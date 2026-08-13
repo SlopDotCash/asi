@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+from types import SimpleNamespace
 from typing import Any, cast
 
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 import alberta_framework.core.hccl_routed_continual_dyad_operational_runner as operational
@@ -241,7 +243,38 @@ def test_routed_kernel_uses_only_the_approved_public_preparation_boundary() -> N
     assert "prepared.source_state is not state" in source
 
 
-def _raw_result(state: object) -> operational.HCCLRoutedContinualDyadOperationalEventResult:
+def _fake_source_state(absolute_step: int) -> SimpleNamespace:
+    """Minimal state double satisfying the executor's source clock/token reads.
+
+    ``step()`` host-reads ``state.hccl_state.world_state.step_words`` (the routed
+    source clock, ``(0, absolute_step)`` as uint32 words) and
+    ``state.content_token`` before dispatching to the routed kernel, so the
+    doubles must carry exactly that attribute chain with concrete arrays.
+    """
+
+    return SimpleNamespace(
+        hccl_state=SimpleNamespace(
+            world_state=SimpleNamespace(
+                step_words=np.asarray((0, absolute_step), dtype=np.uint32),
+            ),
+        ),
+        content_token=np.arange(operational._TOKEN_NBYTES, dtype=np.uint8),
+    )
+
+
+def _raw_result(
+    state: object,
+    *,
+    source: SimpleNamespace,
+    next_step: int,
+) -> operational.HCCLRoutedContinualDyadOperationalEventResult:
+    transcript = SimpleNamespace(
+        pre_transaction_words=np.array(
+            source.hccl_state.world_state.step_words, copy=True
+        ),
+        post_transaction_words=np.asarray((0, next_step), dtype=np.uint32),
+        source_state_content_token=np.array(source.content_token, copy=True),
+    )
     result = object.__new__(operational.HCCLRoutedContinualDyadOperationalEventResult)
     object.__setattr__(
         result,
@@ -249,7 +282,7 @@ def _raw_result(state: object) -> operational.HCCLRoutedContinualDyadOperational
         operational.HCCL_ROUTED_CONTINUAL_DYAD_OPERATIONAL_RESULT_SCHEMA,
     )
     object.__setattr__(result, "state", state)
-    object.__setattr__(result, "transcript", object())
+    object.__setattr__(result, "transcript", transcript)
     object.__setattr__(result, "work", object())
     object.__setattr__(result, "update_applied", True)
     return result
@@ -273,7 +306,7 @@ def _raw_executor(
 def test_routed_executor_does_not_publish_when_preparation_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = object()
+    source = _fake_source_state(0)
     executor = _raw_executor(owner=object(), state=source, checkpoint_interval=None)
 
     def fail(*_args: object, **_kwargs: object) -> object:
@@ -304,7 +337,7 @@ def test_routed_executor_checks_candidate_before_publication(
         def state_valid(_state: object) -> bool:
             return False
 
-    source = object()
+    source = _fake_source_state(absolute_step)
     candidate = object()
     executor = _raw_executor(
         owner=_RejectingOwner(),
@@ -315,7 +348,11 @@ def test_routed_executor_checks_candidate_before_publication(
     monkeypatch.setattr(
         operational,
         "_execute_routed_operational_event",
-        lambda *_args, **_kwargs: _raw_result(candidate),
+        lambda *_args, **_kwargs: _raw_result(
+            candidate,
+            source=source,
+            next_step=absolute_step + 1,
+        ),
     )
     with pytest.raises(operational.HCCLRoutedContinualDyadOperationalError, match=stage):
         executor.step(cast(Any, object()))
