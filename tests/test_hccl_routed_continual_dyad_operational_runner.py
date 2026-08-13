@@ -18,7 +18,6 @@ from alberta_framework.core.hccl_routed_continual_dyad import (
     HCCLRoutedContinualDyadWork,
 )
 
-
 pytestmark = [pytest.mark.unit, pytest.mark.development]
 
 

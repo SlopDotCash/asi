@@ -557,7 +557,10 @@ def _mechanism_diagnostics(
             dtype=np.bool_,
         ),
         context_allocation_requested=np.asarray(
-            tuple(bool(jax.device_get(agent.context_result.context_allocation_requested)) for agent in agents),
+            tuple(
+                bool(jax.device_get(agent.context_result.context_allocation_requested))
+                for agent in agents
+            ),
             dtype=np.bool_,
         ),
         context_full_bank_eviction_requested=np.asarray(
@@ -568,31 +571,52 @@ def _mechanism_diagnostics(
             dtype=np.bool_,
         ),
         context_eviction_target_adjusted=np.asarray(
-            tuple(bool(jax.device_get(agent.context_result.context_eviction_target_adjusted)) for agent in agents),
+            tuple(
+                bool(jax.device_get(agent.context_result.context_eviction_target_adjusted))
+                for agent in agents
+            ),
             dtype=np.bool_,
         ),
         lineage_transferred=np.asarray(
-            tuple(bool(jax.device_get(agent.context_result.lineage_transferred)) for agent in agents),
+            tuple(
+                bool(jax.device_get(agent.context_result.lineage_transferred))
+                for agent in agents
+            ),
             dtype=np.bool_,
         ),
         rescue_incremented=np.asarray(
-            tuple(bool(jax.device_get(agent.context_result.rescue_incremented)) for agent in agents),
+            tuple(
+                bool(jax.device_get(agent.context_result.rescue_incremented))
+                for agent in agents
+            ),
             dtype=np.bool_,
         ),
         lifecycle_committed=np.asarray(
-            tuple(bool(jax.device_get(agent.lifecycle_proof.lifecycle_committed)) for agent in agents),
+            tuple(
+                bool(jax.device_get(agent.lifecycle_proof.lifecycle_committed))
+                for agent in agents
+            ),
             dtype=np.bool_,
         ),
         lifecycle_selected_active_slots=np.asarray(
-            tuple(int(jax.device_get(agent.lifecycle_proof.selected_active_slot)) for agent in agents),
+            tuple(
+                int(jax.device_get(agent.lifecycle_proof.selected_active_slot))
+                for agent in agents
+            ),
             dtype=np.int32,
         ),
         lifecycle_selected_candidate_slots=np.asarray(
-            tuple(int(jax.device_get(agent.lifecycle_proof.selected_candidate_slot)) for agent in agents),
+            tuple(
+                int(jax.device_get(agent.lifecycle_proof.selected_candidate_slot))
+                for agent in agents
+            ),
             dtype=np.int32,
         ),
         pair_admission_masks=np.stack(
-            tuple(np.asarray(jax.device_get(agent.lifecycle_proof.pair_admission_mask)) for agent in agents)
+            tuple(
+                np.asarray(jax.device_get(agent.lifecycle_proof.pair_admission_mask))
+                for agent in agents
+            )
         ).astype(np.bool_),
         memory_settlements_performed=np.asarray(
             tuple(agent.memory_settle_result is not None for agent in agents),
