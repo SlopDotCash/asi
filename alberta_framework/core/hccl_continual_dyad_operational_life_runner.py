@@ -557,7 +557,9 @@ def _read_operational_event(
         signals = proposal.signals
         factor_source = proposal.factors
     except AttributeError as error:
-        raise ValueError("operational result does not expose the PP transcript interface") from error
+        raise ValueError(
+            "operational result does not expose the PP transcript interface"
+        ) from error
     regime = _host_array(
         proposal.evaluator_regime_id,
         name="operational PP evaluator_regime_id",

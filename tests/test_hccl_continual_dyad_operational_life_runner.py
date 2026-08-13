@@ -5,9 +5,8 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
-import json
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pytest
