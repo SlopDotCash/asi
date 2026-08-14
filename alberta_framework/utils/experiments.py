@@ -67,7 +67,7 @@ class MetricSummary(NamedTuple):
 
     Attributes:
         mean: Mean across seeds
-        std: Standard deviation across seeds
+        std: Sample standard deviation across seeds (ddof=1); 0.0 when n_seeds <= 1
         min: Minimum value across seeds
         max: Maximum value across seeds
         n_seeds: Number of seeds
@@ -170,7 +170,7 @@ def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
         final_values = np.mean(metric_arrays[key][:, -window:], axis=1)
         summary[key] = MetricSummary(
             mean=float(np.mean(final_values)),
-            std=float(np.std(final_values)),
+            std=_across_seed_sample_std(final_values),
             min=float(np.min(final_values)),
             max=float(np.max(final_values)),
             n_seeds=n_seeds,
@@ -314,7 +314,11 @@ def get_final_performance(
     metric: str = "squared_error",
     window: int = 100,
 ) -> dict[str, tuple[float, float]]:
-    """Get final performance (mean, std) for each config.
+    """Get final performance (mean, sample std) for each config.
+
+    Across-seed spread uses the sample standard deviation (ddof=1), matching
+    :func:`alberta_framework.utils.statistics.compute_statistics`.  A single
+    seed returns std ``0.0``, never NaN.
 
     Args:
         results: Dictionary of aggregated results
@@ -322,15 +326,24 @@ def get_final_performance(
         window: Number of final steps to average
 
     Returns:
-        Dictionary mapping config name to (mean, std) tuple
+        Dictionary mapping config name to (mean, sample std) tuple
     """
     performance: dict[str, tuple[float, float]] = {}
     for name, agg in results.items():
         arr = agg.metric_arrays[metric]
         final_window = min(window, arr.shape[1])
         final_means = np.mean(arr[:, -final_window:], axis=1)
-        performance[name] = (float(np.mean(final_means)), float(np.std(final_means)))
+        performance[name] = (
+            float(np.mean(final_means)),
+            _across_seed_sample_std(final_means),
+        )
     return performance
+
+
+def _across_seed_sample_std(values: NDArray[np.float64]) -> float:
+    """Sample std across seeds; 0.0 when n <= 1 so the value is never NaN."""
+    n = values.shape[0]
+    return float(np.std(values, ddof=1)) if n > 1 else 0.0
 
 
 def extract_hyperparameter_results(
