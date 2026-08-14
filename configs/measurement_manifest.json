@@ -1,0 +1,1784 @@
+{
+  "version": "2.0",
+  "creation_date": "2026-08-15",
+  "registry_version": "3.0",
+  "total_arms": 115,
+  "total_campaigns": 6,
+  "total_estimated_hours": 159.8,
+  "campaigns": {
+    "ipmnist": {
+      "name": "ipmnist",
+      "n_arms": 20,
+      "total_hours": 3.75,
+      "arms": [
+        {
+          "name": "upgd_w_control",
+          "description": "UPGD-W baseline control",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "control",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.01
+          }
+        },
+        {
+          "name": "adamw_control",
+          "description": "AdamW baseline control",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "control",
+            "adamw"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "adamw",
+            "lr": 0.001
+          }
+        },
+        {
+          "name": "upgd_ema_norm",
+          "description": "UPGD with EMA normalization",
+          "type": "arm",
+          "tags": [
+            "norm",
+            "ema",
+            "upgd"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "ema_decay": 0.99
+          }
+        },
+        {
+          "name": "upgd_w_step_002",
+          "description": "UPGD-W with step size 0.02",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.02
+          }
+        },
+        {
+          "name": "upgd_w_step_005",
+          "description": "UPGD-W with step size 0.05",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.05
+          }
+        },
+        {
+          "name": "upgd_w_step_004",
+          "description": "UPGD-W with step size 0.04",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.04
+          }
+        },
+        {
+          "name": "upgd_w_weight_decay_01",
+          "description": "UPGD-W with weight decay 0.1",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.1
+          }
+        },
+        {
+          "name": "upgd_w_weight_decay_005",
+          "description": "UPGD-W with weight decay 0.05",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.05
+          }
+        },
+        {
+          "name": "upgd_w_weight_decay_0",
+          "description": "UPGD-W with no weight decay",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.0
+          }
+        },
+        {
+          "name": "upgd_w_norm_decay_09",
+          "description": "UPGD-W with norm decay 0.9",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.9
+          }
+        },
+        {
+          "name": "upgd_w_norm_decay_095",
+          "description": "UPGD-W with norm decay 0.95",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.95
+          }
+        },
+        {
+          "name": "upgd_w_norm_decay_999",
+          "description": "UPGD-W with norm decay 0.999",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd"
+          ],
+          "estimated_hours": 0.15,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.999
+          }
+        },
+        {
+          "name": "upgd_w_aggressive_combo",
+          "description": "UPGD-W aggressive combination",
+          "type": "arm",
+          "tags": [
+            "combo",
+            "aggressive",
+            "upgd"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.05,
+            "weight_decay": 0.1,
+            "norm_decay": 0.9
+          }
+        },
+        {
+          "name": "upgd_w_conservative_combo",
+          "description": "UPGD-W conservative combination",
+          "type": "arm",
+          "tags": [
+            "combo",
+            "conservative",
+            "upgd"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.01,
+            "weight_decay": 0.005,
+            "norm_decay": 0.999
+          }
+        },
+        {
+          "name": "upgd_w_balanced_combo",
+          "description": "UPGD-W balanced combination",
+          "type": "arm",
+          "tags": [
+            "combo",
+            "balanced",
+            "upgd"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.02,
+            "weight_decay": 0.05,
+            "norm_decay": 0.95
+          }
+        },
+        {
+          "name": "upgd_w_ema_smoothing",
+          "description": "UPGD-W with EMA smoothing",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "ema",
+            "upgd"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "ema_decay": 0.99
+          }
+        },
+        {
+          "name": "upgd_w_second_order_momentum",
+          "description": "UPGD-W with second-order momentum",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "momentum",
+            "upgd"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "use_second_moment": true
+          }
+        },
+        {
+          "name": "upgd_w_adaptive_schedule",
+          "description": "UPGD-W with adaptive learning rate schedule",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "schedule",
+            "upgd"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "schedule": "adaptive"
+          }
+        },
+        {
+          "name": "upgd_w_gradient_clipping",
+          "description": "UPGD-W with gradient clipping",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "clipping",
+            "upgd"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "grad_clip": 1.0
+          }
+        },
+        {
+          "name": "upgd_w_lookahead",
+          "description": "UPGD-W with lookahead optimizer",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "lookahead",
+            "upgd"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "use_lookahead": true
+          }
+        }
+      ]
+    },
+    "scr": {
+      "name": "scr",
+      "n_arms": 24,
+      "total_hours": 8.25,
+      "arms": [
+        {
+          "name": "backprop_sgd_relu",
+          "description": "Standard backprop with SGD and ReLU",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "sgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "sgd",
+            "activation": "relu"
+          }
+        },
+        {
+          "name": "adamw_baseline",
+          "description": "AdamW optimizer baseline",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "adamw",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "adamw",
+            "lr": 0.001
+          }
+        },
+        {
+          "name": "upgd_w_baseline",
+          "description": "UPGD-W baseline",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.01
+          }
+        },
+        {
+          "name": "upgd_w_scr_step_002",
+          "description": "UPGD-W SCR with step size 0.02",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.02
+          }
+        },
+        {
+          "name": "upgd_w_scr_step_005",
+          "description": "UPGD-W SCR with step size 0.05",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.05
+          }
+        },
+        {
+          "name": "upgd_w_scr_step_004",
+          "description": "UPGD-W SCR with step size 0.04",
+          "type": "arm",
+          "tags": [
+            "step_size",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "step_size": 0.04
+          }
+        },
+        {
+          "name": "upgd_w_scr_wd_01",
+          "description": "UPGD-W SCR with weight decay 0.1",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.1
+          }
+        },
+        {
+          "name": "upgd_w_scr_wd_005",
+          "description": "UPGD-W SCR with weight decay 0.05",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.05
+          }
+        },
+        {
+          "name": "upgd_w_scr_wd_0",
+          "description": "UPGD-W SCR with no weight decay",
+          "type": "arm",
+          "tags": [
+            "weight_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "weight_decay": 0.0
+          }
+        },
+        {
+          "name": "upgd_w_scr_norm_09",
+          "description": "UPGD-W SCR with norm decay 0.9",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.9
+          }
+        },
+        {
+          "name": "upgd_w_scr_norm_095",
+          "description": "UPGD-W SCR with norm decay 0.95",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.95
+          }
+        },
+        {
+          "name": "upgd_w_scr_norm_999",
+          "description": "UPGD-W SCR with norm decay 0.999",
+          "type": "arm",
+          "tags": [
+            "norm_decay",
+            "upgd",
+            "scr"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "norm_decay": 0.999
+          }
+        },
+        {
+          "name": "lion_optimizer",
+          "description": "Lion optimizer for SCR",
+          "type": "arm",
+          "tags": [
+            "optimizer",
+            "lion",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "lion",
+            "lr": 0.001
+          }
+        },
+        {
+          "name": "adamw_warmup",
+          "description": "AdamW with warmup schedule",
+          "type": "arm",
+          "tags": [
+            "optimizer",
+            "adamw",
+            "warmup",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "adamw",
+            "warmup_steps": 1000
+          }
+        },
+        {
+          "name": "muon_optimizer",
+          "description": "Muon optimizer for SCR",
+          "type": "arm",
+          "tags": [
+            "optimizer",
+            "muon",
+            "scr"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "optimizer": "muon"
+          }
+        },
+        {
+          "name": "normalized_sgd",
+          "description": "SGD with gradient normalization",
+          "type": "arm",
+          "tags": [
+            "optimizer",
+            "sgd",
+            "normalized",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "sgd",
+            "normalize_grads": true
+          }
+        },
+        {
+          "name": "norm_gate_composition",
+          "description": "Normalization gating composition",
+          "type": "arm",
+          "tags": [
+            "composition",
+            "gating",
+            "scr"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "composition": "norm_gate"
+          }
+        },
+        {
+          "name": "meta_decay_composition",
+          "description": "Meta decay composition",
+          "type": "arm",
+          "tags": [
+            "composition",
+            "meta",
+            "scr"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "composition": "meta_decay"
+          }
+        },
+        {
+          "name": "buffer_norm_composition",
+          "description": "Buffer normalization composition",
+          "type": "arm",
+          "tags": [
+            "composition",
+            "buffer",
+            "scr"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "composition": "buffer_norm"
+          }
+        },
+        {
+          "name": "rls_gate_composition",
+          "description": "RLS gating composition",
+          "type": "arm",
+          "tags": [
+            "composition",
+            "rls",
+            "gate",
+            "scr"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "composition": "rls_gate"
+          }
+        },
+        {
+          "name": "nesterov_accelerated",
+          "description": "Nesterov accelerated gradient",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "nesterov",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "sgd",
+            "nesterov": true
+          }
+        },
+        {
+          "name": "exponential_decay",
+          "description": "Exponential decay schedule",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "decay",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "schedule": "exponential_decay"
+          }
+        },
+        {
+          "name": "rmsprop_adaptive",
+          "description": "RMSprop with adaptive learning rate",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "rmsprop",
+            "scr"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "rmsprop",
+            "adaptive": true
+          }
+        },
+        {
+          "name": "dynamic_ensemble",
+          "description": "Dynamic ensemble of optimizers",
+          "type": "arm",
+          "tags": [
+            "advanced",
+            "ensemble",
+            "scr"
+          ],
+          "estimated_hours": 0.5,
+          "parameters": {
+            "ensemble": "dynamic"
+          }
+        }
+      ]
+    },
+    "emnist": {
+      "name": "emnist",
+      "n_arms": 29,
+      "total_hours": 10.2,
+      "arms": [
+        {
+          "name": "upgd_w",
+          "description": "UPGD-W baseline learner",
+          "type": "learner",
+          "tags": [
+            "baseline",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "optimizer": "upgd_w"
+          }
+        },
+        {
+          "name": "adamw",
+          "description": "AdamW baseline learner",
+          "type": "learner",
+          "tags": [
+            "baseline",
+            "adamw",
+            "emnist"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "optimizer": "adamw"
+          }
+        },
+        {
+          "name": "upgd_ema_norm_emnist",
+          "description": "UPGD with EMA normalization for EMNIST",
+          "type": "learner",
+          "tags": [
+            "norm",
+            "ema",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "ema_norm": true
+          }
+        },
+        {
+          "name": "sgd_ema_norm",
+          "description": "SGD with EMA normalization",
+          "type": "learner",
+          "tags": [
+            "norm",
+            "ema",
+            "sgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "sgd",
+            "ema_norm": true
+          }
+        },
+        {
+          "name": "upgd_cbp_recycle_high",
+          "description": "UPGD with CBP high recycling",
+          "type": "learner",
+          "tags": [
+            "cbp",
+            "recycling",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "cbp_recycle": 0.8
+          }
+        },
+        {
+          "name": "upgd_cbp_recycle_mid",
+          "description": "UPGD with CBP mid recycling",
+          "type": "learner",
+          "tags": [
+            "cbp",
+            "recycling",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "cbp_recycle": 0.5
+          }
+        },
+        {
+          "name": "upgd_cbp_recycle_low",
+          "description": "UPGD with CBP low recycling",
+          "type": "learner",
+          "tags": [
+            "cbp",
+            "recycling",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "cbp_recycle": 0.2
+          }
+        },
+        {
+          "name": "upgd_l2init_strong",
+          "description": "UPGD with strong L2 initialization",
+          "type": "learner",
+          "tags": [
+            "l2init",
+            "strong",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "l2init_scale": 0.8
+          }
+        },
+        {
+          "name": "upgd_l2init_moderate",
+          "description": "UPGD with moderate L2 initialization",
+          "type": "learner",
+          "tags": [
+            "l2init",
+            "moderate",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "l2init_scale": 0.5
+          }
+        },
+        {
+          "name": "upgd_l2init_weak",
+          "description": "UPGD with weak L2 initialization",
+          "type": "learner",
+          "tags": [
+            "l2init",
+            "weak",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "l2init_scale": 0.2
+          }
+        },
+        {
+          "name": "upgd_shiftnorm_aggressive",
+          "description": "UPGD with aggressive shift normalization",
+          "type": "learner",
+          "tags": [
+            "shiftnorm",
+            "aggressive",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "shiftnorm_scale": 0.8
+          }
+        },
+        {
+          "name": "upgd_shiftnorm_balanced",
+          "description": "UPGD with balanced shift normalization",
+          "type": "learner",
+          "tags": [
+            "shiftnorm",
+            "balanced",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "shiftnorm_scale": 0.5
+          }
+        },
+        {
+          "name": "upgd_shiftnorm_conservative",
+          "description": "UPGD with conservative shift normalization",
+          "type": "learner",
+          "tags": [
+            "shiftnorm",
+            "conservative",
+            "upgd",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "upgd_w",
+            "shiftnorm_scale": 0.2
+          }
+        },
+        {
+          "name": "adamw_cbp",
+          "description": "AdamW with CBP protection",
+          "type": "learner",
+          "tags": [
+            "adamw",
+            "cbp",
+            "protection",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "adamw",
+            "cbp": true
+          }
+        },
+        {
+          "name": "adamw_l2init",
+          "description": "AdamW with L2 initialization",
+          "type": "learner",
+          "tags": [
+            "adamw",
+            "l2init",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "adamw",
+            "l2init": true
+          }
+        },
+        {
+          "name": "sgd_cbp",
+          "description": "SGD with CBP protection",
+          "type": "learner",
+          "tags": [
+            "sgd",
+            "cbp",
+            "protection",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "optimizer": "sgd",
+            "cbp": true
+          }
+        },
+        {
+          "name": "sgd_shiftnorm",
+          "description": "SGD with shift normalization",
+          "type": "learner",
+          "tags": [
+            "sgd",
+            "shiftnorm",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "optimizer": "sgd",
+            "shiftnorm": true
+          }
+        },
+        {
+          "name": "mixup_augmented",
+          "description": "Learner with Mixup augmentation",
+          "type": "learner",
+          "tags": [
+            "augmentation",
+            "mixup",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "augmentation": "mixup",
+            "alpha": 0.2
+          }
+        },
+        {
+          "name": "cutout_augmented",
+          "description": "Learner with Cutout augmentation",
+          "type": "learner",
+          "tags": [
+            "augmentation",
+            "cutout",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "augmentation": "cutout",
+            "cutout_size": 8
+          }
+        },
+        {
+          "name": "randaugment",
+          "description": "Learner with RandAugment",
+          "type": "learner",
+          "tags": [
+            "augmentation",
+            "randaugment",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "augmentation": "randaugment",
+            "num_ops": 2
+          }
+        },
+        {
+          "name": "adversarial_robust",
+          "description": "Adversarially robust learner",
+          "type": "learner",
+          "tags": [
+            "augmentation",
+            "adversarial",
+            "robust",
+            "emnist"
+          ],
+          "estimated_hours": 0.5,
+          "parameters": {
+            "adversarial_training": true
+          }
+        },
+        {
+          "name": "ensemble_augmented",
+          "description": "Ensemble with augmented members",
+          "type": "learner",
+          "tags": [
+            "augmentation",
+            "ensemble",
+            "emnist"
+          ],
+          "estimated_hours": 0.6,
+          "parameters": {
+            "ensemble_size": 3,
+            "augmentation": "mixed"
+          }
+        },
+        {
+          "name": "cbp_l2init_hybrid",
+          "description": "CBP and L2-init hybrid",
+          "type": "learner",
+          "tags": [
+            "hybrid",
+            "cbp",
+            "l2init",
+            "emnist"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "cbp": true,
+            "l2init": true
+          }
+        },
+        {
+          "name": "shiftnorm_cbp_hybrid",
+          "description": "Shift-norm and CBP hybrid",
+          "type": "learner",
+          "tags": [
+            "hybrid",
+            "shiftnorm",
+            "cbp",
+            "emnist"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "shiftnorm": true,
+            "cbp": true
+          }
+        },
+        {
+          "name": "adversarial_cbp_hybrid",
+          "description": "Adversarial training and CBP hybrid",
+          "type": "learner",
+          "tags": [
+            "hybrid",
+            "adversarial",
+            "cbp",
+            "emnist"
+          ],
+          "estimated_hours": 0.5,
+          "parameters": {
+            "adversarial_training": true,
+            "cbp": true
+          }
+        },
+        {
+          "name": "ensemble_protection",
+          "description": "Protected ensemble learner",
+          "type": "learner",
+          "tags": [
+            "hybrid",
+            "ensemble",
+            "protection",
+            "emnist"
+          ],
+          "estimated_hours": 0.55,
+          "parameters": {
+            "ensemble_size": 3,
+            "cbp": true,
+            "l2init": true
+          }
+        },
+        {
+          "name": "forgetting_detector",
+          "description": "Forgetting detection mechanism",
+          "type": "learner",
+          "tags": [
+            "detection",
+            "forgetting",
+            "emnist"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "detect_forgetting": true
+          }
+        },
+        {
+          "name": "per_class_normalization",
+          "description": "Per-class normalization learner",
+          "type": "learner",
+          "tags": [
+            "normalization",
+            "per_class",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "per_class_norm": true
+          }
+        },
+        {
+          "name": "feature_dropout_schedule",
+          "description": "Feature dropout with schedule",
+          "type": "learner",
+          "tags": [
+            "dropout",
+            "schedule",
+            "emnist"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "feature_dropout": true,
+            "schedule": "adaptive"
+          }
+        }
+      ]
+    },
+    "micro_continual": {
+      "name": "micro_continual",
+      "n_arms": 19,
+      "total_hours": 6.7,
+      "arms": [
+        {
+          "name": "rls_head_resid",
+          "description": "RLS head with residual",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "rls",
+            "micro"
+          ],
+          "estimated_hours": 0.2,
+          "parameters": {
+            "method": "rls_head_resid"
+          }
+        },
+        {
+          "name": "alignment_first",
+          "description": "Alignment-first approach",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "alignment",
+            "micro"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "method": "alignment_first"
+          }
+        },
+        {
+          "name": "naive_bayes_extended",
+          "description": "Extended Naive Bayes",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "bayes",
+            "micro"
+          ],
+          "estimated_hours": 0.25,
+          "parameters": {
+            "method": "naive_bayes_extended"
+          }
+        },
+        {
+          "name": "dual_speed_rfs_rls",
+          "description": "Dual-speed RFS and RLS",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "dual_speed",
+            "micro"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "method": "dual_speed_rfs_rls"
+          }
+        },
+        {
+          "name": "actor_critic_micro",
+          "description": "Actor-critic for micro tasks",
+          "type": "arm",
+          "tags": [
+            "baseline",
+            "actor_critic",
+            "micro"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "method": "actor_critic_micro"
+          }
+        },
+        {
+          "name": "replay_buffer_learner",
+          "description": "Learner with replay buffer",
+          "type": "arm",
+          "tags": [
+            "extension",
+            "replay",
+            "micro"
+          ],
+          "estimated_hours": 0.3,
+          "parameters": {
+            "use_replay_buffer": true
+          }
+        },
+        {
+          "name": "plasticity_modulated",
+          "description": "Plasticity-modulated learner",
+          "type": "arm",
+          "tags": [
+            "extension",
+            "plasticity",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "modulate_plasticity": true
+          }
+        },
+        {
+          "name": "task_boundary_detector",
+          "description": "Task boundary detection",
+          "type": "arm",
+          "tags": [
+            "extension",
+            "boundary_detection",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "detect_boundaries": true
+          }
+        },
+        {
+          "name": "maml_inspired",
+          "description": "MAML-inspired meta-learner",
+          "type": "arm",
+          "tags": [
+            "meta_learning",
+            "maml",
+            "micro"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "method": "maml_inspired"
+          }
+        },
+        {
+          "name": "hypernetwork",
+          "description": "Hypernetwork-based learner",
+          "type": "arm",
+          "tags": [
+            "meta_learning",
+            "hypernetwork",
+            "micro"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "use_hypernetwork": true
+          }
+        },
+        {
+          "name": "context_modulation",
+          "description": "Context modulation learner",
+          "type": "arm",
+          "tags": [
+            "meta_learning",
+            "context",
+            "micro"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "context_modulation": true
+          }
+        },
+        {
+          "name": "episodic_memory",
+          "description": "Episodic memory learner",
+          "type": "arm",
+          "tags": [
+            "meta_learning",
+            "memory",
+            "micro"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "use_episodic_memory": true
+          }
+        },
+        {
+          "name": "loss_gated",
+          "description": "Loss-gated learner",
+          "type": "arm",
+          "tags": [
+            "gating",
+            "loss",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "gating": "loss"
+          }
+        },
+        {
+          "name": "gradient_norm_gated",
+          "description": "Gradient norm gated learner",
+          "type": "arm",
+          "tags": [
+            "gating",
+            "gradient_norm",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "gating": "gradient_norm"
+          }
+        },
+        {
+          "name": "variance_gated",
+          "description": "Variance-gated learner",
+          "type": "arm",
+          "tags": [
+            "gating",
+            "variance",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "gating": "variance"
+          }
+        },
+        {
+          "name": "confidence_gated",
+          "description": "Confidence-gated learner",
+          "type": "arm",
+          "tags": [
+            "gating",
+            "confidence",
+            "micro"
+          ],
+          "estimated_hours": 0.35,
+          "parameters": {
+            "gating": "confidence"
+          }
+        },
+        {
+          "name": "rls_meta_hybrid",
+          "description": "RLS and meta-learning hybrid",
+          "type": "arm",
+          "tags": [
+            "hybrid",
+            "rls",
+            "meta",
+            "micro"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "method": "rls_head_resid",
+            "use_meta": true
+          }
+        },
+        {
+          "name": "buffer_plasticity_hybrid",
+          "description": "Replay buffer and plasticity hybrid",
+          "type": "arm",
+          "tags": [
+            "hybrid",
+            "buffer",
+            "plasticity",
+            "micro"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "use_replay_buffer": true,
+            "modulate_plasticity": true
+          }
+        },
+        {
+          "name": "gate_boundary_hybrid",
+          "description": "Gating and boundary detection hybrid",
+          "type": "arm",
+          "tags": [
+            "hybrid",
+            "gating",
+            "boundary",
+            "micro"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "gating": "loss",
+            "detect_boundaries": true
+          }
+        }
+      ]
+    },
+    "forager": {
+      "name": "forager",
+      "n_arms": 19,
+      "total_hours": 10.9,
+      "arms": [
+        {
+          "name": "dqn",
+          "description": "Deep Q-Network baseline",
+          "type": "baseline",
+          "tags": [
+            "baseline",
+            "dqn",
+            "forager"
+          ],
+          "estimated_hours": 0.4,
+          "parameters": {
+            "algorithm": "dqn"
+          }
+        },
+        {
+          "name": "a3c",
+          "description": "Asynchronous Advantage Actor-Critic baseline",
+          "type": "baseline",
+          "tags": [
+            "baseline",
+            "a3c",
+            "forager"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "algorithm": "a3c"
+          }
+        },
+        {
+          "name": "horde",
+          "description": "Horde architecture baseline",
+          "type": "baseline",
+          "tags": [
+            "baseline",
+            "horde",
+            "forager"
+          ],
+          "estimated_hours": 0.5,
+          "parameters": {
+            "algorithm": "horde"
+          }
+        },
+        {
+          "name": "random",
+          "description": "Random policy baseline",
+          "type": "baseline",
+          "tags": [
+            "baseline",
+            "random",
+            "forager"
+          ],
+          "estimated_hours": 0.1,
+          "parameters": {
+            "algorithm": "random"
+          }
+        },
+        {
+          "name": "dqn_smoke_opt",
+          "description": "DQN optimized for smoke tests",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "smoke",
+            "dqn",
+            "forager"
+          ],
+          "estimated_hours": 0.45,
+          "parameters": {
+            "algorithm": "dqn",
+            "phase": "smoke"
+          }
+        },
+        {
+          "name": "dqn_continual_opt",
+          "description": "DQN optimized for continual learning",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "continual",
+            "dqn",
+            "forager"
+          ],
+          "estimated_hours": 0.6,
+          "parameters": {
+            "algorithm": "dqn",
+            "phase": "continual"
+          }
+        },
+        {
+          "name": "dqn_transfer_opt",
+          "description": "DQN optimized for transfer",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "transfer",
+            "dqn",
+            "forager"
+          ],
+          "estimated_hours": 0.6,
+          "parameters": {
+            "algorithm": "dqn",
+            "phase": "transfer"
+          }
+        },
+        {
+          "name": "a3c_smoke_opt",
+          "description": "A3C optimized for smoke tests",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "smoke",
+            "a3c",
+            "forager"
+          ],
+          "estimated_hours": 0.5,
+          "parameters": {
+            "algorithm": "a3c",
+            "phase": "smoke"
+          }
+        },
+        {
+          "name": "a3c_continual_opt",
+          "description": "A3C optimized for continual learning",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "continual",
+            "a3c",
+            "forager"
+          ],
+          "estimated_hours": 0.65,
+          "parameters": {
+            "algorithm": "a3c",
+            "phase": "continual"
+          }
+        },
+        {
+          "name": "a3c_transfer_opt",
+          "description": "A3C optimized for transfer",
+          "type": "baseline",
+          "tags": [
+            "phase_opt",
+            "transfer",
+            "a3c",
+            "forager"
+          ],
+          "estimated_hours": 0.65,
+          "parameters": {
+            "algorithm": "a3c",
+            "phase": "transfer"
+          }
+        },
+        {
+          "name": "dqn_curiosity",
+          "description": "DQN with curiosity-driven exploration",
+          "type": "baseline",
+          "tags": [
+            "hybrid",
+            "curiosity",
+            "dqn",
+            "forager"
+          ],
+          "estimated_hours": 0.55,
+          "parameters": {
+            "algorithm": "dqn",
+            "exploration": "curiosity"
+          }
+        },
+        {
+          "name": "a3c_entropy_reg",
+          "description": "A3C with entropy regularization",
+          "type": "baseline",
+          "tags": [
+            "hybrid",
+            "entropy",
+            "a3c",
+            "forager"
+          ],
+          "estimated_hours": 0.6,
+          "parameters": {
+            "algorithm": "a3c",
+            "entropy_coeff": 0.01
+          }
+        },
+        {
+          "name": "dqn_a3c_ensemble",
+          "description": "Ensemble of DQN and A3C",
+          "type": "baseline",
+          "tags": [
+            "hybrid",
+            "ensemble",
+            "forager"
+          ],
+          "estimated_hours": 0.8,
+          "parameters": {
+            "ensemble": [
+              "dqn",
+              "a3c"
+            ]
+          }
+        },
+        {
+          "name": "dqn_a3c_weighted",
+          "description": "Weighted DQN-A3C hybrid",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "weighted",
+            "forager"
+          ],
+          "estimated_hours": 0.7,
+          "parameters": {
+            "algorithm": "weighted_ensemble",
+            "weights": [
+              0.6,
+              0.4
+            ]
+          }
+        },
+        {
+          "name": "curiosity_entropy",
+          "description": "Curiosity and entropy exploration",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "exploration",
+            "forager"
+          ],
+          "estimated_hours": 0.65,
+          "parameters": {
+            "exploration": [
+              "curiosity",
+              "entropy"
+            ]
+          }
+        },
+        {
+          "name": "distributional_rls",
+          "description": "Distributional RL with RLS",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "distributional",
+            "forager"
+          ],
+          "estimated_hours": 0.7,
+          "parameters": {
+            "algorithm": "distributional_rls"
+          }
+        },
+        {
+          "name": "dueling_advantage",
+          "description": "Dueling network advantage architecture",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "dueling",
+            "forager"
+          ],
+          "estimated_hours": 0.6,
+          "parameters": {
+            "architecture": "dueling"
+          }
+        },
+        {
+          "name": "multi_step_bootstrap",
+          "description": "Multi-step bootstrapping",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "bootstrapping",
+            "forager"
+          ],
+          "estimated_hours": 0.65,
+          "parameters": {
+            "bootstrap_steps": 5
+          }
+        },
+        {
+          "name": "hindsight_relabeling",
+          "description": "Hindsight experience replay with relabeling",
+          "type": "baseline",
+          "tags": [
+            "advanced",
+            "hindsight",
+            "forager"
+          ],
+          "estimated_hours": 0.75,
+          "parameters": {
+            "use_hindsight": true
+          }
+        }
+      ]
+    },
+    "rule_discovery": {
+      "name": "rule_discovery",
+      "n_arms": 4,
+      "total_hours": 120,
+      "arms": [
+        {
+          "name": "rule_discovery_phase_1a_candidates",
+          "description": "Rule discovery phase 1a - 30 candidate genomes",
+          "type": "genome",
+          "tags": [
+            "phase_1a",
+            "candidates",
+            "rule_discovery"
+          ],
+          "estimated_hours": 30,
+          "parameters": {
+            "phase": "1a",
+            "n_genomes": 30
+          }
+        },
+        {
+          "name": "rule_discovery_phase_1b_ablations",
+          "description": "Rule discovery phase 1b - 30 ablation genomes",
+          "type": "genome",
+          "tags": [
+            "phase_1b",
+            "ablations",
+            "rule_discovery"
+          ],
+          "estimated_hours": 20,
+          "parameters": {
+            "phase": "1b",
+            "n_genomes": 30
+          }
+        },
+        {
+          "name": "rule_discovery_phase_1c_genetic",
+          "description": "Rule discovery phase 1c - 50 genetic search genomes",
+          "type": "genome",
+          "tags": [
+            "phase_1c",
+            "genetic",
+            "rule_discovery"
+          ],
+          "estimated_hours": 40,
+          "parameters": {
+            "phase": "1c",
+            "n_genomes": 50
+          }
+        },
+        {
+          "name": "rule_discovery_phase_1d_finetuning",
+          "description": "Rule discovery phase 1d - 20 fine-tuning genomes",
+          "type": "genome",
+          "tags": [
+            "phase_1d",
+            "finetuning",
+            "rule_discovery"
+          ],
+          "estimated_hours": 30,
+          "parameters": {
+            "phase": "1d",
+            "n_genomes": 20
+          }
+        }
+      ]
+    }
+  },
+  "validation": {
+    "total_arms": 115,
+    "valid": 115,
+    "invalid": 0,
+    "errors": []
+  }
+}

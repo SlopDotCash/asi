@@ -1,0 +1,5 @@
+/e/eliza/asi/scr_v2_advanced_optimizers.py
+/e/eliza/asi/tests/test_scr_v2_advanced_optimizers.py
+/e/eliza/asi/example_scr_v2_advanced_optimizers.py
+/e/eliza/asi/SCR_V2_ADVANCED_OPTIMIZERS_GUIDE.md
+/e/eliza/asi/SCR_V2_ADVANCED_OPTIMIZERS_IMPLEMENTATION.md
