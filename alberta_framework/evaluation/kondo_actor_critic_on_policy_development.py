@@ -48,7 +48,7 @@ from jax.extend import backend as jax_backend
 from alberta_framework.core.kondo_gate import KondoGateConfig
 from alberta_framework.core.kondo_sparse_actor import (
     KondoActorBackwardBatch,
-    KondoActorBackwardResult,
+    KondoActorBackwardSummary,
     KondoActorParameters,
     KondoActorProtectedInputs,
     KondoSparseActor,
@@ -1162,7 +1162,7 @@ class _ActorOutcome:
     uniformly_reserved: Array
     force_keep_mask: Array
     gathered_indices: tuple[int, ...]
-    backward: KondoActorBackwardResult
+    backward: KondoActorBackwardSummary
     backward_leading_shape: int
     sparse_backward: bool
     screen_gather_order: tuple[str, ...]
@@ -1324,7 +1324,7 @@ def _kondo_actor_outcome(
     gathered_indices = tuple(int(item) for item in selected_indices[selected_slots])
     if not bool(np.all(np.asarray(batch.failure_mask) <= np.asarray(result.sparks_joy))):
         raise ValueError("Kondo actor dropped a forced rare-failure row")
-    backward = KondoActorBackwardResult(
+    backward = KondoActorBackwardSummary(
         loss=result.actor_loss,
         gradient=result.gradient,
         selected_count=result.screen.selected_count,

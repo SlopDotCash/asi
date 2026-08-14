@@ -59,6 +59,7 @@ from alberta_framework.core.kondo_gate import KondoGate, KondoGateConfig
 from alberta_framework.core.kondo_sparse_actor import (
     KondoActorBackwardBatch,
     KondoActorBackwardResult,
+    KondoActorBackwardSummary,
     KondoActorParameters,
     KondoActorProtectedInputs,
     KondoSparseActor,
@@ -724,7 +725,7 @@ def _backward_record(
     behavior_log_probability: Array,
     parameters_before: KondoActorParameters,
     parameters_after: KondoActorParameters,
-    backward: KondoActorBackwardResult,
+    backward: KondoActorBackwardResult | KondoActorBackwardSummary,
     selected_indices: Sequence[int],
     selected_count: int,
     backward_slots: int,
@@ -944,7 +945,7 @@ class KondoSparseActorDevelopmentEvaluator:
         ):
             raise ValueError("Kondo development sparse transaction failed")
         kondo_selected = np.flatnonzero(np.asarray(kondo_result.sparks_joy)).tolist()
-        kondo_backward = KondoActorBackwardResult(
+        kondo_backward = KondoActorBackwardSummary(
             loss=kondo_result.actor_loss,
             gradient=kondo_result.gradient,
             selected_count=kondo_result.screen.selected_count,
@@ -999,7 +1000,7 @@ class KondoSparseActorDevelopmentEvaluator:
         ):
             raise ValueError("Kondo development overflow fallback failed")
         overflow_selected = np.flatnonzero(np.asarray(overflow_result.sparks_joy)).tolist()
-        overflow_backward = KondoActorBackwardResult(
+        overflow_backward = KondoActorBackwardSummary(
             loss=overflow_result.actor_loss,
             gradient=overflow_result.gradient,
             selected_count=overflow_result.screen.selected_count,

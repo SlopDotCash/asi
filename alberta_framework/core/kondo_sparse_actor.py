@@ -375,6 +375,30 @@ class KondoActorBackwardResult:
 
 
 @chex.dataclass(frozen=True)
+class KondoActorBackwardSummary:
+    """Committed backward accounting without the per-slot autodiff auxiliaries.
+
+    The full :class:`KondoActorBackwardResult` also carries the per-slot
+    ``selected_log_probability`` and ``delight`` auxiliaries that fall out of the
+    canonical ``value_and_grad(_actor_loss, has_aux=True)`` backward pass.  Some
+    evaluation and development lanes reconstruct a backward record from an
+    already-committed :class:`KondoSparseActorResult` transaction, which does not
+    carry those two per-slot quantities; there is no honest local source for
+    them at those sites.  Every consumer of a backward record reads only ``loss``,
+    ``gradient``, ``selected_count``, and ``gradient_finite`` — so those lanes
+    carry exactly that committed subset here rather than fabricating per-slot
+    values to satisfy the full constructor.  Keeping the two types distinct means
+    the core producer at :func:`_actor_backward` still errors if it ever omits a
+    real auxiliary.
+    """
+
+    loss: Float[Array, ""]
+    gradient: KondoActorParameters
+    selected_count: Int[Array, ""]
+    gradient_finite: Bool[Array, ""]
+
+
+@chex.dataclass(frozen=True)
 class KondoSparseActorResult:
     """One proposed/committed Kondo actor transaction."""
 
@@ -1296,6 +1320,7 @@ __all__ = [
     "KONDO_SPARSE_ACTOR_SCHEMA",
     "KondoActorBackwardBatch",
     "KondoActorBackwardResult",
+    "KondoActorBackwardSummary",
     "KondoActorParameters",
     "KondoActorProtectedInputs",
     "KondoSparseActor",
