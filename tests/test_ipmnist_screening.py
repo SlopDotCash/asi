@@ -2680,6 +2680,63 @@ class TestRFFRLS:
             )
 
 
+class TestRFFRLSCache:
+    """V4 preregistration: RFF+RLS with per-context cached readouts."""
+
+    def test_registry_config(self):
+        spec = screening_spec("rff_rls_cache")
+        base_spec = screening_spec("rff_rls")
+        assert spec.base_learner == "upgd_w"
+        assert spec.mechanism == "random_features_cached"
+        # Hyperparameters identical to base rff_rls
+        assert spec.hyperparameters == base_spec.hyperparameters
+
+    def test_state_initialization(self):
+        """Verify cache state initializes with empty cache and LRU."""
+        spec = screening_spec("rff_rls_cache")
+        init_fn, _ = spec.factory(spec.hyperparameters)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        assert state.omega.shape == (1024, SMALL.input_dim)
+        assert state.cache == {}
+        assert state.cache_lru == []
+
+    def test_cache_miss_stores_readout(self):
+        """First encounter with a context stores readout in cache."""
+        spec = screening_spec("rff_rls_cache")
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        x = jr.normal(jr.key(1), (SMALL.input_dim,))
+        y = jnp.array(0, jnp.int32)
+        _, new_state, _ = step_fn(params, state, x, y, jr.key(0))
+        # Context 0 (default) should now be cached
+        assert 0 in new_state.cache
+        assert 0 in new_state.cache_lru
+        cached_wout, cached_p = new_state.cache[0]
+        assert cached_wout.shape == new_state.wout.shape
+        assert cached_p.shape == new_state.p.shape
+
+    def test_cache_hit_restores_readout(self):
+        """Revisiting a context restores its cached readout."""
+        spec = screening_spec("rff_rls_cache")
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        x1 = jr.normal(jr.key(1), (SMALL.input_dim,))
+        y1 = jnp.array(0, jnp.int32)
+        # First visit to context 0
+        _, state = step_fn(params, state, x1, y1, jr.key(0))[:2]
+        cached_wout_1, _ = state.cache[0]
+        # Different example, same context 0
+        x2 = jr.normal(jr.key(2), (SMALL.input_dim,))
+        y2 = jnp.array(1, jnp.int32)
+        _, state = step_fn(params, state, x2, y2, jr.key(1))[:2]
+        cached_wout_2, _ = state.cache[0]
+        # Readouts evolved as RLS continued (not identical to first visit)
+        assert not np.array_equal(cached_wout_1, cached_wout_2)
+
+
 class TestOptimizerFloorHybrids:
     """Wave-B optimizer-floor hybrids: Adam-class step adaptation under the
     champion's full stability package (fast conditioning + utility gate +

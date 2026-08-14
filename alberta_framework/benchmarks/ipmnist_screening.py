@@ -3452,6 +3452,134 @@ def _make_lin_rls_learner(
 
 
 # =============================================================================
+# (s) RFF+RLS with per-context readout cache (V4 dual-speed readout)
+# =============================================================================
+
+
+@chex.dataclass(frozen=True)
+class RFFRLSCacheState:
+    """RFF+RLS state plus per-context cached readouts.
+
+    Extends RFFRLSState with a cache mapping context identifiers to trained
+    readout matrices (wout) and inverse-correlation matrices (p). On task
+    recurrence, cached readouts are restored for instant recovery without
+    retraining. On non-recurring tasks (e.g., IPMNIST), cache is never hit
+    and arm reduces to standard RFF+RLS (V4 control prediction).
+    """
+
+    omega: Array
+    phase: Array
+    p: Array
+    wout: Array
+    norm: EMANormState
+    cache: dict[int, tuple[Array, Array]]  # context_id -> (wout, p)
+    cache_lru: list[int]  # LRU eviction order (max 16 cached contexts)
+
+
+def _make_rff_rls_cache_learner(
+    hp: Mapping[str, float],
+    context_fn=None,
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """RFF+RLS with per-context cached readouts (V4 preregistration).
+
+    Wraps _make_rff_rls_learner with context-indexed cache: when a context
+    is revisited, restore its trained readout (wout, p) instead of starting
+    from scratch. Enables instant recovery on recurring tasks (micro_continual
+    M4); on non-recurring (IPMNIST), cache is never reused and reduces
+    bitwise to standard RFF+RLS (V4 control hypothesis).
+
+    Context function: if provided, maps (x, y) to a hashable context ID
+    (e.g., task index). If None, all steps map to context 0 (control).
+    """
+    if context_fn is None:
+        context_fn = lambda x, y: 0  # All steps same context (control)
+
+    base_init, base_step = _make_rff_rls_learner(hp)
+    rls_lambda = hp.get("rls_lambda", 1.0)
+    feature_scale = hp.get("rls_feature_scale", 1.0 / math.sqrt(hp.get("rls_dim", 100)))
+
+    def init_fn(params: dict[str, Array]) -> RFFRLSCacheState:
+        base_state = base_init(params)
+        return RFFRLSCacheState(  # type: ignore[call-arg]
+            omega=base_state.omega,
+            phase=base_state.phase,
+            p=base_state.p,
+            wout=base_state.wout,
+            norm=base_state.norm,
+            cache={},
+            cache_lru=[],
+        )
+
+    def full_step(
+        params: dict[str, Array], state: RFFRLSCacheState, x: Array, y: Array, key: Array
+    ) -> tuple[dict[str, Array], RFFRLSCacheState, StepMetrics]:
+        # Determine context for this example
+        context_id = int(context_fn(x, y))
+
+        # Check cache
+        cache_hit = context_id in state.cache
+        if cache_hit:
+            # Restore cached readout and inverse-correlation matrix
+            cached_wout, cached_p = state.cache[context_id]
+            current_wout = cached_wout
+            current_p = cached_p
+            # Move context to end of LRU (most recently used)
+            new_lru = [cid for cid in state.cache_lru if cid != context_id] + [context_id]
+        else:
+            # Use current readout, will cache after update
+            current_wout = state.wout
+            current_p = state.p
+            new_lru = state.cache_lru
+
+        # Run standard RLS step
+        x_norm, new_norm = ema_normalize(state.norm, x, hp.get("norm_decay", 0.999), hp.get("norm_epsilon", 1e-8))
+        phi = feature_scale * jnp.cos(state.omega @ x_norm + state.phase)
+        logits = current_wout.T @ phi
+        accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(y, current_wout.shape[1], dtype=jnp.float32)
+        err = y_onehot - logits
+        loss = 0.5 * jnp.sum(err * err)
+        pp = current_p @ phi
+        gain = pp / (rls_lambda + phi @ pp)
+        new_wout = current_wout + jnp.outer(gain, err)
+        new_p = (current_p - jnp.outer(gain, pp)) / rls_lambda
+        new_p = 0.5 * (new_p + new_p.T)
+        err_after = y_onehot - new_wout.T @ phi
+        loss_after = 0.5 * jnp.sum(err_after * err_after)
+        plasticity = jnp.clip(
+            1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
+        )
+
+        # Update cache
+        new_cache = dict(state.cache)
+        if not cache_hit:
+            # First visit to this context: cache the trained readout
+            new_cache[context_id] = (new_wout, new_p)
+            new_lru = new_lru + [context_id]
+            # LRU eviction: keep at most 16 cached contexts
+            if len(new_lru) > 16:
+                evict_context = new_lru[0]
+                del new_cache[evict_context]
+                new_lru = new_lru[1:]
+        else:
+            # Cache hit: update the cached readout with new training
+            new_cache[context_id] = (new_wout, new_p)
+
+        metrics = _step_metrics(params, x_norm, y, loss, jnp.concatenate([logits, jnp.array([loss])]))
+        return params, RFFRLSCacheState(  # type: ignore[call-arg]
+            omega=state.omega,
+            phase=state.phase,
+            p=new_p,
+            wout=new_wout,
+            norm=new_norm,
+            cache=new_cache,
+            cache_lru=new_lru,
+        ), metrics
+
+    return init_fn, full_step
+
+
+# =============================================================================
 # (v) Streaming naive Bayes: class-conditional diagonal Gaussians, no gradients
 # =============================================================================
 
@@ -6020,6 +6148,32 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "noise), streaming one-vs-all RLS readout (forgetting 0.999, "
                 "ridge init 1.0). If this matches the deep arms, the "
                 "benchmark measures tracking rather than learning."
+            ),
+        )
+    )
+    specs.append(
+        ScreeningSpec(
+            name="rff_rls_cache",
+            base_learner="upgd_w",
+            mechanism="random_features_cached",
+            hyperparameters={
+                "rff_m": 1024.0,
+                "rff_gamma": 0.001,
+                "rff_clip": 3.0,
+                "rls_lambda": 0.999,
+                "rls_ridge_init": 1.0,
+                "norm_decay": 0.99,
+                "norm_epsilon": 1e-8,
+                "noise_std": 0.0,
+            },
+            factory=_make_rff_rls_cache_learner,
+            frozen_probe_input=_rff_frozen_probe_input,
+            description=(
+                "V4 preregistration: RFF+RLS with per-context readout cache "
+                "(NEW_DIRECTIONS.md §5). On non-recurring tasks (IPMNIST), "
+                "reduces to rff_rls (control); on recurring (micro_continual M4), "
+                "enables instant recovery via cached readouts. Cache keyed by "
+                "context (default: constant for IPMNIST control hypothesis)."
             ),
         )
     )
