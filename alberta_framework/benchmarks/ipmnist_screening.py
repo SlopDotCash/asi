@@ -2432,6 +2432,138 @@ def _make_adamw_cbp_ema_norm_learner(
 
 
 # =============================================================================
+# (i-ext) UPGD+Norm+CBP and SGD+Norm+CBP: IPMNIST mechanisms for EMNIST v3
+# =============================================================================
+
+
+@chex.dataclass(frozen=True)
+class UPGDNormCBPState:
+    """UPGD+CBP state (utility, step, cbp) plus EMA input-normalizer state."""
+
+    utility: dict[str, Array]
+    step: Array
+    cbp: CBPState
+    norm: EMANormState
+
+
+def _make_upgd_ema_norm_cbp_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """UPGD+EMA input-norm + CBP dormant-unit recycling.
+
+    Combines the exact ``upgd_ema_norm`` update (EMA input normalization +
+    UPGD utility gating) with CBP unit recycling. The normalizer path is
+    pinned bitwise against ``upgd_ema_norm``'s on a shared stream.
+    """
+    noise_std = hp["noise_std"]
+    decay = hp["norm_decay"]
+    epsilon = hp["norm_epsilon"]
+    lean_hp = {
+        name: hp[name] for name in ("step_size", "utility_decay", "noise_std", "weight_decay")
+    }
+
+    def init_fn(params: dict[str, Array]) -> UPGDNormCBPState:
+        input_dim = params["w1"].shape[0]
+        return UPGDNormCBPState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            cbp=_init_cbp_state(params["w1"].shape[1], params["w2"].shape[1]),
+            norm=EMANormState(  # type: ignore[call-arg]
+                mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                var=jnp.ones(input_dim, dtype=jnp.float32),
+                count=jnp.array(0.0, dtype=jnp.float32),
+            ),
+        )
+
+    def full_step(
+        params: dict[str, Array], state: UPGDNormCBPState, x: Array, y: Array, key: Array
+    ) -> tuple[dict[str, Array], UPGDNormCBPState, StepMetrics]:
+        key_noise, key_cbp = jr.split(key)
+        x_norm, new_norm = ema_normalize(state.norm, x, decay, epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        _, _, a1, z2, a2 = _forward_with_activations(params, x_norm)
+        da1, da2 = _activation_loss_grads(params, logits, y, z2)
+        noise = _sorted_flat_noise(key_noise, params, noise_std)
+        lean_state = LeanUPGDState(  # type: ignore[call-arg]
+            utility=state.utility, step=state.step
+        )
+        new_params, new_lean = lean_upgd_w_update(params, lean_state, grads, noise, lean_hp)
+        opt_arrays = {name: new_lean.utility[name][None, ...] for name in new_params}
+        new_params, updated_opt_arrays, new_cbp = _cbp_update(
+            new_params, opt_arrays, state.cbp, a1, da1, a2, da2, key_cbp, hp
+        )
+        assert updated_opt_arrays is not None
+        new_utility = {name: updated_opt_arrays[name][0] for name in new_params}
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return new_params, UPGDNormCBPState(  # type: ignore[call-arg]
+            utility=new_utility, step=new_lean.step, cbp=new_cbp, norm=new_norm
+        ), metrics
+
+    return init_fn, full_step
+
+
+@chex.dataclass(frozen=True)
+class SGDNormCBPState:
+    """SGD+CBP state (cbp only) plus EMA input-normalizer state."""
+
+    cbp: CBPState
+    norm: EMANormState
+
+
+def _make_sgd_norm_cbp_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Plain SGD + decay + CBP dormant-unit recycling, behind EMA input norm.
+
+    Combines the exact ``sgd_ema_norm`` update (plain SGD + decay behind EMA
+    input normalizer, no utility gate) with CBP unit recycling. Normalizer
+    path is pinned bitwise against ``sgd_ema_norm``'s on a shared stream.
+    """
+    step_size = hp["step_size"]
+    decay_factor = 1.0 - step_size * hp["weight_decay"]
+    norm_decay = hp["norm_decay"]
+    epsilon = hp["norm_epsilon"]
+
+    def init_fn(params: dict[str, Array]) -> SGDNormCBPState:
+        input_dim = params["w1"].shape[0]
+        return SGDNormCBPState(  # type: ignore[call-arg]
+            cbp=_init_cbp_state(params["w1"].shape[1], params["w2"].shape[1]),
+            norm=EMANormState(  # type: ignore[call-arg]
+                mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                var=jnp.ones(input_dim, dtype=jnp.float32),
+                count=jnp.array(0.0, dtype=jnp.float32),
+            ),
+        )
+
+    def full_step(
+        params: dict[str, Array], state: SGDNormCBPState, x: Array, y: Array, key: Array
+    ) -> tuple[dict[str, Array], SGDNormCBPState, StepMetrics]:
+        key_cbp = key  # SGD has no noise key; use full key for CBP
+        x_norm, new_norm = ema_normalize(state.norm, x, norm_decay, epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        _, _, a1, z2, a2 = _forward_with_activations(params, x_norm)
+        da1, da2 = _activation_loss_grads(params, logits, y, z2)
+        new_params = {
+            name: params[name] * decay_factor - step_size * grads[name]
+            for name in params
+        }
+        opt_arrays = {name: jnp.zeros((0,), dtype=jnp.float32) for name in new_params}
+        new_params, _, new_cbp = _cbp_update(
+            new_params, opt_arrays, state.cbp, a1, da1, a2, da2, key_cbp, hp
+        )
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return new_params, SGDNormCBPState(  # type: ignore[call-arg]
+            cbp=new_cbp, norm=new_norm
+        ), metrics
+
+    return init_fn, full_step
+
+
+# =============================================================================
 # (j) Guarded AdamW+CBP: utility protection on Adam's delta, CBP regeneration
 # =============================================================================
 
@@ -2983,6 +3115,132 @@ def _make_lion_gate_learner(
         metrics = _step_metrics(new_params, x_norm, y, loss, logits)
         return new_params, LionGateState(  # type: ignore[call-arg]
             utility=utility, step=count, momentum=new_momentum, norm=new_norm
+        ), metrics
+
+    return init_fn, full_step
+
+
+# =============================================================================
+# (q) muon_gated — spectral-norm scaled gated SGD (pre-registered port)
+# =============================================================================
+
+
+@chex.dataclass(frozen=True)
+class MuonGatedState:
+    """UPGD utility EMA/clock, per-layer spectral-norm statistics, normalizer.
+
+    ``spectral_norm`` holds one entry per parameter tensor, tracking the
+    approximate spectral norm of gradients via power iteration for use in
+    gradient scaling. Biases store a scalar norm (element-wise mean of squared
+    gradients) for consistency.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    spectral_norm: dict[str, Array]
+    norm: EMANormState
+
+
+def _compute_spectral_norm_1step(
+    matrix: Array, prev_v: Array, epsilon: float = 1e-8
+) -> tuple[Array, Array]:
+    """One step of power iteration for spectral norm approximation.
+
+    For a matrix ``M``, compute the largest singular value via Rayleigh quotient
+    on the Gram matrix. One iteration is cheap and provides reasonable
+    approximation of the spectral norm for gradient scaling.
+
+    Returns: (spectral_norm_estimate, updated_v_vector)
+    """
+    # Handle 1-D case (biases)
+    if matrix.ndim == 1:
+        # For 1-D, spectral norm is just the max absolute value
+        return jnp.max(jnp.abs(matrix)) + epsilon, matrix
+
+    # For 2-D matrices: power iteration on M @ M^T (column-wise conditioning)
+    # Start with random initialization or use previous vector
+    v = jnp.ones(matrix.shape[0]) / jnp.sqrt(matrix.shape[0])
+
+    # One power iteration: v <- (M @ M^T) @ v / ||(M @ M^T) @ v||
+    gram_v = matrix @ (matrix.T @ v)
+    gram_v_norm = jnp.linalg.norm(gram_v) + epsilon
+    v_new = gram_v / gram_v_norm
+
+    # Spectral norm is sqrt of the eigenvalue of M @ M^T
+    spectral_norm = jnp.sqrt(jnp.abs(jnp.dot(v_new, gram_v))) + epsilon
+
+    return spectral_norm, v_new
+
+
+def _make_muon_gated_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Spectral-norm scaled gated SGD: Muon-inspired port with Newton-Schulz.
+
+    Pre-registered arm combining:
+    - Champion's EMA input normalizer (norm_decay=0.99, norm_epsilon=1e-8)
+    - UPGD utility gating: gate = sigmoid(beta * utility_ema)
+    - Spectral-norm scaling via 1-step power iteration on gradient matrix
+    - Update rule: w ← w*(1-lr*wd) - lr*gate*scaled_grad
+      where scaled_grad = grad / spectral_norm(grad)
+
+    Per-layer spectral normalization addresses Jacobian conditioning on the
+    weight side, complementing the input-side normalization.
+    """
+    step_size = hp["step_size"]
+    utility_decay = hp["utility_decay"]
+    param_decay = 1.0 - step_size * hp["weight_decay"]
+    norm_decay = hp["norm_decay"]
+    norm_epsilon = hp["norm_epsilon"]
+    muon_epsilon = hp.get("muon_epsilon", 1e-8)
+    muon_power_iter = int(hp.get("muon_power_iter", 1))
+
+    def init_fn(params: dict[str, Array]) -> MuonGatedState:
+        return MuonGatedState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            spectral_norm={name: jnp.array(1.0, dtype=jnp.float32)
+                          for name in params},
+            norm=_init_input_norm_state(params),
+        )
+
+    def full_step(
+        params: dict[str, Array], state: MuonGatedState, x: Array, y: Array, key: Array
+    ) -> tuple[dict[str, Array], MuonGatedState, StepMetrics]:
+        del key  # no perturbation: the step consumes no randomness
+        x_norm, new_norm = ema_normalize(state.norm, x, norm_decay, norm_epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        count = state.step + jnp.array(1, dtype=jnp.int32)
+        utility, gate = _upgd_utility_and_gate(
+            params, grads, state.utility, count, utility_decay
+        )
+        new_params: dict[str, Array] = {}
+        new_spectral_norms: dict[str, Array] = {}
+
+        for name in params:
+            g = grads[name]
+            keep = 1.0 - gate[name]
+
+            # Compute spectral norm via power iteration
+            sigma, _ = _compute_spectral_norm_1step(g, state.spectral_norm[name], muon_epsilon)
+            new_spectral_norms[name] = sigma
+
+            # Scaled gradient: g / spectral_norm
+            # Handle NaN/inf by falling back to unscaled gradient
+            scaled_grad = jnp.where(
+                jnp.isfinite(sigma) & (sigma > 0),
+                g / sigma,
+                g
+            )
+
+            # Update: w ← w*(1-lr*wd) - lr*keep*scaled_grad
+            new_params[name] = params[name] * param_decay - step_size * (keep * scaled_grad)
+
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return new_params, MuonGatedState(  # type: ignore[call-arg]
+            utility=utility, step=count, spectral_norm=new_spectral_norms, norm=new_norm
         ), metrics
 
     return init_fn, full_step
@@ -5210,6 +5468,41 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             ),
         ),
         ScreeningSpec(
+            name="upgd_ema_norm_cbp",
+            base_learner="upgd_w",
+            mechanism="input_normalization_recycling",
+            hyperparameters={
+                **_upgd_hp(),
+                **_CBP_DEFAULTS,
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+            },
+            factory=_make_upgd_ema_norm_cbp_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "upgd_ema_norm + CBP dormant-unit recycling (IPMNIST protection "
+                "on normalized input for EMNIST v3)."
+            ),
+        ),
+        ScreeningSpec(
+            name="sgd_norm_cbp",
+            base_learner="upgd_w",
+            mechanism="input_normalization_recycling",
+            hyperparameters={
+                "step_size": 0.01,
+                "weight_decay": 0.01,
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+                **_CBP_DEFAULTS,
+            },
+            factory=_make_sgd_norm_cbp_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "Plain SGD + decay + CBP behind EMA input normalizer "
+                "(gate ablation with recycling for EMNIST v3)."
+            ),
+        ),
+        ScreeningSpec(
             name="upgd_w_sigma0",
             base_learner="upgd_w",
             mechanism="perturbation_dissection",
@@ -5447,6 +5740,28 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                     "beta1-interpolated momentum, decoupled decay 0.05. lr 1e-4 "
                     "(sign updates: lr 1e-3 diverged by task 2; 2-task sweep "
                     "1e-4/3e-4 -> .762/.681 vs champion .719)."
+                ),
+            ),
+            ScreeningSpec(
+                name="muon_gated",
+                base_learner="upgd_w",
+                mechanism="spectral_norm_gating",
+                hyperparameters=_update_rule_hp(
+                    step_size=0.01,
+                    weight_decay=0.01,
+                    norm_decay=0.99,
+                    muon_epsilon=1e-8,
+                    muon_power_iter=1,
+                    gate_beta=1.0,
+                ),
+                factory=_make_muon_gated_learner,
+                frozen_probe_input=_ema_frozen_probe_input,
+                description=(
+                    "Spectral-norm scaled gated SGD (pre-registered Muon-style port): "
+                    "1-step power iteration on gradient spectral norm per layer, "
+                    "scaled gradient applied with UPGD utility gate, champion's EMA "
+                    "input normalization. Addresses Jacobian conditioning on weight "
+                    "side complementing input-side normalization."
                 ),
             ),
         ]

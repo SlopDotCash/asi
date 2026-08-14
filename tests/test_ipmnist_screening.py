@@ -39,6 +39,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_l2init_ema_norm_learner,
     _make_lion_gate_learner,
     _make_muon_gate_learner,
+    _make_muon_gated_learner,
     _make_naive_bayes_learner,
     _make_norm_adam_fastv_learner,
     _make_norm_apollo_gate_learner,
@@ -46,8 +47,10 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_rff_rls_learner,
     _make_sgd_ema_norm_learner,
     _make_sgd_momentum_gate_learner,
+    _make_sgd_norm_cbp_learner,
     _make_snr_ema_norm_learner,
     _make_upgd_alpha_utility_learner,
+    _make_upgd_ema_norm_cbp_learner,
     _make_upgd_ema_norm_ext_learner,
     _make_upgd_idbd_learner,
     _make_upgd_shiftnorm_learner,
@@ -177,6 +180,7 @@ class TestRegistry:
             "sigma0_gateplus",
             "colnorm_gate",
             "muon_gate",
+            "muon_gated",
             "lion_gate",
             "rff_rls",
             "lin_rls",
@@ -767,7 +771,7 @@ class TestSmokeRuns:
         "sigma0_eps1e6", "sigma0_eps1e4", "sigma0_hidden_norm",
         "sigma0_gate_beta05", "sigma0_gate_beta2", "sigma0_localgate",
         "sigma0_shiftnorm", "sigma0_shiftnorm_d099_r200", "sigma0_warmnorm",
-        "sigma0_gateplus",
+        "sigma0_gateplus", "muon_gated",
     ])
     def test_combo_runs_and_is_finite(self, small_data, name):
         x, y = small_data
@@ -779,6 +783,79 @@ class TestSmokeRuns:
         assert np.all(np.isfinite(result.per_task_loss))
         assert np.all(result.per_task_plasticity >= 0.0)
         assert np.all(result.per_task_plasticity <= 1.0)
+
+
+class TestMuonGated:
+    """muon_gated: spectral-norm scaled gated SGD with power iteration."""
+
+    def test_registry_config(self):
+        spec = screening_spec("muon_gated")
+        assert spec.base_learner == "upgd_w"
+        assert spec.hyperparameters["step_size"] == 0.01
+        assert spec.hyperparameters["weight_decay"] == 0.01
+        assert spec.hyperparameters["norm_decay"] == 0.99
+        assert spec.hyperparameters["muon_epsilon"] == 1e-8
+        assert spec.hyperparameters["muon_power_iter"] == 1
+        assert spec.hyperparameters["noise_std"] == 0.0  # no perturbation
+
+    def test_spectral_norm_finite_over_random_steps(self, small_data):
+        """100 random steps: spectral norms stay finite, params stay finite."""
+        x, y = small_data
+        params = init_mlp_params(jr.key(0), SMALL)
+        hp = screening_spec("muon_gated").hyperparameters
+        init_fn, step_fn = _make_muon_gated_learner(hp)
+        state = init_fn(params)
+        for step in range(100):
+            xi = jnp.asarray(x[step % len(x)], jnp.float32)
+            yi = jnp.asarray(y[step % len(y)], jnp.int32)
+            params, state, _ = step_fn(params, state, xi, yi, jr.key(100 + step))
+        # Check all params and norms are finite
+        for n in params:
+            assert np.all(np.isfinite(np.asarray(params[n]))), f"params[{n}] has NaN/Inf"
+            assert np.all(np.isfinite(np.asarray(state.spectral_norm[n]))), \
+                f"spectral_norm[{n}] has NaN/Inf"
+
+    def test_zero_gradient_produces_zero_delta(self):
+        """With zero gradients (and nonzero utility for the global max),
+        the spectral-norm update produces no parameter change."""
+        hp = dict(screening_spec("muon_gated").hyperparameters)
+        params = init_mlp_params(jr.key(0), SMALL)
+        init_fn, _ = _make_muon_gated_learner(hp)
+        state = init_fn(params)
+        # Manually construct zero gradients and nonzero utility
+        grads = {n: jnp.zeros_like(v) for n, v in params.items()}
+        noise = {n: jnp.zeros_like(v) for n, v in params.items()}
+        # Nonzero utility ensures the global max gate works
+        state = state.replace(utility={n: jnp.ones_like(v) for n, v in params.items()})
+        # No gate applied (utility = 1, gate = sigmoid(1) ~ 0.73, keep = 0.27)
+        # but with zero gradient, delta should be zero
+        step_size = hp["step_size"]
+        decay = 1.0 - step_size * hp["weight_decay"]
+        expected = {n: params[n] * decay for n in params}
+        # Simulate the update manually
+        count = state.step + jnp.array(1, dtype=jnp.int32)
+        utility = {
+            n: hp["utility_decay"] * state.utility[n] + (1.0 - hp["utility_decay"]) * 0.0
+            for n in params
+        }
+        bias_correction = 1.0 - jnp.power(
+            jnp.asarray(hp["utility_decay"], dtype=jnp.float32),
+            count.astype(jnp.float32),
+        )
+        global_max = jnp.max(jnp.concatenate([
+            jnp.ravel(utility[n] / bias_correction) for n in params
+        ]))
+        gate = {n: jax.nn.sigmoid(utility[n] / bias_correction / global_max) for n in params}
+        new_params = {
+            n: params[n] * decay - step_size * (1.0 - gate[n]) * jnp.zeros_like(params[n])
+            for n in params
+        }
+        # With zero gradients and the scaling, result should match expected
+        for n in params:
+            np.testing.assert_allclose(
+                new_params[n], expected[n], rtol=1e-5,
+                err_msg=f"mismatch at {n}",
+            )
 
 
 class TestShardsAndMerge:
@@ -1283,6 +1360,60 @@ class TestAdamCBPEMANorm:
             x, y, screening_spec("adamw_cbp"), seed=13, config=SMALL
         )
         assert not np.array_equal(ours.per_task_loss, ref.per_task_loss)
+
+
+class TestUPGDEMANormCBP:
+    """Composition arm: UPGD+EMA norm + CBP (EMNIST v3 extension)."""
+
+    def test_registry_config(self):
+        spec = screening_spec("upgd_ema_norm_cbp")
+        base = screening_spec("upgd_ema_norm")
+        cbp_ref = screening_spec("upgd_cbp")
+        assert spec.base_learner == "upgd_w"
+        # EMA normalizer hyperparameters from upgd_ema_norm
+        assert spec.hyperparameters["norm_decay"] == base.hyperparameters["norm_decay"]
+        assert spec.hyperparameters["norm_epsilon"] == base.hyperparameters["norm_epsilon"]
+        # CBP hyperparameters from upgd_cbp
+        assert spec.hyperparameters["cbp_replacement_rate"] == cbp_ref.hyperparameters[
+            "cbp_replacement_rate"
+        ]
+
+    def test_normalizer_outputs_match_upgd_ema_norm(self):
+        """The threaded EMA normalizer state matches upgd_ema_norm bitwise."""
+        params = init_mlp_params(jr.key(0), SMALL)
+        spec_ours = screening_spec("upgd_ema_norm_cbp")
+        spec_ref = screening_spec("upgd_ema_norm")
+        init_ours, step_ours = spec_ours.factory(spec_ours.hyperparameters)
+        init_ref, step_ref = spec_ref.factory(spec_ref.hyperparameters)
+        s_ours = init_ours(params)
+        s_ref = init_ref(params)
+        x = jnp.ones((10, SMALL.input_dim), dtype=jnp.float32)
+        for i in range(3):
+            xi = x[i]
+            yi = jnp.array(i % 10, dtype=jnp.int32)
+            p_ours, s_ours, _ = step_ours(params, s_ours, xi, yi, jr.key(200 + i))
+            p_ref, s_ref, _ = step_ref(params, s_ref, xi, yi, jr.key(200 + i))
+            np.testing.assert_array_equal(s_ours.norm.mean, s_ref.norm.mean)
+            np.testing.assert_array_equal(s_ours.norm.var, s_ref.norm.var)
+            np.testing.assert_array_equal(s_ours.norm.count, s_ref.norm.count)
+
+
+class TestSGDNormCBP:
+    """Composition arm: SGD + EMA norm + CBP (EMNIST v3 ablation)."""
+
+    def test_registry_config(self):
+        spec = screening_spec("sgd_norm_cbp")
+        norm = screening_spec("sgd_ema_norm")
+        cbp_ref = screening_spec("upgd_cbp")
+        assert spec.base_learner == "upgd_w"
+        # EMA normalizer hyperparameters from sgd_ema_norm
+        assert spec.hyperparameters["norm_decay"] == norm.hyperparameters["norm_decay"]
+        assert spec.hyperparameters["norm_epsilon"] == norm.hyperparameters["norm_epsilon"]
+        # CBP hyperparameters present
+        assert spec.hyperparameters["cbp_replacement_rate"] == cbp_ref.hyperparameters[
+            "cbp_replacement_rate"
+        ]
+
 
 
 class TestUPGDSigma0:

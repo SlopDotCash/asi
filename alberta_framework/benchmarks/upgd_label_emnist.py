@@ -127,7 +127,8 @@ from alberta_framework.benchmarks.upgd_ipmnist_v3 import atomic_write_new_json
 logger = logging.getLogger(__name__)
 
 LabelEMNISTLearner = Literal[
-    "upgd_w", "adamw", "upgd_ema_norm", "upgd_ema_norm_sigma0", "sgd_ema_norm"
+    "upgd_w", "adamw", "upgd_ema_norm", "upgd_ema_norm_sigma0", "sgd_ema_norm",
+    "upgd_ema_norm_cbp", "sgd_norm_cbp", "upgd_l2init", "upgd_shiftnorm"
 ]
 
 BENCHMARK = "upgd_label_permuted_emnist"
