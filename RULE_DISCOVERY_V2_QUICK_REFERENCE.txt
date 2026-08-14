@@ -1,0 +1,262 @@
+RULE DISCOVERY V2 — QUICK REFERENCE & USAGE GUIDE
+
+================================================================================
+FILE LOCATIONS & PURPOSES
+================================================================================
+
+1. rule_discovery_v2_templates.py (19 KB, 420 lines)
+   Location: E:\eliza\asi\rule_discovery_v2_templates.py
+   Purpose: Complete template definitions (23 rule templates)
+   Key exports:
+     - RULE_DISCOVERY_V2_TEMPLATES: list of 23 template dicts
+     - template_to_config_dict(template): converts template to config
+     - describe_template(template): human-readable description
+   Usage: from rule_discovery_v2_templates import RULE_DISCOVERY_V2_TEMPLATES
+
+2. rule_discovery_v2_integration.py (14 KB, 350 lines)
+   Location: E:\eliza\asi\rule_discovery_v2_integration.py
+   Purpose: Integration with existing rule_discovery, examples, validation
+   Key exports:
+     - expand_seed_genomes_with_templates(): injects templates into seed pop
+     - describe_search_configuration(): structured config documentation
+     - validate_templates(): roundtrip verification
+     - CLI usage examples
+   Usage: from rule_discovery_v2_integration import expand_seed_genomes_with_templates
+
+3. RULE_DISCOVERY_V2_TEMPLATES_IMPLEMENTATION.md (17 KB)
+   Location: E:\eliza\asi\RULE_DISCOVERY_V2_TEMPLATES_IMPLEMENTATION.md
+   Purpose: Complete documentation and reference
+   Contents: detailed mechanism descriptions, integration guide, success metrics
+
+4. RULE_DISCOVERY_V2_PREREGISTRATION.md (7.7 KB)
+   Location: E:\eliza\asi\RULE_DISCOVERY_V2_PREREGISTRATION.md (existing)
+   Purpose: Pre-registered protocol for Phase 1-3 execution
+
+================================================================================
+TEMPLATE INVENTORY (23 TOTAL)
+================================================================================
+
+Direction A: Gate Variants (8 templates)
+  1. loss_gating_v1                          - Loss magnitude gates descent
+  2. loss_gating_fast_v1                     - Loss gate + adaptive decay
+  3. gradient_norm_gating_v1                 - Gradient norm gates descent
+  4. entropy_gating_v1                       - Prediction entropy gates
+  5. surprise_gating_alt_v1                  - Error-ratio budget (variant)
+  6. combined_loss_gradient_gating_v1        - Loss + gradient (multiplicative)
+  7. combined_loss_entropy_gating_v1         - Loss + entropy (multiplicative)
+  8. adaptive_gate_threshold_v1              - Adaptive threshold + surprise
+
+Direction B: Normalization Locations (12 templates)
+  9. input_rms_normalization_v1              - Input-side global RMS
+  10. layer_wise_rms_v1                      - Per-layer RMS
+  11. output_logit_normalization_v1          - Output-side logit norm
+  12. channel_wise_rms_v1                    - Per-neuron RMS
+  13. adaptive_norm_decay_v1                 - Error-driven decay rate
+  14. pre_activation_norm_v1                 - Before ReLU
+  15. post_activation_norm_v1                - After ReLU
+  16. dynamic_norm_scale_v1                  - Adaptive scale factor
+  17. whitening_transform_v1                 - Kalman whitening
+  18. layer_dependent_norm_v1                - Depth-dependent decay
+  19. coupled_normalization_v1               - Shared input+hidden stats
+  20. batch_norm_like_v1                     - Batch-norm proxy
+
+Hybrids: A + B (3 templates)
+  21. hybrid_loss_gate_layerwise_norm_v1     - Loss gate + layer-wise norm
+  22. hybrid_gradient_gate_adaptive_decay_v1 - Gradient gate + adaptive decay
+  23. hybrid_entropy_gate_whitening_v1       - Entropy gate + Kalman whiten
+
+================================================================================
+QUICK START: USING TEMPLATES IN SEARCH
+================================================================================
+
+Scenario 1: Run full expanded search on Gaussian suite
+---
+python -m alberta_framework.benchmarks.rule_discovery search \
+  --suite gauss \
+  --n-random 500 \
+  --population 256 \
+  --generations 50 \
+  --eval-seeds 0 1 \
+  --holdout-seeds 101 102 103 \
+  --out outputs/rule_discovery/search_v2_gaussian_expanded.json
+
+Expected: ~20 hours compute; evaluates 36 initial seeds (13 original + 23 templates)
+
+---
+
+Scenario 2: Quick smoke test (5-minute validation)
+---
+python -m alberta_framework.benchmarks.rule_discovery search \
+  --suite gauss \
+  --micro-n-tasks 4 \
+  --micro-task-length 500 \
+  --n-random 100 \
+  --population 50 \
+  --generations 5 \
+  --out outputs/rule_discovery/search_v2_smoke.json
+
+Expected: ~5 minutes; uses 36 seeds, reduced task budget
+
+---
+
+Scenario 3: Programmatic access (Python)
+---
+from rule_discovery_v2_templates import RULE_DISCOVERY_V2_TEMPLATES
+from rule_discovery_v2_integration import expand_seed_genomes_with_templates
+from alberta_framework.benchmarks.rule_discovery import (
+    evaluate_population, gauss_suite
+)
+import jax.numpy as jnp
+
+# Get extended seed population (13 original + 23 templates)
+extended_seeds = expand_seed_genomes_with_templates()
+print(f"Seed population: {extended_seeds.shape}")  # (36, 39)
+
+# Evaluate on a single task
+config = gauss_suite(n_regimes=16)["G1"]
+fitness = evaluate_population(
+    extended_seeds, config, seeds=[0, 1]
+)
+print(f"Fitness shape: {fitness.shape}")  # (36,)
+print(f"Best fitness: {fitness.max():.4f}")
+
+---
+
+Scenario 4: Inspect a specific template
+---
+from rule_discovery_v2_templates import RULE_DISCOVERY_V2_TEMPLATES, describe_template
+from rule_discovery_v2_integration import template_to_config_dict
+from alberta_framework.benchmarks.rule_discovery import (
+    genome_from_config, describe_genome
+)
+
+# Pick template #1 (loss_gating_v1)
+template = RULE_DISCOVERY_V2_TEMPLATES[0]
+print(describe_template(template))
+
+# Convert to genome and inspect
+config = template_to_config_dict(template)
+genome = genome_from_config(config)
+print(describe_genome(genome))
+
+================================================================================
+EXPECTED OUTCOMES & SUCCESS CRITERIA
+================================================================================
+
+Fitness Benchmark (Gaussian M1, 40 regimes, seeds 0-1):
+  Champion form baseline: ~0.88
+  Tuned baseline (structure frozen): ~0.885
+  Success threshold: NEW RULE > 0.89
+  Failure threshold: NEW RULE < 0.88 (no improvement)
+
+Transfer Validation (IPMNIST, 60 tasks):
+  Required for promotion: Beats 0.80 baseline
+  Interpretability: Human-readable mechanism (< 1 sentence)
+
+Most Likely Winners:
+  Direction A: loss_gating_v1, combined_loss_entropy_gating_v1
+  Direction B: layer_wise_rms_v1, adaptive_norm_decay_v1
+  Hybrids: hybrid_loss_gate_layerwise_norm_v1
+
+================================================================================
+VALIDATION & TESTING
+================================================================================
+
+All 23 templates have been validated:
+  [PASS] Genome encoding/decoding (all 23/23)
+  [PASS] Roundtrip verification (decode->encode->decode matches)
+  [PASS] Shape verification (all genomes are (39,))
+  [PASS] Flag/parameter naming (all in existing vocabulary)
+
+To re-validate:
+---
+python rule_discovery_v2_integration.py
+# Output: "All templates valid!"
+---
+
+To inspect individual templates:
+---
+python rule_discovery_v2_templates.py
+# Output: Prints all 23 templates with genome descriptions
+---
+
+================================================================================
+INTEGRATION WITH EXISTING RULE DISCOVERY
+================================================================================
+
+The templates are designed to integrate seamlessly with the existing
+rule_discovery module (alberta_framework/benchmarks/rule_discovery.py).
+
+No changes required to existing code. To use templates:
+
+Option 1: Inject into default seed population (manual)
+  from rule_discovery_v2_integration import expand_seed_genomes_with_templates
+  extended_seeds = expand_seed_genomes_with_templates()
+  # Pass extended_seeds to search initialization
+
+Option 2: Register templates in rule_discovery.seed_genomes() (optional)
+  - Modify seed_genomes() to include templates automatically
+  - All future search runs will include them
+  - One-line change in rule_discovery.py
+
+Option 3: Create separate search run with template-specific config
+  - Use CLI with templates injected via Python import
+  - No modification to existing rule_discovery.py needed
+
+Recommended: Option 1 (manual injection) for Phase 2 to track template origin
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+
+Problem: "ModuleNotFoundError: No module named 'rule_discovery_v2_templates'"
+Solution: Ensure both .py files are in the project root (E:\eliza\asi\)
+
+Problem: "ValueError: genome must have shape (39,), got (36,)"
+Solution: Ensure you're using GENOME_SIZE=39 (not an older value)
+
+Problem: "Templates don't appear in search results"
+Solution: Verify expand_seed_genomes_with_templates() is called to inject them
+          into initial population before search begins
+
+Problem: "All templates have identical fitness"
+Solution: Expected for first generation if mutation/crossover hasn't occurred
+          Run multiple generations to see differentiation
+
+================================================================================
+REFERENCE: GENOME STRUCTURE
+================================================================================
+
+Genome = 39 floating-point dimensions
+  [0-22]:   23 FLAGS (discrete 0/1, thresholded at 0.5)
+    - norm, shift_reset, gate, decay_to_init, surprise_budget, meta_decay,
+      utility_shift_reset, w1_shift_reset, hidden_rms, rls_head,
+      rls_reset_p, nb_member, lr_anneal, layer_lr, kalman_norm
+
+  [23-38]: 16 CONTINUOUS PARAMETERS (continuous [0,1], mode-transformed)
+    - lr, weight_decay, norm_decay, fast_decay, shift_k, utility_decay,
+      gate_beta, surprise_gain, surprise_fast, surprise_slow, meta_gain,
+      rls_lambda, nb_decay, vote_decay, anneal_lo, anneal_hi,
+      layer_lr_ratio, kalman_q
+
+Mode transforms:
+  log10:  [0,1] -> [1e-3, 0.5] for lr
+  linear: [0,1] -> [lo, hi] for fast_decay
+  omp10:  [0,1] -> [1 - 10^-u, 1] for decay rates
+
+================================================================================
+FILES & LOCATIONS (SUMMARY)
+================================================================================
+
+Production code:
+  ✓ E:\eliza\asi\rule_discovery_v2_templates.py (19 KB)
+  ✓ E:\eliza\asi\rule_discovery_v2_integration.py (14 KB)
+
+Documentation:
+  ✓ E:\eliza\asi\RULE_DISCOVERY_V2_TEMPLATES_IMPLEMENTATION.md (17 KB)
+  ✓ E:\eliza\asi\RULE_DISCOVERY_V2_PREREGISTRATION.md (7.7 KB, existing)
+  ✓ This file: E:\eliza\asi\RULE_DISCOVERY_V2_QUICK_REFERENCE.txt
+
+All files ready for production use.
+
+================================================================================

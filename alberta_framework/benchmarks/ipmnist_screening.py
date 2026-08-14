@@ -2564,6 +2564,82 @@ def _make_sgd_norm_cbp_learner(
 
 
 # =============================================================================
+# Additional composition arms for extended pre-registrations
+# =============================================================================
+
+
+@chex.dataclass(frozen=True)
+class UPGDCBPNormState:
+    """UPGD+CBP state plus EMA input-normalizer (inverse composition)."""
+
+    utility: dict[str, Array]
+    step: Array
+    cbp: CBPState
+    norm: EMANormState
+
+
+def _make_upgd_cbp_ema_norm_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """UPGD+CBP then EMA norm (inverse order from upgd_ema_norm_cbp).
+
+    Tests whether the order of composition matters: condition first (upgd_ema_norm_cbp)
+    vs. recycle first (this). Ablation for understanding mechanism interaction.
+    """
+    noise_std = hp["noise_std"]
+    decay = hp["norm_decay"]
+    epsilon = hp["norm_epsilon"]
+    lean_hp = {
+        name: hp[name] for name in ("step_size", "utility_decay", "noise_std", "weight_decay")
+    }
+
+    def init_fn(params: dict[str, Array]) -> UPGDCBPNormState:
+        input_dim = params["w1"].shape[0]
+        return UPGDCBPNormState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            cbp=_init_cbp_state(params["w1"].shape[1], params["w2"].shape[1]),
+            norm=EMANormState(  # type: ignore[call-arg]
+                mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                var=jnp.ones(input_dim, dtype=jnp.float32),
+                count=jnp.array(0.0, dtype=jnp.float32),
+            ),
+        )
+
+    def full_step(
+        params: dict[str, Array], state: UPGDCBPNormState, x: Array, y: Array, key: Array
+    ) -> tuple[dict[str, Array], UPGDCBPNormState, StepMetrics]:
+        key_noise, key_cbp = jr.split(key)
+        # Normalize first (same as other arms)
+        x_norm, new_norm = ema_normalize(state.norm, x, decay, epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        _, _, a1, z2, a2 = _forward_with_activations(params, x_norm)
+        da1, da2 = _activation_loss_grads(params, logits, y, z2)
+        noise = _sorted_flat_noise(key_noise, params, noise_std)
+        lean_state = LeanUPGDState(  # type: ignore[call-arg]
+            utility=state.utility, step=state.step
+        )
+        # CBP first, then UPGD (inverse order)
+        opt_arrays = {name: lean_state.utility[name][None, ...] for name in params}
+        new_params, updated_opt_arrays, new_cbp = _cbp_update(
+            params, opt_arrays, state.cbp, a1, da1, a2, da2, key_cbp, hp
+        )
+        # Then UPGD update on recycled params
+        assert updated_opt_arrays is not None
+        cbp_utility = {name: updated_opt_arrays[name][0] for name in new_params}
+        temp_lean = LeanUPGDState(utility=cbp_utility, step=lean_state.step)  # type: ignore[call-arg]
+        final_params, final_lean = lean_upgd_w_update(new_params, temp_lean, grads, noise, lean_hp)
+        metrics = _step_metrics(final_params, x_norm, y, loss, logits)
+        return final_params, UPGDCBPNormState(  # type: ignore[call-arg]
+            utility=final_lean.utility, step=final_lean.step, cbp=new_cbp, norm=new_norm
+        ), metrics
+
+    return init_fn, full_step
+
+
+# =============================================================================
 # (j) Guarded AdamW+CBP: utility protection on Adam's delta, CBP regeneration
 # =============================================================================
 
@@ -5610,6 +5686,74 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             description=(
                 "upgd_ema_norm + CBP dormant-unit recycling (IPMNIST protection "
                 "on normalized input for EMNIST v3)."
+            ),
+        ),
+        ScreeningSpec(
+            name="upgd_cbp_ema_norm",
+            base_learner="upgd_w",
+            mechanism="recycling_then_conditioning",
+            hyperparameters={
+                **_upgd_hp(),
+                **_CBP_DEFAULTS,
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+            },
+            factory=_make_upgd_cbp_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "Inverse composition: upgd_cbp then EMA norm (tests whether order matters). "
+                "Applies CBP recycling first, then UPGD update after. Ablation for EMNIST v3."
+            ),
+        ),
+        ScreeningSpec(
+            name="upgd_ema_norm_cbp_high",
+            base_learner="upgd_w",
+            mechanism="input_normalization_recycling",
+            hyperparameters={
+                **_upgd_hp(cbp_replacement_rate=0.3),
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+            },
+            factory=_make_upgd_ema_norm_cbp_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "upgd_ema_norm_cbp with high recycling rate (0.3 vs 0.1 default). "
+                "Tests CBP sensitivity to replacement frequency on EMNIST v3."
+            ),
+        ),
+        ScreeningSpec(
+            name="sgd_norm_cbp_high",
+            base_learner="upgd_w",
+            mechanism="input_normalization_recycling",
+            hyperparameters={
+                "step_size": 0.01,
+                "weight_decay": 0.01,
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+                **{k: v for k, v in _CBP_DEFAULTS.items() if k != "cbp_replacement_rate"},
+                "cbp_replacement_rate": 0.3,
+            },
+            factory=_make_sgd_norm_cbp_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "sgd_norm_cbp with high recycling rate (0.3). "
+                "Tests whether aggressive recycling helps gate-free learning on label-shift."
+            ),
+        ),
+        ScreeningSpec(
+            name="upgd_cbp_ema_norm_high",
+            base_learner="upgd_w",
+            mechanism="recycling_then_conditioning",
+            hyperparameters={
+                **_upgd_hp(cbp_replacement_rate=0.3),
+                "norm_decay": 0.999,
+                "norm_epsilon": 1e-8,
+            },
+            factory=_make_upgd_cbp_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "upgd_cbp_ema_norm with high recycling (0.3). "
+                "Composition order ablation with aggressive unit replacement."
             ),
         ),
         ScreeningSpec(

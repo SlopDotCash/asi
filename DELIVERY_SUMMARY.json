@@ -1,0 +1,281 @@
+{
+  "deliverable": "Micro-Continual Benchmark Improvements: Preregistered Arms Implementation",
+  "date": "2026-08-14",
+  "status": "Complete — Ready for Integration",
+  "version": "1.0",
+  "summary": {
+    "task": "Identify micro_continual improvements from preregistrations and implement new learner factories",
+    "completion": "✓ Complete",
+    "preregistrations_analyzed": 3,
+    "arms_identified": 5,
+    "test_coverage": "35 tests passing (60 subtests)"
+  },
+  "artifacts": {
+    "source_code": {
+      "micro_continual_improvements.py": {
+        "lines": 556,
+        "purpose": "Five preregistered learner factories",
+        "factories": [
+          "rls_head_resid",
+          "alignment_first",
+          "naive_bayes_extended",
+          "dual_speed_rfs_rls",
+          "actor_critic_micro"
+        ]
+      }
+    },
+    "tests": {
+      "test_micro_continual_improvements.py": {
+        "lines": 411,
+        "tests": 26,
+        "subtests": 35,
+        "status": "all passing"
+      },
+      "test_integration_micro_continual_arms.py": {
+        "lines": 180,
+        "tests": 9,
+        "subtests": 25,
+        "status": "all passing"
+      }
+    },
+    "documentation": {
+      "PREREGISTERED_ARMS_SUMMARY.md": {
+        "lines": 450,
+        "sections": [
+          "Executive summary",
+          "Five identified arms with full rationale",
+          "Integration instructions",
+          "Preregistration audit trail",
+          "Design rationale and error budget decomposition",
+          "Next steps"
+        ]
+      }
+    }
+  },
+  "preregistrations_analyzed": {
+    "1_contribution_preregistration": {
+      "file": "CONTRIBUTION_PREREGISTRATION.md",
+      "date": "2026-08-14",
+      "status": "Pre-registered, not executed",
+      "arm_identified": "rls_head_resid",
+      "mechanism": "RLS readout on penultimate features + residual head learning",
+      "preregistered_measurement": "0.87114 ± 0.00010 (n=20, seeds 0-19)",
+      "base": "Champion body (sigma0_shiftnorm_d099, 0.86449 ± 0.00009)",
+      "improvement_over_incumbent": "+0.00665 per-seed mean",
+      "seed_strategy": {
+        "tuning": "0-2 (consumed)",
+        "held_out_validation": "3-19 (n=17)"
+      },
+      "success_criterion": "Held-out mean >0.86447, all 17 seeds individually positive"
+    },
+    "2_new_directions": {
+      "file": "NEW_DIRECTIONS.md",
+      "sections": [
+        {
+          "section": "4A - Alignment-First Architecture",
+          "arm": "alignment_first",
+          "mechanism": "Permutation alignment detector from per-feature statistics",
+          "key_insight": "Input permutation is an identification problem, not a learning problem",
+          "validation": "V2 — alignment-composition arm"
+        },
+        {
+          "section": "4B - Streaming Generative Classifier",
+          "arm": "naive_bayes_extended",
+          "mechanism": "Online class-conditional diagonal Gaussians with context cache",
+          "key_insight": "Learning problem is fundamentally a statistics problem",
+          "validation": "V3 — streaming naive Bayes baseline"
+        },
+        {
+          "section": "4C - Dual-Speed Fast-Weights",
+          "arm": "dual_speed_rfs_rls",
+          "mechanism": "Frozen random features + per-regime RLS cache",
+          "key_insight": "Most learning is feature re-learning, not deep learning",
+          "validation": "V4 — context-indexed readout cache"
+        }
+      ],
+      "context": "Pre-registered minimal validations (V1-V4) targeting the 0.135 error budget decomposition"
+    },
+    "3_forager_open_baselines": {
+      "file": "FORAGER_OPEN_BASELINES_PREREGISTRATION.md",
+      "date": "2026-08-14",
+      "status": "Pre-registered, awaiting execution",
+      "arm_adapted": "actor_critic_micro",
+      "mechanism": "On-policy actor-critic adapted to supervised continual streams",
+      "purpose": "Diagnostic arm — test whether RL optimization transfers to supervised setting",
+      "note": "Unlikely to beat champion, but negative result is informative"
+    }
+  },
+  "arms_implemented": [
+    {
+      "name": "rls_head_resid",
+      "mechanism": "rls_readout_residual_head",
+      "preregistration_source": "CONTRIBUTION_PREREGISTRATION.md",
+      "preregistered_value": "0.87114 ± 0.00010",
+      "rationale": "Tests whether deep readouts are necessary; RLS on fixed features + residual head learning",
+      "key_hyperparameters": {
+        "rls_lambda": 1.0,
+        "rls_reset_frac": 0.05,
+        "head_resid": 1.0
+      },
+      "success_criterion": "Held-out validation (seeds 3-19) all improve, mean >0.86447"
+    },
+    {
+      "name": "alignment_first",
+      "mechanism": "permutation_alignment_detection",
+      "preregistration_source": "NEW_DIRECTIONS.md (V2)",
+      "preregistered_prediction": "Transient halves, 60-task screen exceeds 0.870",
+      "rationale": "Permutation identification is combinatorial, not optimization; Hungarian algorithm on statistics",
+      "key_hyperparameters": {
+        "align_window": 300,
+        "align_threshold": 0.5
+      },
+      "success_criterion": "First-window error reduces >50%, screen accuracy >0.870"
+    },
+    {
+      "name": "naive_bayes_extended",
+      "mechanism": "context_conditioned_generative",
+      "preregistration_source": "NEW_DIRECTIONS.md (V3) + SUITE.md",
+      "preregistered_baseline": "0.7851",
+      "rationale": "No-gradient baseline tests whether problem is statistics not optimization; context cache for recurrence",
+      "key_hyperparameters": {
+        "nb_decay": 0.98,
+        "nb_var_epsilon": 1e-4,
+        "nb_context_cache": True
+      },
+      "success_criterion": "Standalone >0.80, with cache on M4 >0.85"
+    },
+    {
+      "name": "dual_speed_rfs_rls",
+      "mechanism": "frozen_random_features_context_cache",
+      "preregistration_source": "NEW_DIRECTIONS.md (V4)",
+      "preregistered_baseline": "0.848 (RFF standalone)",
+      "rationale": "Fixed random bank (0.848) vs champion (0.865) shows most learning is re-learning; context cache validates memory",
+      "key_hyperparameters": {
+        "rfs_dim": 192,
+        "rls_lambda": 1.0,
+        "cache_by_context": True
+      },
+      "success_criterion": "M1 baseline (control), M4 instant recovery if cache works"
+    },
+    {
+      "name": "actor_critic_micro",
+      "mechanism": "policy_gradient_advantage_critic",
+      "preregistration_source": "FORAGER_OPEN_BASELINES_PREREGISTRATION.md",
+      "rationale": "Diagnostic — tests whether policy gradient optimization helps supervised continual learning",
+      "key_hyperparameters": {
+        "step_size": 0.01,
+        "weight_decay": 0.01,
+        "critic_weight": 0.5
+      },
+      "success_criterion": "Negative result (lags champion) is informative; positive result demands investigation"
+    }
+  ],
+  "test_results": {
+    "total_tests": 35,
+    "total_subtests": 60,
+    "passed": 35,
+    "failed": 0,
+    "status": "✓ All tests passing",
+    "test_categories": {
+      "metadata_validation": {
+        "tests": 4,
+        "description": "Registry completeness, factory callability, hyperparameter types, preregistration references"
+      },
+      "factory_signatures": {
+        "tests": 8,
+        "description": "init_fn and step_fn signatures, state creation, metrics extraction"
+      },
+      "integration": {
+        "tests": 14,
+        "description": "micro_continual framework compatibility, MLP mock runs, registry structure"
+      },
+      "preregistration_consistency": {
+        "tests": 9,
+        "description": "Metrics embedding, source citations, hyperparameter coverage"
+      }
+    }
+  },
+  "integration_checklist": {
+    "step_1_add_to_registry": {
+      "file": "alberta_framework/benchmarks/micro_continual.py",
+      "function": "_build_arm_registry()",
+      "action": "Import PREREGISTERED_ARMS and add to specs list",
+      "code_skeleton": "from micro_continual_improvements import PREREGISTERED_ARMS\n  for arm_name, spec in PREREGISTERED_ARMS.items():\n    specs.append(MicroArmSpec(...))"
+    },
+    "step_2_run_transfer_validation": {
+      "command": ".venv/bin/python -m alberta_framework.benchmarks.micro_continual ladder --family input_permutation --seeds 0 1 2 --arms sgd_raw adamw upgd_raw sgd_norm gated_norm naive_bayes rls_head_resid alignment_first naive_bayes_extended dual_speed_rfs_rls actor_critic_micro --out outputs/micro_continual/preregistered_ladder_v1",
+      "exit_code_0": "All arms completed; transfer_valid receipt written",
+      "exit_code_2": "Primary transfer-valid checks failed; receipt preserved"
+    },
+    "step_3_interpret_results": {
+      "checks": [
+        "rls_head_resid: all 3 seeds improve? held-out >0.86447?",
+        "alignment_first: first-window error >50% lower than champion?",
+        "naive_bayes_extended: >0.80 standalone?",
+        "dual_speed_rfs_rls: M4 recurrence recovers >90%?",
+        "actor_critic_micro: baseline sanity (no NaN/inf)?"
+      ]
+    },
+    "step_4_record_outcome": {
+      "file": "outputs/micro_continual/RESULTS.md",
+      "table": "Add results row for each arm with accuracy, vs-champion delta, notes"
+    }
+  },
+  "design_principles_embedded": {
+    "preregistration_compliance": "Each arm cites frozen preregistration document with success criteria",
+    "minimal_validation": "Each arm tests one hypothesis; smallest possible test",
+    "seed_strategy": "Development seeds consumed; held-out validation separate",
+    "fail_closed_reporting": "Negative results inform NEGATIVE_RESULTS_LEDGER.md",
+    "state_management": "Factories use .get() with defaults, handle missing hyperparameters",
+    "signature_compliance": "All factories conform to MicroArmFactory type",
+    "error_budget_targeting": "Transient (alignment), re-learning (dual-speed), identification (alignment), representational memory (naive_bayes, dual-speed)"
+  },
+  "key_files": {
+    "source": [
+      "/e/eliza/asi/micro_continual_improvements.py",
+      "/e/eliza/asi/test_micro_continual_improvements.py",
+      "/e/eliza/asi/test_integration_micro_continual_arms.py"
+    ],
+    "documentation": [
+      "/e/eliza/asi/PREREGISTERED_ARMS_SUMMARY.md",
+      "/e/eliza/asi/CONTRIBUTION_PREREGISTRATION.md",
+      "/e/eliza/asi/NEW_DIRECTIONS.md",
+      "/e/eliza/asi/FORAGER_OPEN_BASELINES_PREREGISTRATION.md",
+      "/e/eliza/asi/outputs/micro_continual/SUITE.md"
+    ]
+  },
+  "next_steps": {
+    "immediate": [
+      "Add PREREGISTERED_ARMS to MICRO_ARM_REGISTRY in micro_continual.py",
+      "Run transfer validation ladder on M1 (input_permutation, seeds 0-2)",
+      "Record results in RESULTS.md"
+    ],
+    "if_pass": [
+      "Route rls_head_resid to full ipmnist_screening protocol (200-task)",
+      "Route alignment_first to 'genuinely new architectures' research lane",
+      "Route naive_bayes_extended + cache to M4 axis validation",
+      "Route dual_speed_rfs_rls to context-caching research track"
+    ],
+    "if_fail": [
+      "Record arm, criteria, outcome in NEGATIVE_RESULTS_LEDGER.md",
+      "Identify mechanical cause (if any)",
+      "State closure on hypothesis"
+    ]
+  },
+  "evidence_promotion": {
+    "status": "Development-grade, nonpromoting",
+    "note": "All arms are diagnostics and explorations. None promote scientific claims. Integration validates signature/state compliance; measurement validates preregistration criteria.",
+    "policy": {
+      "scientific_promotion_allowed": False,
+      "evidence_class": "development_screening_diagnostic",
+      "development_only": True
+    }
+  },
+  "quality_metrics": {
+    "test_pass_rate": "100% (35/35 tests, 60/60 subtests)",
+    "code_coverage": "All five factories tested; all integration paths tested",
+    "preregistration_traceability": "5/5 arms cite source preregistration",
+    "hyperparameter_validation": "All hyperparameters typed and tested for defaults",
+    "documentation_completeness": "450-line integration guide with rationale, criteria, next steps"
+  }
+}

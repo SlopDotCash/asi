@@ -1,0 +1,233 @@
+Micro-Continual Improvements: Quick Reference
+
+DELIVERABLE SUMMARY
+====================
+
+5 preregistered learner factories for micro_continual benchmark
+All tests passing: 35/35 tests, 60/60 subtests
+Ready for integration into MICRO_ARM_REGISTRY
+
+FILES
+=====
+
+Source Code:
+  micro_continual_improvements.py          [556 lines]
+    - 5 factory implementations
+    - PREREGISTERED_ARMS registry dict
+    - Preregistration citations
+
+Tests (all passing):
+  test_micro_continual_improvements.py     [411 lines, 26 tests]
+  test_integration_micro_continual_arms.py [180 lines, 9 tests]
+
+Documentation:
+  PREREGISTERED_ARMS_SUMMARY.md           [450 lines]
+    - Full rationale for each arm
+    - Integration instructions
+    - Interpretation guide
+  DELIVERY_SUMMARY.json                    [This document]
+
+ARMS IDENTIFIED (5)
+===================
+
+1. rls_head_resid
+   Preregistration: CONTRIBUTION_PREREGISTRATION.md
+   Preregistered value: 0.87114 ± 0.00010 (vs incumbent 0.86449)
+   Mechanism: RLS readout + residual head learning
+   Win criterion: Held-out seeds 3-19 all improve, mean >0.86447
+
+2. alignment_first
+   Preregistration: NEW_DIRECTIONS.md (V2)
+   Prediction: Transient halves, screen >0.870
+   Mechanism: Permutation alignment from per-feature statistics
+   Why: Identification problem, not learning problem
+
+3. naive_bayes_extended
+   Preregistration: NEW_DIRECTIONS.md (V3) + SUITE.md
+   Baseline: 0.7851 (full protocol placement)
+   Mechanism: Streaming generative classifier + context cache
+   Why: Tests if problem is statistics not optimization
+
+4. dual_speed_rfs_rls
+   Preregistration: NEW_DIRECTIONS.md (V4)
+   Baseline: 0.848 (frozen random + RLS)
+   Mechanism: Fixed random bank + per-regime RLS cache
+   Why: Most learning is re-learning (0.017 gap to champion)
+
+5. actor_critic_micro
+   Preregistration: FORAGER_OPEN_BASELINES_PREREGISTRATION.md
+   Type: Diagnostic arm
+   Mechanism: Policy gradient + value critic
+   Why: Test if RL optimization helps supervised streams
+
+INTEGRATION STEPS
+=================
+
+1. Add to MICRO_ARM_REGISTRY:
+   File: alberta_framework/benchmarks/micro_continual.py
+   Function: _build_arm_registry()
+
+   from micro_continual_improvements import PREREGISTERED_ARMS
+   for arm_name, spec in PREREGISTERED_ARMS.items():
+       specs.append(MicroArmSpec(...))
+
+2. Run transfer validation ladder (M1 only):
+   .venv/bin/python -m alberta_framework.benchmarks.micro_continual ladder \
+     --family input_permutation \
+     --seeds 0 1 2 \
+     --arms sgd_raw adamw upgd_raw sgd_norm gated_norm naive_bayes \
+            rls_head_resid alignment_first naive_bayes_extended \
+            dual_speed_rfs_rls actor_critic_micro \
+     --out outputs/micro_continual/preregistered_ladder_v1
+
+3. Check results:
+   - Exit 0: All arms completed; transfer_valid receipt written
+   - Exit 2: Primary checks failed; receipt preserved
+   - Examine per_regime_accuracy curves for each arm
+
+4. Record outcome in outputs/micro_continual/RESULTS.md
+
+PREREGISTRATION COMPLIANCE
+==========================
+
+✓ rls_head_resid
+  - Source: CONTRIBUTION_PREREGISTRATION.md (2026-08-14)
+  - Seeds: 0-2 tuning, 3-19 held-out
+  - Criterion: All seeds positive, held-out mean >0.86447
+  - Status: Ready for validation
+
+✓ alignment_first
+  - Source: NEW_DIRECTIONS.md section 4A + V2
+  - Criterion: Transient halves, screen >0.870
+  - Status: Hypothesis-driven experiment
+
+✓ naive_bayes_extended
+  - Source: NEW_DIRECTIONS.md section 4B + V3 + SUITE.md
+  - Criterion: >0.80 standalone, >0.85 with cache on M4
+  - Status: Baseline + memory test
+
+✓ dual_speed_rfs_rls
+  - Source: NEW_DIRECTIONS.md section 4C + V4
+  - Criterion: M1 control, M4 instant recovery
+  - Status: Memory architecture validation
+
+✓ actor_critic_micro
+  - Source: FORAGER_OPEN_BASELINES_PREREGISTRATION.md
+  - Type: Diagnostic (negative result informative)
+  - Status: RL optimization transfer test
+
+ERROR BUDGET TARGETING
+======================
+
+Champion error = 0.135:
+  ~30% transient (first ~500 steps post-shift)
+  ~70% asymptotic (convergence shortfall + optimizer floor)
+
+Arms targeting each:
+  alignment_first    → transient identification
+  rls_head_resid     → simplification benefit
+  dual_speed_rfs_rls → re-learning isolation
+  naive_bayes_extended → representational memory
+  actor_critic_micro → optimizer class ablation
+
+SIGNATURES & COMPLIANCE
+=======================
+
+All factories conform to:
+  MicroArmFactory = Callable[
+    [Mapping[str, float]],
+    tuple[LearnerInitFn, ScreeningStepFn]
+  ]
+
+Each factory:
+  ✓ Returns (init_fn, step_fn)
+  ✓ init_fn(params) -> state dict
+  ✓ step_fn(params, state, grads, key) -> (params, state, metrics)
+  ✓ Metrics are (accuracy, loss, plasticity) arrays
+  ✓ Handles missing hyperparameters with .get()
+
+TEST COVERAGE
+=============
+
+Metadata Validation (4 tests)
+  ✓ Registry completeness
+  ✓ Factory callability
+  ✓ Hyperparameter types
+  ✓ Preregistration references
+
+Factory Signatures (8 tests)
+  ✓ init_fn and step_fn creation
+  ✓ State creation and preservation
+  ✓ Metrics extraction
+  ✓ Return type validation
+
+Integration (14 tests)
+  ✓ micro_continual framework compatibility
+  ✓ MLP mock runs (10 steps each arm)
+  ✓ Registry structure
+  ✓ Hyperparameter coverage
+
+Preregistration Consistency (9 tests)
+  ✓ Metrics embedding (0.87114, 0.7851, 0.848, etc.)
+  ✓ Source citations (all arms reference preregistration)
+  ✓ Hyperparameter reasonableness
+
+NEXT STEPS
+==========
+
+Immediate:
+  1. Integrate into micro_continual.py
+  2. Run M1 validation ladder (seeds 0-2)
+  3. Record results and interpretation
+
+If all pass:
+  - Route rls_head_resid to ipmnist_screening 200-task
+  - Route alignment_first to architecture design track
+  - Route naive_bayes_extended to M4 recurrence axis
+  - Route dual_speed_rfs_rls to context-caching research
+
+If any fail:
+  - Record in NEGATIVE_RESULTS_LEDGER.md
+  - State mechanical cause and implication
+  - Close direction or identify refinement
+
+REFERENCES
+==========
+
+Source documents:
+  CONTRIBUTION_PREREGISTRATION.md
+  NEW_DIRECTIONS.md
+  FORAGER_OPEN_BASELINES_PREREGISTRATION.md
+  outputs/micro_continual/SUITE.md
+
+Framework docs:
+  CLAUDE.md (Alberta framework orientation)
+  CONTINUAL_LEARNING_THEORY.md
+  outputs/micro_continual/SUITE.md (transfer validation)
+
+Integration file:
+  PREREGISTERED_ARMS_SUMMARY.md (detailed integration guide)
+
+QUALITY METRICS
+===============
+
+Code:
+  ✓ 35/35 tests passing (100%)
+  ✓ 60/60 subtests passing (100%)
+  ✓ 556 lines source + 591 lines tests
+  ✓ Full preregistration traceability
+  ✓ Hyperparameter validation
+
+Documentation:
+  ✓ 450-line integration guide
+  ✓ Rationale for each arm
+  ✓ Success criteria embedded
+  ✓ Seed strategy explicit
+  ✓ Fail-closed reporting linked
+
+Evidence Status:
+  Status: Development-grade, nonpromoting
+  All arms are diagnostics/explorations
+  None promote scientific claims
+  Integration validates compliance only
+  Measurement validates preregistration criteria

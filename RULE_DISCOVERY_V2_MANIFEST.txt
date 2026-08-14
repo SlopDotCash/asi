@@ -1,0 +1,274 @@
+RULE DISCOVERY V2 EXPANDED TEMPLATES — PROJECT MANIFEST
+Generated: 2026-08-14
+Status: COMPLETE & VALIDATED
+
+================================================================================
+PROJECT SUMMARY
+================================================================================
+
+Deliverable: 23 new rule templates for rule_discovery search space
+             (Direction A: 8 gate variants + Direction B: 12 norm locations + 3 hybrids)
+
+Objective: Expand automated update-rule discovery by testing alternative gating
+           signals and normalization locations discovered in search-v1.
+
+Status: All code complete, tested, validated, ready for production use.
+
+================================================================================
+DELIVERABLE FILES
+================================================================================
+
+Code files (production-ready):
+  [DONE] rule_discovery_v2_templates.py (19 KB, 420 lines)
+         - 23 template definitions (dicts with flags, params, descriptions)
+         - template_to_config_dict(): template -> config encoding
+         - describe_template(): human-readable descriptions
+         - Smoke test validation (all 23 pass)
+
+  [DONE] rule_discovery_v2_integration.py (14 KB, 350 lines)
+         - expand_seed_genomes_with_templates(): seed population injection
+         - describe_search_configuration(): structured documentation
+         - validate_templates(): roundtrip verification
+         - CLI usage examples (5 scenarios)
+         - Integration checklist
+
+Documentation (reference):
+  [DONE] RULE_DISCOVERY_V2_TEMPLATES_IMPLEMENTATION.md (17 KB)
+         - Complete mechanism descriptions for all 23 templates
+         - Direction A/B/Hybrid breakdown
+         - Integration guide
+         - Success metrics & expected outcomes
+         - Validation results
+
+  [DONE] RULE_DISCOVERY_V2_QUICK_REFERENCE.txt
+         - Quick start guide
+         - File locations & purposes
+         - Template inventory
+         - Usage scenarios (4 examples)
+         - Troubleshooting
+
+  [DONE] RULE_DISCOVERY_V2_PREREGISTRATION.md (7.7 KB, existing)
+         - Pre-registered protocol
+         - Phase 1-3 breakdown
+         - Fitness suite migration
+         - Success thresholds
+
+  [DONE] RULE_DISCOVERY_V2_MANIFEST.txt (this file)
+         - Project overview
+         - File inventory
+         - Template count & categorization
+         - Validation status
+         - Next steps
+
+================================================================================
+TEMPLATE INVENTORY (23 TOTAL)
+================================================================================
+
+Direction A: Gate Variants (8)
+  1. loss_gating_v1
+  2. loss_gating_fast_v1
+  3. gradient_norm_gating_v1
+  4. entropy_gating_v1
+  5. surprise_gating_alt_v1
+  6. combined_loss_gradient_gating_v1
+  7. combined_loss_entropy_gating_v1
+  8. adaptive_gate_threshold_v1
+
+Direction B: Normalization Locations (12)
+  9. input_rms_normalization_v1
+  10. layer_wise_rms_v1
+  11. output_logit_normalization_v1
+  12. channel_wise_rms_v1
+  13. adaptive_norm_decay_v1
+  14. pre_activation_norm_v1
+  15. post_activation_norm_v1
+  16. dynamic_norm_scale_v1
+  17. whitening_transform_v1
+  18. layer_dependent_norm_v1
+  19. coupled_normalization_v1
+  20. batch_norm_like_v1
+
+Hybrids: A + B (3)
+  21. hybrid_loss_gate_layerwise_norm_v1
+  22. hybrid_gradient_gate_adaptive_decay_v1
+  23. hybrid_entropy_gate_whitening_v1
+
+================================================================================
+VALIDATION STATUS (2026-08-14)
+================================================================================
+
+All 23 templates validated:
+
+[PASS] Genome encoding/decoding (23/23)
+  - All templates encode to valid genomes
+  - Genome shape verified: all (39,)
+  - Flag/parameter ranges verified: [0, 1]
+
+[PASS] Roundtrip verification (23/23)
+  - template -> config -> genome -> describe
+  - No encoding/decoding errors
+
+[PASS] Naming verification (23/23)
+  - All flags in FLAG_NAMES (existing vocabulary)
+  - All params in PARAM_NAMES (existing vocabulary)
+
+[PASS] Compatibility (23/23)
+  - Compatible with existing rule_step() implementation
+  - Parsimony penalty applies uniformly
+  - Genome interoperable with evaluate_population()
+
+Result: ALL 23 TEMPLATES READY FOR PRODUCTION
+
+================================================================================
+INTEGRATION STATUS
+================================================================================
+
+Compatibility: 100% backward-compatible
+  - No changes required to existing rule_discovery.py
+  - Fully compatible with existing genome encoding/decoding
+  - Fully compatible with existing evaluation harness
+
+Integration method (recommended):
+  1. Import: from rule_discovery_v2_templates import RULE_DISCOVERY_V2_TEMPLATES
+  2. Extend seeds: from rule_discovery_v2_integration import expand_seed_genomes_with_templates
+  3. Pass to search: extended_seeds = expand_seed_genomes_with_templates()
+  4. All downstream code continues unchanged
+
+Optional: Register in seed_genomes() for automatic injection in all future runs
+
+================================================================================
+USAGE EXAMPLES
+================================================================================
+
+Example 1: Full expanded search (20 hours compute)
+  python -m alberta_framework.benchmarks.rule_discovery search \
+    --suite gauss \
+    --n-random 500 --population 256 --generations 50 \
+    --eval-seeds 0 1 --holdout-seeds 101 102 103 \
+    --out outputs/rule_discovery/search_v2_gaussian_expanded.json
+
+Example 2: Smoke test (5 minutes)
+  python -m alberta_framework.benchmarks.rule_discovery search \
+    --suite gauss \
+    --micro-n-tasks 4 --micro-task-length 500 \
+    --n-random 100 --population 50 --generations 5 \
+    --out outputs/rule_discovery/search_v2_smoke.json
+
+Example 3: Programmatic
+  from rule_discovery_v2_integration import expand_seed_genomes_with_templates
+  extended_seeds = expand_seed_genomes_with_templates()
+
+Example 4: Validate
+  python rule_discovery_v2_integration.py
+
+See RULE_DISCOVERY_V2_QUICK_REFERENCE.txt for more details.
+
+================================================================================
+SUCCESS METRICS
+================================================================================
+
+Fitness metric: Mean online accuracy on Gaussian M1 (40 regimes, seeds 0-1)
+
+Thresholds:
+  Champion form: ~0.88
+  Tuned baseline: ~0.885
+  Success (new rule): > 0.89
+  Failure (new rule): < 0.88
+
+Transfer validation (IPMNIST 60 tasks):
+  Required: beats 0.80 baseline
+  Required: human-readable mechanism
+
+Expected winners:
+  Direction A: loss_gating_v1, combined_loss_entropy_gating_v1
+  Direction B: layer_wise_rms_v1, adaptive_norm_decay_v1
+  Hybrids: hybrid_loss_gate_layerwise_norm_v1
+
+================================================================================
+PROJECT TIMELINE
+================================================================================
+
+Completed (2026-08-14):
+  [DONE] Template design & implementation (23 templates)
+  [DONE] Integration module (seed injection, validation)
+  [DONE] Full validation (all 23 pass)
+  [DONE] Documentation (implementation guide + quick reference)
+
+Pending (per preregistration):
+  [TODO] Phase 1: Migration & re-baseline (2 hours)
+  [TODO] Phase 2: Expanded search (16-20 hours compute)
+  [TODO] Phase 3: Transfer validation (2 hours, if winners found)
+
+Total development time: 4 hours (complete)
+Total compute time: 20-22 hours (pending execution)
+
+================================================================================
+FILES & LOCATIONS
+================================================================================
+
+Location: E:\eliza\asi\
+
+Code:
+  rule_discovery_v2_templates.py (19 KB) - template definitions
+  rule_discovery_v2_integration.py (14 KB) - integration helpers
+
+Documentation:
+  RULE_DISCOVERY_V2_TEMPLATES_IMPLEMENTATION.md (17 KB)
+  RULE_DISCOVERY_V2_QUICK_REFERENCE.txt
+  RULE_DISCOVERY_V2_PREREGISTRATION.md (7.7 KB, existing)
+  RULE_DISCOVERY_V2_MANIFEST.txt (this file)
+
+All files ready for integration into codebase.
+
+================================================================================
+NEXT STEPS (RECOMMENDED)
+================================================================================
+
+1. Code review of rule_discovery_v2_templates.py
+
+2. Quick validation:
+   python rule_discovery_v2_integration.py
+
+3. Smoke test (optional, 5 minutes):
+   python -m alberta_framework.benchmarks.rule_discovery search \
+     --suite gauss --micro-n-tasks 4 --micro-task-length 500 \
+     --n-random 100 --population 50 --generations 5 \
+     --out outputs/rule_discovery/search_v2_smoke.json
+
+4. Phase 1 (migration, 2 hours):
+   Verify Gaussian suite fitness equivalence
+
+5. Phase 2 (expanded search, 16-20 hours):
+   Run full search with 23 templates
+
+6. Phase 3 (transfer validation, 2 hours, if winners > 0.89):
+   Screen top-3 on IPMNIST
+
+7. Document results
+
+================================================================================
+KEY REFERENCES
+================================================================================
+
+Pre-registration document:
+  RULE_DISCOVERY_V2_PREREGISTRATION.md
+
+Existing rule_discovery module:
+  alberta_framework/benchmarks/rule_discovery.py
+
+Canonical Gaussian suite:
+  alberta_framework/benchmarks/micro_continual.py
+
+Transfer validation harness:
+  alberta_framework/benchmarks/ipmnist_screening.py
+
+================================================================================
+PROJECT COMPLETE
+================================================================================
+
+All 23 rule templates have been implemented, validated, and documented.
+Files are ready for production use and integration into the search pipeline.
+
+Status: READY FOR EXECUTION
+
+================================================================================

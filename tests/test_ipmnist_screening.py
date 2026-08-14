@@ -1398,6 +1398,40 @@ class TestUPGDEMANormCBP:
             np.testing.assert_array_equal(s_ours.norm.count, s_ref.norm.count)
 
 
+class TestUPGDCBPEMANorm:
+    """Inverse composition: CBP first, then UPGD + EMA norm."""
+
+    def test_registry_config(self):
+        spec = screening_spec("upgd_cbp_ema_norm")
+        base_cbp = screening_spec("upgd_cbp")
+        norm_ref = screening_spec("upgd_ema_norm")
+        assert spec.base_learner == "upgd_w"
+        assert spec.mechanism == "recycling_then_conditioning"
+        assert spec.hyperparameters["cbp_replacement_rate"] == base_cbp.hyperparameters[
+            "cbp_replacement_rate"
+        ]
+        assert spec.hyperparameters["norm_decay"] == norm_ref.hyperparameters["norm_decay"]
+
+    def test_normalizer_outputs_match_upgd_ema_norm(self):
+        """EMA normalizer state should match upgd_ema_norm bitwise."""
+        params = init_mlp_params(jr.key(0), SMALL)
+        spec_ours = screening_spec("upgd_cbp_ema_norm")
+        spec_ref = screening_spec("upgd_ema_norm")
+        init_ours, step_ours = spec_ours.factory(spec_ours.hyperparameters)
+        init_ref, step_ref = spec_ref.factory(spec_ref.hyperparameters)
+        s_ours = init_ours(params)
+        s_ref = init_ref(params)
+        x = jnp.ones((5, SMALL.input_dim), dtype=jnp.float32)
+        for i in range(3):
+            xi = x[i]
+            yi = jnp.array(i % SMALL.n_classes, dtype=jnp.int32)
+            p_ours, s_ours, _ = step_ours(params, s_ours, xi, yi, jr.key(200 + i))
+            p_ref, s_ref, _ = step_ref(params, s_ref, xi, yi, jr.key(200 + i))
+            np.testing.assert_array_equal(s_ours.norm.mean, s_ref.norm.mean)
+            np.testing.assert_array_equal(s_ours.norm.var, s_ref.norm.var)
+            np.testing.assert_array_equal(s_ours.norm.count, s_ref.norm.count)
+
+
 class TestSGDNormCBP:
     """Composition arm: SGD + EMA norm + CBP (EMNIST v3 ablation)."""
 
