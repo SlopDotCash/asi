@@ -145,7 +145,7 @@ def make_upgd_ema_norm_learner(
     norm_decay = float(hp.get("norm_decay", 0.999))
     norm_epsilon = float(hp.get("norm_epsilon", 1e-8))
 
-    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_learner = build_scr_learner(kind="upgd", params=params)
     base_init = base_learner.init
     base_update = base_learner.update
 
@@ -229,7 +229,7 @@ def make_sigma0_shiftnorm_learner(
     window_size = int(hp.get("shift_detector_window", 100))
     threshold = float(hp.get("shift_detector_threshold", 0.05))
 
-    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_learner = build_scr_learner(kind="upgd", params=params)
     base_init = base_learner.init
     base_update = base_learner.update
 
@@ -349,7 +349,7 @@ def make_rls_head_learner(
     rls_forgetting = float(hp.get("rls_forgetting_factor", 0.999))
     rls_p0_scale = float(hp.get("rls_initial_covariance", 1.0))
 
-    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_learner = build_scr_learner(kind="upgd", params=params)
     base_init = base_learner.init
     base_update = base_learner.update
 

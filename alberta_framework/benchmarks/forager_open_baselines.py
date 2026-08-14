@@ -246,12 +246,12 @@ class A3CAgent:
         logits = x @ self.actor_params["w_out"] + self.actor_params["b_out"]
         return logits  # softmax applied during sampling
 
-    def _forward_critic(self, state: Array) -> float:
+    def _forward_critic(self, state: Array) -> Array:
         """Critic forward: state -> value estimate."""
         x = state @ self.critic_params["w1"] + self.critic_params["b1"]
         x = jax.nn.relu(x)
         value = x @ self.critic_params["w_out"] + self.critic_params["b_out"]
-        return float(value.squeeze())
+        return value.squeeze()
 
     def act(self, state: Array, training: bool = True) -> int:
         """Sample action from policy."""
@@ -261,8 +261,12 @@ class A3CAgent:
         action = jax.random.categorical(subkey, log_probs)
         return int(action)
 
-    def update(self, trajectory: list[dict[str, Any]]) -> None:
+    def update(self, trajectory: list[dict] | dict) -> None:
         """Update actor and critic on a trajectory (episode or batch)."""
+        # Handle single transition (convert to list)
+        if isinstance(trajectory, dict):
+            trajectory = [trajectory]
+
         if not trajectory:
             return
 
