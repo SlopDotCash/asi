@@ -20,6 +20,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import platform
 import stat
 import statistics
 import threading
@@ -359,6 +360,11 @@ class TestImmutablePublication:
     def test_atomic_writer_cleans_temporary_file_after_publish_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # This test uses os.link() which is POSIX-only. On Windows,
+        # atomic_write_new uses pathlib.Path.replace() instead.
+        if platform.system() == "Windows":
+            pytest.skip("os.link() monkeypatch not applicable on Windows")
+
         def fail_link(*_args: object, **_kwargs: object) -> None:
             raise OSError("simulated link failure")
 
@@ -370,6 +376,10 @@ class TestImmutablePublication:
     def test_atomic_writer_removes_its_target_after_post_link_readback_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # This test relies on os.link() which is POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("os.link() not applicable on Windows")
+
         target = tmp_path / "post-link-failure.json"
         real_reader = v3._read_regular_bytes
 
@@ -387,6 +397,10 @@ class TestImmutablePublication:
     def test_atomic_writer_detects_temporary_name_swap_before_link(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # This test uses os.link() which is POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("os.link() not applicable on Windows")
+
         real_link = os.link
         substituted_name = ""
 
@@ -433,6 +447,10 @@ class TestImmutablePublication:
     def test_atomic_writer_preserves_temporary_name_substitution_after_link(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # This test uses os.link() and directory FDs which are POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("os.link() and dir_fd not applicable on Windows")
+
         real_link = os.link
         substituted_name = ""
 
@@ -475,6 +493,10 @@ class TestImmutablePublication:
     def test_atomic_writer_preserves_temporary_name_substitution_on_link_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # This test uses os.link() and directory FDs which are POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("os.link() and dir_fd not applicable on Windows")
+
         substituted_name = ""
 
         def substitute_then_fail(
@@ -511,6 +533,10 @@ class TestImmutablePublication:
     def test_atomic_writer_does_not_follow_destination_or_ancestor_symlinks(
         self, tmp_path: Path
     ) -> None:
+        # Symlinks require elevated privileges on Windows
+        if platform.system() == "Windows":
+            pytest.skip("Symlink creation requires elevated privileges on Windows")
+
         sentinel = tmp_path / "sentinel"
         sentinel.write_bytes(b"keep")
         destination_link = tmp_path / "destination-link"
@@ -532,13 +558,17 @@ class TestImmutablePublication:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # This test relies on directory FDs which are POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("Directory FDs not applicable on Windows")
+
         parent = tmp_path / "parent"
         parent.mkdir()
         moved = tmp_path / "moved"
         original = v3._assert_parent_locator_stable
         checks = 0
 
-        def replace_before_link(destination: Path, directory_fd: int) -> None:
+        def replace_before_link(destination: Path, directory_fd: int | None) -> None:
             nonlocal checks
             checks += 1
             if checks == 2:
@@ -558,6 +588,10 @@ class TestImmutablePublication:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # This test relies on directory FDs which are POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("Directory FDs not applicable on Windows")
+
         target = atomic_write_new(tmp_path / "target.json", b"payload")
         moved = tmp_path / "moved.json"
         real_stat = os.stat

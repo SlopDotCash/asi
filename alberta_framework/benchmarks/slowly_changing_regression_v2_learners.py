@@ -84,8 +84,8 @@ def make_backprop_sgd_relu_learner(
         (init_fn, step_fn) pair for the benchmark loop.
     """
     params = _base_params_from_hp(hp)
-    init_fn, step_fn = build_scr_learner(params, method="sgd")
-    return init_fn, step_fn
+    learner = build_scr_learner(kind="sgd", params=params)
+    return learner.init, learner.update
 
 
 def make_adamw_baseline_learner(
@@ -108,15 +108,8 @@ def make_adamw_baseline_learner(
     adam_epsilon = float(hp.get("adam_epsilon", 1e-8))
     weight_decay = float(hp.get("weight_decay", 0.01))
 
-    init_fn, step_fn = build_scr_learner(
-        params,
-        method="adamw",
-        adam_beta1=adam_beta1,
-        adam_beta2=adam_beta2,
-        adam_epsilon=adam_epsilon,
-        weight_decay=weight_decay,
-    )
-    return init_fn, step_fn
+    learner = build_scr_learner(kind="adamw", params=params)
+    return learner.init, learner.step
 
 
 def make_upgd_w_baseline_learner(
@@ -134,7 +127,9 @@ def make_upgd_w_baseline_learner(
         (init_fn, step_fn) pair for the benchmark loop.
     """
     params = _base_params_from_hp(hp)
-    init_fn, step_fn = build_scr_learner(params, method="upgd_w")
+    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_init = base_learner.init
+    base_update = base_learner.update
     return init_fn, step_fn
 
 
@@ -160,7 +155,9 @@ def make_upgd_ema_norm_learner(
     norm_decay = float(hp.get("norm_decay", 0.999))
     norm_epsilon = float(hp.get("norm_epsilon", 1e-8))
 
-    base_init, base_step = build_scr_learner(params, method="upgd_w")
+    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_init = base_learner.init
+    base_update = base_learner.update
 
     def init_fn(key: Array, feature_dim: int) -> LearnerStateTuple:
         """Initialize learner params and EMA normalizer state."""
@@ -242,7 +239,9 @@ def make_sigma0_shiftnorm_learner(
     window_size = int(hp.get("shift_detector_window", 100))
     threshold = float(hp.get("shift_detector_threshold", 0.05))
 
-    base_init, base_step = build_scr_learner(params, method="upgd_w")
+    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_init = base_learner.init
+    base_update = base_learner.update
 
     def init_fn(key: Array, feature_dim: int) -> LearnerStateTuple:
         """Initialize learner params, normalizer state, and shift detector."""
@@ -360,7 +359,9 @@ def make_rls_head_learner(
     rls_forgetting = float(hp.get("rls_forgetting_factor", 0.999))
     rls_p0_scale = float(hp.get("rls_initial_covariance", 1.0))
 
-    base_init, base_step = build_scr_learner(params, method="upgd_w")
+    base_learner = build_scr_learner(kind="upgd_w", params=params)
+    base_init = base_learner.init
+    base_update = base_learner.update
 
     def init_fn(key: Array, feature_dim: int) -> LearnerStateTuple:
         """Initialize learner params, hidden training state, and RLS state."""
