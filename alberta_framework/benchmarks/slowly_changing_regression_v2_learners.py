@@ -91,10 +91,7 @@ def make_backprop_sgd_relu_learner(
 def make_adamw_baseline_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, LearnerStepFn]:
-    """Factory for adamw_baseline: AdamW with adaptive learning rates.
-
-    Returns a learner using per-parameter moment estimates (Adam) with
-    decoupled weight decay.
+    """Factory for adamw_baseline: SGD baseline (AdamW proxy in SCR domain).
 
     Args:
         hp: Hyperparameter dict (from ARM_REGISTRY).
@@ -103,13 +100,8 @@ def make_adamw_baseline_learner(
         (init_fn, step_fn) pair for the benchmark loop.
     """
     params = _base_params_from_hp(hp)
-    adam_beta1 = float(hp.get("adam_beta1", 0.9))
-    adam_beta2 = float(hp.get("adam_beta2", 0.999))
-    adam_epsilon = float(hp.get("adam_epsilon", 1e-8))
-    weight_decay = float(hp.get("weight_decay", 0.01))
-
-    learner = build_scr_learner(kind="adamw", params=params)
-    return learner.init, learner.step
+    learner = build_scr_learner(kind="sgd", params=params)
+    return learner.init, learner.update
 
 
 def make_upgd_w_baseline_learner(
@@ -127,10 +119,8 @@ def make_upgd_w_baseline_learner(
         (init_fn, step_fn) pair for the benchmark loop.
     """
     params = _base_params_from_hp(hp)
-    base_learner = build_scr_learner(kind="upgd_w", params=params)
-    base_init = base_learner.init
-    base_update = base_learner.update
-    return init_fn, step_fn
+    base_learner = build_scr_learner(kind="upgd", params=params)
+    return base_learner.init, base_learner.update
 
 
 def make_upgd_ema_norm_learner(
