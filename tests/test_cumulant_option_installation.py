@@ -116,7 +116,7 @@ def _composition(
     reserved_observation_suffix: int = 0,
 ) -> CumulantOptionInstallation:
     discovery = CumulantSubtaskDiscovery(_discovery_config())
-    stomp = STOMPConfig(
+    stomp = STOMPConfig.for_dynamic_option_template(
         subtask_specs=(),
         observation_dim=2 + reserved_observation_suffix,
         n_primitive_actions=2,

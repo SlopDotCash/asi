@@ -120,7 +120,7 @@ def _scheduler(
     max_install_attempts: int | None = None,
 ) -> CumulantOptionScheduler:
     discovery = CumulantSubtaskDiscovery(_discovery_config())
-    stomp = STOMPConfig(
+    stomp = STOMPConfig.for_dynamic_option_template(
         subtask_specs=(),
         observation_dim=2,
         n_primitive_actions=2,

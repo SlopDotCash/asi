@@ -259,3 +259,15 @@ def test_primitive_only_stomp_has_typed_empty_option_state_and_base_only_updates
             n_primitive_actions=N_PRIMITIVE,
             option_planning_backups_per_step=1,
         )
+
+
+def test_dynamic_option_template_can_carry_planning_budget_before_materialization() -> None:
+    config = STOMPConfig.for_dynamic_option_template(
+        subtask_specs=(),
+        observation_dim=OBS_DIM,
+        n_primitive_actions=N_PRIMITIVE,
+        option_planning_backups_per_step=1,
+    )
+
+    assert config.n_options == 0
+    assert config.option_planning_backups_per_step == 1

@@ -1327,6 +1327,24 @@ class STOMPConfig:
     epsilon_option: float = 0.1
     option_target_epsilon: float | None = None
     option_importance_clip: float = 10.0
+    _allow_empty_option_planning: bool = dataclasses.field(
+        default=False,
+        repr=False,
+        compare=False,
+    )
+
+    @classmethod
+    def for_dynamic_option_template(cls, **kwargs: Any) -> STOMPConfig:
+        """Build an empty template that will materialize options later.
+
+        A dynamic option installer starts with no configured subtasks, then
+        replaces this template with a fixed option set before constructing the
+        live agent.  The planning budget belongs to that eventual materialized
+        agent, so it must be representable on the empty template without
+        weakening the standalone primitive-only configuration guard.
+        """
+
+        return cls(_allow_empty_option_planning=True, **kwargs)
 
     def __post_init__(self) -> None:
         """Validate configuration."""
@@ -1360,7 +1378,11 @@ class STOMPConfig:
             raise ValueError(
                 "option_planning_backups_per_step must be smaller than int32 max"
             )
-        if not self.subtask_specs and self.option_planning_backups_per_step != 0:
+        if (
+            not self.subtask_specs
+            and self.option_planning_backups_per_step != 0
+            and not self._allow_empty_option_planning
+        ):
             raise ValueError(
                 "primitive-only STOMP requires option_planning_backups_per_step == 0"
             )
