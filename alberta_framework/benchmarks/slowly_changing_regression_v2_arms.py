@@ -136,7 +136,10 @@ SCR_V2_BASELINE_ARMS = frozenset(("backprop_sgd_relu", "adamw_baseline", "upgd_w
 SCR_V2_ALBERTA_ARMS = frozenset(
     ("upgd_ema_norm", "sigma0_shiftnorm", "rls_head")
 )
-SCR_V2_ALL_ARMS = SCR_V2_BASELINE_ARMS | SCR_V2_ALBERTA_ARMS
+SCR_V2_SENSITIVITY_ARMS = frozenset(
+    ("upgd_ema_norm_d095", "upgd_ema_norm_d0999", "upgd_ema_norm_d09999")
+)
+SCR_V2_ALL_ARMS = SCR_V2_BASELINE_ARMS | SCR_V2_ALBERTA_ARMS | SCR_V2_SENSITIVITY_ARMS
 
 
 @chex.dataclass(frozen=True)
@@ -241,6 +244,39 @@ ARM_REGISTRY: MappingProxyType[str, ArmSpecification] = MappingProxyType(
                 "Alberta IPMNIST: rls_head_resid_l1_preset005 standing record (0.8711 ± 0.0001, n=20). "
                 "Prototype: does RLS readout architecture transfer to regression-on-features?"
             ),
+        ),
+        # --- Wave 10: norm_decay sensitivity (2026-08-14 addition).
+        # Hypothesis: Test whether IPMNIST's decay=0.999 transfers to SCR or if
+        # faster (0.95) or slower (0.9999) decay improves performance on output-shift.
+        "upgd_ema_norm_d095": ArmSpecification(
+            name="upgd_ema_norm_d095",
+            role="mechanism_sensitivity",
+            hyperparameters=MappingProxyType({**UPGD_EMA_NORM_HYPERPARAMETERS, "norm_decay": 0.95}),
+            description=(
+                "upgd_ema_norm with faster EMA decay (0.95 vs 0.999). "
+                "Tests if quicker normalization adaptation helps with output-shift."
+            ),
+            reference="SCR v2 domain-transfer sensitivity test (SLOWLY_CHANGING_REGRESSION_V2_PREREGISTRATION).",
+        ),
+        "upgd_ema_norm_d0999": ArmSpecification(
+            name="upgd_ema_norm_d0999",
+            role="mechanism_sensitivity",
+            hyperparameters=MappingProxyType({**UPGD_EMA_NORM_HYPERPARAMETERS, "norm_decay": 0.999}),
+            description=(
+                "upgd_ema_norm with very slow EMA decay (0.999 vs 0.999). "
+                "Conservative baseline; replicates IPMNIST champion decay exactly."
+            ),
+            reference="SCR v2 domain-transfer sensitivity test (SLOWLY_CHANGING_REGRESSION_V2_PREREGISTRATION).",
+        ),
+        "upgd_ema_norm_d09999": ArmSpecification(
+            name="upgd_ema_norm_d09999",
+            role="mechanism_sensitivity",
+            hyperparameters=MappingProxyType({**UPGD_EMA_NORM_HYPERPARAMETERS, "norm_decay": 0.9999}),
+            description=(
+                "upgd_ema_norm with extremely slow EMA decay (0.9999 vs 0.999). "
+                "Tests if even slower normalization helps prevent over-adaptation."
+            ),
+            reference="SCR v2 domain-transfer sensitivity test (SLOWLY_CHANGING_REGRESSION_V2_PREREGISTRATION).",
         ),
     }
 )

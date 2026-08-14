@@ -445,6 +445,57 @@ PREREGISTERED_ARMS = {
             "Preregistered prediction (NEW_DIRECTIONS V4): instant recovery on M4 recurrence."
         ),
     },
+    "rls_head_resid_lambda_095": {
+        "name": "rls_head_resid_lambda_095",
+        "factory": _make_rls_head_resid_learner,
+        "mechanism": "rls_readout_forgetting_factor",
+        "hyperparameters": {
+            "step_size": 0.01,
+            "weight_decay": 0.01,
+            "norm_decay": 0.99,
+            "norm_epsilon": 1e-8,
+            "rls_lambda": 0.95,
+            "rls_reset_frac": 0.05,
+            "head_resid": 1.0,
+        },
+        "description": (
+            "rls_head_resid with high forgetting (lambda=0.95). "
+            "Tests if aggressive forgetting helps continual learning (default lambda=1.0)."
+        ),
+    },
+    "rls_head_resid_lambda_099": {
+        "name": "rls_head_resid_lambda_099",
+        "factory": _make_rls_head_resid_learner,
+        "mechanism": "rls_readout_forgetting_factor",
+        "hyperparameters": {
+            "step_size": 0.01,
+            "weight_decay": 0.01,
+            "norm_decay": 0.99,
+            "norm_epsilon": 1e-8,
+            "rls_lambda": 0.99,
+            "rls_reset_frac": 0.05,
+            "head_resid": 1.0,
+        },
+        "description": (
+            "rls_head_resid with mild forgetting (lambda=0.99). "
+            "Conservative variant for testing forgetting-factor sensitivity."
+        ),
+    },
+    "dual_speed_rfs_rls_lambda_095": {
+        "name": "dual_speed_rfs_rls_lambda_095",
+        "factory": _make_dual_speed_rfs_rls_learner,
+        "mechanism": "frozen_random_features_context_cache_forgetting",
+        "hyperparameters": {
+            "rfs_dim": 192,
+            "rls_lambda": 0.95,
+            "cache_by_context": True,
+            "context_inference_decay": 0.95,
+        },
+        "description": (
+            "dual_speed_rfs_rls with high forgetting (lambda=0.95). "
+            "Tests if forgetting accelerates learning on new tasks."
+        ),
+    },
     "actor_critic_micro": {
         "name": "actor_critic_micro",
         "factory": _make_actor_critic_micro_learner,

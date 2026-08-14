@@ -5427,6 +5427,36 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             factory=_control_factory(_make_adamw_learner),
             description="Published AdamW baseline (proxy-ordering validation arm).",
         ),
+        # --- Wave 10c: weight_decay sensitivity (2026-08-14 addition).
+        # Hypothesis: Test whether UPGD's utility gate replaces explicit regularization;
+        # if gate+gating protect against overfitting, reducing weight decay should not hurt.
+        ScreeningSpec(
+            name="upgd_w_wd_0",
+            base_learner="upgd_w",
+            mechanism="weight_decay_sensitivity",
+            hyperparameters=_upgd_hp(weight_decay=0.0),
+            factory=_control_factory(_make_upgd_w_learner),
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_w with NO weight decay (vs 0.01 default). Tests if gate replaces regularization.",
+        ),
+        ScreeningSpec(
+            name="upgd_w_wd_001",
+            base_learner="upgd_w",
+            mechanism="weight_decay_sensitivity",
+            hyperparameters=_upgd_hp(weight_decay=0.001),
+            factory=_control_factory(_make_upgd_w_learner),
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_w with light weight decay (0.001 vs 0.01 default).",
+        ),
+        ScreeningSpec(
+            name="upgd_w_wd_1",
+            base_learner="upgd_w",
+            mechanism="weight_decay_sensitivity",
+            hyperparameters=_upgd_hp(weight_decay=0.1),
+            factory=_control_factory(_make_upgd_w_learner),
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_w with heavy weight decay (0.1 vs 0.01 default). Tests regularization intensity.",
+        ),
         ScreeningSpec(
             name="upgd_idbd",
             base_learner="upgd_w",
