@@ -496,6 +496,36 @@ PREREGISTERED_ARMS = {
             "Tests if forgetting accelerates learning on new tasks."
         ),
     },
+    "dual_speed_rfs_rls_decay_090": {
+        "name": "dual_speed_rfs_rls_decay_090",
+        "factory": _make_dual_speed_rfs_rls_learner,
+        "mechanism": "frozen_random_features_context_decay",
+        "hyperparameters": {
+            "rfs_dim": 192,
+            "rls_lambda": 1.0,
+            "cache_by_context": True,
+            "context_inference_decay": 0.90,
+        },
+        "description": (
+            "dual_speed_rfs_rls with fast context decay (0.90 vs 0.95 default). "
+            "Tests if quicker context fingerprint forgetting helps continual learning."
+        ),
+    },
+    "dual_speed_rfs_rls_decay_099": {
+        "name": "dual_speed_rfs_rls_decay_099",
+        "factory": _make_dual_speed_rfs_rls_learner,
+        "mechanism": "frozen_random_features_context_decay",
+        "hyperparameters": {
+            "rfs_dim": 192,
+            "rls_lambda": 1.0,
+            "cache_by_context": True,
+            "context_inference_decay": 0.99,
+        },
+        "description": (
+            "dual_speed_rfs_rls with very slow context decay (0.99 vs 0.95 default). "
+            "Tests if slower fingerprint decay helps maintain context identity."
+        ),
+    },
     "actor_critic_micro": {
         "name": "actor_critic_micro",
         "factory": _make_actor_critic_micro_learner,
