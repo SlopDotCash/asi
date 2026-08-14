@@ -113,6 +113,10 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     ScreeningStepFn,
     _make_sgd_ema_norm_learner,
     _make_upgd_ema_norm_learner,
+    _make_upgd_ema_norm_cbp_learner,
+    _make_sgd_norm_cbp_learner,
+    _make_upgd_l2init_learner,
+    _make_upgd_shiftnorm_learner,
     _wrap_grad_learner,
 )
 from alberta_framework.benchmarks.upgd_ipmnist import (
@@ -260,6 +264,10 @@ _FULL_STEP_FACTORIES: dict[
     "upgd_ema_norm": _make_upgd_ema_norm_learner,
     "upgd_ema_norm_sigma0": _make_upgd_ema_norm_learner,
     "sgd_ema_norm": _make_sgd_ema_norm_learner,
+    "upgd_ema_norm_cbp": _make_upgd_ema_norm_cbp_learner,
+    "sgd_norm_cbp": _make_sgd_norm_cbp_learner,
+    "upgd_l2init": _make_upgd_l2init_learner,
+    "upgd_shiftnorm": _make_upgd_shiftnorm_learner,
 }
 
 #: Published reference numbers. The paper reports curves (its Figure for
