@@ -5474,6 +5474,19 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ("sigma0_shiftnorm_d099_f08", {"norm_decay": 0.99, "fast_decay": 0.8}),
         ("sigma0_shiftnorm_d099_f095", {"norm_decay": 0.99, "fast_decay": 0.95}),
         ("sigma0_shiftnorm_d099_r200", {"norm_decay": 0.99, "shift_refractory": 200.0}),
+        # --- Wave 9: unexplored hyperparameter interactions (2026-08-14 addition).
+        # Hypothesis 1: Combination of gentler detector sensitivity and faster
+        # fast_decay might allow quicker re-conditioning without overshooting.
+        ("sigma0_shiftnorm_d099_k05_f08", {"norm_decay": 0.99, "shift_k": 0.5, "fast_decay": 0.8}),
+        # Hypothesis 2: More aggressive detector (k=2) plus rate-limiting to
+        # avoid repeated resets on noisy boundaries.
+        ("sigma0_shiftnorm_d099_k2_r50", {"norm_decay": 0.99, "shift_k": 2.0, "shift_refractory": 50.0}),
+        # Hypothesis 3: Test if d098 (margin winner in frontier-2) benefits from
+        # faster fast_decay. If true, suggests decay plateau is speed-dependent.
+        ("sigma0_shiftnorm_d098_f08", {"norm_decay": 0.98, "fast_decay": 0.8}),
+        # Hypothesis 4: Minimal rate-limiting (50 vs 200) to test if moderate
+        # refractory is sufficient without full gate.
+        ("sigma0_shiftnorm_d099_r50", {"norm_decay": 0.99, "shift_refractory": 50.0}),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
