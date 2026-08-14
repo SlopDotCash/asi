@@ -777,3 +777,72 @@ class TestSupportedForMLP:
             step, _ = optimizer.update_from_gradient(state, jnp.ones((2, 3)))
             assert optimizer.supported_for_mlp()
             assert step.shape == (2, 3)
+
+
+class TestIDBDNaNGuard:
+    """Regression tests for #42: IDBD meta-update NaN-poisoning.
+
+    An inf error against fresh zero traces used to produce inf * 0 = NaN,
+    which flowed through jnp.clip (clip(NaN) is NaN) and permanently
+    poisoned log_step_sizes, bias_step_size, and every later finite update.
+    """
+
+    def test_infinite_error_keeps_weight_step_sizes_finite(self):
+        import jax.numpy as jnp
+
+        opt = IDBD(initial_step_size=0.01, meta_step_size=0.01)
+        st = opt.init(2)
+        x = jnp.ones(2, dtype=jnp.float32)
+
+        r = opt.update(st, jnp.array(jnp.inf, dtype=jnp.float32), x)
+        # Guard protects step-sizes; traces go inf (expected, per reviewer)
+        assert jnp.isfinite(r.new_state.log_step_sizes).all()
+        # log_step_sizes preserved at log(0.01) = -4.6051702
+        assert jnp.allclose(r.new_state.log_step_sizes, jnp.log(0.01))
+
+        # Finite follow-up must stay finite (no inheritance of NaN).
+        r2 = opt.update(r.new_state, jnp.array(1.0, dtype=jnp.float32), x)
+        assert jnp.isfinite(r2.new_state.log_step_sizes).all()
+
+    def test_infinite_error_keeps_bias_step_size_finite(self):
+        import jax.numpy as jnp
+
+        opt = IDBD(initial_step_size=0.01, meta_step_size=0.01)
+        st = opt.init(2)
+        x = jnp.ones(2, dtype=jnp.float32)
+
+        r = opt.update(st, jnp.array(jnp.inf, dtype=jnp.float32), x)
+        # Guard protects bias_step_size; bias_trace goes inf (expected)
+        assert jnp.isfinite(r.new_state.bias_step_size)
+        # bias_step_size preserved at initial 0.01
+        assert r.new_state.bias_step_size == pytest.approx(0.01)
+
+        # Finite follow-up keeps bias finite and unchanged after the skip.
+        r2 = opt.update(r.new_state, jnp.array(1.0, dtype=jnp.float32), x)
+        assert jnp.isfinite(r2.new_state.bias_step_size)
+
+    def test_overflowing_finite_product_keeps_step_sizes_finite(self):
+        import jax.numpy as jnp
+
+        opt = IDBD(initial_step_size=0.01, meta_step_size=0.01)
+        st = opt.init(2)
+        r = opt.update(
+            st,
+            jnp.array(1e20, dtype=jnp.float32),
+            jnp.array([1e20, 1.0], dtype=jnp.float32),
+        )
+        assert jnp.isfinite(r.new_state.log_step_sizes).all()
+
+    def test_ordinary_finite_trajectory_still_adapts(self):
+        import jax.numpy as jnp
+
+        opt = IDBD(initial_step_size=0.01, meta_step_size=0.01)
+        st = opt.init(2)
+        x = jnp.ones(2, dtype=jnp.float32)
+        # A stream of finite errors with nonzero trace should adapt.
+        for e in (1.0, 0.5, -0.2, 0.7):
+            r = opt.update(st, jnp.array(e, dtype=jnp.float32), x)
+            st = r.new_state
+        assert jnp.isfinite(st.log_step_sizes).all()
+        # Adaptation changed at least one step-size away from log(0.01).
+        assert not jnp.allclose(st.log_step_sizes, jnp.log(0.01))
