@@ -1,0 +1,31 @@
+{
+  "total_arms": 115,
+  "total_campaigns": 6,
+  "total_estimated_hours": 159.8,
+  "campaigns": {
+    "ipmnist": {
+      "count": 20,
+      "hours": 3.75
+    },
+    "scr": {
+      "count": 24,
+      "hours": 8.25
+    },
+    "emnist": {
+      "count": 29,
+      "hours": 10.2
+    },
+    "micro_continual": {
+      "count": 19,
+      "hours": 6.7
+    },
+    "forager": {
+      "count": 19,
+      "hours": 10.9
+    },
+    "rule_discovery": {
+      "count": 4,
+      "hours": 120
+    }
+  }
+}

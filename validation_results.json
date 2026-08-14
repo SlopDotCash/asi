@@ -1,0 +1,138 @@
+{
+  "total_checks": 257,
+  "passed": 257,
+  "failed": 0,
+  "warnings": 0,
+  "details": {
+    "registration_completeness": {
+      "passed": true,
+      "message": "All expected arms registered",
+      "details": {
+        "ipmnist": {
+          "expected": 20,
+          "actual": 20,
+          "passed": true
+        },
+        "scr": {
+          "expected": 24,
+          "actual": 24,
+          "passed": true
+        },
+        "emnist": {
+          "expected": 29,
+          "actual": 29,
+          "passed": true
+        },
+        "micro_continual": {
+          "expected": 19,
+          "actual": 19,
+          "passed": true
+        },
+        "forager": {
+          "expected": 19,
+          "actual": 19,
+          "passed": true
+        },
+        "rule_discovery": {
+          "expected": 4,
+          "actual": 4,
+          "passed": true
+        }
+      }
+    },
+    "arm_definitions": {
+      "passed": true,
+      "message": "All arm definitions valid",
+      "invalid_arms": []
+    },
+    "campaign_consistency": {
+      "passed": true,
+      "message": "Campaign indices consistent",
+      "inconsistencies": []
+    },
+    "backward_compatibility": {
+      "passed": true,
+      "message": "Backward compatible with legacy configs",
+      "legacy_arms": {
+        "ipmnist": {
+          "expected": [
+            "upgd_w_control",
+            "adamw_control",
+            "upgd_ema_norm"
+          ],
+          "found": [
+            "upgd_w_control",
+            "adamw_control",
+            "upgd_ema_norm"
+          ],
+          "missing": []
+        },
+        "scr": {
+          "expected": [
+            "backprop_sgd_relu",
+            "adamw_baseline",
+            "upgd_w_baseline"
+          ],
+          "found": [
+            "backprop_sgd_relu",
+            "adamw_baseline",
+            "upgd_w_baseline"
+          ],
+          "missing": []
+        },
+        "emnist": {
+          "expected": [
+            "upgd_w",
+            "adamw",
+            "upgd_ema_norm_emnist"
+          ],
+          "found": [
+            "upgd_w",
+            "adamw",
+            "upgd_ema_norm_emnist"
+          ],
+          "missing": []
+        },
+        "micro_continual": {
+          "expected": [
+            "rls_head_resid",
+            "alignment_first",
+            "naive_bayes_extended"
+          ],
+          "found": [
+            "rls_head_resid",
+            "alignment_first",
+            "naive_bayes_extended"
+          ],
+          "missing": []
+        },
+        "forager": {
+          "expected": [
+            "dqn",
+            "a3c",
+            "horde"
+          ],
+          "found": [
+            "dqn",
+            "a3c",
+            "horde"
+          ],
+          "missing": []
+        }
+      }
+    },
+    "resource_estimates": {
+      "passed": true,
+      "message": "Resource estimates valid",
+      "campaign_hours": {
+        "ipmnist": 3.75,
+        "scr": 8.25,
+        "emnist": 10.2,
+        "micro_continual": 6.7,
+        "forager": 10.9,
+        "rule_discovery": 120
+      },
+      "total_hours": 159.8
+    }
+  }
+}

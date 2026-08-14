@@ -1,0 +1,14 @@
+{
+  "valid": true,
+  "checks": {
+    "has_version": true,
+    "has_creation_date": true,
+    "has_registry_version": true,
+    "has_total_arms": true,
+    "has_total_campaigns": true,
+    "has_campaigns": true,
+    "campaigns_match": true,
+    "arm_count_consistent": true
+  },
+  "errors": []
+}
