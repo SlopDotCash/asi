@@ -1001,20 +1001,8 @@ class _HCCLRoutedContinualDyadOperationalExecutor:
             raise HCCLRoutedContinualDyadOperationalError(
                 "bounds",
                 "configured routed life has no remaining transition capacity",
-            )
+        )
         source = self._state
-        source_words = _host_array(
-            source.hccl_state.world_state.step_words,
-            name="executor routed source clock",
-            shape=(2,),
-            dtype=np.dtype(np.uint32),
-        )
-        source_token = _host_array(
-            source.content_token,
-            name="executor routed source content token",
-            shape=(_TOKEN_NBYTES,),
-            dtype=np.dtype(np.uint8),
-        )
         try:
             result = _execute_routed_operational_event(
                 self._owner,
@@ -1035,6 +1023,41 @@ class _HCCLRoutedContinualDyadOperationalExecutor:
             )
 
         next_step = self._absolute_step + 1
+        final_step = next_step == self._maximum_transitions
+        periodic_due = (
+            self._checkpoint_interval is not None
+            and next_step % self._checkpoint_interval == 0
+        )
+        checkpoint_due = final_step or periodic_due
+        if checkpoint_due:
+            stage = "final-checkpoint" if final_step else "periodic-checkpoint"
+            try:
+                _host_true(
+                    self._owner.state_valid(result.state),
+                    name=f"{stage} routed candidate validity",
+                )
+            except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+                raise HCCLRoutedContinualDyadOperationalError(stage, str(error)) from error
+            result = dataclasses.replace(
+                result,
+                work=dataclasses.replace(
+                    result.work,
+                    runner_checkpoint_state_validations=1,
+                ),
+            )
+
+        source_words = _host_array(
+            source.hccl_state.world_state.step_words,
+            name="executor routed source clock",
+            shape=(2,),
+            dtype=np.dtype(np.uint32),
+        )
+        source_token = _host_array(
+            source.content_token,
+            name="executor routed source content token",
+            shape=(_TOKEN_NBYTES,),
+            dtype=np.dtype(np.uint8),
+        )
         transcript_pre = _host_array(
             result.transcript.pre_transaction_words,
             name="result transcript pre clock",
@@ -1064,29 +1087,6 @@ class _HCCLRoutedContinualDyadOperationalExecutor:
             raise HCCLRoutedContinualDyadOperationalError(
                 "source-transcript-binding",
                 "result does not name the executor's exact source token and next clock",
-            )
-
-        final_step = next_step == self._maximum_transitions
-        periodic_due = (
-            self._checkpoint_interval is not None
-            and next_step % self._checkpoint_interval == 0
-        )
-        checkpoint_due = final_step or periodic_due
-        if checkpoint_due:
-            stage = "final-checkpoint" if final_step else "periodic-checkpoint"
-            try:
-                _host_true(
-                    self._owner.state_valid(result.state),
-                    name=f"{stage} routed candidate validity",
-                )
-            except (AttributeError, RuntimeError, TypeError, ValueError) as error:
-                raise HCCLRoutedContinualDyadOperationalError(stage, str(error)) from error
-            result = dataclasses.replace(
-                result,
-                work=dataclasses.replace(
-                    result.work,
-                    runner_checkpoint_state_validations=1,
-                ),
             )
 
         self._state = result.state
