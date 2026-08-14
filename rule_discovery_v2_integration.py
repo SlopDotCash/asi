@@ -39,19 +39,52 @@ def expand_seed_genomes_with_templates() -> Array:
     """Inject all 23 expanded templates into the initial seed population.
 
     Returns an extended seed population matrix where:
-    - Rows 0–12: original seed_genomes() (champion form, meta-a, meta-b,
-                 bare SGD, norm-only, L2-init, discovered-rule-1, + wave-2)
+    - Rows 0–12: base seeds (champion, meta-a, meta-b, bare, norm-only, l2init, etc.)
     - Rows 13–35: all 23 Direction A/B/hybrid templates
 
-    This ensures the search population begins with structured diversity
-    across gate mechanisms and normalization strategies.
+    Note: Builds base seeds inline to avoid circular dependency with seed_genomes().
     """
+    from alberta_framework.benchmarks.rule_discovery import (
+        champion_form_genome,
+        genome_from_config,
+        FLAG_NAMES,
+        PARAM_NAMES,
+        _CHAMPION_CONFIG,
+        _DISC_SURPRISE_CONFIG,
+    )
+
     rows: list[np.ndarray] = []
 
-    # Original seed genomes (baseline population diversity)
-    original_seeds = np.asarray(seed_genomes(), dtype=np.float32)
-    for i in range(original_seeds.shape[0]):
-        rows.append(original_seeds[i])
+    # Build base seeds inline (same as seed_genomes but without circular call)
+    rows.append(champion_form_genome())
+    meta_a = dict(_CHAMPION_CONFIG)
+    meta_a["meta_decay"] = 1.0
+    rows.append(genome_from_config(meta_a))
+    meta_b = dict(_CHAMPION_CONFIG)
+    meta_b["surprise_budget"] = 1.0
+    rows.append(genome_from_config(meta_b))
+    bare = {name: 0.0 for name in FLAG_NAMES}
+    bare.update({name: _CHAMPION_CONFIG[name] for name in PARAM_NAMES})
+    rows.append(genome_from_config(bare))
+    norm_only = dict(bare)
+    norm_only["norm"] = 1.0
+    rows.append(genome_from_config(norm_only))
+    l2init = dict(_CHAMPION_CONFIG)
+    l2init["decay_to_init"] = 1.0
+    rows.append(genome_from_config(l2init))
+    rows.append(genome_from_config(_DISC_SURPRISE_CONFIG))
+    for base in (_CHAMPION_CONFIG, _DISC_SURPRISE_CONFIG):
+        for extra in (
+            {"rls_head": 1.0},
+            {"rls_head": 1.0, "rls_reset_p": 1.0},
+            {"nb_member": 1.0},
+            {"lr_anneal": 1.0},
+            {"layer_lr": 1.0, "layer_lr_ratio": 2.0},
+            {"kalman_norm": 1.0},
+        ):
+            variant = dict(base)
+            variant.update(extra)
+            rows.append(genome_from_config(variant))
 
     # All 23 expanded templates
     for template in RULE_DISCOVERY_V2_TEMPLATES:
@@ -61,9 +94,8 @@ def expand_seed_genomes_with_templates() -> Array:
 
     result: Array = jnp.asarray(np.stack(rows), dtype=jnp.float32)
     logger.info(
-        "Expanded seed population: %d total (original %d + templates %d)",
+        "Expanded seed population: %d total (base + %d templates)",
         result.shape[0],
-        original_seeds.shape[0],
         len(RULE_DISCOVERY_V2_TEMPLATES),
     )
     return result
