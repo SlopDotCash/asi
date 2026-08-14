@@ -680,8 +680,12 @@ class IDBD(Optimizer[IDBDState]):
         meta_gradient = z * state.traces
         new_log_step_sizes = state.log_step_sizes + beta * meta_gradient
 
-        # 3. Clip log step-sizes
-        new_log_step_sizes = jnp.clip(new_log_step_sizes, -10.0, 2.0)
+        # Guard: a non-finite meta-delta keeps the previous log step-size
+        new_log_step_sizes = jnp.where(
+            jnp.isfinite(meta_gradient),
+            jnp.clip(new_log_step_sizes, -10.0, 2.0),
+            state.log_step_sizes,
+        )
 
         # 4. New step-sizes
         new_alphas = jnp.exp(new_log_step_sizes)
@@ -738,11 +742,19 @@ class IDBD(Optimizer[IDBDState]):
         beta = state.meta_step_size
 
         # 1. Meta-update: adapt step-sizes using OLD traces
-        gradient_correlation = error_scalar * observation * state.traces
+        # Re-associate as error * (x * h) so a zero trace kills the
+        # product before a finite overflow can produce inf*0 = NaN (#42).
+        gradient_correlation = error_scalar * (observation * state.traces)
         new_log_step_sizes = state.log_step_sizes + beta * gradient_correlation
 
-        # Clip log step-sizes to prevent numerical issues
-        new_log_step_sizes = jnp.clip(new_log_step_sizes, -10.0, 2.0)
+        # Clip log step-sizes to prevent numerical issues.  jnp.clip(NaN, …)
+        # is NaN, so guard the meta-delta: a non-finite delta keeps the
+        # previous log step-size for that weight.
+        new_log_step_sizes = jnp.where(
+            jnp.isfinite(gradient_correlation),
+            jnp.clip(new_log_step_sizes, -10.0, 2.0),
+            state.log_step_sizes,
+        )
 
         # 2. Compute NEW step-sizes
         new_alphas = jnp.exp(new_log_step_sizes)
