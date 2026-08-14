@@ -5563,9 +5563,43 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "load-bearing once inputs are conditioned?"
             ),
         ),
-        # --- Wave 6: the final dissection of the normalized arm.  With
-        # upgd_ema_norm_sigma0 tying upgd_ema_norm, the method reduces to
-        # normalize + utility-gated SGD + decay; this arm drops the gate too.
+        # --- Wave 10b: utility_gate_beta sensitivity (2026-08-14 addition).
+        # Hypothesis: Gate steepness (beta) affects learning rate through gating
+        # intensity; test whether default beta=2 is optimal or if higher/lower
+        # beta improves transfer. Beta controls sigmoid(beta * utility) hardness.
+        ScreeningSpec(
+            name="upgd_ema_norm_beta1",
+            base_learner="upgd_w",
+            mechanism="input_normalization",
+            hyperparameters=_upgd_hp(
+                norm_decay=0.999, norm_epsilon=1e-8, utility_beta=1.0
+            ),
+            factory=_make_upgd_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_ema_norm with soft gate (beta=1 vs default 2).",
+        ),
+        ScreeningSpec(
+            name="upgd_ema_norm_beta4",
+            base_learner="upgd_w",
+            mechanism="input_normalization",
+            hyperparameters=_upgd_hp(
+                norm_decay=0.999, norm_epsilon=1e-8, utility_beta=4.0
+            ),
+            factory=_make_upgd_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_ema_norm with hard gate (beta=4 vs default 2).",
+        ),
+        ScreeningSpec(
+            name="upgd_ema_norm_beta10",
+            base_learner="upgd_w",
+            mechanism="input_normalization",
+            hyperparameters=_upgd_hp(
+                norm_decay=0.999, norm_epsilon=1e-8, utility_beta=10.0
+            ),
+            factory=_make_upgd_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description="upgd_ema_norm with very hard gate (beta=10 vs default 2).",
+        ),
         ScreeningSpec(
             name="sgd_ema_norm",
             base_learner="upgd_w",
@@ -6074,6 +6108,13 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         # Hypothesis 4: Minimal rate-limiting (50 vs 200) to test if moderate
         # refractory is sufficient without full gate.
         ("sigma0_shiftnorm_d099_r50", {"norm_decay": 0.99, "shift_refractory": 50.0}),
+        # --- Wave 10: norm_decay sensitivity (2026-08-14 addition).
+        # Hypothesis 5: EMA decay speed is the active ingredient; test whether
+        # 0.99 is locally optimal or if slower decay (0.999, 0.9999) or faster
+        # decay (0.95) improves transfer to held-out tasks.
+        ("sigma0_shiftnorm_d095", {"norm_decay": 0.95}),
+        ("sigma0_shiftnorm_d0999", {"norm_decay": 0.999}),
+        ("sigma0_shiftnorm_d09999", {"norm_decay": 0.9999}),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(

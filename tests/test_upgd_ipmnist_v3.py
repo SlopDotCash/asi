@@ -624,6 +624,10 @@ class TestImmutablePublication:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        # This test relies on directory FDs which are POSIX-only
+        if platform.system() == "Windows":
+            pytest.skip("Directory FDs not applicable on Windows")
+
         target = tmp_path / "target.json"
         moved = tmp_path / "moved.json"
         real_reader = v3._read_regular_bytes
