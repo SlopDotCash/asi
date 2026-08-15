@@ -377,6 +377,27 @@ def test_cli_refuses_pinned_output_even_when_missing_before_validation(
 
 
 @pytest.mark.unit
+def test_cli_refuses_alternate_roots_canonical_output_before_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pinned = tmp_path / "outputs" / "evidence_manifest.json"
+    assert not pinned.exists()
+
+    def forbidden_build(root: Path) -> dict[str, object]:
+        raise AssertionError(f"validation must not run for refused output {root}")
+
+    monkeypatch.setattr(evidence_manifest_cli, "build_evidence_manifest", forbidden_build)
+
+    assert evidence_manifest_cli.main(["--root", str(tmp_path), "--output", str(pinned)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "pinned canonical artifact path" in captured.err
+    assert not pinned.exists()
+
+
+@pytest.mark.unit
 def test_cli_refuses_existing_output_before_validation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

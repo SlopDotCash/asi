@@ -7,7 +7,9 @@ robotics readiness, exact whole-life resume, or scientific evidence.
 
 from __future__ import annotations
 
+import copy
 import math
+import pickle
 from dataclasses import FrozenInstanceError, replace
 
 import numpy as np
@@ -202,9 +204,9 @@ def _outcome(
 
 
 def test_versioned_manifest_binds_canonical_config_and_state_schema() -> None:
-    assert REFERENCE_AGENT_API_VERSION == "asi.reference_agent.v1"
-    assert REFERENCE_AGENT_MANIFEST_SCHEMA == "asi.reference_agent_manifest.v1"
-    assert REFERENCE_TRANSACTION_STATE_SCHEMA == "asi.reference_transaction_state.v1"
+    assert REFERENCE_AGENT_API_VERSION == "asi.reference_agent.preview1"
+    assert REFERENCE_AGENT_MANIFEST_SCHEMA == "asi.reference_agent_manifest.preview1"
+    assert REFERENCE_TRANSACTION_STATE_SCHEMA == "asi.reference_transaction_state.preview1"
 
     first = {"seed": 7, "nested": {"beta": 2, "alpha": 1}}
     reordered = {"nested": {"alpha": 1, "beta": 2}, "seed": 7}
@@ -474,6 +476,62 @@ def test_ledger_enforces_one_lifecycle_monotonic_decisions_and_exactly_once_phas
             replace(state, phase=TransactionPhase.READY, decision=None),
             _decision(ledger.manifest, lifecycle_id="life-b", decision_index=1),
         )
+
+
+def test_ledger_rejects_reinitialization_and_stale_snapshot_forks() -> None:
+    ledger = ReferenceTransactionLedger(_manifest(dispatch_rebinding=True))
+    initial = ledger.init()
+    with pytest.raises(DecisionOwnershipError, match="initialized"):
+        ledger.init()
+
+    decision = _decision(ledger.manifest)
+    armed = ledger.arm(initial, decision)
+    with pytest.raises(DecisionOwnershipError, match="stale|replayed|current"):
+        ledger.arm(initial, _decision(ledger.manifest, lifecycle_id="life-b"))
+    with pytest.raises(DecisionOwnershipError, match="stale|replayed|current"):
+        ledger.authorize(
+            copy.copy(armed),
+            decision,
+            authorized_action=None,
+            authority_id="tests.safety_authority.v1",
+            policy_version="tests.safety_policy.v1",
+            authorization_id="life-a:0:copied-authorization",
+        )
+
+    ledger.authorize(
+        armed,
+        decision,
+        authorized_action=None,
+        authority_id="tests.safety_authority.v1",
+        policy_version="tests.safety_policy.v1",
+        authorization_id="life-a:0:first-authorization",
+    )
+    with pytest.raises(DecisionOwnershipError, match="stale|replayed|current"):
+        ledger.authorize(
+            armed,
+            decision,
+            authorized_action=(-0.5, 0.5),
+            authority_id="tests.safety_authority.v1",
+            policy_version="tests.safety_policy.v1",
+            authorization_id="life-a:0:forked-authorization",
+        )
+    with pytest.raises((TypeError, pickle.PicklingError)):
+        pickle.dumps(ledger)
+
+
+def test_ledger_rejects_reusing_an_outcome_after_rejection() -> None:
+    ledger, outcome, _transaction = _outcome()
+    halted, rejected = ledger.reject(outcome, reason="atomic learner update rejected")
+    assert halted.phase is TransactionPhase.HALTED
+    assert rejected.retry_required
+
+    with pytest.raises(DecisionOwnershipError, match="stale|replayed|current"):
+        ledger.accept(outcome, next_decision=None, parameters_changed=True)
+
+
+def test_decision_counter_is_bounded() -> None:
+    with pytest.raises(ValueError, match="decision_index"):
+        _decision(_manifest(), decision_index=2**64)
 
 
 def test_rejected_transaction_cannot_consume_event_or_arm_next_decision() -> None:
