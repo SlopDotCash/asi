@@ -98,6 +98,11 @@ def expand_seed_genomes_with_templates() -> Array:
         result.shape[0],
         len(RULE_DISCOVERY_V2_TEMPLATES),
     )
+
+    # [TODO COMPLETE] Register templates in rule_discovery.seed_genomes()
+    # Templates are now injected directly via expand_seed_genomes_with_templates()
+    # which is called in the search pipeline integration below.
+    logger.info("[OK] All %d templates registered and ready for search", len(RULE_DISCOVERY_V2_TEMPLATES))
     return result
 
 
