@@ -1,7 +1,7 @@
 # Pre-registration: RLS Ridge Optimization Screen
 
 **Date:** 2026-08-14  
-**Status:** Pre-registered, not executed
+**Status:** ✓ Executed 2026-08-15 - WIN (see RLS_HEAD_RESID_VALIDATION_RESULTS.md)
 
 ## Contribution type
 **Climb** — Beat the incumbent baseline `sigma0_shiftnorm_d099` (0.86449 ± 0.00009, n=20) on the IPMNIST screening lane.
