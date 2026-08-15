@@ -255,6 +255,7 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
         "fast_decay": 0.9,
         "shift_delta": 0.02,
         "shift_k": 1.0,
+        "shift_refractory": 0.0,
     },
 }
 
