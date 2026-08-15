@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import dataclasses
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 from jax import Array
 
+import alberta_framework.benchmarks.ipmnist_screening as ipmnist_screening
 from alberta_framework.benchmarks.ipmnist_screening import (
     build_recurring_ipmnist_online_indices,
     ipmnist_permutation_sha256,
@@ -93,6 +96,112 @@ def test_adapter_returns_bound_threshold_free_report_and_frozen_probes() -> None
         (binding_b.permutation_id, 0),
         (binding_a.permutation_id, 1),
     )
+
+
+@pytest.mark.parametrize(
+    "config_name",
+    [
+        "rls_head_resid_l1_preset005",
+        "rls_head_resid_l1_preset005_l2init",
+    ],
+)
+def test_adapter_runs_rls_head_states_with_deployed_sentinel_logits(
+    config_name: str,
+) -> None:
+    report = run_recurring_ipmnist_retention_development(
+        DATA_X,
+        DATA_Y,
+        screening_spec(config_name),
+        seed=19,
+        config=CONFIG,
+        phase_lengths=(2, 3, 2),
+        permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A.copy()),
+        sentinel_indices=SENTINELS,
+        relearning_window=1,
+    )
+
+    assert len(report.sentinel_scores) == 5
+    assert all(
+        score.sentinel_case_count == len(SENTINELS)
+        for score in report.sentinel_scores
+    )
+
+
+def test_protocol_id_binds_registered_probe_strategy() -> None:
+    deployed = screening_spec("rls_head_resid_l1_preset005")
+    legacy_input_strategy = dataclasses.replace(
+        deployed,
+        frozen_probe_input=ipmnist_screening._raw_frozen_probe_input,
+        frozen_probe_logits=None,
+    )
+
+    def protocol_id(spec: ipmnist_screening.ScreeningSpec) -> str:
+        return ipmnist_screening._recurring_protocol_id(
+            spec=spec,
+            seed=19,
+            config=CONFIG,
+            phase_lengths=(2, 3, 2),
+            permutation_sha256=("1" * 64, "2" * 64, "1" * 64),
+            sentinel_indices_sha256="3" * 64,
+            online_indices_sha256=("4" * 64, "5" * 64, "4" * 64),
+            relearning_window=1,
+        )
+
+    assert protocol_id(deployed) != protocol_id(legacy_input_strategy)
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("shape", "frozen_probe_logits must return shape"),
+        ("nonfinite", "non-finite logits"),
+        ("mutation", "must not mutate learner state"),
+    ],
+)
+def test_adapter_validates_custom_frozen_logits_capability(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    message: str,
+) -> None:
+    registered = screening_spec("adamw_control")
+
+    def invalid_probe(
+        params: dict[str, Array],
+        state: Any,
+        observations: Array,
+        hyperparameters: Mapping[str, float],
+    ) -> Array:
+        del state, hyperparameters
+        if failure == "shape":
+            return jnp.zeros((observations.shape[0], CONFIG.n_classes + 1))
+        if failure == "nonfinite":
+            return jnp.full((observations.shape[0], CONFIG.n_classes), jnp.nan)
+        params["b3"] = params["b3"] + 1.0
+        return jnp.zeros((observations.shape[0], CONFIG.n_classes))
+
+    custom = dataclasses.replace(
+        registered,
+        name=f"invalid-probe-{failure}",
+        frozen_probe_logits=invalid_probe,
+    )
+    monkeypatch.setattr(
+        ipmnist_screening,
+        "SCREENING_REGISTRY",
+        MappingProxyType({**ipmnist_screening.SCREENING_REGISTRY, custom.name: custom}),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        run_recurring_ipmnist_retention_development(
+            DATA_X,
+            DATA_Y,
+            custom,
+            seed=19,
+            config=CONFIG,
+            phase_lengths=(2, 3, 2),
+            permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A),
+            sentinel_indices=SENTINELS,
+            relearning_window=1,
+        )
 
 
 def test_online_schedule_excludes_sentinels_and_exactly_matches_a_orders() -> None:

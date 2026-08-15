@@ -1,12 +1,13 @@
 # Evidence methodology
 
-This guide explains what counts as evidence in Alberta, how evidence is
-promoted, and which Alberta Plan properties have registered scientific
-artifacts. It is intentionally not a session log, implementation inventory, or
-live results dashboard.
+This guide explains what counts as evidence in ASI, how evidence is promoted,
+and which Alberta Plan properties have registered scientific artifacts. It is
+intentionally not a session log, implementation inventory, roadmap, or live
+results dashboard. The same fail-closed rules apply to Alberta-derived and
+non-Alberta research.
 
 For current project status, read [the research status](../status.md). For the
-machine-readable claim contracts, registered source closures, and current
+machine-readable claim contracts, registered source sets, and current
 validation result, use
 [`evidence_manifest.py`](../../alberta_framework/evaluation/evidence_manifest.py)
 and run:
@@ -35,8 +36,8 @@ statistics, acceptance checks, and scientific/content digest. The registry
 then checks that reconstruction against its own frozen contract.
 
 An accepted registry entry supports only its `claim_scope`. It is not evidence
-for a broader mechanism, a different source tree, or completion of the Alberta
-Plan. In particular:
+for a broader mechanism, a different source tree, ASI's whole-agent target, or
+completion of the Alberta Plan. In particular:
 
 - **mechanism** means a controlled component behavior; it may use supplied or
   oracle information;
@@ -105,8 +106,10 @@ following before held-out evidence is inspected:
    incomplete, reordered, or extra data as required by its schema. The
    validator recomputes aggregates, intervals, comparisons, and acceptance
    from primitive records.
-6. **Registered source closure.** Exact bytes for every registered source must
-   match the artifact or an explicitly defined historical compatibility path.
+6. **Registered source set.** Exact bytes for every manually registered source
+   path must match the artifact or an explicitly defined historical compatibility
+   path. Current v1 sets are not complete recursive execution closures; a future
+   protocol must version and bind that stronger identity rather than relabeling v1.
 7. **Matched comparison.** Claimed resource, state, action, seed, and work
    matching must be measured and validated, not inferred from similar code.
 8. **Immutable result.** Acceptance, rejection, and execution failure are all
@@ -145,7 +148,8 @@ artifacts listed here.
 ## Evidence registry semantics
 
 The ordinary registry is an operational index over narrow claims. It is not a
-scientific artifact, a signature, or an Alberta Plan completion certificate.
+scientific artifact, a signature, an ASI score, or an Alberta Plan completion
+certificate.
 
 ### Per-claim status
 
@@ -216,7 +220,7 @@ The FTL and IA entries have narrow historical-chain handling in the registry:
 If either special chain fails, the claim is invalid. A changed protocol or a
 new current-code promotion still needs a new schema/path and untouched seeds.
 
-## Alberta Plan property map
+## Alberta Plan evidence crosswalk
 
 This table routes each Plan property to its strongest durable evidence class
 without duplicating the changing implementation inventory. Read
@@ -240,14 +244,16 @@ blockers.
 
 ## Known limitations
 
-- There is no accepted, source-valid whole-agent L3 certificate.
+- No whole-agent L3 protocol or result has been completed.
 - The feature claims cover finite, supplied degree-two archives and visible
   context, not autonomous open-ended feature discovery or an indefinite
   retention theorem.
-- The FTL result is a deterministic known-reward menu diagnostic, not
-  closed-loop world-model control or compute-matched planner superiority.
-- The accepted multi-agent result is a visibly cued sanity benchmark, not IA;
-  the registered IA protocol is a valid rejection.
+- The frozen historical FTL outcome is a deterministic known-reward menu
+  diagnostic, not closed-loop world-model control or compute-matched planner
+  superiority; its current validity must be checked live.
+- The frozen historical multi-agent outcome is a visibly cued sanity benchmark,
+  not IA. The frozen IA artifact outcome is a valid rejection; neither phrase
+  claims that the current source passes validation.
 - Development campaigns, including IPMNIST screening, cannot promote their
   inspected seeds or selected arms.
 - Publication-shaped or source-faithful replication machinery is not a
@@ -267,7 +273,7 @@ development ideas are not silently retried or reinterpreted.
 Before changing evaluation code or registered sources:
 
 1. inspect `EVIDENCE_SPECS` and the artifact's strict validator;
-2. determine whether the file is in a registered source closure or another
+2. determine whether the file is in a registered source set or another
    output provenance manifest;
 3. expect persisted evidence to become invalid if registered bytes change;
 4. do not edit the pinned artifact or weaken its validator to restore status.

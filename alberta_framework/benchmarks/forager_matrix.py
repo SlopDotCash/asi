@@ -3938,7 +3938,7 @@ def _validate_tuning_reference(
             "evaluation selection rule does not match the referenced tuning report"
         )
     try:
-        tuning_variants, tuning_execution, recomputed_protocol = (
+        tuning_variants, _tuning_execution, recomputed_protocol = (
             _validate_tuning_artifact_chain(
                 report_path=report_path,
                 report=report,
@@ -3970,7 +3970,6 @@ def _validate_tuning_reference(
         selection_results.get("groups"),
         "referenced selection_results.groups",
     )
-    selected_details: dict[str, Any] = {}
     expected_groups = set(groups)
     evaluation_groups = {
         variant.selection_group for variant in manifest.variants.values()
@@ -4023,12 +4022,6 @@ def _validate_tuning_reference(
                 f"evaluation variant {evaluation_id!r} does not match selected "
                 f"tuning variant {tuning_id!r}"
             )
-        selected_details[evaluation_id] = {
-            "tuning_variant_id": tuning_id,
-            "selection_group": evaluation_variant.selection_group,
-            "kind": evaluation_variant.kind,
-            "config_sha256": evaluation_hash,
-        }
     tuning_seed_values = matrix_config.get("seeds")
     tuning_seeds = _require_seed_list(tuning_seed_values, "referenced matrix_config.seeds")
     if tuning_manifest.evaluation_seeds != manifest.evaluation_seeds:

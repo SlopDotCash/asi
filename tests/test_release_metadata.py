@@ -129,3 +129,10 @@ def test_local_markdown_links_resolve_inside_the_repository() -> None:
                 broken.append(f"{location} (missing)")
 
     assert not broken, "Broken local Markdown links:\n" + "\n".join(broken)
+
+
+def test_top_level_public_exports_are_unique_and_resolvable() -> None:
+    exports = alberta_framework.__all__
+
+    assert len(exports) == len(set(exports))
+    assert all(hasattr(alberta_framework, name) for name in exports)

@@ -64,7 +64,6 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_upgd_warmnorm_learner,
     _make_wclip_ema_norm_learner,
     _newton_schulz_orthogonalize,
-    _rff_frozen_probe_input,
     _upgd_utility_and_gate,
     adam_elem_step,
     adam_elem_update,
@@ -2787,14 +2786,31 @@ class TestSigma0Frontier:
                     np.asarray(params[n]), np.asarray(ref_params[n])
                 )
 
-    def test_hidden_norm_frozen_probe_rejected(self):
-        """The plain-MLP sentinel probe cannot describe the RMS-normalized
-        forward pass; the arm must refuse instead of probing the wrong model."""
+    def test_hidden_norm_frozen_probe_uses_deployed_forward(self):
+        """The frozen sentinel path includes input EMA and both hidden RMS layers."""
         spec = screening_spec("sigma0_hidden_norm")
-        with pytest.raises(NotImplementedError, match="hidden"):
-            spec.frozen_probe_input(
-                None, jnp.zeros((2, SMALL.input_dim)), spec.hyperparameters
+        params = init_mlp_params(jr.key(70), SMALL)
+        init_fn, _ = spec.factory(spec.hyperparameters)
+        state = init_fn(params)
+        inputs = jr.normal(jr.key(71), (3, SMALL.input_dim))
+        assert spec.frozen_probe_logits is not None
+        logits = spec.frozen_probe_logits(params, state, inputs, spec.hyperparameters)
+
+        model_inputs = _ema_frozen_probe_input(state, inputs, spec.hyperparameters)
+        epsilon = spec.hyperparameters["hidden_rms_epsilon"]
+
+        def expected_one(x):
+            h1 = _hidden_rms_normalize(
+                jax.nn.relu(x @ params["w1"] + params["b1"]), epsilon
             )
+            h2 = _hidden_rms_normalize(
+                jax.nn.relu(h1 @ params["w2"] + params["b2"]), epsilon
+            )
+            return h2 @ params["w3"] + params["b3"]
+
+        expected = jax.vmap(expected_one)(model_inputs)
+        assert logits.shape == (3, SMALL.n_classes)
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
 
     def test_each_axis_changes_the_trajectory(self, small_data):
         """Sanity against silently-ignored hyperparameters: every arm's
@@ -3435,7 +3451,7 @@ class TestRFFRLS:
         assert spec.mechanism == "random_features"
         assert spec.noise_update is None
         assert spec.factory is _make_rff_rls_learner
-        assert spec.frozen_probe_input is _rff_frozen_probe_input
+        assert spec.frozen_probe_logits is ipmnist_screening._rff_rls_frozen_probe_logits
         assert spec.hyperparameters == self.EXPECTED_HP
 
     def test_lin_rls_registry_and_smoke(self):
@@ -3446,7 +3462,7 @@ class TestRFFRLS:
         spec = screening_spec("lin_rls")
         assert spec.mechanism == "random_features"
         assert spec.factory is _make_lin_rls_learner
-        assert spec.frozen_probe_input is _rff_frozen_probe_input
+        assert spec.frozen_probe_logits is ipmnist_screening._lin_rls_frozen_probe_logits
         init_fn, step_fn = spec.factory(spec.hyperparameters)
         params = init_mlp_params(jr.key(7), SMALL)
         state = init_fn(params)
@@ -3548,17 +3564,40 @@ class TestRFFRLS:
         assert np.all(np.asarray(result.per_task_plasticity) <= 1.0)
         assert float(acc.mean()) > 0.2
 
-    def test_frozen_probe_fails_closed(self):
-        """No trained protocol MLP exists — sentinel probes must refuse, like
-        the _hidden_rms_frozen_probe_input precedent, so merge/reporting can
-        never emit a meaningless probe number."""
-        spec = screening_spec("rff_rls")
-        init_fn, _ = spec.factory(spec.hyperparameters)
-        state = init_fn(init_mlp_params(jr.key(0), SMALL))
-        with pytest.raises(NotImplementedError, match="rff_rls"):
-            spec.frozen_probe_input(
-                state, jnp.zeros((3, SMALL.input_dim)), spec.hyperparameters
+    @pytest.mark.parametrize("name", ["rff_rls", "lin_rls"])
+    def test_frozen_probe_uses_deployed_rls_readout(self, name):
+        """Frozen probes score each arm's learned RLS readout, never inert MLP params."""
+        spec = screening_spec(name)
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        train_x = jr.normal(jr.key(1), (SMALL.input_dim,))
+        _, state, _ = step_fn(params, state, train_x, jnp.array(2), jr.key(2))
+        inputs = jr.normal(jr.key(3), (3, SMALL.input_dim))
+        assert spec.frozen_probe_logits is not None
+        logits = spec.frozen_probe_logits(params, state, inputs, spec.hyperparameters)
+
+        normalized = _ema_frozen_probe_input(state, inputs, spec.hyperparameters)
+        clipped = jnp.clip(
+            normalized,
+            -spec.hyperparameters["rff_clip"],
+            spec.hyperparameters["rff_clip"],
+        )
+        if name == "rff_rls":
+            features = jnp.sqrt(2.0 / state.omega.shape[0]) * jnp.cos(
+                clipped @ state.omega.T + state.phase
             )
+        else:
+            features = jnp.concatenate(
+                [
+                    clipped / jnp.sqrt(jnp.float32(clipped.shape[1])),
+                    jnp.ones((clipped.shape[0], 1), dtype=jnp.float32),
+                ],
+                axis=1,
+            )
+        expected = features @ state.wout
+        assert logits.shape == (3, SMALL.n_classes)
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
 
 
 class TestOptimizerFloorHybrids:
@@ -4276,8 +4315,24 @@ class TestNaiveBayes:
         assert 0.0 < spec.hyperparameters["nb_decay"] < 1.0
         assert spec.hyperparameters["nb_var_epsilon"] > 0.0
         assert spec.noise_update is None
-        with pytest.raises(NotImplementedError):
-            spec.frozen_probe_input(None, jnp.zeros(4), spec.hyperparameters)
+        assert spec.frozen_probe_logits is ipmnist_screening._naive_bayes_frozen_probe_logits
+
+    def test_frozen_probe_uses_naive_bayes_posterior(self):
+        spec = screening_spec("naive_bayes")
+        params = init_mlp_params(jr.key(80), SMALL)
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        state = init_fn(params)
+        for step in range(6):
+            x = jr.normal(jr.key(81 + step), (SMALL.input_dim,))
+            _, state, _ = step_fn(
+                params, state, x, jnp.array(step % SMALL.n_classes), jr.key(step)
+            )
+        inputs = jr.normal(jr.key(90), (4, SMALL.input_dim))
+        assert spec.frozen_probe_logits is not None
+        logits = spec.frozen_probe_logits(params, state, inputs, spec.hyperparameters)
+        expected = jax.vmap(lambda x: naive_bayes_logits(state, x))(inputs)
+        assert logits.shape == (4, SMALL.n_classes)
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
 
     def test_first_update_hand_computed(self):
         """One step from init: annealed EMA gives running-average semantics."""
@@ -5382,17 +5437,36 @@ class TestRLSHead:
             assert np.all((plas >= 0.0) & (plas <= 1.0)), overrides
             assert float(acc.mean()) > 1.0 / config.n_classes, overrides
 
-    def test_frozen_probe_fails_closed(self):
-        from alberta_framework.benchmarks.ipmnist_screening import (
-            _rls_head_frozen_probe_input,
+    def test_frozen_probe_uses_body_and_rls_readout(self):
+        hp = self._hp()
+        init_fn, step_fn = self._factory()
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        params, state, _ = step_fn(
+            params,
+            state,
+            jr.normal(jr.key(1), (SMALL.input_dim,)),
+            jnp.array(2),
+            jr.key(2),
         )
+        inputs = jr.normal(jr.key(3), (3, SMALL.input_dim))
+        spec = screening_spec("rls_head_l0999")
+        assert spec.frozen_probe_logits is not None
+        logits = spec.frozen_probe_logits(params, state, inputs, hp)
 
-        init_fn, _ = self._factory()
-        state = init_fn(init_mlp_params(jr.key(0), SMALL))
-        with pytest.raises(NotImplementedError, match="rls_head"):
-            _rls_head_frozen_probe_input(
-                state, jnp.zeros((3, SMALL.input_dim)), self._hp()
-            )
+        normalized = _ema_frozen_probe_input(state, inputs, hp)
+        h1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+        h2 = jax.nn.relu(h1 @ params["w2"] + params["b2"])
+        features = jnp.concatenate(
+            [
+                h2 / jnp.sqrt(jnp.float32(h2.shape[1] + 1)),
+                jnp.ones((h2.shape[0], 1), dtype=jnp.float32),
+            ],
+            axis=1,
+        )
+        expected = features @ state.wout
+        assert logits.shape == (3, SMALL.n_classes)
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
 
     def test_p_trace_cap_zero_is_bitexact_off(self):
         """rls_p_trace_cap=0 disables the cap at build time and must be
@@ -5460,7 +5534,7 @@ class TestRLSHead:
         is deliberately not registered)."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             _make_rls_head_learner,
-            _rls_head_frozen_probe_input,
+            _rls_head_frozen_probe_logits,
             _rls_head_hp,
         )
 
@@ -5532,7 +5606,7 @@ class TestRLSHead:
             assert spec.base_learner == "upgd_w", name
             assert spec.mechanism == "rls_readout", name
             assert spec.factory is _make_rls_head_learner, name
-            assert spec.frozen_probe_input is _rls_head_frozen_probe_input, name
+            assert spec.frozen_probe_logits is _rls_head_frozen_probe_logits, name
             assert spec.noise_update is None, name
             assert spec.hyperparameters == _rls_head_hp(**overrides), name
             # Champion-body constants are intact on every arm.
@@ -5574,7 +5648,7 @@ class TestRLSHeadNoReset:
         assert candidate.base_learner == incumbent.base_learner == "upgd_w"
         assert candidate.mechanism == incumbent.mechanism == "rls_readout"
         assert candidate.factory is incumbent.factory
-        assert candidate.frozen_probe_input is incumbent.frozen_probe_input
+        assert candidate.frozen_probe_logits is incumbent.frozen_probe_logits
         assert candidate.noise_update is incumbent.noise_update is None
         assert candidate.hyperparameters == {
             **incumbent.hyperparameters,
@@ -5725,7 +5799,7 @@ class TestRLSHeadL2Init:
             RLSHeadL2InitState,
             RLSHeadState,
             _make_rls_head_l2init_learner,
-            _rls_head_frozen_probe_input,
+            _rls_head_frozen_probe_logits,
         )
 
         incumbent = screening_spec("rls_head_resid_l1_preset005")
@@ -5733,7 +5807,7 @@ class TestRLSHeadL2Init:
         assert candidate.base_learner == incumbent.base_learner == "upgd_w"
         assert candidate.mechanism == incumbent.mechanism == "rls_readout"
         assert candidate.factory is _make_rls_head_l2init_learner
-        assert candidate.frozen_probe_input is _rls_head_frozen_probe_input
+        assert candidate.frozen_probe_logits is _rls_head_frozen_probe_logits
         assert candidate.noise_update is None
         assert candidate.hyperparameters == {
             **incumbent.hyperparameters,
@@ -5756,6 +5830,47 @@ class TestRLSHeadL2Init:
                 jax.device_get(getattr(candidate_state, field)),
                 jax.device_get(getattr(incumbent_state, field)),
             )
+
+    def test_frozen_probe_supports_l2init_state_without_mutation(self):
+        spec = screening_spec("rls_head_resid_l1_preset005_l2init")
+        params = self._manual_params()
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        state = init_fn(params)
+        params, state, _ = step_fn(
+            params,
+            state,
+            jnp.linspace(-0.2, 0.4, SMALL.input_dim, dtype=jnp.float32),
+            jnp.asarray(1, jnp.int32),
+            jr.key(7),
+        )
+        params_before = jax.tree_util.tree_map(
+            lambda leaf: np.array(leaf, copy=True), params
+        )
+        state_before = jax.tree_util.tree_map(
+            lambda leaf: np.array(leaf, copy=True), state
+        )
+        inputs = jr.normal(jr.key(8), (3, SMALL.input_dim))
+        assert spec.frozen_probe_logits is not None
+        logits = spec.frozen_probe_logits(
+            params, state, inputs, spec.hyperparameters
+        )
+
+        normalized = _ema_frozen_probe_input(state, inputs, spec.hyperparameters)
+        h1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+        h2 = jax.nn.relu(h1 @ params["w2"] + params["b2"])
+        features = jnp.concatenate(
+            [
+                h2 / jnp.sqrt(jnp.float32(h2.shape[1] + 1)),
+                jnp.ones((h2.shape[0], 1), dtype=jnp.float32),
+            ],
+            axis=1,
+        )
+        expected = features @ state.wout
+        assert logits.shape == (3, SMALL.n_classes)
+        assert bool(jnp.all(jnp.isfinite(logits)))
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
+        self._assert_tree_equal(params, params_before)
+        self._assert_tree_equal(state, state_before)
 
     def test_factory_rejects_every_nonfrozen_config(self):
         from alberta_framework.benchmarks.ipmnist_screening import (
@@ -6058,8 +6173,10 @@ class TestNBEnsemble:
             assert 0.0 < hp["ens_decay"] < 1.0, name
             assert hp["ens_beta"] > 0.0, name
             assert hp["ens_lock_network"] == 0.0, name
-            with pytest.raises(NotImplementedError, match="nb_ensemble"):
-                spec.frozen_probe_input(None, jnp.zeros(4), hp)
+            assert (
+                spec.frozen_probe_logits
+                is ipmnist_screening._nb_ensemble_frozen_probe_logits
+            ), name
         assert screening_spec("nb_ensemble_champion").hyperparameters[
             "ens_nb_reset"
         ] == 0.0
@@ -6074,6 +6191,54 @@ class TestNBEnsemble:
         hp3 = screening_spec("nb_ensemble_rls3").hyperparameters
         for k in ("rff_clip", "rls_lambda", "rls_ridge_init"):
             assert hp3[k] == lin[k], k
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{}, {"ens_use_rls": 1.0}, {"ens_lock_network": 1.0}],
+    )
+    def test_frozen_probe_uses_deployed_member_semantics(self, overrides):
+        hp = self._hp(**overrides)
+        init_fn, step_fn = self._factory(**overrides)
+        params = init_mlp_params(jr.key(100), SMALL)
+        state = init_fn(params)
+        for step, (x, y) in enumerate(zip(*self._stream(n_steps=6, seed=101))):
+            params, state, _ = step_fn(params, state, x, y, jr.key(step))
+        inputs = jr.normal(jr.key(102), (3, SMALL.input_dim))
+        callback = screening_spec("nb_ensemble_champion").frozen_probe_logits
+        assert callback is not None
+        logits = callback(params, state, inputs, hp)
+
+        normalized = _ema_frozen_probe_input(state.net, inputs, hp)
+        net_logits = ipmnist_screening.mlp_logits(params, normalized)
+        if overrides.get("ens_lock_network", 0.0) != 0.0:
+            expected = net_logits
+        else:
+            member_logp = [
+                jax.nn.log_softmax(net_logits),
+                jax.nn.log_softmax(
+                    jax.vmap(lambda x: naive_bayes_logits(state.nb, x))(inputs)
+                ),
+            ]
+            if overrides.get("ens_use_rls", 0.0) != 0.0:
+                assert state.rls is not None
+                rls_normalized = _ema_frozen_probe_input(state.rls, inputs, hp)
+                clipped = jnp.clip(rls_normalized, -hp["rff_clip"], hp["rff_clip"])
+                features = jnp.concatenate(
+                    [
+                        clipped / jnp.sqrt(jnp.float32(clipped.shape[1])),
+                        jnp.ones((clipped.shape[0], 1), dtype=jnp.float32),
+                    ],
+                    axis=1,
+                )
+                member_logp.append(jax.nn.log_softmax(features @ state.rls.wout))
+            log_weights = jax.nn.log_softmax(hp["ens_beta"] * state.member_acc)
+            expected = jax.nn.log_softmax(
+                jax.nn.logsumexp(
+                    jnp.stack(member_logp) + log_weights[:, None, None], axis=0
+                )
+            )
+        assert logits.shape == (3, SMALL.n_classes)
+        np.testing.assert_allclose(np.asarray(logits), np.asarray(expected), rtol=1e-6)
 
     def test_lock_network_reduces_to_shiftnorm_champion_bitwise(self):
         """ens_lock_network=1: params AND metrics follow the registered

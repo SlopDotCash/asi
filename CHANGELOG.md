@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the versioned, development-only ASI reference-agent transaction contract: immutable
+  typed payloads, manifest/lifecycle identities, separate dispatch authorization, learner
+  settlement, executor receipt and outcome records, explicit reset identities, and a
+  fail-closed functional phase ledger. This is an L0 protocol surface, not a concrete adapter,
+  whole-life runner, exact-resume result, `reference-dev` selection, or scientific claim.
+- Added the ASI research roadmap, proposed reference-agent protocol ADR, repository anti-LARP
+  audit, documentation index, and mutable IPMNIST campaign index. The project identity changes
+  while the `alberta-framework` distribution, `alberta_framework` imports, `alberta-*` CLIs,
+  historical schemas, and robot-consumed compatibility surface remain stable.
 - Added the code-only, permanently nonpromoting IPMNIST gate-ablation arm
   `rls_head_resid_l1_preset005_nogate`. It has no result artifact and does not authorize a
   benchmark run; execution remains gated by the issue's source receipt and owner-approved
@@ -27,6 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Recurring-IPMNIST retention probes now use each registered arm's frozen deployed-logit path,
+  including hidden-RMS, RFF/linear RLS, naive Bayes and ensemble variants, and every RLS-head
+  state family. Probe shape, finiteness, and learner-state immutability are checked before a
+  development report is returned; this fixes execution coverage and creates no evidence claim.
+- Project metadata and mutable overview documentation now identify the active repository as ASI,
+  retain explicit upstream/fork attribution, and describe Alberta Plan coverage as a crosswalk
+  rather than a completion claim. The existing PyPI name conflict and checkout-only install path
+  remain explicit.
 - Made new IPMNIST screening shards and summaries strict v2 artifacts bound to a clean Git
   commit/tree, the actual tracked package and `uv.lock` bytes, runtime/JAX details, and the
   canonical materialized MNIST feature/label bytes. The run CLI now captures these bindings
@@ -55,6 +72,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rejected SIGReg samples, embeddings, directions, and derived projections that are
   non-finite in float32 arithmetic before they can become silent NaN losses, including
   under compiled and vectorized JAX calls.
+- Made Step 1 and Step 2 smoke commands choose a final averaging window no longer than an
+  implicitly requested short horizon while preserving validation of explicit invalid windows.
+- Made continual-IA and continual-multiagent artifact publication exclusive under overwrite and
+  concurrent-writer races. Invalid multiagent artifacts now use the documented exit-2 status,
+  and the evidence-manifest CLI validates before exclusive publication and refuses the pinned or
+  any existing destination.
+- Made the OCI console entry point render top-level and subcommand help from a shared lightweight
+  parser when a wheel installer uses hard links, while real operations still import the attested
+  implementation and reject external hard-link aliases.
+- Added a release contract requiring unique, resolvable top-level exports, made the shared
+  Label-EMNIST diagnostic fixture pytest-10-compatible, and removed a small set of unused private
+  bookkeeping without changing public APIs.
 - Required automatic feature-to-subtask counts to be non-negative integer scalars before
   ranking, while retaining NumPy/JAX integer-scalar compatibility and zero/oversized bounds.
 - Aligned plotted trailing-window learning-curve means and confidence intervals with the

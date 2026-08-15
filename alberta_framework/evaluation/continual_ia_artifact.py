@@ -474,7 +474,7 @@ def write_ia_evidence_artifact(
     path: Path,
     report: ContinualIAReport,
 ) -> dict[str, object]:
-    """Write only an internally valid evidence artifact."""
+    """Exclusively create an internally valid evidence artifact."""
 
     artifact = build_ia_evidence_artifact(report)
     validation = validate_ia_evidence_artifact(artifact)
@@ -483,7 +483,8 @@ def write_ia_evidence_artifact(
             "refusing to write invalid IA evidence artifact: " + "; ".join(validation.errors)
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(ia_artifact_json(artifact), encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(ia_artifact_json(artifact))
     return artifact
 
 

@@ -104,8 +104,8 @@ identical seeds):
   (``sqrt(2/m) * cos(Omega x + b)``, m=1024) into a streaming one-vs-all
   recursive-least-squares readout with forgetting factor 0.999. If a fixed
   random projection + exponential-window RLS matches the deep arms, the
-  benchmark measures tracking rather than learning. Sentinel probes fail
-  closed (there is no trained protocol MLP to probe).
+  benchmark measures tracking rather than learning. Sentinel probes evaluate
+  the deployed random-feature and RLS readout directly.
 - ``sgd_ema_norm_d099`` / ``wclip_ema_norm`` / ``fade_head_ema_norm`` /
   ``snr_ema_norm`` / ``l2init_ema_norm``: the reviewer comparison rows —
   the strongest published plasticity mechanisms (per-layer weight clipping,
@@ -287,6 +287,9 @@ NoiseUpdateFn = Callable[
     tuple[dict[str, Array], Any],
 ]
 FrozenProbeInputFn = Callable[[Any, Array, Mapping[str, float]], Array]
+FrozenProbeLogitsFn = Callable[
+    [dict[str, Array], Any, Array, Mapping[str, float]], Array
+]
 
 
 def _lean_upgd_noise_update(
@@ -3431,24 +3434,6 @@ def _make_naive_bayes_learner(
     return init_fn, full_step
 
 
-def _naive_bayes_frozen_probe_input(
-    state: Any, observation: Array, hyperparameters: Mapping[str, float]
-) -> Array:
-    """Refuse sentinel probes for the gradient-free naive-Bayes arm.
-
-    Exactly the :func:`_rff_frozen_probe_input` situation: the deployed
-    model is the streaming Gaussian statistics, not the (untouched,
-    randomly initialized) protocol MLP, so probing ``mlp_logits`` would
-    silently score a model that does not exist. Fail closed.
-    """
-    del state, observation, hyperparameters
-    raise NotImplementedError(
-        "sentinel probes are unsupported for the naive_bayes arm: there is "
-        "no trained protocol MLP to probe (the deployed model is the "
-        "streaming class-conditional Gaussian statistics)"
-    )
-
-
 # =============================================================================
 # (w) rls_head — champion body + recursive-least-squares readout
 # =============================================================================
@@ -3898,24 +3883,6 @@ def _make_rls_head_learner(
     return init_fn, full_step
 
 
-def _rls_head_frozen_probe_input(
-    state: Any, observation: Array, hyperparameters: Mapping[str, float]
-) -> Array:
-    """Refuse sentinel probes for the RLS-readout arms.
-
-    The deployed prediction is ``argmax(wout.T @ phi)``, not ``mlp_logits``:
-    in resid mode w3/b3 are never trained, and in parallel mode probing the
-    SGD head would silently score the passenger model instead of the
-    deployed readout.  Fail closed, the rff_rls/naive_bayes precedent.
-    """
-    del state, observation, hyperparameters
-    raise NotImplementedError(
-        "sentinel probes are unsupported for the rls_head arms: the deployed "
-        "model is the champion body + RLS readout, not the protocol MLP head "
-        "that the probe harness would score"
-    )
-
-
 # =============================================================================
 # (v2) Transient attack: champion/NB ensemble with online learned vote weights
 # =============================================================================
@@ -4213,24 +4180,6 @@ def _make_nb_ensemble_learner(
         return new_params, new_state, (accuracy, loss, plasticity)
 
     return init_fn, full_step
-
-
-def _nb_ensemble_frozen_probe_input(
-    state: Any, observation: Array, hyperparameters: Mapping[str, float]
-) -> Array:
-    """Refuse sentinel probes for the nb_ensemble arms.
-
-    The deployed predictor is the accuracy-weighted member mixture, not the
-    protocol MLP alone: probing ``mlp_logits`` on the champion member would
-    silently score a different model than the one the arm deploys.  Fail
-    closed, exactly like the other non-MLP deployments.
-    """
-    del state, observation, hyperparameters
-    raise NotImplementedError(
-        "sentinel probes are unsupported for the nb_ensemble arms: the "
-        "deployed predictor is the accuracy-weighted member mixture, not "
-        "the protocol MLP alone"
-    )
 
 
 # =============================================================================
@@ -5102,42 +5051,140 @@ def _ema_frozen_probe_input(
     return (observation - norm.mean) / (jnp.sqrt(norm.var) + epsilon)
 
 
-def _hidden_rms_frozen_probe_input(
-    state: Any, observation: Array, hyperparameters: Mapping[str, float]
+def _hidden_rms_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
 ) -> Array:
-    """Refuse sentinel probes for arms whose forward pass is not the plain MLP.
+    """Evaluate the hidden-RMS MLP with frozen input-normalizer statistics."""
+    model_inputs = _ema_frozen_probe_input(state, observation, hyperparameters)
+    epsilon = hyperparameters.get("hidden_rms_epsilon")
+    if epsilon is None or not math.isfinite(epsilon) or epsilon <= 0.0:
+        raise ValueError("a hidden-RMS frozen probe requires finite positive epsilon")
 
-    ``sigma0_hidden_norm`` RMS-normalizes the hidden activations inside the
-    forward pass; the probe harness computes logits with ``mlp_logits``, so
-    any input-side transform would silently probe the wrong model.  Failing
-    closed here is the honest option until the probe harness can accept a
-    per-arm forward function.
-    """
-    del state, observation, hyperparameters
-    raise NotImplementedError(
-        "sentinel probes are unsupported for hidden-RMS-normalized arms: the "
-        "deployed forward pass is not the plain protocol MLP"
+    def predict_one(x: Array) -> Array:
+        h1 = _hidden_rms_normalize(
+            jax.nn.relu(x @ params["w1"] + params["b1"]), epsilon
+        )
+        h2 = _hidden_rms_normalize(
+            jax.nn.relu(h1 @ params["w2"] + params["b2"]), epsilon
+        )
+        return h2 @ params["w3"] + params["b3"]
+
+    return jax.vmap(predict_one)(model_inputs)
+
+
+def _rff_rls_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Evaluate the frozen random-Fourier projection and learned RLS readout."""
+    del params
+    if not isinstance(state, RFFRLSState):
+        raise TypeError("an rff_rls frozen probe requires RFFRLSState")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    clip = hyperparameters["rff_clip"]
+    z = jnp.clip(normalized, -clip, clip)
+    feature_scale = math.sqrt(2.0 / state.omega.shape[0])
+    features = feature_scale * jnp.cos(z @ state.omega.T + state.phase)
+    return features @ state.wout
+
+
+def _lin_rls_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Evaluate the frozen normalized-linear feature map and learned RLS readout."""
+    del params
+    if not isinstance(state, RFFRLSState):
+        raise TypeError("a lin_rls frozen probe requires RFFRLSState")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    clip = hyperparameters["rff_clip"]
+    z = jnp.clip(normalized, -clip, clip)
+    features = jnp.concatenate(
+        [
+            z / jnp.sqrt(jnp.float32(z.shape[1])),
+            jnp.ones((z.shape[0], 1), dtype=jnp.float32),
+        ],
+        axis=1,
     )
+    return features @ state.wout
 
 
-def _rff_frozen_probe_input(
-    state: Any, observation: Array, hyperparameters: Mapping[str, float]
+def _naive_bayes_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
 ) -> Array:
-    """Refuse sentinel probes for the no-backprop random-features arm.
+    """Evaluate the streaming Gaussian classifier without updating statistics."""
+    del params, hyperparameters
+    if not isinstance(state, NaiveBayesState):
+        raise TypeError("a naive_bayes frozen probe requires NaiveBayesState")
+    return jax.vmap(lambda x: naive_bayes_logits(state, x))(observation)
 
-    ``rff_rls`` never trains the protocol MLP — its deployed model is the
-    frozen random projection plus the RLS readout.  The probe harness scores
-    ``mlp_logits`` on the (untouched, randomly initialized) MLP params, so
-    any input transform here would silently probe a model that does not
-    exist.  Fail closed, exactly like :func:`_hidden_rms_frozen_probe_input`,
-    so merge/reporting can never emit a meaningless plasticity/retention
-    number for this arm.
-    """
-    del state, observation, hyperparameters
-    raise NotImplementedError(
-        "sentinel probes are unsupported for the rff_rls arm: there is no "
-        "trained protocol MLP to probe (the deployed model is the frozen "
-        "random-features + RLS readout)"
+
+def _rls_head_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Evaluate the champion body and its deployed bias-augmented RLS readout."""
+    if not isinstance(state, (RLSHeadState, RLSHeadL2InitState)):
+        raise TypeError("an rls_head frozen probe requires an RLS head state")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    h1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+    h2 = jax.nn.relu(h1 @ params["w2"] + params["b2"])
+    scale = 1.0 / math.sqrt(h2.shape[1] + 1)
+    features = jnp.concatenate(
+        [
+            h2 * scale,
+            jnp.ones((h2.shape[0], 1), dtype=jnp.float32),
+        ],
+        axis=1,
+    )
+    return features @ state.wout
+
+
+def _nb_ensemble_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Evaluate the deployed champion lock or accuracy-weighted member mixture."""
+    if not isinstance(state, NBEnsembleState):
+        raise TypeError("an nb_ensemble frozen probe requires NBEnsembleState")
+    normalized = _ema_frozen_probe_input(state.net, observation, hyperparameters)
+    network_logits = mlp_logits(params, normalized)
+    if hyperparameters["ens_lock_network"] != 0.0:
+        return network_logits
+
+    member_log_probabilities = [
+        jax.nn.log_softmax(network_logits),
+        jax.nn.log_softmax(
+            jax.vmap(lambda x: naive_bayes_logits(state.nb, x))(observation)
+        ),
+    ]
+    if hyperparameters["ens_use_rls"] != 0.0:
+        if state.rls is None:
+            raise TypeError("an RLS-enabled nb_ensemble probe requires its RLS state")
+        rls_logits = _lin_rls_frozen_probe_logits(
+            params, state.rls, observation, hyperparameters
+        )
+        member_log_probabilities.append(jax.nn.log_softmax(rls_logits))
+    log_weights = jax.nn.log_softmax(hyperparameters["ens_beta"] * state.member_acc)
+    return jax.nn.log_softmax(
+        jax.nn.logsumexp(
+            jnp.stack(member_log_probabilities) + log_weights[:, None, None],
+            axis=0,
+        )
     )
 
 
@@ -5157,6 +5204,10 @@ class ScreeningSpec:
         frozen_probe_input: Applies the learner's current input preprocessing
             without updating its state.  Raw-input learners use the identity
             transform; adaptive normalizers must opt in explicitly.
+        frozen_probe_logits: Optional arm-specific deployed forward pass for
+            learners that cannot be represented as input preprocessing plus
+            the protocol MLP. ``None`` uses ``frozen_probe_input`` followed by
+            :func:`mlp_logits`.
     """
 
     name: str
@@ -5167,6 +5218,7 @@ class ScreeningSpec:
     description: str = ""
     noise_update: NoiseUpdateFn | None = None
     frozen_probe_input: FrozenProbeInputFn = _raw_frozen_probe_input
+    frozen_probe_logits: FrozenProbeLogitsFn | None = None
 
 
 def _upgd_hp(**overrides: float) -> dict[str, float]:
@@ -5415,7 +5467,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             mechanism="hidden_normalization",
             hyperparameters=_sigma0_ext_hp(hidden_rms=1.0, hidden_rms_epsilon=1e-8),
             factory=_make_upgd_ema_norm_ext_learner,
-            frozen_probe_input=_hidden_rms_frozen_probe_input,
+            frozen_probe_logits=_hidden_rms_frozen_probe_logits,
             description=(
                 "upgd_ema_norm_sigma0 plus stateless per-example RMS "
                 "normalization of both hidden ReLU layers (no learnable "
@@ -5954,7 +6006,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "noise_std": 0.0,
             },
             factory=_make_rff_rls_learner,
-            frozen_probe_input=_rff_frozen_probe_input,
+            frozen_probe_logits=_rff_rls_frozen_probe_logits,
             description=(
                 "No-backprop tracking control: champion EMA input normalizer "
                 "(decay 0.99), z-scores clipped to +/-3, frozen random "
@@ -5982,7 +6034,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "noise_std": 0.0,
             },
             factory=_make_lin_rls_learner,
-            frozen_probe_input=_rff_frozen_probe_input,
+            frozen_probe_logits=_lin_rls_frozen_probe_logits,
             description=(
                 "Linear floor of the tracking control: champion EMA input "
                 "normalizer, z-scores clipped to +/-3 and scaled by "
@@ -6007,7 +6059,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "noise_std": 0.0,
             },
             factory=_make_naive_bayes_learner,
-            frozen_probe_input=_naive_bayes_frozen_probe_input,
+            frozen_probe_logits=_naive_bayes_frozen_probe_logits,
             description=(
                 "Streaming naive Bayes (V3 development validation): online "
                 "class-conditional diagonal Gaussians with annealed "
@@ -6053,7 +6105,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 mechanism="transient_ensemble",
                 hyperparameters=_nb_ensemble_hp(**ens_overrides),
                 factory=_make_nb_ensemble_learner,
-                frozen_probe_input=_nb_ensemble_frozen_probe_input,
+                frozen_probe_logits=_nb_ensemble_frozen_probe_logits,
                 description=(
                     "Adaptive champion/NB ensemble (transient attack): "
                     "accuracy-weighted probability mixture with online vote "
@@ -6219,7 +6271,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 mechanism="rls_readout",
                 hyperparameters=_rls_head_hp(**rls_overrides),
                 factory=_make_rls_head_learner,
-                frozen_probe_input=_rls_head_frozen_probe_input,
+                frozen_probe_logits=_rls_head_frozen_probe_logits,
                 description=(
                     "Champion body (shift-adaptive EMA-norm d099 + "
                     + body_update
@@ -6238,7 +6290,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             mechanism="rls_readout",
             hyperparameters=_rls_head_l2init_hp(),
             factory=_make_rls_head_l2init_learner,
-            frozen_probe_input=_rls_head_frozen_probe_input,
+            frozen_probe_logits=_rls_head_frozen_probe_logits,
             description=(
                 "Code-only issue-#14 endpoint: the exact "
                 "rls_head_resid_l1_preset005 incumbent with decoupled "
@@ -7201,6 +7253,24 @@ def _declared_learner_state_sha256(
     return digest.hexdigest()
 
 
+def _recurring_probe_strategy(spec: ScreeningSpec) -> dict[str, str]:
+    """Describe the registered sentinel path without claiming code authentication."""
+    callback: object
+    if spec.frozen_probe_logits is None:
+        mode = "input_then_protocol_mlp"
+        callback = spec.frozen_probe_input
+    else:
+        mode = "deployed_logits"
+        callback = spec.frozen_probe_logits
+    module = getattr(callback, "__module__", None)
+    qualname = getattr(callback, "__qualname__", None)
+    if not isinstance(module, str) or not module:
+        raise TypeError("a registered frozen probe callback must declare __module__")
+    if not isinstance(qualname, str) or not qualname:
+        raise TypeError("a registered frozen probe callback must declare __qualname__")
+    return {"mode": mode, "module": module, "qualname": qualname}
+
+
 def _recurring_protocol_id(
     *,
     spec: ScreeningSpec,
@@ -7218,6 +7288,7 @@ def _recurring_protocol_id(
         "config_name": spec.name,
         "base_learner": spec.base_learner,
         "hyperparameters": dict(spec.hyperparameters),
+        "frozen_probe_strategy": _recurring_probe_strategy(spec),
         "seed": seed,
         "config": config.to_config(),
         "phase_lengths": list(phase_lengths),
@@ -7464,19 +7535,33 @@ def run_recurring_ipmnist_retention_development(
             sentinel_inputs = jnp.asarray(
                 resolved_x[indices][:, permutation], dtype=jnp.float32
             )
-            model_inputs = spec.frozen_probe_input(
-                state, sentinel_inputs, spec.hyperparameters
-            )
-            if model_inputs.shape != sentinel_inputs.shape:
-                raise ValueError("frozen_probe_input must preserve sentinel input shape")
-            logits = np.asarray(jax.device_get(mlp_logits(params, model_inputs)))
+            if spec.frozen_probe_logits is None:
+                model_inputs = spec.frozen_probe_input(
+                    state, sentinel_inputs, spec.hyperparameters
+                )
+                if model_inputs.shape != sentinel_inputs.shape:
+                    raise ValueError("frozen_probe_input must preserve sentinel input shape")
+                probe_logits = mlp_logits(params, model_inputs)
+            else:
+                probe_logits = spec.frozen_probe_logits(
+                    params, state, sentinel_inputs, spec.hyperparameters
+                )
+            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
+            if state_hash_after != state_hash_before:
+                raise ValueError("a frozen sentinel probe must not mutate learner state")
+            expected_logits_shape = (len(indices), config.n_classes)
+            if probe_logits.shape != expected_logits_shape:
+                raise ValueError(
+                    "frozen_probe_logits must return shape "
+                    f"{expected_logits_shape}, got {probe_logits.shape}"
+                )
+            logits = np.asarray(jax.device_get(probe_logits))
             if not np.all(np.isfinite(logits)):
                 raise ValueError("a frozen sentinel probe produced non-finite logits")
             correctness = tuple(
                 bool(value)
                 for value in np.asarray(np.argmax(logits, axis=-1) == sentinel_labels)
             )
-            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
             snapshots.append(
                 SentinelProbeSnapshot.from_requirement(
                     requirement,

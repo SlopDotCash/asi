@@ -18,7 +18,7 @@ Companion documents for this lane:
   matched-current section below).
 - `docs/archive/historical-forager-reconstruction.md` — the separate reconstructed
   paper-era NumPy environment family.
-- `docs/status.md` ("Forager benchmark lane") — the canonical
+- [`docs/status.md`](docs/status.md), especially Step 6 — the canonical
   evidence-status statement; no Forager performance result is registered in
   the scientific evidence manifest.
 

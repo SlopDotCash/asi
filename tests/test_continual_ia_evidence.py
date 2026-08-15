@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -34,6 +36,7 @@ from alberta_framework.evaluation.continual_ia_artifact import (
     load_ia_evidence_artifact,
     scientific_content_sha256,
     validate_ia_evidence_artifact,
+    write_ia_evidence_artifact,
 )
 from alberta_framework.evaluation.continual_ia_cli import (
     main as continual_ia_cli_main,
@@ -443,6 +446,46 @@ def test_unknown_operational_timing_and_digest_keys_fail_closed(
     assert any("operational_diagnostics keys do not match" in error for error in validation.errors)
     assert any("condition_timings[0] keys do not match" in error for error in validation.errors)
     assert any("content_digest keys do not match" in error for error in validation.errors)
+
+
+def test_writer_refuses_to_overwrite_an_existing_artifact(
+    heldout_report: ContinualIAReport,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "existing.json"
+    path.write_text("sentinel\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        write_ia_evidence_artifact(path, heldout_report)
+
+    assert path.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_writer_allows_only_one_simultaneous_creator(
+    heldout_report: ContinualIAReport,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "raced.json"
+    barrier = threading.Barrier(2)
+
+    def attempt() -> dict[str, object]:
+        barrier.wait()
+        return write_ia_evidence_artifact(path, heldout_report)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(attempt) for _ in range(2)]
+
+    artifacts: list[dict[str, object]] = []
+    collisions = 0
+    for future in futures:
+        try:
+            artifacts.append(future.result())
+        except FileExistsError:
+            collisions += 1
+
+    assert len(artifacts) == 1
+    assert collisions == 1
+    assert path.read_text(encoding="utf-8") == ia_artifact_json(artifacts[0])
 
 
 def test_cli_writes_verifies_and_returns_two_for_invalid_artifacts(

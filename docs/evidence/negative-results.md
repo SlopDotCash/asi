@@ -130,7 +130,12 @@ postmortem.
 
 9. **`slowly_changing_regression_v2` is not an exact Dohare et al. (2024)
    replication.** Its comparator was selected locally and its extensions are
-   permanently nonpromoting.
+   permanently nonpromoting. The v1/v2 runner and its focused tests have been
+   retired, so commands and launch-status text in the preserved
+   `outputs/slowly_changing_regression/RUNBOOK.md` are historical and are not
+   runnable against the current tree. Stored plans, partial shards, and logs
+   remain development records; they do not authorize reconstructing or resuming
+   the retired lane.
 
 10. **The Forager PPO RNG-isolation probe is concluded.** Its finding was
    absorbed into [`FORAGER_BENCHMARK.md`](../../FORAGER_BENCHMARK.md); the
@@ -167,7 +172,8 @@ postmortem.
 
 2. **The conditioning-equivalence prediction was refuted.** In the v2 merge,
    `upgd_ema_norm` exceeded its preregistered equivalence band around the raw
-   UPGD-W baseline. EMA conditioning is therefore a general stream optimizer,
-   not only an input-shift fix; perturbation again added no benefit once
-   conditioning was present. Record: `results.v2.json` in the EMNIST output
-   lane.
+   UPGD-W baseline. The conditioning benefit therefore transferred to this
+   three-seed, development-only label-permutation lane and is not exclusively
+   an input-shift effect; that one lane does not establish a general stream
+   optimizer. Perturbation again added no benefit once conditioning was
+   present. Record: `results.v2.json` in the EMNIST output lane.

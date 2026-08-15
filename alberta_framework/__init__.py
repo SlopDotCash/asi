@@ -1,8 +1,9 @@
-"""Alberta Framework: A JAX-based research framework for continual AI.
-The Alberta Framework provides foundational components for continual reinforcement
-learning research. Built on JAX for hardware acceleration, the framework emphasizes
-temporally uniform online updates without special training phases; vectorized helpers
-can run multiple independent agent lives efficiently.
+"""ASI's compatibility package for JAX-based continual-learning research.
+
+The retained core exposes online learners and immutable JAX state transitions.
+The wider package also includes intentionally separate batched helpers, replay,
+periodic lifecycle work, benchmarks, and fail-closed evidence tooling; temporal
+uniformity is a property of specific online paths, not every exported component.
 Research status
 ---------------
 The package exposes implementation surfaces spanning all twelve steps of the

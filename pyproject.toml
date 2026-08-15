@@ -3,21 +3,33 @@ requires = ["hatchling==1.32.0", "editables==0.6"]
 build-backend = "hatchling.build"
 
 [project]
+# Compatibility distribution name; the project/repository identity is ASI.
 name = "alberta-framework"
 version = "0.29.0"
-description = "JAX research framework for investigating continual learning and the Alberta Plan"
+description = "ASI: evidence-driven JAX research for end-to-end continual learning"
 readme = "README.md"
 license = "Apache-2.0"
-# Developed alongside the elizaOS robot research package (see VENDORING.md). Relaxed from
+# Vendored into elizaOS at research/alberta (see VENDORING.md). Relaxed from
 # upstream ">=3.13" to ">=3.12": the continual-RL subset only uses PEP 695
-# syntax (3.12+), and eliza-robot imports it in-process on Python 3.12 where
-# brax/mujoco pin numpy<2. JAX 0.7.1 is the tested floor that remains
-# compatible with the robot track's NumPy 1.26 runtime.
+# syntax (3.12+), and eliza-robot imports it in-process on Python 3.12. JAX
+# 0.7.1 is the tested floor that remains compatible with the declared NumPy
+# 1.26 lower bound; the robot track currently permits NumPy 2.x as well.
 requires-python = ">=3.12"
 authors = [
     { name = "J. Klawson", email = "j-klawson@users.noreply.github.com" }
 ]
-keywords = ["machine-learning", "continual-learning", "meta-learning", "jax", "reinforcement-learning"]
+maintainers = [
+    { name = "elizaOS research contributors" }
+]
+keywords = [
+    "machine-learning",
+    "continual-learning",
+    "online-learning",
+    "meta-learning",
+    "jax",
+    "reinforcement-learning",
+    "robotics",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
