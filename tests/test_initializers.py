@@ -1,6 +1,7 @@
 """Tests for sparse initialization."""
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -37,12 +38,29 @@ class TestSparseInit:
         fan_out, fan_in = 64, 32
         weights = sparse_init(key, (fan_out, fan_in), sparsity=0.5)
 
-        scale = 1.0 / fan_in**0.5
+        scale = (3.0 / fan_in) ** 0.5
         nonzero_mask = weights != 0
         nonzero_values = weights[nonzero_mask]
 
         assert jnp.all(nonzero_values >= -scale)
         assert jnp.all(nonzero_values <= scale)
+
+    def test_uniform_init_matches_lecun_variance_scaling(self):
+        """The dense branch should match canonical LeCun uniform initialization."""
+        key = jr.key(19)
+        shape = (8, 5)
+        init_key, _ = jr.split(key)
+        expected = jax.nn.initializers.variance_scaling(
+            1.0,
+            "fan_in",
+            "uniform",
+            in_axis=1,
+            out_axis=0,
+        )(init_key, shape)
+
+        actual = sparse_init(key, shape, sparsity=0.0, init_type="uniform")
+
+        chex.assert_trees_all_close(actual, expected)
 
     def test_different_keys_give_different_results(self):
         """Different random keys should produce different weight matrices."""

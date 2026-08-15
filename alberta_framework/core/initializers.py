@@ -53,10 +53,11 @@ def sparse_init(
     init_key, mask_key = jr.split(key)
 
     # LeCun-scale initialization
-    scale = 1.0 / fan_in**0.5
     if init_type == "uniform":
+        scale = (3.0 / fan_in) ** 0.5
         weights = jr.uniform(init_key, shape, dtype=jnp.float32, minval=-scale, maxval=scale)
     elif init_type == "normal":
+        scale = 1.0 / fan_in**0.5
         weights = jr.normal(init_key, shape, dtype=jnp.float32) * scale
     else:
         raise ValueError(f"init_type must be 'uniform' or 'normal', got '{init_type}'")
