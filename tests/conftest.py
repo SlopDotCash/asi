@@ -9,6 +9,27 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
+# Optional dependency markers for graceful skips
+pytest_plugins = []
+
+# Check for optional dependencies and create skip markers
+_FORAGAX_AVAILABLE = importlib.util.find_spec("continual_foragax") is not None
+_BSUITE_AVAILABLE = importlib.util.find_spec("bsuite") is not None
+_GYMNASIUM_AVAILABLE = importlib.util.find_spec("gymnasium") is not None
+
+skipif_no_foragax = pytest.mark.skipif(
+    not _FORAGAX_AVAILABLE,
+    reason="continual-foragax not installed (optional: pip install -e .[forager])",
+)
+skipif_no_bsuite = pytest.mark.skipif(
+    not _BSUITE_AVAILABLE,
+    reason="bsuite not installed (optional: pip install -e .[bsuite])",
+)
+skipif_no_gymnasium = pytest.mark.skipif(
+    not _GYMNASIUM_AVAILABLE,
+    reason="gymnasium not installed (optional: pip install -e .[gymnasium])",
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 for import_path in (PROJECT_ROOT,):
     if str(import_path) not in sys.path:

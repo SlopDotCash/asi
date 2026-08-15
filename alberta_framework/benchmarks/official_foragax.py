@@ -1160,7 +1160,15 @@ def _harness_sha256() -> str:
     return digest.hexdigest()
 
 
-_HARNESS_SHA256_AT_IMPORT = _harness_sha256()
+_HARNESS_SHA256_AT_IMPORT: str | None = None
+
+
+def _get_harness_sha256_at_import() -> str:
+    """Lazily compute harness SHA256 on first access, avoiding import-time I/O."""
+    global _HARNESS_SHA256_AT_IMPORT
+    if _HARNESS_SHA256_AT_IMPORT is None:
+        _HARNESS_SHA256_AT_IMPORT = _harness_sha256()
+    return _HARNESS_SHA256_AT_IMPORT
 
 
 def _verify_current_harness_source_closure(
@@ -1168,7 +1176,7 @@ def _verify_current_harness_source_closure(
 ) -> None:
     """Require a manifest to have been issued by these exact validator bytes."""
     live_sha256 = _harness_sha256()
-    if live_sha256 != _HARNESS_SHA256_AT_IMPORT:
+    if live_sha256 != _get_harness_sha256_at_import():
         raise OfficialForagaxValidationError(
             "official runner or transitive validator source changed after "
             "this interpreter imported it"

@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 
+# Skip entire module if foragax not available
+pytest.importorskip("continual_foragax")
+
 from alberta_framework import forager_cli
 
 pytestmark = pytest.mark.integration
