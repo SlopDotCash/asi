@@ -1,0 +1,131 @@
+{
+  "created_unix": 1786810083,
+  "evidence_policy": {
+    "development_only": true,
+    "evidence_class": "development_replication_diagnostic",
+    "execution_attestation": false,
+    "scientific_promotion_allowed": false
+  },
+  "plan": {
+    "benchmark": "upgd_label_permuted_emnist",
+    "config": {
+      "hidden1": 300,
+      "hidden2": 150,
+      "input_dim": 784,
+      "n_classes": 47,
+      "n_steps": 1000000,
+      "n_tasks": 400,
+      "task_length": 2500
+    },
+    "dataset": {
+      "input_scaling": "(x/255 - 0.5) / 0.5",
+      "parser": "liac-arff",
+      "source": "openml:EMNIST_Balanced:data_id=41039",
+      "total_rows": 131600,
+      "train_order_check": "first_112800_rows_have_2400_per_class_and_tail_400_per_class",
+      "train_rows_used": 112800,
+      "x_sha256": "a6e7cb5635f41a98d880d2ec16fcf9f786bf24b7e079562dd8bd31d0543b2301",
+      "y_sha256": "8bfacf7cfc0344ed6059128349106a553d9fb38316f665d2307d053cf5f25946"
+    },
+    "deviations": [
+      {
+        "code": "openml_dataset_plumbing",
+        "description": "OpenML EMNIST_Balanced (41039) first 112800 rows, accepted only when class counts match the torchvision balanced train split; row identity and pixel orientation with torchvision are unverified (both irrelevant to an MLP)",
+        "scope": "dataset"
+      },
+      {
+        "code": "seeded_streams",
+        "description": "label-permutation and example streams are seed-derived; upstream streams are unseeded",
+        "scope": "rng_schedule"
+      },
+      {
+        "code": "task_aligned_logging",
+        "description": "task blocks are [t*L, (t+1)*L); upstream logging is shifted one step",
+        "scope": "metric_blocks"
+      },
+      {
+        "code": "float32_bias_corrections",
+        "description": "bias corrections remain float32; upstream mixes float64 scalars",
+        "scope": "numeric_precision"
+      }
+    ],
+    "hyperparameters": {
+      "sgd_norm_cbp": {
+        "cbp_maturity_threshold": 1000,
+        "cbp_replacement_rate": 0.1,
+        "norm_decay": 0.999,
+        "norm_epsilon": 1e-08,
+        "step_size": 0.01,
+        "weight_decay": 0.0
+      },
+      "upgd_ema_norm_cbp": {
+        "cbp_maturity_threshold": 1000,
+        "cbp_replacement_rate": 0.1,
+        "noise_std": 0.001,
+        "norm_decay": 0.999,
+        "norm_epsilon": 1e-08,
+        "step_size": 0.01,
+        "utility_decay": 0.9,
+        "weight_decay": 0.0
+      },
+      "upgd_l2init": {
+        "l2_init_strength": 0.01,
+        "noise_std": 0.001,
+        "step_size": 0.01,
+        "utility_decay": 0.9,
+        "weight_decay": 0.0
+      },
+      "upgd_shiftnorm": {
+        "fast_decay": 0.9,
+        "noise_std": 0.001,
+        "norm_decay": 0.999,
+        "norm_epsilon": 1e-08,
+        "shift_delta": 0.02,
+        "shift_k": 1.0,
+        "step_size": 0.01,
+        "utility_decay": 0.9,
+        "weight_decay": 0.0
+      }
+    },
+    "learner_ids": [
+      "upgd_ema_norm_cbp",
+      "sgd_norm_cbp",
+      "upgd_l2init",
+      "upgd_shiftnorm"
+    ],
+    "matches_selected_publication_configuration": true,
+    "notes": [
+      "v3 protection mechanisms: testing CBP, L2-init, shiftnorm on label-permutation domain per LABEL_EMNIST_V3_PREREGISTRATION.md"
+    ],
+    "paper_reference": {
+      "approximate_average_online_accuracy": {
+        "adamw": 0.35,
+        "upgd_w": 0.74
+      },
+      "citation": "Elsayed & Mahmood (2024). Addressing Loss of Plasticity and Catastrophic Forgetting in Continual Learning. ICLR 2024.",
+      "n_seeds": 20,
+      "official_commit": "b75e90ad4b09c28971ac9dbb902a8fd86709b28c",
+      "official_repository": "https://github.com/mohmdelsayed/upgd",
+      "openreview": "https://openreview.net/forum?id=sKPzAXoylB",
+      "protocol_files": [
+        "core/task/label_permuted_emnist.py",
+        "core/network/fcn_relu.py",
+        "core/run/run_stats.py",
+        "experiments/statistics_output_permuted_emnist.py",
+        "core/optim/weight_upgd/first_order.py",
+        "core/optim/adam.py"
+      ],
+      "qualitative": "UPGD-W rises toward ~0.73-0.75 across 400 tasks; plasticity-only and plain-optimizer baselines sit near ~0.35.",
+      "reference_kind": "figure_readoff_low_confidence"
+    },
+    "planned_shard_count": 12,
+    "seed_ids": [
+      100,
+      101,
+      102
+    ]
+  },
+  "plan_sha256": "f81307771d068a74f4a202e41ec01758fd79ffb10f5e8dff06763d9fc1f744db",
+  "schema": "alberta.upgd_label_emnist.plan.v1",
+  "schema_version": 1
+}

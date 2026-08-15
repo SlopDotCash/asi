@@ -232,6 +232,28 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
     "upgd_ema_norm": UPGD_EMA_NORM_HYPERPARAMETERS,
     "upgd_ema_norm_sigma0": UPGD_EMA_NORM_SIGMA0_HYPERPARAMETERS,
     "sgd_ema_norm": SGD_EMA_NORM_HYPERPARAMETERS,
+    # v3 protection arms (LABEL_EMNIST_V3_PREREGISTRATION.md)
+    "upgd_ema_norm_cbp": {
+        **UPGD_EMA_NORM_HYPERPARAMETERS,
+        "cbp_replacement_rate": 0.1,
+        "cbp_maturity_threshold": 1000,
+    },
+    "sgd_norm_cbp": {
+        **SGD_EMA_NORM_HYPERPARAMETERS,
+        "cbp_replacement_rate": 0.1,
+        "cbp_maturity_threshold": 1000,
+    },
+    "upgd_l2init": {
+        **UPGD_W_PROTOCOL_HYPERPARAMETERS,
+        "l2_init_strength": 0.01,
+    },
+    "upgd_shiftnorm": {
+        **UPGD_W_PROTOCOL_HYPERPARAMETERS,
+        **_EMA_NORM_SETTINGS,
+        "fast_decay": 0.9,
+        "shift_delta": 0.02,
+        "shift_k": 1.0,
+    },
 }
 
 
