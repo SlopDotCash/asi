@@ -1,5 +1,5 @@
 {
-  "created_unix": 1786810083,
+  "created_unix": 1786810201,
   "evidence_policy": {
     "development_only": true,
     "evidence_class": "development_replication_diagnostic",
@@ -51,16 +51,18 @@
     ],
     "hyperparameters": {
       "sgd_norm_cbp": {
-        "cbp_maturity_threshold": 1000,
-        "cbp_replacement_rate": 0.1,
+        "cbp_decay_rate": 0.99,
+        "cbp_maturity_threshold": 100.0,
+        "cbp_replacement_rate": 0.0001,
         "norm_decay": 0.999,
         "norm_epsilon": 1e-08,
         "step_size": 0.01,
         "weight_decay": 0.0
       },
       "upgd_ema_norm_cbp": {
-        "cbp_maturity_threshold": 1000,
-        "cbp_replacement_rate": 0.1,
+        "cbp_decay_rate": 0.99,
+        "cbp_maturity_threshold": 100.0,
+        "cbp_replacement_rate": 0.0001,
         "noise_std": 0.001,
         "norm_decay": 0.999,
         "norm_epsilon": 1e-08,
@@ -125,7 +127,7 @@
       102
     ]
   },
-  "plan_sha256": "f81307771d068a74f4a202e41ec01758fd79ffb10f5e8dff06763d9fc1f744db",
+  "plan_sha256": "6036d52a363bd104a521bba2be2179eecc06d65aa4ccd68e5ddd2f97983968aa",
   "schema": "alberta.upgd_label_emnist.plan.v1",
   "schema_version": 1
 }

@@ -235,13 +235,15 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
     # v3 protection arms (LABEL_EMNIST_V3_PREREGISTRATION.md)
     "upgd_ema_norm_cbp": {
         **UPGD_EMA_NORM_HYPERPARAMETERS,
-        "cbp_replacement_rate": 0.1,
-        "cbp_maturity_threshold": 1000,
+        "cbp_decay_rate": 0.99,
+        "cbp_replacement_rate": 1e-4,
+        "cbp_maturity_threshold": 100.0,
     },
     "sgd_norm_cbp": {
         **SGD_EMA_NORM_HYPERPARAMETERS,
-        "cbp_replacement_rate": 0.1,
-        "cbp_maturity_threshold": 1000,
+        "cbp_decay_rate": 0.99,
+        "cbp_replacement_rate": 1e-4,
+        "cbp_maturity_threshold": 100.0,
     },
     "upgd_l2init": {
         **UPGD_W_PROTOCOL_HYPERPARAMETERS,
