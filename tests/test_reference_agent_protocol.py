@@ -10,11 +10,14 @@ from __future__ import annotations
 import copy
 import math
 import pickle
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
 
 import numpy as np
 import pytest
 
+import alberta_framework.reference_agent as reference_agent
 from alberta_framework.reference_agent import (
     REFERENCE_AGENT_API_VERSION,
     REFERENCE_AGENT_MANIFEST_SCHEMA,
@@ -447,10 +450,11 @@ def test_ledger_enforces_one_lifecycle_monotonic_decisions_and_exactly_once_phas
     ledger, armed, decision = _armed_ledger()
     with pytest.raises(DecisionOwnershipError, match="phase|armed"):
         ledger.arm(armed, decision)
+    other_ledger = ReferenceTransactionLedger(ledger.manifest)
     with pytest.raises(DecisionOwnershipError, match="decision index|expected"):
-        ledger.arm(
-            ledger.init(),
-            _decision(ledger.manifest, decision_index=1),
+        other_ledger.arm(
+            other_ledger.init(),
+            _decision(other_ledger.manifest, decision_index=1),
         )
 
     ledger, state, transaction = _outcome()
@@ -471,10 +475,24 @@ def test_ledger_enforces_one_lifecycle_monotonic_decisions_and_exactly_once_phas
 
     with pytest.raises(DecisionOwnershipError, match="phase|outcome"):
         ledger.accept(state, next_decision=None, parameters_changed=False)
+
+    lifecycle_ledger, boundary, _transaction = _outcome(
+        terminated=True,
+        autoreset=False,
+        bootstrap_observation=(0.0, 0.0, 0.0),
+        bootstrap_observation_id="life-a:terminal:0",
+        next_decision_observation=None,
+        next_decision_observation_id=None,
+    )
+    ready, _result = lifecycle_ledger.accept(
+        boundary,
+        next_decision=None,
+        parameters_changed=False,
+    )
     with pytest.raises(DecisionOwnershipError, match="lifecycle"):
-        ledger.arm(
-            replace(state, phase=TransactionPhase.READY, decision=None),
-            _decision(ledger.manifest, lifecycle_id="life-b", decision_index=1),
+        lifecycle_ledger.arm(
+            ready,
+            _decision(lifecycle_ledger.manifest, lifecycle_id="life-b", decision_index=1),
         )
 
 
@@ -529,9 +547,87 @@ def test_ledger_rejects_reusing_an_outcome_after_rejection() -> None:
         ledger.accept(outcome, next_decision=None, parameters_changed=True)
 
 
+def test_ledger_serializes_concurrent_authorization_of_one_snapshot() -> None:
+    ledger, armed, decision = _armed_ledger(dispatch_rebinding=True)
+    barrier = threading.Barrier(2)
+
+    def authorize(suffix: str) -> object:
+        barrier.wait()
+        return ledger.authorize(
+            armed,
+            decision,
+            authorized_action=None,
+            authority_id="tests.safety_authority.v1",
+            policy_version="tests.safety_policy.v1",
+            authorization_id=f"life-a:0:{suffix}",
+        )
+
+    successes = 0
+    failures = 0
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(authorize, suffix) for suffix in ("first", "second")]
+        for future in futures:
+            try:
+                future.result()
+            except DecisionOwnershipError as exc:
+                assert "stale" in str(exc) or "current" in str(exc)
+                failures += 1
+            else:
+                successes += 1
+    assert (successes, failures) == (1, 1)
+
+
 def test_decision_counter_is_bounded() -> None:
     with pytest.raises(ValueError, match="decision_index"):
         _decision(_manifest(), decision_index=2**64)
+
+
+def test_final_uint64_decision_is_consumed_once_then_exhausts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(reference_agent, "_MAX_DECISION_INDEX", 0)
+    ledger, outcome, transaction = _outcome()
+    exhausted, result = ledger.accept(
+        outcome,
+        next_decision=None,
+        parameters_changed=True,
+    )
+    assert result.transaction == transaction
+    assert result.transaction_accepted
+    assert exhausted.phase is TransactionPhase.EXHAUSTED
+    assert exhausted.next_decision_index == 0
+    assert exhausted.lifecycle_id == transaction.lifecycle_id
+    assert exhausted.decision is None
+    with pytest.raises(DecisionOwnershipError, match="phase|exhausted"):
+        ledger.arm(exhausted, _decision(ledger.manifest))
+
+
+def test_protocol_rejects_host_scalars_that_overflow_or_underflow_binary64() -> None:
+    if np.finfo(np.longdouble).max <= np.finfo(np.float64).max:
+        pytest.skip("platform longdouble has no wider exponent range than float64")
+    _ledger, _state, transaction = _outcome()
+    huge = np.longdouble("1e4000")
+    tiny = np.nextafter(np.longdouble(0), np.longdouble(1))
+
+    with pytest.raises(ValueError, match="reward.*binary64"):
+        replace(transaction, reward=huge)
+    with pytest.raises(ValueError, match="reward.*underflow"):
+        replace(transaction, reward=tiny)
+    with pytest.raises(ValueError, match="interoperable"):
+        SpaceSpec.box(
+            shape=(),
+            dtype=np.dtype(np.longdouble).name,
+            low=None,
+            high=None,
+            semantic_id="tests.unsupported_float.v1",
+        )
+    with pytest.raises(ValueError, match="interoperable"):
+        ArrayValue(
+            semantic_id="tests.unsupported_float.v1",
+            dtype=np.dtype(np.longdouble).name,
+            shape=(),
+            payload=np.asarray(1.0, dtype=np.longdouble).tobytes(),
+        )
 
 
 def test_rejected_transaction_cannot_consume_event_or_arm_next_decision() -> None:
@@ -637,10 +733,11 @@ def test_boundary_without_autoreset_waits_for_explicit_next_arm() -> None:
 
 def test_transaction_state_rejects_phase_skips_and_foreign_record_chains() -> None:
     ledger, settled, decision, authorization, dispatch = _settled()
+    fresh = ReferenceTransactionLedger(ledger.manifest).init()
 
     with pytest.raises(DecisionOwnershipError, match="record chain|phase"):
         replace(
-            ledger.init(),
+            fresh,
             phase=TransactionPhase.SETTLED,
             lifecycle_id=decision.lifecycle_id,
             dispatch=dispatch,
@@ -710,7 +807,7 @@ def test_transaction_state_rejects_phase_skips_and_foreign_record_chains() -> No
     )
     with pytest.raises(DecisionOwnershipError, match="manifest"):
         replace(
-            ledger.init(),
+            fresh,
             phase=TransactionPhase.SETTLED,
             lifecycle_id="foreign-life",
             decision=foreign_decision,
@@ -721,6 +818,7 @@ def test_transaction_state_rejects_phase_skips_and_foreign_record_chains() -> No
 
 def test_ledger_revalidates_every_embedded_value_against_manifest_codecs() -> None:
     ledger = ReferenceTransactionLedger(_manifest(dispatch_rebinding=True))
+    initial = ledger.init()
     decision = _decision(ledger.manifest)
     assert decision.proposed_action is not None
     foreign_observation = SpaceSpec.box(
@@ -732,7 +830,7 @@ def test_ledger_revalidates_every_embedded_value_against_manifest_codecs() -> No
     ).encode(np.asarray((0.0, 0.0, 0.0), dtype=np.float32))
     bad_decision = replace(decision, observation=foreign_observation)
     bad_armed = replace(
-        ledger.init(),
+        initial,
         phase=TransactionPhase.ARMED,
         lifecycle_id=bad_decision.lifecycle_id,
         decision=bad_decision,
@@ -747,7 +845,7 @@ def test_ledger_revalidates_every_embedded_value_against_manifest_codecs() -> No
             authorization_id="life-a:0:authorization",
         )
 
-    armed = ledger.arm(ledger.init(), decision)
+    armed = ledger.arm(initial, decision)
     foreign_action = SpaceSpec.box(
         shape=(2,),
         dtype="float32",

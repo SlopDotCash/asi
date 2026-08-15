@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the versioned, development-only ASI reference-agent transaction contract: immutable
   typed payloads, manifest/lifecycle identities, separate dispatch authorization, learner
   settlement, executor receipt and outcome records, explicit reset identities, and a
-  fail-closed functional phase ledger. This is an L0 protocol surface, not a concrete adapter,
+  fail-closed process-local single-writer phase ledger. This is an L0 protocol surface, not a
+  concrete adapter,
   whole-life runner, exact-resume result, `reference-dev` selection, or scientific claim.
 - Added the ASI research roadmap, proposed reference-agent protocol ADR, repository anti-LARP
   audit, documentation index, and mutable IPMNIST campaign index. The project identity changes
@@ -36,6 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Kept the proposed reference-agent API and state schemas in an explicit preview namespace,
+  made its live ledger reject initialization, stale-snapshot, copied-state, and replay forks,
+  disarmed it at the final uint64 decision, and rejected numeric values that cannot be
+  represented by its interoperable protocol dtypes. Evidence-manifest publication now also
+  protects the canonical pinned path beneath an alternate validation root.
 - Recurring-IPMNIST retention probes now use each registered arm's frozen deployed-logit path,
   including hidden-RMS, RFF/linear RLS, naive Bayes and ensemble variants, and every RLS-head
   state family. Probe shape, finiteness, and learner-state immutability are checked before a

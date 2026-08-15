@@ -49,7 +49,7 @@ document cannot do so by assertion.
 ### Implemented L0 transaction slice
 
 The [versioned host transaction module](../../alberta_framework/reference_agent.py)
-and its [17 retained tests](../../tests/test_reference_agent_protocol.py)
+and its [retained contract tests](../../tests/test_reference_agent_protocol.py)
 implement the first acceptance slice:
 
 - canonical configuration and manifest identities plus fixed, exact-dtype
@@ -58,9 +58,9 @@ implement the first acceptance slice:
 - separate authorization, learner settlement, executor receipt, and
   receipt-bound outcome records;
 - explicit bootstrap and post-reset observation identities at episode boundaries;
-- an immutable transaction state and functional phase ledger from `ready` through
+- immutable transaction snapshots and a process-local single-writer phase ledger from `ready` through
   `armed`, `authorized`, `settled`, `dispatched`, and `outcome`, with fail-closed
-  halt behavior; and
+  halt and counter-exhaustion behavior; and
 - acceptance/rejection records that forbid a rejected event from reporting a
   parameter change or arming a next decision and require it to remain retryable.
 
@@ -277,7 +277,7 @@ The proposal advances only in this order:
 1. **Host transaction contract — implemented at L0.** The versioned manifest and
    transaction-state schemas, immutable typed payloads, distinct authorization,
    settlement, receipt, and outcome records, explicit reset identities,
-   functional phase ledger, and 17 retained fail-closed tests implement the host
+   process-local single-writer phase ledger and retained fail-closed tests implement the host
    transaction slice. This is structural and nonpromoting.
 2. **Whole-life conformance core — open.** Define the canonical life
    configuration and aggregate life state; implement agent, environment,

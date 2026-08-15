@@ -1,6 +1,6 @@
 """Versioned host-facing transaction protocol for ASI reference-agent adapters.
 
-This module provides immutable records and a functional ownership ledger. It is
+This module provides immutable records and a process-local ownership ledger. It is
 an L0 interoperability contract only: it does not select reference-dev, prove
 learning benefit, certify safety or robotics readiness, or establish exact
 whole-life checkpoint resume.
@@ -14,14 +14,32 @@ import hashlib
 import json
 import math
 import re
+import threading
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
 
-REFERENCE_AGENT_API_VERSION = "asi.reference_agent.v1"
-REFERENCE_AGENT_MANIFEST_SCHEMA = "asi.reference_agent_manifest.v1"
-REFERENCE_TRANSACTION_STATE_SCHEMA = "asi.reference_transaction_state.v1"
+REFERENCE_AGENT_API_VERSION = "asi.reference_agent.preview1"
+REFERENCE_AGENT_MANIFEST_SCHEMA = "asi.reference_agent_manifest.preview1"
+REFERENCE_TRANSACTION_STATE_SCHEMA = "asi.reference_transaction_state.preview1"
+
+_MAX_DECISION_INDEX = (1 << 64) - 1
+_PROTOCOL_DTYPES = frozenset(
+    {
+        "float16",
+        "float32",
+        "float64",
+        "int8",
+        "int16",
+        "int32",
+        "int64",
+        "uint8",
+        "uint16",
+        "uint32",
+        "uint64",
+    }
+)
 
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -148,8 +166,10 @@ class ArrayValue:
             dtype = np.dtype(self.dtype)
         except TypeError as exc:
             raise ValueError(f"unsupported dtype {self.dtype!r}") from exc
-        if dtype.kind not in {"f", "i", "u"} or dtype.name != self.dtype:
-            raise ValueError("ArrayValue dtype must be a canonical real numeric dtype")
+        if dtype.name != self.dtype or dtype.name not in _PROTOCOL_DTYPES:
+            raise ValueError(
+                "ArrayValue dtype must be a canonical interoperable real numeric dtype"
+            )
         if not isinstance(self.shape, tuple) or any(
             isinstance(dimension, bool)
             or not isinstance(dimension, int)
@@ -210,10 +230,10 @@ class SpaceSpec:
             dtype = np.dtype(self.dtype)
         except TypeError as exc:
             raise ValueError(f"unsupported dtype {self.dtype!r}") from exc
-        if dtype.kind not in {"f", "i", "u"}:
-            raise ValueError("dtype must be a real floating-point or integer dtype")
         if dtype.name != self.dtype:
             raise ValueError(f"dtype must use canonical spelling {dtype.name!r}")
+        if dtype.name not in _PROTOCOL_DTYPES:
+            raise ValueError("dtype must be an interoperable real floating-point or integer dtype")
 
         if self.kind == "discrete":
             if self.shape != ():
@@ -589,8 +609,9 @@ class Decision:
             isinstance(self.decision_index, bool)
             or not isinstance(self.decision_index, int)
             or self.decision_index < 0
+            or self.decision_index > _MAX_DECISION_INDEX
         ):
-            raise ValueError("decision_index must be a nonnegative integer")
+            raise ValueError("decision_index must be an integer in the uint64 range")
         expected_id = f"{self.lifecycle_id}:{self.decision_index}"
         if self.decision_id != expected_id:
             raise ValueError(f"decision_id must use canonical value {expected_id!r}")
@@ -626,6 +647,7 @@ class TransactionPhase(enum.Enum):
     DISPATCHED = "dispatched"
     OUTCOME = "outcome"
     HALTED = "halted"
+    EXHAUSTED = "exhausted"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -759,7 +781,16 @@ def _finite_scalar(value: Any, *, name: str) -> float:
     array = _numeric_array(value, name=name)
     if array.shape != ():
         raise ValueError(f"{name} must be a finite real scalar")
-    return float(array)
+    original = array.item()
+    try:
+        normalized = float(original)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be representable as a finite binary64 scalar") from exc
+    if not math.isfinite(normalized):
+        raise ValueError(f"{name} must be representable as a finite binary64 scalar")
+    if original != 0 and normalized == 0.0:
+        raise ValueError(f"{name} must not underflow when represented as binary64")
+    return normalized
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -886,6 +917,8 @@ class StepResult:
         if self.rejection_reason is not None:
             raise ValueError("an accepted transaction cannot carry a rejection reason")
         if self.next_decision is None:
+            if self.transaction.decision.decision_index == _MAX_DECISION_INDEX:
+                return
             if not self.transaction.is_boundary or self.transaction.is_autoreset:
                 raise ValueError("a continuing/autoreset transaction must arm a next decision")
             return
@@ -913,7 +946,7 @@ class StepResult:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReferenceTransactionState:
-    """Immutable state for one functional transaction ledger."""
+    """Immutable snapshot owned by one process-local transaction ledger."""
 
     schema: str
     manifest_id: str
@@ -939,8 +972,9 @@ class ReferenceTransactionState:
             isinstance(self.next_decision_index, bool)
             or not isinstance(self.next_decision_index, int)
             or self.next_decision_index < 0
+            or self.next_decision_index > _MAX_DECISION_INDEX
         ):
-            raise ValueError("next_decision_index must be a nonnegative integer")
+            raise ValueError("next_decision_index must be an integer in the uint64 range")
         if self.phase is TransactionPhase.HALTED:
             if not isinstance(self.halt_reason, str) or not self.halt_reason.strip():
                 raise ValueError("halted state requires a nonempty halt_reason")
@@ -966,6 +1000,7 @@ class ReferenceTransactionState:
             TransactionPhase.SETTLED: (True, True, True, False, False),
             TransactionPhase.DISPATCHED: (True, True, True, True, False),
             TransactionPhase.OUTCOME: (True, True, True, True, True),
+            TransactionPhase.EXHAUSTED: (False, False, False, False, False),
         }
         if self.phase is TransactionPhase.HALTED:
             allowed_halted = {
@@ -981,7 +1016,12 @@ class ReferenceTransactionState:
                 f"state record chain does not match phase {self.phase.value}"
             )
 
-        if self.lifecycle_id is None:
+        if self.phase is TransactionPhase.EXHAUSTED:
+            if self.lifecycle_id is None or self.next_decision_index != _MAX_DECISION_INDEX:
+                raise DecisionOwnershipError(
+                    "exhausted state requires a lifecycle and the final uint64 decision index"
+                )
+        elif self.lifecycle_id is None:
             if self.phase is not TransactionPhase.READY or self.next_decision_index != 0:
                 raise DecisionOwnershipError(
                     "only the initial ready state may omit lifecycle identity"
@@ -1029,27 +1069,39 @@ class ReferenceTransactionState:
 
 
 class ReferenceTransactionLedger:
-    """Stateless transition functions for one manifest-bound agent life."""
+    """Single-writer transition owner for one manifest-bound process lifetime.
 
-    __slots__ = ("_manifest",)
+    State records are immutable snapshots, but only the exact current object may
+    advance this ledger. Equal copies and stale snapshots are rejected so callers
+    cannot fork or replay an authorization/outcome chain inside one process.
+    """
+
+    __slots__ = ("_manifest", "_lock", "_state")
 
     def __init__(self, manifest: AgentManifest) -> None:
         if not isinstance(manifest, AgentManifest):
             raise ValueError("manifest must be an AgentManifest")
         self._manifest = manifest
+        self._lock = threading.Lock()
+        self._state: ReferenceTransactionState | None = None
 
     @property
     def manifest(self) -> AgentManifest:
         return self._manifest
 
     def init(self) -> ReferenceTransactionState:
-        return ReferenceTransactionState(
-            schema=REFERENCE_TRANSACTION_STATE_SCHEMA,
-            manifest_id=self.manifest.manifest_id,
-            phase=TransactionPhase.READY,
-            lifecycle_id=None,
-            next_decision_index=0,
-        )
+        with self._lock:
+            if self._state is not None:
+                raise DecisionOwnershipError("transaction ledger is already initialized")
+            state = ReferenceTransactionState(
+                schema=REFERENCE_TRANSACTION_STATE_SCHEMA,
+                manifest_id=self.manifest.manifest_id,
+                phase=TransactionPhase.READY,
+                lifecycle_id=None,
+                next_decision_index=0,
+            )
+            self._state = state
+            return state
 
     def _validate_state(self, state: ReferenceTransactionState) -> None:
         if not isinstance(state, ReferenceTransactionState):
@@ -1058,41 +1110,44 @@ class ReferenceTransactionLedger:
             raise DecisionOwnershipError("state schema does not match the ledger")
         if state.manifest_id != self.manifest.manifest_id:
             raise DecisionOwnershipError("state manifest does not match the ledger")
-        if state.decision is None:
-            return
-        try:
-            self.manifest.validate_decision(state.decision)
-            if (
-                state.authorization is not None
-                and state.authorization.authorized_action is not None
-            ):
-                self.manifest.action_spec.validate_value(
-                    state.authorization.authorized_action
-                )
-            if state.dispatch is not None:
+        if state.decision is not None:
+            try:
+                self.manifest.validate_decision(state.decision)
                 if (
                     state.authorization is not None
-                    and state.authorization.status is AuthorizationStatus.REPLACED
-                    and not self.manifest.capabilities.dispatch_rebinding
+                    and state.authorization.authorized_action is not None
                 ):
-                    raise DecisionOwnershipError(
-                        "rebound dispatch requires the manifest dispatch_rebinding capability"
+                    self.manifest.action_spec.validate_value(
+                        state.authorization.authorized_action
                     )
-                self.manifest.action_spec.validate_value(state.dispatch.effective_action)
-            if state.transaction is not None:
-                self.manifest.observation_spec.validate_value(
-                    state.transaction.bootstrap_observation
-                )
-                if state.transaction.next_decision_observation is not None:
+                if state.dispatch is not None:
+                    if (
+                        state.authorization is not None
+                        and state.authorization.status is AuthorizationStatus.REPLACED
+                        and not self.manifest.capabilities.dispatch_rebinding
+                    ):
+                        raise DecisionOwnershipError(
+                            "rebound dispatch requires the manifest dispatch_rebinding capability"
+                        )
+                    self.manifest.action_spec.validate_value(state.dispatch.effective_action)
+                if state.transaction is not None:
                     self.manifest.observation_spec.validate_value(
-                        state.transaction.next_decision_observation
+                        state.transaction.bootstrap_observation
                     )
-        except DecisionOwnershipError:
-            raise
-        except (TypeError, ValueError) as exc:
-            raise DecisionOwnershipError(
-                "state records do not match the ledger manifest codecs"
-            ) from exc
+                    if state.transaction.next_decision_observation is not None:
+                        self.manifest.observation_spec.validate_value(
+                            state.transaction.next_decision_observation
+                        )
+            except DecisionOwnershipError:
+                raise
+            except (TypeError, ValueError) as exc:
+                raise DecisionOwnershipError(
+                    "state records do not match the ledger manifest codecs"
+                ) from exc
+        if self._state is None:
+            raise DecisionOwnershipError("transaction ledger is not initialized")
+        if state is not self._state:
+            raise DecisionOwnershipError("state is stale, replayed, copied, or not current")
 
     def _require_phase(
         self,
@@ -1105,8 +1160,12 @@ class ReferenceTransactionLedger:
                 f"transaction phase must be {expected.value}, got {state.phase.value}"
             )
 
+    def _commit(self, state: ReferenceTransactionState) -> ReferenceTransactionState:
+        self._state = state
+        return state
+
+    @staticmethod
     def _halt(
-        self,
         state: ReferenceTransactionState,
         *,
         reason: str,
@@ -1124,28 +1183,29 @@ class ReferenceTransactionLedger:
         state: ReferenceTransactionState,
         decision: Decision,
     ) -> ReferenceTransactionState:
-        self._require_phase(state, TransactionPhase.READY)
-        self.manifest.validate_decision(decision)
-        if not decision.armed:
-            raise DecisionOwnershipError("cannot arm a disarmed decision")
-        if decision.decision_index != state.next_decision_index:
-            raise DecisionOwnershipError(
-                f"decision index must equal expected {state.next_decision_index}"
+        with self._lock:
+            self._require_phase(state, TransactionPhase.READY)
+            self.manifest.validate_decision(decision)
+            if not decision.armed:
+                raise DecisionOwnershipError("cannot arm a disarmed decision")
+            if decision.decision_index != state.next_decision_index:
+                raise DecisionOwnershipError(
+                    f"decision index must equal expected {state.next_decision_index}"
+                )
+            if state.lifecycle_id is not None and decision.lifecycle_id != state.lifecycle_id:
+                raise DecisionOwnershipError("decision belongs to a different lifecycle")
+            next_state = dataclasses.replace(
+                state,
+                phase=TransactionPhase.ARMED,
+                lifecycle_id=decision.lifecycle_id,
+                decision=decision,
+                authorization=None,
+                dispatch=None,
+                receipt=None,
+                transaction=None,
+                halt_reason=None,
             )
-        if state.lifecycle_id is not None and decision.lifecycle_id != state.lifecycle_id:
-            raise DecisionOwnershipError("decision belongs to a different lifecycle")
-        lifecycle_id = decision.lifecycle_id
-        return dataclasses.replace(
-            state,
-            phase=TransactionPhase.ARMED,
-            lifecycle_id=lifecycle_id,
-            decision=decision,
-            authorization=None,
-            dispatch=None,
-            receipt=None,
-            transaction=None,
-            halt_reason=None,
-        )
+            return self._commit(next_state)
 
     def authorize(
         self,
@@ -1158,57 +1218,56 @@ class ReferenceTransactionLedger:
         authorization_id: str,
         veto_reason: str | None = None,
     ) -> tuple[ReferenceTransactionState, DispatchAuthorization]:
-        self._require_phase(state, TransactionPhase.ARMED)
-        if state.decision != decision:
-            raise DecisionOwnershipError("authorization does not own the armed decision")
-        self.manifest.validate_decision(decision)
-        if veto_reason is not None:
-            if authorized_action is not None:
-                raise ValueError("veto cannot carry an authorized action")
+        with self._lock:
+            self._require_phase(state, TransactionPhase.ARMED)
+            if state.decision != decision:
+                raise DecisionOwnershipError("authorization does not own the armed decision")
+            self.manifest.validate_decision(decision)
+            if veto_reason is not None:
+                if authorized_action is not None:
+                    raise ValueError("veto cannot carry an authorized action")
+                authorization = DispatchAuthorization(
+                    decision=decision,
+                    status=AuthorizationStatus.VETOED,
+                    authorized_action=None,
+                    authority_id=authority_id,
+                    policy_version=policy_version,
+                    authorization_id=authorization_id,
+                    veto_reason=veto_reason,
+                )
+                halted = dataclasses.replace(
+                    state,
+                    phase=TransactionPhase.HALTED,
+                    authorization=authorization,
+                    halt_reason=f"dispatch veto: {veto_reason}",
+                )
+                return self._commit(halted), authorization
+
+            assert decision.proposed_action is not None
+            encoded_action = (
+                decision.proposed_action
+                if authorized_action is None
+                else self.manifest.action_spec.encode(authorized_action)
+            )
+            status = (
+                AuthorizationStatus.EXACT
+                if encoded_action == decision.proposed_action
+                else AuthorizationStatus.REPLACED
+            )
             authorization = DispatchAuthorization(
                 decision=decision,
-                status=AuthorizationStatus.VETOED,
-                authorized_action=None,
+                status=status,
+                authorized_action=encoded_action,
                 authority_id=authority_id,
                 policy_version=policy_version,
                 authorization_id=authorization_id,
-                veto_reason=veto_reason,
             )
-            halted = dataclasses.replace(
-                state,
-                phase=TransactionPhase.HALTED,
-                authorization=authorization,
-                halt_reason=f"dispatch veto: {veto_reason}",
-            )
-            return halted, authorization
-
-        assert decision.proposed_action is not None
-        encoded_action = (
-            decision.proposed_action
-            if authorized_action is None
-            else self.manifest.action_spec.encode(authorized_action)
-        )
-        status = (
-            AuthorizationStatus.EXACT
-            if encoded_action == decision.proposed_action
-            else AuthorizationStatus.REPLACED
-        )
-        authorization = DispatchAuthorization(
-            decision=decision,
-            status=status,
-            authorized_action=encoded_action,
-            authority_id=authority_id,
-            policy_version=policy_version,
-            authorization_id=authorization_id,
-        )
-        return (
-            dataclasses.replace(
+            next_state = dataclasses.replace(
                 state,
                 phase=TransactionPhase.AUTHORIZED,
                 authorization=authorization,
-            ),
-            authorization,
-        )
+            )
+            return self._commit(next_state), authorization
 
     def settle_dispatch(
         self,
@@ -1219,46 +1278,48 @@ class ReferenceTransactionLedger:
         settlement_id: str,
         halt_on_unsupported: bool = True,
     ) -> tuple[ReferenceTransactionState, DispatchAck | None]:
-        self._require_phase(state, TransactionPhase.AUTHORIZED)
-        if state.authorization != authorization:
-            raise DecisionOwnershipError("settlement does not own the authorization")
-        if not isinstance(rebinding_applied, bool):
-            raise ValueError("rebinding_applied must be boolean")
-        if not isinstance(halt_on_unsupported, bool):
-            raise ValueError("halt_on_unsupported must be boolean")
-        if authorization.status is AuthorizationStatus.VETOED:
-            raise DecisionOwnershipError("vetoed authorization cannot be settled")
-        assert authorization.authorized_action is not None
+        with self._lock:
+            self._require_phase(state, TransactionPhase.AUTHORIZED)
+            if state.authorization != authorization:
+                raise DecisionOwnershipError("settlement does not own the authorization")
+            if not isinstance(rebinding_applied, bool):
+                raise ValueError("rebinding_applied must be boolean")
+            if not isinstance(halt_on_unsupported, bool):
+                raise ValueError("halt_on_unsupported must be boolean")
+            if authorization.status is AuthorizationStatus.VETOED:
+                raise DecisionOwnershipError("vetoed authorization cannot be settled")
+            assert authorization.authorized_action is not None
 
-        if authorization.status is AuthorizationStatus.REPLACED:
-            supported = self.manifest.capabilities.dispatch_rebinding
-            if not supported or not rebinding_applied:
-                reason = "authorized replacement cannot rebind learning credit"
-                if halt_on_unsupported:
-                    return self._halt(state, reason=reason), None
-                raise ValueError(
-                    "rebinding_applied=True and declared dispatch_rebinding are required"
-                )
-            status = DispatchStatus.REBOUND
-        else:
-            if rebinding_applied:
-                raise ValueError("rebinding_applied must be false for an exact authorization")
-            status = DispatchStatus.EXACT
+            if authorization.status is AuthorizationStatus.REPLACED:
+                supported = self.manifest.capabilities.dispatch_rebinding
+                if not supported or not rebinding_applied:
+                    reason = "authorized replacement cannot rebind learning credit"
+                    if halt_on_unsupported:
+                        halted = self._halt(state, reason=reason)
+                        return self._commit(halted), None
+                    raise ValueError(
+                        "rebinding_applied=True and declared dispatch_rebinding are required"
+                    )
+                status = DispatchStatus.REBOUND
+            else:
+                if rebinding_applied:
+                    raise ValueError(
+                        "rebinding_applied must be false for an exact authorization"
+                    )
+                status = DispatchStatus.EXACT
 
-        dispatch = DispatchAck(
-            authorization=authorization,
-            status=status,
-            effective_action=authorization.authorized_action,
-            settlement_id=settlement_id,
-        )
-        return (
-            dataclasses.replace(
+            dispatch = DispatchAck(
+                authorization=authorization,
+                status=status,
+                effective_action=authorization.authorized_action,
+                settlement_id=settlement_id,
+            )
+            next_state = dataclasses.replace(
                 state,
                 phase=TransactionPhase.SETTLED,
                 dispatch=dispatch,
-            ),
-            dispatch,
-        )
+            )
+            return self._commit(next_state), dispatch
 
     def record_dispatch(
         self,
@@ -1268,22 +1329,23 @@ class ReferenceTransactionLedger:
         receipt_id: str,
         executor_id: str,
     ) -> tuple[ReferenceTransactionState, DispatchReceipt]:
-        self._require_phase(state, TransactionPhase.SETTLED)
-        if state.dispatch != dispatch:
-            raise DecisionOwnershipError("dispatch receipt does not own the settled dispatch")
-        receipt = DispatchReceipt(
-            dispatch=dispatch,
-            receipt_id=receipt_id,
-            executor_id=executor_id,
-        )
-        return (
-            dataclasses.replace(
+        with self._lock:
+            self._require_phase(state, TransactionPhase.SETTLED)
+            if state.dispatch != dispatch:
+                raise DecisionOwnershipError(
+                    "dispatch receipt does not own the settled dispatch"
+                )
+            receipt = DispatchReceipt(
+                dispatch=dispatch,
+                receipt_id=receipt_id,
+                executor_id=executor_id,
+            )
+            next_state = dataclasses.replace(
                 state,
                 phase=TransactionPhase.DISPATCHED,
                 receipt=receipt,
-            ),
-            receipt,
-        )
+            )
+            return self._commit(next_state), receipt
 
     def record_outcome(
         self,
@@ -1300,35 +1362,34 @@ class ReferenceTransactionLedger:
         next_decision_observation_id: str | None,
         next_decision_observation: Any | None,
     ) -> tuple[ReferenceTransactionState, Transaction]:
-        self._require_phase(state, TransactionPhase.DISPATCHED)
-        if state.receipt != receipt:
-            raise DecisionOwnershipError("outcome does not own the exact dispatch receipt")
-        bootstrap = self.manifest.observation_spec.encode(bootstrap_observation)
-        next_observation = (
-            None
-            if next_decision_observation is None
-            else self.manifest.observation_spec.encode(next_decision_observation)
-        )
-        transaction = Transaction(
-            receipt=receipt,
-            reward=reward,
-            discount=discount,
-            terminated=terminated,
-            truncated=truncated,
-            autoreset=autoreset,
-            bootstrap_observation_id=bootstrap_observation_id,
-            bootstrap_observation=bootstrap,
-            next_decision_observation_id=next_decision_observation_id,
-            next_decision_observation=next_observation,
-        )
-        return (
-            dataclasses.replace(
+        with self._lock:
+            self._require_phase(state, TransactionPhase.DISPATCHED)
+            if state.receipt != receipt:
+                raise DecisionOwnershipError("outcome does not own the exact dispatch receipt")
+            bootstrap = self.manifest.observation_spec.encode(bootstrap_observation)
+            next_observation = (
+                None
+                if next_decision_observation is None
+                else self.manifest.observation_spec.encode(next_decision_observation)
+            )
+            transaction = Transaction(
+                receipt=receipt,
+                reward=reward,
+                discount=discount,
+                terminated=terminated,
+                truncated=truncated,
+                autoreset=autoreset,
+                bootstrap_observation_id=bootstrap_observation_id,
+                bootstrap_observation=bootstrap,
+                next_decision_observation_id=next_decision_observation_id,
+                next_decision_observation=next_observation,
+            )
+            next_state = dataclasses.replace(
                 state,
                 phase=TransactionPhase.OUTCOME,
                 transaction=transaction,
-            ),
-            transaction,
-        )
+            )
+            return self._commit(next_state), transaction
 
     def accept(
         self,
@@ -1337,45 +1398,62 @@ class ReferenceTransactionLedger:
         next_decision: Decision | None,
         parameters_changed: bool,
     ) -> tuple[ReferenceTransactionState, StepResult]:
-        self._require_phase(state, TransactionPhase.OUTCOME)
-        if state.transaction is None:
-            raise DecisionOwnershipError("outcome phase lacks a transaction")
-        if not isinstance(parameters_changed, bool):
-            raise ValueError("parameters_changed must be boolean")
-        if next_decision is not None:
-            self.manifest.validate_decision(next_decision)
-        result = StepResult(
-            transaction=state.transaction,
-            next_decision=next_decision,
-            transaction_accepted=True,
-            parameters_changed=parameters_changed,
-            retry_required=False,
-            rejection_reason=None,
-        )
-        next_index = state.next_decision_index + 1
-        if next_decision is None:
-            next_state = dataclasses.replace(
-                state,
-                phase=TransactionPhase.READY,
-                next_decision_index=next_index,
-                decision=None,
-                authorization=None,
-                dispatch=None,
-                receipt=None,
-                transaction=None,
+        with self._lock:
+            self._require_phase(state, TransactionPhase.OUTCOME)
+            if state.transaction is None:
+                raise DecisionOwnershipError("outcome phase lacks a transaction")
+            if not isinstance(parameters_changed, bool):
+                raise ValueError("parameters_changed must be boolean")
+            exhausted = state.next_decision_index == _MAX_DECISION_INDEX
+            if exhausted and next_decision is not None:
+                raise DecisionOwnershipError(
+                    "the final uint64 decision is consumed; next decision must be absent"
+                )
+            if next_decision is not None:
+                self.manifest.validate_decision(next_decision)
+            result = StepResult(
+                transaction=state.transaction,
+                next_decision=next_decision,
+                transaction_accepted=True,
+                parameters_changed=parameters_changed,
+                retry_required=False,
+                rejection_reason=None,
             )
-        else:
-            next_state = dataclasses.replace(
-                state,
-                phase=TransactionPhase.ARMED,
-                next_decision_index=next_index,
-                decision=next_decision,
-                authorization=None,
-                dispatch=None,
-                receipt=None,
-                transaction=None,
-            )
-        return next_state, result
+            if exhausted:
+                next_state = dataclasses.replace(
+                    state,
+                    phase=TransactionPhase.EXHAUSTED,
+                    decision=None,
+                    authorization=None,
+                    dispatch=None,
+                    receipt=None,
+                    transaction=None,
+                )
+            else:
+                next_index = state.next_decision_index + 1
+                if next_decision is None:
+                    next_state = dataclasses.replace(
+                        state,
+                        phase=TransactionPhase.READY,
+                        next_decision_index=next_index,
+                        decision=None,
+                        authorization=None,
+                        dispatch=None,
+                        receipt=None,
+                        transaction=None,
+                    )
+                else:
+                    next_state = dataclasses.replace(
+                        state,
+                        phase=TransactionPhase.ARMED,
+                        next_decision_index=next_index,
+                        decision=next_decision,
+                        authorization=None,
+                        dispatch=None,
+                        receipt=None,
+                        transaction=None,
+                    )
+            return self._commit(next_state), result
 
     def reject(
         self,
@@ -1383,18 +1461,20 @@ class ReferenceTransactionLedger:
         *,
         reason: str,
     ) -> tuple[ReferenceTransactionState, StepResult]:
-        self._require_phase(state, TransactionPhase.OUTCOME)
-        if state.transaction is None:
-            raise DecisionOwnershipError("outcome phase lacks a transaction")
-        result = StepResult(
-            transaction=state.transaction,
-            next_decision=None,
-            transaction_accepted=False,
-            parameters_changed=False,
-            retry_required=True,
-            rejection_reason=reason,
-        )
-        return self._halt(state, reason=reason), result
+        with self._lock:
+            self._require_phase(state, TransactionPhase.OUTCOME)
+            if state.transaction is None:
+                raise DecisionOwnershipError("outcome phase lacks a transaction")
+            result = StepResult(
+                transaction=state.transaction,
+                next_decision=None,
+                transaction_accepted=False,
+                parameters_changed=False,
+                retry_required=True,
+                rejection_reason=reason,
+            )
+            halted = self._halt(state, reason=reason)
+            return self._commit(halted), result
 
 
 __all__ = [

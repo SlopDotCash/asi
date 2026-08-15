@@ -62,9 +62,10 @@ retained `PrototypeAgent` and the sibling robot controller. The
 [Proposed protocol ADR](docs/design/asi-reference-agent-protocol.md) specifies state ownership,
 dispatch lineage, an exact-resume acceptance gate, and its ordered implementation sequence. The
 [initial L0 transaction contract](alberta_framework/reference_agent.py) and its
-[17 retained tests](tests/test_reference_agent_protocol.py) now cover immutable typed payloads,
+[retained contract tests](tests/test_reference_agent_protocol.py) now cover immutable typed payloads,
 separate authorization, learner settlement, dispatch receipt, and receipt-bound outcome records,
-explicit reset identities, and a fail-closed functional phase ledger. This is not a concrete
+explicit reset identities, counter exhaustion, and a fail-closed process-local single-writer
+phase ledger. This is not a concrete
 adapter or whole-life conformance result. It does not populate `reference-dev`: no Prototype or
 robot adapter, aggregate life state or runner, whole-life checkpoint, or exact-resume result
 exists. The robot and Forager paths do not currently consume `PrototypeAgent`, and Forager still

@@ -18,11 +18,12 @@ from alberta_framework.evaluation.evidence_manifest import (
 DEFAULT_OUTPUT = REPO_ROOT / "outputs/evidence_manifest.json"
 
 
-def _resolved_new_output(path: Path) -> Path:
+def _resolved_new_output(path: Path, *, validation_root: Path) -> Path:
     expanded = path.expanduser()
     resolved = expanded.resolve()
     canonical = DEFAULT_OUTPUT.expanduser().resolve()
-    if resolved == canonical:
+    root_canonical = (validation_root / "outputs/evidence_manifest.json").expanduser().resolve()
+    if resolved in {canonical, root_canonical}:
         raise FileExistsError(
             f"refusing to write pinned canonical artifact path: {resolved}; "
             "pass --output with a new path"
@@ -65,7 +66,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output_path: Path | None = None
     if args.output is not None:
         try:
-            output_path = _resolved_new_output(args.output)
+            output_path = _resolved_new_output(args.output, validation_root=args.root)
         except OSError as error:
             _emit_error(error)
             return 2
