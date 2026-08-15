@@ -24,6 +24,7 @@ References:
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any
 
 import chex
@@ -115,6 +116,8 @@ def epps_pulley_gaussian_statistic(
     BHEP form of Baringhaus & Henze 1988). It is zero only when the projected
     distribution matches the target Gaussian in the population limit.
     """
+    if not math.isfinite(kernel_width) or kernel_width <= 0.0:
+        raise ValueError("kernel_width must be positive and finite")
     width = jnp.asarray(kernel_width, dtype=jnp.float32)
     x = jnp.ravel(jnp.asarray(samples, dtype=jnp.float32))
     diffs = x[:, None] - x[None, :]

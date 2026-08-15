@@ -5,6 +5,7 @@ from __future__ import annotations
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.sigreg import (
     SIGRegConfig,
@@ -38,6 +39,16 @@ def test_epps_pulley_statistic_penalizes_collapsed_samples() -> None:
     collapsed_loss = epps_pulley_gaussian_statistic(collapsed)
 
     assert float(collapsed_loss) > float(gaussian_loss)
+
+
+@pytest.mark.parametrize("kernel_width", [0.0, -1.0, float("nan"), float("inf")])
+def test_epps_pulley_statistic_rejects_invalid_kernel_width(
+    kernel_width: float,
+) -> None:
+    samples = jnp.asarray([-1.0, 0.0, 1.0], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="positive and finite"):
+        epps_pulley_gaussian_statistic(samples, kernel_width=kernel_width)
 
 
 def test_sliced_sigreg_penalizes_shifted_and_collapsed_embeddings() -> None:
