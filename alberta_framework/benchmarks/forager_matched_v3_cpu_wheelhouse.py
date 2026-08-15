@@ -1050,7 +1050,7 @@ def _validate_verifier(binding: WheelhouseVerifierToolBinding) -> _VerifierDescr
 def _directory_fd(path: Path, *, label: str) -> int:
     if type(path) is not type(Path()) or not path.is_absolute():
         _fail(f"{label} must be one exact absolute pathlib.Path")
-    flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
         descriptor = os.open(path, flags)
@@ -2802,7 +2802,7 @@ def stage_matched_v3_cpu_wheelhouse(
         staging_fd = os.open(
             staging_name,
             os.O_RDONLY
-            | os.O_DIRECTORY
+            | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=scratch_fd,
@@ -3060,7 +3060,7 @@ def publish_matched_v3_cpu_wheelhouse(
         namespace_fd = os.open(
             namespace,
             os.O_RDONLY
-            | os.O_DIRECTORY
+            | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=root_fd,
@@ -3074,7 +3074,7 @@ def publish_matched_v3_cpu_wheelhouse(
         staging_fd = os.open(
             staging,
             os.O_RDONLY
-            | os.O_DIRECTORY
+            | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=namespace_fd,
