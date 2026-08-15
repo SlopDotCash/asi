@@ -11,7 +11,7 @@ The package overview and normal development entry points remain in
 - [`design/asi-reference-agent-protocol.md`](design/asi-reference-agent-protocol.md) — Proposed
   shared reference-life protocol, state ownership, dispatch invariants, adapter boundaries, and
   exact-resume acceptance gate. Its [L0 transaction ledger](../alberta_framework/reference_agent.py)
-  and [17 retained tests](../tests/test_reference_agent_protocol.py) complete only the first
+  and [retained contract tests](../tests/test_reference_agent_protocol.py) complete only the first
   acceptance step; no adapter, whole-life runner/checkpoint, exact-resume result, or
   `reference-dev` agent exists.
 - [`status.md`](status.md) — requirement-to-evidence status and completion gates.

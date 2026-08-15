@@ -76,7 +76,7 @@ The architectural direction is selected in the
 one semantic lifecycle, dispatch, state-ownership, and exact-resume contract with
 adapters for `PrototypeAgent` and the sibling robot controller. The
 [versioned L0 transaction ledger](../../alberta_framework/reference_agent.py) and
-its [17 retained tests](../../tests/test_reference_agent_protocol.py) now cover
+its [retained contract tests](../../tests/test_reference_agent_protocol.py) now cover
 immutable typed payloads, distinct authorization/settlement/receipt/outcome
 records, explicit reset identities, and fail-closed phase and rejection
 semantics. This resolves the initial host transaction slice, not completion of
