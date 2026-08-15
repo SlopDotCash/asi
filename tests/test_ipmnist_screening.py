@@ -44,6 +44,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_norm_apollo_gate_learner,
     _make_norm_rmsprop_gate_learner,
     _make_rff_rls_learner,
+    _make_rls_head_nogate_learner,
     _make_sgd_ema_norm_learner,
     _make_sgd_momentum_gate_learner,
     _make_snr_ema_norm_learner,
@@ -4716,3 +4717,114 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+
+class TestRLSHeadNogate:
+    """Preregistered gate ablation on the residual-trained incumbent (#52)."""
+
+    INCUMBENT = "rls_head_resid_l1_preset005"
+    ARM = "rls_head_resid_l1_preset005_nogate"
+
+    def test_registry_pin_arm_and_inherited_hyperparameters(self):
+        spec = screening_spec(self.ARM)
+        incumbent = screening_spec(self.INCUMBENT)
+        assert spec.mechanism == "rls_readout"
+        assert spec.hyperparameters["gate_scale"] == 0.0
+        inherited = {k: v for k, v in spec.hyperparameters.items() if k != "gate_scale"}
+        assert inherited == dict(incumbent.hyperparameters)
+
+    def _stream(self, n_steps, dim, seed=123):
+        ks = jr.split(jr.key(seed), n_steps)
+        xs = [jr.normal(jr.fold_in(k, 1), (dim,)) for k in ks]
+        ys = [jnp.array(int(jr.randint(jr.fold_in(k, 2), (), 0, 10)), jnp.int32) for k in ks]
+        return xs, ys
+
+    def test_gate_scale_one_reduces_bitwise_to_incumbent(self):
+        """The reduction pin: at gate_scale=1.0 the nogate factory's whole
+        trajectory equals the incumbent factory's bit-for-bit."""
+        incumbent = screening_spec(self.INCUMBENT)
+        params = init_mlp_params(jr.key(5), SMALL)
+        hp = {**incumbent.hyperparameters, "gate_scale": 1.0}
+        i_init, i_step = incumbent.factory(incumbent.hyperparameters)
+        n_init, n_step = _make_rls_head_nogate_learner(hp)
+        i_state, n_state = i_init(params), n_init(params)
+        ip, np_ = dict(params), dict(params)
+        xs, ys = self._stream(12, SMALL.input_dim)
+        key = jr.key(9)
+        for x, y in zip(xs, ys):
+            ip, i_state, im = i_step(ip, i_state, x, y, key)
+            np_, n_state, nm = n_step(np_, n_state, x, y, key)
+            for name in ip:
+                np.testing.assert_array_equal(ip[name], np_[name])
+            np.testing.assert_array_equal(i_state.p, n_state.p)
+            np.testing.assert_array_equal(i_state.wout, n_state.wout)
+            for a, b in zip(im, nm):
+                np.testing.assert_array_equal(a, b)
+
+    def test_gate_scale_zero_body_is_plain_decayed_sgd(self):
+        """Every step's body update equals an independently computed plain
+        decayed-SGD step on the RLS residual gradient, the utility EMA never
+        accumulates, and the head arithmetic is untouched.  At least one step
+        must carry a nonzero residual gradient, otherwise the comparison
+        would be vacuous (a fully dead second ReLU layer makes every body
+        gradient exactly zero, and both arms then reduce to pure decay)."""
+        incumbent = screening_spec(self.INCUMBENT)
+        spec = screening_spec(self.ARM)
+        hp = spec.hyperparameters
+        params = init_mlp_params(jr.key(6), SMALL)
+        i_init, i_step = incumbent.factory(incumbent.hyperparameters)
+        a_init, a_step = spec.factory(hp)
+        i_state, a_state = i_init(params), a_init(params)
+        ip, ap = dict(params), dict(params)
+        xs, ys = self._stream(10, SMALL.input_dim, seed=77)
+        key = jr.key(3)
+        decay = 1.0 - hp["step_size"] * hp["weight_decay"]
+        m = params["w2"].shape[1] + 1
+        saw_nonzero_gradient = False
+
+        for x, y in zip(xs, ys):
+            x_norm, _, _, _ = shift_adaptive_normalize(
+                a_state.norm, a_state.fast_mean, x,
+                decay=hp["norm_decay"], fast_decay=hp["fast_decay"],
+                epsilon=hp["norm_epsilon"], shift_k=hp["shift_k"],
+                shift_delta=hp["shift_delta"],
+                shift_refractory=hp["shift_refractory"],
+            )
+            wout_before = a_state.wout
+            params_before = dict(ap)
+            y_onehot = jax.nn.one_hot(y, wout_before.shape[1], dtype=jnp.float32)
+
+            def head_loss(body, _p=params_before, _w=wout_before, _x=x_norm,
+                          _y=y_onehot):
+                merged = {**_p, **body}
+                a1 = jax.nn.relu(_x @ merged["w1"] + merged["b1"])
+                a2 = jax.nn.relu(a1 @ merged["w2"] + merged["b2"])
+                phi = jnp.concatenate(
+                    [a2 * (1.0 / math.sqrt(m)), jnp.ones((1,), jnp.float32)]
+                )
+                err = _y - _w.T @ phi
+                return 0.5 * jnp.sum(err * err)
+
+            body = {name: params_before[name] for name in ("w1", "b1", "w2", "b2")}
+            grads = jax.grad(head_loss)(body)
+            if any(float(jnp.max(jnp.abs(grads[n]))) > 0.0 for n in body):
+                saw_nonzero_gradient = True
+
+            ip, i_state, _ = i_step(ip, i_state, x, y, key)
+            ap, a_state, _ = a_step(ap, a_state, x, y, key)
+
+            for name in body:
+                expected = params_before[name] * decay - hp["step_size"] * grads[name]
+                np.testing.assert_array_equal(ap[name], expected)
+            # w3/b3 are passengers in the residual arm: never trained.
+            for name in ("w3", "b3"):
+                np.testing.assert_array_equal(ap[name], params_before[name])
+            for name in ap:
+                np.testing.assert_array_equal(
+                    a_state.utility[name], jnp.zeros_like(ap[name])
+                )
+
+        assert saw_nonzero_gradient, "pin was vacuous: residual gradient never nonzero"
+        assert any(
+            not np.array_equal(ip[name], ap[name]) for name in ("w1", "w2")
+        )

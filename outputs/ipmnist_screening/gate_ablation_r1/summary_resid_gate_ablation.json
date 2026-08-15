@@ -1,0 +1,127 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_resid_l1_preset005",
+ "created_unix": 1786818723.48649,
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 6,
+ "noise_mode": "step",
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8710610868888887,
+   "average_online_accuracy_stderr": 0.00038142165085491196,
+   "average_plasticity_mean": 0.007110055444444444,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_l1_preset005_nogate",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 0.0,
+    "head_resid": 1.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.00018619069047619177,
+   "n_seeds": 3,
+   "paired_vs_control": {
+    "all_seeds_improve": true,
+    "beats_control": true,
+    "confirmation_candidate": false,
+    "control": "rls_head_resid_l1_preset005",
+    "mean_diff": 0.001557776666666751,
+    "per_seed_diff": [
+     0.001467,
+     0.001993,
+     0.001213
+    ],
+    "seeds": [
+     0,
+     1,
+     2
+    ],
+    "stderr_diff": 0.00022972931952205516
+   },
+   "per_seed_average_online_accuracy": [
+    0.870653,
+    0.871823,
+    0.870707
+   ],
+   "per_seed_late_window_slope": [
+    0.00012071,
+    -0.00029357,
+    -0.00038572
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 90.45
+  },
+  {
+   "average_online_accuracy_mean": 0.869503310222222,
+   "average_online_accuracy_stderr": 0.00018578155781233995,
+   "average_plasticity_mean": 0.0053189076666666675,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_l1_preset005",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "head_resid": 1.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.00034119058333333406,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.869187,
+    0.86983,
+    0.869493
+   ],
+   "per_seed_late_window_slope": [
+    -0.000135,
+    -0.00042572,
+    -0.00046286
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 255.2
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v1",
+ "slope_window": 15
+}

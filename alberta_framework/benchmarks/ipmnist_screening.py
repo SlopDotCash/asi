@@ -3658,6 +3658,144 @@ def _make_rls_head_learner(
     return init_fn, full_step
 
 
+def _make_rls_head_nogate_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Gate ablation on the residual-trained RLS-head incumbent (issue #52).
+
+    ``gate_scale`` is the mechanism constant.  At ``1.0`` this factory
+    delegates verbatim to :func:`_make_rls_head_learner`, so the reduction to
+    the incumbent is bit-exact by construction (pinned).  At ``0.0`` the four
+    residual-trained body tensors update by plain decayed SGD,
+    ``theta * (1 - alpha*wd) - alpha * residual_gradient`` — no utility EMA,
+    no bias correction, no sigmoid gate — while the conditioning, shift
+    detector, and wind-up-immune RLS head keep the incumbent's exact
+    arithmetic and constants.  Only the residual configuration is supported;
+    anything else fails closed.
+    """
+    gate_scale = hp["gate_scale"]
+    if gate_scale == 1.0:
+        return _make_rls_head_learner(hp)
+    if gate_scale != 0.0:
+        raise ValueError(
+            "gate_scale must be 0.0 (ablation) or 1.0 (incumbent reduction)"
+        )
+    if hp["head_resid"] == 0.0:
+        raise ValueError(
+            "the gate ablation is preregistered for the residual arm only"
+        )
+    step_size = hp["step_size"]
+    param_decay = 1.0 - step_size * hp["weight_decay"]
+    rls_lambda = hp["rls_lambda"]
+    ridge_init = hp["rls_ridge_init"]
+    reset_frac = hp["rls_reset_frac"]
+    reset_enabled = reset_frac <= 1.0
+    trace_cap = hp["rls_p_trace_cap"]
+    cap_enabled = trace_cap > 0.0
+
+    def normalize(
+        state: EMANormState, fast_mean: Array, x: Array
+    ) -> tuple[Array, EMANormState, Array, Array]:
+        return shift_adaptive_normalize(
+            state, fast_mean, x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+
+    def init_fn(params: dict[str, Array]) -> RLSHeadState:
+        input_dim = params["w1"].shape[0]
+        m = params["w2"].shape[1] + 1
+        n_classes = params["w3"].shape[1]
+        return RLSHeadState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            norm=EMANormState(  # type: ignore[call-arg]
+                mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                var=jnp.ones(input_dim, dtype=jnp.float32),
+                count=jnp.zeros(input_dim, dtype=jnp.float32),
+            ),
+            fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+            p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+            wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+        )
+
+    def _phi(params: dict[str, Array], x_norm: Array) -> Array:
+        m = params["w2"].shape[1] + 1
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        scale = 1.0 / math.sqrt(m)
+        return jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
+
+    def full_step(
+        params: dict[str, Array],
+        state: RLSHeadState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], RLSHeadState, StepMetrics]:
+        del key  # sigma-0 body, closed-form head: no randomness consumed
+        x_norm, new_norm, new_fast, shifted = normalize(
+            state.norm, state.fast_mean, x
+        )
+        count = state.step + jnp.array(1, dtype=jnp.int32)
+        n_classes = state.wout.shape[1]
+        y_onehot = jax.nn.one_hot(y, n_classes, dtype=jnp.float32)
+        body = {name: params[name] for name in _RLS_HEAD_BODY}
+
+        def head_loss(
+            body_params: dict[str, Array],
+        ) -> tuple[Array, tuple[Array, Array]]:
+            merged = dict(params)
+            merged.update(body_params)
+            phi = _phi(merged, x_norm)
+            logits = state.wout.T @ phi
+            err = y_onehot - logits
+            return 0.5 * jnp.sum(err * err), (logits, phi)
+
+        (loss, (logits, phi)), body_grads = jax.value_and_grad(
+            head_loss, has_aux=True
+        )(body)
+        new_params = dict(params)
+        for name in _RLS_HEAD_BODY:
+            new_params[name] = (
+                params[name] * param_decay - step_size * body_grads[name]
+            )
+        accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
+        err = y_onehot - logits
+        pp = state.p @ phi
+        gain = pp / (rls_lambda + phi @ pp)
+        new_wout = state.wout + jnp.outer(gain, err)
+        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+        new_p = 0.5 * (new_p + new_p.T)
+        if reset_enabled:
+            m = new_p.shape[0]
+            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+            new_p = jnp.where(
+                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+            )
+        if cap_enabled:
+            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+        err_after = y_onehot - new_wout.T @ phi
+        loss_after = 0.5 * jnp.sum(err_after * err_after)
+        plasticity = jnp.clip(
+            1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
+        )
+        return new_params, RLSHeadState(  # type: ignore[call-arg]
+            utility=state.utility,
+            step=count,
+            norm=new_norm,
+            fast_mean=new_fast,
+            p=new_p,
+            wout=new_wout,
+        ), (accuracy, loss, plasticity)
+
+    return init_fn, full_step
+
+
 def _rls_head_frozen_probe_input(
     state: Any, observation: Array, hyperparameters: Mapping[str, float]
 ) -> Array:
@@ -5965,6 +6103,33 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    # --- Preregistered gate ablation on the residual incumbent (issue
+    # #52): does the utility gate pay rent under the residual training
+    # signal?  Wave 6 answered no for the SGD-head path under conditioning;
+    # ledger #27/#29 put the plateau movement in the residual-trained body;
+    # this arm sits exactly in the gap.  One change: gate_scale=0.0 swaps
+    # the gated body step for plain decayed SGD; gate_scale=1.0 delegates
+    # verbatim to the incumbent factory (bit-exact reduction, pinned).
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_l1_preset005_nogate",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0, rls_reset_frac=0.05, head_resid=1.0,
+                gate_scale=0.0,
+            ),
+            factory=_make_rls_head_nogate_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Gate ablation on the residual-trained wind-up-immune "
+                "incumbent (preregistered, issue #52): plain decayed-SGD "
+                "body on the RLS residual — no utility EMA, no sigmoid "
+                "gate — under the incumbent's exact conditioning, shift "
+                "detector, and head."
+            ),
+        )
+    )
     # --- Optimizer-floor hybrid wave (section (s) factories): Adam-class
     # step adaptation under the champion's full stability package.  The
     # naive composition adamw_cbp_ema_norm proved Adam-class task-1
