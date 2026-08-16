@@ -46,6 +46,18 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _float32_operand(
+    name: str,
+    value: Array | float | int,
+    shape: tuple[int, ...],
+) -> Array:
+    """Narrow one numeric operand while preserving its exact shape contract."""
+    array = jnp.asarray(value, dtype=jnp.float32)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    return array
+
+
 @dataclasses.dataclass(frozen=True)
 class ActionConditionedWorldModelConfig:
     """Configuration for :class:`ActionConditionedWorldModel`.
@@ -390,12 +402,9 @@ class ActionConditionedWorldModel:
         must not form arithmetic with a non-finite public observation before
         publishing the fail-visible result.
         """
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
         action_one_hot = self.encode_action(action)
         features_valid = jnp.all(jnp.isfinite(obs)) & jnp.all(
             jnp.isfinite(action_one_hot)
@@ -416,6 +425,7 @@ class ActionConditionedWorldModel:
     @functools.partial(jax.jit, static_argnums=(0,))
     def encode_action(self, action: Array) -> Array:
         """Return the action code, leaving invalid discrete inputs visible."""
+        action = _float32_operand("action", action, ())
         safe_action, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
@@ -440,18 +450,16 @@ class ActionConditionedWorldModel:
         next_observation: Array,
     ) -> Array:
         """Build normalized ``[delta_obs, reward, discount]`` targets."""
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
-        next_obs = jnp.asarray(next_observation, dtype=jnp.float32)
-        if next_obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"next_observation must have shape ({self._config.observation_dim},) "
-                f"got {next_obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
+        next_obs = _float32_operand(
+            "next_observation",
+            next_observation,
+            (self._config.observation_dim,),
+        )
+        reward_arr = _float32_operand("reward", reward, ())
+        discount_arr = _float32_operand("discount", discount, ())
         obs_scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
         safe_scale = jnp.maximum(obs_scale, jnp.asarray(1e-6, dtype=jnp.float32))
         normalized_delta = jnp.where(
@@ -460,10 +468,10 @@ class ActionConditionedWorldModel:
             next_obs / safe_scale,
         )
         reward_target = jnp.reshape(
-            jnp.asarray(reward, dtype=jnp.float32) / self._config.reward_scale,
+            reward_arr / self._config.reward_scale,
             (1,),
         )
-        discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
+        discount_target = jnp.reshape(discount_arr, (1,))
         return jnp.concatenate([normalized_delta, reward_target, discount_target], axis=0)
 
     def _prediction_and_raw_diagnostics(
@@ -573,24 +581,21 @@ class ActionConditionedWorldModel:
         else:
             discount = discount_or_next_observation
 
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
+        action = _float32_operand("action", action, ())
         action_arr, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
         )
-        reward_arr = jnp.asarray(reward, dtype=jnp.float32)
-        discount_arr = jnp.asarray(discount, dtype=jnp.float32)
-        next_obs = jnp.asarray(next_observation, dtype=jnp.float32)
-        if next_obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"next_observation must have shape ({self._config.observation_dim},) "
-                f"got {next_obs.shape}"
-            )
+        reward_arr = _float32_operand("reward", reward, ())
+        discount_arr = _float32_operand("discount", discount, ())
+        next_obs = _float32_operand(
+            "next_observation",
+            next_observation,
+            (self._config.observation_dim,),
+        )
         inputs_valid = (
             jnp.all(jnp.isfinite(obs))
             & action_valid
@@ -990,6 +995,7 @@ class OneStepWorldModel:
     def encode_action(self, action: Array) -> Array:
         """Encode a discrete or vector action."""
         if self._config.n_actions is not None:
+            action = _float32_operand("action", action, ())
             safe_action, action_valid = safe_discrete_action(
                 action,
                 self._config.n_actions,
@@ -1004,43 +1010,31 @@ class OneStepWorldModel:
                 encoded,
                 jnp.full_like(encoded, jnp.nan),
             )
-        action_arr = jnp.asarray(action, dtype=jnp.float32)
-        if action_arr.shape != (self._config.action_dim,):
-            raise ValueError(
-                f"action must have shape ({self._config.action_dim},) "
-                f"got {action_arr.shape}"
-            )
-        return action_arr
+        return _float32_operand("action", action, (self._config.action_dim,))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def input_features(self, observation: Array, action: Array) -> Array:
         """Return ``concat(observation, encoded_action)``."""
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
         return jnp.concatenate([obs, self.encode_action(action)], axis=0)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def targets(self, observation: Array, reward: Array, next_observation: Array) -> Array:
         """Build ``[reward, next_obs_or_delta]`` targets."""
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
-        next_obs = jnp.asarray(next_observation, dtype=jnp.float32)
-        if next_obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"next_observation must have shape ({self._config.observation_dim},) "
-                f"got {next_obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
+        reward_arr = _float32_operand("reward", reward, ())
+        next_obs = _float32_operand(
+            "next_observation",
+            next_observation,
+            (self._config.observation_dim,),
+        )
         obs_target = next_obs - obs if self._config.predict_delta else next_obs
         return jnp.concatenate(
-            [jnp.reshape(jnp.asarray(reward, dtype=jnp.float32), (1,)), obs_target],
+            [jnp.reshape(reward_arr, (1,)), obs_target],
             axis=0,
         )
 
@@ -1052,12 +1046,9 @@ class OneStepWorldModel:
         action: Array,
     ) -> WorldModelPrediction:
         """Predict reward and next observation."""
-        obs = jnp.asarray(observation, dtype=jnp.float32)
-        if obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"observation must have shape ({self._config.observation_dim},) "
-                f"got {obs.shape}"
-            )
+        obs = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
         raw_predictions = self._learner.predict(
             state.learner_state,
             self.input_features(obs, action),
@@ -1084,18 +1075,25 @@ class OneStepWorldModel:
         next_observation: Array,
     ) -> WorldModelUpdateResult:
         """Update from one real transition."""
+        observation = _float32_operand(
+            "observation", observation, (self._config.observation_dim,)
+        )
+        reward = _float32_operand("reward", reward, ())
+        next_observation = _float32_operand(
+            "next_observation",
+            next_observation,
+            (self._config.observation_dim,),
+        )
         if self._config.n_actions is not None:
+            action = _float32_operand("action", action, ())
             safe_action, action_valid = safe_discrete_action(
                 action,
                 self._config.n_actions,
             )
         else:
-            action_arr = jnp.asarray(action, dtype=jnp.float32)
-            if action_arr.shape != (self._config.action_dim,):
-                raise ValueError(
-                    f"action must have shape ({self._config.action_dim},) "
-                    f"got {action_arr.shape}"
-                )
+            action_arr = _float32_operand(
+                "action", action, (self._config.action_dim,)
+            )
             action_valid = jnp.all(jnp.isfinite(action_arr))
             safe_action = jnp.where(
                 action_valid,
@@ -1109,13 +1107,8 @@ class OneStepWorldModel:
             self.input_features(observation, safe_action),
             targets,
         )
-        next_obs = jnp.asarray(next_observation, dtype=jnp.float32)
-        if next_obs.shape != (self._config.observation_dim,):
-            raise ValueError(
-                f"next_observation must have shape ({self._config.observation_dim},) "
-                f"got {next_obs.shape}"
-            )
-        reward_arr = jnp.asarray(reward, dtype=jnp.float32)
+        next_obs = next_observation
+        reward_arr = reward
         next_observation_errors = prediction.next_observation - next_obs
         reward_error = prediction.reward - reward_arr
         observation_mse = jnp.nanmean(next_observation_errors**2)
