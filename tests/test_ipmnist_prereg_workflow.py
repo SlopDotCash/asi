@@ -42,6 +42,15 @@ def test_prereg_protocols_pin_exact_arms_and_seeds() -> None:
     assert issue188.seeds == tuple(range(3, 13))
 
 
+def test_issue184_protocol_pins_exact_arms_namespace_and_seeds() -> None:
+    issue184 = _PROTOCOLS["issue184"]
+    assert issue184.issue == 184
+    assert issue184.namespace == "rls_preset_ablation_r1"
+    assert issue184.control == "rls_head_resid_l1_preset005"
+    assert issue184.candidate == "rls_head_resid_l1_noreset"
+    assert issue184.seeds == (0, 1, 2)
+
+
 def test_authorization_line_binds_every_launch_identity() -> None:
     line = _authorization_line(
         _PROTOCOLS["issue51"],
@@ -139,6 +148,34 @@ def test_issue188_outcomes_are_frozen(mean_diff: float, stderr_diff: float, expe
             mean_diff=mean_diff,
             stderr_diff=stderr_diff,
             per_seed_diff=(mean_diff,) * 10,
+        )
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("mean_diff", "diffs", "expected"),
+    [
+        (0.002000001, (0.001, 0.002, 0.003), "no_reset_win"),
+        (0.002, (0.001, 0.002, 0.003), "inconclusive"),
+        (0.003, (0.001, 0.0, 0.003), "inconclusive"),
+        (-0.002000001, (-0.001, -0.002, -0.003), "reset_load_bearing"),
+        (-0.002, (-0.001, -0.002, -0.003), "inconclusive"),
+        (-0.003, (-0.001, 0.0, -0.003), "inconclusive"),
+        (0.001, (0.0015, -0.0015, 0.0), "practical_equivalence"),
+        (-0.001, (0.0015, -0.0015, 0.0), "practical_equivalence"),
+        (0.0005, (0.001500001, -0.001, 0.0), "inconclusive"),
+    ],
+)
+def test_issue184_outcomes_are_frozen(
+    mean_diff: float, diffs: tuple[float, ...], expected: str
+) -> None:
+    assert (
+        _classify_outcome(
+            "issue184",
+            mean_diff=mean_diff,
+            stderr_diff=0.0,
+            per_seed_diff=diffs,
         )
         == expected
     )
