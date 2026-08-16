@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from fractions import Fraction
 
 import chex
@@ -39,6 +40,36 @@ def test_working_memory_config_roundtrip_and_shapes() -> None:
     chex.assert_shape(state.action_traces, (1, 2))
     chex.assert_shape(state.reward_traces, (2, 1))
     chex.assert_shape(state.last_gate, (3,))
+
+
+def test_working_memory_config_from_config_requires_actual_json_lists() -> None:
+    class HostileList(list[float]):
+        def __iter__(self) -> Iterator[float]:
+            raise AssertionError("invalid list subclass must not be iterated")
+
+    base = WorkingMemoryConfig(observation_dim=2, action_dim=1).to_config()
+    keys = (
+        "observation_decay_rates",
+        "action_decay_rates",
+        "reward_decay_rates",
+    )
+    invalid_values: tuple[object, ...] = (
+        (0.5,),
+        "0.5",
+        np.asarray([0.5]),
+        HostileList([0.5]),
+        0.5,
+    )
+    for key in keys:
+        for value in invalid_values:
+            payload = {**base, key: value}
+            with pytest.raises(ValueError, match=key):
+                WorkingMemoryConfig.from_config(payload)  # type: ignore[arg-type]
+
+    restored = WorkingMemoryConfig.from_config(base)
+    assert type(restored.observation_decay_rates) is tuple
+    assert type(restored.action_decay_rates) is tuple
+    assert type(restored.reward_decay_rates) is tuple
 
 
 def test_working_memory_trace_decay_and_feature_causality() -> None:
