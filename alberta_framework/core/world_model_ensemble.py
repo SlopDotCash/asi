@@ -39,17 +39,19 @@ import dataclasses
 import functools
 import hashlib
 import json
-import math
+import operator
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
     load_checkpoint_metadata,
@@ -71,8 +73,94 @@ from alberta_framework.core.world_model import (
 WORLD_MODEL_ENSEMBLE_CHECKPOINT_SCHEMA = "alberta.world_model_ensemble.v2"
 _WORLD_MODEL_ENSEMBLE_CHECKPOINT_SCHEMA_V1 = "alberta.world_model_ensemble.v1"
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
 _REPLAY_KEY_FOLD_IN = 0x5245504C
 _V1_REPLAY_KEY_FOLD_IN = 0x50525632
+
+
+def _require_int32(
+    name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX
+) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _configured_member_state_scalars(model: ActionConditionedWorldModelConfig) -> int:
+    input_dim = model.observation_dim + model.n_actions
+    if model.include_action_interactions:
+        input_dim += model.observation_dim * model.n_actions
+    n_heads = model.observation_dim + 2
+    layer_sizes = (input_dim, *model.hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    head_input = model.hidden_sizes[-1] if model.hidden_sizes else input_dim
+    head_parameters = n_heads * (head_input + 1)
+    optimizer_scalars = 2 * len(model.hidden_sizes) + 2 * n_heads
+    learner_scalars = (
+        2 * (trunk_parameters + head_parameters)
+        + optimizer_scalars
+        + sum(model.hidden_sizes)
+        + 5  # array counters plus two logical host timing leaves
+    )
+    return learner_scalars + 2 * model.observation_dim + 4
+
+
+def _validate_ensemble_resources(
+    model: ActionConditionedWorldModelConfig, ensemble_size: int
+) -> None:
+    target_dim = model.observation_dim + 2
+    member_scalars = _configured_member_state_scalars(model)
+    residual_scalars = ensemble_size * target_dim
+    # Members, residual matrix, signal estimator (9), two typed PRNG keys (4),
+    # two masks, two count vectors, and two event counters.
+    persistent_scalars = (
+        ensemble_size * member_scalars
+        + residual_scalars
+        + 9
+        + 4
+        + 4 * ensemble_size
+        + 2
+    )
+    persistent_bytes = (
+        4
+        * (
+            ensemble_size * member_scalars
+            + residual_scalars
+            + 9
+            + 4
+            + 2 * ensemble_size
+            + 2
+        )
+        + 2 * ensemble_size
+    )
+    for name, value in (
+        ("member_state_scalars", member_scalars),
+        ("residual_variance_scalars", residual_scalars),
+        ("persistent_state_scalars", persistent_scalars),
+        ("persistent_state_bytes", persistent_bytes),
+    ):
+        if value > _INT32_MAX:
+            raise ValueError(f"derived {name} must fit in signed int32")
 
 
 def _saturating_int32_increment(value: Array) -> Array:
@@ -127,43 +215,51 @@ class WorldModelEnsembleConfig:
     residual_variance_floor: float = 1.0e-6
 
     def __post_init__(self) -> None:
-        if (
-            isinstance(self.ensemble_size, bool)
-            or not isinstance(self.ensemble_size, int)
-            or self.ensemble_size < 2
-        ):
-            raise ValueError("ensemble_size must be an integer >= 2")
-        if (
-            not math.isfinite(self.bootstrap_probability)
-            or not 0.0 < self.bootstrap_probability < 1.0
-        ):
-            raise ValueError("bootstrap_probability must be finite and in (0, 1)")
-        if (
-            not math.isfinite(self.residual_variance_decay)
-            or not 0.0 <= self.residual_variance_decay < 1.0
-        ):
-            raise ValueError("residual_variance_decay must be finite and in [0, 1)")
-        if (
-            isinstance(self.residual_variance_warmup_steps, bool)
-            or not isinstance(self.residual_variance_warmup_steps, int)
-            or not 1 <= self.residual_variance_warmup_steps <= _INT32_MAX
-        ):
-            raise ValueError("residual_variance_warmup_steps must be an integer in [1, int32 max]")
-        if not math.isfinite(self.residual_variance_floor) or self.residual_variance_floor <= 0.0:
-            raise ValueError("residual_variance_floor must be positive and finite")
-        if self.signal_estimator.ensemble_size != self.ensemble_size:
+        if type(self.model) is not ActionConditionedWorldModelConfig:
+            raise ValueError("model must be an ActionConditionedWorldModelConfig")
+        if type(self.signal_estimator) is not LearningSignalEstimatorConfig:
+            raise ValueError("signal_estimator must be a LearningSignalEstimatorConfig")
+        ensemble_size = _require_int32(
+            "ensemble_size", self.ensemble_size, minimum=2, maximum=_INT32_MAX - 1
+        )
+        warmup = _require_int32(
+            "residual_variance_warmup_steps",
+            self.residual_variance_warmup_steps,
+            minimum=1,
+        )
+        bootstrap_probability = validated_float32_scalar(
+            "bootstrap_probability",
+            self.bootstrap_probability,
+            positive=True,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        residual_variance_decay = validated_float32_scalar(
+            "residual_variance_decay",
+            self.residual_variance_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        residual_variance_floor = validated_float32_scalar(
+            "residual_variance_floor", self.residual_variance_floor, positive=True
+        )
+        if self.signal_estimator.ensemble_size != ensemble_size:
             raise ValueError("signal_estimator.ensemble_size must match ensemble_size")
         expected_target_dim = self.model.observation_dim + 2
         if self.signal_estimator.target_dim != expected_target_dim:
             raise ValueError("signal_estimator.target_dim must equal model.observation_dim + 2")
-        if self.residual_variance_floor < self.signal_estimator.variance_floor:
+        if residual_variance_floor < self.signal_estimator.variance_floor:
             raise ValueError("residual_variance_floor must be >= signal_estimator.variance_floor")
-        if self.residual_variance_floor > self.signal_estimator.max_predicted_variance:
+        if residual_variance_floor > self.signal_estimator.max_predicted_variance:
             raise ValueError("residual_variance_floor exceeds the signal estimator variance bound")
 
-        # Reuse the model's complete constructor validation rather than
-        # maintaining a second, drifting copy here.
-        ActionConditionedWorldModel(self.model)
+        object.__setattr__(self, "ensemble_size", ensemble_size)
+        object.__setattr__(self, "residual_variance_warmup_steps", warmup)
+        object.__setattr__(self, "bootstrap_probability", bootstrap_probability)
+        object.__setattr__(self, "residual_variance_decay", residual_variance_decay)
+        object.__setattr__(self, "residual_variance_floor", residual_variance_floor)
+        _validate_ensemble_resources(self.model, ensemble_size)
 
     @property
     def target_dim(self) -> int:
@@ -551,6 +647,8 @@ class WorldModelEnsemble:
     """Fixed-size bootstrap ensemble with causal typed learning signals."""
 
     def __init__(self, config: WorldModelEnsembleConfig):
+        if type(config) is not WorldModelEnsembleConfig:
+            raise ValueError("config must be a WorldModelEnsembleConfig")
         self._config = config
         self._model = ActionConditionedWorldModel(config.model)
         self._signals = LearningSignalEstimator(config.signal_estimator)
@@ -676,7 +774,11 @@ class WorldModelEnsemble:
             raise TypeError("bootstrap PRNG key storage must use uint32 words")
         bootstrap_words = int(bootstrap_key_data.size + replay_key_data.size)
         bootstrap_bytes = int(bootstrap_key_data.nbytes + replay_key_data.nbytes)
-        if persistent.uint32_scalars != bootstrap_words or bootstrap_bytes != 4 * bootstrap_words:
+        expected_uint32 = (
+            self._config.ensemble_size * member_account.uint32_scalars
+            + bootstrap_words
+        )
+        if persistent.uint32_scalars != expected_uint32 or bootstrap_bytes != 4 * bootstrap_words:
             raise ValueError("bootstrap PRNG key accounting does not match state")
 
         prediction = _logical_tree_accounting(self._zero_prediction())

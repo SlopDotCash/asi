@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,8 @@ def _config(
     max_predicted_variance: float = 10_000.0,
     max_observed_loss: float = 10_000.0,
     residual_variance_warmup_steps: int = 1,
+    residual_variance_decay: float = 0.8,
+    residual_variance_floor: float = 1.0e-6,
 ) -> WorldModelEnsembleConfig:
     model = ActionConditionedWorldModelConfig(
         observation_dim=2,
@@ -79,9 +82,9 @@ def _config(
         signal_estimator=signals,
         ensemble_size=ensemble_size,
         bootstrap_probability=bootstrap_probability,
-        residual_variance_decay=0.8,
+        residual_variance_decay=residual_variance_decay,
         residual_variance_warmup_steps=residual_variance_warmup_steps,
-        residual_variance_floor=1.0e-6,
+        residual_variance_floor=residual_variance_floor,
     )
 
 
@@ -751,3 +754,110 @@ def test_checkpoint_rejects_invalid_state(tmp_path: Path) -> None:
             corrupt,
             tmp_path / "invalid",
         )
+
+
+def test_config_validates_numpy_integer_and_float32_scalar_families() -> None:
+    model = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=()
+    )
+    signals = LearningSignalEstimatorConfig(ensemble_size=3, target_dim=4)
+    config = WorldModelEnsembleConfig(
+        model=model,
+        signal_estimator=signals,
+        ensemble_size=np.uint16(3),
+        bootstrap_probability=np.float64(0.75),
+        residual_variance_decay=Fraction(3, 4),
+        residual_variance_warmup_steps=np.int64(2),
+        residual_variance_floor=np.float32(1.0e-5),
+    )
+    assert type(config.ensemble_size) is int
+    assert type(config.residual_variance_warmup_steps) is int
+    assert all(
+        type(value) is float
+        for value in (
+            config.bootstrap_probability,
+            config.residual_variance_decay,
+            config.residual_variance_floor,
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"ensemble_size": True},
+        {"ensemble_size": 3.0},
+        {"residual_variance_warmup_steps": np.bool_(True)},
+        {"residual_variance_warmup_steps": 1.5},
+        {"bootstrap_probability": 1.0e-100},
+        {"bootstrap_probability": 1.0 - 1.0e-10},
+        {"residual_variance_decay": 1.0 - 1.0e-10},
+        {"residual_variance_floor": 1.0e100},
+    ],
+)
+def test_config_rejects_hostile_scalar_domains(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        _config(**overrides)  # type: ignore[arg-type]
+
+
+def test_config_preflights_aggregate_state_before_split_or_allocation() -> None:
+    ensemble_size = 20_000_000
+    model = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=()
+    )
+    signals = LearningSignalEstimatorConfig(
+        ensemble_size=ensemble_size,
+        target_dim=4,
+    )
+    with pytest.raises(ValueError, match="persistent_state_bytes"):
+        WorldModelEnsembleConfig(
+            model=model,
+            signal_estimator=signals,
+            ensemble_size=ensemble_size,
+        )
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        ActionConditionedWorldModelConfig(
+            observation_dim=2, n_actions=2, hidden_sizes=()
+        ),
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(3,),
+            include_action_interactions=True,
+        ),
+    ],
+)
+def test_config_resource_formula_matches_initialized_tree(
+    model: ActionConditionedWorldModelConfig,
+) -> None:
+    signals = LearningSignalEstimatorConfig(ensemble_size=2, target_dim=4)
+    ensemble = WorldModelEnsemble(
+        WorldModelEnsembleConfig(
+            model=model,
+            signal_estimator=signals,
+            ensemble_size=2,
+        )
+    )
+    budget = ensemble.resource_budget()
+    assert budget.persistent_state_scalars == (
+        budget.persistent_float32_scalars
+        + budget.persistent_float64_scalars
+        + budget.persistent_int32_scalars
+        + budget.persistent_int64_scalars
+        + budget.persistent_uint32_scalars
+        + budget.persistent_bool_scalars
+    )
+    assert budget.persistent_state_bytes == (
+        4
+        * (
+            budget.persistent_float32_scalars
+            + budget.persistent_int32_scalars
+            + budget.persistent_uint32_scalars
+        )
+        + 8 * (budget.persistent_float64_scalars + budget.persistent_int64_scalars)
+        + budget.persistent_bool_scalars
+    )
