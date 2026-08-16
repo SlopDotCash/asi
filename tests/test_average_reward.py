@@ -927,7 +927,8 @@ def test_average_reward_configs_canonicalize_float32_sink_values() -> None:
 
 
 def test_average_reward_actor_preflights_state_before_allocation() -> None:
-    last_legal_n_actions = (2**29 - 1 - 14) // 10
+    # Includes both actor leaves and the nested one-head critic state.
+    last_legal_n_actions = (2**29 - 1 - 28) // 10
     AverageRewardHordeActorCriticConfig(
         n_actions=last_legal_n_actions,
         hidden_sizes=(1,),

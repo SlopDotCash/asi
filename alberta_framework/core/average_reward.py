@@ -93,10 +93,23 @@ def _require_state_resources(name: str, *, scalars: int, nbytes: int) -> None:
         raise ValueError(f"{name} state bytes must fit signed int32")
 
 
-def _preflight_actor_state(n_actions: int, observation_dim: int, actor_dim: int) -> None:
+def _preflight_actor_state(
+    n_actions: int,
+    observation_dim: int,
+    hidden_sizes: tuple[int, ...],
+) -> None:
+    actor_dim = hidden_sizes[-1] if hidden_sizes else observation_dim
     actor_parameters = n_actions * actor_dim
     float32_scalars = 4 * actor_parameters + 6 * n_actions + observation_dim + 8
-    scalar_count = float32_scalars + 5
+    actor_scalar_count = float32_scalars + 5
+    layer_sizes = (observation_dim, *hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    critic_parameters = trunk_parameters + actor_dim + 1
+    critic_scalar_count = 2 * critic_parameters + sum(hidden_sizes) + 5
+    scalar_count = actor_scalar_count + critic_scalar_count
     _require_state_resources(
         "average-reward actor-critic",
         scalars=scalar_count,
@@ -434,7 +447,7 @@ class AverageRewardHordeActorCriticConfig:
             validated_float32_scalar("epsilon", self.epsilon, lower=0.0, upper=1.0),
         )
         if self.hidden_sizes:
-            _preflight_actor_state(self.n_actions, 1, self.hidden_sizes[-1])
+            _preflight_actor_state(self.n_actions, 1, self.hidden_sizes)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize this config to a dictionary."""
@@ -631,7 +644,9 @@ class AverageRewardHordeActorCriticAgent:
         """Initialize critic and actor state."""
         observation_dim = _require_int32("observation_dim", observation_dim, minimum=1)
         actor_dim = self._config.hidden_sizes[-1] if self._config.hidden_sizes else observation_dim
-        _preflight_actor_state(self._config.n_actions, observation_dim, actor_dim)
+        _preflight_actor_state(
+            self._config.n_actions, observation_dim, self._config.hidden_sizes
+        )
         key, critic_key = jr.split(key)
         critic_state = self._critic.init(observation_dim, critic_key)
         actor_opt_w = self._actor_optimizer.init_for_shape((self._config.n_actions, actor_dim))
