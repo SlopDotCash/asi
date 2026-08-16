@@ -8,8 +8,9 @@ All streams use JAX-compatible pure functions that work with jax.lax.scan.
 """
 
 import math
+import operator
 from numbers import Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax.numpy as jnp
@@ -32,19 +33,29 @@ _FLOAT32_EXP_SAFE_LOG_MAX = float(
     np.nextafter(np.float32(math.log(_FLOAT32_MAX)), np.float32(-math.inf))
 )
 
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
 
 def _require_positive_int(name: str, value: object) -> int:
     """Require a positive schedule modulus representable by JAX's int32 clock."""
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 1
-        or value > _INT32_MAX
-    ):
-        raise ValueError(
-            f"{name} must be a positive integer in [1, {_INT32_MAX}], got {value!r}"
-        )
-    return value
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be a positive integer in [1, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if number < 1 or number > _INT32_MAX:
+        raise ValueError(f"{name} must be a positive integer in [1, {_INT32_MAX}]")
+    return number
 
 
 def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[int, int, float]:
@@ -89,6 +100,13 @@ def _require_finite_float32_log_scale(name: str, value: object) -> float:
     _, _, narrowed = _narrow_real_to_float32(name, value, message)
     if narrowed < _FLOAT32_EXP_SAFE_LOG_MIN or narrowed > _FLOAT32_EXP_SAFE_LOG_MAX:
         raise ValueError(message)
+    return narrowed
+
+
+def _require_finite_float32(name: str, value: object) -> float:
+    """Require a finite float32 execution value."""
+    message = f"{name} must be a finite float32 value"
+    _, _, narrowed = _narrow_real_to_float32(name, value, message)
     return narrowed
 
 
@@ -232,10 +250,23 @@ class HiddenStateAR2Stream:
             nonlinear_coeff: Weight on the hidden h0*h1 interaction term
             target_noise_std: Std dev of additive target noise
         """
-        if visible_dim <= 0 or visible_dim >= feature_dim:
+        feature_dim = _require_positive_int("feature_dim", feature_dim)
+        visible_dim = _require_positive_int("visible_dim", visible_dim)
+        if visible_dim >= feature_dim:
             raise ValueError("visible_dim must be in [1, feature_dim)")
         if feature_dim - visible_dim < 2:
             raise ValueError("hidden block must contain at least two channels")
+        phi1 = _require_finite_float32("phi1", phi1)
+        phi2 = _require_finite_float32("phi2", phi2)
+        innovation_std = _require_finite_nonnegative_float32(
+            "innovation_std", innovation_std
+        )
+        nonlinear_coeff = _require_finite_float32(
+            "nonlinear_coeff", nonlinear_coeff
+        )
+        target_noise_std = _require_finite_nonnegative_float32(
+            "target_noise_std", target_noise_std
+        )
         deterministic_copy = phi1 == 1.0 and phi2 == 0.0 and innovation_std == 0.0
         violates_stationarity = (
             phi1 + phi2 >= 1.0 or phi2 - phi1 >= 1.0 or abs(phi2) >= 1.0
@@ -464,11 +495,15 @@ class SuttonExperiment1Stream:
                 irrelevant-input weights (0.0 = they stay exactly zero,
                 as in the paper)
         """
-        self._num_relevant = num_relevant
-        self._num_irrelevant = num_irrelevant
+        self._num_relevant = _require_positive_int("num_relevant", num_relevant)
+        self._num_irrelevant = _require_positive_int(
+            "num_irrelevant", num_irrelevant
+        )
         self._change_interval = _require_positive_int("change_interval", change_interval)
-        self._noise_std = noise_std
-        self._bias_drift_rate = bias_drift_rate
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
+        self._bias_drift_rate = _require_finite_nonnegative_float32(
+            "bias_drift_rate", bias_drift_rate
+        )
 
     @property
     def feature_dim(self) -> int:
@@ -912,6 +947,7 @@ def make_scale_range(
     stream = ScaledStreamWrapper(RandomWalkStream(10), scales)
     ```
     """
+    feature_dim = _require_positive_int("feature_dim", feature_dim)
     if log_spaced:
         min_bound = _require_normal_float32_scale("min_scale", min_scale)
         max_bound = _require_normal_float32_scale("max_scale", max_scale)
@@ -944,7 +980,9 @@ def make_scale_range(
                 )
         return jnp.asarray(values, dtype=jnp.float32)
     else:
-        return jnp.linspace(min_scale, max_scale, feature_dim, dtype=jnp.float32)
+        min_bound = _require_finite_nonnegative_float32("min_scale", min_scale)
+        max_bound = _require_finite_nonnegative_float32("max_scale", max_scale)
+        return jnp.linspace(min_bound, max_bound, feature_dim, dtype=jnp.float32)
 
 
 @chex.dataclass(frozen=True)
@@ -1003,7 +1041,7 @@ class DynamicScaleShiftStream:
             max_scale: Maximum scale factor (log-uniform sampling)
             noise_std: Std dev of target noise
         """
-        self._feature_dim = feature_dim
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
         self._scale_change_interval = _require_positive_int(
             "scale_change_interval", scale_change_interval
         )
@@ -1014,7 +1052,7 @@ class DynamicScaleShiftStream:
         self._max_scale = _require_normal_float32_scale("max_scale", max_scale)
         if self._min_scale > self._max_scale:
             raise ValueError("min_scale must be <= max_scale")
-        self._noise_std = noise_std
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
 
     @property
     def feature_dim(self) -> int:
@@ -1154,14 +1192,18 @@ class ScaleDriftStream:
             max_log_scale: Maximum log-scale (clips drift)
             noise_std: Std dev of target noise
         """
-        self._feature_dim = feature_dim
-        self._weight_drift_rate = weight_drift_rate
-        self._scale_drift_rate = scale_drift_rate
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        self._weight_drift_rate = _require_finite_nonnegative_float32(
+            "weight_drift_rate", weight_drift_rate
+        )
+        self._scale_drift_rate = _require_finite_nonnegative_float32(
+            "scale_drift_rate", scale_drift_rate
+        )
         self._min_log_scale = _require_finite_float32_log_scale("min_log_scale", min_log_scale)
         self._max_log_scale = _require_finite_float32_log_scale("max_log_scale", max_log_scale)
         if self._min_log_scale > self._max_log_scale:
             raise ValueError("min_log_scale must be <= max_log_scale")
-        self._noise_std = noise_std
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
 
     @property
     def feature_dim(self) -> int:
