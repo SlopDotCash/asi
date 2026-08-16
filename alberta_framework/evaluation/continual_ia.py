@@ -23,10 +23,11 @@ feature discovery, or completion of the Alberta Plan.
 from __future__ import annotations
 
 import functools
+import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Literal, cast
+from typing import Any, Literal, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -35,6 +36,8 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from alberta_framework._seed_validation import JAX_KEY_SEED_MAX
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAConfig,
@@ -83,6 +86,84 @@ RECOMMENDATION_CONDITIONS: tuple[IAConditionName, ...] = (
     "accept_always",
 )
 
+_INT32_MAX = 2**31 - 1
+_MAX_BOOTSTRAP_RESAMPLES = 1_000_000
+_MAX_BOOTSTRAP_DRAW_COUNT = 50_000_000
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
+
+
+def _require_integer(
+    name: str,
+    value: object,
+    *,
+    minimum: int,
+    maximum: int = _INT32_MAX,
+) -> int:
+    """Canonicalize only trusted Python/NumPy integer scalar families."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_derived_int32(name: str, value: int) -> None:
+    if not 0 <= value <= _INT32_MAX:
+        raise ValueError(f"derived {name} must be in [0, {_INT32_MAX}]")
+
+
+def _preflight_static_resources(
+    *,
+    num_steps: int,
+    phase_length: int,
+    n_demons: int,
+) -> None:
+    """Bound all config-only controller, scan, history, and work dimensions."""
+    n_phases = num_steps // phase_length
+    # Exact state-tree measurements for the fixed two-state/two-action/one-option
+    # protocol. Host timing floats are included at their deployed eight bytes.
+    recommendation_state_scalars = 113 + 2 * n_demons
+    recommendation_state_bytes = 468 + 8 * n_demons
+    augmented_state_scalars = 103 + 7 * n_demons
+    augmented_state_bytes = 428 + 28 * n_demons
+    # Every retained result exposes six logical history fields: one float64
+    # reward vector, four int64 action vectors, and one bool acceptance vector.
+    per_condition_history_bytes = 41 * num_steps + 16 * n_phases - 8
+    per_seed_history_bytes = len(CONDITION_NAMES) * per_condition_history_bytes
+    per_seed_transition_work = len(CONDITION_NAMES) * num_steps
+    scan_key_bytes = 8 * num_steps
+    for name, value in (
+        ("n_phases", n_phases),
+        ("recommendation_controller_state_scalars", recommendation_state_scalars),
+        ("recommendation_controller_state_bytes", recommendation_state_bytes),
+        ("augmented_controller_state_scalars", augmented_state_scalars),
+        ("augmented_controller_state_bytes", augmented_state_bytes),
+        ("scan_key_bytes", scan_key_bytes),
+        ("per_seed_history_bytes", per_seed_history_bytes),
+        ("per_seed_transition_work", per_seed_transition_work),
+    ):
+        _require_derived_int32(name, value)
+
+
+def _preflight_run_resources(config: ContinualIAConfig, seed_count: int) -> None:
+    """Bound retained histories, total transitions, and bootstrap peak arrays."""
+    per_condition_history_bytes = 41 * config.num_steps + 16 * config.n_phases - 8
+    total_history_bytes = len(CONDITION_NAMES) * seed_count * per_condition_history_bytes
+    total_transition_work = len(CONDITION_NAMES) * seed_count * config.num_steps
+    bootstrap_draw_count = config.bootstrap_resamples * seed_count
+    bootstrap_peak_bytes = 16 * bootstrap_draw_count + 8 * config.bootstrap_resamples
+    _require_derived_int32("total_history_bytes", total_history_bytes)
+    _require_derived_int32("total_transition_work", total_transition_work)
+    _require_derived_int32("bootstrap_peak_bytes", bootstrap_peak_bytes)
+    if bootstrap_draw_count > _MAX_BOOTSTRAP_DRAW_COUNT:
+        raise ValueError(
+            "derived bootstrap_draw_count must not exceed "
+            f"{_MAX_BOOTSTRAP_DRAW_COUNT}"
+        )
+
 
 @dataclass(frozen=True)
 class ContinualIAConfig:
@@ -105,28 +186,64 @@ class ContinualIAConfig:
     bootstrap_seed: int = 2_026_073_012
 
     def __post_init__(self) -> None:
-        if self.num_steps < 1 or self.phase_length < 1:
-            raise ValueError("num_steps and phase_length must be positive")
-        if self.num_steps % self.phase_length != 0:
+        num_steps = _require_integer("num_steps", self.num_steps, minimum=1)
+        phase_length = _require_integer(
+            "phase_length", self.phase_length, minimum=1, maximum=num_steps
+        )
+        observation_dim = _require_integer(
+            "observation_dim", self.observation_dim, minimum=2, maximum=2
+        )
+        n_actions = _require_integer("n_actions", self.n_actions, minimum=2, maximum=2)
+        n_demons = _require_integer("n_demons", self.n_demons, minimum=1)
+        recovery_window = _require_integer(
+            "recovery_window", self.recovery_window, minimum=1, maximum=phase_length
+        )
+        bootstrap_resamples = _require_integer(
+            "bootstrap_resamples",
+            self.bootstrap_resamples,
+            minimum=1_000,
+            maximum=_MAX_BOOTSTRAP_RESAMPLES,
+        )
+        bootstrap_seed = _require_integer(
+            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=JAX_KEY_SEED_MAX
+        )
+        if num_steps % phase_length != 0:
             raise ValueError("num_steps must be divisible by phase_length")
-        if self.observation_dim != 2 or self.n_actions != 2:
-            raise ValueError("the frozen protocol requires two observations/actions")
-        if self.n_demons < 1:
-            raise ValueError("n_demons must be positive")
-        if not 0.0 <= self.partner_epsilon <= 1.0:
-            raise ValueError("partner_epsilon must lie in [0, 1]")
-        if not 0.0 <= self.recommendation_acceptance_probability <= 1.0:
-            raise ValueError("acceptance probability must lie in [0, 1]")
-        if not 1 <= self.recovery_window <= self.phase_length:
-            raise ValueError("recovery_window must lie in [1, phase_length]")
-        if not 0.0 <= self.recovery_mean_reward_threshold <= 1.0:
-            raise ValueError("recovery threshold must lie in [0, 1]")
-        if self.bootstrap_resamples < 1_000:
-            raise ValueError("bootstrap_resamples must be at least 1000")
-        if not 0.0 < self.confidence_level < 1.0:
-            raise ValueError("confidence_level must lie in (0, 1)")
-        if not 0 <= self.bootstrap_seed < 2**32:
-            raise ValueError("bootstrap_seed must lie in [0, 2**32)")
+        _preflight_static_resources(
+            num_steps=num_steps,
+            phase_length=phase_length,
+            n_demons=n_demons,
+        )
+        object.__setattr__(self, "num_steps", num_steps)
+        object.__setattr__(self, "phase_length", phase_length)
+        object.__setattr__(self, "observation_dim", observation_dim)
+        object.__setattr__(self, "n_actions", n_actions)
+        object.__setattr__(self, "n_demons", n_demons)
+        object.__setattr__(self, "recovery_window", recovery_window)
+        object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
+        object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
+        for name, bounds in (
+            ("partner_q_step_size", {"lower": 0.0}),
+            ("partner_average_reward_step_size", {"lower": 0.0}),
+            ("partner_epsilon", {"lower": 0.0, "upper": 1.0}),
+            ("cortex_base_step_size", {"lower": 0.0}),
+            (
+                "recommendation_acceptance_probability",
+                {"lower": 0.0, "upper": 1.0},
+            ),
+            ("recovery_mean_reward_threshold", {"lower": 0.0, "upper": 1.0}),
+            (
+                "confidence_level",
+                {"positive": True, "upper": 1.0, "upper_inclusive": False},
+            ),
+        ):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(
+                    name, getattr(self, name), **cast(dict[str, Any], bounds)
+                ),
+            )
 
     @property
     def n_phases(self) -> int:
@@ -147,18 +264,46 @@ class IAAcceptanceThresholds:
     maximum_executed_action_credit_mismatches: int = 0
 
     def __post_init__(self) -> None:
-        if self.minimum_seed_count < 1 or self.evidence_seed_start < 0:
-            raise ValueError("seed count/start must be positive/non-negative")
-        minimums = (
-            self.minimum_primary_uplift_lower_ci,
-            self.minimum_changed_action_intervention_rate,
-            self.minimum_augmentation_vs_alone_lower_ci,
-            self.minimum_augmentation_vs_noise_lower_ci,
+        minimum_seed_count = _require_integer(
+            "minimum_seed_count", self.minimum_seed_count, minimum=1
         )
-        if not all(np.isfinite(value) for value in minimums):
-            raise ValueError("acceptance thresholds must be finite")
-        if self.maximum_executed_action_credit_mismatches < 0:
-            raise ValueError("credit mismatch threshold must be non-negative")
+        evidence_seed_start = _require_integer(
+            "evidence_seed_start",
+            self.evidence_seed_start,
+            minimum=0,
+            maximum=JAX_KEY_SEED_MAX,
+        )
+        maximum_mismatches = _require_integer(
+            "maximum_executed_action_credit_mismatches",
+            self.maximum_executed_action_credit_mismatches,
+            minimum=0,
+        )
+        schedule_end = evidence_seed_start + minimum_seed_count
+        if schedule_end > JAX_KEY_SEED_MAX + 1:
+            raise ValueError("derived evidence seed schedule exceeds the uint32 JAX key domain")
+        object.__setattr__(self, "minimum_seed_count", minimum_seed_count)
+        object.__setattr__(self, "evidence_seed_start", evidence_seed_start)
+        object.__setattr__(
+            self, "maximum_executed_action_credit_mismatches", maximum_mismatches
+        )
+        for name, bounds in (
+            ("minimum_primary_uplift_lower_ci", {"lower": -1.0, "upper": 1.0}),
+            (
+                "minimum_changed_action_intervention_rate",
+                {"lower": 0.0, "upper": 1.0},
+            ),
+            ("minimum_augmentation_vs_alone_lower_ci", {"lower": -1.0, "upper": 1.0}),
+            ("minimum_augmentation_vs_noise_lower_ci", {"lower": -1.0, "upper": 1.0}),
+        ):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(
+                    name, getattr(self, name), **cast(dict[str, Any], bounds)
+                ),
+            )
+        if type(self.require_observe_only_exact_identity) is not bool:
+            raise ValueError("require_observe_only_exact_identity must be an actual bool")
 
 
 @dataclass(frozen=True)
@@ -186,14 +331,20 @@ class ControllerBudget:
     ia_attached: bool
 
     def __post_init__(self) -> None:
-        if self.state_scalars < 0 or self.state_bytes < 0:
-            raise ValueError("state budget fields must be non-negative")
-        if self.observation_scalars < 1:
-            raise ValueError("observation budget must be positive")
-        if self.action_scalars_per_step < 1:
-            raise ValueError("action budget must be positive")
-        if self.interaction_steps < 1:
-            raise ValueError("interaction budget must be positive")
+        for name, minimum in (
+            ("state_scalars", 0),
+            ("state_bytes", 0),
+            ("observation_scalars", 1),
+            ("action_scalars_per_step", 1),
+            ("interaction_steps", 1),
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_integer(name, getattr(self, name), minimum=minimum),
+            )
+        if type(self.ia_attached) is not bool:
+            raise ValueError("ia_attached must be an actual bool")
 
 
 @dataclass(frozen=True)
@@ -311,12 +462,27 @@ def paired_bootstrap_mean_interval(
         raise ValueError("paired_differences must be a non-empty vector")
     if not np.all(np.isfinite(values)):
         raise ValueError("paired_differences must be finite")
-    if not 0.0 < confidence_level < 1.0:
-        raise ValueError("confidence_level must lie in (0, 1)")
-    if resamples < 1:
-        raise ValueError("resamples must be positive")
-    if not 0 <= seed < 2**32:
-        raise ValueError("seed must lie in [0, 2**32)")
+    confidence_level = validated_float32_scalar(
+        "confidence_level",
+        confidence_level,
+        positive=True,
+        upper=1.0,
+        upper_inclusive=False,
+    )
+    resamples = _require_integer(
+        "resamples", resamples, minimum=1, maximum=_MAX_BOOTSTRAP_RESAMPLES
+    )
+    seed = _require_integer("seed", seed, minimum=0, maximum=JAX_KEY_SEED_MAX)
+    bootstrap_draw_count = resamples * int(values.size)
+    if bootstrap_draw_count > _MAX_BOOTSTRAP_DRAW_COUNT:
+        raise ValueError(
+            "derived bootstrap_draw_count must not exceed "
+            f"{_MAX_BOOTSTRAP_DRAW_COUNT}"
+        )
+    _require_derived_int32(
+        "bootstrap_peak_bytes",
+        16 * bootstrap_draw_count + 8 * resamples,
+    )
 
     generator = np.random.default_rng(seed)
     indices = generator.integers(
@@ -1203,13 +1369,20 @@ def run_continual_ia_benchmark(
 
     benchmark_config = ContinualIAConfig() if config is None else config
     limits = IAAcceptanceThresholds() if thresholds is None else thresholds
-    seed_tuple = tuple(int(seed) for seed in seeds)
-    if not seed_tuple:
+    if type(seeds) not in (tuple, list):
+        raise ValueError("seeds must be an actual tuple or list")
+    seed_count = len(seeds)
+    if seed_count < 1:
         raise ValueError("seeds must be non-empty")
+    _preflight_run_resources(benchmark_config, seed_count)
+    seed_tuple = tuple(
+        _require_integer(
+            f"seeds[{index}]", seed, minimum=0, maximum=JAX_KEY_SEED_MAX
+        )
+        for index, seed in enumerate(seeds)
+    )
     if len(set(seed_tuple)) != len(seed_tuple):
         raise ValueError("seeds must be unique")
-    if any(seed < 0 or seed >= 2**31 for seed in seed_tuple):
-        raise ValueError("seeds must lie in [0, 2**31)")
 
     env = _make_env(benchmark_config)
     partner = _make_partner(benchmark_config)

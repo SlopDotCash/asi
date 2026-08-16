@@ -18,10 +18,12 @@ from alberta_framework.evaluation.continual_ia import (
     ConditionTiming,
     ContinualIAConfig,
     ContinualIAReport,
+    ControllerBudget,
     IAAcceptanceThresholds,
     IAConditionName,
     IAConditionResult,
     aggregate_ia_evidence,
+    condition_controller_budgets,
     evaluate_ia_acceptance,
     paired_bootstrap_mean_interval,
     run_continual_ia_benchmark,
@@ -543,3 +545,178 @@ def test_cli_rejects_an_injected_non_promoted_schedule_without_writing(
     assert emitted["valid"] is False
     assert emitted["accepted"] is False
     assert not path.exists()
+
+
+_NUMPY_INTEGER_TYPES = tuple(
+    {np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")}
+)
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("num_steps", 1_200),
+        ("phase_length", 200),
+        ("observation_dim", 2),
+        ("n_actions", 2),
+        ("n_demons", 2),
+        ("recovery_window", 20),
+        ("bootstrap_resamples", 10_000),
+        ("bootstrap_seed", 2_026_073_012),
+    ),
+)
+def test_continual_ia_config_accepts_every_numpy_integer_family(
+    integer_type: type[np.integer], field: str, value: int
+) -> None:
+    if not np.iinfo(integer_type).min <= value <= np.iinfo(integer_type).max:
+        pytest.skip("field's valid domain has no value representable by this dtype")
+    config = ContinualIAConfig(**{field: integer_type(value)})
+    assert type(getattr(config, field)) is int
+    assert getattr(config, field) == value
+
+
+@pytest.mark.parametrize("field", ("num_steps", "n_demons", "bootstrap_seed"))
+def test_continual_ia_config_rejects_bool_and_hostile_integer_subclasses(field: str) -> None:
+    class HostileInt(int):
+        def __index__(self) -> int:
+            raise AssertionError("untrusted index hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    with pytest.raises(ValueError, match=field):
+        ContinualIAConfig(**{field: True})
+    with pytest.raises(ValueError, match=field):
+        ContinualIAConfig(**{field: HostileInt(2)})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("partner_q_step_size", -1.0),
+        ("partner_average_reward_step_size", float("inf")),
+        ("partner_epsilon", True),
+        ("cortex_base_step_size", float("nan")),
+        ("recommendation_acceptance_probability", 1.01),
+        ("recovery_mean_reward_threshold", -0.01),
+        ("confidence_level", 1.0),
+    ),
+)
+def test_continual_ia_config_rejects_float32_unsafe_scalars(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        ContinualIAConfig(**{field: value})
+
+
+def test_continual_ia_config_normalizes_hostile_ratio_failures() -> None:
+    class HostileFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("untrusted ratio hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook")
+
+    with pytest.raises(ValueError, match="partner_epsilon"):
+        ContinualIAConfig(partner_epsilon=HostileFloat(0.1))
+
+
+def test_continual_ia_config_preflights_derived_resources_without_allocating() -> None:
+    with pytest.raises(ValueError, match="per_seed_history_bytes"):
+        ContinualIAConfig(num_steps=10_000_000, phase_length=1, recovery_window=1)
+    with pytest.raises(ValueError, match="controller_state"):
+        ContinualIAConfig(n_demons=2**31 - 1)
+    with pytest.raises(ValueError, match="bootstrap_resamples"):
+        ContinualIAConfig(bootstrap_resamples=1_000_001)
+
+
+@pytest.mark.parametrize("n_demons", (1, 2, 10))
+def test_controller_resource_preflight_formulas_match_deployed_state(n_demons: int) -> None:
+    budgets = condition_controller_budgets(ContinualIAConfig(n_demons=n_demons))
+    recommendation = budgets["recommendation_p05"]
+    augmented = budgets["augmented_predictions"]
+    assert recommendation.state_scalars == 113 + 2 * n_demons
+    assert recommendation.state_bytes == 468 + 8 * n_demons
+    assert augmented.state_scalars == 103 + 7 * n_demons
+    assert augmented.state_bytes == 428 + 28 * n_demons
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_ia_thresholds_accept_integer_families_and_bound_seed_schedule(
+    integer_type: type[np.integer],
+) -> None:
+    thresholds = IAAcceptanceThresholds(
+        minimum_seed_count=integer_type(30),
+        evidence_seed_start=integer_type(30),
+        maximum_executed_action_credit_mismatches=integer_type(0),
+    )
+    assert type(thresholds.minimum_seed_count) is int
+    assert type(thresholds.evidence_seed_start) is int
+    assert type(thresholds.maximum_executed_action_credit_mismatches) is int
+    with pytest.raises(ValueError, match="seed schedule"):
+        IAAcceptanceThresholds(minimum_seed_count=2, evidence_seed_start=2**32 - 1)
+
+
+def test_ia_thresholds_validate_bools_float32_domains_and_canonical_payload() -> None:
+    with pytest.raises(ValueError, match="minimum_seed_count"):
+        IAAcceptanceThresholds(minimum_seed_count=True)
+    with pytest.raises(ValueError, match="require_observe_only_exact_identity"):
+        IAAcceptanceThresholds(require_observe_only_exact_identity=1)
+    with pytest.raises(ValueError, match="minimum_changed_action_intervention_rate"):
+        IAAcceptanceThresholds(minimum_changed_action_intervention_rate=np.float64(1.1))
+    thresholds = IAAcceptanceThresholds(
+        minimum_primary_uplift_lower_ci=np.float64(0.1)
+    )
+    assert type(thresholds.minimum_primary_uplift_lower_ci) is float
+
+    config = ContinualIAConfig(
+        num_steps=np.int32(1_200),
+        partner_epsilon=np.float64(0.1),
+        bootstrap_seed=np.uint32(2_026_073_012),
+    )
+    assert all(type(value) in (int, float) for value in config.__dict__.values())
+
+
+def test_controller_budget_rejects_hostile_or_out_of_domain_payloads() -> None:
+    with pytest.raises(ValueError, match="state_bytes"):
+        ControllerBudget(0, True, 1, 1, 1, False)
+    with pytest.raises(ValueError, match="ia_attached"):
+        ControllerBudget(0, 0, 1, 1, 1, 1)
+
+
+def test_bootstrap_and_run_work_preflights_fire_before_large_allocations() -> None:
+    with pytest.raises(ValueError, match="bootstrap_draw_count"):
+        paired_bootstrap_mean_interval(
+            np.ones((51,), dtype=np.float64),
+            confidence_level=0.95,
+            resamples=1_000_000,
+            seed=0,
+        )
+    with pytest.raises(ValueError, match="total_history_bytes"):
+        run_continual_ia_benchmark(
+            seeds=tuple(range(10)),
+            config=ContinualIAConfig(num_steps=1_000_000, phase_length=1_000_000),
+        )
+
+
+def test_run_rejects_hostile_seed_without_conversion_hooks() -> None:
+    class HostileSeed:
+        def __int__(self) -> int:
+            raise AssertionError("untrusted int hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    with pytest.raises(ValueError, match=r"seeds\[0\]"):
+        run_continual_ia_benchmark(seeds=(HostileSeed(),))
+
+
+def test_run_rejects_noncanonical_seed_container_before_iteration() -> None:
+    class HostileTuple(tuple[object, ...]):
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("untrusted iteration hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    with pytest.raises(ValueError, match="actual tuple or list"):
+        run_continual_ia_benchmark(seeds=HostileTuple((0,)))
