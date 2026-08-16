@@ -227,6 +227,25 @@ class TestConfig:
     def test_n_steps(self):
         assert TINY.n_steps == 4 * 25
 
+    def test_n_steps_int32_overflow_rejected(self):
+        # stream() casts the per-step regime index to dtype=jnp.int32
+        # (``jnp.arange(n_steps, dtype=jnp.int32) // regime_length``). An
+        # n_steps beyond the signed int32 domain must be rejected at
+        # construction instead of silently wrapping every regime index past
+        # the boundary to a negative value.
+        with pytest.raises(ValueError, match="n_steps"):
+            MicroStreamConfig(
+                family="input_permutation",
+                n_regimes=60_000,
+                regime_length=60_000,
+            )
+        # The boundary itself (exactly INT32_MAX) must still be accepted.
+        MicroStreamConfig(
+            family="input_permutation",
+            n_regimes=1,
+            regime_length=2**31 - 1,
+        )
+
     def test_to_config_roundtrip(self):
         rebuilt = MicroStreamConfig(**TINY.to_config())
         assert rebuilt == TINY

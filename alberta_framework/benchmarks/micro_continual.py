@@ -204,6 +204,8 @@ def _require_nonempty_string(value: object, *, context: str) -> str:
 # Configuration
 # =============================================================================
 
+_INT32_MAX: int = 2**31 - 1
+
 
 @dataclass(frozen=True)
 class MicroStreamConfig:
@@ -270,6 +272,17 @@ class MicroStreamConfig:
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {value!r}")
+        if self.n_regimes * self.regime_length > _INT32_MAX:
+            # stream() casts the per-step regime index to dtype=jnp.int32
+            # (``jnp.arange(n_steps, dtype=jnp.int32) // regime_length``); an
+            # uncaught n_steps beyond the signed int32 domain would silently
+            # wrap the derived regime index instead of raising, corrupting
+            # every regime assignment past the wraparound point.
+            raise ValueError(
+                "derived n_steps (n_regimes * regime_length) must fit in signed "
+                f"int32, got {self.n_regimes} * {self.regime_length} = "
+                f"{self.n_regimes * self.regime_length} > {_INT32_MAX}"
+            )
         sparsity = self.component_sparsity
         if not isinstance(sparsity, int) or isinstance(sparsity, bool) or sparsity <= 0:
             raise ValueError(
