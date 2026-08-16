@@ -1037,6 +1037,12 @@ def test_run_step12_smoke_zero_steps_raises() -> None:
         run_step12_smoke(steps=0)
 
 
+@pytest.mark.parametrize("steps", [True, 1.5])
+def test_run_step12_smoke_rejects_non_integer_steps(steps: object) -> None:
+    with pytest.raises(ValueError, match="steps"):
+        run_step12_smoke(steps=steps)  # type: ignore[arg-type]
+
+
 def test_run_step12_smoke_cerebellum_errors_shape() -> None:
     result = run_step12_smoke(steps=16)
     assert result.cerebellum_errors_shape == (16, 4)

@@ -426,8 +426,7 @@ def run_step12_smoke(
     Returns:
         :class:`Step12SmokeResult` with shape/fineness summary.
     """
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1)
 
     cfg = config or Step12IAConfig()
     agent = make_step12_ia_agent(cfg)
