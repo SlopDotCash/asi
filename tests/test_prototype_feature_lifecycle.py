@@ -56,7 +56,8 @@ def _config(*, replacement_interval: int = 1) -> PrototypeFeatureLifecycleConfig
 
 def _oak_agent(config: PrototypeFeatureLifecycleConfig, *, hidden: bool = False) -> OaKAgent:
     specs = tuple(
-        SubtaskSpec(feature_index=index) for index in config.option_subtask_feature_indices
+        SubtaskSpec(feature_index=index)
+        for index in config.option_subtask_feature_indices
     )
     return OaKAgent(
         OaKConfig(
@@ -229,7 +230,9 @@ def test_config_is_strict_versioned_mechanism_only_and_round_trips() -> None:
     lifecycle = PrototypeFeatureLifecycle(config)
     assert PrototypeFeatureLifecycleConfig.from_config(config.to_config()) == config
     lifecycle.require_compatible_oak_config(_oak_agent(config).config)
-    assert config.to_config()["mechanism_status"] == (PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS)
+    assert config.to_config()["mechanism_status"] == (
+        PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS
+    )
     assert config.to_config()["scientific_promotion_allowed"] is False
     assert PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED is False
 
@@ -326,7 +329,7 @@ def test_config_is_strict_versioned_mechanism_only_and_round_trips() -> None:
                 SubtaskSpec(feature_index=0),
                 SubtaskSpec(feature_index=1),
             ),
-            observation_dim=config.total_feature_dim,
+            observation_dim=single_action_config.total_feature_dim,
             n_primitive_actions=cast(int, True),
         )
 
@@ -387,7 +390,8 @@ def test_init_augmentation_state_and_exact_resource_contracts() -> None:
         int(getattr(leaf, "nbytes", 0)) for leaf in jax.tree.leaves(state)
     )
     expected_learner_template_bytes = sum(
-        int(getattr(leaf, "nbytes", 0)) for leaf in jax.tree.leaves(state.learner_state)
+        int(getattr(leaf, "nbytes", 0))
+        for leaf in jax.tree.leaves(state.learner_state)
     )
     expected_oak_template_bytes = sum(
         int(getattr(leaf, "nbytes", 0))
@@ -395,9 +399,13 @@ def test_init_augmentation_state_and_exact_resource_contracts() -> None:
     )
     assert budget.lifecycle_state_nbytes == expected_lifecycle_state_bytes
     assert budget.consumer_binding_persistent_nbytes == sum(
-        int(getattr(leaf, "nbytes", 0)) for leaf in jax.tree.leaves(binding)
+        int(getattr(leaf, "nbytes", 0))
+        for leaf in jax.tree.leaves(binding)
     )
-    assert budget.internal_learner_template_nbytes == expected_learner_template_bytes
+    assert (
+        budget.internal_learner_template_nbytes
+        == expected_learner_template_bytes
+    )
     assert budget.internal_oak_template_nbytes == expected_oak_template_bytes
     assert budget.internal_template_nbytes == (
         expected_learner_template_bytes + expected_oak_template_bytes
@@ -520,7 +528,9 @@ def test_descriptor_semantics_cannot_advance_ahead_of_generation() -> None:
     )
 
     one_generation = mutated.replace(
-        learner_state=mutated.learner_state.replace(step_count=jnp.asarray(1, dtype=jnp.int32)),
+        learner_state=mutated.learner_state.replace(
+            step_count=jnp.asarray(1, dtype=jnp.int32)
+        ),
         router_state=dataclasses.replace(
             mutated.router_state,
             route_count=jnp.asarray(1, dtype=jnp.int32),
@@ -679,7 +689,9 @@ def test_pair_only_lifecycle_rejects_compositional_provenance(
     state = lifecycle.init(jr.key(46))
     current = getattr(state.learner_state, field)
     corrupt = state.replace(
-        learner_state=state.learner_state.replace(**{field: jnp.full_like(current, replacement)})
+        learner_state=state.learner_state.replace(
+            **{field: jnp.full_like(current, replacement)}
+        )
     )
     assert not bool(lifecycle.state_valid(corrupt))
 
@@ -688,23 +700,35 @@ def test_fixed_disabled_learner_substate_must_remain_reachable() -> None:
     lifecycle = PrototypeFeatureLifecycle(_config())
     state = lifecycle.init(jr.key(48))
     state = state.replace(
-        learner_state=state.learner_state.replace(step_count=jnp.asarray(1, dtype=jnp.int32)),
+        learner_state=state.learner_state.replace(
+            step_count=jnp.asarray(1, dtype=jnp.int32)
+        ),
         observe_count=jnp.asarray(1, dtype=jnp.int32),
     )
     assert bool(lifecycle.state_valid(state))
     learner = state.learner_state
     corruptions = (
-        learner.replace(relevance_probe_weights=learner.relevance_probe_weights.at[0, 0].set(1.0)),
-        learner.replace(relevance_probe_biases=learner.relevance_probe_biases.at[0].set(1.0)),
-        learner.replace(evidence_idle_steps=learner.evidence_idle_steps.at[0].set(1)),
-        learner.replace(utility_evidence_streak=learner.utility_evidence_streak.at[0].set(1)),
+        learner.replace(
+            relevance_probe_weights=learner.relevance_probe_weights.at[0, 0].set(1.0)
+        ),
+        learner.replace(
+            relevance_probe_biases=learner.relevance_probe_biases.at[0].set(1.0)
+        ),
+        learner.replace(
+            evidence_idle_steps=learner.evidence_idle_steps.at[0].set(1)
+        ),
+        learner.replace(
+            utility_evidence_streak=learner.utility_evidence_streak.at[0].set(1)
+        ),
         learner.replace(
             candidate_promotion_evidence_streak=(
                 learner.candidate_promotion_evidence_streak.at[0].set(1)
             )
         ),
         learner.replace(
-            active_output_memory_committed=(learner.active_output_memory_committed.at[0].set(True))
+            active_output_memory_committed=(
+                learner.active_output_memory_committed.at[0].set(True)
+            )
         ),
         learner.replace(
             candidate_reacquisition_required=(
@@ -734,7 +758,9 @@ def test_scale_robust_utility_emas_remain_bounded(
     state = lifecycle.init(jr.key(49))
     current = getattr(state.learner_state, field)
     corrupt = state.replace(
-        learner_state=state.learner_state.replace(**{field: current.at[0].set(value)})
+        learner_state=state.learner_state.replace(
+            **{field: current.at[0].set(value)}
+        )
     )
     assert not bool(lifecycle.state_valid(corrupt))
 
@@ -746,8 +772,14 @@ def test_full_oak_audit_rejects_ownership_model_counter_and_outer_corruption() -
     oak = _seed_oak(lifecycle, state, event.next_observation)
     stomp = oak.stomp_state
     corruptions = (
-        oak.replace(stomp_state=stomp.replace(base_last_action=jnp.asarray(1, dtype=jnp.int32))),
-        oak.replace(stomp_state=stomp.replace(option_steps=jnp.asarray(1, dtype=jnp.int32))),
+        oak.replace(
+            stomp_state=stomp.replace(
+                base_last_action=jnp.asarray(1, dtype=jnp.int32)
+            )
+        ),
+        oak.replace(
+            stomp_state=stomp.replace(option_steps=jnp.asarray(1, dtype=jnp.int32))
+        ),
         oak.replace(
             stomp_state=stomp.replace(
                 option_models=stomp.option_models.replace(
@@ -755,7 +787,9 @@ def test_full_oak_audit_rejects_ownership_model_counter_and_outer_corruption() -
                 )
             )
         ),
-        oak.replace(execution_counts=jnp.asarray([2, 0], dtype=jnp.int32)),
+        oak.replace(
+            execution_counts=jnp.asarray([2, 0], dtype=jnp.int32)
+        ),
         oak.replace(
             stomp_state=stomp.replace(
                 option_models=stomp.option_models.replace(
@@ -768,7 +802,9 @@ def test_full_oak_audit_rejects_ownership_model_counter_and_outer_corruption() -
         ),
         oak.replace(
             stomp_state=stomp.replace(
-                base_learner_state=stomp.base_learner_state.replace(birth_timestamp=-1.0)
+                base_learner_state=stomp.base_learner_state.replace(
+                    birth_timestamp=-1.0
+                )
             )
         ),
         oak.replace(
@@ -798,7 +834,9 @@ def test_max_observation_capacity_is_an_exact_atomic_noop() -> None:
     lifecycle = PrototypeFeatureLifecycle(config)
     state = lifecycle.init(jr.key(53))
     state = state.replace(
-        learner_state=state.learner_state.replace(step_count=jnp.asarray(1, dtype=jnp.int32)),
+        learner_state=state.learner_state.replace(
+            step_count=jnp.asarray(1, dtype=jnp.int32)
+        ),
         observe_count=jnp.asarray(1, dtype=jnp.int32),
     )
     assert bool(lifecycle.state_valid(state))
@@ -1024,42 +1062,3 @@ def test_checkpoint_round_trip_is_strict_and_resource_bound(
             corrupt,
             tmp_path / "corrupt",
         )
-
-
-def test_prototype_feature_lifecycle_config_integer_validation() -> None:
-    with pytest.raises(ValueError, match="base_feature_dim"):
-        PrototypeFeatureLifecycleConfig(
-            base_feature_dim=True,  # type: ignore[arg-type]
-            active_pair_slots=4,
-            candidate_pair_slots=2,
-            n_tasks=1,
-            n_options=1,
-            n_primitive_actions=2,
-            option_subtask_feature_indices=(0,),
-        )
-    with pytest.raises(ValueError, match="base_feature_dim"):
-        PrototypeFeatureLifecycleConfig(
-            base_feature_dim=4.5,  # type: ignore[arg-type]
-            active_pair_slots=4,
-            candidate_pair_slots=2,
-            n_tasks=1,
-            n_options=1,
-            n_primitive_actions=2,
-            option_subtask_feature_indices=(0,),
-        )
-
-    cfg = PrototypeFeatureLifecycleConfig(
-        base_feature_dim=np.int32(4),
-        active_pair_slots=np.int64(4),
-        candidate_pair_slots=np.int32(2),
-        n_tasks=np.int32(1),
-        n_options=np.int32(1),
-        n_primitive_actions=np.int64(2),
-        option_subtask_feature_indices=(np.int32(0),),
-    )
-    assert cfg.base_feature_dim == 4
-    assert cfg.active_pair_slots == 4
-    assert cfg.option_subtask_feature_indices == (0,)
-    assert type(cfg.base_feature_dim) is int
-    assert type(cfg.active_pair_slots) is int
-    assert type(cfg.option_subtask_feature_indices[0]) is int

@@ -27,17 +27,15 @@ from __future__ import annotations
 
 import dataclasses
 import math
-import operator
 import struct
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, SupportsIndex, cast
+from typing import Any, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
@@ -64,28 +62,17 @@ from alberta_framework.core.options import (
     replace_dispatched_primitive_action,
 )
 
-PROTOTYPE_FEATURE_LIFECYCLE_CONFIG_SCHEMA = "alberta.prototype-feature-lifecycle.config.v1"
-PROTOTYPE_FEATURE_LIFECYCLE_CHECKPOINT_SCHEMA = "alberta.prototype-feature-lifecycle.checkpoint.v1"
+PROTOTYPE_FEATURE_LIFECYCLE_CONFIG_SCHEMA = (
+    "alberta.prototype-feature-lifecycle.config.v1"
+)
+PROTOTYPE_FEATURE_LIFECYCLE_CHECKPOINT_SCHEMA = (
+    "alberta.prototype-feature-lifecycle.checkpoint.v1"
+)
 PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS = "development_mechanism_only"
 PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED = False
 
 _CONFIG_TYPE = "PrototypeFeatureLifecycleConfig"
 _INT32_MAX = 2_147_483_647
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
 _MAX_TOTAL_FEATURE_DIM = 4_096
 _MAX_PAIR_SLOTS = 262_144
 _MAX_AXIS_PRODUCT_SCALARS = 4_194_304
@@ -102,13 +89,13 @@ def _strict_int(
     minimum: int,
     maximum: int = _INT32_MAX,
 ) -> int:
-    """Validate a Python integer or NumPy integer scalar without accepting booleans."""
-    if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be a strict integer in [{minimum}, {maximum}]")
-    canonical = operator.index(cast(SupportsIndex, value))
-    if not minimum <= canonical <= maximum:
-        raise ValueError(f"{name} must be a strict integer in [{minimum}, {maximum}]")
-    return canonical
+    """Validate a Python integer without accepting booleans or coercions."""
+
+    if type(value) is not int or not minimum <= value <= maximum:
+        raise ValueError(
+            f"{name} must be a strict integer in [{minimum}, {maximum}]"
+        )
+    return value
 
 
 def _strict_float(
@@ -123,21 +110,31 @@ def _strict_float(
 
     if type(value) is not float:
         bracket = "]" if maximum_inclusive else ")"
-        raise ValueError(f"{name} must be a strict float in [{minimum}, {maximum}{bracket}")
+        raise ValueError(
+            f"{name} must be a strict float in [{minimum}, {maximum}{bracket}"
+        )
     upper_valid = value <= maximum if maximum_inclusive else value < maximum
     if not math.isfinite(value) or value < minimum or not upper_valid:
         bracket = "]" if maximum_inclusive else ")"
-        raise ValueError(f"{name} must be a strict float in [{minimum}, {maximum}{bracket}")
+        raise ValueError(
+            f"{name} must be a strict float in [{minimum}, {maximum}{bracket}"
+        )
     try:
         float32_value = struct.unpack("!f", struct.pack("!f", value))[0]
     except OverflowError as error:
         raise ValueError(f"{name} must remain finite as float32") from error
     if not math.isfinite(float32_value) or (value != 0.0 and float32_value == 0.0):
         raise ValueError(f"{name} must remain finite and nonzero as float32")
-    float32_upper_valid = float32_value <= maximum if maximum_inclusive else float32_value < maximum
+    float32_upper_valid = (
+        float32_value <= maximum
+        if maximum_inclusive
+        else float32_value < maximum
+    )
     if float32_value < minimum or not float32_upper_valid:
         bracket = "]" if maximum_inclusive else ")"
-        raise ValueError(f"{name} must remain in [{minimum}, {maximum}{bracket} as float32")
+        raise ValueError(
+            f"{name} must remain in [{minimum}, {maximum}{bracket} as float32"
+        )
     return value
 
 
@@ -172,37 +169,37 @@ class PrototypeFeatureLifecycleConfig:
     max_observations: int = _INT32_MAX - 1
 
     def __post_init__(self) -> None:
-        base_feature_dim = _strict_int(
+        _strict_int(
             self.base_feature_dim,
             name="base_feature_dim",
             minimum=2,
             maximum=_MAX_TOTAL_FEATURE_DIM,
         )
-        active_pair_slots = _strict_int(
+        _strict_int(
             self.active_pair_slots,
             name="active_pair_slots",
             minimum=1,
             maximum=_MAX_PAIR_SLOTS,
         )
-        candidate_pair_slots = _strict_int(
+        _strict_int(
             self.candidate_pair_slots,
             name="candidate_pair_slots",
             minimum=0,
             maximum=_MAX_PAIR_SLOTS,
         )
-        n_tasks = _strict_int(
+        _strict_int(
             self.n_tasks,
             name="n_tasks",
             minimum=1,
             maximum=_MAX_PYTHON_COLLECTION_LENGTH,
         )
-        n_options = _strict_int(
+        _strict_int(
             self.n_options,
             name="n_options",
             minimum=1,
             maximum=_MAX_PYTHON_COLLECTION_LENGTH,
         )
-        n_primitive_actions = _strict_int(
+        _strict_int(
             self.n_primitive_actions,
             name="n_primitive_actions",
             minimum=1,
@@ -210,63 +207,48 @@ class PrototypeFeatureLifecycleConfig:
         )
         if (
             type(self.option_subtask_feature_indices) is not tuple
-            or len(self.option_subtask_feature_indices) != n_options
+            or len(self.option_subtask_feature_indices) != self.n_options
         ):
             raise ValueError(
-                "option_subtask_feature_indices must be an exact tuple with one entry per option"
+                "option_subtask_feature_indices must be an exact tuple with one "
+                "entry per option"
             )
         for feature_index in self.option_subtask_feature_indices:
             if (
-                type(feature_index) not in _ACTUAL_INT_TYPES
-                or not 0 <= operator.index(cast(SupportsIndex, feature_index)) < base_feature_dim
+                type(feature_index) is not int
+                or not 0 <= feature_index < self.base_feature_dim
             ):
-                raise ValueError("every option subtask must index the stable base prefix")
-        option_subtask_feature_indices = tuple(
-            operator.index(cast(SupportsIndex, feature_index))
-            for feature_index in self.option_subtask_feature_indices
-        )
-        replacement_interval = _strict_int(
+                raise ValueError(
+                    "every option subtask must index the stable base prefix"
+                )
+        _strict_int(
             self.replacement_interval,
             name="replacement_interval",
             minimum=0,
             maximum=_INT32_MAX - 1,
         )
-        if candidate_pair_slots == 0 and replacement_interval > 0:
-            raise ValueError("positive replacement_interval requires candidate_pair_slots > 0")
-        min_feature_age = _strict_int(
+        if self.candidate_pair_slots == 0 and self.replacement_interval > 0:
+            raise ValueError(
+                "positive replacement_interval requires candidate_pair_slots > 0"
+            )
+        _strict_int(
             self.min_feature_age,
             name="min_feature_age",
             minimum=0,
             maximum=_INT32_MAX - 1,
         )
-        candidate_min_age = _strict_int(
+        _strict_int(
             self.candidate_min_age,
             name="candidate_min_age",
             minimum=0,
             maximum=_INT32_MAX - 1,
         )
-        max_observations = _strict_int(
+        _strict_int(
             self.max_observations,
             name="max_observations",
             minimum=1,
             maximum=_INT32_MAX - 1,
         )
-
-        object.__setattr__(self, "base_feature_dim", base_feature_dim)
-        object.__setattr__(self, "active_pair_slots", active_pair_slots)
-        object.__setattr__(self, "candidate_pair_slots", candidate_pair_slots)
-        object.__setattr__(self, "n_tasks", n_tasks)
-        object.__setattr__(self, "n_options", n_options)
-        object.__setattr__(self, "n_primitive_actions", n_primitive_actions)
-        object.__setattr__(
-            self,
-            "option_subtask_feature_indices",
-            option_subtask_feature_indices,
-        )
-        object.__setattr__(self, "replacement_interval", replacement_interval)
-        object.__setattr__(self, "min_feature_age", min_feature_age)
-        object.__setattr__(self, "candidate_min_age", candidate_min_age)
-        object.__setattr__(self, "max_observations", max_observations)
         _strict_float(
             self.step_size_output,
             name="step_size_output",
@@ -314,23 +296,42 @@ class PrototypeFeatureLifecycleConfig:
         if self.candidate_pair_slots > pair_space:
             raise ValueError("candidate_pair_slots exceeds the canonical pair space")
         if self.active_pair_slots**2 > _MAX_DESCRIPTOR_COMPARISON_CELLS:
-            raise ValueError("active descriptor comparison matrix exceeds the allocation ceiling")
+            raise ValueError(
+                "active descriptor comparison matrix exceeds the allocation ceiling"
+            )
         if self.candidate_pair_slots**2 > _MAX_DESCRIPTOR_COMPARISON_CELLS:
             raise ValueError(
                 "candidate descriptor comparison matrix exceeds the allocation ceiling"
             )
-        if self.candidate_pair_slots > 0 and pair_space > _MAX_ENUMERATED_PAIR_SPACE:
-            raise ValueError("all-pairs candidate enumeration exceeds the allocation ceiling")
+        if (
+            self.candidate_pair_slots > 0
+            and pair_space > _MAX_ENUMERATED_PAIR_SPACE
+        ):
+            raise ValueError(
+                "all-pairs candidate enumeration exceeds the allocation ceiling"
+            )
         if self.n_total_actions > _MAX_PYTHON_COLLECTION_LENGTH:
-            raise ValueError("linear base-head collection exceeds the allocation ceiling")
+            raise ValueError(
+                "linear base-head collection exceeds the allocation ceiling"
+            )
         if self.total_feature_dim > _MAX_TOTAL_FEATURE_DIM:
-            raise ValueError("total_feature_dim exceeds the lifecycle allocation ceiling")
-        discovery_axis_product = self.n_tasks * (self.active_pair_slots + self.candidate_pair_slots)
+            raise ValueError(
+                "total_feature_dim exceeds the lifecycle allocation ceiling"
+            )
+        discovery_axis_product = self.n_tasks * (
+            self.active_pair_slots + self.candidate_pair_slots
+        )
         if discovery_axis_product > _MAX_AXIS_PRODUCT_SCALARS:
-            raise ValueError("task-by-pair discovery state exceeds the allocation ceiling")
-        option_model_scalars = self.n_options * self.total_feature_dim * self.total_feature_dim
+            raise ValueError(
+                "task-by-pair discovery state exceeds the allocation ceiling"
+            )
+        option_model_scalars = (
+            self.n_options * self.total_feature_dim * self.total_feature_dim
+        )
         if option_model_scalars > _MAX_AXIS_PRODUCT_SCALARS:
-            raise ValueError("option-model feature matrix state exceeds the allocation ceiling")
+            raise ValueError(
+                "option-model feature matrix state exceeds the allocation ceiling"
+            )
         input_groups = (
             2 * self.n_total_actions
             + 2 * self.n_options * self.n_primitive_actions
@@ -338,7 +339,9 @@ class PrototypeFeatureLifecycleConfig:
             + 1
         )
         if input_groups * self.total_feature_dim > _MAX_MANAGED_CONSUMER_SCALARS:
-            raise ValueError("managed linear OaK consumers exceed the allocation ceiling")
+            raise ValueError(
+                "managed linear OaK consumers exceed the allocation ceiling"
+            )
 
     @property
     def total_feature_dim(self) -> int:
@@ -368,7 +371,9 @@ class PrototypeFeatureLifecycleConfig:
             "n_tasks": self.n_tasks,
             "n_options": self.n_options,
             "n_primitive_actions": self.n_primitive_actions,
-            "option_subtask_feature_indices": list(self.option_subtask_feature_indices),
+            "option_subtask_feature_indices": list(
+                self.option_subtask_feature_indices
+            ),
             "step_size_output": self.step_size_output,
             "utility_decay": self.utility_decay,
             "replacement_interval": self.replacement_interval,
@@ -418,7 +423,10 @@ class PrototypeFeatureLifecycleConfig:
             raise ValueError("unexpected prototype feature lifecycle config schema")
         if payload.pop("type") != _CONFIG_TYPE:
             raise ValueError("unexpected prototype feature lifecycle config type")
-        if payload.pop("mechanism_status") != PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS:
+        if (
+            payload.pop("mechanism_status")
+            != PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS
+        ):
             raise ValueError("prototype feature lifecycle must remain mechanism-only")
         if payload.pop("scientific_promotion_allowed") is not False:
             raise ValueError("prototype feature lifecycle config cannot claim promotion")
@@ -644,7 +652,10 @@ def _floating_tree_is_finite(value: Any) -> Bool[Array, ""]:
 def _tree_nbytes(value: Any) -> int:
     """Count physical bytes reported by every persistent PyTree leaf."""
 
-    return sum(int(getattr(leaf, "nbytes", 0)) for leaf in jax.tree_util.tree_leaves(value))
+    return sum(
+        int(getattr(leaf, "nbytes", 0))
+        for leaf in jax.tree_util.tree_leaves(value)
+    )
 
 
 def _trees_exactly_equal(left: Any, right: Any) -> Bool[Array, ""]:
@@ -670,7 +681,8 @@ def _exact_json_tree_equal(left: Any, right: Any) -> bool:
         return False
     if type(left) is dict:
         return set(left) == set(right) and all(
-            _exact_json_tree_equal(left[key], right[key]) for key in left
+            _exact_json_tree_equal(left[key], right[key])
+            for key in left
         )
     if type(left) is list:
         return len(left) == len(right) and all(
@@ -793,7 +805,8 @@ class PrototypeFeatureLifecycle:
             raise TypeError("oak_config.stomp must be an exact STOMPConfig")
         specs = stomp.subtask_specs
         exact_specs = type(specs) is tuple and all(
-            type(spec) is SubtaskSpec and type(spec.feature_index) is int for spec in specs
+            type(spec) is SubtaskSpec and type(spec.feature_index) is int
+            for spec in specs
         )
         indices = tuple(spec.feature_index for spec in specs)
         compatible = (
@@ -819,7 +832,9 @@ class PrototypeFeatureLifecycle:
     ) -> PrototypeFeatureLifecycle:
         """Construct from the strict versioned configuration."""
 
-        return PrototypeFeatureLifecycle(PrototypeFeatureLifecycleConfig.from_config(config))
+        return PrototypeFeatureLifecycle(
+            PrototypeFeatureLifecycleConfig.from_config(config)
+        )
 
     def _canonical_active_descriptors(self) -> Array:
         pairs: list[tuple[int, int]] = []
@@ -931,7 +946,10 @@ class PrototypeFeatureLifecycle:
             return jnp.asarray(False, dtype=jnp.bool_)
         return (
             (binding.semantic_generation >= 0)
-            & (binding.semantic_generation == state.router_state.generation_count)
+            & (
+                binding.semantic_generation
+                == state.router_state.generation_count
+            )
             & jnp.array_equal(
                 binding.descriptors,
                 state.router_state.descriptors,
@@ -971,13 +989,18 @@ class PrototypeFeatureLifecycle:
             axis=1,
         )
         active_validation = self._router.validate_descriptors(active_descriptors)
-        router_validation = self._router.validate_descriptors(state.router_state.descriptors)
+        router_validation = self._router.validate_descriptors(
+            state.router_state.descriptors
+        )
         canonical_descriptors = self._canonical_active_descriptors()
         canonical_row_distance = jnp.sum(
             jnp.any(active_descriptors != canonical_descriptors, axis=1),
             dtype=jnp.int32,
         )
-        descriptor_history_valid = canonical_row_distance <= state.router_state.generation_count
+        descriptor_history_valid = (
+            canonical_row_distance
+            <= state.router_state.generation_count
+        )
 
         candidate_left = learner.candidate_left
         candidate_right = learner.candidate_right
@@ -1021,7 +1044,10 @@ class PrototypeFeatureLifecycle:
             & jnp.all(learner.candidate_ages <= learner.step_count)
             & jnp.all(learner.evidence_idle_steps <= learner.step_count)
             & jnp.all(learner.utility_evidence_streak <= learner.step_count)
-            & jnp.all(learner.candidate_promotion_evidence_streak <= learner.step_count)
+            & jnp.all(
+                learner.candidate_promotion_evidence_streak
+                <= learner.step_count
+            )
         )
         bounded_counters = (
             (state.observe_count <= self._config.max_observations)
@@ -1037,7 +1063,10 @@ class PrototypeFeatureLifecycle:
                 state.observe_count,
             )
             & (state.router_state.route_count == state.committed_curation_count)
-            & (state.router_state.generation_count == state.committed_curation_count)
+            & (
+                state.router_state.generation_count
+                == state.committed_curation_count
+            )
         )
         provenance_valid = (
             jnp.all(learner.feature_parent_a == -1)
@@ -1058,7 +1087,9 @@ class PrototypeFeatureLifecycle:
             & jnp.all(learner.task_activity_ema >= 0.0)
             & jnp.all(learner.task_activity_ema <= 1.0)
         )
-        timer_values_valid = (learner.birth_timestamp >= 0.0) & (learner.uptime_s >= 0.0)
+        timer_values_valid = (
+            learner.birth_timestamp >= 0.0
+        ) & (learner.uptime_s >= 0.0)
         fixed_disabled_substate_valid = (
             _float32_arrays_bit_exact(
                 learner.relevance_probe_weights,
@@ -1112,9 +1143,9 @@ class PrototypeFeatureLifecycle:
             state.step_count,
         )
         option_completions = stomp.option_models.n_completions
-        timer_values_valid = (jnp.asarray(stomp.base_learner_state.birth_timestamp) >= 0.0) & (
-            jnp.asarray(stomp.base_learner_state.uptime_s) >= 0.0
-        )
+        timer_values_valid = (
+            jnp.asarray(stomp.base_learner_state.birth_timestamp) >= 0.0
+        ) & (jnp.asarray(stomp.base_learner_state.uptime_s) >= 0.0)
         return (
             dispatch.state_valid
             & dispatch.observation_matches
@@ -1156,7 +1187,9 @@ class PrototypeFeatureLifecycle:
         )
         augmented = self._learner.augmented_observation(state.learner_state, raw)
         valid = (
-            self.state_valid(state) & jnp.all(jnp.isfinite(raw)) & jnp.all(jnp.isfinite(augmented))
+            self.state_valid(state)
+            & jnp.all(jnp.isfinite(raw))
+            & jnp.all(jnp.isfinite(augmented))
         )
         return jnp.where(valid, augmented, jnp.zeros_like(augmented))
 
@@ -1198,13 +1231,21 @@ class PrototypeFeatureLifecycle:
         )
         left = state.learner_state.feature_left
         right = state.learner_state.feature_right
-        live = (left >= 0) & (left < right) & (right < self._config.base_feature_dim)
+        live = (
+            (left >= 0)
+            & (left < right)
+            & (right < self._config.base_feature_dim)
+        )
         safe_left = jnp.where(live, left, 0)
         safe_right = jnp.where(live, right, 0)
         pair_gradient = gradient[self._config.base_feature_dim :]
         pulled = gradient[: self._config.base_feature_dim]
-        pulled = pulled.at[safe_left].add(jnp.where(live, pair_gradient * raw[safe_right], 0.0))
-        pulled = pulled.at[safe_right].add(jnp.where(live, pair_gradient * raw[safe_left], 0.0))
+        pulled = pulled.at[safe_left].add(
+            jnp.where(live, pair_gradient * raw[safe_right], 0.0)
+        )
+        pulled = pulled.at[safe_right].add(
+            jnp.where(live, pair_gradient * raw[safe_left], 0.0)
+        )
         valid = (
             self.state_valid(state)
             & jnp.all(jnp.isfinite(raw))
@@ -1259,10 +1300,14 @@ class PrototypeFeatureLifecycle:
         )
         internal_learner_template_nbytes = _tree_nbytes(self._learner_template)
         internal_oak_template_nbytes = _tree_nbytes(self._oak_template)
-        internal_template_nbytes = internal_learner_template_nbytes + internal_oak_template_nbytes
+        internal_template_nbytes = (
+            internal_learner_template_nbytes + internal_oak_template_nbytes
+        )
         return PrototypeFeatureLifecycleResourceBudget(
             mechanism_status=PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS,
-            scientific_promotion_allowed=(PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED),
+            scientific_promotion_allowed=(
+                PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED
+            ),
             base_feature_slots=self._config.base_feature_dim,
             active_pair_slots=self._config.active_pair_slots,
             candidate_pair_slots=self._config.candidate_pair_slots,
@@ -1275,7 +1320,9 @@ class PrototypeFeatureLifecycle:
             internal_learner_template_nbytes=internal_learner_template_nbytes,
             internal_oak_template_nbytes=internal_oak_template_nbytes,
             internal_template_nbytes=internal_template_nbytes,
-            owned_persistent_state_nbytes=(lifecycle_state_nbytes + internal_template_nbytes),
+            owned_persistent_state_nbytes=(
+                lifecycle_state_nbytes + internal_template_nbytes
+            ),
             managed_oak_consumer_nbytes=4 * (managed_consumer_scalars + width),
             rebuilt_base_cache_nbytes=4 * width,
             input_route_feature_groups=input_groups,
@@ -1288,8 +1335,12 @@ class PrototypeFeatureLifecycle:
             # Current implementation evaluates the active bank for the old
             # cache audit, learner update, provisional committed cache,
             # candidate postcondition cache, and final returned cache.
-            max_active_pair_products_per_observe=(5 * self._config.active_pair_slots),
-            max_candidate_pair_products_per_observe=(self._config.candidate_pair_slots),
+            max_active_pair_products_per_observe=(
+                5 * self._config.active_pair_slots
+            ),
+            max_candidate_pair_products_per_observe=(
+                self._config.candidate_pair_slots
+            ),
             max_observations=self._config.max_observations,
         )
 
@@ -1344,7 +1395,8 @@ class PrototypeFeatureLifecycle:
         return {
             "base_head_weights": stomp.base_learner_state.head_params.weights,
             "base_head_weight_traces": tuple(
-                trace_pair[0] for trace_pair in stomp.base_learner_state.head_traces
+                trace_pair[0]
+                for trace_pair in stomp.base_learner_state.head_traces
             ),
             "option_policy_weights": stomp.option_policies.q_weights,
             "option_policy_traces": stomp.option_policies.traces,
@@ -1447,7 +1499,9 @@ class PrototypeFeatureLifecycle:
         if not self._state_static_contract_valid(state):
             raise ValueError("prototype feature lifecycle state has an invalid static contract")
         if type(consumer_binding) is not PrototypeFeatureConsumerBinding:
-            raise TypeError("consumer_binding must be a PrototypeFeatureConsumerBinding")
+            raise TypeError(
+                "consumer_binding must be a PrototypeFeatureConsumerBinding"
+            )
         _require_array(
             consumer_binding.semantic_generation,
             name="consumer_binding.semantic_generation",
@@ -1507,8 +1561,9 @@ class PrototypeFeatureLifecycle:
             oak_state.stomp_state.base_last_obs,
             old_next_augmented,
         )
-        update_capacity_available = state.observe_count < jnp.asarray(
-            self._config.max_observations, dtype=jnp.int32
+        update_capacity_available = (
+            state.observe_count
+            < jnp.asarray(self._config.max_observations, dtype=jnp.int32)
         )
         composition_valid = (
             state_values_valid
@@ -1554,7 +1609,9 @@ class PrototypeFeatureLifecycle:
             & (stomp.executing_option == -1)
             & (stomp.base_last_action < self._config.n_primitive_actions)
         )
-        curation_deferred = curation_proposed & ~safe_curation_boundary
+        curation_deferred = (
+            curation_proposed & ~safe_curation_boundary
+        )
         routing_attempted = curation_proposed & safe_curation_boundary
 
         input_route = self._router.route(
@@ -1575,9 +1632,10 @@ class PrototypeFeatureLifecycle:
             input_route.state,
             output_route.state,
         )
-        routed_values_finite_raw = _floating_tree_is_finite(
-            routed_inputs
-        ) & _floating_tree_is_finite(output_route.consumers)
+        routed_values_finite_raw = (
+            _floating_tree_is_finite(routed_inputs)
+            & _floating_tree_is_finite(output_route.consumers)
+        )
         route_valid = (
             input_route.diagnostics.valid
             & output_route.diagnostics.valid
@@ -1693,9 +1751,12 @@ class PrototypeFeatureLifecycle:
         postcondition_valid = learner_update_valid & candidate_postcondition_valid
         postcondition_rolled_back = learner_update_valid & ~candidate_postcondition_valid
         transaction_applied = learner_update_valid & candidate_postcondition_valid
-        curation_committed = provisional_curation_committed & candidate_postcondition_valid
-        curation_rolled_back = route_curation_rolled_back | (
-            postcondition_rolled_back & curation_proposed
+        curation_committed = (
+            provisional_curation_committed & candidate_postcondition_valid
+        )
+        curation_rolled_back = (
+            route_curation_rolled_back
+            | (postcondition_rolled_back & curation_proposed)
         )
         next_state = jax.lax.cond(
             postcondition_rolled_back,
@@ -1743,18 +1804,28 @@ class PrototypeFeatureLifecycle:
             oak_values_valid=oak_values_valid,
             consumer_binding_valid=consumer_binding_values_valid,
             event_values_valid=event_values_valid,
-            next_observation_matches_oak_cache=(next_observation_matches_oak_cache),
+            next_observation_matches_oak_cache=(
+                next_observation_matches_oak_cache
+            ),
             update_capacity_available=update_capacity_available,
-            learner_update_rejected=(~composition_valid | learner_update.update_rejected),
+            learner_update_rejected=(
+                ~composition_valid | learner_update.update_rejected
+            ),
             transaction_applied=transaction_applied,
             curation_proposed=curation_proposed,
             safe_curation_boundary=safe_curation_boundary,
             curation_deferred=curation_deferred,
             routing_attempted=routing_attempted,
-            input_route_valid=(routing_attempted & input_route.diagnostics.valid),
-            output_route_valid=(routing_attempted & output_route.diagnostics.valid),
+            input_route_valid=(
+                routing_attempted & input_route.diagnostics.valid
+            ),
+            output_route_valid=(
+                routing_attempted & output_route.diagnostics.valid
+            ),
             route_states_match=routing_attempted & route_states_match_raw,
-            routed_values_finite=(routing_attempted & routed_values_finite_raw),
+            routed_values_finite=(
+                routing_attempted & routed_values_finite_raw
+            ),
             curation_committed=curation_committed,
             curation_rolled_back=curation_rolled_back,
             postcondition_checked=learner_update_valid,
@@ -1832,7 +1903,10 @@ def load_prototype_feature_lifecycle_checkpoint(
         raise ValueError("prototype feature lifecycle checkpoint fields are invalid")
     if metadata.get("schema") != PROTOTYPE_FEATURE_LIFECYCLE_CHECKPOINT_SCHEMA:
         raise ValueError("prototype feature lifecycle checkpoint schema is unsupported")
-    if metadata.get("mechanism_status") != PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS:
+    if (
+        metadata.get("mechanism_status")
+        != PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS
+    ):
         raise ValueError("prototype feature lifecycle checkpoint is not mechanism-only")
     if metadata.get("scientific_promotion_allowed") is not False:
         raise ValueError("prototype feature lifecycle checkpoint cannot claim promotion")
