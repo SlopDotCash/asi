@@ -1,5 +1,7 @@
 """Tests for Horde-backed actor-critic integration."""
 
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -214,8 +216,12 @@ def test_horde_actor_critic_update_is_jittable() -> None:
 def test_run_horde_actor_critic_from_arrays_scan() -> None:
     agent = _make_agent(n_demons=2)
     state = agent.init(feature_dim=2, key=jr.key(3))
-    observations = jnp.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32)
-    next_observations = jnp.array([[0.0, 1.0], [1.0, 1.0], [0.5, -0.5]], dtype=jnp.float32)
+    observations = jnp.array(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32
+    )
+    next_observations = jnp.array(
+        [[0.0, 1.0], [1.0, 1.0], [0.5, -0.5]], dtype=jnp.float32
+    )
     rewards = jnp.array([1.0, 0.0, -1.0], dtype=jnp.float32)
     aux = jnp.array([[0.5], [1.0], [-0.5]], dtype=jnp.float32)
     actions = jnp.array([0, 1, 0], dtype=jnp.int32)
@@ -419,7 +425,9 @@ def test_qhorde_terminal_does_not_multiply_inf_next_value() -> None:
     assert bool(result.update_applied)
     chex.assert_trees_all_close(result.td_error, jnp.array(3.0, dtype=jnp.float32))
     chex.assert_trees_all_equal(result.next_q_values, jnp.zeros((2,), jnp.float32))
-    chex.assert_tree_all_finite(result.state.replace(rng_key=jr.key_data(result.state.rng_key)))
+    chex.assert_tree_all_finite(
+        result.state.replace(rng_key=jr.key_data(result.state.rng_key))
+    )
     chex.assert_tree_all_finite(
         (result.policy, result.q_values, result.next_q_values, result.td_error)
     )
@@ -448,8 +456,12 @@ def test_horde_zero_discount_neutralizes_inf_next_value_diagnostic() -> None:
 
     assert bool(result.update_applied)
     chex.assert_trees_all_equal(result.next_value, jnp.array(0.0, jnp.float32))
-    chex.assert_tree_all_finite(result.state.replace(rng_key=jr.key_data(result.state.rng_key)))
-    chex.assert_tree_all_finite((result.policy, result.value, result.next_value, result.td_error))
+    chex.assert_tree_all_finite(
+        result.state.replace(rng_key=jr.key_data(result.state.rng_key))
+    )
+    chex.assert_tree_all_finite(
+        (result.policy, result.value, result.next_value, result.td_error)
+    )
 
 
 def test_qhorde_actor_critic_auxiliary_prediction_and_terminal_trace_reset() -> None:
@@ -628,6 +640,88 @@ from alberta_framework.core.horde_actor_critic import (  # noqa: E402
     run_nonlinear_horde_actor_critic_from_arrays,
 )
 
+_ACTOR_CONFIG_TYPES = (
+    HordeActorCriticConfig,
+    QHordeActorCriticConfig,
+    NonlinearHordeActorCriticConfig,
+    NonlinearQHordeActorCriticConfig,
+)
+
+
+@pytest.mark.parametrize("config_type", _ACTOR_CONFIG_TYPES)
+@pytest.mark.parametrize(
+    "integer_type",
+    sorted(
+        {np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")},
+        key=lambda value: value.__name__,
+    ),
+)
+def test_actor_configs_accept_every_numpy_integer_family(config_type, integer_type) -> None:
+    config = config_type(n_actions=integer_type(2))
+    assert type(config.n_actions) is int
+    if hasattr(config, "hidden_sizes"):
+        config = config_type(n_actions=2, hidden_sizes=(integer_type(3),))
+        assert type(config.hidden_sizes[0]) is int
+
+
+@pytest.mark.parametrize("config_type", _ACTOR_CONFIG_TYPES)
+@pytest.mark.parametrize("invalid", (True, np.bool_(True), 2.0, 0, 2**31))
+def test_actor_configs_reject_untrusted_or_out_of_domain_action_counts(
+    config_type, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match="n_actions"):
+        config_type(n_actions=invalid)
+
+
+@pytest.mark.parametrize(
+    ("factory", "field"),
+    (
+        (HordeActorCriticConfig, "actor_step_size"),
+        (HordeActorCriticConfig, "actor_lamda"),
+        (HordeActorCriticConfig, "temperature"),
+        (QHordeActorCriticConfig, "gamma"),
+        (NonlinearHordeActorCriticConfig, "actor_sparsity"),
+        (NonlinearHordeActorCriticConfig, "actor_epsilon"),
+        (NonlinearHordeActorCriticConfig, "actor_td_error_normalizer_decay"),
+        (NonlinearQHordeActorCriticConfig, "leaky_relu_slope"),
+    ),
+)
+def test_actor_configs_reject_float32_unsafe_scalars(factory, field: str) -> None:
+    for value in (True, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match=field):
+            factory(n_actions=2, **{field: value})
+
+
+def test_actor_config_exact_endpoints_and_derived_allocations_fail_closed() -> None:
+    with pytest.raises(ValueError, match="gamma"):
+        QHordeActorCriticConfig(n_actions=2, gamma=Fraction(1, 1) + Fraction(1, 2**80))
+    with pytest.raises(ValueError, match="hidden layer"):
+        NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(46_341, 46_341))
+    with pytest.raises(ValueError, match="actor head"):
+        NonlinearQHordeActorCriticConfig(n_actions=46_341, hidden_sizes=(46_341,))
+    with pytest.raises(ValueError, match="actor_state_bytes"):
+        _make_agent().init(2**27, jr.key(0))
+
+
+@pytest.mark.parametrize("config_type", _ACTOR_CONFIG_TYPES)
+def test_actor_config_schema_roundtrip_is_exact(config_type) -> None:
+    config = config_type(n_actions=np.int32(2))
+    payload = config.to_config()
+    assert config_type.from_config(payload) == config
+    with pytest.raises(ValueError, match="exactly"):
+        config_type.from_config({**payload, "unknown": 1})
+    with pytest.raises(ValueError, match="actual dict"):
+        config_type.from_config(type("MappingSubclass", (dict,), {})(payload))
+
+
+def test_nonlinear_serialized_hidden_sizes_require_json_list() -> None:
+    config = NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(3,))
+    payload = config.to_config()
+    assert type(payload["hidden_sizes"]) is list
+    assert NonlinearHordeActorCriticConfig.from_config(payload) == config
+    with pytest.raises(ValueError, match="actual list"):
+        NonlinearHordeActorCriticConfig.from_config({**payload, "hidden_sizes": (3,)})
+
 OBS_DIM = 8
 N_ACTIONS = 3
 
@@ -721,22 +815,21 @@ def test_nonlinear_horde_zero_discount_neutralizes_inf_next_value() -> None:
 
     assert bool(result.update_applied)
     chex.assert_trees_all_equal(result.next_value, jnp.array(0.0, jnp.float32))
-    chex.assert_tree_all_finite(result.state.replace(rng_key=jr.key_data(result.state.rng_key)))
-    chex.assert_tree_all_finite((result.policy, result.value, result.next_value, result.td_error))
+    chex.assert_tree_all_finite(
+        result.state.replace(rng_key=jr.key_data(result.state.rng_key))
+    )
+    chex.assert_tree_all_finite(
+        (result.policy, result.value, result.next_value, result.td_error)
+    )
 
 
 class TestNonlinearHordeActorCriticConfig:
     def _simple_critic(self) -> HordeLearner:
         spec = create_horde_spec(
-            [
-                GVFSpec(  # type: ignore[call-arg]
-                    name="v",
-                    demon_type=DemonType.PREDICTION,
-                    gamma=0.9,
-                    lamda=0.0,
-                    cumulant_index=0,
-                )
-            ]
+            [GVFSpec(  # type: ignore[call-arg]
+                name="v", demon_type=DemonType.PREDICTION,
+                gamma=0.9, lamda=0.0, cumulant_index=0,
+            )]
         )
         return HordeLearner(spec, hidden_sizes=(16,))
 
@@ -753,20 +846,17 @@ class TestNonlinearHordeActorCriticConfig:
             critic = self._simple_critic()
             critic = HordeLearner(
                 create_horde_spec(
-                    [
-                        GVFSpec(  # type: ignore[call-arg]
-                            name="v",
-                            demon_type=DemonType.PREDICTION,
-                            gamma=0.9,
-                            lamda=0.0,
-                            cumulant_index=0,
-                        )
-                    ]
+                    [GVFSpec(  # type: ignore[call-arg]
+                        name="v", demon_type=DemonType.PREDICTION,
+                        gamma=0.9, lamda=0.0, cumulant_index=0,
+                    )]
                 ),
                 hidden_sizes=(16,),
             )
             NonlinearHordeActorCriticAgent(
-                NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(16,), temperature=0.0),
+                NonlinearHordeActorCriticConfig(
+                    n_actions=2, hidden_sizes=(16,), temperature=0.0
+                ),
                 critic,
             )
 
@@ -838,7 +928,9 @@ class TestNonlinearHordeActorCriticInit:
     def test_traces_zero_at_init(self) -> None:
         agent = _make_nlhac_agent(hidden_sizes=(32,))
         state = agent.init(OBS_DIM, jr.key(0))
-        chex.assert_trees_all_close(state.actor_head_trace_w, jnp.zeros((N_ACTIONS, 32)))
+        chex.assert_trees_all_close(
+            state.actor_head_trace_w, jnp.zeros((N_ACTIONS, 32))
+        )
 
     def test_linear_actor_no_trunk(self) -> None:
         agent = _make_nlhac_agent(hidden_sizes=())
@@ -870,15 +962,13 @@ class TestNonlinearHordeActorCriticUpdate:
         """Inf TD error zeros the ObGD step, then td_error*step is 0*inf=NaN."""
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.0,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.0,
+                    lamda=0.0,
+                    cumulant_index=0,
+                )]
             ),
             hidden_sizes=(),
             step_size=0.03,
@@ -907,22 +997,19 @@ class TestNonlinearHordeActorCriticUpdate:
         chex.assert_tree_all_finite(poisoned.policy)
         chex.assert_tree_all_finite(poisoned.critic_result.predictions)
 
-        recovered = agent.update(poisoned.state, jnp.array(1.0, dtype=jnp.float32), observation)
+        recovered = agent.update(
+            poisoned.state, jnp.array(1.0, dtype=jnp.float32), observation
+        )
         assert bool(jnp.all(jnp.isfinite(recovered.state.actor_head_w)))
         assert bool(recovered.update_applied)
 
     def test_actor_td_error_normalizer_updates(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.99,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
             ),
             hidden_sizes=(32,),
             step_size=0.03,
@@ -943,15 +1030,10 @@ class TestNonlinearHordeActorCriticUpdate:
         """decay=0 times leftover inf actor TD-error EMA is NaN."""
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.99,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
             ),
             hidden_sizes=(8,),
             step_size=0.03,
@@ -979,20 +1061,17 @@ class TestNonlinearHordeActorCriticUpdate:
         agent = _make_nlhac_agent()
         state = _init_nlhac(agent)
         result = agent.update(state, jnp.array(0.0), jnp.zeros(OBS_DIM))
-        chex.assert_trees_all_close(jnp.sum(result.policy), jnp.array(1.0), atol=1e-5)
+        chex.assert_trees_all_close(
+            jnp.sum(result.policy), jnp.array(1.0), atol=1e-5
+        )
 
     def test_actor_weights_update(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.99,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
             ),
             hidden_sizes=(32,),
             step_size=0.03,
@@ -1012,15 +1091,10 @@ class TestNonlinearHordeActorCriticUpdate:
     def test_actor_gradient_clip_limits_new_trace_norm(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.99,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
             ),
             hidden_sizes=(32,),
             step_size=0.03,
@@ -1040,7 +1114,10 @@ class TestNonlinearHordeActorCriticUpdate:
         trace_norm = jnp.sqrt(
             jnp.sum(jnp.square(result.state.actor_head_trace_w))
             + jnp.sum(jnp.square(result.state.actor_head_trace_b))
-            + sum(jnp.sum(jnp.square(trace)) for trace in result.state.actor_trunk_traces)
+            + sum(
+                jnp.sum(jnp.square(trace))
+                for trace in result.state.actor_trunk_traces
+            )
         )
         assert float(trace_norm) <= 0.0501
 
@@ -1048,15 +1125,13 @@ class TestNonlinearHordeActorCriticUpdate:
         """Large TD errors must enter the ObGD denominator exactly once."""
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.0,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.0,
+                    lamda=0.0,
+                    cumulant_index=0,
+                )]
             ),
             hidden_sizes=(),
             step_size=0.03,
@@ -1124,15 +1199,10 @@ class TestNonlinearHordeActorCriticUpdate:
     def test_trunk_weights_update(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.99,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
             ),
             hidden_sizes=(32,),
             step_size=0.03,
@@ -1164,7 +1234,9 @@ class TestNonlinearHordeActorCriticScan:
         n_steps = 15
         obs = jnp.zeros((n_steps, OBS_DIM))
         rews = jnp.ones(n_steps)
-        result = run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rews, obs)
+        result = run_nonlinear_horde_actor_critic_from_arrays(
+            agent, state, obs, rews, obs
+        )
         chex.assert_shape(result.actions, (n_steps,))
         chex.assert_shape(result.values, (n_steps,))
         chex.assert_shape(result.td_errors, (n_steps,))
@@ -1176,7 +1248,9 @@ class TestNonlinearHordeActorCriticScan:
         n_steps = 20
         obs = jr.normal(jr.key(5), (n_steps, OBS_DIM))
         rews = jr.normal(jr.key(6), (n_steps,))
-        result = run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rews, obs)
+        result = run_nonlinear_horde_actor_critic_from_arrays(
+            agent, state, obs, rews, obs
+        )
         chex.assert_tree_all_finite(result.td_errors)
 
     def test_scan_step_count_final(self) -> None:
@@ -1195,7 +1269,9 @@ class TestNonlinearHordeActorCriticScan:
         n_steps = 200
         obs = jr.normal(jr.key(99), (n_steps, OBS_DIM))
         rews = jr.normal(jr.key(100), (n_steps,))
-        result = run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rews, obs)
+        result = run_nonlinear_horde_actor_critic_from_arrays(
+            agent, state, obs, rews, obs
+        )
         chex.assert_tree_all_finite(result.td_errors)
         assert int(result.state.step_count) == n_steps
 
@@ -1298,7 +1374,9 @@ class TestNonlinearQHordeActorCritic:
         state = agent.init(2, jr.key(21))
         state, _, _ = agent.start(state, jnp.array([0.0, 1.0], jnp.float32))
         poisoned_w = jnp.asarray([[huge, 0.0]], dtype=jnp.float32)
-        head_params = state.critic_state.head_params.replace(weights=(poisoned_w, poisoned_w))
+        head_params = state.critic_state.head_params.replace(
+            weights=(poisoned_w, poisoned_w)
+        )
         state = state.replace(  # type: ignore[attr-defined]
             critic_state=state.critic_state.replace(head_params=head_params)
         )
@@ -1311,8 +1389,12 @@ class TestNonlinearQHordeActorCritic:
         )
 
         assert bool(result.update_applied)
-        chex.assert_trees_all_equal(result.next_q_values, jnp.zeros((2,), jnp.float32))
-        chex.assert_tree_all_finite(result.state.replace(rng_key=jr.key_data(result.state.rng_key)))
+        chex.assert_trees_all_equal(
+            result.next_q_values, jnp.zeros((2,), jnp.float32)
+        )
+        chex.assert_tree_all_finite(
+            result.state.replace(rng_key=jr.key_data(result.state.rng_key))
+        )
         chex.assert_tree_all_finite(
             (result.policy, result.q_values, result.next_q_values, result.td_error)
         )
@@ -1375,15 +1457,13 @@ class TestNonlinearQHordeActorCritic:
     def test_requires_control_heads(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="v",
-                        demon_type=DemonType.PREDICTION,
-                        gamma=0.9,
-                        lamda=0.0,
-                        cumulant_index=0,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.9,
+                    lamda=0.0,
+                    cumulant_index=0,
+                )]
             ),
             hidden_sizes=(16,),
         )
@@ -1396,15 +1476,13 @@ class TestNonlinearQHordeActorCritic:
     def test_requires_zero_gamma_for_prebootstrapped_action_heads(self) -> None:
         critic = HordeLearner(
             create_horde_spec(
-                [
-                    GVFSpec(  # type: ignore[call-arg]
-                        name="q",
-                        demon_type=DemonType.CONTROL,
-                        gamma=0.9,
-                        lamda=0.0,
-                        cumulant_index=-1,
-                    )
-                ]
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="q",
+                    demon_type=DemonType.CONTROL,
+                    gamma=0.9,
+                    lamda=0.0,
+                    cumulant_index=-1,
+                )]
             ),
             hidden_sizes=(16,),
         )
@@ -1483,68 +1561,3 @@ class TestNonlinearQHordeActorCritic:
 
         assert after[1] > before[1]
         assert after[0] < before[0]
-
-
-def test_horde_actor_critic_config_rejects_booleans_and_non_integers() -> None:
-    with pytest.raises(ValueError, match="n_actions"):
-        HordeActorCriticConfig(n_actions=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="n_actions"):
-        HordeActorCriticConfig(n_actions=2.5)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="value_head_index"):
-        HordeActorCriticConfig(n_actions=2, value_head_index=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="actor_step_size"):
-        HordeActorCriticConfig(n_actions=2, actor_step_size=True)  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="n_actions"):
-        QHordeActorCriticConfig(n_actions=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="gamma"):
-        QHordeActorCriticConfig(n_actions=2, gamma=True)  # type: ignore[arg-type]
-
-
-def test_horde_actor_critic_config_accepts_and_canonicalizes_numpy_integers() -> None:
-    cfg = HordeActorCriticConfig(n_actions=np.int32(3), value_head_index=np.uint16(0))
-    assert type(cfg.n_actions) is int
-    assert type(cfg.value_head_index) is int
-    assert cfg.n_actions == 3
-    assert cfg.value_head_index == 0
-
-    q_cfg = QHordeActorCriticConfig(n_actions=np.int64(4))
-    assert type(q_cfg.n_actions) is int
-    assert q_cfg.n_actions == 4
-
-
-def test_nonlinear_horde_actor_critic_configs_reject_booleans_and_non_integers() -> None:
-    with pytest.raises(ValueError, match="n_actions"):
-        NonlinearHordeActorCriticConfig(n_actions=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="hidden_sizes"):
-        NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=[32])  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="hidden_sizes"):
-        NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(True,))  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="actor_lamda"):
-        NonlinearHordeActorCriticConfig(n_actions=2, actor_lamda=1.0 + 1e-6)
-
-    with pytest.raises(ValueError, match="n_actions"):
-        NonlinearQHordeActorCriticConfig(n_actions=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="hidden_sizes"):
-        NonlinearQHordeActorCriticConfig(n_actions=2, hidden_sizes=(np.int32(0),))
-
-
-def test_nonlinear_horde_actor_critic_configs_accept_and_canonicalizes_numpy_integers() -> None:
-    cfg = NonlinearHordeActorCriticConfig(
-        n_actions=np.int32(2),
-        value_head_index=np.uint16(0),
-        hidden_sizes=(np.int32(32), np.int64(16)),
-    )
-    assert type(cfg.n_actions) is int
-    assert type(cfg.value_head_index) is int
-    assert type(cfg.hidden_sizes[0]) is int
-    assert type(cfg.hidden_sizes[1]) is int
-    assert cfg.hidden_sizes == (32, 16)
-
-    q_cfg = NonlinearQHordeActorCriticConfig(
-        n_actions=np.int32(3),
-        hidden_sizes=(np.int64(64),),
-    )
-    assert type(q_cfg.n_actions) is int
-    assert type(q_cfg.hidden_sizes[0]) is int
-    assert q_cfg.hidden_sizes == (64,)
