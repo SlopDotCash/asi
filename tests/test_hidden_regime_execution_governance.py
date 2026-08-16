@@ -705,7 +705,7 @@ def test_atomic_record_install_survives_every_fault_checkpoint(
             raise RuntimeError(f"synthetic crash at {stage}")
 
     monkeypatch.setattr(governance, "_atomic_install_checkpoint", inject_fault)
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         with pytest.raises(RuntimeError, match="synthetic crash"):
             governance._write_new_immutable(directory_fd, record_name, raw)
@@ -741,7 +741,7 @@ def test_atomic_record_install_partial_write_and_syscall_failures_never_expose_p
         raise OSError(errno.EIO, "synthetic interrupted write")
 
     monkeypatch.setattr(os, "write", partial_then_fail)
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         with pytest.raises(OSError, match="synthetic interrupted write"):
             governance._write_new_immutable(directory_fd, governance._STARTED_FILE, raw)
@@ -755,7 +755,7 @@ def test_atomic_record_install_partial_write_and_syscall_failures_never_expose_p
         "_link_anonymous_file_no_replace",
         lambda *args: (_ for _ in ()).throw(OSError(errno.EIO, "synthetic link failure")),
     )
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         with pytest.raises(OSError, match="synthetic link failure"):
             governance._write_new_immutable(directory_fd, governance._STARTED_FILE, raw)
@@ -771,7 +771,7 @@ def test_atomic_record_install_directory_sync_failure_leaves_complete_recoverabl
     directory = tmp_path / "case"
     directory.mkdir()
     raw = canonical_json_bytes({"record": "started"})
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     real_fsync = os.fsync
 
     def fail_directory_sync(descriptor: int) -> None:
@@ -801,7 +801,7 @@ def test_atomic_record_install_never_replaces_an_existing_target(
     original = b"original-complete-record"
     target.write_bytes(original)
     target.chmod(0o444)
-    directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+    directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         with pytest.raises(FileExistsError):
             governance._write_new_immutable(

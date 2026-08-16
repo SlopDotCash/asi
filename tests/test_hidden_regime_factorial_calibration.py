@@ -3049,7 +3049,7 @@ def test_protected_plan_parent_fails_without_output_when_mutation_lock_is_held(
         "execute_bound_calibration_worker",
         lambda *a, **k: SimpleNamespace(returncode=0, stdout=stdout, stderr=b""),
     )
-    locked_case_fd = os.open(cases / "case-007", os.O_RDONLY | os.O_DIRECTORY)
+    locked_case_fd = os.open(cases / "case-007", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         fcntl.flock(locked_case_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(calibration.CalibrationError, match="active execution or mutation"):
@@ -3088,7 +3088,7 @@ def test_threshold_input_guard_fails_without_output_when_mutation_lock_is_held(
     for case_index in range(calibration.EXPECTED_CASES):
         (cases / f"case-{case_index:03d}").mkdir()
 
-    locked_case_fd = os.open(cases / "case-007", os.O_RDONLY | os.O_DIRECTORY)
+    locked_case_fd = os.open(cases / "case-007", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         fcntl.flock(locked_case_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with pytest.raises(calibration.CalibrationError, match="active execution or mutation"):
@@ -3103,7 +3103,7 @@ def test_threshold_input_guard_fails_without_output_when_mutation_lock_is_held(
         os.close(locked_case_fd)
     assert not tuple(threshold_receipts.iterdir())
 
-    first_case_fd = os.open(cases / "case-000", os.O_RDONLY | os.O_DIRECTORY)
+    first_case_fd = os.open(cases / "case-000", os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
         fcntl.flock(first_case_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     finally:

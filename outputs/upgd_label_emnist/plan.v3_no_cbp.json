@@ -1,5 +1,5 @@
 {
-  "created_unix": 1786810483,
+  "created_unix": 1786811996,
   "evidence_policy": {
     "development_only": true,
     "evidence_class": "development_replication_diagnostic",
@@ -64,6 +64,7 @@
         "norm_epsilon": 1e-08,
         "shift_delta": 0.02,
         "shift_k": 1.0,
+        "shift_refractory": 0.0,
         "step_size": 0.01,
         "utility_decay": 0.9,
         "weight_decay": 0.0
@@ -75,7 +76,7 @@
     ],
     "matches_selected_publication_configuration": true,
     "notes": [
-      "v3 protection mechanisms (no CBP): testing L2-init and shiftnorm on label-permutation domain. CBP arms blocked by portability issue."
+      "v3 protection mechanisms (no CBP, corrected hyperparameters): L2-init and shiftnorm"
     ],
     "paper_reference": {
       "approximate_average_online_accuracy": {
@@ -105,7 +106,7 @@
       102
     ]
   },
-  "plan_sha256": "3a010dd3a08fea7483dc366802026cad9bcb9ee2276c3a63cb593a861a9d5ac6",
+  "plan_sha256": "efdf27bbaf233bf194eab56f0a36a1908187a2aaa5bdf864af97c5f1fb95513d",
   "schema": "alberta.upgd_label_emnist.plan.v1",
   "schema_version": 1
 }

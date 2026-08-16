@@ -1978,7 +1978,7 @@ class _BoundDirectory:
 
 
 def _directory_open_flags() -> int:
-    flags = os.O_RDONLY | os.O_DIRECTORY
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     if hasattr(os, "O_CLOEXEC"):
         flags |= os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -2498,7 +2498,7 @@ def _atomic_create_bound_json(
 def _atomic_create_bytes(path: Path, encoded: bytes) -> None:
     """Atomically create bytes through a no-follow directory descriptor."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    flags = os.O_RDONLY | os.O_DIRECTORY
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:

@@ -66,8 +66,8 @@ _STAGING_DIRECTORY_MODE = 0o700
 _READ_CHUNK_SIZE = 1024 * 1024
 _AT_FDCWD = -100
 _RENAME_NOREPLACE = 1
-_OPEN_DIRECTORY_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-_OPEN_REGULAR_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+_OPEN_DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+_OPEN_REGULAR_FLAGS = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
 EXPECTED_METHODS = (
     "step2_hybrid_memory_trace",
     "step2_hybrid_memory_trace_adaptive_sharp",

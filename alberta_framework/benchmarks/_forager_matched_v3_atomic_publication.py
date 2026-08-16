@@ -314,7 +314,7 @@ def _require_linux_open_flags() -> None:
 
 def _directory_open_flags() -> int:
     _require_linux_open_flags()
-    return os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    return os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 def _file_read_flags() -> int:

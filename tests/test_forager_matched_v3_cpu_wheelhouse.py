@@ -1018,7 +1018,7 @@ def test_verifier_executes_from_sealed_immutable_code_snapshots(
     descriptors = wheelhouse._validate_verifier(binding)
     staged = tmp_path / "staged"
     staged.mkdir()
-    staged_descriptor = os.open(staged, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    staged_descriptor = os.open(staged, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
     required_seals = sum(
         getattr(fcntl, name)
         for name in ("F_SEAL_WRITE", "F_SEAL_GROW", "F_SEAL_SHRINK", "F_SEAL_SEAL")

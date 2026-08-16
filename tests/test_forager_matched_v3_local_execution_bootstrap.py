@@ -784,7 +784,7 @@ def test_exact_jax_environment_selects_cpu_without_cache_writes(tmp_path: Path) 
     cache = tmp_path / "cache"
     cache.mkdir(mode=0o700)
     cache.chmod(0o700)
-    cache_fd = os.open(cache, os.O_RDONLY | os.O_DIRECTORY)
+    cache_fd = os.open(cache, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     cache_proc_path = f"/proc/self/fd/{cache_fd}"
     probe = r"""
 import json, os, sys

@@ -80,7 +80,7 @@ _LOCKFILES = (Path("pyproject.toml"), Path("uv.lock"))
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY_FLAGS = (
     os.O_RDONLY
-    | os.O_DIRECTORY
+    | getattr(os, "O_DIRECTORY", 0)
     | _NOFOLLOW
     | getattr(os, "O_CLOEXEC", 0)
 )

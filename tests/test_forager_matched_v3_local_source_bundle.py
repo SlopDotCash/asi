@@ -559,7 +559,7 @@ def test_duplicate_first_fstat_baseexception_closes_only_duplicate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    source = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    source = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
     real_fcntl = bundle.fcntl.fcntl
     real_fstat = bundle.os.fstat
     duplicate = -1
@@ -597,7 +597,7 @@ def test_checked_child_first_fstat_baseexception_closes_child(
 ) -> None:
     child = tmp_path / "child"
     child.write_bytes(b"payload")
-    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    parent = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
     before = os.stat("child", dir_fd=parent, follow_symlinks=False)
     real_open = bundle.os.open
     real_fstat = bundle.os.fstat
@@ -642,7 +642,7 @@ def test_relative_parent_child_baseexception_closes_child_and_root_duplicate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     (tmp_path / "child").mkdir()
-    root = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    root = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
     real_duplicate = bundle._duplicate_directory_descriptor
     real_open = bundle.os.open
     real_fstat = bundle.os.fstat

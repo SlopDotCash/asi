@@ -456,7 +456,7 @@ def test_checked_child_first_fstat_baseexception_closes_child(
 ) -> None:
     child = tmp_path / "child"
     child.write_bytes(b"payload")
-    parent = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    parent = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0))
     before = os.stat("child", dir_fd=parent, follow_symlinks=False)
     real_open = snapshot.os.open
     real_fstat = snapshot.os.fstat

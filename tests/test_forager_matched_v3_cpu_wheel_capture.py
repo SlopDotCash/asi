@@ -448,7 +448,7 @@ def test_directory_open_failure_without_capability_never_deletes_substitution(
 
     def substitute_before_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
         nonlocal displaced, replacement, injected
-        if not injected and str(path).startswith(".capture-") and flags & os.O_DIRECTORY:
+        if not injected and str(path).startswith(".capture-") and flags & getattr(os, "O_DIRECTORY", 0):
             injected = True
             parent_fd = kwargs["dir_fd"]
             parent = Path(os.readlink(f"/proc/self/fd/{parent_fd}"))

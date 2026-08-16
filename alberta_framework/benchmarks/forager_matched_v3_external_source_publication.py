@@ -1201,7 +1201,7 @@ def _open_directory(path: Path, *, label: str) -> _OpenDirectory:
         descriptor = os.open(
             path,
             os.O_RDONLY
-            | os.O_DIRECTORY
+            | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
         )
@@ -1236,7 +1236,7 @@ def _open_directory_at(
         descriptor = os.open(
             name,
             os.O_RDONLY
-            | os.O_DIRECTORY
+            | getattr(os, "O_DIRECTORY", 0)
             | getattr(os, "O_CLOEXEC", 0)
             | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent.descriptor,

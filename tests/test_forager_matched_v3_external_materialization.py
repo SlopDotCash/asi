@@ -1705,7 +1705,7 @@ def test_copy_parent_failure_does_not_leak_source_descriptor(
     source.mkdir()
     raw = b"source bytes"
     (source / "file").write_bytes(raw)
-    source_root = os.open(source, os.O_RDONLY | os.O_DIRECTORY)
+    source_root = os.open(source, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     record = materialization._GitTreeFile(
         path="file",
         git_mode="100644",
