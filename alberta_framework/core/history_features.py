@@ -116,16 +116,34 @@ class HistoryFeatureExtractor:
             include_raw: If True (default), the raw observation is
                 concatenated to the front of the augmented observation.
         """
-        if any(not math.isfinite(b) or (b < 0.0) or (b >= 1.0) for b in decay_rates):
-            raise ValueError(
-                f"decay_rates must be finite and lie in [0, 1); got {decay_rates}"
-            )
+        if isinstance(raw_dim, bool) or not isinstance(raw_dim, int):
+            raise ValueError(f"raw_dim must be an int; got {raw_dim!r}")
+        if raw_dim < 1:
+            raise ValueError(f"raw_dim must be >= 1; got {raw_dim!r}")
+        if not isinstance(decay_rates, tuple):
+            raise ValueError(f"decay_rates must be a tuple; got {decay_rates!r}")
+        for _v in decay_rates:
+            if isinstance(_v, bool) or not isinstance(_v, int | float):
+                raise ValueError(
+                    f"decay_rates must contain finite values in [0, 1); got {decay_rates!r}"
+                )
+            if not math.isfinite(float(_v)) or float(_v) < 0.0 or float(_v) >= 1.0:
+                raise ValueError(
+                    f"decay_rates must be finite and lie in [0, 1); got {decay_rates!r}"
+                )
+        if not isinstance(include_raw, bool):
+            raise ValueError(f"include_raw must be a bool; got {include_raw!r}")
+        if channels is not None and not isinstance(channels, tuple):
+            raise ValueError(f"channels must be a tuple or None; got {channels!r}")
         if channels is None:
             channels = tuple(range(raw_dim))
-        if any(c < 0 or c >= raw_dim for c in channels):
-            raise ValueError(
-                f"channels {channels} contains an index outside [0, {raw_dim})"
-            )
+        for _c in channels:
+            if isinstance(_c, bool) or not isinstance(_c, int):
+                raise ValueError(f"channels must contain ints; got {channels!r}")
+            if _c < 0 or _c >= raw_dim:
+                raise ValueError(
+                    f"channels {channels} contains an index outside [0, {raw_dim})"
+                )
 
         self._raw_dim = raw_dim
         self._decay_rates = decay_rates
@@ -233,9 +251,15 @@ class HistoryFeatureExtractor:
         """Reconstruct from config dict."""
         config = dict(config)
         config.pop("type", None)
+        raw_rates = config["decay_rates"]
+        if isinstance(raw_rates, list):
+            raw_rates = tuple(raw_rates)
+        raw_channels = config["channels"]
+        if isinstance(raw_channels, list):
+            raw_channels = tuple(raw_channels)
         return cls(
-            raw_dim=int(config["raw_dim"]),
-            decay_rates=tuple(config["decay_rates"]),
-            channels=tuple(config["channels"]) if config["channels"] is not None else None,
-            include_raw=bool(config["include_raw"]),
+            raw_dim=config["raw_dim"],
+            decay_rates=raw_rates,
+            channels=raw_channels,
+            include_raw=config["include_raw"],
         )
