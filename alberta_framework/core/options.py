@@ -1613,7 +1613,12 @@ class STOMPConfig:
                 )
             sequence = cast(list[object] | tuple[object, ...], raw_hidden)
             payload["base_hidden_sizes"] = tuple(sequence)
-        return cls(subtask_specs=tuple(specs), **payload)
+        try:
+            return cls(subtask_specs=tuple(specs), **payload)
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized STOMPConfig is invalid") from error
 
 
 # ---------------------------------------------------------------------------

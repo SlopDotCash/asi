@@ -509,6 +509,9 @@ def test_stomp_from_config_preserves_mapping_partial_and_tuple_compatibility() -
     with pytest.raises(ValueError, match="mapping"):
         STOMPConfig.from_config(MappingSpoof())  # type: ignore[arg-type]
 
+    with pytest.raises(ValueError, match="STOMPConfig"):
+        STOMPConfig.from_config({"unexpected_field": 1})
+
     for field, value in (
         ("subtask_specs", "not-a-sequence"),
         ("base_hidden_sizes", "not-a-sequence"),
