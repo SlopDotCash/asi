@@ -43,18 +43,20 @@ from __future__ import annotations
 import functools
 import hashlib
 import json
-import math
+import operator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Protocol, SupportsIndex, TypeVar, cast, runtime_checkable
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
     load_checkpoint_metadata,
@@ -68,6 +70,46 @@ from alberta_framework.core.working_memory import (
 )
 
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
+    if type(value) is not tuple:
+        raise ValueError(f"{name} must be an actual tuple")
+    rates = cast(tuple[object, ...], value)
+    return tuple(
+        validated_float32_scalar(
+            f"{name}[{index}]",
+            rate,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        for index, rate in enumerate(rates)
+    )
 _FLOAT32_MAX = 3.4028234663852886e38
 
 
@@ -95,6 +137,28 @@ class StateBuilderBudget:
     trainable_scalars: int
     state_scalars: int
     state_bytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "output_scalars",
+            _require_int32("output_scalars", self.output_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "trainable_scalars",
+            _require_int32("trainable_scalars", self.trainable_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "state_scalars",
+            _require_int32("state_scalars", self.state_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "state_bytes",
+            _require_int32("state_bytes", self.state_bytes, minimum=0),
+        )
 
     def to_config(self) -> dict[str, int]:
         """Return a JSON-compatible budget description."""
@@ -630,7 +694,11 @@ class IdentityStateBuilderConfig:
     observation_dim: int
 
     def __post_init__(self) -> None:
-        _validate_observation_dim(self.observation_dim)
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -644,7 +712,7 @@ class IdentityStateBuilderConfig:
         """Reconstruct from :meth:`to_config` output."""
         data = dict(payload)
         data.pop("type", None)
-        return cls(observation_dim=int(data["observation_dim"]))
+        return cls(observation_dim=data["observation_dim"])
 
 
 @chex.dataclass(frozen=True)
@@ -847,16 +915,33 @@ class FixedTraceStateBuilderConfig:
     include_raw_observation: bool = True
 
     def __post_init__(self) -> None:
-        _validate_observation_dim(self.observation_dim)
-        if self.n_actions < 0:
-            raise ValueError("n_actions must be non-negative")
-        for name, rates in (
-            ("observation_decay_rates", self.observation_decay_rates),
-            ("action_decay_rates", self.action_decay_rates),
-            ("outcome_decay_rates", self.outcome_decay_rates),
-        ):
-            if any(not math.isfinite(rate) or rate < 0.0 or rate >= 1.0 for rate in rates):
-                raise ValueError(f"{name} must contain finite values in [0, 1)")
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "n_actions",
+            _require_int32("n_actions", self.n_actions, minimum=0),
+        )
+        if type(self.include_raw_observation) is not bool:
+            raise ValueError("include_raw_observation must be a bool")
+        object.__setattr__(
+            self,
+            "observation_decay_rates",
+            _require_decay_rates("observation_decay_rates", self.observation_decay_rates),
+        )
+        object.__setattr__(
+            self,
+            "action_decay_rates",
+            _require_decay_rates("action_decay_rates", self.action_decay_rates),
+        )
+        object.__setattr__(
+            self,
+            "outcome_decay_rates",
+            _require_decay_rates("outcome_decay_rates", self.outcome_decay_rates),
+        )
         if (
             not self.include_raw_observation
             and not self.observation_decay_rates
@@ -1176,19 +1261,45 @@ class OnlineGatedStateBuilderConfig:
     include_raw_observation: bool = True
 
     def __post_init__(self) -> None:
-        _validate_observation_dim(self.observation_dim)
-        if self.n_actions < 0:
-            raise ValueError("n_actions must be non-negative")
-        if self.hidden_dim < 1:
-            raise ValueError("hidden_dim must be positive")
-        if not math.isfinite(self.step_size) or self.step_size <= 0.0:
-            raise ValueError("step_size must be finite and positive")
-        if not math.isfinite(self.gradient_clip) or self.gradient_clip <= 0.0:
-            raise ValueError("gradient_clip must be finite and positive")
-        if not math.isfinite(self.initial_gate_bias):
-            raise ValueError("initial_gate_bias must be finite")
-        if not math.isfinite(self.initialization_scale) or self.initialization_scale <= 0.0:
-            raise ValueError("initialization_scale must be finite and positive")
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "n_actions",
+            _require_int32("n_actions", self.n_actions, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "hidden_dim",
+            _require_int32("hidden_dim", self.hidden_dim, minimum=1),
+        )
+        if type(self.include_raw_observation) is not bool:
+            raise ValueError("include_raw_observation must be a bool")
+        object.__setattr__(
+            self,
+            "step_size",
+            validated_float32_scalar("step_size", self.step_size, positive=True),
+        )
+        object.__setattr__(
+            self,
+            "gradient_clip",
+            validated_float32_scalar("gradient_clip", self.gradient_clip, positive=True),
+        )
+        object.__setattr__(
+            self,
+            "initial_gate_bias",
+            validated_float32_scalar("initial_gate_bias", self.initial_gate_bias),
+        )
+        object.__setattr__(
+            self,
+            "initialization_scale",
+            validated_float32_scalar(
+                "initialization_scale", self.initialization_scale, positive=True
+            ),
+        )
 
     def event_dim(self) -> int:
         """Return observation + one-hot action + reward + discount width."""
