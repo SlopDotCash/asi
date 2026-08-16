@@ -46,9 +46,14 @@ def test_world_model_rejects_malformed_observation_vectors(
     for call in calls:
         with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
             call()
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            jax.jit(call)()
 
 
-def test_world_model_rejects_malformed_continuous_actions() -> None:
+@pytest.mark.parametrize("shape", [(1, 2), (2, 1)])
+def test_world_model_rejects_malformed_continuous_actions(
+    shape: tuple[int, int],
+) -> None:
     model = OneStepWorldModel(
         WorldModelConfig(
             observation_dim=2,
@@ -59,7 +64,7 @@ def test_world_model_rejects_malformed_continuous_actions() -> None:
     )
     state = model.init(jr.key(11))
     observation = jnp.zeros((2,), dtype=jnp.float32)
-    malformed_action = jnp.zeros((1, 2), dtype=jnp.float32)
+    malformed_action = jnp.zeros(shape, dtype=jnp.float32)
 
     calls = (
         lambda: model.encode_action(malformed_action),
@@ -76,6 +81,87 @@ def test_world_model_rejects_malformed_continuous_actions() -> None:
     for call in calls:
         with pytest.raises(ValueError, match=r"action must have shape \(2,\)"):
             call()
+        with pytest.raises(ValueError, match=r"action must have shape \(2,\)"):
+            jax.jit(call)()
+
+
+@pytest.mark.parametrize(
+    ("operation", "field"),
+    [
+        ("encode_action", "action"),
+        ("input_features", "action"),
+        ("targets", "reward"),
+        ("predict", "action"),
+        ("update", "action"),
+        ("update", "reward"),
+    ],
+)
+def test_world_model_rejects_size_one_scalar_aliases(
+    operation: str, field: str
+) -> None:
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(12))
+    values = {
+        "observation": jnp.zeros((2,), dtype=jnp.float32),
+        "action": jnp.asarray(0, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "next_observation": jnp.ones((2,), dtype=jnp.float32),
+    }
+    values[field] = jnp.ones((1,), dtype=jnp.float32)
+
+    def call() -> object:
+        if operation == "encode_action":
+            return model.encode_action(values["action"])
+        if operation == "input_features":
+            return model.input_features(values["observation"], values["action"])
+        if operation == "targets":
+            return model.targets(
+                values["observation"], values["reward"], values["next_observation"]
+            )
+        if operation == "predict":
+            return model.predict(state, values["observation"], values["action"])
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=field):
+        call()
+    with pytest.raises(ValueError, match=field):
+        jax.jit(call)()
+
+
+def test_world_model_preserves_direct_numeric_dtype_canonicalization() -> None:
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=None,
+            action_dim=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    features = model.input_features(
+        jnp.asarray([1, 2], dtype=jnp.int32),
+        jnp.asarray([3, 4], dtype=jnp.int16),
+    )
+    targets = model.targets(
+        jnp.asarray([1, 2], dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int16),
+        jnp.asarray([2, 3], dtype=jnp.int16),
+    )
+    assert features.dtype == jnp.float32
+    assert targets.dtype == jnp.float32
 
 
 def test_world_model_update_is_finite_and_shape_stable() -> None:
