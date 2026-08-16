@@ -595,6 +595,21 @@ class TestMakeScaleRange:
 class TestDynamicScaleShiftStream:
     """Tests for the DynamicScaleShiftStream class."""
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"min_scale": 0.0},
+            {"min_scale": -1.0},
+            {"min_scale": float("nan")},
+            {"max_scale": float("inf")},
+            {"min_scale": 10.0, "max_scale": 1.0},
+        ],
+    )
+    def test_rejects_nonpositive_nonfinite_or_reversed_scale_bounds(self, kwargs):
+        """These bounds produced NaN/inf observations or an inverted log-uniform range."""
+        with pytest.raises(ValueError, match="scale"):
+            DynamicScaleShiftStream(feature_dim=4, **kwargs)
+
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""
         stream = DynamicScaleShiftStream(feature_dim=10)
@@ -680,6 +695,27 @@ class TestDynamicScaleShiftStream:
 
 class TestScaleDriftStream:
     """Tests for the ScaleDriftStream class."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            (
+                {"min_log_scale": 4.0, "max_log_scale": -4.0},
+                "min_log_scale must be <= max_log_scale",
+            ),
+            ({"min_log_scale": float("nan")}, "min_log_scale must be finite"),
+            ({"max_log_scale": float("inf")}, "max_log_scale must be finite"),
+        ],
+    )
+    def test_rejects_reversed_or_nonfinite_log_scale_bounds(self, kwargs, message):
+        """Reversed clip bounds pin every scale to max_log_scale: a stationary stream."""
+        with pytest.raises(ValueError, match=message):
+            ScaleDriftStream(feature_dim=4, **kwargs)
+
+    def test_equal_log_scale_bounds_are_accepted(self, rng_key):
+        stream = ScaleDriftStream(feature_dim=4, min_log_scale=0.0, max_log_scale=0.0)
+        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
+        chex.assert_tree_all_finite(timestep.observation)
 
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""

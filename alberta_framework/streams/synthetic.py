@@ -991,8 +991,10 @@ class DynamicScaleShiftStream:
         self._weight_change_interval = _require_positive_int(
             "weight_change_interval", weight_change_interval
         )
-        self._min_scale = min_scale
-        self._max_scale = max_scale
+        self._min_scale = _require_normal_float32_scale("min_scale", min_scale)
+        self._max_scale = _require_normal_float32_scale("max_scale", max_scale)
+        if self._min_scale > self._max_scale:
+            raise ValueError("min_scale must be <= max_scale")
         self._noise_std = noise_std
 
     @property
@@ -1136,6 +1138,11 @@ class ScaleDriftStream:
         self._feature_dim = feature_dim
         self._weight_drift_rate = weight_drift_rate
         self._scale_drift_rate = scale_drift_rate
+        for name, bound in (("min_log_scale", min_log_scale), ("max_log_scale", max_log_scale)):
+            if isinstance(bound, bool) or not isinstance(bound, Real) or not math.isfinite(bound):
+                raise ValueError(f"{name} must be finite")
+        if min_log_scale > max_log_scale:
+            raise ValueError("min_log_scale must be <= max_log_scale")
         self._min_log_scale = min_log_scale
         self._max_log_scale = max_log_scale
         self._noise_std = noise_std
