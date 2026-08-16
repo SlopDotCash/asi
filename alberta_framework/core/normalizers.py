@@ -24,11 +24,12 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
@@ -53,6 +54,39 @@ NORMALIZER_LIFETIME_COUNTER_DELTA_NBYTES = 8
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _FLOAT32_CONSECUTIVE_INTEGER_LIMIT = 2**24
+
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(int, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 def _stored_float32_equals_one(value: float) -> bool:
@@ -475,6 +509,9 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
             Initial normalizer state whose zero mean and unit variance form
             the estimator's one explicit prior pseudo-sample.
         """
+        feature_dim = _require_int(
+            "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+        )
         return EMANormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
@@ -620,6 +657,9 @@ class WelfordNormalizer(Normalizer[WelfordNormalizerState]):
         Returns:
             Initial normalizer state with zero mean and unit variance
         """
+        feature_dim = _require_int(
+            "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+        )
         return WelfordNormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
@@ -757,6 +797,9 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
 
     def init(self, feature_dim: int) -> StreamingBatchNormalizerState:
         """Initialize running moments."""
+        feature_dim = _require_int(
+            "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+        )
         return StreamingBatchNormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
