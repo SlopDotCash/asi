@@ -42,15 +42,43 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Any
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
+
 _INT32_MAX = 2_147_483_647
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -119,24 +147,65 @@ class LearningSignalEstimatorConfig:
 
     def __post_init__(self) -> None:
         """Reject invalid static shapes, timescales, and safety bounds."""
-        _positive_integer("ensemble_size", self.ensemble_size, minimum=2)
-        _positive_integer("target_dim", self.target_dim)
-        _positive_integer("progress_warmup_steps", self.progress_warmup_steps, minimum=2)
-        _positive_integer(
+        object.__setattr__(
+            self,
+            "ensemble_size",
+            _require_int32("ensemble_size", self.ensemble_size, minimum=2),
+        )
+        object.__setattr__(
+            self,
+            "target_dim",
+            _require_int32("target_dim", self.target_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "progress_warmup_steps",
+            _require_int32(
+                "progress_warmup_steps",
+                self.progress_warmup_steps,
+                minimum=2,
+            ),
+        )
+        object.__setattr__(
+            self,
             "change_calibration_steps",
-            self.change_calibration_steps,
-            minimum=2,
+            _require_int32(
+                "change_calibration_steps",
+                self.change_calibration_steps,
+                minimum=2,
+            ),
         )
         if self.change_calibration_steps >= _INT32_MAX:
             raise ValueError("change_calibration_steps must fit in int32")
         _positive_finite("variance_floor", self.variance_floor)
-        _unit_interval("fast_loss_decay", self.fast_loss_decay)
-        _unit_interval("slow_loss_decay", self.slow_loss_decay)
-        if self.fast_loss_decay >= self.slow_loss_decay:
+        fast_loss_decay = validated_float32_scalar(
+            "fast_loss_decay",
+            self.fast_loss_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        slow_loss_decay = validated_float32_scalar(
+            "slow_loss_decay",
+            self.slow_loss_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        if fast_loss_decay >= slow_loss_decay:
             raise ValueError("fast_loss_decay must be smaller than slow_loss_decay")
+        change_decay = validated_float32_scalar(
+            "change_decay",
+            self.change_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        object.__setattr__(self, "fast_loss_decay", fast_loss_decay)
+        object.__setattr__(self, "slow_loss_decay", slow_loss_decay)
+        object.__setattr__(self, "change_decay", change_decay)
         _positive_finite("change_z_threshold", self.change_z_threshold)
         _positive_finite("change_temperature", self.change_temperature)
-        _unit_interval("change_decay", self.change_decay)
         _positive_finite("calibration_scale_floor", self.calibration_scale_floor)
         _positive_finite("max_normalized_residual", self.max_normalized_residual)
         _positive_finite("max_input_magnitude", self.max_input_magnitude)
