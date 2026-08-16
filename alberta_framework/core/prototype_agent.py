@@ -380,6 +380,16 @@ def _default_oak_config() -> OaKConfig:
     )
 
 
+def _require_positive_legacy_model_gamma(name: str, gamma: float) -> None:
+    """Reject model discounts the terminal-free compatibility wrapper cannot emit."""
+    if gamma <= 0.0:
+        raise ValueError(
+            f"{name} must be positive: the legacy update synthesizes "
+            "transitions with discount=gamma and terminated=False, which the "
+            "boundary contract rejects when gamma is zero"
+        )
+
+
 def _sample_one_hot_dream_observation(
     prediction: Array,
     key: Array,
@@ -567,7 +577,11 @@ class PrototypeAgentConfig:
         object.__setattr__(
             self,
             "horde_step_size",
-            validated_float32_scalar("horde_step_size", self.horde_step_size, positive=True),
+            validated_float32_scalar(
+                "horde_step_size",
+                self.horde_step_size,
+                positive=True,
+            ),
         )
         if self.auto_curate_every < 0:
             raise ValueError("auto_curate_every must be non-negative")
@@ -613,12 +627,10 @@ class PrototypeAgentConfig:
                     f"got {self.world_model.n_actions} and "
                     f"{self.oak.n_primitive_actions}"
                 )
-            if self.world_model.gamma <= 0.0:
-                raise ValueError(
-                    "world_model.gamma must be positive: the legacy update synthesizes "
-                    "transitions with discount=gamma and terminated=False, which the "
-                    "boundary contract rejects when gamma is zero"
-                )
+            _require_positive_legacy_model_gamma(
+                "world_model.gamma",
+                self.world_model.gamma,
+            )
         if self.world_model_ensemble is not None:
             ensemble_model = self.world_model_ensemble.model
             if ensemble_model.observation_dim != self.oak.observation_dim:
@@ -635,6 +647,10 @@ class PrototypeAgentConfig:
                     f"{ensemble_model.n_actions} and "
                     f"{self.oak.n_primitive_actions}"
                 )
+            _require_positive_legacy_model_gamma(
+                "world_model_ensemble.model.gamma",
+                ensemble_model.gamma,
+            )
             if self.n_dreams_per_step != 0:
                 raise ValueError(
                     "dreaming is disabled for world_model_ensemble until its "
@@ -654,6 +670,10 @@ class PrototypeAgentConfig:
                     "oak.n_primitive_actions, got "
                     f"{replay_model.n_actions} and {self.oak.n_primitive_actions}"
                 )
+            _require_positive_legacy_model_gamma(
+                "model_replay_rehearsal.ensemble.model.gamma",
+                replay_model.gamma,
+            )
             if self.n_dreams_per_step != 0:
                 raise ValueError(
                     "dreaming is disabled for model_replay_rehearsal; replay is "

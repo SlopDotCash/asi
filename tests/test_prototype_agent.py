@@ -17,8 +17,11 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.dreaming import DreamingConfig
+from alberta_framework.core.dual_replay import DualReplayConfig
 from alberta_framework.core.experiential_memory import ExperientialMemoryConfig
 from alberta_framework.core.intelligence_amplification import IAConfig
+from alberta_framework.core.learning_signals import LearningSignalEstimatorConfig
+from alberta_framework.core.model_replay_rehearsal import ModelReplayRehearsalConfig
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.core.prototype_agent import (
@@ -37,6 +40,7 @@ from alberta_framework.core.prototype_agent import (
 )
 from alberta_framework.core.types import DemonType, GVFSpec, create_horde_spec
 from alberta_framework.core.world_model import ActionConditionedWorldModelConfig
+from alberta_framework.core.world_model_ensemble import WorldModelEnsembleConfig
 
 pytestmark = pytest.mark.slow
 
@@ -101,6 +105,17 @@ def _wm_cfg(
         hidden_sizes=(),  # linear for speed
         step_size=0.1,
         error_decay=0.99,
+    )
+
+
+def _ensemble_cfg(*, gamma: float) -> WorldModelEnsembleConfig:
+    return WorldModelEnsembleConfig(
+        model=_wm_cfg(gamma=gamma),
+        signal_estimator=LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=OBS_DIM + 2,
+        ),
+        ensemble_size=2,
     )
 
 
@@ -233,36 +248,92 @@ class TestPrototypeAgentConfigValidation:
     @pytest.mark.parametrize(
         ("value", "message"),
         [
-            (float("nan"), "horde_step_size must be a finite real number"),
-            (float("inf"), "horde_step_size must be a finite real number"),
-            (1e100, "horde_step_size must remain finite once narrowed to float32"),
-            (5e-324, "horde_step_size must remain positive once narrowed to float32"),
-            (1e-50, "horde_step_size must remain positive once narrowed to float32"),
-            (Fraction(1, 10**400), "horde_step_size must remain positive once narrowed"),
+            (float("nan"), "finite real"),
+            (float("inf"), "finite real"),
+            (1e100, "remain finite"),
+            (5e-324, "remain positive"),
+            (1e-50, "remain positive"),
+            (Fraction(1, 10**400), "remain positive"),
         ],
     )
-    def test_horde_step_size_must_be_positive_in_float32(self, value: object, message: str) -> None:
-        """The Horde consumes float32: host-finite values narrowing to inf or 0 are refused."""
+    def test_horde_step_size_respects_float32_sink(
+        self,
+        value: object,
+        message: str,
+    ) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             with pytest.raises(ValueError, match=message):
-                PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=value)  # type: ignore[arg-type]
+                PrototypeAgentConfig(
+                    oak=_oak_cfg(),
+                    horde_step_size=value,  # type: ignore[arg-type]
+                )
 
-    def test_horde_step_size_canonicalizes_reals_and_round_trips(self) -> None:
-        config = PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=Fraction(1, 8))
-        assert type(config.horde_step_size) is float and config.horde_step_size == 0.125
-        big = PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=(2**25 - 1) * 2**103 - 1)
+    def test_horde_step_size_canonicalizes_and_round_trips(self) -> None:
+        config = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            horde_step_size=Fraction(1, 8),
+        )
+        assert type(config.horde_step_size) is float
+        assert config.horde_step_size == 0.125
+        assert PrototypeAgentConfig.from_config(config.to_config()) == config
+        big = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            horde_step_size=(2**25 - 1) * 2**103 - 1,
+        )
         assert big.horde_step_size == float(np.finfo(np.float32).max)
-        restored = PrototypeAgentConfig.from_config(big.to_config())
-        assert restored.horde_step_size == big.horde_step_size
         agent = PrototypeAgent(_minimal_config())
         state = agent.start(agent.init(jr.key(0)), jnp.zeros(OBS_DIM))
         assert int(agent.update(state, 0.1, jnp.ones(OBS_DIM)).state.step_count) == 1
 
-    def test_legacy_world_model_gamma_zero_is_rejected(self) -> None:
-        """gamma == 0 makes the legacy update synthesize discount=0, terminated=False forever."""
-        with pytest.raises(ValueError, match="world_model.gamma must be positive"):
-            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
+    @pytest.mark.parametrize("lane", ["world_model", "ensemble", "replay"])
+    def test_legacy_model_lanes_reject_zero_gamma(self, lane: str) -> None:
+        kwargs: dict[str, object]
+        if lane == "world_model":
+            kwargs = {"world_model": _wm_cfg(gamma=0.0)}
+        elif lane == "ensemble":
+            kwargs = {"world_model_ensemble": _ensemble_cfg(gamma=0.0)}
+        else:
+            ensemble = _ensemble_cfg(gamma=0.0)
+            replay = DualReplayConfig(
+                total_capacity=4,
+                short_term_capacity=2,
+                observation_dim=OBS_DIM,
+                action_dim=N_PRIM,
+                short_term_sample_size=1,
+                long_term_sample_size=1,
+            )
+            kwargs = {
+                "model_replay_rehearsal": ModelReplayRehearsalConfig(
+                    ensemble=ensemble,
+                    replay=replay,
+                )
+            }
+        with pytest.raises(ValueError, match="gamma must be positive"):
+            PrototypeAgentConfig(oak=_oak_cfg(), **kwargs)  # type: ignore[arg-type]
+
+    def test_positive_gamma_remains_valid_for_every_legacy_model_lane(self) -> None:
+        ensemble = _ensemble_cfg(gamma=0.5)
+        replay = DualReplayConfig(
+            total_capacity=4,
+            short_term_capacity=2,
+            observation_dim=OBS_DIM,
+            action_dim=N_PRIM,
+            short_term_sample_size=1,
+            long_term_sample_size=1,
+        )
+        configs = (
+            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.5)),
+            PrototypeAgentConfig(oak=_oak_cfg(), world_model_ensemble=ensemble),
+            PrototypeAgentConfig(
+                oak=_oak_cfg(),
+                model_replay_rehearsal=ModelReplayRehearsalConfig(
+                    ensemble=ensemble,
+                    replay=replay,
+                ),
+            ),
+        )
+        assert all(config.horde_step_size == 0.1 for config in configs)
 
 
 # ---------------------------------------------------------------------------
