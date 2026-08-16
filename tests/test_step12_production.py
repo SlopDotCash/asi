@@ -1178,6 +1178,15 @@ def test_step12_rejects_spoofed_int_class_with_negative_ratio() -> None:
         Step12IAConfig(base_step_size=SpoofedIntFloat(0.5))
 
 
+def test_step12_rejects_integer_subclass_conversion_hooks() -> None:
+    class LyingInt(int):
+        def __int__(self) -> int:
+            return 3
+
+    with pytest.raises(ValueError, match="n_demons"):
+        Step12IAConfig(n_demons=LyingInt(-1))
+
+
 def test_step12_rejects_spoofed_ratio_components() -> None:
     class SpoofedComponent:
         @property
@@ -1191,5 +1200,5 @@ def test_step12_rejects_spoofed_ratio_components() -> None:
         def as_integer_ratio(self) -> tuple[Any, Any]:
             return (SpoofedComponent(), 2)
 
-    with pytest.raises(ValueError, match="must narrow to a finite float32"):
+    with pytest.raises(ValueError, match="must be finite"):
         Step12IAConfig(option_gamma=BadRatioFloat(0.5))

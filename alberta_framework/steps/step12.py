@@ -29,9 +29,8 @@ References:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, cast
 
 import jax.numpy as jnp
@@ -39,7 +38,6 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.intelligence_amplification import (
     ExoCerebellumConfig,
     IAAgent,
@@ -55,6 +53,9 @@ from alberta_framework.core.intelligence_amplification import (
 )
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
+from alberta_framework.steps._float32_validation import (
+    finite_real_and_float32,
+)
 
 
 @dataclass(frozen=True)
@@ -155,37 +156,9 @@ class Step12IAConfig:
 
 
 _INT32_MAX = 2**31 - 1
-
-
-def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
-    """Return the original real, exact ratio, and finite binary32 rounding."""
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    real = cast(Real, value)
-    try:
-        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
-    except (FloatingPointError, OverflowError, TypeError, ValueError):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
-    if not math.isfinite(narrowed):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
-    return real, numerator, denominator, narrowed
-
-
-def canonical_float32_storage(value: Real, narrowed: float) -> float:
-    if not isinstance(value, (int, float, np.floating)):
-        return narrowed
-    try:
-        number = float(value)
-    except (OverflowError, TypeError, ValueError):
-        return narrowed
-    if not math.isfinite(number):
-        raise ValueError("scalar must be finite")
-    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
-        renarrowed = np.asarray(number, dtype=np.float32)
-    if not bool(np.array_equal(narrowed, renarrowed)):
-        number = float(narrowed)
-    return number
+_NUMPY_INTEGER_TYPES = frozenset(
+    np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
@@ -229,9 +202,13 @@ def _require_int(
     maximum: int | None = None,
 ) -> int:
     actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+    number: int
+    if actual_type is int:
+        number = cast(int, value)
+    elif actual_type in _NUMPY_INTEGER_TYPES:
+        number = int(cast(Integral, value))
+    else:
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -263,13 +240,13 @@ def _validate_ia_facade_config(config: Step12IAConfig) -> None:
         minimum=0,
         maximum=_INT32_MAX - 1,
     )
-    if not isinstance(config.subtask_specs, tuple):
+    if type(config.subtask_specs) is not tuple:
         raise ValueError(
             f"subtask_specs must be a tuple of SubtaskSpec, got {config.subtask_specs!r}"
         )
     canonical_specs: list[SubtaskSpec] = []
     for spec in config.subtask_specs:
-        if not isinstance(spec, SubtaskSpec):
+        if type(spec) is not SubtaskSpec:
             raise ValueError(f"subtask_specs must contain SubtaskSpec values, got {spec!r}")
         feature_index = _require_int(
             "feature_index",
