@@ -29,7 +29,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, cast
 
 import jax.numpy as jnp
@@ -37,7 +37,6 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.oak import (
     KeyboardChordLearnerConfig,
     KeyboardChordLearnerState,
@@ -53,6 +52,10 @@ from alberta_framework.core.oak import (
     update_keyboard_chord_learner,
 )
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
+)
 
 
 @dataclass(frozen=True)
@@ -164,52 +167,40 @@ class Step11OaKConfig:
 
 
 _INT32_MAX = 2**31 - 1
+_NUMPY_INTEGER_TYPES = frozenset(
+    np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+)
 
 
 def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    try:
-        execution_value = round_real_to_float32(value)
-    except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
-        raise ValueError(f"{name} must be finite in float32, got {value!r}") from error
-    if not bool(np.isfinite(execution_value)):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return execution_value
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    original_value: Any = value
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
     if (
-        not isinstance(value, bool)
-        and isinstance(value, Real)
-        and (original_value < 0 or original_value > 1)
+        numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
     ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    number = _require_real(name, value)
-    if not 0.0 <= number <= 1.0:
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    if not isinstance(value, bool) and isinstance(value, Real) and value < 0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    number = _require_real(name, value)
-    if number < 0.0:
-        raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    if not isinstance(value, bool) and isinstance(value, Real) and value <= 0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
-    number = _require_real(name, value)
-    if number <= 0.0:
-        raise ValueError(
-            f"{name} must be positive in float32 execution sink, got {value!r}"
-        )
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
@@ -217,45 +208,59 @@ def _require_int(
     value: object,
     *,
     minimum: int | None = None,
-    exclusive_maximum: int | None = None,
+    maximum: int | None = None,
 ) -> int:
     actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+    if actual_type is int:
+        number = cast(int, value)
+    elif actual_type in _NUMPY_INTEGER_TYPES:
+        number = int(cast(Integral, value))
+    else:
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
-    if exclusive_maximum is not None and number >= exclusive_maximum:
-        raise ValueError(f"{name} must be smaller than int32 max, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
 def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
+    observation_dim = _require_int(
+        "observation_dim",
+        config.observation_dim,
+        minimum=1,
+        maximum=_INT32_MAX,
+    )
     n_primitive_actions = _require_int(
         "n_primitive_actions",
         config.n_primitive_actions,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     option_planning_backups_per_step = _require_int(
         "option_planning_backups_per_step",
         config.option_planning_backups_per_step,
         minimum=0,
-        exclusive_maximum=_INT32_MAX,
+        maximum=_INT32_MAX - 1,
     )
-    if not isinstance(config.subtask_specs, tuple):
+    if type(config.subtask_specs) is not tuple:
         raise ValueError(
             f"subtask_specs must be a tuple of SubtaskSpec, got {config.subtask_specs!r}"
         )
     canonical_specs: list[SubtaskSpec] = []
     for spec in config.subtask_specs:
-        if not isinstance(spec, SubtaskSpec):
+        if type(spec) is not SubtaskSpec:
             raise ValueError(f"subtask_specs must contain SubtaskSpec values, got {spec!r}")
-        feature_index = _require_int("feature_index", spec.feature_index, minimum=0)
+        feature_index = _require_int(
+            "feature_index",
+            spec.feature_index,
+            minimum=0,
+            maximum=_INT32_MAX,
+        )
         if feature_index >= observation_dim:
             raise ValueError(
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
@@ -269,9 +274,8 @@ def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
             "max_option_steps",
             spec.max_option_steps,
             minimum=1,
+            maximum=_INT32_MAX,
         )
-        if max_option_steps > _INT32_MAX:
-            raise ValueError("max_option_steps must fit int32 telemetry")
         canonical_specs.append(
             SubtaskSpec(
                 feature_index=feature_index,
@@ -464,7 +468,8 @@ def run_step11_smoke(
     Returns:
         :class:`Step11SmokeResult` with shape/fineness summary.
     """
-    steps = _require_int("steps", steps, minimum=1)
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config
     if cfg is None:

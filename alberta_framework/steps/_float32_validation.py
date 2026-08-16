@@ -17,7 +17,7 @@ def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, f
     real = cast(Real, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
-    except (FloatingPointError, OverflowError, TypeError, ValueError):
+    except Exception:
         raise ValueError(f"{name} must be finite, got {value!r}") from None
     if not math.isfinite(narrowed):
         raise ValueError(f"{name} must be finite, got {value!r}")
