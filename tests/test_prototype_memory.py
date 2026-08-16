@@ -190,3 +190,83 @@ def test_infinite_observation_prediction_stays_nonfinite() -> None:
     assert not bool(jnp.all(jnp.isfinite(logits)))
     prediction = learner.predict(state, obs)
     assert not bool(jnp.all(jnp.isfinite(prediction)))
+_INVALID_PROTOTYPE_CONFIGS: tuple[dict[str, object], ...] = (
+    {"feature_dim": 0, "n_classes": 2},
+    {"feature_dim": -1, "n_classes": 2},
+    {"feature_dim": 2**31, "n_classes": 2},
+    {"feature_dim": True, "n_classes": 2},
+    {"feature_dim": "4", "n_classes": 2},
+    {"feature_dim": 4, "n_classes": 1},
+    {"feature_dim": 4, "n_classes": 0},
+    {"feature_dim": 4, "n_classes": -1},
+    {"feature_dim": 4, "n_classes": 2**31},
+    {"feature_dim": 4, "n_classes": True},
+    {"feature_dim": 4, "n_classes": "2"},
+    {"feature_dim": 4, "n_classes": 2, "slots_per_class": 0},
+    {"feature_dim": 4, "n_classes": 2, "slots_per_class": -1},
+    {"feature_dim": 4, "n_classes": 2, "slots_per_class": 2**31},
+    {"feature_dim": 4, "n_classes": 2, "slots_per_class": True},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": 0.0},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": -0.1},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": 1.1},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": 1e100},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": float("nan")},
+    {"feature_dim": 4, "n_classes": 2, "update_rate": True},
+    {"feature_dim": 4, "n_classes": 2, "novelty_threshold": -0.1},
+    {"feature_dim": 4, "n_classes": 2, "novelty_threshold": 1e100},
+    {"feature_dim": 4, "n_classes": 2, "novelty_threshold": float("nan")},
+    {"feature_dim": 4, "n_classes": 2, "novelty_threshold": True},
+    {"feature_dim": 4, "n_classes": 2, "bandwidth": 0.0},
+    {"feature_dim": 4, "n_classes": 2, "bandwidth": -0.1},
+    {"feature_dim": 4, "n_classes": 2, "bandwidth": 1e100},
+    {"feature_dim": 4, "n_classes": 2, "bandwidth": float("nan")},
+    {"feature_dim": 4, "n_classes": 2, "bandwidth": True},
+)
+
+
+@pytest.mark.parametrize("kwargs", _INVALID_PROTOTYPE_CONFIGS)
+def test_prototype_memory_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        PrototypeMemoryConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_prototype_memory_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"update_rate must be in \(0, 1\]"):
+        PrototypeMemoryConfig(
+            feature_dim=4,
+            n_classes=2,
+            update_rate=HiddenBoundaryFloat(0.5),
+        )
+
+
+def test_prototype_memory_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        PrototypeMemoryConfig(
+            feature_dim=4,
+            n_classes=2,
+            update_rate=value,  # type: ignore[arg-type]
+        )

@@ -19,19 +19,119 @@ from __future__ import annotations
 
 import functools
 import math
+from numbers import Integral, Real
 from typing import Any, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
     select_transaction,
 )
+
+_INT32_MAX: int = 2**31 - 1
+
+
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real <= 0.0
+        or not real <= 1.0
+        or numerator <= 0
+        or numerator > denominator
+        or narrowed <= 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 @chex.dataclass(frozen=True)
@@ -61,6 +161,10 @@ class PrototypeMemoryConfig:
     update_rate: float = 0.3
     novelty_threshold: float = 0.08
     bandwidth: float = 0.01
+
+    def __post_init__(self) -> None:
+        """Validate and canonicalize configuration."""
+        _validate_config(self)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a plain dictionary."""
@@ -114,18 +218,26 @@ class PrototypeMemoryLearningResult:
 
 
 def _validate_config(config: PrototypeMemoryConfig) -> None:
-    if config.feature_dim < 1:
-        raise ValueError("feature_dim must be positive")
-    if config.n_classes < 2:
-        raise ValueError("n_classes must be at least 2")
-    if config.slots_per_class < 1:
-        raise ValueError("slots_per_class must be positive")
-    if not 0.0 < config.update_rate <= 1.0 or not math.isfinite(config.update_rate):
-        raise ValueError("update_rate must be in (0, 1]")
-    if config.novelty_threshold < 0.0 or not math.isfinite(config.novelty_threshold):
-        raise ValueError("novelty_threshold must be non-negative")
-    if config.bandwidth <= 0.0 or not math.isfinite(config.bandwidth):
-        raise ValueError("bandwidth must be positive")
+    feature_dim = _require_int(
+        "feature_dim", config.feature_dim, minimum=1, maximum=_INT32_MAX
+    )
+    n_classes = _require_int(
+        "n_classes", config.n_classes, minimum=2, maximum=_INT32_MAX
+    )
+    slots_per_class = _require_int(
+        "slots_per_class", config.slots_per_class, minimum=1, maximum=_INT32_MAX
+    )
+    update_rate = _require_half_open_unit_interval("update_rate", config.update_rate)
+    novelty_threshold = _require_nonnegative_real(
+        "novelty_threshold", config.novelty_threshold
+    )
+    bandwidth = _require_positive_real("bandwidth", config.bandwidth)
+    object.__setattr__(config, "feature_dim", feature_dim)
+    object.__setattr__(config, "n_classes", n_classes)
+    object.__setattr__(config, "slots_per_class", slots_per_class)
+    object.__setattr__(config, "update_rate", update_rate)
+    object.__setattr__(config, "novelty_threshold", novelty_threshold)
+    object.__setattr__(config, "bandwidth", bandwidth)
 
 
 def _softmax(logits: Array) -> Array:

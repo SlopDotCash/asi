@@ -6,6 +6,9 @@ do not establish an integrated Alberta Plan completion result.
 
 from __future__ import annotations
 
+import warnings
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -89,10 +92,12 @@ def _oak_cfg(
 def _wm_cfg(
     obs_dim: int = OBS_DIM,
     n_actions: int = N_PRIM,
+    gamma: float = 0.99,
 ) -> ActionConditionedWorldModelConfig:
     return ActionConditionedWorldModelConfig(
         observation_dim=obs_dim,
         n_actions=n_actions,
+        gamma=gamma,
         hidden_sizes=(),  # linear for speed
         step_size=0.1,
         error_decay=0.99,
@@ -224,6 +229,40 @@ class TestPrototypeAgentConfigValidation:
     def test_horde_step_size_positive(self) -> None:
         with pytest.raises(ValueError, match="horde_step_size"):
             PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=0.0)
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            (float("nan"), "horde_step_size must be a finite real number"),
+            (float("inf"), "horde_step_size must be a finite real number"),
+            (1e100, "horde_step_size must remain finite once narrowed to float32"),
+            (5e-324, "horde_step_size must remain positive once narrowed to float32"),
+            (1e-50, "horde_step_size must remain positive once narrowed to float32"),
+            (Fraction(1, 10**400), "horde_step_size must remain positive once narrowed"),
+        ],
+    )
+    def test_horde_step_size_must_be_positive_in_float32(self, value: object, message: str) -> None:
+        """The Horde consumes float32: host-finite values narrowing to inf or 0 are refused."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(ValueError, match=message):
+                PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=value)  # type: ignore[arg-type]
+
+    def test_horde_step_size_canonicalizes_reals_and_round_trips(self) -> None:
+        config = PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=Fraction(1, 8))
+        assert type(config.horde_step_size) is float and config.horde_step_size == 0.125
+        big = PrototypeAgentConfig(oak=_oak_cfg(), horde_step_size=(2**25 - 1) * 2**103 - 1)
+        assert big.horde_step_size == float(np.finfo(np.float32).max)
+        restored = PrototypeAgentConfig.from_config(big.to_config())
+        assert restored.horde_step_size == big.horde_step_size
+        agent = PrototypeAgent(_minimal_config())
+        state = agent.start(agent.init(jr.key(0)), jnp.zeros(OBS_DIM))
+        assert int(agent.update(state, 0.1, jnp.ones(OBS_DIM)).state.step_count) == 1
+
+    def test_legacy_world_model_gamma_zero_is_rejected(self) -> None:
+        """gamma == 0 makes the legacy update synthesize discount=0, terminated=False forever."""
+        with pytest.raises(ValueError, match="world_model.gamma must be positive"):
+            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
 
 
 # ---------------------------------------------------------------------------

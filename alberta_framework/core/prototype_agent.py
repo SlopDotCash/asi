@@ -46,6 +46,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
     load_checkpoint_metadata,
@@ -563,8 +564,11 @@ class PrototypeAgentConfig:
                 "dream_next_observation_mode must be "
                 "'model_prediction' or 'sample_one_hot'"
             )
-        if self.horde_step_size <= 0.0:
-            raise ValueError("horde_step_size must be positive")
+        object.__setattr__(
+            self,
+            "horde_step_size",
+            validated_float32_scalar("horde_step_size", self.horde_step_size, positive=True),
+        )
         if self.auto_curate_every < 0:
             raise ValueError("auto_curate_every must be non-negative")
         if not isinstance(self.learn_state_builder_from_world_model, bool):
@@ -608,6 +612,12 @@ class PrototypeAgentConfig:
                     "world_model.n_actions must match oak.n_primitive_actions, "
                     f"got {self.world_model.n_actions} and "
                     f"{self.oak.n_primitive_actions}"
+                )
+            if self.world_model.gamma <= 0.0:
+                raise ValueError(
+                    "world_model.gamma must be positive: the legacy update synthesizes "
+                    "transitions with discount=gamma and terminated=False, which the "
+                    "boundary contract rejects when gamma is zero"
                 )
         if self.world_model_ensemble is not None:
             ensemble_model = self.world_model_ensemble.model

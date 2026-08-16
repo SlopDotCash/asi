@@ -5,6 +5,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.upgd_memory import (
     UPGDMemoryConfig,
@@ -276,3 +277,240 @@ def test_zero_reliability_decay_does_not_relax_consumed_non_ema_state() -> None:
     )
     chex.assert_trees_all_equal(result.state, expected)
     chex.assert_trees_all_equal(result.predictions, jnp.zeros((2,), dtype=jnp.float32))
+
+
+_INVALID_UPGD_MEMORY_CONFIGS: tuple[dict[str, object], ...] = (
+    {"feature_dim": 0, "n_heads": 2},
+    {"feature_dim": -1, "n_heads": 2},
+    {"feature_dim": 2**31, "n_heads": 2},
+    {"feature_dim": True, "n_heads": 2},
+    {"feature_dim": "2", "n_heads": 2},
+    {"feature_dim": 2, "n_heads": 1},
+    {"feature_dim": 2, "n_heads": 0},
+    {"feature_dim": 2, "n_heads": -1},
+    {"feature_dim": 2, "n_heads": 2**31},
+    {"feature_dim": 2, "n_heads": True},
+    {"feature_dim": 2, "n_heads": 2, "hidden_sizes": ()},
+    {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (0,)},
+    {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (2**31,)},
+    {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (True,)},
+    {"feature_dim": 2, "n_heads": 2, "readout_mode": "invalid_mode"},
+    {"feature_dim": 2, "n_heads": 2, "upgd_step_size": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "upgd_step_size": -0.01},
+    {"feature_dim": 2, "n_heads": 2, "upgd_step_size": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_step_size": float("nan")},
+    {"feature_dim": 2, "n_heads": 2, "upgd_step_size": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_step_size_multiplier": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_step_size_multiplier": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_step_size_multiplier": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_step_size_multiplier": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_bias_step_size_multiplier": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_bias_step_size_multiplier": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_bias_step_size_multiplier": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_gate_ratio": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_gate_ratio": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_gate_ratio": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_multiplier": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_multiplier": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_multiplier": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_warmup_steps": -1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_warmup_steps": 2**31},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_loss_pressure_warmup_steps": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_multiplier": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_multiplier": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_multiplier": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_decay": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_decay": 1.0},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_decay": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_decay": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_decay": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_delta_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_delta_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_delta_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_pressure_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_pressure_threshold": 1.0},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_pressure_threshold": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_pressure_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_pressure_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_warmup_steps": -1},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_warmup_steps": 2**31},
+    {"feature_dim": 2, "n_heads": 2, "upgd_head_repetition_warmup_steps": True},
+    {"feature_dim": 2, "n_heads": 2, "slots_per_class": 0},
+    {"feature_dim": 2, "n_heads": 2, "slots_per_class": -1},
+    {"feature_dim": 2, "n_heads": 2, "slots_per_class": 2**31},
+    {"feature_dim": 2, "n_heads": 2, "slots_per_class": True},
+    {"feature_dim": 2, "n_heads": 2, "memory_update_rate": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "memory_update_rate": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "memory_update_rate": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "memory_update_rate": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "memory_update_rate": True},
+    {"feature_dim": 2, "n_heads": 2, "initial_novelty_threshold": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "initial_novelty_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "initial_novelty_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "initial_novelty_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "memory_bandwidth": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "memory_bandwidth": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "memory_bandwidth": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "memory_bandwidth": True},
+    {"feature_dim": 2, "n_heads": 2, "initial_memory_logit": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "initial_memory_logit": True},
+    {"feature_dim": 2, "n_heads": 2, "memory_logit_step_size": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "memory_logit_step_size": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "memory_logit_step_size": True},
+    {"feature_dim": 2, "n_heads": 2, "confidence_logit_scale": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "confidence_logit_scale": True},
+    {"feature_dim": 2, "n_heads": 2, "reliability_logit_scale": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "reliability_logit_scale": True},
+    {"feature_dim": 2, "n_heads": 2, "reliability_decay": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "reliability_decay": 1.0},
+    {"feature_dim": 2, "n_heads": 2, "reliability_decay": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "reliability_decay": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "reliability_decay": True},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_blend_scale": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_blend_scale": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_blend_scale": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_blend_scale": True},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_pressure_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_pressure_threshold": 1.0},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_pressure_threshold": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_pressure_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "target_trace_pressure_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "novelty_adaptation_rate": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "novelty_adaptation_rate": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "novelty_adaptation_rate": True},
+    {"feature_dim": 2, "n_heads": 2, "target_allocation_rate": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "target_allocation_rate": 1.1},
+    {"feature_dim": 2, "n_heads": 2, "target_allocation_rate": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "target_allocation_rate": True},
+    {"feature_dim": 2, "n_heads": 2, "min_novelty_threshold": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "min_novelty_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "min_novelty_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "min_novelty_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "max_novelty_threshold": 0.0},
+    {"feature_dim": 2, "n_heads": 2, "max_novelty_threshold": -0.1},
+    {"feature_dim": 2, "n_heads": 2, "max_novelty_threshold": 1e100},
+    {"feature_dim": 2, "n_heads": 2, "max_novelty_threshold": True},
+    {"feature_dim": 2, "n_heads": 2, "min_novelty_threshold": 0.5, "max_novelty_threshold": 0.1},
+)
+
+
+@pytest.mark.parametrize("kwargs", _INVALID_UPGD_MEMORY_CONFIGS)
+def test_upgd_memory_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        UPGDMemoryConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_upgd_memory_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"memory_update_rate must be in \(0, 1\]"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            memory_update_rate=HiddenBoundaryFloat(0.5),
+        )
+
+
+def test_upgd_memory_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            upgd_step_size=value,  # type: ignore[arg-type]
+        )
+
+
+def test_upgd_memory_rejects_spoofed_tuple_container() -> None:
+    class SpoofedTuple(list):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    with pytest.raises(TypeError, match="hidden_sizes"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            hidden_sizes=SpoofedTuple([64]),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(TypeError, match="hidden_sizes"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            hidden_sizes=[64],  # type: ignore[arg-type]
+        )
+
+
+def test_upgd_memory_rejects_equality_spoofed_readout_mode() -> None:
+    class SpoofedReadoutMode:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return hash("softmax_ce")
+
+    with pytest.raises(TypeError, match="readout_mode"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            readout_mode=SpoofedReadoutMode(),  # type: ignore[arg-type]
+        )
+
+
+def test_upgd_memory_rejects_spoofed_int_class_and_negative_ratios() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="upgd_step_size"):
+        UPGDMemoryConfig(
+            feature_dim=2,
+            n_heads=2,
+            upgd_step_size=SpoofedIntFloat(0.5),
+        )
+
+
+def test_upgd_memory_json_roundtrip() -> None:
+    import json
+
+    config = UPGDMemoryConfig(
+        feature_dim=4,
+        n_heads=3,
+        hidden_sizes=(16, 8),
+        readout_mode="softmax_ce",
+        upgd_step_size=0.05,
+    )
+    serialized = config.to_dict()
+    json_str = json.dumps(serialized)
+    deserialized = json.loads(json_str)
+    restored = UPGDMemoryConfig.from_dict(deserialized)
+
+    assert restored == config
+    assert restored.hidden_sizes == (16, 8)
+    assert restored.readout_mode == "softmax_ce"
