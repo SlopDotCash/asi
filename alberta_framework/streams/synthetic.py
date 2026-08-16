@@ -58,6 +58,19 @@ def _require_positive_int(name: str, value: object) -> int:
     return number
 
 
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
 def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[int, int, float]:
     """Return one trusted exact ratio together with its binary32 rounding."""
     actual_type = type(value)
@@ -256,6 +269,11 @@ class HiddenStateAR2Stream:
             raise ValueError("visible_dim must be in [1, feature_dim)")
         if feature_dim - visible_dim < 2:
             raise ValueError("hidden block must contain at least two channels")
+        _require_float32_resource(
+            "HiddenStateAR2Stream state",
+            vector_scalars=2 * feature_dim,
+            fixed_scalars=2,
+        )
         phi1 = _require_finite_float32("phi1", phi1)
         phi2 = _require_finite_float32("phi2", phi2)
         innovation_std = _require_finite_nonnegative_float32(
@@ -498,6 +516,14 @@ class SuttonExperiment1Stream:
         self._num_relevant = _require_positive_int("num_relevant", num_relevant)
         self._num_irrelevant = _require_positive_int(
             "num_irrelevant", num_irrelevant
+        )
+        feature_dim = self._num_relevant + self._num_irrelevant
+        if feature_dim > _INT32_MAX:
+            raise ValueError("SuttonExperiment1Stream feature_dim must fit signed int32")
+        _require_float32_resource(
+            "SuttonExperiment1Stream state",
+            vector_scalars=feature_dim,
+            fixed_scalars=3,
         )
         self._change_interval = _require_positive_int("change_interval", change_interval)
         self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
@@ -948,6 +974,7 @@ def make_scale_range(
     ```
     """
     feature_dim = _require_positive_int("feature_dim", feature_dim)
+    _require_float32_resource("scale range", vector_scalars=feature_dim)
     if log_spaced:
         min_bound = _require_normal_float32_scale("min_scale", min_scale)
         max_bound = _require_normal_float32_scale("max_scale", max_scale)
@@ -1042,6 +1069,11 @@ class DynamicScaleShiftStream:
             noise_std: Std dev of target noise
         """
         self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        _require_float32_resource(
+            "DynamicScaleShiftStream state",
+            vector_scalars=2 * self._feature_dim,
+            fixed_scalars=3,
+        )
         self._scale_change_interval = _require_positive_int(
             "scale_change_interval", scale_change_interval
         )
@@ -1193,6 +1225,11 @@ class ScaleDriftStream:
             noise_std: Std dev of target noise
         """
         self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        _require_float32_resource(
+            "ScaleDriftStream state",
+            vector_scalars=2 * self._feature_dim,
+            fixed_scalars=3,
+        )
         self._weight_drift_rate = _require_finite_nonnegative_float32(
             "weight_drift_rate", weight_drift_rate
         )

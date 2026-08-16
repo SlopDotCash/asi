@@ -165,3 +165,38 @@ def test_dynamic_scale_shift_float_validators_reject_nonfinite() -> None:
 def test_make_scale_range_rejects_invalid_feature_dim_hostile() -> None:
     with pytest.raises(ValueError, match="feature_dim"):
         make_scale_range(feature_dim=_RaisingIntSubclass(5))  # type: ignore[arg-type]
+
+
+def test_hidden_and_scale_streams_preflight_state_bytes_without_allocation() -> None:
+    last_legal = (2**29 - 1 - 3) // 2
+
+    DynamicScaleShiftStream(feature_dim=last_legal)
+    ScaleDriftStream(feature_dim=last_legal)
+    with pytest.raises(ValueError, match="byte count"):
+        DynamicScaleShiftStream(feature_dim=last_legal + 1)
+    with pytest.raises(ValueError, match="byte count"):
+        ScaleDriftStream(feature_dim=last_legal + 1)
+
+    hidden_last_legal = (2**29 - 1 - 2) // 2
+    HiddenStateAR2Stream(feature_dim=hidden_last_legal, visible_dim=2)
+    with pytest.raises(ValueError, match="byte count"):
+        HiddenStateAR2Stream(feature_dim=hidden_last_legal + 1, visible_dim=2)
+
+
+def test_sutton_stream_preflights_derived_feature_and_state_bytes() -> None:
+    last_legal_total = 2**29 - 1 - 3
+
+    SuttonExperiment1Stream(num_relevant=1, num_irrelevant=last_legal_total - 1)
+    with pytest.raises(ValueError, match="byte count"):
+        SuttonExperiment1Stream(num_relevant=1, num_irrelevant=last_legal_total)
+    with pytest.raises(ValueError, match="feature_dim"):
+        SuttonExperiment1Stream(num_relevant=2**30, num_irrelevant=2**30)
+
+
+def test_make_scale_range_rejects_oversize_before_numpy_allocation(monkeypatch) -> None:
+    def allocation_must_not_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("allocation ran before resource validation")
+
+    monkeypatch.setattr(np, "geomspace", allocation_must_not_run)
+    with pytest.raises(ValueError, match="byte count"):
+        make_scale_range(feature_dim=2**29)
