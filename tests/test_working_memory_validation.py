@@ -232,6 +232,7 @@ def test_working_state_preflight_bytes_without_allocation() -> None:
         observation_decay_rates=(0.5, 0.9, 0.99),
         action_decay_rates=(),
         reward_decay_rates=(),
+        include_current_observation=False,
     )
     assert cfg.observation_dim == last_legal
     with pytest.raises(ValueError, match="byte count"):
@@ -242,6 +243,7 @@ def test_working_state_preflight_bytes_without_allocation() -> None:
             observation_decay_rates=(0.5, 0.9, 0.99),
             action_decay_rates=(),
             reward_decay_rates=(),
+            include_current_observation=False,
         )
     # Non-minimal should also be allocation-free
     with pytest.raises(ValueError, match="byte count|scalar count|dimensions"):
@@ -260,6 +262,21 @@ def test_working_state_preflight_feature_dim_boundary() -> None:
         match="configuration feature_dim|byte count|scalar count|dimensions",
     ):
         _base_cfg(observation_dim=600_000_000, action_dim=600_000_000, reward_dim=600_000_000)
+
+
+def test_unused_signal_vector_still_fits_public_zero_allocation() -> None:
+    with pytest.raises(ValueError, match="action vector byte count"):
+        WorkingMemoryConfig(
+            observation_dim=1,
+            action_dim=_INT32_MAX // 4 + 1,
+            reward_dim=0,
+            observation_decay_rates=(),
+            action_decay_rates=(),
+            reward_decay_rates=(),
+            include_current_action=False,
+            include_current_reward=False,
+            include_traces=False,
+        )
 
 
 def test_working_serialized_schema_preserves_only_exact_list_tuple_compatibility() -> None:
@@ -384,7 +401,9 @@ def test_working_transform_preflights_output_bytes_without_allocation() -> None:
             include_traces=False,
         )
     )
-    first_overflow = _INT32_MAX // 5 + 1
+    # Returned float32 features, bool verdicts, and a default float32 gate
+    # workspace consume nine bytes per one-dimensional event.
+    first_overflow = _INT32_MAX // 9 + 1
     observations = jax.ShapeDtypeStruct((first_overflow, 1), jnp.float32)
     empty = jax.ShapeDtypeStruct((first_overflow, 0), jnp.float32)
     with pytest.raises(ValueError, match="byte count"):

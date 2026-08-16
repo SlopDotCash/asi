@@ -241,9 +241,6 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     return number
 
 
-_UINT32_MAX: int = 4294967295
-
-
 def _require_float32_resource(
     name: str,
     *,
@@ -323,6 +320,13 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
         raise ValueError(
             f"configuration feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
         )
+    for name, dimension in (
+        ("observation vector", observation_dim),
+        ("action vector", action_dim),
+        ("reward vector", reward_dim),
+        ("working-memory feature output", feature_dim),
+    ):
+        _require_float32_resource(name, vector_scalars=dimension)
     trace_scalars = (
         observation_dim * len(observation_decay_rates)
         + action_dim * len(action_decay_rates)
@@ -330,17 +334,11 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
     )
     if trace_scalars > _INT32_MAX:
         raise ValueError("WorkingMemoryConfig dimensions must fit signed int32")
-    total_state_scalars = trace_scalars + 4
     _require_float32_resource(
         "WorkingMemoryConfig state",
         vector_scalars=trace_scalars,
         fixed_scalars=4,
     )
-    persistent_bytes = 4 * total_state_scalars
-    if persistent_bytes > _INT32_MAX:
-        raise ValueError("WorkingMemoryConfig state byte count must fit signed int32")
-    if persistent_bytes > _UINT32_MAX:
-        raise ValueError("working memory allocation exceeds uint32 byte accounting")
 
 
 def _empty_or_vector(value: Array, dim: int) -> Array:
@@ -756,8 +754,8 @@ def transform_working_memory_arrays(
             f"(got {_obs.shape[0]}, {_act.shape[0]}, {_rew.shape[0]})"
         )
     _require_sequence_resource(
-        "working memory transform outputs",
-        float32_scalars=int(steps) * cfg.feature_dim(),
+        "working memory transform outputs and default gate workspace",
+        float32_scalars=int(steps) * (cfg.feature_dim() + 1),
         bool_scalars=int(steps),
     )
     if state is None:

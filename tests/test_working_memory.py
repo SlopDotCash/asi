@@ -561,9 +561,10 @@ def test_config_rejects_derived_feature_dimension_above_int32() -> None:
         WorkingMemoryConfig(observation_dim=2**31 - 1)
 
 
-def test_config_accepts_exact_int32_max_derived_feature_dimension() -> None:
+def test_config_feature_byte_boundary_is_allocation_free() -> None:
+    last_valid = (2**31 - 1) // 4
     config = WorkingMemoryConfig(
-        observation_dim=2**31 - 1,
+        observation_dim=last_valid,
         action_dim=0,
         reward_dim=0,
         observation_decay_rates=(),
@@ -574,7 +575,19 @@ def test_config_accepts_exact_int32_max_derived_feature_dimension() -> None:
         include_traces=False,
     )
 
-    assert config.feature_dim() == 2**31 - 1
+    assert config.feature_dim() == last_valid
+    with pytest.raises(ValueError, match="feature output byte count"):
+        WorkingMemoryConfig(
+            observation_dim=last_valid,
+            action_dim=1,
+            reward_dim=0,
+            observation_decay_rates=(),
+            action_decay_rates=(),
+            reward_decay_rates=(),
+            include_current_action=True,
+            include_current_reward=False,
+            include_traces=False,
+        )
 
 
 @pytest.mark.parametrize("method", ["features", "update_checked", "step"])
