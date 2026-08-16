@@ -24,16 +24,18 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
     MultiHeadMLPState,
@@ -52,6 +54,77 @@ STOMP_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
+
+
+def _require_int32(
+    name: str,
+    value: object,
+    *,
+    minimum: int,
+    maximum: int = _INT32_MAX,
+) -> int:
+    """Return a canonical exact integer in the signed-int32 domain."""
+
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _stomp_resource_counts(
+    n_options: int,
+    observation_dim: int,
+    n_primitive_actions: int,
+    hidden_sizes: tuple[int, ...],
+) -> dict[str, int]:
+    """Preflight exact config/state counts before STOMP constructs any JAX array."""
+
+    n_total_actions = n_primitive_actions + n_options
+    layer_sizes = (observation_dim, *hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else observation_dim
+    base_parameters = trunk_parameters + n_total_actions * (final_width + 1)
+    base_optimizer_scalars = 2 * len(hidden_sizes) + 2 * n_total_actions
+    base_state_scalars = (
+        2 * base_parameters + base_optimizer_scalars + sum(hidden_sizes) + 3
+    )
+    wrapper_float32_scalars = (
+        n_options * observation_dim * observation_dim
+        + 2 * n_options * n_primitive_actions * observation_dim
+        + 6 * n_options
+        + 2 * observation_dim
+        + 5
+    )
+    wrapper_int32_scalars = n_options + 6
+    wrapper_uint32_scalars = 4
+    wrapper_state_scalars = (
+        wrapper_float32_scalars + wrapper_int32_scalars + wrapper_uint32_scalars
+    )
+    resources = {
+        "n_total_actions": n_total_actions,
+        "spec_array_scalars": 4 * n_options,
+        "spec_array_bytes": 16 * n_options,
+        "base_parameter_scalars": base_parameters,
+        "base_optimizer_scalars": base_optimizer_scalars,
+        "base_state_scalars": base_state_scalars,
+        "base_state_bytes": 4 * base_state_scalars,
+        "wrapper_state_scalars": wrapper_state_scalars,
+        "wrapper_state_bytes": 4 * wrapper_state_scalars,
+        "persistent_state_scalars": base_state_scalars + wrapper_state_scalars,
+        "persistent_state_bytes": 4 * (base_state_scalars + wrapper_state_scalars),
+    }
+    for name, count in resources.items():
+        if not 0 <= count <= _INT32_MAX:
+            raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
+    return resources
 
 # ---------------------------------------------------------------------------
 # Subtask specification (Python-level; JAX arrays extracted for scan use)
@@ -83,14 +156,30 @@ class SubtaskSpec:
 
     def __post_init__(self) -> None:
         """Validate subtask specification."""
-        if self.feature_index < 0:
-            raise ValueError("feature_index must be non-negative")
-        if not math.isfinite(self.threshold) or self.threshold <= 0.0:
-            raise ValueError("threshold must be finite and positive")
-        if not math.isfinite(self.pseudo_reward_scale) or self.pseudo_reward_scale <= 0.0:
-            raise ValueError("pseudo_reward_scale must be finite and positive")
-        if self.max_option_steps < 1:
-            raise ValueError("max_option_steps must be at least 1")
+        object.__setattr__(
+            self,
+            "feature_index",
+            _require_int32("feature_index", self.feature_index, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "threshold",
+            validated_float32_scalar("threshold", self.threshold, positive=True),
+        )
+        object.__setattr__(
+            self,
+            "pseudo_reward_scale",
+            validated_float32_scalar(
+                "pseudo_reward_scale",
+                self.pseudo_reward_scale,
+                positive=True,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_option_steps",
+            _require_int32("max_option_steps", self.max_option_steps, minimum=1),
+        )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1419,18 +1508,50 @@ class STOMPConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if self.observation_dim <= 0:
-            raise ValueError("observation_dim must be positive")
-        if self.n_primitive_actions <= 0:
-            raise ValueError("n_primitive_actions must be positive")
+        if type(self.subtask_specs) is not tuple:
+            raise ValueError("subtask_specs must be an actual tuple")
+        if not all(type(spec) is SubtaskSpec for spec in self.subtask_specs):
+            raise ValueError("subtask_specs entries must be actual SubtaskSpec values")
+        if type(self.base_hidden_sizes) is not tuple:
+            raise ValueError("base_hidden_sizes must be an actual tuple")
+
+        observation_dim = _require_int32("observation_dim", self.observation_dim, minimum=1)
+        n_primitive_actions = _require_int32(
+            "n_primitive_actions", self.n_primitive_actions, minimum=1
+        )
+        hidden_sizes = tuple(
+            _require_int32(f"base_hidden_sizes[{index}]", width, minimum=1)
+            for index, width in enumerate(self.base_hidden_sizes)
+        )
+        try:
+            backups = _require_int32(
+                "option_planning_backups_per_step",
+                self.option_planning_backups_per_step,
+                minimum=0,
+                maximum=_INT32_MAX - 1,
+            )
+        except ValueError as error:
+            raise ValueError(
+                "option_planning_backups_per_step must be a nonnegative integer "
+                "smaller than int32 max"
+            ) from error
+        _stomp_resource_counts(
+            len(self.subtask_specs),
+            observation_dim,
+            n_primitive_actions,
+            hidden_sizes,
+        )
+        object.__setattr__(self, "observation_dim", observation_dim)
+        object.__setattr__(self, "n_primitive_actions", n_primitive_actions)
+        object.__setattr__(self, "base_hidden_sizes", hidden_sizes)
+        object.__setattr__(self, "option_planning_backups_per_step", backups)
+
         for spec in self.subtask_specs:
-            if spec.feature_index >= self.observation_dim:
+            if spec.feature_index >= observation_dim:
                 raise ValueError(
                     f"SubtaskSpec.feature_index={spec.feature_index} >= "
-                    f"observation_dim={self.observation_dim}"
+                    f"observation_dim={observation_dim}"
                 )
-            if spec.max_option_steps > _INT32_MAX:
-                raise ValueError("SubtaskSpec.max_option_steps must fit int32 telemetry")
         for step_size_name in (
             "base_step_size",
             "base_avg_reward_step_size",
@@ -1438,9 +1559,15 @@ class STOMPConfig:
             "option_avg_reward_step_size",
             "option_model_step_size",
         ):
-            step_size_value: float = getattr(self, step_size_name)
-            if not math.isfinite(step_size_value) or step_size_value < 0.0:
-                raise ValueError(f"{step_size_name} must be finite and non-negative")
+            object.__setattr__(
+                self,
+                step_size_name,
+                validated_float32_scalar(
+                    step_size_name,
+                    getattr(self, step_size_name),
+                    lower=0.0,
+                ),
+            )
         for unit_interval_name in (
             "base_trace_decay",
             "option_trace_decay",
@@ -1448,28 +1575,42 @@ class STOMPConfig:
             "epsilon_base",
             "epsilon_option",
         ):
-            unit_interval_value: float = getattr(self, unit_interval_name)
-            if not math.isfinite(unit_interval_value) or not 0.0 <= unit_interval_value <= 1.0:
-                raise ValueError(f"{unit_interval_name} must be finite and in [0, 1]")
-        if not math.isfinite(self.option_gamma) or not 0.0 <= self.option_gamma <= 1.0:
-            raise ValueError("option_gamma must be finite and in [0, 1]")
-        if self.option_target_epsilon is not None and not (
-            0.0 <= self.option_target_epsilon <= 1.0
-        ):
-            raise ValueError("option_target_epsilon must be in [0, 1] when provided")
-        if self.option_importance_clip <= 0.0:
-            raise ValueError("option_importance_clip must be positive")
-        if (
-            isinstance(self.option_planning_backups_per_step, bool)
-            or not isinstance(self.option_planning_backups_per_step, int)
-            or self.option_planning_backups_per_step < 0
-        ):
-            raise ValueError("option_planning_backups_per_step must be a nonnegative integer")
-        if self.option_planning_backups_per_step >= _INT32_MAX:
-            raise ValueError(
-                "option_planning_backups_per_step must be smaller than int32 max"
+            object.__setattr__(
+                self,
+                unit_interval_name,
+                validated_float32_scalar(
+                    unit_interval_name,
+                    getattr(self, unit_interval_name),
+                    lower=0.0,
+                    upper=1.0,
+                ),
             )
-        if not self.subtask_specs and self.option_planning_backups_per_step != 0:
+        object.__setattr__(
+            self,
+            "option_gamma",
+            validated_float32_scalar(
+                "option_gamma", self.option_gamma, lower=0.0, upper=1.0
+            ),
+        )
+        if self.option_target_epsilon is not None:
+            object.__setattr__(
+                self,
+                "option_target_epsilon",
+                validated_float32_scalar(
+                    "option_target_epsilon",
+                    self.option_target_epsilon,
+                    lower=0.0,
+                    upper=1.0,
+                ),
+            )
+        object.__setattr__(
+            self,
+            "option_importance_clip",
+            validated_float32_scalar(
+                "option_importance_clip", self.option_importance_clip, positive=True
+            ),
+        )
+        if not self.subtask_specs and backups != 0:
             raise ValueError(
                 "primitive-only STOMP requires option_planning_backups_per_step == 0"
             )
@@ -1513,13 +1654,66 @@ class STOMPConfig:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> STOMPConfig:
         """Reconstruct from :meth:`to_config` output."""
-        payload = dict(config)
-        payload.pop("type", None)
-        specs_raw = payload.pop("subtask_specs", [])
-        specs = tuple(SubtaskSpec(**s) for s in specs_raw)
-        if "base_hidden_sizes" in payload:
-            payload["base_hidden_sizes"] = tuple(payload["base_hidden_sizes"])
-        return cls(subtask_specs=specs, **payload)
+        if type(config) is not dict or not all(type(key) is str for key in config):
+            raise ValueError("STOMPConfig payload must be an actual string-keyed dict")
+        payload = config.copy()
+        expected = {field.name for field in dataclasses.fields(cls)} | {"type"}
+        legacy_expected = expected - {"option_planning_backups_per_step"}
+        if set(payload) not in (expected, legacy_expected):
+            raise ValueError("STOMPConfig fields do not match the schema")
+        config_type = payload.pop("type")
+        if type(config_type) is not str or config_type != "STOMPConfig":
+            raise ValueError("unexpected STOMPConfig type")
+        specs_raw = payload.pop("subtask_specs")
+        if type(specs_raw) is not list:
+            raise ValueError("serialized subtask_specs must be a list")
+        spec_fields = {field.name for field in dataclasses.fields(SubtaskSpec)}
+        specs: list[SubtaskSpec] = []
+        for raw in specs_raw:
+            if type(raw) is not dict or not all(type(key) is str for key in raw):
+                raise ValueError("serialized subtask_specs entries must be actual dicts")
+            if set(raw) != spec_fields:
+                raise ValueError("serialized SubtaskSpec fields do not match the schema")
+            if type(raw["feature_index"]) is not int or type(raw["max_option_steps"]) is not int:
+                raise ValueError("serialized SubtaskSpec integer fields must be JSON integers")
+            if type(raw["threshold"]) is not float or type(raw["pseudo_reward_scale"]) is not float:
+                raise ValueError("serialized SubtaskSpec scalar fields must be JSON floats")
+            specs.append(SubtaskSpec(**raw))
+        raw_hidden = payload.pop("base_hidden_sizes")
+        if type(raw_hidden) is not list:
+            raise ValueError("serialized base_hidden_sizes must be a list")
+        if not all(type(width) is int for width in raw_hidden):
+            raise ValueError("serialized base_hidden_sizes entries must be JSON integers")
+        if "option_planning_backups_per_step" not in payload:
+            payload["option_planning_backups_per_step"] = 0
+        for name in (
+            "observation_dim",
+            "n_primitive_actions",
+            "option_planning_backups_per_step",
+        ):
+            if type(payload[name]) is not int:
+                raise ValueError(f"serialized {name} must be a JSON integer")
+        for name in (
+            "base_step_size",
+            "base_avg_reward_step_size",
+            "base_trace_decay",
+            "option_step_size",
+            "option_avg_reward_step_size",
+            "option_trace_decay",
+            "option_gamma",
+            "option_model_decay",
+            "option_model_step_size",
+            "epsilon_base",
+            "epsilon_option",
+            "option_importance_clip",
+        ):
+            if type(payload[name]) is not float:
+                raise ValueError(f"serialized {name} must be a JSON float")
+        target_epsilon = payload["option_target_epsilon"]
+        if target_epsilon is not None and type(target_epsilon) is not float:
+            raise ValueError("serialized option_target_epsilon must be null or a JSON float")
+        payload["base_hidden_sizes"] = tuple(raw_hidden)
+        return cls(subtask_specs=tuple(specs), **payload)
 
 
 # ---------------------------------------------------------------------------

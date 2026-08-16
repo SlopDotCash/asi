@@ -1,8 +1,13 @@
 """Tests for STOMP checkpoint payloads and state migration (core/options.py)."""
 
+import json
+from fractions import Fraction
+from typing import Any
+
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.options import (
@@ -17,7 +22,9 @@ from alberta_framework.core.options import (
     SubtaskSpec,
     _differential_q_update,
     _differential_semidp_q_update,
+    _stomp_resource_counts,
     load_stomp_state_with_migration,
+    measure_stomp_state_nbytes,
     replace_dispatched_primitive_action,
     stomp_state_to_checkpoint_payload,
 )
@@ -375,7 +382,7 @@ class TestStompConfigScalarValidation:
         "value", [float("nan"), float("inf"), float("-inf"), -0.05]
     )
     def test_rejects_invalid_step_sizes(self, name: str, value: float) -> None:
-        with pytest.raises(ValueError, match=f"{name} must be finite and non-negative"):
+        with pytest.raises(ValueError, match=name):
             self._build(**{name: value})
 
     @pytest.mark.parametrize("name", _UNIT_INTERVAL_FIELDS)
@@ -383,7 +390,7 @@ class TestStompConfigScalarValidation:
         "value", [float("nan"), float("inf"), float("-inf"), -0.1, 1.5, 2.0]
     )
     def test_rejects_invalid_unit_interval_scalars(self, name: str, value: float) -> None:
-        with pytest.raises(ValueError, match=rf"{name} must be finite and in \[0, 1\]"):
+        with pytest.raises(ValueError, match=name):
             self._build(**{name: value})
 
     @pytest.mark.parametrize("name", _STEP_SIZE_FIELDS)
@@ -402,5 +409,125 @@ class TestStompConfigScalarValidation:
     def test_from_config_enforces_scalar_validation(self) -> None:
         payload = self._build().to_config()
         payload["base_step_size"] = float("nan")
-        with pytest.raises(ValueError, match="base_step_size must be finite and non-negative"):
+        with pytest.raises(ValueError, match="base_step_size"):
             STOMPConfig.from_config(payload)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dtype", [np.dtype(code).type for code in "bBhHiIlLqQ"])
+def test_stomp_integer_fields_accept_every_supported_numpy_dtype(dtype: type[Any]) -> None:
+    spec = SubtaskSpec(feature_index=dtype(0), max_option_steps=dtype(8))
+    config = STOMPConfig(
+        subtask_specs=(spec,),
+        observation_dim=dtype(2),
+        n_primitive_actions=dtype(2),
+        base_hidden_sizes=(dtype(3),),
+        option_planning_backups_per_step=dtype(0),
+    )
+
+    assert type(spec.feature_index) is int
+    assert type(spec.max_option_steps) is int
+    assert type(config.observation_dim) is int
+    assert type(config.n_primitive_actions) is int
+    assert type(config.base_hidden_sizes[0]) is int
+    assert type(config.option_planning_backups_per_step) is int
+    assert STOMPConfig.from_config(config.to_config()) == config
+    json.dumps(config.to_config(), allow_nan=False)
+
+
+@pytest.mark.unit
+def test_stomp_rejects_hostile_integer_and_container_impostors() -> None:
+    class IntSubclass(int):
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    for value in (True, np.bool_(True), IntSubclass(1), ClassSpoof()):
+        with pytest.raises(ValueError, match="feature_index"):
+            SubtaskSpec(feature_index=value)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="observation_dim"):
+            STOMPConfig(observation_dim=value)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="subtask_specs"):
+        STOMPConfig(subtask_specs=[])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="base_hidden_sizes"):
+        STOMPConfig(base_hidden_sizes=[3])  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_stomp_float32_boundaries_are_canonical_and_exact() -> None:
+    spec = SubtaskSpec(
+        feature_index=0,
+        threshold=Fraction(1, 2),
+        pseudo_reward_scale=np.float64(0.5),
+    )
+    config = STOMPConfig(
+        subtask_specs=(spec,),
+        observation_dim=1,
+        base_step_size=Fraction(0),
+        option_gamma=Fraction(1),
+        option_importance_clip=Fraction(1, 2),
+    )
+    assert type(spec.threshold) is float
+    assert type(spec.pseudo_reward_scale) is float
+    assert type(config.base_step_size) is float
+    assert type(config.option_gamma) is float
+    assert type(config.option_importance_clip) is float
+
+    for field, value in (
+        ("base_step_size", Fraction(-1, 10**100)),
+        ("option_gamma", Fraction(1) + Fraction(1, 10**100)),
+        ("option_importance_clip", Fraction(0)),
+    ):
+        with pytest.raises(ValueError, match=field):
+            STOMPConfig(**{field: value})
+
+
+@pytest.mark.unit
+def test_stomp_resource_preflight_matches_state_and_rejects_before_allocation() -> None:
+    config = STOMPConfig(
+        subtask_specs=(SubtaskSpec(feature_index=0), SubtaskSpec(feature_index=1)),
+        observation_dim=3,
+        n_primitive_actions=2,
+        base_hidden_sizes=(4,),
+    )
+    resources = _stomp_resource_counts(2, 3, 2, (4,))
+    state = STOMPAgent(config).init(jr.key(0))
+    assert resources["persistent_state_bytes"] == measure_stomp_state_nbytes(state)
+
+    with pytest.raises(ValueError, match="derived .*state"):
+        STOMPConfig(
+            subtask_specs=(SubtaskSpec(feature_index=0),),
+            observation_dim=50_000,
+            n_primitive_actions=1,
+        )
+
+
+@pytest.mark.unit
+def test_stomp_from_config_requires_exact_json_containers_and_schema() -> None:
+    config = STOMPConfig(
+        subtask_specs=(SubtaskSpec(feature_index=0),),
+        observation_dim=2,
+    )
+    payload = config.to_config()
+    for mutation, message in (
+        ({**payload, "type": "wrong"}, "type"),
+        ({**payload, "subtask_specs": tuple(payload["subtask_specs"])}, "subtask_specs"),
+        ({**payload, "base_hidden_sizes": tuple(payload["base_hidden_sizes"])}, "hidden"),
+        ({**payload, "observation_dim": np.int32(2)}, "observation_dim"),
+        ({**payload, "base_step_size": np.float32(0.05)}, "base_step_size"),
+        ({**payload, "extra": 1}, "fields"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            STOMPConfig.from_config(mutation)
+
+    legacy = payload.copy()
+    legacy.pop("option_planning_backups_per_step")
+    assert STOMPConfig.from_config(legacy).option_planning_backups_per_step == 0
