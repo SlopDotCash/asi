@@ -139,6 +139,45 @@ def _serialized_sequence(name: str, value: object) -> tuple[Any, ...]:
     return tuple(cast(list[Any] | tuple[Any, ...], value))
 
 
+def _require_scan_resource(name: str, *, float32_scalars: int, bool_scalars: int) -> None:
+    if float32_scalars + bool_scalars > _INT32_MAX:
+        raise ValueError(f"derived {name} scalar count must fit in signed int32")
+    if 4 * float32_scalars + bool_scalars > _INT32_MAX:
+        raise ValueError(f"derived {name} byte count must fit in signed int32")
+
+
+def _scan_array_metadata(name: str, value: object) -> tuple[int, ...]:
+    """Read shape and numeric dtype before any user-controlled array conversion."""
+    try:
+        raw_shape = object.__getattribute__(value, "shape")
+        raw_dtype = object.__getattribute__(value, "dtype")
+    except (AttributeError, TypeError):
+        raise ValueError(f"{name} must expose array shape and dtype metadata") from None
+    if type(raw_shape) is not tuple:
+        raise ValueError(f"{name} shape metadata must be an exact tuple")
+    shape = tuple(
+        _require_int32(f"{name} shape dimension", dimension, minimum=0)
+        for dimension in raw_shape
+    )
+    try:
+        dtype = np.dtype(raw_dtype)
+    except Exception:
+        raise ValueError(f"{name} dtype metadata must be readable") from None
+    if dtype.kind not in "biuf":
+        raise ValueError(f"{name} must have a real numeric dtype")
+    return shape
+
+
+def _require_scan_array(name: str, value: object, expected: tuple[int, ...]) -> None:
+    if _scan_array_metadata(name, value) != expected:
+        raise ValueError(f"{name} must have shape {expected}")
+
+
+def _saturating_increment(value: Array) -> Array:
+    one = jnp.asarray(1, dtype=jnp.int32)
+    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
+
+
 def _float32_operand(
     name: str,
     value: Array | float | int,
@@ -248,6 +287,12 @@ class ActionConditionedWorldModelConfig:
                 name,
                 validated_float32_scalar(name, getattr(self, name), **bounds),
             )
+        if (
+            observation_scale is not None
+            and max(observation_scale) * self.max_delta_scale
+            > float(np.finfo(np.float32).max)
+        ):
+            raise ValueError("observation_scale * max_delta_scale must remain finite")
 
         action_feature_dim = n_actions
         if self.include_action_interactions:
@@ -401,8 +446,23 @@ def _rollback_multi_head_result(
 
 def _action_world_model_state_is_valid(
     state: ActionConditionedWorldModelState,
+    observation_dim: int,
 ) -> Bool[Array, ""]:
     """Accept either the intentional empty-bound sentinels or finite learned bounds."""
+    direct_structure_valid = (
+        state.observation_min.shape == (observation_dim,)
+        and state.observation_max.shape == (observation_dim,)
+        and state.reward_min.shape == ()
+        and state.reward_max.shape == ()
+        and state.model_error_ema.shape == ()
+        and state.step_count.shape == ()
+        and state.observation_min.dtype == jnp.float32
+        and state.observation_max.dtype == jnp.float32
+        and state.reward_min.dtype == jnp.float32
+        and state.reward_max.dtype == jnp.float32
+        and state.model_error_ema.dtype == jnp.float32
+        and state.step_count.dtype == jnp.int32
+    )
     finite_bounds = (
         jnp.all(jnp.isfinite(state.observation_min))
         & jnp.all(jnp.isfinite(state.observation_max))
@@ -417,7 +477,8 @@ def _action_world_model_state_is_valid(
         & jnp.isneginf(state.reward_max)
     )
     return (
-        floating_tree_is_finite(state.learner_state)
+        direct_structure_valid
+        & floating_tree_is_finite(state.learner_state)
         & jnp.isfinite(state.model_error_ema)
         & (state.step_count >= 0)
         & (finite_bounds | empty_bounds)
@@ -813,7 +874,7 @@ class ActionConditionedWorldModel:
             reward_min=jnp.minimum(state.reward_min, safe_reward),
             reward_max=jnp.maximum(state.reward_max, safe_reward),
             model_error_ema=next_error_ema,
-            step_count=state.step_count + 1,
+            step_count=_saturating_increment(state.step_count),
         )
 
         diagnostics_finite = (
@@ -830,7 +891,7 @@ class ActionConditionedWorldModel:
         update_applied = (
             inputs_valid
             & learner_result.update_applied
-            & _action_world_model_state_is_valid(state)
+            & _action_world_model_state_is_valid(state, self._config.observation_dim)
             & floating_tree_is_finite(candidate_state)
             & diagnostics_finite
         )
@@ -885,12 +946,38 @@ def run_action_conditioned_world_model_learning_loop(
     discounts: Float[Array, " num_steps"] | None = None,
 ) -> ActionConditionedWorldModelLearningResult:
     """Run online one-step model learning over transition arrays."""
+    observation_dim = model.config.observation_dim
+    n_heads = observation_dim + 2
+    observation_shape = _scan_array_metadata("observations", observations)
+    if len(observation_shape) != 2 or observation_shape[1] != observation_dim:
+        raise ValueError(f"observations must have shape (num_steps, {observation_dim})")
+    num_steps = observation_shape[0]
+    _require_scan_array("actions", actions, (num_steps,))
+    _require_scan_array("rewards", rewards, (num_steps,))
+    _require_scan_array(
+        "next_observations", next_observations, (num_steps, observation_dim)
+    )
+    if discounts is not None:
+        _require_scan_array("discounts", discounts, (num_steps,))
+    _require_scan_resource(
+        "action-conditioned world-model learning result",
+        float32_scalars=(
+            2 * num_steps * observation_dim + 6 * num_steps + 6 * num_steps * n_heads
+        ),
+        bool_scalars=num_steps,
+    )
+    observations = jnp.asarray(observations, dtype=jnp.float32)
+    actions = jnp.asarray(actions, dtype=jnp.float32)
+    rewards = jnp.asarray(rewards, dtype=jnp.float32)
+    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     if discounts is None:
         discounts = jnp.full(
-            jnp.shape(rewards),
+            (num_steps,),
             jnp.asarray(model.config.gamma, dtype=jnp.float32),
             dtype=jnp.float32,
         )
+    else:
+        discounts = jnp.asarray(discounts, dtype=jnp.float32)
 
     def _scan_fn(
         carry: ActionConditionedWorldModelState,
@@ -1296,13 +1383,29 @@ class OneStepWorldModel:
         prediction_error = jnp.nanmean(learner_result.errors**2)
         candidate_state = WorldModelState(
             learner_state=learner_result.state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_increment(state.step_count),
+        )
+        diagnostics_valid = (
+            jnp.all(jnp.isfinite(prediction.next_observation))
+            & jnp.isfinite(prediction.reward)
+            & jnp.all(jnp.isfinite(prediction.raw_predictions))
+            & jnp.all(~jnp.isinf(targets))
+            & jnp.all(~jnp.isinf(learner_result.errors))
+            & jnp.all(~jnp.isinf(learner_result.per_head_metrics))
+            & jnp.all(~jnp.isinf(next_observation_errors))
+            & ~jnp.isinf(reward_error)
+            & ~jnp.isinf(observation_mse)
+            & ~jnp.isinf(prediction_error)
         )
         update_applied = (
             action_valid
             & learner_result.update_applied
             & floating_tree_is_finite(state)
+            & (state.step_count.shape == ())
+            & (state.step_count.dtype == jnp.int32)
+            & (state.step_count >= 0)
             & floating_tree_is_finite(candidate_state)
+            & diagnostics_valid
         )
         new_state = select_transaction(update_applied, candidate_state, state)
         reported_learner_result = _rollback_multi_head_result(
@@ -1357,6 +1460,33 @@ def run_world_model_learning_loop(
     next_observations: Array,
 ) -> WorldModelLearningResult:
     """Run one-step world-model learning with ``jax.lax.scan``."""
+    observation_dim = model.config.observation_dim
+    n_heads = observation_dim + 1
+    observation_shape = _scan_array_metadata("observations", observations)
+    if len(observation_shape) != 2 or observation_shape[1] != observation_dim:
+        raise ValueError(f"observations must have shape (num_steps, {observation_dim})")
+    num_steps = observation_shape[0]
+    action_shape = (
+        (num_steps,)
+        if model.config.n_actions is not None
+        else (num_steps, model.config.action_dim)
+    )
+    _require_scan_array("actions", actions, action_shape)
+    _require_scan_array("rewards", rewards, (num_steps,))
+    _require_scan_array(
+        "next_observations", next_observations, (num_steps, observation_dim)
+    )
+    _require_scan_resource(
+        "world-model learning result",
+        float32_scalars=(
+            2 * num_steps * observation_dim + 2 * num_steps + 3 * num_steps * n_heads
+        ),
+        bool_scalars=num_steps,
+    )
+    observations = jnp.asarray(observations, dtype=jnp.float32)
+    actions = jnp.asarray(actions, dtype=jnp.float32)
+    rewards = jnp.asarray(rewards, dtype=jnp.float32)
+    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
 
     def step_fn(
         carry: WorldModelState,

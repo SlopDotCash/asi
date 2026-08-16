@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -367,3 +369,55 @@ def test_world_model_config_deserialization_preserves_sequence_compatibility() -
     payload["hidden_sizes"] = range(2)
     with pytest.raises(ValueError, match="actual list or tuple"):
         WorldModelConfig.from_config(payload)
+
+
+def test_world_model_scan_preflights_metadata_and_complete_result_resources() -> None:
+    model = OneStepWorldModel(WorldModelConfig(observation_dim=1, hidden_sizes=()))
+    state = model.init(jr.key(0))
+    with pytest.raises(ValueError, match="rewards must have shape"):
+        run_world_model_learning_loop(
+            model,
+            state,
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.zeros((2,), dtype=jnp.int32),
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.zeros((2, 1), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="real numeric dtype"):
+        run_world_model_learning_loop(
+            model,
+            state,
+            jnp.zeros((2, 1), dtype=jnp.float32),
+            jnp.zeros((2,), dtype=jnp.int32),
+            jnp.zeros((2,), dtype=jnp.complex64),
+            jnp.zeros((2, 1), dtype=jnp.float32),
+        )
+
+    steps = 60_000_000
+    with pytest.raises(ValueError, match="byte count"):
+        run_world_model_learning_loop(
+            model,
+            state,
+            jax.ShapeDtypeStruct((steps, 1), jnp.float32),
+            jax.ShapeDtypeStruct((steps,), jnp.int32),
+            jax.ShapeDtypeStruct((steps,), jnp.float32),
+            jax.ShapeDtypeStruct((steps, 1), jnp.float32),
+        )
+
+
+def test_world_model_outer_step_count_saturates() -> None:
+    model = OneStepWorldModel(
+        WorldModelConfig(observation_dim=1, n_actions=2, hidden_sizes=(), sparsity=0.0)
+    )
+    state = dataclasses.replace(
+        model.init(jr.key(0)), step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32)
+    )
+    result = model.update(
+        state,
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1

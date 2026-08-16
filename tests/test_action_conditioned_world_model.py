@@ -830,3 +830,97 @@ def test_diagnostics_reflect_true_decodes_not_guard_clips() -> None:
     assert float(far_result.next_observation_errors[0]) == pytest.approx(
         config.max_delta_scale, abs=1e-3
     )
+
+
+def test_action_world_model_rejects_decode_product_overflow() -> None:
+    with pytest.raises(ValueError, match=r"observation_scale \* max_delta_scale"):
+        ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            observation_scale=(float(np.finfo(np.float32).max),),
+            max_delta_scale=2.0,
+        )
+
+
+def test_action_world_model_scan_preflights_complete_result_resources() -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(observation_dim=1, n_actions=2, hidden_sizes=())
+    )
+    state = model.init(jr.key(0))
+    steps = 21_000_000
+    with pytest.raises(ValueError, match="byte count"):
+        run_action_conditioned_world_model_learning_loop(
+            model,
+            state,
+            jax.ShapeDtypeStruct((steps, 1), jnp.float32),
+            jax.ShapeDtypeStruct((steps,), jnp.int32),
+            jax.ShapeDtypeStruct((steps,), jnp.float32),
+            jax.ShapeDtypeStruct((steps, 1), jnp.float32),
+        )
+
+
+def test_action_world_model_outer_step_count_saturates() -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(0))
+    state = dataclasses.replace(
+        state,
+        observation_min=jnp.zeros((1,), dtype=jnp.float32),
+        observation_max=jnp.zeros((1,), dtype=jnp.float32),
+        reward_min=jnp.asarray(0.0, dtype=jnp.float32),
+        reward_max=jnp.asarray(0.0, dtype=jnp.float32),
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+    )
+    result = model.update(
+        state,
+        jnp.asarray([0.0], dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray([0.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1
+
+
+def test_action_world_model_rolls_back_reduction_overflow() -> None:
+    observation_dim = 8
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=observation_dim,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+            observation_scale=(8.0e18,) * observation_dim,
+        )
+    )
+    state = model.init(jr.key(0))
+    heads = state.learner_state.head_params
+    biased_heads = dataclasses.replace(
+        heads,
+        biases=tuple(
+            jnp.ones_like(bias) if index < observation_dim else jnp.zeros_like(bias)
+            for index, bias in enumerate(heads.biases)
+        ),
+    )
+    state = dataclasses.replace(
+        state,
+        learner_state=dataclasses.replace(state.learner_state, head_params=biased_heads),
+    )
+    result = model.update(
+        state,
+        jnp.zeros((observation_dim,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros((observation_dim,), dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert float(result.observation_mse) == 0.0
+    assert int(result.state.step_count) == 0
