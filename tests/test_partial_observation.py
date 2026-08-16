@@ -123,6 +123,22 @@ class TestRandom:
         with pytest.raises(ValueError, match="mask_prob"):
             PartialObservationWrapper(inner, mode=MaskMode.RANDOM, mask_prob=Spoof())
 
+    def test_random_normalizes_hostile_real_failure_without_repr(self) -> None:
+        class HostileFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                raise RuntimeError("untrusted ratio hook")
+
+            def __repr__(self) -> str:
+                raise AssertionError("repr hook executed")
+
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        with pytest.raises(ValueError, match="mask_prob"):
+            PartialObservationWrapper(
+                inner,
+                mode=MaskMode.RANDOM,
+                mask_prob=HostileFloat(0.5),
+            )
+
 
 class TestPeriodic:
     def test_periodic_cycles(self) -> None:
