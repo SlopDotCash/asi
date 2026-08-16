@@ -403,8 +403,26 @@ class SARSAAgent:
         if type(sarsa_config) is not SARSAConfig:
             raise ValueError("sarsa_config must be an actual SARSAConfig")
         lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
+        step_size = validated_float32_scalar("step_size", step_size, lower=0.0)
+        sparsity = validated_float32_scalar("sparsity", sparsity, lower=0.0, upper=1.0)
+        leaky_relu_slope = validated_float32_scalar("leaky_relu_slope", leaky_relu_slope, lower=0.0)
+        utility_decay = validated_float32_scalar(
+            "utility_decay",
+            utility_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        if type(use_layer_norm) is not bool:
+            raise ValueError("use_layer_norm must be an actual bool")
+        if type(trace_mode) is not TraceMode:
+            raise ValueError("trace_mode must be an actual TraceMode")
         if prediction_demons is not None and type(prediction_demons) is not list:
             raise ValueError("prediction_demons must be an actual list or None")
+        if prediction_demons is not None and any(
+            type(demon) is not GVFSpec for demon in prediction_demons
+        ):
+            raise ValueError("prediction_demons entries must be actual GVFSpec values")
         n_predictions = len(prediction_demons) if prediction_demons is not None else 0
         total_heads = _require_int32(
             "total control and prediction demons",
@@ -490,7 +508,7 @@ class SARSAAgent:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "SARSAAgent":
+    def from_config(cls, config: Mapping[str, Any]) -> "SARSAAgent":
         """Reconstruct from config dict."""
         from alberta_framework.core.normalizers import normalizer_from_config
         from alberta_framework.core.optimizers import (
@@ -503,7 +521,8 @@ class SARSAAgent:
         if not all(type(key) is str for key in config) or set(config) != _SARSA_AGENT_CONFIG_FIELDS:
             raise ValueError("SARSA agent config fields do not match the schema")
         config = dict(config)
-        if config.pop("type") != "SARSAAgent":
+        serialized_type = config.pop("type")
+        if type(serialized_type) is not str or serialized_type != "SARSAAgent":
             raise ValueError("unexpected SARSA agent config type")
         state_schema = config.pop("state_schema")
         if type(state_schema) is not str or state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
@@ -518,6 +537,8 @@ class SARSAAgent:
             and type(config["prediction_demons"]) is not list
         ):
             raise ValueError("serialized prediction_demons must be an actual list or None")
+        if type(config["trace_mode"]) is not str:
+            raise ValueError("serialized trace_mode must be an actual string")
 
         sarsa_config = SARSAConfig.from_config(config.pop("sarsa_config"))
         optimizer = optimizer_from_config(config.pop("optimizer"))
@@ -547,6 +568,46 @@ class SARSAAgent:
             prediction_demons=prediction_demons,
             trace_mode=trace_mode,
             **config,
+        )
+
+    def _require_state_contract(self, state: SARSAState) -> int:
+        """Validate SARSA-owned static state leaves and return feature width."""
+
+        if type(state) is not SARSAState:
+            raise TypeError("state must be an actual SARSAState")
+        if type(state.learner_state) is not MultiHeadMLPState:
+            raise TypeError("learner_state must be an actual MultiHeadMLPState")
+        last_observation = jnp.asarray(state.last_observation)
+        if last_observation.ndim != 1 or last_observation.shape[0] < 1:
+            raise ValueError("SARSA last_observation must be a nonempty vector")
+        if last_observation.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("SARSA last_observation must have dtype float32")
+        for name, value, dtype in (
+            ("last_action", state.last_action, jnp.int32),
+            ("epsilon", state.epsilon, jnp.float32),
+            ("step_count", state.step_count, jnp.int32),
+        ):
+            array = jnp.asarray(value)
+            if array.shape != ():
+                raise ValueError(f"SARSA {name} must be scalar")
+            if array.dtype != jnp.dtype(dtype):
+                raise TypeError(f"SARSA {name} has the wrong dtype")
+        key_words = jnp.asarray(jr.key_data(state.rng_key))
+        if key_words.shape != (2,) or key_words.dtype != jnp.dtype(jnp.uint32):
+            raise TypeError("SARSA rng_key must be a scalar Threefry key")
+        return int(last_observation.shape[0])
+
+    def _state_values_valid(self, state: SARSAState) -> Array:
+        """Return dynamic validity for the complete source transaction."""
+
+        return (
+            jnp.all(jnp.isfinite(state.last_observation))
+            & jnp.isfinite(state.epsilon)
+            & (state.epsilon >= 0.0)
+            & (state.epsilon <= 1.0)
+            & (state.last_action >= -1)
+            & (state.last_action < self.n_actions)
+            & (state.step_count >= 0)
         )
 
     def init(self, feature_dim: int, key: Array) -> SARSAState:
@@ -595,11 +656,20 @@ class SARSAAgent:
         Returns:
             Tuple of (action, new_rng_key)
         """
+        feature_dim = self._require_state_contract(state)
+        raw_observation = jnp.asarray(observation)
+        if raw_observation.shape != (feature_dim,):
+            raise ValueError(f"SARSA observation must have shape ({feature_dim},)")
+        if raw_observation.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("SARSA observation must have dtype float32")
+        input_valid = self._state_values_valid(state) & jnp.all(jnp.isfinite(raw_observation))
+        safe_observation = jnp.where(input_valid, raw_observation, jnp.zeros_like(raw_observation))
         key, explore_key, noise_key, random_key = jr.split(state.rng_key, 4)
 
         # Get Q-values (first n_actions heads are control demons)
-        all_preds = self._horde.predict(state.learner_state, observation)
+        all_preds = self._horde.predict(state.learner_state, safe_observation)
         q_values = all_preds[: self._sarsa_config.n_actions]
+        policy_valid = input_valid & jnp.all(jnp.isfinite(q_values))
 
         # Greedy action with Gumbel tie-breaking
         # Add small noise only to max-valued actions for uniform tie-breaking
@@ -615,7 +685,10 @@ class SARSAAgent:
         explore = jr.uniform(explore_key) < state.epsilon
         action = jax.lax.select(explore, random_action, greedy_action)
 
-        return action, key
+        return (
+            jnp.where(policy_valid, action, jnp.asarray(-1, dtype=jnp.int32)),
+            jax.lax.cond(policy_valid, lambda: key, lambda: state.rng_key),
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -647,9 +720,60 @@ class SARSAAgent:
         """
         n_actions = self._sarsa_config.n_actions
         gamma = self._sarsa_config.gamma
+        feature_dim = self._require_state_contract(state)
+        raw_observation = jnp.asarray(observation)
+        if raw_observation.shape != (feature_dim,):
+            raise ValueError(f"SARSA observation must have shape ({feature_dim},)")
+        if raw_observation.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("SARSA observation must have dtype float32")
+        raw_reward = jnp.asarray(reward)
+        if raw_reward.shape != ():
+            raise ValueError("SARSA reward must be scalar")
+        if raw_reward.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("SARSA reward must have dtype float32")
+        raw_terminated = jnp.asarray(terminated)
+        if raw_terminated.shape != ():
+            raise ValueError("SARSA terminated must be scalar")
+        if raw_terminated.dtype not in (jnp.dtype(jnp.bool_), jnp.dtype(jnp.float32)):
+            raise TypeError("SARSA terminated must have dtype bool or float32")
+        raw_next_action = jnp.asarray(next_action)
+        if raw_next_action.shape != ():
+            raise ValueError("SARSA next_action must be scalar")
+        if raw_next_action.dtype != jnp.dtype(jnp.int32):
+            raise TypeError("SARSA next_action must have dtype int32")
+        prediction_values = None
+        prediction_values_valid = jnp.asarray(True, dtype=jnp.bool_)
+        if prediction_cumulants is not None:
+            prediction_values = jnp.asarray(prediction_cumulants)
+            if prediction_values.shape != (self._n_prediction_demons,):
+                raise ValueError(
+                    f"SARSA prediction_cumulants must have shape ({self._n_prediction_demons},)"
+                )
+            if prediction_values.dtype != jnp.dtype(jnp.float32):
+                raise TypeError("SARSA prediction_cumulants must have dtype float32")
+            prediction_values_valid = jnp.all(~jnp.isinf(prediction_values))
+
+        state_valid = self._state_values_valid(state)
+        next_action_valid = (raw_next_action >= 0) & (raw_next_action < n_actions)
+        terminated_valid = (raw_terminated == 0) | (raw_terminated == 1)
+        inputs_valid = (
+            jnp.all(jnp.isfinite(raw_observation))
+            & jnp.isfinite(raw_reward)
+            & terminated_valid
+            & next_action_valid
+            & prediction_values_valid
+        )
+        safe_observation = jnp.where(
+            jnp.all(jnp.isfinite(raw_observation)),
+            raw_observation,
+            jnp.zeros_like(raw_observation),
+        )
+        safe_reward = jnp.where(jnp.isfinite(raw_reward), raw_reward, jnp.zeros_like(raw_reward))
+        safe_terminated = jnp.where(terminated_valid, raw_terminated, jnp.ones_like(raw_terminated))
+        safe_next_action = jnp.clip(raw_next_action, 0, n_actions - 1)
 
         # Q(s', :) for all actions
-        all_preds = self._horde.predict(state.learner_state, observation)
+        all_preds = self._horde.predict(state.learner_state, safe_observation)
         q_next = all_preds[:n_actions]
         q_previous = self._horde.predict(
             state.learner_state,
@@ -659,15 +783,15 @@ class SARSAAgent:
         # SARSA target: r + gamma * Q(s', a') with terminal handling.
         # A terminal or zero-gamma transition must not multiply Q(s', a');
         # jnp.where still evaluates 0 * inf, which is NaN.
-        q_sa_next = q_next[next_action]
+        q_sa_next = q_next[safe_next_action]
         gamma_arr = jnp.asarray(gamma, dtype=q_sa_next.dtype)
-        skip_bootstrap = (terminated != 0) | (gamma_arr == 0.0)
+        skip_bootstrap = (safe_terminated != 0) | (gamma_arr == 0.0)
         bootstrap = jnp.where(
             skip_bootstrap,
             jnp.zeros_like(q_sa_next),
             gamma_arr * q_sa_next,
         )
-        sarsa_target = reward + bootstrap
+        sarsa_target = safe_reward + bootstrap
 
         # Build cumulants: NaN for all except last_action gets sarsa_target
         cumulants = jnp.full(self._horde.n_demons, jnp.nan, dtype=jnp.float32)
@@ -685,12 +809,12 @@ class SARSAAgent:
         cumulants = jnp.where(action_valid, updated_cumulants, cumulants)
 
         # Add prediction demon cumulants if any
-        if prediction_cumulants is not None:
+        if prediction_values is not None:
             cumulants = cumulants.at[n_actions:].set(
                 jnp.where(
-                    action_valid,
-                    prediction_cumulants,
-                    jnp.full_like(prediction_cumulants, jnp.nan),
+                    action_valid & inputs_valid,
+                    prediction_values,
+                    jnp.full_like(prediction_values, jnp.nan),
                 )
             )
 
@@ -704,7 +828,7 @@ class SARSAAgent:
             state.learner_state,
             state.last_observation,
             cumulants,
-            observation,
+            safe_observation,
             discounts,
         )
 
@@ -721,8 +845,8 @@ class SARSAAgent:
                 decay = jnp.where(state.last_action == i, 1.0, gl)
                 skipped_w = jnp.where(decay == 0.0, jnp.zeros_like(w_trace), decay * w_trace)
                 skipped_b = jnp.where(decay == 0.0, jnp.zeros_like(b_trace), decay * b_trace)
-                new_w = jnp.where(terminated, jnp.zeros_like(w_trace), skipped_w)
-                new_b = jnp.where(terminated, jnp.zeros_like(b_trace), skipped_b)
+                new_w = jnp.where(safe_terminated, jnp.zeros_like(w_trace), skipped_w)
+                new_b = jnp.where(safe_terminated, jnp.zeros_like(b_trace), skipped_b)
                 head_traces[i] = (new_w, new_b)
             new_learner_state = new_learner_state.replace(head_traces=tuple(head_traces))
 
@@ -743,22 +867,42 @@ class SARSAAgent:
             lambda: state.epsilon,
         )
 
-        new_state = SARSAState(  # type: ignore[call-arg]
+        proposed_state = SARSAState(  # type: ignore[call-arg]
             learner_state=new_learner_state,
-            last_action=next_action,
-            last_observation=observation,
+            last_action=safe_next_action,
+            last_observation=safe_observation,
             epsilon=new_epsilon,
             rng_key=state.rng_key,
             step_count=new_step_count,
         )
-        new_state = jax.lax.cond(action_valid, lambda: new_state, lambda: state)
+        candidate_valid = _floating_tree_is_finite(proposed_state)
+        zero_decay_trace_recovery = jnp.asarray(
+            self._lamda > 0.0 and gamma == 0.0,
+            dtype=jnp.bool_,
+        )
+        transaction_applied = (
+            state_valid
+            & action_valid
+            & inputs_valid
+            & (horde_result.update_applied | zero_decay_trace_recovery)
+            & candidate_valid
+        )
+        diagnostic_valid = (
+            action_valid
+            & next_action_valid
+            & jnp.isfinite(raw_reward)
+            & terminated_valid
+            & (jnp.all(jnp.isfinite(raw_observation)) | skip_bootstrap)
+            & jnp.isfinite(td_error)
+        )
+        new_state = jax.lax.cond(transaction_applied, lambda: proposed_state, lambda: state)
 
         return SARSAUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=next_action,
-            q_values=q_next,
-            td_error=td_error,
-            reward=reward,
+            action=jnp.where(transaction_applied, safe_next_action, -1),
+            q_values=jnp.where(transaction_applied, q_next, jnp.zeros_like(q_next)),
+            td_error=jnp.where(diagnostic_valid, td_error, 0.0),
+            reward=jnp.where(jnp.isfinite(raw_reward), raw_reward, 0.0),
         )
 
 
