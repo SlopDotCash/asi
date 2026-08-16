@@ -125,9 +125,7 @@ class TestLearnedResourceManager:
             jax.nn.softmax(finite_state.log_weights[0]),
         )
 
-        state = finite_state.replace(
-            log_weights=jnp.full((1, 2), jnp.inf, dtype=jnp.float32)
-        )
+        state = finite_state.replace(log_weights=jnp.full((1, 2), jnp.inf, dtype=jnp.float32))
         raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
         assert not bool(jnp.isfinite(raw))
         assert manager.weights(state).tolist() == pytest.approx([0.5, 0.5])
@@ -139,9 +137,7 @@ class TestLearnedResourceManager:
 
     def test_nonzero_discount_rejects_nonfinite_logits(self) -> None:
         manager = LearnedResourceManager(n_actions=2, discount=0.5)
-        state = manager.init().replace(
-            log_weights=jnp.full((1, 2), jnp.inf, dtype=jnp.float32)
-        )
+        state = manager.init().replace(log_weights=jnp.full((1, 2), jnp.inf, dtype=jnp.float32))
 
         assert not bool(jnp.all(jnp.isfinite(manager.weights(state))))
         result = manager.update(state, jnp.asarray([0.1, 1.0], dtype=jnp.float32))
@@ -151,9 +147,7 @@ class TestLearnedResourceManager:
 
     def test_zero_loss_decay_recovers_observed_nonfinite_ema(self) -> None:
         manager = LearnedResourceManager(n_actions=2, loss_decay=0.0)
-        state = manager.init().replace(
-            loss_ema=jnp.asarray([[jnp.inf, 7.0]], dtype=jnp.float32)
-        )
+        state = manager.init().replace(loss_ema=jnp.asarray([[jnp.inf, 7.0]], dtype=jnp.float32))
 
         result = manager.update(state, jnp.asarray([0.1, jnp.nan], dtype=jnp.float32))
 
@@ -162,9 +156,7 @@ class TestLearnedResourceManager:
 
     def test_zero_loss_decay_rejects_poisoned_ema_in_ignored_slot(self) -> None:
         manager = LearnedResourceManager(n_actions=2, loss_decay=0.0)
-        state = manager.init().replace(
-            loss_ema=jnp.asarray([[0.0, jnp.inf]], dtype=jnp.float32)
-        )
+        state = manager.init().replace(loss_ema=jnp.asarray([[0.0, jnp.inf]], dtype=jnp.float32))
 
         result = manager.update(state, jnp.asarray([0.1, jnp.nan], dtype=jnp.float32))
 
@@ -173,9 +165,7 @@ class TestLearnedResourceManager:
 
     def test_nonzero_loss_decay_rejects_consumed_nonfinite_ema(self) -> None:
         manager = LearnedResourceManager(n_actions=2, loss_decay=0.5)
-        state = manager.init().replace(
-            loss_ema=jnp.asarray([[jnp.inf, 0.0]], dtype=jnp.float32)
-        )
+        state = manager.init().replace(loss_ema=jnp.asarray([[jnp.inf, 0.0]], dtype=jnp.float32))
 
         result = manager.update(state, jnp.asarray([0.1, 1.0], dtype=jnp.float32))
 
@@ -498,3 +488,47 @@ class TestGeneratorMetaResourceManager:
 
         assert jnp.all(jnp.isfinite(result.metrics))
         assert jnp.all(jnp.isfinite(result.state.generator_resource_state.log_weights))
+
+
+def test_learned_resource_manager_integer_validation() -> None:
+    with pytest.raises(ValueError, match="n_actions"):
+        LearnedResourceManager(n_actions=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        LearnedResourceManager(n_actions=3.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_contexts"):
+        LearnedResourceManager(n_actions=3, n_contexts=True)  # type: ignore[arg-type]
+
+    rm = LearnedResourceManager(n_actions=np.int32(4), n_contexts=np.int64(2))
+    assert rm.n_actions == 4
+    assert rm.n_contexts == 2
+    assert type(rm.n_actions) is int
+    assert type(rm.n_contexts) is int
+
+
+def test_generator_meta_resource_manager_integer_validation() -> None:
+    with pytest.raises(ValueError, match="n_contexts"):
+        GeneratorMetaResourceManager(
+            policy_names=("p1",),
+            op_ids=(0,),
+            parent_modes=(0,),
+            replacement_multipliers=(1.0,),
+            promotion_margin_multipliers=(1.0,),
+            candidate_min_age_multipliers=(1.0,),
+            imprint_scales=(1.0,),
+            n_contexts=True,  # type: ignore[arg-type]
+        )
+
+    mgr = GeneratorMetaResourceManager(
+        policy_names=("p1",),
+        op_ids=(np.int32(1),),
+        parent_modes=(np.int64(0),),
+        replacement_multipliers=(1.0,),
+        promotion_margin_multipliers=(1.0,),
+        candidate_min_age_multipliers=(1.0,),
+        imprint_scales=(1.0,),
+        n_contexts=np.int32(2),
+    )
+    assert mgr.n_contexts == 2
+    assert mgr._op_ids == (1,)
+    assert type(mgr._op_ids[0]) is int
+    assert type(mgr.n_contexts) is int
