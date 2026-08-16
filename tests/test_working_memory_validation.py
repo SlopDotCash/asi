@@ -222,8 +222,8 @@ def test_working_dimensions_preflight_without_allocation() -> None:
 def test_working_state_preflight_bytes_without_allocation() -> None:
     # Minimal custom decays to make math tractable: len_obs=3 default
     # Use observation_dim variation with other dims 0 to isolate
-    # With obs_dim variable, trace = 3*obs, total_state=3*obs+4, byte=12*obs+16
-    last_legal = (_INT32_MAX - 16) // 12
+    # With this configuration, the conservative update bound is 35*obs+47.
+    last_legal = (_INT32_MAX // 4 - 47) // 35
     # Need to set action/reward 0 to keep trace minimal
     cfg = WorkingMemoryConfig(
         observation_dim=last_legal,
@@ -262,28 +262,20 @@ def test_working_state_preflight_feature_dim_boundary() -> None:
         _base_cfg(observation_dim=600_000_000, action_dim=600_000_000, reward_dim=600_000_000)
 
 
-def test_working_serialized_schema_preserves_only_exact_list_tuple_compatibility() -> None:
+def test_working_serialization_preserves_historical_constructor_compatibility() -> None:
     config = _base_cfg()
     payload = config.to_config()
     payload["observation_decay_rates"] = tuple(payload["observation_decay_rates"])
     assert WorkingMemoryConfig.from_config(MappingProxyType(payload)) == config
 
-    for mutation, match in (
-        ({"type": "OtherConfig"}, "type"),
-        ({"observation_dim": np.int32(2)}, "observation_dim"),
-        ({"gate_threshold": np.float32(0.0)}, "gate_threshold"),
-        ({"include_traces": 1}, "include_traces"),
-        ({"observation_decay_rates": [np.float32(0.5)]}, "JSON numbers"),
-        ({"extra": 1}, "fields"),
-    ):
-        invalid = config.to_config()
-        invalid.update(mutation)
-        with pytest.raises(ValueError, match=match):
-            WorkingMemoryConfig.from_config(invalid)
-    missing = config.to_config()
-    missing.pop("gate_temperature")
-    with pytest.raises(ValueError, match="fields"):
-        WorkingMemoryConfig.from_config(missing)
+    payload["type"] = "historical-marker"
+    payload["observation_dim"] = np.int32(2)
+    payload["gate_threshold"] = np.float32(0.0)
+    assert WorkingMemoryConfig.from_config(payload) == config
+    partial = {"observation_dim": 2, "action_dim": 1, "reward_dim": 1}
+    assert WorkingMemoryConfig.from_config(partial) == config
+    with pytest.raises(ValueError, match="serialized WorkingMemoryConfig"):
+        WorkingMemoryConfig.from_config({**config.to_config(), "extra": 1})
 
 
 def test_working_mapping_hooks_are_normalized_without_class_spoofing() -> None:
@@ -312,14 +304,14 @@ def test_working_mapping_hooks_are_normalized_without_class_spoofing() -> None:
             loader(MappingSpoof())  # type: ignore[arg-type]
 
 
-def test_working_featurizer_serialized_envelope_is_exact() -> None:
+def test_working_featurizer_preserves_historical_outer_metadata() -> None:
     memory = WorkingMemoryFeaturizer(_base_cfg())
     payload = memory.to_config()
     assert WorkingMemoryFeaturizer.from_config(MappingProxyType(payload)).config == memory.config
-    with pytest.raises(ValueError, match="type"):
-        WorkingMemoryFeaturizer.from_config({**payload, "type": "OtherFeaturizer"})
-    with pytest.raises(ValueError, match="fields"):
-        WorkingMemoryFeaturizer.from_config({**payload, "extra": 1})
+    restored = WorkingMemoryFeaturizer.from_config(
+        {**payload, "type": "historical-marker", "extra": 1}
+    )
+    assert restored.config == memory.config
 
 
 @pytest.mark.parametrize(
@@ -400,3 +392,60 @@ def test_working_gate_temperature_must_be_positive_normal_float32() -> None:
     assert _base_cfg(gate_temperature=minimum_normal).gate_temperature == minimum_normal
     with pytest.raises(ValueError, match="gate_temperature"):
         _base_cfg(gate_temperature=float.fromhex("0x1.0p-149"))
+
+
+def test_working_large_finite_diagnostics_are_operation_safe() -> None:
+    memory = WorkingMemoryFeaturizer(_base_cfg())
+    limit = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
+    state = dataclasses.replace(
+        memory.init(),
+        observation_traces=jnp.full((3, 2), limit, dtype=jnp.float32),
+    )
+    diagnostics = memory.diagnostics(state)
+    assert all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree.leaves(diagnostics))
+    assert float(diagnostics.trace_energy) > 0.0
+    assert float(diagnostics.observation_energy) == float(limit)
+
+
+def test_working_large_finite_innovation_rolls_back_step() -> None:
+    memory = WorkingMemoryFeaturizer(
+        _base_cfg(include_innovations=True, observation_decay_rates=(0.5,))
+    )
+    limit = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
+    state = dataclasses.replace(
+        memory.init(), observation_traces=jnp.full((1, 2), -limit, dtype=jnp.float32)
+    )
+    result = memory.step(
+        state,
+        jnp.full((2,), limit, dtype=jnp.float32),
+        jnp.zeros((1,), dtype=jnp.float32),
+        jnp.zeros((1,), dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert bool(jnp.all(result.features == 0.0))
+    assert all(
+        bool(equal)
+        for equal in jax.tree.leaves(jax.tree.map(jnp.array_equal, result.state, state))
+    )
+
+
+def test_working_transform_resource_preflight_precedes_jax_conversion() -> None:
+    memory = WorkingMemoryFeaturizer(_base_cfg())
+    first_overflow = _INT32_MAX // (4 * memory.feature_dim() + 1) + 1
+
+    class HostArray:
+        dtype = np.dtype(np.float32)
+
+        def __init__(self, width: int):
+            self.shape = (first_overflow, width)
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("conversion must not run")
+
+    with pytest.raises(ValueError, match="byte count"):
+        transform_working_memory_arrays(
+            memory,
+            HostArray(2),  # type: ignore[arg-type]
+            HostArray(1),  # type: ignore[arg-type]
+            HostArray(1),  # type: ignore[arg-type]
+        )
