@@ -27,15 +27,17 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import operator
 import struct
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
@@ -73,6 +75,9 @@ PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED = False
 
 _CONFIG_TYPE = "PrototypeFeatureLifecycleConfig"
 _INT32_MAX = 2_147_483_647
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
 _MAX_TOTAL_FEATURE_DIM = 4_096
 _MAX_PAIR_SLOTS = 262_144
 _MAX_AXIS_PRODUCT_SCALARS = 4_194_304
@@ -89,13 +94,18 @@ def _strict_int(
     minimum: int,
     maximum: int = _INT32_MAX,
 ) -> int:
-    """Validate a Python integer without accepting booleans or coercions."""
+    """Validate and canonicalize a supported concrete host integer."""
 
-    if type(value) is not int or not minimum <= value <= maximum:
+    if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(
             f"{name} must be a strict integer in [{minimum}, {maximum}]"
         )
-    return value
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(
+            f"{name} must be a strict integer in [{minimum}, {maximum}]"
+        )
+    return canonical
 
 
 def _strict_float(
@@ -169,6 +179,40 @@ class PrototypeFeatureLifecycleConfig:
     max_observations: int = _INT32_MAX - 1
 
     def __post_init__(self) -> None:
+        integer_fields = (
+            ("base_feature_dim", 2, _MAX_TOTAL_FEATURE_DIM),
+            ("active_pair_slots", 1, _MAX_PAIR_SLOTS),
+            ("candidate_pair_slots", 0, _MAX_PAIR_SLOTS),
+            ("n_tasks", 1, _MAX_PYTHON_COLLECTION_LENGTH),
+            ("n_options", 1, _MAX_PYTHON_COLLECTION_LENGTH),
+            ("n_primitive_actions", 1, _MAX_PYTHON_COLLECTION_LENGTH),
+            ("replacement_interval", 0, _INT32_MAX - 1),
+            ("min_feature_age", 0, _INT32_MAX - 1),
+            ("candidate_min_age", 0, _INT32_MAX - 1),
+            ("max_observations", 1, _INT32_MAX - 1),
+        )
+        for name, minimum, maximum in integer_fields:
+            object.__setattr__(
+                self,
+                name,
+                _strict_int(
+                    getattr(self, name), name=name, minimum=minimum, maximum=maximum
+                ),
+            )
+        if type(self.option_subtask_feature_indices) is tuple:
+            object.__setattr__(
+                self,
+                "option_subtask_feature_indices",
+                tuple(
+                    _strict_int(
+                        value,
+                        name=f"option_subtask_feature_indices[{index}]",
+                        minimum=-_INT32_MAX,
+                        maximum=_INT32_MAX,
+                    )
+                    for index, value in enumerate(self.option_subtask_feature_indices)
+                ),
+            )
         _strict_int(
             self.base_feature_dim,
             name="base_feature_dim",
@@ -430,6 +474,33 @@ class PrototypeFeatureLifecycleConfig:
             raise ValueError("prototype feature lifecycle must remain mechanism-only")
         if payload.pop("scientific_promotion_allowed") is not False:
             raise ValueError("prototype feature lifecycle config cannot claim promotion")
+        integer_fields = {
+            "base_feature_dim",
+            "active_pair_slots",
+            "candidate_pair_slots",
+            "n_tasks",
+            "n_options",
+            "n_primitive_actions",
+            "replacement_interval",
+            "min_feature_age",
+            "candidate_min_age",
+            "max_observations",
+        }
+        float_fields = {
+            "step_size_output",
+            "utility_decay",
+            "promotion_margin",
+            "scale_normalizer_decay",
+            "scale_normalizer_epsilon",
+        }
+        for name in integer_fields:
+            if type(payload[name]) is not int:
+                raise ValueError(f"serialized {name} must be a JSON integer")
+        for name in float_fields:
+            if type(payload[name]) is not float:
+                raise ValueError(f"serialized {name} must be a JSON number")
+        if type(payload["carry_survivors"]) is not bool:
+            raise ValueError("serialized carry_survivors must be a JSON boolean")
         raw_subtask_indices = payload.get("option_subtask_feature_indices")
         if type(raw_subtask_indices) is not list or not all(
             type(index) is int for index in raw_subtask_indices

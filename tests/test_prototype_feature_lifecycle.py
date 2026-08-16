@@ -1062,3 +1062,59 @@ def test_checkpoint_round_trip_is_strict_and_resource_bound(
             corrupt,
             tmp_path / "corrupt",
         )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "base_feature_dim",
+        "active_pair_slots",
+        "candidate_pair_slots",
+        "n_tasks",
+        "n_options",
+        "n_primitive_actions",
+        "replacement_interval",
+        "min_feature_age",
+        "candidate_min_age",
+        "max_observations",
+    ),
+)
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_lifecycle_config_canonicalizes_numpy_integer_families(
+    field: str, code: str
+) -> None:
+    value = getattr(_config(), field)
+    config = dataclasses.replace(_config(), **{field: np.dtype(code).type(value)})
+    assert type(getattr(config, field)) is int
+
+
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_lifecycle_config_canonicalizes_numpy_option_indices(code: str) -> None:
+    integer_type = np.dtype(code).type
+    config = dataclasses.replace(
+        _config(), option_subtask_feature_indices=(integer_type(0), integer_type(1))
+    )
+    assert all(type(value) is int for value in config.option_subtask_feature_indices)
+
+
+def test_lifecycle_config_rejects_hostile_integer_without_hooks() -> None:
+    class HostileInt(int):
+        def __index__(self) -> int:
+            raise AssertionError("untrusted index hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    with pytest.raises(ValueError, match="base_feature_dim"):
+        dataclasses.replace(_config(), base_feature_dim=HostileInt(4))
+    with pytest.raises(ValueError, match="option_subtask_feature_indices"):
+        dataclasses.replace(
+            _config(), option_subtask_feature_indices=(HostileInt(0), 1)
+        )
+
+
+def test_lifecycle_serialized_schema_remains_exact_json() -> None:
+    payload = _config().to_config()
+    payload["base_feature_dim"] = np.int64(4)
+    with pytest.raises(ValueError, match="base_feature_dim"):
+        PrototypeFeatureLifecycleConfig.from_config(payload)
