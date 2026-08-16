@@ -69,6 +69,32 @@ def _protocol() -> RecurringIPMNISTProtocol:
     )
 
 
+def test_protocol_rejects_aggregate_trace_and_probe_workload_overflow() -> None:
+    protocol = _protocol()
+    too_many = (2**31 - 1) // 3 + 1
+    oversized_bindings = (
+        dataclasses.replace(protocol.sentinel_bindings[0], sentinel_case_count=too_many),
+        protocol.sentinel_bindings[1],
+    )
+    with pytest.raises(ValueError, match="sentinel probe evaluations"):
+        dataclasses.replace(protocol, sentinel_bindings=oversized_bindings)
+
+    long_phase = 400_000_000
+    with pytest.raises(ValueError, match="trace scalar count"):
+        dataclasses.replace(
+            protocol,
+            phases=(
+                dataclasses.replace(protocol.phases[0], length=long_phase),
+                dataclasses.replace(
+                    protocol.phases[1], start_step=long_phase, length=long_phase
+                ),
+                dataclasses.replace(
+                    protocol.phases[2], start_step=2 * long_phase, length=long_phase
+                ),
+            ),
+        )
+
+
 def _trace(*, retaining: bool) -> RecurringIPMNISTTrace:
     revisit = (1.0, 1.0, 1.0, 1.0) if retaining else (0.0, 0.0, 1.0, 1.0)
     return RecurringIPMNISTTrace(

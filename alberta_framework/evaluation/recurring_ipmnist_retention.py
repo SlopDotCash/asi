@@ -142,6 +142,11 @@ def _positive_int(value: object, *, name: str, maximum: int = _INT32_MAX) -> int
     return canonical
 
 
+def _require_int32_workload(name: str, value: int) -> None:
+    if not 1 <= value <= _INT32_MAX:
+        raise ValueError(f"derived {name} must fit in signed int32")
+
+
 def _unit_float(value: object, *, name: str, binary: bool = False) -> float:
     if type(value) is not float or not math.isfinite(value) or not 0.0 <= value <= 1.0:
         qualifier = "finite binary" if binary else "finite in [0, 1]"
@@ -360,6 +365,16 @@ class RecurringIPMNISTProtocol:
         )
         if self.relearning_window > self.phases[0].length:
             raise ValueError("relearning_window cannot exceed either equal-length A phase")
+        _require_int32_workload("trace scalar count", 2 * self.trace_length)
+        binding_counts = {
+            binding.permutation_id: binding.sentinel_case_count
+            for binding in self.sentinel_bindings
+        }
+        sentinel_evaluations = sum(
+            binding_counts[requirement.permutation_id]
+            for requirement in self.required_probe_snapshots
+        )
+        _require_int32_workload("sentinel probe evaluations", sentinel_evaluations)
 
     @property
     def trace_length(self) -> int:
@@ -440,6 +455,9 @@ class RecurringIPMNISTTrace:
             raise ValueError("the online trace must be non-empty")
         if len(self.pre_update_online_accuracy) != len(self.post_update_one_step_plasticity):
             raise ValueError("accuracy and plasticity traces must have equal length")
+        _require_int32_workload(
+            "online trace scalar count", 2 * len(self.pre_update_online_accuracy)
+        )
         for index, value in enumerate(self.pre_update_online_accuracy):
             _unit_float(value, name=f"pre_update_online_accuracy[{index}]", binary=True)
         for index, value in enumerate(self.post_update_one_step_plasticity):
@@ -504,6 +522,7 @@ class SentinelProbeSnapshot:
             raise ValueError("correctness must be a non-empty exact tuple")
         if any(type(value) is not bool for value in self.correctness):
             raise ValueError("correctness must contain only canonical booleans")
+        _require_int32_workload("sentinel correctness cases", len(self.correctness))
 
     @classmethod
     def from_requirement(
