@@ -853,13 +853,27 @@ def test_step9_smoke_rejects_class_spoofed_integer_steps() -> None:
     [
         ({"steps": 2**31}, "steps"),
         ({"seed": -1}, "seed"),
-        ({"seed": 2**31}, "seed"),
+        ({"seed": 2**32}, "seed"),
         ({"seed": True}, "seed"),
     ],
 )
 def test_step9_smoke_enforces_int32_inputs(kwargs: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         run_step9_smoke(**kwargs)  # type: ignore[arg-type]
+
+
+def test_step9_smoke_accepts_full_uint32_seed_range() -> None:
+    assert run_step9_smoke(steps=1, seed=2**32 - 1).seed == 2**32 - 1
+
+
+def test_step9_config_requires_actual_hidden_size_tuple() -> None:
+    class SpoofedTuple(list[int]):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    with pytest.raises(ValueError, match="model_hidden_sizes"):
+        Step9DreamingConfig(model_hidden_sizes=SpoofedTuple([4]))  # type: ignore[arg-type]
 
 
 def test_step9_smoke_linear_model() -> None:

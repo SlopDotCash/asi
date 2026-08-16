@@ -35,6 +35,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import Array
 
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAState,
@@ -259,7 +260,7 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
             f"control.n_actions ({config.control.n_actions}) must equal "
             f"n_actions ({n_actions})"
         )
-    if not isinstance(config.model_hidden_sizes, tuple):
+    if type(config.model_hidden_sizes) is not tuple:
         raise ValueError(
             f"model_hidden_sizes must be a tuple of integers, got "
             f"{config.model_hidden_sizes!r}"
@@ -818,7 +819,7 @@ def run_step9_smoke(
 ) -> Step9SmokeResult:
     """Run a tiny deterministic Step 9 dreaming integration probe."""
     steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
-    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
 
     cfg = config or Step9DreamingConfig()
     agent, model, buffer = make_step9_components(cfg)
