@@ -190,8 +190,23 @@ class DecisionFidelityConfig:
 
         if type(self.menu_amplitudes) is not tuple:
             raise ValueError("menu_amplitudes must be an exact tuple")
-        if len(self.menu_amplitudes) < 3:
+        menu_count = len(self.menu_amplitudes)
+        if menu_count < 3:
             raise ValueError("menu_amplitudes must contain at least three choices")
+        probe_count = _require_derived_int32("probe count", 2 * probes_per_domain)
+        _require_derived_int32("phase schedule length", 3 * phase_steps)
+        _require_derived_int32("phase array bytes", 12 * phase_steps)
+        _require_derived_int32("action menu scalars", menu_count * horizon)
+        rollout_scalars = _require_derived_int32(
+            "probe rollout work", probe_count * menu_count * horizon
+        )
+        _require_derived_int32(
+            "probe and rollout array bytes",
+            16 * rollout_scalars
+            + 8 * probe_count * menu_count
+            + 8 * menu_count * horizon
+            + 16 * probe_count,
+        )
         menu_values: list[float] = []
         menu_ratios: list[tuple[int, int]] = []
         for index, value in enumerate(self.menu_amplitudes):
@@ -223,21 +238,6 @@ class DecisionFidelityConfig:
         object.__setattr__(self, "action_cost", action_cost)
         object.__setattr__(self, "confidence_level", confidence_level)
 
-        menu_count = len(menu_amplitudes)
-        probe_count = _require_derived_int32("probe count", 2 * probes_per_domain)
-        _require_derived_int32("phase schedule length", 3 * phase_steps)
-        _require_derived_int32("phase array bytes", 12 * phase_steps)
-        _require_derived_int32("action menu scalars", menu_count * horizon)
-        rollout_scalars = _require_derived_int32(
-            "probe rollout work", probe_count * menu_count * horizon
-        )
-        _require_derived_int32(
-            "probe and rollout array bytes",
-            16 * rollout_scalars
-            + 8 * probe_count * menu_count
-            + 8 * menu_count * horizon
-            + 16 * probe_count,
-        )
         sparse_config = SparseFTLWorldModelConfig(
             observation_dim=1,
             action_dim=1,

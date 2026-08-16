@@ -434,3 +434,20 @@ def test_custom_seed_container_rejects_hostile_iterables_without_iteration() -> 
 
     with pytest.raises(ValueError, match="actual tuple or list"):
         run_ftl_decision_fidelity_evaluation(seeds=HostileIterable())  # type: ignore[arg-type]
+
+
+def test_menu_resource_preflight_runs_before_element_hooks() -> None:
+    class HostileMenuValue:
+        @property
+        def __class__(self) -> type[float]:  # pragma: no cover - must not run
+            raise AssertionError("menu element hook ran before resource preflight")
+
+        def __repr__(self) -> str:  # pragma: no cover - must not run
+            raise AssertionError("menu repr ran before resource preflight")
+
+    hostile = HostileMenuValue()
+    with pytest.raises(ValueError, match="action menu scalars"):
+        DecisionFidelityConfig(
+            horizon=2**31 - 1,
+            menu_amplitudes=(hostile, hostile, hostile),  # type: ignore[arg-type]
+        )
