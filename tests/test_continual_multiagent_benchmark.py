@@ -584,3 +584,106 @@ def test_acceptance_thresholds_accepts_and_canonicalizes_numpy_integers() -> Non
     assert type(thresholds.evidence_seed_start) is int
     assert thresholds.minimum_seed_count == 30
     assert thresholds.evidence_seed_start == 30
+
+
+_NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+@pytest.mark.parametrize(
+    "field",
+    (
+        "phase_steps",
+        "nuisance_dim",
+        "probe_horizon",
+        "probe_tail_steps",
+        "recovery_window",
+        "bootstrap_resamples",
+        "bootstrap_seed",
+    ),
+)
+def test_continual_multiagent_config_canonicalizes_every_numpy_integer_family(
+    integer_type: type,
+    field: str,
+) -> None:
+    values = {
+        "phase_steps": 64,
+        "nuisance_dim": 4,
+        "probe_horizon": 12,
+        "probe_tail_steps": 4,
+        "recovery_window": 4,
+        "bootstrap_resamples": 1_000,
+        "bootstrap_seed": 7,
+    }
+    if field == "bootstrap_resamples" and np.iinfo(integer_type).max < 1_000:
+        pytest.skip("this integer dtype has no value in the documented resample domain")
+    values[field] = integer_type(values[field])
+    config = ContinualMultiAgentConfig(**values)
+
+    assert type(getattr(config, field)) is int
+
+
+def test_continual_multiagent_integer_boundaries_are_hostile_safe() -> None:
+    class HostileInt(int):
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    for value in (HostileInt(64), ClassSpoof()):
+        with pytest.raises(ValueError, match="phase_steps"):
+            ContinualMultiAgentConfig(phase_steps=value)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="minimum_seed_count"):
+        AcceptanceThresholds(minimum_seed_count=True)  # type: ignore[arg-type]
+
+
+def test_continual_multiagent_preflights_derived_life_and_world_resources() -> None:
+    last_phase_steps = (2**31 - 1) // 48
+    ContinualMultiAgentConfig(phase_steps=last_phase_steps)
+    with pytest.raises(ValueError, match="condition result buffers bytes"):
+        ContinualMultiAgentConfig(phase_steps=last_phase_steps + 1)
+
+    last_nuisance_dim = ((2**31 - 1) // 4 - 9) // 2
+    ContinualMultiAgentConfig(nuisance_dim=last_nuisance_dim)
+    with pytest.raises(ValueError, match="world state bytes"):
+        ContinualMultiAgentConfig(nuisance_dim=last_nuisance_dim + 1)
+
+
+def test_multiagent_seed_schedules_remain_in_uint32_domain() -> None:
+    thresholds = AcceptanceThresholds(
+        minimum_seed_count=1,
+        evidence_seed_start=2**32 - 1,
+    )
+    assert thresholds.evidence_seed_start == 2**32 - 1
+    with pytest.raises(ValueError, match="seed schedule"):
+        AcceptanceThresholds(
+            minimum_seed_count=2,
+            evidence_seed_start=2**32 - 1,
+        )
+
+
+def test_paired_bootstrap_preflights_exact_workspace_before_allocation() -> None:
+    last_resamples = (2**31 - 1 - 16) // 40
+    with pytest.raises(ValueError, match="workspace bytes"):
+        paired_bootstrap_mean_interval(
+            np.asarray((0.1, 0.2)),
+            confidence_level=0.95,
+            resamples=last_resamples + 1,
+            seed=0,
+        )
+
+
+def test_multiagent_float32_configuration_is_canonical_and_sink_safe() -> None:
+    config = ContinualMultiAgentConfig(learning_rate=np.float64(0.2))
+    assert type(config.learning_rate) is float
+    assert config.learning_rate == float(np.float32(0.2))
+    with pytest.raises(ValueError, match="learning_rate"):
+        ContinualMultiAgentConfig(learning_rate=1.0e100)
+    with pytest.raises(ValueError, match="confidence_level"):
+        ContinualMultiAgentConfig(confidence_level=1.0 - 1.0e-10)

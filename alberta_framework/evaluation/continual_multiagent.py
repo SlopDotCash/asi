@@ -45,6 +45,8 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from alberta_framework._seed_validation import JAX_KEY_SEED_MAX, require_jax_seed
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.streams.recurring_multiagent import (
     AVOID_CONTEXT,
     AVOID_CONTEXT_INDEX,
@@ -99,6 +101,18 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_uint32_seed(name: str, value: object) -> int:
+    canonical = _require_int32(name, value, minimum=0, maximum=JAX_KEY_SEED_MAX)
+    return require_jax_seed(canonical, name=name)
+
+
+def _require_int32_resource(name: str, *, scalars: int, nbytes: int) -> None:
+    if scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalars must fit signed int32")
+    if nbytes > _INT32_MAX:
+        raise ValueError(f"{name} bytes must fit signed int32")
+
+
 @dataclass(frozen=True)
 class ContinualMultiAgentConfig:
     """Scientific and resource configuration for one A-B-A life."""
@@ -131,8 +145,21 @@ class ContinualMultiAgentConfig:
         bootstrap_resamples = _require_int32(
             "bootstrap_resamples", self.bootstrap_resamples, minimum=1000
         )
-        bootstrap_seed = _require_int32(
-            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=2**32 - 1
+        bootstrap_seed = _require_uint32_seed("bootstrap_seed", self.bootstrap_seed)
+
+        total_steps = 3 * phase_steps
+        if total_steps > _INT32_MAX:
+            raise ValueError("3 * phase_steps must fit signed int32")
+        _require_int32_resource(
+            "condition result buffers",
+            scalars=2 * total_steps,
+            nbytes=16 * total_steps,
+        )
+        world_state_scalars = 2 * nuisance_dim + 9
+        _require_int32_resource(
+            "recurring two-agent world state",
+            scalars=world_state_scalars,
+            nbytes=4 * world_state_scalars,
         )
 
         object.__setattr__(self, "phase_steps", phase_steps)
@@ -143,16 +170,36 @@ class ContinualMultiAgentConfig:
         object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
         object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
 
-        if not 0.0 < self.learning_rate <= 1.0:
-            raise ValueError("learning_rate must lie in (0, 1]")
-        if not 0.0 <= self.exploration_rate <= 1.0:
-            raise ValueError("exploration_rate must lie in [0, 1]")
-        if not 0.0 <= self.recovery_reward_threshold <= 1.0:
-            raise ValueError("recovery_reward_threshold must lie in [0, 1]")
-        if not 0.0 <= self.stability_reference_reward <= 1.0:
-            raise ValueError("stability_reference_reward must lie in [0, 1]")
-        if not 0.0 < self.confidence_level < 1.0:
-            raise ValueError("confidence_level must lie in (0, 1)")
+        object.__setattr__(
+            self,
+            "learning_rate",
+            validated_float32_scalar(
+                "learning_rate", self.learning_rate, positive=True, upper=1.0
+            ),
+        )
+        for name in (
+            "exploration_rate",
+            "recovery_reward_threshold",
+            "stability_reference_reward",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(
+                    name, getattr(self, name), lower=0.0, upper=1.0
+                ),
+            )
+        object.__setattr__(
+            self,
+            "confidence_level",
+            validated_float32_scalar(
+                "confidence_level",
+                self.confidence_level,
+                positive=True,
+                upper=1.0,
+                upper_inclusive=False,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -189,8 +236,10 @@ class AcceptanceThresholds:
         object.__setattr__(
             self,
             "evidence_seed_start",
-            _require_int32("evidence_seed_start", self.evidence_seed_start, minimum=0),
+            _require_uint32_seed("evidence_seed_start", self.evidence_seed_start),
         )
+        if self.evidence_seed_start + self.minimum_seed_count - 1 > JAX_KEY_SEED_MAX:
+            raise ValueError("evidence seed schedule must remain in the JAX uint32 domain")
 
 
 @dataclass(frozen=True)
@@ -569,10 +618,14 @@ def paired_bootstrap_mean_interval(
         raise ValueError("paired_differences must contain only finite values")
     if not 0.0 < confidence_level < 1.0:
         raise ValueError("confidence_level must lie in (0, 1)")
-    if resamples < 1:
-        raise ValueError("resamples must be positive")
-    if not 0 <= seed < 2**32:
-        raise ValueError("seed must lie in [0, 2**32)")
+    resamples = _require_int32("resamples", resamples, minimum=1)
+    seed = _require_uint32_seed("seed", seed)
+    index_scalars = resamples * int(values.size)
+    _require_int32_resource(
+        "paired bootstrap workspace",
+        scalars=2 * index_scalars + resamples + int(values.size),
+        nbytes=16 * index_scalars + 8 * resamples + 8 * int(values.size),
+    )
 
     generator = np.random.default_rng(seed)
     indices = generator.integers(
