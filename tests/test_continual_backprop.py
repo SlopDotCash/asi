@@ -7,6 +7,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.continual_backprop import (
@@ -681,8 +682,67 @@ class TestTrackerDataclass:
 
 
 # =============================================================================
-# Config roundtrip
+# Config validation and roundtrip
 # =============================================================================
+
+
+class TestContinualBackpropConfigValidation:
+    """Configuration rejects values that cannot be consumed safely by JAX."""
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("decay_rate", float("nan")),
+            ("decay_rate", float("inf")),
+            ("decay_rate", -0.1),
+            ("decay_rate", 1.0),
+            ("replacement_rate", float("nan")),
+            ("replacement_rate", float("inf")),
+            ("replacement_rate", -0.1),
+            ("replacement_rate", 1.1),
+            ("maturity_threshold", -1),
+            ("maturity_threshold", 1.5),
+            ("maturity_threshold", np.iinfo(np.int32).max + 1),
+            ("enabled", 1),
+        ],
+    )
+    def test_rejects_invalid_fields(self, field: str, value: object) -> None:
+        with pytest.raises(ValueError, match=field):
+            ContinualBackpropConfig(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "field",
+        ["decay_rate", "replacement_rate", "maturity_threshold", "enabled"],
+    )
+    def test_rejects_class_spoofed_values(self, field: str) -> None:
+        class SpoofedScalar:
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def __int__(self) -> int:
+                return 1
+
+            def __float__(self) -> float:
+                return 0.5
+
+        with pytest.raises(ValueError, match=field):
+            ContinualBackpropConfig(  # type: ignore[arg-type]
+                **{field: SpoofedScalar()}
+            )
+
+    def test_canonicalizes_supported_numpy_scalars_and_roundtrips(self) -> None:
+        config = ContinualBackpropConfig(
+            decay_rate=np.float64(0.9),
+            replacement_rate=np.float32(0.25),
+            maturity_threshold=np.int64(7),
+            enabled=False,
+        )
+        assert type(config.decay_rate) is float
+        assert type(config.replacement_rate) is float
+        assert type(config.maturity_threshold) is int
+        assert type(config.enabled) is bool
+        assert ContinualBackpropConfig.from_config(config.to_config()) == config
 
 
 class TestConfigRoundtrip:

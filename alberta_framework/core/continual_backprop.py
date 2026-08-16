@@ -71,9 +71,11 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.multi_head_learner import (
     MULTI_HEAD_MLP_STATE_SCHEMA,
@@ -116,6 +118,37 @@ class ContinualBackpropConfig:
     maturity_threshold: int = 100
     enabled: bool = True
 
+    def __post_init__(self) -> None:
+        """Validate and canonicalize configuration at its execution boundaries."""
+        decay_rate = _validated_config_float(
+            "decay_rate",
+            self.decay_rate,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        replacement_rate = _validated_config_float(
+            "replacement_rate",
+            self.replacement_rate,
+            lower=0.0,
+            upper=1.0,
+        )
+        maturity_type = type(self.maturity_threshold)
+        if maturity_type is int:
+            maturity_threshold = self.maturity_threshold
+        elif issubclass(maturity_type, np.integer):
+            maturity_threshold = int(self.maturity_threshold)
+        else:
+            raise ValueError("maturity_threshold must be an integer in the int32 domain")
+        if not 0 <= maturity_threshold <= np.iinfo(np.int32).max:
+            raise ValueError("maturity_threshold must be an integer in the int32 domain")
+        if type(self.enabled) is not bool:
+            raise ValueError("enabled must be an actual bool")
+        object.__setattr__(self, "decay_rate", decay_rate)
+        object.__setattr__(self, "replacement_rate", replacement_rate)
+        object.__setattr__(self, "maturity_threshold", maturity_threshold)
+        object.__setattr__(self, "enabled", bool(self.enabled))
+
     def to_config(self) -> dict[str, Any]:
         """Serialize to dict."""
         return {
@@ -129,6 +162,29 @@ class ContinualBackpropConfig:
     def from_config(cls, config: dict[str, Any]) -> ContinualBackpropConfig:
         """Reconstruct from dict."""
         return cls(**config)
+
+
+def _validated_config_float(
+    name: str,
+    value: object,
+    *,
+    lower: float,
+    upper: float,
+    upper_inclusive: bool = True,
+) -> float:
+    """Validate trusted built-in/NumPy numerics in both host and float32 domains."""
+    actual_type = type(value)
+    if actual_type not in (int, float) and not issubclass(
+        actual_type, (np.integer, np.floating)
+    ):
+        raise ValueError(f"{name} must be a finite real number")
+    return validated_float32_scalar(
+        name,
+        value,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
 
 
 @chex.dataclass(frozen=True)

@@ -121,6 +121,13 @@ class Step7DynaConfig:
         payload = asdict(self)
         payload["control"] = self.control.to_dict()
         payload["world_model"] = self.world_model.to_dict()
+        payload["planning_steps"] = int(self.planning_steps)
+        payload["planning_rollout_depth"] = int(self.planning_rollout_depth)
+        payload["planning_warmup_steps"] = int(self.planning_warmup_steps)
+        payload["planning_memory_size"] = int(self.planning_memory_size)
+        payload["planning_importance_ratio_clip"] = float(self.planning_importance_ratio_clip)
+        payload["planning_priority_propagation"] = float(self.planning_priority_propagation)
+        payload["planning_utility_step_size"] = float(self.planning_utility_step_size)
         return payload
 
     @classmethod
@@ -134,6 +141,9 @@ class Step7DynaConfig:
             cast(dict[str, object], data["world_model"])
         )
         return cls(**cast(Any, data))
+
+
+_INT32_MAX = 2**31 - 1
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
@@ -164,7 +174,13 @@ def _require_unit_interval(name: str, value: object) -> float:
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_int(name: str, value: object, *, minimum: int | None = None) -> int:
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
@@ -175,31 +191,35 @@ def _require_int(name: str, value: object, *, minimum: int | None = None) -> int
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
-def _require_bool(name: str, value: object) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a bool, got {value!r}")
-    return value
-
-
 def _validate_planning_config(config: Step7DynaConfig) -> None:
-    planning_steps = _require_int("planning_steps", config.planning_steps, minimum=0)
+    planning_steps = _require_int(
+        "planning_steps",
+        config.planning_steps,
+        minimum=0,
+        maximum=_INT32_MAX,
+    )
     planning_rollout_depth = _require_int(
         "planning_rollout_depth",
         config.planning_rollout_depth,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     planning_warmup_steps = _require_int(
         "planning_warmup_steps",
         config.planning_warmup_steps,
         minimum=0,
+        maximum=_INT32_MAX,
     )
     planning_memory_size = _require_int(
         "planning_memory_size",
         config.planning_memory_size,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     importance_clip = _require_positive_real(
         "planning_importance_ratio_clip",
@@ -213,11 +233,17 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         "planning_utility_step_size",
         config.planning_utility_step_size,
     )
-    _require_bool(
-        "planning_apply_importance_correction",
-        config.planning_apply_importance_correction,
-    )
-    if config.planning_strategy not in (
+    if type(config.planning_apply_importance_correction) is not bool:
+        raise ValueError(
+            f"planning_apply_importance_correction must be a bool, got "
+            f"{config.planning_apply_importance_correction!r}"
+        )
+    strategy = config.planning_strategy
+    if type(strategy) is not str:
+        raise ValueError(
+            f"planning_strategy must be an actual string, got {strategy!r}"
+        )
+    if strategy not in (
         "random",
         "reward",
         "surprise",
@@ -229,6 +255,7 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
             "planning_strategy must be random, reward, surprise, predecessor, "
             "prioritized, or learned"
         )
+    canonical_strategy = str(strategy)
     if config.world_model.n_actions != config.control.n_actions:
         raise ValueError("world_model.n_actions must equal control.n_actions")
     object.__setattr__(config, "planning_steps", planning_steps)
@@ -238,6 +265,12 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
     object.__setattr__(config, "planning_importance_ratio_clip", importance_clip)
     object.__setattr__(config, "planning_priority_propagation", propagation)
     object.__setattr__(config, "planning_utility_step_size", utility_step)
+    object.__setattr__(
+        config,
+        "planning_apply_importance_correction",
+        bool(config.planning_apply_importance_correction),
+    )
+    object.__setattr__(config, "planning_strategy", canonical_strategy)
 
 
 @chex.dataclass(frozen=True)

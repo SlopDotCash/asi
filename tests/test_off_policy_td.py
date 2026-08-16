@@ -796,3 +796,68 @@ class TestZeroGammaDoesNotMultiplyInfBootstrap:
         assert bool(result.update_applied)
         chex.assert_trees_all_close(result.td_error, jnp.array(3.0, dtype=jnp.float32))
         chex.assert_tree_all_finite(result.state.weights)
+
+    def test_off_policy_td_does_not_multiply_inf_traces(self) -> None:
+        """gamma*lam=0 drops leftover traces; 0 * inf must not freeze."""
+        learner = OffPolicyTDLinearLearner(step_size=0.1, trace_decay=0.9)
+        state = learner.init(2).replace(  # type: ignore[attr-defined]
+            eligibility_traces=jnp.full(2, jnp.inf, dtype=jnp.float32),
+            bias_eligibility_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        )
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = learner.update(
+            state,
+            jnp.array([0.5, -0.25], dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.state.eligibility_traces)
+        assert bool(jnp.isfinite(result.state.bias_eligibility_trace))
+
+    def test_etd_does_not_multiply_inf_follow_on(self) -> None:
+        """gamma=0 drops leftover F; 0 * inf must not freeze the ETD step."""
+        learner = ETDLinearLearner(step_size=0.1, trace_decay=0.4)
+        state = learner.init(2).replace(  # type: ignore[attr-defined]
+            follow_on_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
+            eligibility_traces=jnp.full(2, jnp.inf, dtype=jnp.float32),
+            bias_eligibility_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        )
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = learner.update(
+            state,
+            jnp.array([0.5, -0.25], dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        assert bool(jnp.isfinite(result.state.follow_on_trace))
+        chex.assert_tree_all_finite(result.state.eligibility_traces)
+
+    def test_gradient_td_does_not_multiply_inf_traces(self) -> None:
+        """gamma*lam=0 drops leftover GTD traces; 0 * inf must not freeze."""
+        learner = GradientTDLinearLearner(step_size=0.1, trace_decay=0.9)
+        state = learner.init(2).replace(  # type: ignore[attr-defined]
+            eligibility_traces=jnp.full(3, jnp.inf, dtype=jnp.float32),
+        )
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = learner.update(
+            state,
+            jnp.array([0.5, -0.25], dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.state.eligibility_traces)

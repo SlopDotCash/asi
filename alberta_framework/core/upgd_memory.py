@@ -14,16 +14,20 @@ rather than a route-selecting portfolio.
 from __future__ import annotations
 
 import functools
+import math
 from dataclasses import asdict, dataclass
-from typing import Any, Literal
+from numbers import Integral, Real
+from typing import Any, Literal, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.optimizers import ObGDBounding
 from alberta_framework.core.prototype_memory import (
     PrototypeMemoryConfig,
@@ -36,6 +40,122 @@ from alberta_framework.core.update_safety import (
     select_transaction,
 )
 from alberta_framework.core.upgd import UPGDLearner, UPGDState
+
+_INT32_MAX: int = 2**31 - 1
+
+
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_real(name: str, value: object) -> float:
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real <= 0.0
+        or not real <= 1.0
+        or numerator <= 0
+        or numerator > denominator
+        or narrowed <= 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_zero_one_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real < 1.0
+        or numerator < 0
+        or numerator >= denominator
+        or narrowed < 0.0
+        or not narrowed < 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1), got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -141,6 +261,10 @@ class UPGDMemoryConfig:
     min_novelty_threshold: float = 1e-4
     max_novelty_threshold: float = 1.0
 
+    def __post_init__(self) -> None:
+        """Validate and canonicalize configuration."""
+        _validate_config(self)
+
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
         payload = asdict(self)
@@ -161,6 +285,11 @@ class UPGDMemoryConfig:
         if "hidden_sizes" in payload:
             payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
         return cls(**payload)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> UPGDMemoryConfig:
+        """Reconstruct from :meth:`to_dict` output."""
+        return cls.from_config(data)
 
 
 @chex.dataclass(frozen=True)
@@ -200,60 +329,214 @@ class UPGDMemoryLearningResult:
 
 
 def _validate_config(config: UPGDMemoryConfig) -> None:
-    if config.feature_dim < 1:
-        raise ValueError("feature_dim must be positive")
-    if config.n_heads < 2:
-        raise ValueError("n_heads must be at least 2")
-    if any(size < 1 for size in config.hidden_sizes):
+    feature_dim = _require_int(
+        "feature_dim", config.feature_dim, minimum=1, maximum=_INT32_MAX
+    )
+    n_heads = _require_int("n_heads", config.n_heads, minimum=2, maximum=_INT32_MAX)
+    if type(config.hidden_sizes) is not tuple:
+        raise TypeError(
+            f"hidden_sizes must be an actual tuple, got {type(config.hidden_sizes).__name__}"
+        )
+    if not config.hidden_sizes:
         raise ValueError("hidden_sizes must contain only positive widths")
-    if config.readout_mode not in {"linear_mse", "softmax_ce"}:
+    canonical_hidden = tuple(
+        _require_int("hidden_sizes element", size, minimum=1, maximum=_INT32_MAX)
+        for size in config.hidden_sizes
+    )
+    if not canonical_hidden:
+        raise ValueError("hidden_sizes must contain only positive widths")
+    readout_mode = config.readout_mode
+    if type(readout_mode) is not str:
+        raise TypeError(
+            f"readout_mode must be an actual string, got {readout_mode!r}"
+        )
+    if readout_mode not in {"linear_mse", "softmax_ce"}:
         raise ValueError("readout_mode must be 'linear_mse' or 'softmax_ce'")
-    if config.upgd_step_size <= 0.0:
-        raise ValueError("upgd_step_size must be positive")
-    if config.upgd_head_step_size_multiplier <= 0.0:
-        raise ValueError("upgd_head_step_size_multiplier must be positive")
-    if config.upgd_head_bias_step_size_multiplier < 0.0:
-        raise ValueError("upgd_head_bias_step_size_multiplier must be non-negative")
-    if config.upgd_head_loss_pressure_gate_ratio < 0.0:
-        raise ValueError("upgd_head_loss_pressure_gate_ratio must be non-negative")
-    if config.upgd_head_loss_pressure_multiplier < 0.0:
-        raise ValueError("upgd_head_loss_pressure_multiplier must be non-negative")
-    if config.upgd_head_loss_pressure_warmup_steps < 0:
-        raise ValueError("upgd_head_loss_pressure_warmup_steps must be non-negative")
-    if config.upgd_head_repetition_multiplier < 0.0:
-        raise ValueError("upgd_head_repetition_multiplier must be non-negative")
-    if not 0.0 <= config.upgd_head_repetition_decay < 1.0:
-        raise ValueError("upgd_head_repetition_decay must be in [0, 1)")
-    if config.upgd_head_repetition_delta_threshold < 0.0:
-        raise ValueError("upgd_head_repetition_delta_threshold must be non-negative")
-    if not 0.0 <= config.upgd_head_repetition_pressure_threshold < 1.0:
-        raise ValueError("upgd_head_repetition_pressure_threshold must be in [0, 1)")
-    if config.upgd_head_repetition_warmup_steps < 0:
-        raise ValueError("upgd_head_repetition_warmup_steps must be non-negative")
-    if config.slots_per_class < 1:
-        raise ValueError("slots_per_class must be positive")
-    if not 0.0 < config.memory_update_rate <= 1.0:
-        raise ValueError("memory_update_rate must be in (0, 1]")
-    if config.initial_novelty_threshold <= 0.0:
-        raise ValueError("initial_novelty_threshold must be positive")
-    if config.memory_bandwidth <= 0.0:
-        raise ValueError("memory_bandwidth must be positive")
-    if config.memory_logit_step_size < 0.0:
-        raise ValueError("memory_logit_step_size must be non-negative")
-    if not 0.0 <= config.reliability_decay < 1.0:
-        raise ValueError("reliability_decay must be in [0, 1)")
-    if not 0.0 <= config.target_trace_blend_scale <= 1.0:
-        raise ValueError("target_trace_blend_scale must be in [0, 1]")
-    if not 0.0 <= config.target_trace_pressure_threshold < 1.0:
-        raise ValueError("target_trace_pressure_threshold must be in [0, 1)")
-    if config.novelty_adaptation_rate < 0.0:
-        raise ValueError("novelty_adaptation_rate must be non-negative")
-    if not 0.0 <= config.target_allocation_rate <= 1.0:
-        raise ValueError("target_allocation_rate must be in [0, 1]")
-    if config.min_novelty_threshold <= 0.0:
-        raise ValueError("min_novelty_threshold must be positive")
-    if config.max_novelty_threshold < config.min_novelty_threshold:
-        raise ValueError("max_novelty_threshold must be >= min_novelty_threshold")
+    canonical_readout_mode = str(readout_mode)
+    upgd_step_size = _require_positive_real("upgd_step_size", config.upgd_step_size)
+    upgd_head_step_size_multiplier = _require_positive_real(
+        "upgd_head_step_size_multiplier", config.upgd_head_step_size_multiplier
+    )
+    upgd_head_bias_step_size_multiplier = _require_nonnegative_real(
+        "upgd_head_bias_step_size_multiplier",
+        config.upgd_head_bias_step_size_multiplier,
+    )
+    upgd_head_loss_pressure_gate_ratio = _require_nonnegative_real(
+        "upgd_head_loss_pressure_gate_ratio",
+        config.upgd_head_loss_pressure_gate_ratio,
+    )
+    upgd_head_loss_pressure_multiplier = _require_nonnegative_real(
+        "upgd_head_loss_pressure_multiplier",
+        config.upgd_head_loss_pressure_multiplier,
+    )
+    upgd_head_loss_pressure_warmup_steps = _require_int(
+        "upgd_head_loss_pressure_warmup_steps",
+        config.upgd_head_loss_pressure_warmup_steps,
+        minimum=0,
+        maximum=_INT32_MAX,
+    )
+    upgd_head_repetition_multiplier = _require_nonnegative_real(
+        "upgd_head_repetition_multiplier",
+        config.upgd_head_repetition_multiplier,
+    )
+    upgd_head_repetition_decay = _require_half_open_zero_one_interval(
+        "upgd_head_repetition_decay",
+        config.upgd_head_repetition_decay,
+    )
+    upgd_head_repetition_delta_threshold = _require_nonnegative_real(
+        "upgd_head_repetition_delta_threshold",
+        config.upgd_head_repetition_delta_threshold,
+    )
+    upgd_head_repetition_pressure_threshold = _require_half_open_zero_one_interval(
+        "upgd_head_repetition_pressure_threshold",
+        config.upgd_head_repetition_pressure_threshold,
+    )
+    upgd_head_repetition_warmup_steps = _require_int(
+        "upgd_head_repetition_warmup_steps",
+        config.upgd_head_repetition_warmup_steps,
+        minimum=0,
+        maximum=_INT32_MAX,
+    )
+    slots_per_class = _require_int(
+        "slots_per_class", config.slots_per_class, minimum=1, maximum=_INT32_MAX
+    )
+    memory_update_rate = _require_half_open_unit_interval(
+        "memory_update_rate", config.memory_update_rate
+    )
+    initial_novelty_threshold = _require_positive_real(
+        "initial_novelty_threshold", config.initial_novelty_threshold
+    )
+    memory_bandwidth = _require_positive_real(
+        "memory_bandwidth", config.memory_bandwidth
+    )
+    initial_memory_logit = _require_real(
+        "initial_memory_logit", config.initial_memory_logit
+    )
+    memory_logit_step_size = _require_nonnegative_real(
+        "memory_logit_step_size", config.memory_logit_step_size
+    )
+    confidence_logit_scale = _require_real(
+        "confidence_logit_scale", config.confidence_logit_scale
+    )
+    reliability_logit_scale = _require_real(
+        "reliability_logit_scale", config.reliability_logit_scale
+    )
+    reliability_decay = _require_half_open_zero_one_interval(
+        "reliability_decay", config.reliability_decay
+    )
+    target_trace_blend_scale = _require_unit_interval(
+        "target_trace_blend_scale", config.target_trace_blend_scale
+    )
+    target_trace_pressure_threshold = _require_half_open_zero_one_interval(
+        "target_trace_pressure_threshold", config.target_trace_pressure_threshold
+    )
+    novelty_adaptation_rate = _require_nonnegative_real(
+        "novelty_adaptation_rate", config.novelty_adaptation_rate
+    )
+    target_allocation_rate = _require_half_open_zero_one_interval(
+        "target_allocation_rate", config.target_allocation_rate
+    )
+    min_novelty_threshold = _require_positive_real(
+        "min_novelty_threshold", config.min_novelty_threshold
+    )
+    max_novelty_threshold = _require_positive_real(
+        "max_novelty_threshold", config.max_novelty_threshold
+    )
+    if min_novelty_threshold >= max_novelty_threshold:
+        raise ValueError("min_novelty_threshold must be strictly less than max_novelty_threshold")
+
+    object.__setattr__(config, "feature_dim", feature_dim)
+    object.__setattr__(config, "n_heads", n_heads)
+    object.__setattr__(config, "hidden_sizes", canonical_hidden)
+    object.__setattr__(config, "readout_mode", canonical_readout_mode)
+    object.__setattr__(config, "upgd_step_size", upgd_step_size)
+    object.__setattr__(
+        config,
+        "upgd_head_step_size_multiplier",
+        upgd_head_step_size_multiplier,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_bias_step_size_multiplier",
+        upgd_head_bias_step_size_multiplier,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_loss_pressure_gate_ratio",
+        upgd_head_loss_pressure_gate_ratio,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_loss_pressure_multiplier",
+        upgd_head_loss_pressure_multiplier,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_loss_pressure_warmup_steps",
+        upgd_head_loss_pressure_warmup_steps,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_repetition_multiplier",
+        upgd_head_repetition_multiplier,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_repetition_decay",
+        upgd_head_repetition_decay,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_repetition_delta_threshold",
+        upgd_head_repetition_delta_threshold,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_repetition_pressure_threshold",
+        upgd_head_repetition_pressure_threshold,
+    )
+    object.__setattr__(
+        config,
+        "upgd_head_repetition_warmup_steps",
+        upgd_head_repetition_warmup_steps,
+    )
+    object.__setattr__(config, "slots_per_class", slots_per_class)
+    object.__setattr__(config, "memory_update_rate", memory_update_rate)
+    object.__setattr__(
+        config, "initial_novelty_threshold", initial_novelty_threshold
+    )
+    object.__setattr__(config, "memory_bandwidth", memory_bandwidth)
+    object.__setattr__(config, "initial_memory_logit", initial_memory_logit)
+    object.__setattr__(
+        config, "memory_logit_step_size", memory_logit_step_size
+    )
+    object.__setattr__(
+        config, "confidence_logit_scale", confidence_logit_scale
+    )
+    object.__setattr__(
+        config, "reliability_logit_scale", reliability_logit_scale
+    )
+    object.__setattr__(config, "reliability_decay", reliability_decay)
+    object.__setattr__(
+        config, "target_trace_blend_scale", target_trace_blend_scale
+    )
+    object.__setattr__(
+        config,
+        "target_trace_pressure_threshold",
+        target_trace_pressure_threshold,
+    )
+    object.__setattr__(
+        config, "novelty_adaptation_rate", novelty_adaptation_rate
+    )
+    object.__setattr__(
+        config, "target_allocation_rate", target_allocation_rate
+    )
+    object.__setattr__(
+        config, "min_novelty_threshold", min_novelty_threshold
+    )
+    object.__setattr__(
+        config, "max_novelty_threshold", max_novelty_threshold
+    )
 
 
 def _active_mse(prediction: Array, target: Array) -> Array:

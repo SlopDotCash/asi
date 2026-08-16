@@ -9,6 +9,7 @@ pass after the facade rejects them. Legal endpoints stay constructible.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from typing import Any
 
 import chex
@@ -47,6 +48,7 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_steps", 1.5),
     ("planning_steps", "1"),
     ("planning_steps", None),
+    ("planning_steps", 2**31),
     ("planning_rollout_depth", True),
     ("planning_rollout_depth", False),
     ("planning_rollout_depth", 0),
@@ -54,12 +56,14 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_rollout_depth", 1.5),
     ("planning_rollout_depth", "1"),
     ("planning_rollout_depth", None),
+    ("planning_rollout_depth", 2**31),
     ("planning_warmup_steps", True),
     ("planning_warmup_steps", False),
     ("planning_warmup_steps", -1),
     ("planning_warmup_steps", 1.5),
     ("planning_warmup_steps", "1"),
     ("planning_warmup_steps", None),
+    ("planning_warmup_steps", 2**31),
     ("planning_memory_size", True),
     ("planning_memory_size", False),
     ("planning_memory_size", 0),
@@ -67,6 +71,7 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_memory_size", 1.5),
     ("planning_memory_size", "1"),
     ("planning_memory_size", None),
+    ("planning_memory_size", 2**31),
     ("planning_importance_ratio_clip", float("nan")),
     ("planning_importance_ratio_clip", float("inf")),
     ("planning_importance_ratio_clip", float("-inf")),
@@ -76,6 +81,8 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_importance_ratio_clip", -1.0),
     ("planning_importance_ratio_clip", "10"),
     ("planning_importance_ratio_clip", None),
+    ("planning_importance_ratio_clip", 1e100),
+    ("planning_importance_ratio_clip", 1e-50),
     ("planning_priority_propagation", float("nan")),
     ("planning_priority_propagation", float("inf")),
     ("planning_priority_propagation", float("-inf")),
@@ -84,6 +91,7 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_priority_propagation", -0.1),
     ("planning_priority_propagation", "1"),
     ("planning_priority_propagation", None),
+    ("planning_priority_propagation", 1e100),
     ("planning_utility_step_size", float("nan")),
     ("planning_utility_step_size", float("inf")),
     ("planning_utility_step_size", float("-inf")),
@@ -99,6 +107,7 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_apply_importance_correction", "yes"),
     ("planning_apply_importance_correction", ""),
     ("planning_apply_importance_correction", None),
+    ("planning_utility_step_size", 1e100),
 )
 
 
@@ -622,3 +631,129 @@ class TestScorePlanningActions:
             jnp.mean((prediction.next_observation - anchor) ** 2)
         )
         assert float(score) == pytest.approx(float(expected), rel=1e-6)
+
+
+def test_step7_dyna_rejects_float32_underflow_for_positive_fields() -> None:
+    with pytest.raises(ValueError, match="planning_importance_ratio_clip"):
+        Step7DynaConfig(planning_importance_ratio_clip=1e-50)
+    with pytest.raises(ValueError, match="planning_importance_ratio_clip"):
+        Step7DynaConfig(planning_importance_ratio_clip=1e-46)
+
+
+def test_step7_dyna_rejects_float32_overflow() -> None:
+    with pytest.raises(ValueError, match="planning_importance_ratio_clip"):
+        Step7DynaConfig(planning_importance_ratio_clip=1e100)
+    with pytest.raises(ValueError, match="planning_priority_propagation"):
+        Step7DynaConfig(planning_priority_propagation=1e100)
+    with pytest.raises(ValueError, match="planning_utility_step_size"):
+        Step7DynaConfig(planning_utility_step_size=1e100)
+
+
+def test_step7_dyna_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    config = Step7DynaConfig(
+        planning_steps=2**31 - 1,
+        planning_rollout_depth=2**31 - 1,
+        planning_warmup_steps=2**31 - 1,
+        planning_memory_size=2**31 - 1,
+        planning_importance_ratio_clip=f32_max,
+        planning_priority_propagation=f32_max,
+        planning_utility_step_size=1.0,
+    )
+    assert config.planning_steps == 2**31 - 1
+    assert config.planning_rollout_depth == 2**31 - 1
+    assert config.planning_warmup_steps == 2**31 - 1
+    assert config.planning_memory_size == 2**31 - 1
+    assert config.planning_importance_ratio_clip == f32_max
+    assert config.planning_priority_propagation == f32_max
+    assert config.planning_utility_step_size == 1.0
+
+
+def test_step7_dyna_exact_fraction_rounding() -> None:
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    config = Step7DynaConfig(
+        planning_importance_ratio_clip=midpoint,
+        planning_priority_propagation=midpoint,
+        planning_utility_step_size=Fraction(1, 4),
+    )
+    expected_f32 = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    assert config.planning_importance_ratio_clip == expected_f32
+    assert config.planning_priority_propagation == expected_f32
+    assert config.planning_utility_step_size == 0.25
+
+
+def test_step7_dyna_rejects_equality_spoofed_strategy() -> None:
+    class SpoofedStrategy:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return hash("random")
+
+    with pytest.raises(ValueError, match="planning_strategy"):
+        Step7DynaConfig(planning_strategy=SpoofedStrategy())  # type: ignore[arg-type]
+
+
+def test_step7_dyna_rejects_non_bool_importance_correction() -> None:
+    class SpoofedBool:
+        @property
+        def __class__(self) -> type[bool]:
+            return bool
+
+        def __bool__(self) -> bool:
+            return True
+
+    with pytest.raises(ValueError, match="planning_apply_importance_correction"):
+        Step7DynaConfig(planning_apply_importance_correction=SpoofedBool())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="planning_apply_importance_correction"):
+        Step7DynaConfig(planning_apply_importance_correction=1)  # type: ignore[arg-type]
+
+
+def test_step7_dyna_rejects_spoofed_int_class_and_adversarial_ratios() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="planning_importance_ratio_clip"):
+        Step7DynaConfig(planning_importance_ratio_clip=SpoofedIntFloat(0.5))
+
+    with pytest.raises(ValueError, match="planning_priority_propagation"):
+        Step7DynaConfig(planning_priority_propagation=SpoofedIntFloat(0.5))
+
+    with pytest.raises(ValueError, match="planning_utility_step_size"):
+        Step7DynaConfig(planning_utility_step_size=SpoofedIntFloat(0.5))
+
+
+def test_step7_dyna_json_roundtrip() -> None:
+    config = Step7DynaConfig(
+        planning_steps=5,
+        planning_rollout_depth=2,
+        planning_warmup_steps=10,
+        planning_memory_size=128,
+        planning_strategy="prioritized",
+        planning_importance_ratio_clip=5.0,
+        planning_apply_importance_correction=False,
+        planning_priority_propagation=0.8,
+        planning_utility_step_size=0.1,
+    )
+    serialized = config.to_dict()
+    json_str = json.dumps(serialized)
+    deserialized = json.loads(json_str)
+    restored = Step7DynaConfig.from_dict(deserialized)
+
+    assert restored.planning_steps == config.planning_steps
+    assert restored.planning_rollout_depth == config.planning_rollout_depth
+    assert restored.planning_warmup_steps == config.planning_warmup_steps
+    assert restored.planning_memory_size == config.planning_memory_size
+    assert restored.planning_strategy == config.planning_strategy
+    assert restored.planning_importance_ratio_clip == config.planning_importance_ratio_clip
+    assert (
+        restored.planning_apply_importance_correction
+        == config.planning_apply_importance_correction
+    )
+    assert restored.planning_priority_propagation == config.planning_priority_propagation
+    assert restored.planning_utility_step_size == config.planning_utility_step_size

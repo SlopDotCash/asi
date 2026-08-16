@@ -70,7 +70,15 @@ class Step8WorldModelConfig:
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
         payload = asdict(self)
-        payload["hidden_sizes"] = list(self.hidden_sizes)
+        payload["hidden_sizes"] = [int(h) for h in self.hidden_sizes]
+        payload["observation_dim"] = int(self.observation_dim)
+        if self.n_actions is not None:
+            payload["n_actions"] = int(self.n_actions)
+        payload["action_dim"] = int(self.action_dim)
+        payload["step_size"] = float(self.step_size)
+        payload["sparsity"] = float(self.sparsity)
+        payload["leaky_relu_slope"] = float(self.leaky_relu_slope)
+        payload["utility_decay"] = float(self.utility_decay)
         return payload
 
     @classmethod
@@ -96,6 +104,16 @@ class Step8WorldModelConfig:
             predict_delta=self.predict_delta,
             utility_decay=self.utility_decay,
         )
+
+
+_INT32_MAX = 2**31 - 1
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
@@ -126,14 +144,13 @@ def _require_half_open_unit_interval(name: str, value: object) -> float:
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_nonnegative_real(name: str, value: object) -> float:
-    real, numerator, _, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return canonical_float32_storage(real, narrowed)
-
-
-def _require_int(name: str, value: object, *, minimum: int | None = None) -> int:
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
@@ -141,7 +158,11 @@ def _require_int(name: str, value: object, *, minimum: int | None = None) -> int
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
@@ -152,15 +173,25 @@ def _require_bool(name: str, value: object) -> bool:
 
 
 def _validate_world_model_config(config: Step8WorldModelConfig) -> None:
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
-    n_actions = (
-        None if config.n_actions is None else _require_int("n_actions", config.n_actions, minimum=1)
+    observation_dim = _require_int(
+        "observation_dim",
+        config.observation_dim,
+        minimum=1,
+        maximum=_INT32_MAX,
     )
-    action_dim = _require_int("action_dim", config.action_dim, minimum=1)
-    if not isinstance(config.hidden_sizes, tuple):
-        raise ValueError(f"hidden_sizes must be a tuple of integers, got {config.hidden_sizes!r}")
+    n_actions = (
+        None
+        if config.n_actions is None
+        else _require_int("n_actions", config.n_actions, minimum=1, maximum=_INT32_MAX)
+    )
+    action_dim = _require_int("action_dim", config.action_dim, minimum=1, maximum=_INT32_MAX)
+    if type(config.hidden_sizes) is not tuple:
+        raise ValueError(
+            f"hidden_sizes must be an actual tuple, got {type(config.hidden_sizes).__name__}"
+        )
     hidden_sizes = tuple(
-        _require_int("hidden_sizes", size, minimum=1) for size in config.hidden_sizes
+        _require_int("hidden_sizes", size, minimum=1, maximum=_INT32_MAX)
+        for size in config.hidden_sizes
     )
     step_size = _require_nonnegative_real("step_size", config.step_size)
     sparsity = _require_unit_interval("sparsity", config.sparsity)

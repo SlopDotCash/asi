@@ -9,6 +9,7 @@ after the facade rejects them. Legal endpoints stay constructible.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from typing import Any
 
 import chex
@@ -34,39 +35,46 @@ _INVALID_WORLD_MODEL_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", -1),
     ("observation_dim", 1.5),
     ("observation_dim", "4"),
+    ("observation_dim", 2**31),
     ("n_actions", True),
     ("n_actions", False),
     ("n_actions", 0),
     ("n_actions", -1),
     ("n_actions", 1.5),
     ("n_actions", "2"),
+    ("n_actions", 2**31),
     ("action_dim", True),
     ("action_dim", False),
     ("action_dim", 0),
     ("action_dim", -1),
     ("action_dim", 1.5),
     ("action_dim", "1"),
+    ("action_dim", 2**31),
     ("hidden_sizes", (True,)),
     ("hidden_sizes", (False,)),
     ("hidden_sizes", (0,)),
     ("hidden_sizes", (-1,)),
     ("hidden_sizes", (1.5,)),
     ("hidden_sizes", ("64",)),
+    ("hidden_sizes", (2**31,)),
     ("step_size", float("nan")),
     ("step_size", float("inf")),
     ("step_size", True),
     ("step_size", False),
     ("step_size", -1.0),
+    ("step_size", 1e100),
     ("sparsity", float("nan")),
     ("sparsity", True),
     ("sparsity", -0.1),
     ("sparsity", 1.1),
+    ("sparsity", 1e100),
     ("utility_decay", float("nan")),
     ("utility_decay", float("inf")),
     ("utility_decay", True),
     ("utility_decay", False),
     ("utility_decay", -0.1),
     ("utility_decay", 1.0),
+    ("utility_decay", 1e100),
     ("leaky_relu_slope", float("nan")),
     ("leaky_relu_slope", float("inf")),
     ("leaky_relu_slope", float("-inf")),
@@ -84,6 +92,7 @@ _INVALID_WORLD_MODEL_FIELDS: tuple[tuple[str, Any], ...] = (
     ("predict_delta", 1.0),
     ("predict_delta", "yes"),
     ("predict_delta", None),
+    ("leaky_relu_slope", 1e100),
 )
 
 
@@ -317,3 +326,101 @@ def test_step8_world_model_fields_canonicalize_nonbuiltin_numbers() -> None:
     assert type(payload["utility_decay"]) is float
     assert model.to_config()["config"]["utility_decay"] == 0.5
     assert model.to_config()["config"]["leaky_relu_slope"] == 0.5
+
+
+def test_step8_world_model_rejects_float32_overflow() -> None:
+    with pytest.raises(ValueError, match="step_size"):
+        Step8WorldModelConfig(step_size=1e100)
+    with pytest.raises(ValueError, match="sparsity"):
+        Step8WorldModelConfig(sparsity=1e100)
+    with pytest.raises(ValueError, match="leaky_relu_slope"):
+        Step8WorldModelConfig(leaky_relu_slope=1e100)
+    with pytest.raises(ValueError, match="utility_decay"):
+        Step8WorldModelConfig(utility_decay=1e100)
+
+
+def test_step8_world_model_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    config = Step8WorldModelConfig(
+        observation_dim=2**31 - 1,
+        n_actions=2**31 - 1,
+        action_dim=2**31 - 1,
+        hidden_sizes=(2**31 - 1,),
+        step_size=f32_max,
+        sparsity=1.0,
+        leaky_relu_slope=f32_max,
+        utility_decay=0.99,
+    )
+    assert config.observation_dim == 2**31 - 1
+    assert config.n_actions == 2**31 - 1
+    assert config.action_dim == 2**31 - 1
+    assert config.hidden_sizes == (2**31 - 1,)
+    assert config.step_size == f32_max
+    assert config.sparsity == 1.0
+    assert config.leaky_relu_slope == f32_max
+
+
+def test_step8_world_model_exact_fraction_rounding() -> None:
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    config = Step8WorldModelConfig(
+        step_size=midpoint,
+        sparsity=Fraction(1, 4),
+        leaky_relu_slope=midpoint,
+        utility_decay=Fraction(1, 2),
+    )
+    expected_f32 = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    assert config.step_size == expected_f32
+    assert config.leaky_relu_slope == expected_f32
+    assert config.sparsity == 0.25
+    assert config.utility_decay == 0.5
+
+
+def test_step8_world_model_rejects_spoofed_tuple_container() -> None:
+    class SpoofedTuple(list):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        Step8WorldModelConfig(hidden_sizes=SpoofedTuple([64]))  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        Step8WorldModelConfig(hidden_sizes=[64])  # type: ignore[arg-type]
+
+
+def test_step8_world_model_rejects_non_bool_flags() -> None:
+    class SpoofedBool:
+        @property
+        def __class__(self) -> type[bool]:
+            return bool
+
+        def __bool__(self) -> bool:
+            return True
+
+    with pytest.raises(ValueError, match="use_layer_norm"):
+        Step8WorldModelConfig(use_layer_norm=SpoofedBool())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="predict_delta"):
+        Step8WorldModelConfig(predict_delta=SpoofedBool())  # type: ignore[arg-type]
+
+
+def test_step8_world_model_rejects_spoofed_int_class_and_adversarial_ratios() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="step_size"):
+        Step8WorldModelConfig(step_size=SpoofedIntFloat(0.5))
+
+    with pytest.raises(ValueError, match="sparsity"):
+        Step8WorldModelConfig(sparsity=SpoofedIntFloat(0.5))
+
+    with pytest.raises(ValueError, match="leaky_relu_slope"):
+        Step8WorldModelConfig(leaky_relu_slope=SpoofedIntFloat(0.5))
+
+    with pytest.raises(ValueError, match="utility_decay"):
+        Step8WorldModelConfig(utility_decay=SpoofedIntFloat(0.5))

@@ -185,6 +185,39 @@ def test_differential_semi_mdp_target_uses_all_declared_terms_exactly() -> None:
     assert float(diagnostics.candidate_priorities[0, 0]) == pytest.approx(3.0)
 
 
+def test_zero_discount_does_not_multiply_overflowed_next_values() -> None:
+    """discount_ema=0 must skip max Q(s') so an overflowed next-state model still ranks."""
+    agent = STOMPAgent(_stomp_config())
+    state = _supported_state(agent, targets=(1.0, 4.0))
+    huge = jnp.finfo(jnp.float32).max
+    ones = tuple(
+        jnp.ones_like(weight)
+        for weight in state.base_learner_state.head_params.weights
+    )
+    learner = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(weights=ones)
+    )
+    state = state.replace(
+        base_learner_state=learner,
+        option_models=state.option_models.replace(
+            next_state_weights=jnp.full((2, 2, 2), huge, dtype=jnp.float32),
+        ),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    diagnostics = OptionSearchControl(agent).apply(state, ANCHOR).diagnostics
+    np.testing.assert_array_equal(
+        np.asarray(diagnostics.candidate_valid[0]),
+        np.array([True, True]),
+    )
+    np.testing.assert_allclose(
+        np.asarray(diagnostics.candidate_targets[0]),
+        np.array([1.0, 4.0], dtype=np.float32),
+    )
+    assert int(diagnostics.selected_option_indices[0]) == 1
+
+
 def test_equal_residual_priority_uses_stable_lowest_option_index() -> None:
     agent = STOMPAgent(_stomp_config())
     state = _supported_state(agent, targets=(1.0, -1.0))

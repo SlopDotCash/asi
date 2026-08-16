@@ -329,3 +329,30 @@ def test_gtd_backend_rejects_non_finite_observation() -> None:
     chex.assert_trees_all_close(result.state.trunk_w, state.trunk_w, atol=0.0)
     chex.assert_trees_all_close(result.state.head_w, state.head_w, atol=0.0)
     assert not bool(result.update_applied)
+
+
+def test_gtd_backend_rolls_back_finite_overflow() -> None:
+    """A finite candidate that overflows must not be committed or reported applied."""
+    learner = NonlinearSharedGTDHordeLearner(
+        _spec(gammas=(0.8,)),
+        hidden_size=4,
+        primary_step_size=0.01,
+        secondary_step_size=0.01,
+        ratio_clip=10.0,
+    )
+    state = learner.init(2, jax.random.key(13)).replace(  # type: ignore[attr-defined]
+        trunk_w=jnp.full((4, 2), 100.0, dtype=jnp.float32),
+        head_w=jnp.full((1, 4), jnp.finfo(jnp.float32).max, dtype=jnp.float32),
+    )
+    result = learner.update_with_ratios_and_discounts(
+        state,
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+        jnp.zeros(1, dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert not bool(result.head_updates_applied[0])
+    chex.assert_trees_all_close(result.state, state, atol=0.0)
