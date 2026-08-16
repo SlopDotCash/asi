@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from typing import Any
 
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 
@@ -12,15 +15,21 @@ from alberta_framework.core.oak import (
     KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA,
     OAK_CONFIG_SCHEMA,
     KeyboardChordLearnerConfig,
+    OaKAgent,
     OaKConfig,
+    _keyboard_resource_counts,
+    _oak_resource_counts,
+    init_keyboard_chord_learner,
+    measure_oak_state_nbytes,
+    update_keyboard_chord_learner,
 )
-from alberta_framework.core.options import STOMPConfig
+from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 
 _INTEGER_DTYPES = tuple(np.dtype(code).type for code in "bBhHiIlLqQ")
 _REAL_DTYPES = tuple(np.dtype(code).type for code in "efdg")
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
-_MAX_KEYBOARD_OPTIONS = ((2**32 - 1) - 8) // 4
+_MAX_KEYBOARD_OPTIONS = ((2**31 - 1) - 8) // 4
 
 
 class _IntSubclass(int):
@@ -91,7 +100,7 @@ def test_integer_endpoints_and_derived_keyboard_allocation_bound() -> None:
     with pytest.raises(ValueError, match="min_steps_before_curation"):
         OaKConfig(min_steps_before_curation=2**64)
     cfg = KeyboardChordLearnerConfig(n_options=_MAX_KEYBOARD_OPTIONS)
-    assert cfg.n_options * 4 + 8 <= 2**32 - 1
+    assert _keyboard_resource_counts(cfg.n_options)["state_bytes"] <= 2**31 - 1
     with pytest.raises(ValueError, match="n_options"):
         KeyboardChordLearnerConfig(n_options=_MAX_KEYBOARD_OPTIONS + 1)
 
@@ -204,3 +213,59 @@ def test_exact_nested_config_and_serialization_contracts() -> None:
             loader(extra)
         with pytest.raises(ValueError, match="readable mapping"):
             loader(_RaisingMapping())
+
+
+def test_oak_aggregate_resource_preflight_matches_initialized_state() -> None:
+    config = OaKConfig(
+        stomp=STOMPConfig(
+            subtask_specs=(SubtaskSpec(feature_index=0),),
+            observation_dim=2,
+            n_primitive_actions=2,
+            base_hidden_sizes=(3,),
+        )
+    )
+    resources = _oak_resource_counts(config.stomp)
+    assert resources["persistent_state_bytes"] == measure_oak_state_nbytes(
+        OaKAgent(config).init(jr.key(0))
+    )
+
+
+def test_serialized_values_require_exact_json_scalar_types() -> None:
+    oak = OaKConfig().to_config()
+    oak["min_steps_before_curation"] = np.int64(0)
+    with pytest.raises(ValueError, match="min_steps_before_curation"):
+        OaKConfig.from_config(oak)
+
+    keyboard = KeyboardChordLearnerConfig(n_options=2).to_config()
+    keyboard["step_size"] = np.float32(0.1)
+    with pytest.raises(ValueError, match="step_size"):
+        KeyboardChordLearnerConfig.from_config(keyboard)
+
+
+def test_keyboard_update_rejects_alias_shapes_eager_and_outer_jit() -> None:
+    config = KeyboardChordLearnerConfig(n_options=2)
+    state = init_keyboard_chord_learner(config)
+    chord = jnp.ones((2,), dtype=jnp.float32)
+    reward = jnp.asarray(1.0, dtype=jnp.float32)
+    updated = jax.jit(update_keyboard_chord_learner, static_argnums=(0))(
+        config,
+        state,
+        chord,
+        reward,
+    )
+    assert updated.chord_vector.shape == (2,)
+    assert updated.reward_baseline.shape == ()
+
+    for bad_chord in (
+        jnp.ones((1, 2), dtype=jnp.float32),
+        jnp.ones((2, 1), dtype=jnp.float32),
+    ):
+        with pytest.raises(ValueError, match="selected_chord"):
+            update_keyboard_chord_learner(config, state, bad_chord, reward)
+    with pytest.raises(ValueError, match="reward"):
+        update_keyboard_chord_learner(
+            config,
+            state,
+            chord,
+            jnp.ones((1,), dtype=jnp.float32),
+        )

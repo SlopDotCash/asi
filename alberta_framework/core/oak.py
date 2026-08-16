@@ -33,10 +33,8 @@ References:
 from __future__ import annotations
 
 import dataclasses
-import math
 import operator
 from collections.abc import Mapping
-from numbers import Real
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -47,6 +45,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.normalizers import (
     _checked_lifetime_words_increment,
     _lifetime_counter_valid,
@@ -63,6 +62,7 @@ from alberta_framework.core.options import (
     SubtaskSpec,
     _checked_lifetime_words_advance,
     _lifetime_words_at_least,
+    _stomp_resource_counts,
     load_stomp_state_with_migration,
     measure_stomp_state_nbytes,
     replace_dispatched_primitive_action,
@@ -79,7 +79,6 @@ OAK_CONFIG_SCHEMA = "alberta.oak-config.v1"
 KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA = "alberta.keyboard-chord-learner-config.v1"
 
 _INT32_MAX = 2**31 - 1
-_UINT32_MAX = 2**32 - 1
 _UINT64_MAX = 2**64 - 1
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -103,11 +102,12 @@ _ACTUAL_REAL_TYPES = frozenset(
         *(np.dtype(code).type for code in ("e", "f", "d", "g")),
     }
 )
-_FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _KEYBOARD_FIXED_STATE_NBYTES = 8
 _KEYBOARD_OPTION_NBYTES = 4
-_MAX_KEYBOARD_OPTIONS = (_UINT32_MAX - _KEYBOARD_FIXED_STATE_NBYTES) // (_KEYBOARD_OPTION_NBYTES)
+_MAX_KEYBOARD_OPTIONS = (_INT32_MAX - _KEYBOARD_FIXED_STATE_NBYTES) // (
+    _KEYBOARD_OPTION_NBYTES
+)
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -140,33 +140,60 @@ def _require_float32(
 ) -> float:
     """Return a canonical finite normal float32-compatible host scalar."""
 
-    if type(value) not in _ACTUAL_REAL_TYPES or not isinstance(value, Real):
+    if type(value) not in _ACTUAL_REAL_TYPES:
         raise ValueError(f"{name} must be a real scalar")
-    try:
-        canonical = float(value)
-    except OverflowError as error:
-        raise ValueError(f"{name} must be finite and float32-compatible") from error
-    if not math.isfinite(canonical) or abs(canonical) > _FLOAT32_MAX:
-        raise ValueError(f"{name} must be finite and float32-compatible")
-    if canonical != 0.0 and abs(canonical) < _FLOAT32_TINY:
+    canonical, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        lower=minimum,
+        upper=maximum,
+        upper_inclusive=maximum_inclusive,
+    )
+    tiny_numerator, tiny_denominator = _FLOAT32_TINY.as_integer_ratio()
+    if numerator != 0 and abs(numerator) * tiny_denominator < tiny_numerator * denominator:
         raise ValueError(f"{name} must be zero or a normal float32 value")
-    if canonical < minimum:
-        raise ValueError(f"{name} must be >= {minimum}")
-    if maximum is not None and (
-        canonical > maximum or (not maximum_inclusive and canonical == maximum)
-    ):
-        interval_end = "]" if maximum_inclusive else ")"
-        raise ValueError(f"{name} must be in [{minimum}, {maximum}{interval_end}")
-    return 0.0 if canonical == 0.0 else canonical
+    return 0.0 if numerator == 0 else canonical
 
 
 def _config_mapping(value: object, *, name: str) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
+    if not issubclass(type(value), Mapping):
         raise ValueError(f"{name} must be a mapping")
     try:
-        return dict(value)
+        return dict(cast(Mapping[str, Any], value))
     except Exception as error:
         raise ValueError(f"{name} must be a readable mapping") from error
+
+
+def _oak_resource_counts(stomp: STOMPConfig) -> dict[str, int]:
+    """Return exact nested/wrapper state bytes or reject before allocation."""
+
+    nested = _stomp_resource_counts(
+        stomp.n_options,
+        stomp.observation_dim,
+        stomp.n_primitive_actions,
+        stomp.base_hidden_sizes,
+    )
+    wrapper_state_scalars = 3 * stomp.n_options + 3
+    resources = {
+        "wrapper_state_scalars": wrapper_state_scalars,
+        "wrapper_state_bytes": 4 * wrapper_state_scalars,
+        "persistent_state_scalars": nested["persistent_state_scalars"]
+        + wrapper_state_scalars,
+        "persistent_state_bytes": nested["persistent_state_bytes"]
+        + 4 * wrapper_state_scalars,
+    }
+    for name, count in resources.items():
+        if count > _INT32_MAX:
+            raise ValueError(f"derived OaK {name} must be at most {_INT32_MAX}")
+    return resources
+
+
+def _keyboard_resource_counts(n_options: int) -> dict[str, int]:
+    state_scalars = n_options + 2
+    state_bytes = 4 * state_scalars
+    if state_bytes > _INT32_MAX:
+        raise ValueError(f"derived keyboard state_bytes must be at most {_INT32_MAX}")
+    return {"state_scalars": state_scalars, "state_bytes": state_bytes}
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +237,7 @@ class OaKConfig:
     def __post_init__(self) -> None:
         if type(self.stomp) is not STOMPConfig:
             raise ValueError("stomp must be an exact STOMPConfig")
+        _oak_resource_counts(self.stomp)
         min_steps = _require_uint64(
             "min_steps_before_curation",
             self.min_steps_before_curation,
@@ -255,16 +283,37 @@ class OaKConfig:
     def from_config(cls, payload: Mapping[str, Any]) -> OaKConfig:
         """Reconstruct from :meth:`to_config` output."""
         data = _config_mapping(payload, name="OaKConfig payload")
+        current_fields = {
+            "schema",
+            "type",
+            "stomp",
+            "utility_ema_decay",
+            "curation_threshold",
+            "min_steps_before_curation",
+        }
+        allowed_fields = (
+            current_fields,
+            current_fields - {"schema"},
+            current_fields - {"min_steps_before_curation"},
+            current_fields - {"schema", "min_steps_before_curation"},
+        )
+        if set(data) not in allowed_fields:
+            raise ValueError("OaKConfig fields do not match the supported schema")
         schema = data.pop("schema", None)
-        type_name = data.pop("type", None)
+        type_name = data.pop("type")
         if schema is not None and (type(schema) is not str or schema != OAK_CONFIG_SCHEMA):
             raise ValueError("OaKConfig schema is unsupported")
-        if type_name is not None and (type(type_name) is not str or type_name != "OaKConfig"):
+        if type(type_name) is not str or type_name != "OaKConfig":
             raise ValueError("OaKConfig type is invalid")
-        required = {"stomp", "utility_ema_decay", "curation_threshold"}
-        allowed = required | {"min_steps_before_curation"}
-        if not required <= set(data) or not set(data) <= allowed:
-            raise ValueError("OaKConfig fields do not match the supported schema")
+        if type(data["utility_ema_decay"]) is not float:
+            raise ValueError("serialized utility_ema_decay must be a JSON float")
+        if type(data["curation_threshold"]) is not float:
+            raise ValueError("serialized curation_threshold must be a JSON float")
+        if "min_steps_before_curation" in data:
+            if type(data["min_steps_before_curation"]) is not int:
+                raise ValueError("serialized min_steps_before_curation must be a JSON integer")
+        else:
+            data["min_steps_before_curation"] = 0
         stomp_raw = data.pop("stomp")
         stomp = STOMPConfig.from_config(_config_mapping(stomp_raw, name="OaKConfig stomp"))
         return cls(stomp=stomp, **data)
@@ -958,6 +1007,7 @@ class KeyboardChordLearnerConfig:
         n_options = _require_int32(
             "n_options", self.n_options, minimum=1, maximum=_MAX_KEYBOARD_OPTIONS
         )
+        _keyboard_resource_counts(n_options)
         object.__setattr__(self, "n_options", n_options)
         for name in ("step_size", "l2_penalty"):
             object.__setattr__(self, name, _require_float32(name, getattr(self, name), minimum=0.0))
@@ -989,19 +1039,31 @@ class KeyboardChordLearnerConfig:
     def from_config(cls, payload: Mapping[str, Any]) -> KeyboardChordLearnerConfig:
         """Reconstruct from :meth:`to_config` output."""
         data = _config_mapping(payload, name="KeyboardChordLearnerConfig payload")
+        current_fields = {
+            "schema",
+            "type",
+            "n_options",
+            "step_size",
+            "baseline_decay",
+            "l2_penalty",
+            "max_norm",
+        }
+        legacy_fields = current_fields - {"schema"}
+        if set(data) not in (current_fields, legacy_fields):
+            raise ValueError("KeyboardChordLearnerConfig fields do not match the schema")
         schema = data.pop("schema", None)
-        type_name = data.pop("type", None)
+        type_name = data.pop("type")
         if schema is not None and (
             type(schema) is not str or schema != KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA
         ):
             raise ValueError("KeyboardChordLearnerConfig schema is unsupported")
-        if type_name is not None and (
-            type(type_name) is not str or type_name != "KeyboardChordLearnerConfig"
-        ):
+        if type(type_name) is not str or type_name != "KeyboardChordLearnerConfig":
             raise ValueError("KeyboardChordLearnerConfig type is invalid")
-        required = {"n_options", "step_size", "baseline_decay", "l2_penalty", "max_norm"}
-        if set(data) != required:
-            raise ValueError("KeyboardChordLearnerConfig fields do not match the schema")
+        if type(data["n_options"]) is not int:
+            raise ValueError("serialized n_options must be a JSON integer")
+        for name in ("step_size", "baseline_decay", "l2_penalty", "max_norm"):
+            if type(data[name]) is not float:
+                raise ValueError(f"serialized {name} must be a JSON float")
         return cls(**data)
 
 
@@ -1036,9 +1098,27 @@ def update_keyboard_chord_learner(
     Positive advantage moves the learned chord vector toward the selected
     chord; negative advantage moves it away.  The reward baseline is an EMA.
     """
-    chord = jnp.asarray(selected_chord, dtype=jnp.float32).reshape((config.n_options,))
+    if type(config) is not KeyboardChordLearnerConfig:
+        raise ValueError("config must be an exact KeyboardChordLearnerConfig")
+    if state.chord_vector.shape != (config.n_options,) or state.chord_vector.dtype != jnp.float32:
+        raise ValueError("state chord_vector contract is invalid")
+    if state.reward_baseline.shape != () or state.reward_baseline.dtype != jnp.float32:
+        raise ValueError("state reward_baseline contract is invalid")
+    if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
+        raise ValueError("state step_count contract is invalid")
+    raw_chord = jnp.asarray(selected_chord)
+    if raw_chord.shape != (config.n_options,):
+        raise ValueError(f"selected_chord must have shape ({config.n_options},)")
+    if raw_chord.dtype != jnp.float32:
+        raise TypeError("selected_chord must have dtype float32")
+    raw_reward = jnp.asarray(reward)
+    if raw_reward.shape != ():
+        raise ValueError("reward must be scalar")
+    if raw_reward.dtype != jnp.float32:
+        raise TypeError("reward must have dtype float32")
+    chord = raw_chord
     chord_norm = chord / (jnp.linalg.norm(chord) + 1.0e-8)
-    reward_arr = jnp.asarray(reward, dtype=jnp.float32)
+    reward_arr = raw_reward
     baseline = (
         config.baseline_decay * state.reward_baseline + (1.0 - config.baseline_decay) * reward_arr
     )
@@ -1052,7 +1132,7 @@ def update_keyboard_chord_learner(
     proposed_state = KeyboardChordLearnerState(
         chord_vector=proposed_vector * scale,
         reward_baseline=baseline,
-        step_count=state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(state.step_count),
     )
     # Inf reward * a zero chord coordinate is 0*inf = NaN, then the
     # max-norm rescaling is nan/inf and the whole vector stays poisoned.
