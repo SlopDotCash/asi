@@ -93,26 +93,49 @@ class TestProtocolConstants:
         with pytest.raises(ValueError, match="n_tasks"):
             IPMNISTConfig(n_tasks=value)
 
-    def test_config_rejects_hostile_integer_subclasses_without_calling_hooks(self):
-        class HostileInt(int):
+    def test_config_rejects_spoofs_and_subclasses_without_calling_hooks(self):
+        class HostileIndex:
             def __index__(self):
                 raise AssertionError("must not call hostile __index__")
 
             def __repr__(self):
                 raise AssertionError("must not call hostile __repr__")
 
-        with pytest.raises(ValueError, match="n_tasks"):
-            IPMNISTConfig(n_tasks=HostileInt(2))
+        class HostileInt(int):
+            def __index__(self):
+                raise AssertionError("must not call subclass __index__")
+
+            def __repr__(self):
+                raise AssertionError("must not call subclass __repr__")
+
+        class HostileNumpyInt(np.int64):
+            def __index__(self):
+                raise AssertionError("must not call NumPy subclass __index__")
+
+            def __repr__(self):
+                raise AssertionError("must not call NumPy subclass __repr__")
+
+        for value in (HostileIndex(), HostileInt(2), HostileNumpyInt(2)):
+            with pytest.raises(ValueError, match="n_tasks"):
+                IPMNISTConfig(n_tasks=value)
 
     def test_config_rejects_derived_horizon_and_schedule_overflow(self):
         with pytest.raises(ValueError, match="run horizon"):
             IPMNISTConfig(n_tasks=46_341, task_length=46_341)
+        with pytest.raises(ValueError, match="run horizon"):
+            IPMNISTConfig(n_tasks=2, task_length=2**30, input_dim=1)
         with pytest.raises(ValueError, match="permutation schedule"):
             IPMNISTConfig(n_tasks=3_000_000, task_length=1)
+        with pytest.raises(ValueError, match="permutation schedule"):
+            IPMNISTConfig(n_tasks=2, task_length=1, input_dim=2**30)
 
     def test_config_rejects_derived_parameter_allocations(self):
         with pytest.raises(ValueError, match="w1 allocation"):
             IPMNISTConfig(input_dim=50_000, hidden1=50_000)
+        with pytest.raises(ValueError, match="w2 allocation"):
+            IPMNISTConfig(input_dim=1, hidden1=46_341, hidden2=46_341, n_classes=1)
+        with pytest.raises(ValueError, match="w3 allocation"):
+            IPMNISTConfig(input_dim=1, hidden1=1, hidden2=46_341, n_classes=46_341)
         with pytest.raises(ValueError, match="total parameter allocation"):
             IPMNISTConfig(
                 input_dim=32_768,
@@ -126,6 +149,46 @@ class TestProtocolConstants:
         assert horizon.n_steps == 2**31 - 1
         schedule = IPMNISTConfig(n_tasks=2**31 - 1, task_length=1, input_dim=1)
         assert schedule.n_tasks * schedule.input_dim == 2**31 - 1
+
+    def test_config_total_parameter_boundary_and_adjacent_overflow_are_allocation_free(self):
+        boundary = IPMNISTConfig(
+            n_tasks=1,
+            task_length=1,
+            input_dim=(2**31 - 1) - 5,
+            hidden1=1,
+            hidden2=1,
+            n_classes=1,
+        )
+        assert (
+            boundary.input_dim * boundary.hidden1
+            + boundary.hidden1 * boundary.hidden2
+            + boundary.hidden2 * boundary.n_classes
+            + boundary.hidden1
+            + boundary.hidden2
+            + boundary.n_classes
+            == 2**31 - 1
+        )
+        with pytest.raises(ValueError, match="total parameter allocation"):
+            IPMNISTConfig(
+                n_tasks=1,
+                task_length=1,
+                input_dim=(2**31 - 1) - 4,
+                hidden1=1,
+                hidden2=1,
+                n_classes=1,
+            )
+
+    def test_config_roundtrip_canonicalizes_numpy_integer_scalars(self):
+        config = IPMNISTConfig(
+            n_tasks=np.int16(2),
+            task_length=np.uint16(3),
+            input_dim=np.int32(4),
+            hidden1=np.uint32(5),
+            hidden2=np.int64(6),
+            n_classes=np.uint64(2),
+        )
+        assert IPMNISTConfig(**config.to_config()) == config
+        assert all(type(value) is int for value in config.to_config().values())
 
     def test_published_hyperparameters(self):
         assert UPGD_W_PROTOCOL_HYPERPARAMETERS == {
