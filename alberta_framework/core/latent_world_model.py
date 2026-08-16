@@ -293,6 +293,8 @@ class LatentWorldModelConfig:
         """Reconstruct from :meth:`to_config` output."""
         if not issubclass(type(config), Mapping):
             raise ValueError("config must be an actual mapping")
+        if not all(type(key) is str for key in config):
+            raise ValueError("config fields do not match the serialized schema")
         payload = dict(config)
         config_type = payload.pop("type", None)
         if type(config_type) is not str or config_type != "LatentWorldModelConfig":
@@ -513,9 +515,13 @@ class LatentWorldModel:
 
         if not issubclass(type(config), Mapping):
             raise ValueError("model config must be an actual mapping")
-        if set(config) != {"type", "config", "learner"}:
+        if not all(type(key) is str for key in config) or set(config) != {
+            "type",
+            "config",
+            "learner",
+        }:
             raise ValueError("model config fields do not match the serialized schema")
-        if config.get("type") != "LatentWorldModel":
+        if type(config["type"]) is not str or config["type"] != "LatentWorldModel":
             raise ValueError("unexpected latent world model type")
         payload = dict(config)
         payload.pop("type")
@@ -524,11 +530,12 @@ class LatentWorldModel:
         model_config = LatentWorldModelConfig.from_config(
             cast(Mapping[str, object], payload["config"])
         )
-        learner_cfg = dict(payload["learner"])
+        learner = MultiHeadMLPLearner.from_config(cast(dict[str, Any], payload["learner"]))
+        learner_cfg = learner.to_config()
         optimizer = optimizer_from_config(learner_cfg["optimizer"])
         bounder_cfg = learner_cfg.get("bounder")
         head_opt_cfg = learner_cfg.get("head_optimizer")
-        return cls(
+        model = cls(
             model_config,
             optimizer=optimizer,
             bounder=bounder_from_config(bounder_cfg) if bounder_cfg is not None else None,
@@ -536,6 +543,9 @@ class LatentWorldModel:
                 optimizer_from_config(head_opt_cfg) if head_opt_cfg is not None else None
             ),
         )
+        if model.learner.to_config() != learner_cfg:
+            raise ValueError("learner config is incompatible with the model config")
+        return model
 
     def init(self, key: Array) -> LatentWorldModelState:
         """Initialize fixed encoder and predictor state."""

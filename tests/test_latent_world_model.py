@@ -661,6 +661,89 @@ def test_latent_config_preflights_combined_persistent_state_without_allocation()
         )
 
 
+def test_latent_config_accepts_full_numpy_integer_family() -> None:
+    integer_types = tuple(
+        dict.fromkeys(
+            np.dtype(code).type
+            for code in (
+                "b",
+                "h",
+                "i",
+                "l",
+                "q",
+                "B",
+                "H",
+                "I",
+                "L",
+                "Q",
+                "p",
+                "P",
+            )
+        )
+    )
+    for integer_type in integer_types:
+        config = LatentWorldModelConfig(
+            observation_dim=integer_type(2),
+            n_actions=integer_type(2),
+            latent_dim=integer_type(2),
+            hidden_sizes=(integer_type(3),),
+        )
+        assert config.observation_dim == config.n_actions == config.latent_dim == 2
+        assert config.hidden_sizes == (3,)
+        assert all(
+            type(value) is int
+            for value in (
+                config.observation_dim,
+                config.n_actions,
+                config.latent_dim,
+                config.hidden_sizes[0],
+            )
+        )
+
+
+def test_latent_config_normalizes_hostile_integer_and_ratio_hooks() -> None:
+    class HostileInteger:
+        def __index__(self) -> int:
+            raise AssertionError("index hook must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    class HostileFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("hostile ratio")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    with pytest.raises(ValueError, match="observation_dim"):
+        LatentWorldModelConfig(
+            observation_dim=HostileInteger(),  # type: ignore[arg-type]
+            n_actions=2,
+        )
+    with pytest.raises(ValueError, match="reward_scale"):
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            reward_scale=HostileFloat(1.0),
+        )
+
+
+def test_latent_model_rejects_incompatible_nested_learner() -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    payload = model.to_config()
+    payload["learner"]["n_heads"] += 1
+    with pytest.raises(ValueError, match="incompatible"):
+        LatentWorldModel.from_config(payload)
+
+    hostile_type = model.to_config()
+    hostile_type["type"] = object()
+    with pytest.raises(ValueError, match="type"):
+        LatentWorldModel.from_config(hostile_type)
+
+
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
