@@ -213,11 +213,10 @@ def test_prototype_dimensions_preflight_without_allocation() -> None:
 
 
 def test_prototype_state_preflight_bytes_without_allocation() -> None:
-    # Minimal sizes: n_classes=2, feature_dim=1, vary slots_per_class.
-    # total = 6*slots +1, byte = 24*slots+4
-    last_legal = (2**31 - 1 - 4) // 24
+    # Minimal dimensions, varying slots: update bound = 36*slots + 65.
+    last_legal = (_INT32_MAX // 4 - 65) // 36
     PrototypeMemoryConfig(feature_dim=1, n_classes=2, slots_per_class=last_legal)
-    with pytest.raises(ValueError, match="byte count"):
+    with pytest.raises(ValueError, match="update byte count"):
         PrototypeMemoryConfig(feature_dim=1, n_classes=2, slots_per_class=last_legal + 1)
     # Non-minimal vector should also be allocation-free.
     with pytest.raises(ValueError, match="byte count|scalar count|dimensions"):
@@ -225,10 +224,10 @@ def test_prototype_state_preflight_bytes_without_allocation() -> None:
 
 
 def test_prototype_state_preflight_feature_dim_boundary() -> None:
-    # Vary feature_dim with n_classes=2, slots=1: byte = 8*fd+20
-    last_legal = (2**31 - 1 - 20) // 8
+    # n_classes=2, slots=1, varying features: update bound = 16*fd + 85.
+    last_legal = (_INT32_MAX // 4 - 85) // 16
     PrototypeMemoryConfig(feature_dim=last_legal, n_classes=2, slots_per_class=1)
-    with pytest.raises(ValueError, match="byte count"):
+    with pytest.raises(ValueError, match="update byte count"):
         PrototypeMemoryConfig(feature_dim=last_legal + 1, n_classes=2, slots_per_class=1)
 
 
@@ -307,6 +306,50 @@ def test_prototype_serialized_schema_is_exact_and_uses_json_scalars() -> None:
         PrototypeMemoryLearner.from_config({**learner_payload, "extra": 1})
 
 
+@pytest.mark.parametrize("mutation", ["missing-type", "wrong-type", "extra-field"])
+def test_prototype_config_requires_exact_schema(mutation: str) -> None:
+    payload = PrototypeMemoryConfig(feature_dim=2, n_classes=2).to_config()
+    if mutation == "missing-type":
+        del payload["type"]
+    elif mutation == "wrong-type":
+        payload["type"] = "PrototypeMemoryLearner"
+    else:
+        payload["unknown"] = 1
+    with pytest.raises(ValueError, match="documented fields|discriminator"):
+        PrototypeMemoryConfig.from_config(payload)
+
+
+@pytest.mark.parametrize("mutation", ["missing-type", "wrong-type", "extra-field"])
+def test_prototype_learner_requires_exact_outer_schema(mutation: str) -> None:
+    learner = PrototypeMemoryLearner(PrototypeMemoryConfig(feature_dim=2, n_classes=2))
+    payload = learner.to_config()
+    if mutation == "missing-type":
+        del payload["type"]
+    elif mutation == "wrong-type":
+        payload["type"] = "PrototypeMemoryConfig"
+    else:
+        payload["unknown"] = 1
+    with pytest.raises(ValueError, match="documented fields|discriminator"):
+        PrototypeMemoryLearner.from_config(payload)
+
+
+def test_prototype_schema_errors_do_not_run_hostile_repr() -> None:
+    class Hostile:
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not execute")
+
+    config = PrototypeMemoryConfig(feature_dim=2, n_classes=2).to_config()
+    config["type"] = Hostile()
+    with pytest.raises(ValueError, match="discriminator"):
+        PrototypeMemoryConfig.from_config(config)
+
+    learner = PrototypeMemoryLearner(PrototypeMemoryConfig(feature_dim=2, n_classes=2))
+    outer = learner.to_config()
+    outer["type"] = Hostile()
+    with pytest.raises(ValueError, match="discriminator"):
+        PrototypeMemoryLearner.from_config(outer)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement", "message"),
     [
@@ -378,6 +421,30 @@ def test_prototype_update_rejects_scalar_and_vector_shape_aliases(
     ):
         with pytest.raises(ValueError, match=message):
             call()
+
+
+@pytest.mark.parametrize("dtype", [np.float16, np.float64, np.int32, np.bool_])
+def test_prototype_public_operations_reject_non_float32_operands(dtype: object) -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=3, n_classes=2, slots_per_class=2)
+    )
+    state = learner.init()
+    observation = np.zeros((3,), dtype=dtype)
+    target = np.zeros((2,), dtype=dtype)
+    threshold = np.asarray(0, dtype=dtype)
+    with pytest.raises(TypeError, match="observation.*dtype"):
+        learner.predict(state, observation)
+    with pytest.raises(TypeError, match="observation.*dtype"):
+        learner.update(state, observation, jnp.zeros((2,), dtype=jnp.float32))
+    with pytest.raises(TypeError, match="target.*dtype"):
+        learner.update(state, jnp.zeros((3,), dtype=jnp.float32), target)
+    with pytest.raises(TypeError, match="novelty_threshold.*dtype"):
+        learner.update_with_novelty_threshold(
+            state,
+            jnp.zeros((3,), dtype=jnp.float32),
+            jnp.zeros((2,), dtype=jnp.float32),
+            threshold,
+        )
 
 
 def test_prototype_invalid_state_and_threshold_are_atomic_noops() -> None:
@@ -474,4 +541,40 @@ def test_prototype_array_runner_preflights_shapes_and_output_resources() -> None
             lambda x, y: run_prototype_memory_arrays(learner, x, y),
             observations,
             targets,
+        )
+
+
+def test_prototype_array_runner_preflights_before_conversion() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=2)
+    )
+
+    class OversizedArrayStub:
+        shape = (_INT32_MAX, 2)
+        dtype = np.dtype(np.float32)
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("conversion must not run")
+
+    stub = OversizedArrayStub()
+    with pytest.raises(ValueError, match="scalar count|byte count"):
+        run_prototype_memory_arrays(learner, stub, stub)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("dtype", [np.float16, np.float64, np.int32, np.bool_])
+def test_prototype_array_runner_rejects_non_float32_inputs(dtype: object) -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=2)
+    )
+    with pytest.raises(TypeError, match="observations.*dtype"):
+        run_prototype_memory_arrays(
+            learner,
+            np.zeros((2, 2), dtype=dtype),
+            np.zeros((2, 2), dtype=np.float32),
+        )
+    with pytest.raises(TypeError, match="targets.*dtype"):
+        run_prototype_memory_arrays(
+            learner,
+            np.zeros((2, 2), dtype=np.float32),
+            np.zeros((2, 2), dtype=dtype),
         )
