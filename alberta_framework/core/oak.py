@@ -36,6 +36,7 @@ import dataclasses
 import math
 import operator
 from collections.abc import Mapping
+from numbers import Real
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -74,8 +75,11 @@ from alberta_framework.core.types import MLPParams
 OAK_STATE_SCHEMA = "alberta.oak-state.v2"
 OAK_LIFETIME_COUNTER_NBYTES = 12
 OAK_LIFETIME_COUNTER_DELTA_NBYTES = 8
+OAK_CONFIG_SCHEMA = "alberta.oak-config.v1"
+KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA = "alberta.keyboard-chord-learner-config.v1"
 
 _INT32_MAX = 2**31 - 1
+_UINT32_MAX = 2**32 - 1
 _UINT64_MAX = 2**64 - 1
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -92,6 +96,18 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
+_ACTUAL_REAL_TYPES = frozenset(
+    {
+        *_ACTUAL_INT_TYPES,
+        float,
+        *(np.dtype(code).type for code in ("e", "f", "d", "g")),
+    }
+)
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
+_FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+_KEYBOARD_FIXED_STATE_NBYTES = 8
+_KEYBOARD_OPTION_NBYTES = 4
+_MAX_KEYBOARD_OPTIONS = (_UINT32_MAX - _KEYBOARD_FIXED_STATE_NBYTES) // (_KEYBOARD_OPTION_NBYTES)
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -112,6 +128,45 @@ def _require_uint64(
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_float32(
+    name: str,
+    value: object,
+    *,
+    minimum: float,
+    maximum: float | None = None,
+    maximum_inclusive: bool = True,
+) -> float:
+    """Return a canonical finite normal float32-compatible host scalar."""
+
+    if type(value) not in _ACTUAL_REAL_TYPES or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a real scalar")
+    try:
+        canonical = float(value)
+    except OverflowError as error:
+        raise ValueError(f"{name} must be finite and float32-compatible") from error
+    if not math.isfinite(canonical) or abs(canonical) > _FLOAT32_MAX:
+        raise ValueError(f"{name} must be finite and float32-compatible")
+    if canonical != 0.0 and abs(canonical) < _FLOAT32_TINY:
+        raise ValueError(f"{name} must be zero or a normal float32 value")
+    if canonical < minimum:
+        raise ValueError(f"{name} must be >= {minimum}")
+    if maximum is not None and (
+        canonical > maximum or (not maximum_inclusive and canonical == maximum)
+    ):
+        interval_end = "]" if maximum_inclusive else ")"
+        raise ValueError(f"{name} must be in [{minimum}, {maximum}{interval_end}")
+    return 0.0 if canonical == 0.0 else canonical
+
+
+def _config_mapping(value: object, *, name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    try:
+        return dict(value)
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +208,8 @@ class OaKConfig:
     min_steps_before_curation: int = 0
 
     def __post_init__(self) -> None:
+        if type(self.stomp) is not STOMPConfig:
+            raise ValueError("stomp must be an exact STOMPConfig")
         min_steps = _require_uint64(
             "min_steps_before_curation",
             self.min_steps_before_curation,
@@ -160,11 +217,16 @@ class OaKConfig:
             maximum=_UINT64_MAX,
         )
         object.__setattr__(self, "min_steps_before_curation", min_steps)
-
-        if not math.isfinite(self.utility_ema_decay) or not 0.0 <= self.utility_ema_decay <= 1.0:
-            raise ValueError("utility_ema_decay must be finite and in [0, 1]")
-        if not math.isfinite(self.curation_threshold) or self.curation_threshold < 0.0:
-            raise ValueError("curation_threshold must be finite and non-negative")
+        object.__setattr__(
+            self,
+            "utility_ema_decay",
+            _require_float32("utility_ema_decay", self.utility_ema_decay, minimum=0.0, maximum=1.0),
+        )
+        object.__setattr__(
+            self,
+            "curation_threshold",
+            _require_float32("curation_threshold", self.curation_threshold, minimum=0.0),
+        )
 
     @property
     def n_options(self) -> int:
@@ -181,6 +243,7 @@ class OaKConfig:
     def to_config(self) -> dict[str, Any]:
         """Return a JSON-serializable dictionary."""
         return {
+            "schema": OAK_CONFIG_SCHEMA,
             "type": "OaKConfig",
             "stomp": self.stomp.to_config(),
             "utility_ema_decay": self.utility_ema_decay,
@@ -189,12 +252,21 @@ class OaKConfig:
         }
 
     @classmethod
-    def from_config(cls, payload: dict[str, Any]) -> OaKConfig:
+    def from_config(cls, payload: Mapping[str, Any]) -> OaKConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _config_mapping(payload, name="OaKConfig payload")
+        schema = data.pop("schema", None)
+        type_name = data.pop("type", None)
+        if schema is not None and (type(schema) is not str or schema != OAK_CONFIG_SCHEMA):
+            raise ValueError("OaKConfig schema is unsupported")
+        if type_name is not None and (type(type_name) is not str or type_name != "OaKConfig"):
+            raise ValueError("OaKConfig type is invalid")
+        required = {"stomp", "utility_ema_decay", "curation_threshold"}
+        allowed = required | {"min_steps_before_curation"}
+        if not required <= set(data) or not set(data) <= allowed:
+            raise ValueError("OaKConfig fields do not match the supported schema")
         stomp_raw = data.pop("stomp")
-        stomp = STOMPConfig.from_config(stomp_raw)
+        stomp = STOMPConfig.from_config(_config_mapping(stomp_raw, name="OaKConfig stomp"))
         return cls(stomp=stomp, **data)
 
 
@@ -883,29 +955,53 @@ class KeyboardChordLearnerConfig:
     max_norm: float = 10.0
 
     def __post_init__(self) -> None:
-        n_options = _require_int32("n_options", self.n_options, minimum=1)
+        n_options = _require_int32(
+            "n_options", self.n_options, minimum=1, maximum=_MAX_KEYBOARD_OPTIONS
+        )
         object.__setattr__(self, "n_options", n_options)
-
-        if not math.isfinite(self.step_size) or self.step_size < 0.0:
-            raise ValueError("step_size must be finite and non-negative")
-        if not math.isfinite(self.baseline_decay) or not 0.0 <= self.baseline_decay < 1.0:
-            raise ValueError("baseline_decay must be finite and in [0, 1)")
-        if not math.isfinite(self.l2_penalty) or self.l2_penalty < 0.0:
-            raise ValueError("l2_penalty must be finite and non-negative")
-        if not math.isfinite(self.max_norm) or self.max_norm <= 0.0:
-            raise ValueError("max_norm must be finite and positive")
+        for name in ("step_size", "l2_penalty"):
+            object.__setattr__(self, name, _require_float32(name, getattr(self, name), minimum=0.0))
+        object.__setattr__(
+            self,
+            "baseline_decay",
+            _require_float32(
+                "baseline_decay",
+                self.baseline_decay,
+                minimum=0.0,
+                maximum=1.0,
+                maximum_inclusive=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_norm",
+            _require_float32("max_norm", self.max_norm, minimum=_FLOAT32_TINY),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
         payload = dataclasses.asdict(self)
+        payload["schema"] = KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA
         payload["type"] = "KeyboardChordLearnerConfig"
         return payload
 
     @classmethod
-    def from_config(cls, payload: dict[str, Any]) -> KeyboardChordLearnerConfig:
+    def from_config(cls, payload: Mapping[str, Any]) -> KeyboardChordLearnerConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _config_mapping(payload, name="KeyboardChordLearnerConfig payload")
+        schema = data.pop("schema", None)
+        type_name = data.pop("type", None)
+        if schema is not None and (
+            type(schema) is not str or schema != KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA
+        ):
+            raise ValueError("KeyboardChordLearnerConfig schema is unsupported")
+        if type_name is not None and (
+            type(type_name) is not str or type_name != "KeyboardChordLearnerConfig"
+        ):
+            raise ValueError("KeyboardChordLearnerConfig type is invalid")
+        required = {"n_options", "step_size", "baseline_decay", "l2_penalty", "max_norm"}
+        if set(data) != required:
+            raise ValueError("KeyboardChordLearnerConfig fields do not match the schema")
         return cls(**data)
 
 
@@ -2137,10 +2233,12 @@ class OaKAgent:
 
 
 __all__ = [
+    "KEYBOARD_CHORD_LEARNER_CONFIG_SCHEMA",
     "KeyboardChordLearnerConfig",
     "KeyboardChordLearnerState",
     "OAK_LIFETIME_COUNTER_DELTA_NBYTES",
     "OAK_LIFETIME_COUNTER_NBYTES",
+    "OAK_CONFIG_SCHEMA",
     "OAK_STATE_SCHEMA",
     "OaKAgent",
     "OaKArrayResult",
