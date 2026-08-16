@@ -6,12 +6,164 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.world_model import (
     OneStepWorldModel,
     WorldModelConfig,
+    WorldModelState,
     run_world_model_learning_loop,
 )
+
+
+def _one_step_shape_model(
+    *, continuous: bool = False
+) -> tuple[OneStepWorldModel, WorldModelState]:
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=None if continuous else 2,
+            action_dim=2 if continuous else 1,
+            hidden_sizes=(),
+            sparsity=0.0,
+            use_layer_norm=False,
+        )
+    )
+    return model, model.init(jr.key(92))
+
+
+@pytest.mark.parametrize(
+    ("operation", "field"),
+    [
+        ("input_features", "observation"),
+        ("targets", "observation"),
+        ("targets", "next_observation"),
+        ("predict", "observation"),
+        ("update", "observation"),
+        ("update", "next_observation"),
+    ],
+)
+def test_one_step_world_model_rejects_wrong_observation_shapes(
+    operation: str, field: str
+) -> None:
+    model, state = _one_step_shape_model()
+    values = {
+        "observation": jnp.zeros((2,), dtype=jnp.float32),
+        "action": jnp.asarray(0, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "next_observation": jnp.ones((2,), dtype=jnp.float32),
+    }
+    values[field] = jnp.zeros((2, 1), dtype=jnp.float32)
+
+    def call() -> object:
+        if operation == "input_features":
+            return model.input_features(values["observation"], values["action"])
+        if operation == "targets":
+            return model.targets(
+                values["observation"], values["reward"], values["next_observation"]
+            )
+        if operation == "predict":
+            return model.predict(state, values["observation"], values["action"])
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=field):
+        call()
+    with pytest.raises(ValueError, match=field):
+        jax.jit(call)()
+
+
+@pytest.mark.parametrize("operation", ["encode_action", "input_features", "predict", "update"])
+def test_one_step_world_model_rejects_wrong_continuous_action_shapes(
+    operation: str,
+) -> None:
+    model, state = _one_step_shape_model(continuous=True)
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    action = jnp.zeros((1, 2), dtype=jnp.float32)
+    reward = jnp.asarray(0.5, dtype=jnp.float32)
+    next_observation = jnp.ones((2,), dtype=jnp.float32)
+
+    def call() -> object:
+        if operation == "encode_action":
+            return model.encode_action(action)
+        if operation == "input_features":
+            return model.input_features(observation, action)
+        if operation == "predict":
+            return model.predict(state, observation, action)
+        return model.update(state, observation, action, reward, next_observation)
+
+    with pytest.raises(ValueError, match="action"):
+        call()
+    with pytest.raises(ValueError, match="action"):
+        jax.jit(call)()
+
+
+@pytest.mark.parametrize(
+    ("operation", "field"),
+    [
+        ("encode_action", "action"),
+        ("input_features", "action"),
+        ("targets", "reward"),
+        ("predict", "action"),
+        ("update", "action"),
+        ("update", "reward"),
+    ],
+)
+def test_one_step_world_model_rejects_size_one_scalar_aliases(
+    operation: str, field: str
+) -> None:
+    model, state = _one_step_shape_model()
+    values = {
+        "observation": jnp.zeros((2,), dtype=jnp.float32),
+        "action": jnp.asarray(0, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "next_observation": jnp.ones((2,), dtype=jnp.float32),
+    }
+    values[field] = jnp.ones((1,), dtype=jnp.float32)
+
+    def call() -> object:
+        if operation == "encode_action":
+            return model.encode_action(values["action"])
+        if operation == "input_features":
+            return model.input_features(values["observation"], values["action"])
+        if operation == "targets":
+            return model.targets(
+                values["observation"], values["reward"], values["next_observation"]
+            )
+        if operation == "predict":
+            return model.predict(state, values["observation"], values["action"])
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=field):
+        call()
+    with pytest.raises(ValueError, match=field):
+        jax.jit(call)()
+
+
+def test_one_step_world_model_preserves_numeric_dtype_canonicalization() -> None:
+    model, _ = _one_step_shape_model(continuous=True)
+    features = model.input_features(
+        jnp.asarray([1, 2], dtype=jnp.int32),
+        jnp.asarray([3, 4], dtype=jnp.int16),
+    )
+    targets = model.targets(
+        jnp.asarray([1, 2], dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int16),
+        jnp.asarray([2, 3], dtype=jnp.int16),
+    )
+    assert features.dtype == jnp.float32
+    assert targets.dtype == jnp.float32
 
 
 def test_world_model_update_is_finite_and_shape_stable() -> None:

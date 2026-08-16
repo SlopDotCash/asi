@@ -46,6 +46,14 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _float32_scalar(name: str, value: Array) -> Array:
+    """Canonicalize one scalar without flattening size-one vectors or matrices."""
+    array = jnp.asarray(value, dtype=jnp.float32)
+    if array.shape != ():
+        raise ValueError(f"{name} must be scalar; got shape {array.shape}")
+    return array
+
+
 @dataclasses.dataclass(frozen=True)
 class ActionConditionedWorldModelConfig:
     """Configuration for :class:`ActionConditionedWorldModel`.
@@ -416,6 +424,7 @@ class ActionConditionedWorldModel:
     @functools.partial(jax.jit, static_argnums=(0,))
     def encode_action(self, action: Array) -> Array:
         """Return the action code, leaving invalid discrete inputs visible."""
+        action = _float32_scalar("action", action)
         safe_action, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
@@ -460,10 +469,9 @@ class ActionConditionedWorldModel:
             next_obs / safe_scale,
         )
         reward_target = jnp.reshape(
-            jnp.asarray(reward, dtype=jnp.float32) / self._config.reward_scale,
-            (1,),
+            _float32_scalar("reward", reward) / self._config.reward_scale, (1,)
         )
-        discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
+        discount_target = jnp.reshape(_float32_scalar("discount", discount), (1,))
         return jnp.concatenate([normalized_delta, reward_target, discount_target], axis=0)
 
     def _prediction_and_raw_diagnostics(
@@ -580,11 +588,11 @@ class ActionConditionedWorldModel:
                 f"got {obs.shape}"
             )
         action_arr, action_valid = safe_discrete_action(
-            action,
+            _float32_scalar("action", action),
             self._config.n_actions,
         )
-        reward_arr = jnp.asarray(reward, dtype=jnp.float32)
-        discount_arr = jnp.asarray(discount, dtype=jnp.float32)
+        reward_arr = _float32_scalar("reward", reward)
+        discount_arr = _float32_scalar("discount", discount)
         next_obs = jnp.asarray(next_observation, dtype=jnp.float32)
         if next_obs.shape != (self._config.observation_dim,):
             raise ValueError(
@@ -991,7 +999,7 @@ class OneStepWorldModel:
         """Encode a discrete or vector action."""
         if self._config.n_actions is not None:
             safe_action, action_valid = safe_discrete_action(
-                action,
+                _float32_scalar("action", action),
                 self._config.n_actions,
             )
             encoded = jax.nn.one_hot(
@@ -1040,7 +1048,7 @@ class OneStepWorldModel:
             )
         obs_target = next_obs - obs if self._config.predict_delta else next_obs
         return jnp.concatenate(
-            [jnp.reshape(jnp.asarray(reward, dtype=jnp.float32), (1,)), obs_target],
+            [jnp.reshape(_float32_scalar("reward", reward), (1,)), obs_target],
             axis=0,
         )
 
@@ -1086,7 +1094,7 @@ class OneStepWorldModel:
         """Update from one real transition."""
         if self._config.n_actions is not None:
             safe_action, action_valid = safe_discrete_action(
-                action,
+                _float32_scalar("action", action),
                 self._config.n_actions,
             )
         else:
@@ -1115,7 +1123,7 @@ class OneStepWorldModel:
                 f"next_observation must have shape ({self._config.observation_dim},) "
                 f"got {next_obs.shape}"
             )
-        reward_arr = jnp.asarray(reward, dtype=jnp.float32)
+        reward_arr = _float32_scalar("reward", reward)
         next_observation_errors = prediction.next_observation - next_obs
         reward_error = prediction.reward - reward_arr
         observation_mse = jnp.nanmean(next_observation_errors**2)
