@@ -267,12 +267,22 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
-def _validated_config_float(name: str, value: object) -> float:
+def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) is bool or type(value) is np.bool_:
         raise ValueError(f"{name} must be numeric, not bool")
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
-    normalized = validated_float32_scalar(name, value)
+    try:
+        magnitude = abs(float(cast(Any, value)))
+    except Exception as error:
+        raise ValueError(
+            f"{name} must be exactly zero or representable as a finite normal float32"
+        ) from error
+    if magnitude > _FLOAT32_MAX or (magnitude != 0.0 and magnitude < _FLOAT32_TINY):
+        raise ValueError(
+            f"{name} must be exactly zero or representable as a finite normal float32"
+        )
+    normalized = validated_float32_scalar(name, value, **bounds)
     _validate_normal_float32_config_value(name, normalized)
     return normalized
 
@@ -334,7 +344,10 @@ def _preflight_state_resources(
         + 4 * width
         + 3
     )
-    logical_scalars = float32_scalars + 7
+    # Four int32 leaves, one typed-key leaf, and one bool leaf are the six
+    # non-float logical scalars. The typed key occupies two uint32 words, so
+    # the independently derived byte count remains one byte above 4 * scalars.
+    logical_scalars = float32_scalars + 6
     state_nbytes = 4 * (float32_scalars + 6) + 1
     resources = {
         "parameter_scalars": parameters,
@@ -426,32 +439,32 @@ class RecurrentTraceActorCriticConfig:
         object.__setattr__(self, "encoder_width", encoder_width)
         object.__setattr__(self, "output_width", output_width)
 
-        numeric_values = (
-            ("gamma", self.gamma),
-            ("actor_lamda", self.actor_lamda),
-            ("critic_lamda", self.critic_lamda),
-            ("actor_alpha", self.actor_alpha),
-            ("critic_alpha", self.critic_alpha),
-            ("actor_kappa", self.actor_kappa),
-            ("critic_kappa", self.critic_kappa),
-            ("entropy_coefficient", self.entropy_coefficient),
-            ("temperature", self.temperature),
-            ("sparsity", self.sparsity),
-            ("r_min", self.r_min),
-            ("r_max", self.r_max),
-            ("max_phase", self.max_phase),
-            ("rtu_epsilon", self.rtu_epsilon),
-            ("layer_norm_epsilon", self.layer_norm_epsilon),
-            ("leaky_relu_slope", self.leaky_relu_slope),
-            ("normalization_epsilon", self.normalization_epsilon),
-            ("beta2", self.beta2),
-            ("epsilon", self.epsilon),
-        )
-        for numeric_name, numeric_value in numeric_values:
+        float_domains: dict[str, dict[str, Any]] = {
+            "gamma": {"lower": 0.0, "upper": 1.0},
+            "actor_lamda": {"lower": 0.0, "upper": 1.0},
+            "critic_lamda": {"lower": 0.0, "upper": 1.0},
+            "actor_alpha": {"lower": 0.0},
+            "critic_alpha": {"lower": 0.0},
+            "actor_kappa": {"positive": True},
+            "critic_kappa": {"positive": True},
+            "entropy_coefficient": {"lower": 0.0},
+            "temperature": {"positive": True},
+            "sparsity": {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            "r_min": {"lower": 0.0, "upper": 1.0},
+            "r_max": {"positive": True, "upper": 1.0},
+            "max_phase": {"positive": True, "upper": 2.0 * math.pi},
+            "rtu_epsilon": {"positive": True, "upper": 1.0, "upper_inclusive": False},
+            "layer_norm_epsilon": {"positive": True},
+            "leaky_relu_slope": {"lower": 0.0},
+            "normalization_epsilon": {"positive": True},
+            "beta2": {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            "epsilon": {"positive": True},
+        }
+        for numeric_name, bounds in float_domains.items():
             object.__setattr__(
                 self,
                 numeric_name,
-                _validated_config_float(numeric_name, numeric_value),
+                _validated_config_float(numeric_name, getattr(self, numeric_name), **bounds),
             )
 
         for interval_name, interval_value in (
@@ -521,7 +534,7 @@ class RecurrentTraceActorCriticConfig:
             ("adaptive_obgd", self.adaptive_obgd),
         ):
             if type(value) is not bool:
-                raise ValueError(f"{name} must be an exact bool")
+                raise ValueError(f"{name} must be a bool")
         _preflight_state_resources(self, 1)
 
     def state_resource_budget(self, feature_dim: object) -> dict[str, int]:

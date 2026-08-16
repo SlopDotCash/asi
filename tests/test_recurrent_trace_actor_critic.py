@@ -2083,9 +2083,18 @@ def test_state_resource_budget_is_exact_and_init_preflights_before_rng(
         "parameter_scalars": 124,
         "sensitivity_scalars_per_network": 36,
         "float32_state_scalars": 343,
-        "state_scalars": 350,
+        "state_scalars": 349,
         "state_nbytes": 1397,
     }
+
+    state = RecurrentTraceActorCriticAgent(config).init(2, jr.key(7))
+    leaves = jax.tree_util.tree_leaves(state)
+    assert config.state_resource_budget(2)["state_scalars"] == sum(
+        int(leaf.size) for leaf in leaves
+    )
+    assert config.state_resource_budget(2)["state_nbytes"] == sum(
+        int(leaf.nbytes) for leaf in leaves
+    )
 
     def forbidden_split(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("RNG split must not run before resource validation")
@@ -2093,6 +2102,89 @@ def test_state_resource_budget_is_exact_and_init_preflights_before_rng(
     monkeypatch.setattr(recurrent_trace_module.jr, "split", forbidden_split)
     with pytest.raises(ValueError, match="derived"):
         RecurrentTraceActorCriticAgent(config).init(2**31 - 1, jr.key(0))
+
+
+@pytest.mark.parametrize("field", ("n_actions", "hidden_size", "encoder_width", "output_width"))
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_config_accepts_every_representable_numpy_integer_family(
+    field: str, code: str
+) -> None:
+    arguments: dict[str, Any] = {"n_actions": 2, field: np.dtype(code).type(3)}
+    config = RecurrentTraceActorCriticConfig(**arguments)
+    assert type(getattr(config, field)) is int
+    assert getattr(config, field) == 3
+
+
+@pytest.mark.parametrize(
+    ("field", "valid"),
+    (
+        ("gamma", 0.5),
+        ("actor_lamda", 0.5),
+        ("critic_lamda", 0.5),
+        ("actor_alpha", 0.5),
+        ("critic_alpha", 0.5),
+        ("actor_kappa", 0.5),
+        ("critic_kappa", 0.5),
+        ("entropy_coefficient", 0.5),
+        ("temperature", 0.5),
+        ("sparsity", 0.5),
+        ("r_min", 0.25),
+        ("r_max", 0.75),
+        ("max_phase", 0.5),
+        ("rtu_epsilon", 0.5),
+        ("layer_norm_epsilon", 0.5),
+        ("leaky_relu_slope", 0.5),
+        ("normalization_epsilon", 0.5),
+        ("beta2", 0.5),
+        ("epsilon", 0.5),
+    ),
+)
+@pytest.mark.parametrize("code", ("e", "f", "d", "g"))
+def test_config_accepts_and_canonicalizes_numpy_float_families(
+    field: str, valid: float, code: str
+) -> None:
+    config = RecurrentTraceActorCriticConfig(
+        n_actions=2,
+        **{field: np.dtype(code).type(valid)},
+    )
+    assert type(getattr(config, field)) is float
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("gamma", np.nextafter(np.float64(1.0), np.float64(2.0))),
+        ("sparsity", np.nextafter(np.float64(1.0), np.float64(0.0))),
+        ("beta2", np.nextafter(np.float64(1.0), np.float64(0.0))),
+    ),
+)
+def test_config_rejects_exact_host_values_that_round_across_float32_bounds(
+    field: str, value: np.float64
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        RecurrentTraceActorCriticConfig(n_actions=2, **{field: value})
+
+
+@pytest.mark.parametrize(
+    ("taylor", "adaptive"),
+    ((False, False), (True, False), (False, True), (True, True)),
+)
+def test_state_resource_budget_matches_optional_state_trees(
+    taylor: bool, adaptive: bool
+) -> None:
+    config = RecurrentTraceActorCriticConfig(
+        n_actions=3,
+        hidden_size=4,
+        encoder_width=5,
+        output_width=6,
+        rtrl_taylor_correction=taylor,
+        adaptive_obgd=adaptive,
+    )
+    state = RecurrentTraceActorCriticAgent(config).init(7, jr.key(5))
+    leaves = jax.tree_util.tree_leaves(state)
+    budget = config.state_resource_budget(7)
+    assert budget["state_scalars"] == sum(int(leaf.size) for leaf in leaves)
+    assert budget["state_nbytes"] == sum(int(leaf.nbytes) for leaf in leaves)
 
 
 def test_canonical_discrete_architecture_defaults_and_core_export() -> None:
