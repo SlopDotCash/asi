@@ -2,7 +2,7 @@
 
 **Audit date:** 2026-08-14–15 (America/Los_Angeles)
 **Baseline revision:** `22739da0b5d8a06a621b6743297f1c46d8d87903`
-**Production base:** `e1328798a676175cdf65cfcbf7fe6b1226d10b68` plus the audited forward-port
+**Production base:** `58b6780840e1ba3fd6fdaea4d49c906d6c3b55cb` plus the audited forward-port
 worktree
 **Scope:** implementation, tests, package metadata, documentation, registered evidence, and
 the active IPMNIST and Forager development records
@@ -23,8 +23,8 @@ The strongest measurements are:
 | Measure | Result | Meaning |
 |---|---:|---|
 | Package and test Python before cleanup | 1,264,156 lines in 1,192 files | Audited baseline at `22739da` |
-| Package and test Python retained | 343,781 lines in 373 files | Final audited forward-port inventory |
-| Python surface removed | **72.81% by physical lines; 68.71% by files** | Exact inventory ratio; LARP classification is the audit judgment |
+| Package and test Python retained | 345,332 lines in 375 files | Final audited forward-port inventory |
+| Python surface removed | **72.68% by physical lines; 68.54% by files** | Exact inventory ratio; LARP classification is the audit judgment |
 | Single `3d195c3` “updates” commit | 758,229 insertions in 849 files | Largest concentrated expansion |
 | Current-cleanup deletions born in that commit | 680,481 pre-cleanup lines across 643 files | Exact provenance cohort, not every deleted file |
 | Alberta Plan steps complete | **0/12** | Mechanism presence is not Step completion |
@@ -69,12 +69,12 @@ production-forward-port working tree:
 22739da test Python:       430,218 lines / 700 files
 combined:                1,264,156 lines / 1,192 files
 
-retained package Python:   216,669 lines / 165 files
-retained test Python:      127,112 lines / 208 files
-combined:                  343,781 lines / 373 files
+retained package Python:   217,376 lines / 166 files
+retained test Python:      127,956 lines / 209 files
+combined:                  345,332 lines / 375 files
 ```
 
-That is 920,375 lines (72.81%) and 819 files (68.71%) removed. Physical removal is not
+That is 918,824 lines (72.68%) and 817 files (68.54%) removed. Physical removal is not
 independently a semantic classification: the audit reached its 70–80% judgment by reviewing
 callers, tests, execution records, evidence authority, and narrative claims while deciding
 what to remove or retain. The range is a sensitivity judgment, not a statistical confidence
@@ -90,7 +90,7 @@ consistent with LLM-amplified code generation. They cannot prove who or what aut
 text, so this audit does not assign an “LLM-written” percentage and does not call that cohort
 an objective lower bound on LARP.
 
-The 72.81% figure also does **not** mean the retained 27.19% is scientifically validated. Scientific
+The 72.68% figure also does **not** mean the retained 27.32% is scientifically validated. Scientific
 completeness is measured separately: 0/12 complete Plan steps and 0/5 live-valid registered
 claims.
 
