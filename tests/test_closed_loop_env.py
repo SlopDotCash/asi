@@ -25,6 +25,24 @@ _INT32_MAX = 2**31 - 1
 _INVALID_PHASE_LENGTHS = (0, -1, False, True, 1.5, None, 2**31, 10**100)
 
 
+class _SpoofedReward:
+    """Non-real object whose ``__class__`` property impersonates ``float``."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 2)
+
+
+class _ExplodingRewardFloat(float):
+    """Float subclass whose untrusted ratio hook must never execute."""
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("untrusted reward ratio hook executed")
+
+
 def _rollout_two_state(
     env: SwitchingTwoStateMDP,
     policy: tuple[int, int],
@@ -307,6 +325,43 @@ class TestRiverSwim:
         """reward_right must be finite."""
         with pytest.raises(ValueError, match="reward_right must be finite"):
             RiverSwimMDP(RiverSwimConfig(reward_right=reward_right))
+
+    @pytest.mark.parametrize("field", ["reward_left", "reward_right"])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            np.bool_(False),
+            "0.5",
+            object(),
+            _SpoofedReward(),
+            _ExplodingRewardFloat(0.5),
+            1.0e100,
+            -1.0e100,
+        ],
+    )
+    def test_rewards_reject_untrusted_or_non_float32_values(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            RiverSwimMDP(RiverSwimConfig(**{field: value}))  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["reward_left", "reward_right"])
+    def test_rewards_are_canonicalized_directly_to_json_safe_float32(
+        self,
+        field: str,
+    ) -> None:
+        midpoint_plus = Fraction(1) + Fraction(1, 1 << 24) + Fraction(1, 1 << 60)
+        expected = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+
+        env = RiverSwimMDP(RiverSwimConfig(**{field: midpoint_plus}))  # type: ignore[arg-type]
+        stored = getattr(env.config, field)
+
+        assert type(stored) is float
+        assert stored == expected
+        assert np.isfinite(np.asarray(env.reward_tensor)).all()
 
     @pytest.mark.parametrize("initial_state", [1.5, True, 2.0])
     def test_non_integer_initial_state_raises(self, initial_state):

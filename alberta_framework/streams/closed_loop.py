@@ -37,6 +37,7 @@ The state and config records are immutable chex dataclasses.
 from __future__ import annotations
 
 import itertools
+from fractions import Fraction
 from numbers import Integral, Real
 from typing import Any, cast
 
@@ -47,6 +48,8 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 from jaxtyping import Float, Int
+
+from alberta_framework._float32 import round_real_to_float32
 
 # Reward phases for the switching payoff schedule.
 PHASE_A = 0
@@ -62,6 +65,41 @@ _TWO_STATE_ACTIONS = 2
 _INT32_MAX = 2**31 - 1
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _FLOAT32_TINY_RATIO = _FLOAT32_TINY.as_integer_ratio()
+_SUPPORTED_NUMPY_REWARD_TYPES: tuple[type[object], ...] = (
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+    np.float16,
+    np.float32,
+    np.float64,
+    np.longdouble,
+)
+
+
+def _normalized_finite_float32_reward(name: str, value: object) -> float:
+    """Return one hook-free host real canonicalized to the float32 reward sink."""
+    message = f"{name} must be finite, concrete, and representable in float32"
+    actual_type = type(value)
+    trusted = actual_type is int or actual_type is float or actual_type is Fraction
+    trusted = trusted or any(
+        actual_type is supported_type for supported_type in _SUPPORTED_NUMPY_REWARD_TYPES
+    )
+    if not trusted:
+        raise ValueError(message)
+    try:
+        narrowed = round_real_to_float32(cast(Real, value))
+    except Exception as error:
+        raise ValueError(message) from error
+    if not np.isfinite(narrowed):
+        raise ValueError(message)
+    return narrowed
 
 
 def _exact_real_ratio(name: str, value: object) -> tuple[int, int]:
@@ -415,6 +453,14 @@ class RiverSwimMDP:
             "p_right_down",
             config.p_right_down,
         )
+        reward_left = _normalized_finite_float32_reward(
+            "reward_left",
+            config.reward_left,
+        )
+        reward_right = _normalized_finite_float32_reward(
+            "reward_right",
+            config.reward_right,
+        )
         if p_right_up + p_right_down > 1.0:
             raise ValueError(
                 "p_right_up + p_right_down must not exceed 1, got "
@@ -431,19 +477,13 @@ class RiverSwimMDP:
                 "initial_state must be an integer, got "
                 f"{config.initial_state!r}"
             )
-        if not np.isfinite(config.reward_left):
-            raise ValueError(
-                f"reward_left must be finite, got {config.reward_left}"
-            )
-        if not np.isfinite(config.reward_right):
-            raise ValueError(
-                f"reward_right must be finite, got {config.reward_right}"
-            )
         config = cast(
             RiverSwimConfig,
             config.replace(
                 p_right_up=p_right_up,
                 p_right_down=p_right_down,
+                reward_left=reward_left,
+                reward_right=reward_right,
             ),
         )
         self._config: RiverSwimConfig = config
