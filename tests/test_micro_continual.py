@@ -198,6 +198,76 @@ class TestConfig:
         with pytest.raises(ValueError, match="n_regimes"):
             MicroStreamConfig(family="input_permutation", n_regimes=True)
 
+    @pytest.mark.parametrize(
+        "integer_type",
+        [
+            np.int8,
+            np.int16,
+            np.int32,
+            np.int64,
+            np.uint8,
+            np.uint16,
+            np.uint32,
+            np.uint64,
+            np.longlong,
+            np.ulonglong,
+        ],
+    )
+    def test_full_numpy_integer_family_is_canonicalized(self, integer_type):
+        config = MicroStreamConfig(
+            family="input_permutation",
+            n_regimes=integer_type(4),
+            regime_length=integer_type(25),
+            dim=integer_type(6),
+            n_classes=integer_type(3),
+            n_components=integer_type(2),
+            component_sparsity=integer_type(2),
+            recurrence_pool=integer_type(2),
+        )
+        assert all(
+            type(getattr(config, field)) is int
+            for field in (
+                "n_regimes",
+                "regime_length",
+                "dim",
+                "n_classes",
+                "n_components",
+                "component_sparsity",
+                "recurrence_pool",
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "n_regimes",
+            "regime_length",
+            "dim",
+            "n_classes",
+            "n_components",
+            "component_sparsity",
+            "recurrence_pool",
+        ],
+    )
+    def test_integer_subclasses_are_rejected_without_calling_hooks(self, field: str):
+        class HostileInt(int):
+            def __index__(self) -> int:
+                raise AssertionError("untrusted __index__ must not run")
+
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
+        with pytest.raises(ValueError, match=field):
+            tiny("input_permutation", **{field: HostileInt(2)})
+
+    def test_family_subclasses_are_rejected_without_calling_repr(self):
+        class HostileString(str):
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
+        with pytest.raises(ValueError, match="family"):
+            MicroStreamConfig(family=HostileString("input_permutation"))
+
     def test_recurrence_pool_bounds(self):
         with pytest.raises(ValueError, match="recurrence_pool"):
             tiny("recurrence", recurrence_pool=1)
@@ -239,12 +309,42 @@ class TestConfig:
                 n_regimes=60_000,
                 regime_length=60_000,
             )
-        # The boundary itself (exactly INT32_MAX) must still be accepted.
+        # Even an int32-representable schedule must be rejected when the
+        # complete materialized stream would exceed the byte budget.
+        with pytest.raises(ValueError, match="persistent stream bytes"):
+            MicroStreamConfig(
+                family="input_permutation",
+                n_regimes=1,
+                regime_length=2**31 - 1,
+                dim=1,
+                n_classes=1,
+                n_components=1,
+                component_sparsity=1,
+            )
+
+    def test_persistent_stream_byte_boundary_is_allocation_free(self):
+        # With each non-schedule dimension equal to one, the returned stream
+        # owns 4 * n_steps + 6 four-byte scalars.
+        last_valid_steps = ((2**31 - 1) // 4 - 6) // 4
         MicroStreamConfig(
             family="input_permutation",
             n_regimes=1,
-            regime_length=2**31 - 1,
+            regime_length=last_valid_steps,
+            dim=1,
+            n_classes=1,
+            n_components=1,
+            component_sparsity=1,
         )
+        with pytest.raises(ValueError, match="persistent stream bytes"):
+            MicroStreamConfig(
+                family="input_permutation",
+                n_regimes=1,
+                regime_length=last_valid_steps + 1,
+                dim=1,
+                n_classes=1,
+                n_components=1,
+                component_sparsity=1,
+            )
 
     def test_to_config_roundtrip(self):
         rebuilt = MicroStreamConfig(**TINY.to_config())

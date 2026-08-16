@@ -64,6 +64,7 @@ import argparse
 import json
 import logging
 import math
+import operator
 import os
 import platform
 import tempfile
@@ -74,7 +75,7 @@ from functools import lru_cache
 from numbers import Real
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -205,6 +206,51 @@ def _require_nonempty_string(value: object, *, context: str) -> str:
 # =============================================================================
 
 _INT32_MAX: int = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_positive_int32(value: object, name: str) -> int:
+    """Canonicalize one trusted host integer without invoking foreign hooks."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be a positive integer")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not 1 <= canonical <= _INT32_MAX:
+        raise ValueError(f"{name} must be a positive integer no greater than {_INT32_MAX}")
+    return canonical
+
+
+def _preflight_stream_resources(config: MicroStreamConfig) -> None:
+    """Bound the complete materialized stream's persistent numeric payload."""
+    steps = config.n_regimes * config.regime_length
+    persistent_scalars = (
+        2 * steps * config.dim  # x and base_x
+        + 2 * steps  # base_y and regime_ids
+        + config.n_classes * config.n_components * config.dim  # component_means
+        + config.dim  # dim_sigma
+        + config.n_regimes * config.dim  # permutations
+        + config.n_regimes * config.n_classes  # label_maps
+        + 2 * config.n_regimes  # scale_factors and regime_pool_ids
+    )
+    persistent_bytes = 4 * persistent_scalars
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError(
+            "derived persistent stream bytes must fit in signed int32; "
+            f"got {persistent_bytes}"
+        )
 
 
 @dataclass(frozen=True)
@@ -264,14 +310,20 @@ class MicroStreamConfig:
     recurrence_pool: int = 5
 
     def __post_init__(self) -> None:
-        if self.family not in FAMILIES:
-            raise ValueError(
-                f"family must be one of {FAMILIES}, got {self.family!r}"
+        if type(self.family) is not str or self.family not in FAMILIES:
+            raise ValueError(f"family must be one of {FAMILIES}")
+        for name in (
+            "n_regimes",
+            "regime_length",
+            "dim",
+            "n_classes",
+            "n_components",
+            "component_sparsity",
+            "recurrence_pool",
+        ):
+            object.__setattr__(
+                self, name, _require_positive_int32(getattr(self, name), name)
             )
-        for name in ("n_regimes", "regime_length", "dim", "n_classes", "n_components"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
         if self.n_regimes * self.regime_length > _INT32_MAX:
             # stream() casts the per-step regime index to dtype=jnp.int32
             # (``jnp.arange(n_steps, dtype=jnp.int32) // regime_length``); an
@@ -284,10 +336,6 @@ class MicroStreamConfig:
                 f"{self.n_regimes * self.regime_length} > {_INT32_MAX}"
             )
         sparsity = self.component_sparsity
-        if not isinstance(sparsity, int) or isinstance(sparsity, bool) or sparsity <= 0:
-            raise ValueError(
-                f"component_sparsity must be a positive integer, got {sparsity!r}"
-            )
         if sparsity > self.dim:
             raise ValueError(
                 f"component_sparsity ({sparsity}) must not exceed dim ({self.dim})"
@@ -330,13 +378,14 @@ class MicroStreamConfig:
             )
         if self.family == "recurrence":
             pool = self.recurrence_pool
-            if not isinstance(pool, int) or isinstance(pool, bool) or pool < 2:
-                raise ValueError(f"recurrence_pool must be an integer >= 2, got {pool!r}")
+            if pool < 2:
+                raise ValueError("recurrence_pool must be an integer >= 2")
             if pool > self.n_regimes:
                 raise ValueError(
                     f"recurrence_pool ({pool}) must not exceed n_regimes "
                     f"({self.n_regimes})"
                 )
+        _preflight_stream_resources(self)
 
     @property
     def n_steps(self) -> int:
