@@ -83,6 +83,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 from jax import Array
 
@@ -441,3 +442,29 @@ def test_recommendation_protocol_accounting() -> None:
     for proto in data["protocols"][0.0]:
         assert int(proto.accepted_count) == 0
         assert int(proto.rejected_count) == _NUM_STEPS
+
+
+def test_ia_configs_reject_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="n_demons"):
+        ExoCerebellumConfig(n_demons=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="obs_dim"):
+        ExoCerebellumConfig(obs_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_demons"):
+        ExoCerebellumConfig(n_demons=4.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="obs_dim"):
+        ExoCerebellumConfig(obs_dim=4.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="acceptance_ema_decay"):
+        RecommendationProtocolConfig(acceptance_ema_decay=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="acceptance_ema_decay"):
+        RecommendationProtocolConfig(acceptance_ema_decay=1.0 - 1e-10)
+
+
+def test_ia_configs_accept_and_canonicalize_numpy_integers() -> None:
+    cfg = ExoCerebellumConfig(
+        n_demons=np.int32(8),
+        obs_dim=np.uint16(16),
+    )
+    assert type(cfg.n_demons) is int
+    assert type(cfg.obs_dim) is int
+    assert cfg.n_demons == 8
+    assert cfg.obs_dim == 16

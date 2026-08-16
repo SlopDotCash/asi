@@ -38,17 +38,20 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import operator
 from collections.abc import Mapping
 from numbers import Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
 from alberta_framework._float32 import round_real_to_float32
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.normalizers import (
     _checked_lifetime_words_increment,
     _lifetime_counter_valid,
@@ -86,6 +89,30 @@ RECOMMENDATION_PROTOCOL_LIFETIME_COUNTER_NBYTES = 36
 RECOMMENDATION_PROTOCOL_LIFETIME_COUNTER_DELTA_NBYTES = 24
 
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _positive_float32_scalar(name: str, value: object) -> float:
@@ -137,10 +164,16 @@ class ExoCerebellumConfig:
     step_size: float = 0.05
 
     def __post_init__(self) -> None:
-        if self.n_demons <= 0:
-            raise ValueError("n_demons must be positive")
-        if self.obs_dim <= 0:
-            raise ValueError("obs_dim must be positive")
+        object.__setattr__(
+            self,
+            "n_demons",
+            _require_int32("n_demons", self.n_demons, minimum=1, maximum=65_536),
+        )
+        object.__setattr__(
+            self,
+            "obs_dim",
+            _require_int32("obs_dim", self.obs_dim, minimum=1, maximum=65_536),
+        )
         step_size = _positive_float32_scalar("step_size", self.step_size)
         object.__setattr__(self, "step_size", step_size)
 
@@ -705,8 +738,17 @@ class RecommendationProtocolConfig:
     acceptance_ema_decay: float = 0.95
 
     def __post_init__(self) -> None:
-        if not 0.0 <= self.acceptance_ema_decay < 1.0:
-            raise ValueError("acceptance_ema_decay must be in [0, 1)")
+        object.__setattr__(
+            self,
+            "acceptance_ema_decay",
+            validated_float32_scalar(
+                "acceptance_ema_decay",
+                self.acceptance_ema_decay,
+                lower=0.0,
+                upper=1.0,
+                upper_inclusive=False,
+            ),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
