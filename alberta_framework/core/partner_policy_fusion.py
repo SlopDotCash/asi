@@ -27,9 +27,10 @@ import dataclasses
 import hashlib
 import json
 import math
+import operator
 from collections.abc import Mapping
 from numbers import Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -65,12 +66,32 @@ _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 
 
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
 def _strict_positive_int(value: object, *, name: str, maximum: int = _INT32_MAX) -> int:
     """Return a strict positive integer within an explicit bound."""
 
-    if type(value) is not int or not 1 <= value <= maximum:
+    if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(f"{name} must be a strict integer in [1, {maximum}]")
-    return value
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not 1 <= canonical <= maximum:
+        raise ValueError(f"{name} must be a strict integer in [1, {maximum}]")
+    return canonical
 
 
 def _strict_float32(
@@ -199,20 +220,44 @@ class PartnerPolicyFusionConfig:
     def __post_init__(self) -> None:
         """Reject dynamic dimensions, ambiguous thresholds, and unsafe bounds."""
 
-        _strict_positive_int(self.max_partners, name="max_partners", maximum=1024)
-        _strict_positive_int(self.context_dim, name="context_dim", maximum=65_536)
-        _strict_positive_int(self.n_actions, name="n_actions", maximum=65_536)
-        _strict_positive_int(
-            self.max_message_horizon,
-            name="max_message_horizon",
-            maximum=_INT32_MAX,
+        object.__setattr__(
+            self,
+            "max_partners",
+            _strict_positive_int(self.max_partners, name="max_partners", maximum=1024),
         )
-        _strict_positive_int(
-            self.min_feedback_for_learned_routing,
-            name="min_feedback_for_learned_routing",
-            maximum=_INT32_MAX,
+        object.__setattr__(
+            self,
+            "context_dim",
+            _strict_positive_int(self.context_dim, name="context_dim", maximum=65_536),
         )
-        _strict_positive_int(self.counter_cap, name="counter_cap", maximum=_INT32_MAX)
+        object.__setattr__(
+            self,
+            "n_actions",
+            _strict_positive_int(self.n_actions, name="n_actions", maximum=65_536),
+        )
+        object.__setattr__(
+            self,
+            "max_message_horizon",
+            _strict_positive_int(
+                self.max_message_horizon,
+                name="max_message_horizon",
+                maximum=_INT32_MAX,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "min_feedback_for_learned_routing",
+            _strict_positive_int(
+                self.min_feedback_for_learned_routing,
+                name="min_feedback_for_learned_routing",
+                maximum=_INT32_MAX,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "counter_cap",
+            _strict_positive_int(self.counter_cap, name="counter_cap", maximum=_INT32_MAX),
+        )
         if self.min_feedback_for_learned_routing > self.counter_cap:
             raise ValueError("min_feedback_for_learned_routing exceeds counter_cap")
 

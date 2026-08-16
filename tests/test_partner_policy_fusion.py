@@ -885,3 +885,40 @@ def test_state_tamper_and_static_shape_mismatch_fail_strict_validation() -> None
                 feedback_counts=jnp.zeros((2,), dtype=jnp.int32),
             )
         )
+
+
+def test_partner_policy_fusion_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="max_partners"):
+        PartnerPolicyFusionConfig(max_partners=True, context_dim=4, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="context_dim"):
+        PartnerPolicyFusionConfig(max_partners=2, context_dim=True, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        PartnerPolicyFusionConfig(max_partners=2, context_dim=4, n_actions=True)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="max_partners"):
+        PartnerPolicyFusionConfig(max_partners=2.5, context_dim=4, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="context_dim"):
+        PartnerPolicyFusionConfig(max_partners=2, context_dim=4.5, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        PartnerPolicyFusionConfig(max_partners=2, context_dim=4, n_actions=2.5)  # type: ignore[arg-type]
+
+
+def test_partner_policy_fusion_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    config = PartnerPolicyFusionConfig(
+        max_partners=np.int32(2),
+        context_dim=np.int64(4),
+        n_actions=np.uint16(2),
+        max_message_horizon=np.int8(8),
+        min_feedback_for_learned_routing=np.uint32(4),
+        counter_cap=np.int32(1_000_000),
+    )
+    assert type(config.max_partners) is int
+    assert type(config.context_dim) is int
+    assert type(config.n_actions) is int
+    assert type(config.max_message_horizon) is int
+    assert type(config.min_feedback_for_learned_routing) is int
+    assert type(config.counter_cap) is int
+
+    assert config.max_partners == 2
+    assert config.context_dim == 4
+    assert config.n_actions == 2
