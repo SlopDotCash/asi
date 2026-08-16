@@ -30,14 +30,40 @@ nexting work.
 from __future__ import annotations
 
 import functools
-import math
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Float
+
+from alberta_framework.core._float32_scalars import validated_float32_scalar
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = int(cast(int, value))
+    if number < minimum or number > _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}]")
+    return number
 
 # =============================================================================
 # Types
@@ -116,21 +142,43 @@ class HistoryFeatureExtractor:
             include_raw: If True (default), the raw observation is
                 concatenated to the front of the augmented observation.
         """
-        if any(not math.isfinite(b) or (b < 0.0) or (b >= 1.0) for b in decay_rates):
-            raise ValueError(
-                f"decay_rates must be finite and lie in [0, 1); got {decay_rates}"
+        raw_dim = _require_int32("raw_dim", raw_dim, minimum=1)
+        if type(decay_rates) is not tuple:
+            raise ValueError("decay_rates must be an actual tuple")
+        canonical_decays = tuple(
+            validated_float32_scalar(
+                f"decay_rates[{index}]",
+                value,
+                lower=0.0,
+                upper=1.0,
+                upper_inclusive=False,
             )
+            for index, value in enumerate(decay_rates)
+        )
+        if type(include_raw) is not bool:
+            raise ValueError("include_raw must be an actual bool")
         if channels is None:
             channels = tuple(range(raw_dim))
-        if any(c < 0 or c >= raw_dim for c in channels):
+        elif type(channels) is not tuple:
+            raise ValueError("channels must be an actual tuple or None")
+        canonical_channels = tuple(
+            _require_int32(f"channels[{index}]", channel, minimum=0)
+            for index, channel in enumerate(channels)
+        )
+        if any(channel >= raw_dim for channel in canonical_channels):
             raise ValueError(
-                f"channels {channels} contains an index outside [0, {raw_dim})"
+                f"channels {canonical_channels} contains an index outside [0, {raw_dim})"
             )
 
         self._raw_dim = raw_dim
-        self._decay_rates = decay_rates
-        self._channels = channels
+        self._decay_rates = canonical_decays
+        self._channels = canonical_channels
         self._include_raw = include_raw
+        feature_dim = self.feature_dim()
+        if feature_dim < 1 or feature_dim > _INT32_MAX:
+            raise ValueError(
+                f"feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
+            )
 
     @property
     def raw_dim(self) -> int:
@@ -231,11 +279,17 @@ class HistoryFeatureExtractor:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> HistoryFeatureExtractor:
         """Reconstruct from config dict."""
-        config = dict(config)
-        config.pop("type", None)
+        payload = dict(config)
+        payload.pop("type", None)
+        decay_rates = payload["decay_rates"]
+        if type(decay_rates) is list:
+            decay_rates = tuple(decay_rates)
+        channels = payload["channels"]
+        if type(channels) is list:
+            channels = tuple(channels)
         return cls(
-            raw_dim=int(config["raw_dim"]),
-            decay_rates=tuple(config["decay_rates"]),
-            channels=tuple(config["channels"]) if config["channels"] is not None else None,
-            include_raw=bool(config["include_raw"]),
+            raw_dim=payload["raw_dim"],
+            decay_rates=decay_rates,
+            channels=channels,
+            include_raw=payload["include_raw"],
         )
