@@ -655,7 +655,7 @@ def test_step7_dyna_preserves_float32_boundaries() -> None:
         planning_steps=2**31 - 1,
         planning_rollout_depth=2**31 - 1,
         planning_warmup_steps=2**31 - 1,
-        planning_memory_size=2**31 - 1,
+        planning_memory_size=2**31 - 2,
         planning_importance_ratio_clip=f32_max,
         planning_priority_propagation=f32_max,
         planning_utility_step_size=1.0,
@@ -663,10 +663,13 @@ def test_step7_dyna_preserves_float32_boundaries() -> None:
     assert config.planning_steps == 2**31 - 1
     assert config.planning_rollout_depth == 2**31 - 1
     assert config.planning_warmup_steps == 2**31 - 1
-    assert config.planning_memory_size == 2**31 - 1
+    assert config.planning_memory_size == 2**31 - 2
     assert config.planning_importance_ratio_clip == f32_max
     assert config.planning_priority_propagation == f32_max
     assert config.planning_utility_step_size == 1.0
+
+    with pytest.raises(ValueError, match="planning_memory_size"):
+        Step7DynaConfig(planning_memory_size=2**31 - 1)
 
 
 def test_step7_dyna_exact_fraction_rounding() -> None:

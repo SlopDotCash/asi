@@ -219,7 +219,8 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         "planning_memory_size",
         config.planning_memory_size,
         minimum=1,
-        maximum=_INT32_MAX,
+        # ``memory_count + 1`` is computed in int32 before saturation.
+        maximum=_INT32_MAX - 1,
     )
     importance_clip = _require_positive_real(
         "planning_importance_ratio_clip",
