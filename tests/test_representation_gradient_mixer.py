@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections import UserDict
+from fractions import Fraction
+from types import MappingProxyType
 from typing import cast
 
 import jax
@@ -487,7 +490,18 @@ def test_gradient_mixer_canonicalizes_every_numpy_integer_type(
 
 def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
     class IntSubclass(int):
-        pass
+        def __index__(self) -> int:
+            raise AssertionError("subclass index must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("subclass repr must not run")
+
+    class NumpyIntSubclass(np.int64):
+        def __index__(self) -> int:
+            raise AssertionError("NumPy subclass index must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("NumPy subclass repr must not run")
 
     class ClassSpoof:
         @property
@@ -497,7 +511,16 @@ def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
         def __repr__(self) -> str:
             raise RuntimeError("repr must not run")
 
-    for value in (True, np.bool_(True), 0, -1, 1.0, IntSubclass(3), ClassSpoof()):
+    for value in (
+        True,
+        np.bool_(True),
+        0,
+        -1,
+        1.0,
+        IntSubclass(3),
+        NumpyIntSubclass(3),
+        ClassSpoof(),
+    ):
         with pytest.raises(ValueError, match="representation_dim"):
             RepresentationGradientMixerConfig(
                 representation_dim=value  # type: ignore[arg-type]
@@ -505,16 +528,187 @@ def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
 
 
 def test_gradient_mixer_allocation_contract_endpoints_are_allocation_free() -> None:
-    last_legal = (2**31 - 1) // 4
+    fixed_output_bytes = 12 * 4 + 12
+    last_legal = ((2**31 - 1) - fixed_output_bytes) // 4
     config = RepresentationGradientMixerConfig(representation_dim=last_legal)
     budget = config.resource_budget
 
     assert budget.representation_dim == last_legal
     assert budget.persistent_state_scalars == 0
     assert budget.persistent_state_bytes == 0
-    assert budget.output_float32_scalars == last_legal
-    assert budget.output_nbytes == 4 * last_legal
+    assert budget.output_float32_scalars == last_legal + 12
+    assert budget.output_bool_scalars == 12
+    assert budget.output_scalars == last_legal + 24
+    assert budget.output_nbytes == 4 * (last_legal + 12) + 12
+    assert budget.output_nbytes <= 2**31 - 1
+    assert 4 * (last_legal + 1 + 12) + 12 > 2**31 - 1
     json.dumps(budget.to_dict(), allow_nan=False)
 
     with pytest.raises(ValueError, match="representation_dim"):
         RepresentationGradientMixerConfig(representation_dim=last_legal + 1)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["full", "behavior_only", "world_only", "discard"],
+)
+def test_gradient_mixer_accepts_every_exact_mode(mode: GradientMixMode) -> None:
+    assert RepresentationGradientMixerConfig(representation_dim=1, mode=mode).mode == mode
+
+
+@pytest.mark.parametrize("normalization", ["none", "unit_l2"])
+@pytest.mark.parametrize(
+    "field", ["behavior_normalization", "grounded_world_normalization"]
+)
+def test_gradient_mixer_accepts_every_exact_normalization(
+    field: str, normalization: str
+) -> None:
+    config = RepresentationGradientMixerConfig(
+        representation_dim=1,
+        **{field: normalization},  # type: ignore[arg-type]
+    )
+    assert getattr(config, field) == normalization
+
+
+def test_gradient_mixer_rejects_string_subclasses_for_all_static_tokens() -> None:
+    class StringSubclass(str):
+        pass
+
+    for field, value in (
+        ("mode", StringSubclass("full")),
+        ("behavior_normalization", StringSubclass("none")),
+        ("grounded_world_normalization", StringSubclass("unit_l2")),
+    ):
+        with pytest.raises(ValueError, match=field):
+            RepresentationGradientMixerConfig(
+                representation_dim=1,
+                **{field: value},  # type: ignore[arg-type]
+            )
+
+
+@pytest.mark.parametrize(
+    ("field", "allow_zero"),
+    [
+        ("behavior_weight", True),
+        ("grounded_world_weight", True),
+        ("normalization_epsilon", False),
+        ("behavior_clip_norm", False),
+        ("grounded_world_clip_norm", False),
+        ("final_clip_norm", False),
+    ],
+)
+def test_gradient_mixer_float32_scalar_endpoints_and_canonicalization(
+    field: str, allow_zero: bool
+) -> None:
+    tiny = float(np.finfo(np.float32).tiny)
+    maximum = float(np.finfo(np.float32).max)
+    valid_values = [
+        tiny,
+        maximum,
+        *(np.dtype(code).type(0.5) for code in ("e", "f", "d", "g")),
+        Fraction(1, 4),
+    ]
+    if allow_zero:
+        valid_values.extend((0, -0.0))
+    for value in valid_values:
+        config = RepresentationGradientMixerConfig(
+            representation_dim=1,
+            **{field: value},  # type: ignore[arg-type]
+        )
+        stored = getattr(config, field)
+        assert type(stored) is float
+        if value == 0:
+            assert not np.signbit(stored)
+        assert RepresentationGradientMixerConfig.from_config(config.to_config()) == config
+
+    invalid_values: list[object] = [
+        True,
+        np.bool_(True),
+        -1,
+        float("nan"),
+        float("inf"),
+        Fraction(*tiny.as_integer_ratio()) / 2,
+        Fraction(int(maximum) + 1, 1),
+    ]
+    if not allow_zero:
+        invalid_values.append(0)
+    for value in invalid_values:
+        with pytest.raises(ValueError, match=field):
+            RepresentationGradientMixerConfig(
+                representation_dim=1,
+                **{field: value},  # type: ignore[arg-type]
+            )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "behavior_weight",
+        "grounded_world_weight",
+        "normalization_epsilon",
+        "behavior_clip_norm",
+        "grounded_world_clip_norm",
+        "final_clip_norm",
+    ],
+)
+def test_gradient_mixer_rejects_hostile_real_subclasses_as_value_errors(
+    field: str,
+) -> None:
+    class HostileFraction(Fraction):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise AssertionError("hostile ratio must be contained")
+
+        def __repr__(self) -> str:
+            raise AssertionError("hostile repr must not run")
+
+    with pytest.raises(ValueError, match=field):
+        RepresentationGradientMixerConfig(
+            representation_dim=1,
+            **{field: HostileFraction(1, 2)},  # type: ignore[arg-type]
+        )
+
+
+def test_gradient_mixer_from_config_accepts_mappings_and_rejects_token_subclasses() -> None:
+    config = RepresentationGradientMixerConfig(representation_dim=3)
+    payload = config.to_config()
+    for mapping in (MappingProxyType(payload), UserDict(payload)):
+        assert RepresentationGradientMixerConfig.from_config(mapping) == config
+
+    with pytest.raises(ValueError, match="mapping"):
+        RepresentationGradientMixerConfig.from_config(  # type: ignore[arg-type]
+            list(payload.items())
+        )
+
+    class MappingSpoof:
+        @property
+        def __class__(self) -> type[dict[object, object]]:  # type: ignore[override]
+            return dict
+
+        def __repr__(self) -> str:
+            raise AssertionError("mapping repr must not run")
+
+    with pytest.raises(ValueError, match="mapping"):
+        RepresentationGradientMixerConfig.from_config(  # type: ignore[arg-type]
+            MappingSpoof()
+        )
+
+    class StringSubclass(str):
+        pass
+
+    for field, value in (
+        ("schema", StringSubclass(cast(str, payload["schema"]))),
+        ("type", StringSubclass(cast(str, payload["type"]))),
+    ):
+        with pytest.raises(ValueError, match=field):
+            RepresentationGradientMixerConfig.from_config({**payload, field: value})
+
+
+def test_gradient_mixer_resource_budget_is_exported_from_public_packages() -> None:
+    from alberta_framework import RepresentationGradientMixerResourceBudget as RootBudget
+    from alberta_framework.core import (
+        RepresentationGradientMixerResourceBudget as CoreBudget,
+    )
+
+    budget = RepresentationGradientMixerConfig(representation_dim=3).resource_budget
+    assert isinstance(budget, RootBudget)
+    assert RootBudget is CoreBudget

@@ -451,6 +451,7 @@ from alberta_framework.core.representation_gradient_mixer import (
     GradientNormalization,
     RepresentationGradientMixDiagnostics,
     RepresentationGradientMixerConfig,
+    RepresentationGradientMixerResourceBudget,
     RepresentationGradientMixResult,
     mix_representation_gradients,
 )
@@ -774,6 +775,7 @@ __all__ = [
     "GradientNormalization",
     "RepresentationGradientMixDiagnostics",
     "RepresentationGradientMixerConfig",
+    "RepresentationGradientMixerResourceBudget",
     "RepresentationGradientMixResult",
     "mix_representation_gradients",
     # Dreaming / self-simulation

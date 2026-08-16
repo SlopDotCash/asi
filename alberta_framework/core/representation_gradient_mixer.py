@@ -11,10 +11,8 @@ call so matched evaluator arms keep the same input and diagnostic surface.
 from __future__ import annotations
 
 import dataclasses
-import math
 import operator
 from collections.abc import Mapping
-from numbers import Real
 from typing import Any, Literal, SupportsIndex, cast
 
 import chex
@@ -22,6 +20,10 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
+
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar_with_ratio,
+)
 
 GradientMixMode = Literal["full", "behavior_only", "world_only", "discard"]
 GradientNormalization = Literal["none", "unit_l2"]
@@ -36,20 +38,14 @@ _VALID_NORMALIZATIONS = frozenset({"none", "unit_l2"})
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _INT32_MAX = 2**31 - 1
-_MAX_REPRESENTATION_DIM = _INT32_MAX // 4
+_DIAGNOSTIC_FLOAT32_SCALARS = 12
+_OUTPUT_BOOL_SCALARS = 12
+_FIXED_OUTPUT_BYTES = 4 * _DIAGNOSTIC_FLOAT32_SCALARS + _OUTPUT_BOOL_SCALARS
+_MAX_REPRESENTATION_DIM = (_INT32_MAX - _FIXED_OUTPUT_BYTES) // 4
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
+        *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")),
     }
 )
 
@@ -71,19 +67,21 @@ def _strict_float32_scalar(
 ) -> float:
     """Validate a finite nonnegative scalar with a stable float32 encoding."""
 
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{label} must be a real scalar")
-    normalized = float(cast(Real, value))
-    if not math.isfinite(normalized) or normalized < 0.0:
-        raise ValueError(f"{label} must be finite and non-negative")
-    if not allow_zero and normalized == 0.0:
-        raise ValueError(f"{label} must be positive")
-    if normalized > _FLOAT32_MAX:
-        raise ValueError(f"{label} exceeds the finite float32 range")
-    if normalized != 0.0 and normalized < _FLOAT32_TINY:
+    normalized, numerator, denominator = validated_float32_scalar_with_ratio(
+        label,
+        value,
+        positive=not allow_zero,
+        lower=0.0 if allow_zero else None,
+        upper=_FLOAT32_MAX,
+    )
+    tiny_numerator, tiny_denominator = _FLOAT32_TINY.as_integer_ratio()
+    exact_is_subnormal = (
+        numerator != 0
+        and numerator * tiny_denominator < tiny_numerator * denominator
+    )
+    if exact_is_subnormal or (normalized != 0.0 and normalized < _FLOAT32_TINY):
         raise ValueError(f"{label} is below the normal float32 range")
-    return normalized
+    return 0.0 if numerator == 0 else normalized
 
 
 @dataclasses.dataclass(frozen=True)
@@ -134,20 +132,32 @@ class RepresentationGradientMixerConfig:
             or self.grounded_world_normalization not in _VALID_NORMALIZATIONS
         ):
             raise ValueError("grounded_world_normalization must be none or unit_l2")
-        _strict_float32_scalar(
-            self.behavior_weight,
+        object.__setattr__(
+            self,
             "behavior_weight",
-            allow_zero=True,
+            _strict_float32_scalar(
+                self.behavior_weight,
+                "behavior_weight",
+                allow_zero=True,
+            ),
         )
-        _strict_float32_scalar(
-            self.grounded_world_weight,
+        object.__setattr__(
+            self,
             "grounded_world_weight",
-            allow_zero=True,
+            _strict_float32_scalar(
+                self.grounded_world_weight,
+                "grounded_world_weight",
+                allow_zero=True,
+            ),
         )
-        _strict_float32_scalar(
-            self.normalization_epsilon,
+        object.__setattr__(
+            self,
             "normalization_epsilon",
-            allow_zero=False,
+            _strict_float32_scalar(
+                self.normalization_epsilon,
+                "normalization_epsilon",
+                allow_zero=False,
+            ),
         )
         for label, value in (
             ("behavior_clip_norm", self.behavior_clip_norm),
@@ -155,7 +165,11 @@ class RepresentationGradientMixerConfig:
             ("final_clip_norm", self.final_clip_norm),
         ):
             if value is not None:
-                _strict_float32_scalar(value, label, allow_zero=False)
+                object.__setattr__(
+                    self,
+                    label,
+                    _strict_float32_scalar(value, label, allow_zero=False),
+                )
 
     def to_config(self) -> dict[str, object]:
         """Return the complete JSON-compatible mixing rule."""
@@ -192,7 +206,12 @@ class RepresentationGradientMixerConfig:
     ) -> RepresentationGradientMixerConfig:
         """Strictly reconstruct only an exact :meth:`to_config` payload."""
 
-        payload = dict(config)
+        if not issubclass(type(config), Mapping):
+            raise ValueError("config must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("config mapping could not be read") from error
         expected = {
             "schema",
             "type",
@@ -209,9 +228,14 @@ class RepresentationGradientMixerConfig:
         }
         if set(payload) != expected:
             raise ValueError("config fields do not match the serialized schema")
-        if payload.pop("schema") != REPRESENTATION_GRADIENT_MIXER_CONFIG_SCHEMA:
+        schema = payload.pop("schema")
+        if (
+            type(schema) is not str
+            or schema != REPRESENTATION_GRADIENT_MIXER_CONFIG_SCHEMA
+        ):
             raise ValueError("config schema differs")
-        if payload.pop("type") != _CONFIG_TYPE:
+        config_type = payload.pop("type")
+        if type(config_type) is not str or config_type != _CONFIG_TYPE:
             raise ValueError("config type differs")
         return cls(**cast(dict[str, Any], payload))
 
@@ -223,19 +247,37 @@ class RepresentationGradientMixerConfig:
             representation_dim=self.representation_dim,
             persistent_state_scalars=0,
             persistent_state_bytes=0,
-            output_float32_scalars=self.representation_dim,
-            output_nbytes=4 * self.representation_dim,
+            output_float32_scalars=(
+                self.representation_dim + _DIAGNOSTIC_FLOAT32_SCALARS
+            ),
+            output_bool_scalars=_OUTPUT_BOOL_SCALARS,
+            output_scalars=(
+                self.representation_dim
+                + _DIAGNOSTIC_FLOAT32_SCALARS
+                + _OUTPUT_BOOL_SCALARS
+            ),
+            output_nbytes=(
+                4 * (self.representation_dim + _DIAGNOSTIC_FLOAT32_SCALARS)
+                + _OUTPUT_BOOL_SCALARS
+            ),
         )
 
 
 @dataclasses.dataclass(frozen=True)
 class RepresentationGradientMixerResourceBudget:
-    """Exact persistent-state and fixed-width output allocation accounting."""
+    """Exact persistent state and logical public-result payload accounting.
+
+    Output counts include the mixed gradient, diagnostics, and repeated
+    top-level decision fields. They intentionally exclude compiler-dependent
+    temporaries and do not assume that repeated result leaves alias buffers.
+    """
 
     representation_dim: int
     persistent_state_scalars: int
     persistent_state_bytes: int
     output_float32_scalars: int
+    output_bool_scalars: int
+    output_scalars: int
     output_nbytes: int
 
     def to_dict(self) -> dict[str, int]:
