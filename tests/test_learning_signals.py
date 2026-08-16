@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from fractions import Fraction
 
 import chex
 import jax
@@ -556,3 +557,59 @@ def test_learning_signals_config_rejects_spoofed_scalar_and_schema_types() -> No
 
 class _DictSubclass(dict[str, object]):
     """A mapping subtype that must not reach deserialization hooks."""
+
+
+def test_learning_signal_cross_scalar_order_holds_before_and_after_narrowing() -> None:
+    below = Fraction(1, 2) - Fraction(1, 2**80)
+    above = Fraction(1, 2) + Fraction(1, 2**80)
+    with pytest.raises(ValueError, match="fast_loss_decay"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            fast_loss_decay=below,
+            slow_loss_decay=above,
+        )
+    with pytest.raises(ValueError, match="variance_floor"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            variance_floor=above,
+            max_predicted_variance=Fraction(1, 2),
+        )
+
+
+def test_learning_signal_bounds_cover_actual_worst_case_operations() -> None:
+    with pytest.raises(ValueError, match="four times max_input_magnitude"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            max_input_magnitude=float.fromhex("0x1.fffffep+62"),
+            max_predicted_variance=np.finfo(np.float32).max,
+        )
+    with pytest.raises(ValueError, match="counter lifetime"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            max_normalized_residual=1.0e20,
+        )
+
+
+def test_learning_signal_stable_reductions_remain_finite_at_legal_large_bounds() -> None:
+    estimator = LearningSignalEstimator(
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            max_input_magnitude=1.0e18,
+            max_predicted_variance=1.0,
+        )
+    )
+    state = estimator.init()
+    next_state, signals = estimator.observe(
+        state,
+        jnp.asarray([[-1.0e18], [1.0e18]], dtype=jnp.float32),
+        jnp.ones((2, 1), dtype=jnp.float32),
+        jnp.asarray([-1.0e18], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    assert bool(jnp.isfinite(signals.epistemic_disagreement))
+    assert bool(jnp.isfinite(next_state.calibration_m2))

@@ -51,9 +51,13 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 
 _INT32_MAX = 2_147_483_647
+_FLOAT32_MAX = float.fromhex("0x1.fffffep+127")
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -78,6 +82,20 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _ratio_less(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] * right[1] < right[0] * left[1]
+
+
+def _ratio_less_equal(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] * right[1] <= right[0] * left[1]
+
+
+def _stable_mean(values: Array, *, axis: int | None = None) -> Array:
+    """Average bounded float32 values without overflowing the reduction sum."""
+    count = values.size if axis is None else values.shape[axis]
+    return jnp.sum(values / jnp.asarray(count, dtype=jnp.float32), axis=axis)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -160,41 +178,38 @@ class LearningSignalEstimatorConfig:
                 maximum=_INT32_MAX - 1,
             ),
         )
-        positive_fields = (
-            "variance_floor",
-            "change_z_threshold",
-            "change_temperature",
-            "calibration_scale_floor",
-            "max_normalized_residual",
-            "max_input_magnitude",
-            "max_predicted_variance",
-            "max_observed_loss",
-        )
-        for field_name in positive_fields:
-            object.__setattr__(
-                self,
-                field_name,
-                validated_float32_scalar(
-                    field_name,
-                    getattr(self, field_name),
-                    positive=True,
-                ),
+        positive_values = {
+            field_name: validated_float32_scalar_with_ratio(
+                field_name, getattr(self, field_name), positive=True
             )
-        fast_loss_decay = validated_float32_scalar(
+            for field_name in (
+                "variance_floor",
+                "change_z_threshold",
+                "change_temperature",
+                "calibration_scale_floor",
+                "max_normalized_residual",
+                "max_input_magnitude",
+                "max_predicted_variance",
+                "max_observed_loss",
+            )
+        }
+        fast_loss_decay, fast_n, fast_d = validated_float32_scalar_with_ratio(
             "fast_loss_decay",
             self.fast_loss_decay,
             lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
-        slow_loss_decay = validated_float32_scalar(
+        slow_loss_decay, slow_n, slow_d = validated_float32_scalar_with_ratio(
             "slow_loss_decay",
             self.slow_loss_decay,
             lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
-        if fast_loss_decay >= slow_loss_decay:
+        if not _ratio_less((fast_n, fast_d), (slow_n, slow_d)) or not (
+            fast_loss_decay < slow_loss_decay
+        ):
             raise ValueError("fast_loss_decay must be smaller than slow_loss_decay")
         change_decay = validated_float32_scalar(
             "change_decay",
@@ -206,8 +221,45 @@ class LearningSignalEstimatorConfig:
         object.__setattr__(self, "fast_loss_decay", fast_loss_decay)
         object.__setattr__(self, "slow_loss_decay", slow_loss_decay)
         object.__setattr__(self, "change_decay", change_decay)
-        if self.variance_floor > self.max_predicted_variance:
+        for field_name, (stored, _, _) in positive_values.items():
+            object.__setattr__(self, field_name, stored)
+        _, variance_floor_n, variance_floor_d = positive_values["variance_floor"]
+        _, max_variance_n, max_variance_d = positive_values["max_predicted_variance"]
+        if not _ratio_less_equal(
+            (variance_floor_n, variance_floor_d),
+            (max_variance_n, max_variance_d),
+        ) or self.variance_floor > self.max_predicted_variance:
             raise ValueError("variance_floor must not exceed max_predicted_variance")
+        max_input, max_input_n, max_input_d = positive_values["max_input_magnitude"]
+        float32_max_n, float32_max_d = _FLOAT32_MAX.as_integer_ratio()
+        total_variance_left = (
+            4 * max_input_n * max_input_n * max_variance_d
+            + max_variance_n * max_input_d * max_input_d
+        ) * float32_max_d
+        total_variance_right = (
+            float32_max_n * max_input_d * max_input_d * max_variance_d
+        )
+        if total_variance_left > total_variance_right or (
+            4.0 * max_input * max_input + self.max_predicted_variance > _FLOAT32_MAX
+        ):
+            raise ValueError(
+                "four times max_input_magnitude squared plus "
+                "max_predicted_variance must fit float32"
+            )
+        max_residual, max_residual_n, max_residual_d = positive_values[
+            "max_normalized_residual"
+        ]
+        calibration_left = (
+            _INT32_MAX * max_residual_n * max_residual_n * float32_max_d
+        )
+        calibration_right = float32_max_n * max_residual_d * max_residual_d
+        if calibration_left > calibration_right or (
+            _INT32_MAX * max_residual * max_residual > _FLOAT32_MAX
+        ):
+            raise ValueError(
+                "max_normalized_residual squared times the counter lifetime "
+                "must fit float32"
+            )
 
     def to_config(self) -> dict[str, Any]:
         """Return a JSON-compatible configuration."""
@@ -529,14 +581,14 @@ class LearningSignalEstimator:
         )
         safe_loss = jnp.clip(safe_loss, 0.0, self._config.max_observed_loss)
 
-        ensemble_mean = jnp.mean(safe_means, axis=0)
-        per_dimension_epistemic = jnp.mean(
+        ensemble_mean = _stable_mean(safe_means, axis=0)
+        per_dimension_epistemic = _stable_mean(
             jnp.square(safe_means - ensemble_mean[None, :]),
             axis=0,
         )
-        per_dimension_aleatoric = jnp.mean(safe_variances, axis=0)
-        epistemic_disagreement = jnp.mean(per_dimension_epistemic)
-        epistemic_surprise = jnp.mean(
+        per_dimension_aleatoric = _stable_mean(safe_variances, axis=0)
+        epistemic_disagreement = _stable_mean(per_dimension_epistemic)
+        epistemic_surprise = _stable_mean(
             per_dimension_epistemic
             / jnp.maximum(per_dimension_aleatoric, self._config.variance_floor)
         )
@@ -544,12 +596,14 @@ class LearningSignalEstimator:
             epistemic_surprise,
             self._config.max_normalized_residual,
         )
-        aleatoric_uncertainty = jnp.mean(per_dimension_aleatoric)
+        aleatoric_uncertainty = _stable_mean(per_dimension_aleatoric)
         total_variance = jnp.maximum(
             per_dimension_epistemic + per_dimension_aleatoric,
             self._config.variance_floor,
         )
-        normalized_residual = jnp.mean(jnp.square(safe_target - ensemble_mean) / total_variance)
+        normalized_residual = _stable_mean(
+            jnp.square(safe_target - ensemble_mean) / total_variance
+        )
         normalized_residual = jnp.minimum(
             normalized_residual,
             self._config.max_normalized_residual,

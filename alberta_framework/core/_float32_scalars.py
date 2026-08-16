@@ -35,6 +35,27 @@ def validated_float32_scalar(
             to a finite binary32, or leaves the declared domain either as the
             exact host value or once narrowed to binary32.
     """
+    stored, _, _ = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        positive=positive,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
+    return stored
+
+
+def validated_float32_scalar_with_ratio(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> tuple[float, int, int]:
+    """Validate once and also return the exact host numerator and denominator."""
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a finite real number")
@@ -79,7 +100,8 @@ def validated_float32_scalar(
         raise ValueError(f"{name} must be {domain}")
     if not narrowed_in_domain(narrowed):
         raise ValueError(f"{name} must remain {domain} once narrowed to float32")
-    return real if type(real) is float else narrowed
+    stored = real if type(real) is float else narrowed
+    return stored, numerator, denominator
 
 
 def _describe_domain(
@@ -96,4 +118,4 @@ def _describe_domain(
     return "finite"
 
 
-__all__ = ["validated_float32_scalar"]
+__all__ = ["validated_float32_scalar", "validated_float32_scalar_with_ratio"]
