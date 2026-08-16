@@ -129,10 +129,13 @@ def _preflight_static_resources(
     recommendation_state_bytes = 468 + 8 * n_demons
     augmented_state_scalars = 103 + 7 * n_demons
     augmented_state_bytes = 428 + 28 * n_demons
-    # Every retained result exposes six logical history fields: one float64
-    # reward vector, four int64 action vectors, and one bool acceptance vector.
-    per_condition_history_bytes = 41 * num_steps + 16 * n_phases - 8
-    per_seed_history_bytes = len(CONDITION_NAMES) * per_condition_history_bytes
+    # The recommendation scan retains 21 bytes/step of outputs while its
+    # uint32 split-key schedule is live. The three recommendation results each
+    # retain 41 bytes/step; the three plain results each retain 33 because one
+    # int64 sentinel vector is shared by two result fields. Every arm also
+    # retains float64 phase means and int64 recovery lengths.
+    recommendation_scan_and_key_bytes = 29 * num_steps
+    per_seed_history_bytes = 222 * num_steps + 96 * n_phases - 48
     per_seed_transition_work = len(CONDITION_NAMES) * num_steps
     scan_key_bytes = 8 * num_steps
     for name, value in (
@@ -142,6 +145,7 @@ def _preflight_static_resources(
         ("augmented_controller_state_scalars", augmented_state_scalars),
         ("augmented_controller_state_bytes", augmented_state_bytes),
         ("scan_key_bytes", scan_key_bytes),
+        ("recommendation_scan_and_key_bytes", recommendation_scan_and_key_bytes),
         ("per_seed_history_bytes", per_seed_history_bytes),
         ("per_seed_transition_work", per_seed_transition_work),
     ):
@@ -150,8 +154,8 @@ def _preflight_static_resources(
 
 def _preflight_run_resources(config: ContinualIAConfig, seed_count: int) -> None:
     """Bound retained histories, total transitions, and bootstrap peak arrays."""
-    per_condition_history_bytes = 41 * config.num_steps + 16 * config.n_phases - 8
-    total_history_bytes = len(CONDITION_NAMES) * seed_count * per_condition_history_bytes
+    per_seed_history_bytes = 222 * config.num_steps + 96 * config.n_phases - 48
+    total_history_bytes = seed_count * per_seed_history_bytes
     total_transition_work = len(CONDITION_NAMES) * seed_count * config.num_steps
     bootstrap_draw_count = config.bootstrap_resamples * seed_count
     bootstrap_peak_bytes = 16 * bootstrap_draw_count + 8 * config.bootstrap_resamples
@@ -1244,11 +1248,9 @@ def evaluate_ia_acceptance(
     """Evaluate every preregistered primary and coherent secondary check."""
 
     limits = IAAcceptanceThresholds() if thresholds is None else thresholds
-    expected_seeds = tuple(
-        range(
-            limits.evidence_seed_start,
-            limits.evidence_seed_start + limits.minimum_seed_count,
-        )
+    seed_schedule_matches = len(aggregate.seeds) == limits.minimum_seed_count and all(
+        seed == limits.evidence_seed_start + offset
+        for offset, seed in enumerate(aggregate.seeds)
     )
     identity = (
         aggregate.observe_only_exact_reward_identity
@@ -1265,7 +1267,7 @@ def evaluate_ia_acceptance(
         _minimum_check(
             "evidence_seed_schedule",
             "primary",
-            float(aggregate.seeds == expected_seeds),
+            float(seed_schedule_matches),
             1.0,
             "Promoted evidence must use exactly frozen seeds 30-59.",
         ),

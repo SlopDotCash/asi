@@ -621,6 +621,12 @@ def test_continual_ia_config_normalizes_hostile_ratio_failures() -> None:
 
 
 def test_continual_ia_config_preflights_derived_resources_without_allocating() -> None:
+    exact_boundary = ContinualIAConfig(
+        num_steps=9_000_000,
+        phase_length=9_000_000,
+        recovery_window=1,
+    )
+    assert exact_boundary.num_steps == 9_000_000
     with pytest.raises(ValueError, match="per_seed_history_bytes"):
         ContinualIAConfig(num_steps=10_000_000, phase_length=1, recovery_window=1)
     with pytest.raises(ValueError, match="controller_state"):
