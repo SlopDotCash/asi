@@ -14,8 +14,9 @@ rather than a route-selecting portfolio.
 from __future__ import annotations
 
 import functools
+import operator
 from dataclasses import asdict, dataclass
-from typing import Any, Literal, cast
+from typing import Any, Literal, SupportsIndex, cast
 
 import chex
 import jax
@@ -50,7 +51,23 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.uint16,
     np.uint32,
     np.uint64,
+    np.longlong,
+    np.ulonglong,
 )
+_UINT32_MAX: int = 4294967295
+
+
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
 
 
 def _require_real(name: str, value: object) -> float:
@@ -96,16 +113,16 @@ def _require_int(
     maximum: int | None = None,
 ) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(cast(int, value))
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{name} must be positive, got {value!r}")
+            raise ValueError(f"{name} must be positive, got invalid value")
         if minimum == 0:
-            raise ValueError(f"{name} must be non-negative, got {value!r}")
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+            raise ValueError(f"{name} must be non-negative, got invalid value")
+        raise ValueError(f"{name} must be >= {minimum}, got invalid value")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}, got invalid value")
     return number
 
 
@@ -295,7 +312,7 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     readout_mode = config.readout_mode
     if type(readout_mode) is not str:
         raise TypeError(
-            f"readout_mode must be an actual string, got {readout_mode!r}"
+            "readout_mode must be an actual string, got invalid value"
         )
     if readout_mode not in {"linear_mse", "softmax_ce"}:
         raise ValueError("readout_mode must be 'linear_mse' or 'softmax_ce'")
@@ -484,6 +501,22 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     object.__setattr__(
         config, "max_novelty_threshold", max_novelty_threshold
     )
+    if n_heads * slots_per_class > _INT32_MAX:
+        raise ValueError("UPGDMemoryConfig dimensions must fit signed int32")
+    if n_heads * slots_per_class * feature_dim > _INT32_MAX:
+        raise ValueError("UPGDMemoryConfig dimensions must fit signed int32")
+    total_means = n_heads * slots_per_class * feature_dim
+    fixed_state_scalars = 2 * n_heads * slots_per_class + 9
+    _require_float32_resource(
+        "UPGDMemoryConfig state",
+        vector_scalars=total_means,
+        fixed_scalars=fixed_state_scalars,
+    )
+    persistent_bytes = 4 * (total_means + fixed_state_scalars)
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("UPGDMemoryConfig state byte count must fit signed int32")
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("upgd memory allocation exceeds uint32 byte accounting")
 
 
 def _active_mse(prediction: Array, target: Array) -> Array:
