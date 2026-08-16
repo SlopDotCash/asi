@@ -419,11 +419,13 @@ def test_default_discounts_do_not_inherit_the_reward_dtype() -> None:
 )
 def test_config_rejects_non_finite_scalars(overrides: dict[str, object]) -> None:
     """A NaN scalar passes a bare `< 0` check and yields an all-rejected run scoring 0.0."""
-    config = ActionConditionedWorldModelConfig(
-        observation_dim=2, n_actions=2, hidden_sizes=(), **overrides  # type: ignore[arg-type]
-    )
     with pytest.raises(ValueError, match="finite"):
-        ActionConditionedWorldModel(config)
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            **overrides,  # type: ignore[arg-type]
+        )
 
 
 class _FloatSpoof:
@@ -474,13 +476,15 @@ def test_config_rejects_scalars_that_leave_the_float32_domain(
     overrides: dict[str, object], message: str
 ) -> None:
     """Host-finite values must also stay finite and in range once narrowed to float32."""
-    config = ActionConditionedWorldModelConfig(
-        observation_dim=2, n_actions=2, hidden_sizes=(), **overrides  # type: ignore[arg-type]
-    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(ValueError, match=message):
-            ActionConditionedWorldModel(config)
+            ActionConditionedWorldModelConfig(
+                observation_dim=2,
+                n_actions=2,
+                hidden_sizes=(),
+                **overrides,  # type: ignore[arg-type]
+            )
 
 
 def test_config_canonicalizes_real_scalars_and_preserves_builtin_floats() -> None:
@@ -535,6 +539,85 @@ def test_config_normalizes_real_comparison_hooks_and_conversion_failures() -> No
                 gamma=BrokenFraction(1, 2),
             )
         )
+
+
+@pytest.mark.parametrize("value", [True, 1.5, "2", object()])
+def test_config_rejects_non_integer_dimensions_without_repr(value: object) -> None:
+    with pytest.raises(ValueError, match="observation_dim"):
+        ActionConditionedWorldModelConfig(observation_dim=value, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        ActionConditionedWorldModelConfig(observation_dim=2, n_actions=value)  # type: ignore[arg-type]
+
+
+def test_config_canonicalizes_numpy_integer_family_and_complete_scalars() -> None:
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=np.uint64(3),
+        n_actions=np.int8(2),
+        hidden_sizes=(np.uint16(4),),
+        step_size=np.float64(0.02),
+        sparsity=np.float32(0.5),
+        leaky_relu_slope=Fraction(1, 10),
+    )
+    assert type(config.observation_dim) is int
+    assert type(config.n_actions) is int
+    assert config.hidden_sizes == (4,)
+    assert all(type(value) is int for value in config.hidden_sizes)
+    assert all(
+        type(value) is float
+        for value in (config.step_size, config.sparsity, config.leaky_relu_slope)
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"step_size": 0.0},
+        {"sparsity": -0.1},
+        {"sparsity": 1.1},
+        {"leaky_relu_slope": -0.1},
+        {"leaky_relu_slope": 1.1},
+        {"predict_delta": np.bool_(True)},
+        {"use_layer_norm": 1},
+        {"include_action_interactions": "yes"},
+    ],
+)
+def test_config_rejects_invalid_complete_public_fields(overrides: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        ActionConditionedWorldModelConfig(
+            observation_dim=2, n_actions=2, **overrides  # type: ignore[arg-type]
+        )
+
+
+def test_config_preflights_derived_dimensions_and_state() -> None:
+    with pytest.raises(ValueError, match="action_interaction_scalars"):
+        ActionConditionedWorldModelConfig(
+            observation_dim=50_000,
+            n_actions=50_000,
+            hidden_sizes=(),
+            include_action_interactions=True,
+        )
+    with pytest.raises(ValueError, match="combined_direct_state_bytes"):
+        ActionConditionedWorldModelConfig(
+            observation_dim=20_000,
+            n_actions=2,
+            hidden_sizes=(),
+        )
+
+
+def test_config_serialization_preserves_list_and_tuple_compatibility() -> None:
+    payload = ActionConditionedWorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        hidden_sizes=(),
+        observation_scale=(1.0, 2.0),
+    ).to_config()
+    assert ActionConditionedWorldModelConfig.from_config(payload).hidden_sizes == ()
+    payload["hidden_sizes"] = (3,)
+    payload["observation_scale"] = (1.0, 2.0)
+    assert ActionConditionedWorldModelConfig.from_config(payload).hidden_sizes == (3,)
+    payload["hidden_sizes"] = range(2)
+    with pytest.raises(ValueError, match="actual list or tuple"):
+        ActionConditionedWorldModelConfig.from_config(payload)
 
 
 @pytest.mark.parametrize("discount", [1.5, -0.5, 5.0])

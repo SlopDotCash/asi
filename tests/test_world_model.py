@@ -6,6 +6,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.world_model import (
@@ -323,3 +324,46 @@ def test_world_model_learns_action_conditional_deterministic_transition() -> Non
     assert float(last_mse) < float(first_mse)
     assert float(pred_a1.reward - pred_a0.reward) > 0.25
     assert float(pred_a1.next_observation[0] - pred_a0.next_observation[0]) > 0.5
+
+
+def test_world_model_config_validates_all_public_fields_and_resources() -> None:
+    config = WorldModelConfig(
+        observation_dim=np.int32(3),
+        n_actions=np.uint8(2),
+        action_dim=np.int64(1),
+        hidden_sizes=(np.uint16(4),),
+        step_size=np.float64(0.02),
+    )
+    assert type(config.observation_dim) is int
+    assert type(config.n_actions) is int
+    assert type(config.action_dim) is int
+    assert config.hidden_sizes == (4,)
+    assert type(config.step_size) is float
+
+    invalid = (
+        {"observation_dim": True},
+        {"n_actions": 2.5},
+        {"action_dim": False},
+        {"hidden_sizes": [4]},
+        {"step_size": 0.0},
+        {"sparsity": float("nan")},
+        {"leaky_relu_slope": 1.1},
+        {"use_layer_norm": np.bool_(True)},
+        {"predict_delta": 1},
+    )
+    for overrides in invalid:
+        with pytest.raises(ValueError):
+            WorldModelConfig(**{"observation_dim": 2, **overrides})  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="combined_direct_state_bytes"):
+        WorldModelConfig(observation_dim=20_000, n_actions=2, hidden_sizes=())
+
+
+def test_world_model_config_deserialization_preserves_sequence_compatibility() -> None:
+    payload = WorldModelConfig(observation_dim=2, hidden_sizes=()).to_config()
+    assert WorldModelConfig.from_config(payload).hidden_sizes == ()
+    payload["hidden_sizes"] = (3,)
+    assert WorldModelConfig.from_config(payload).hidden_sizes == (3,)
+    payload["hidden_sizes"] = range(2)
+    with pytest.raises(ValueError, match="actual list or tuple"):
+        WorldModelConfig.from_config(payload)
