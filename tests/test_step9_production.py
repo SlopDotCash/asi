@@ -9,6 +9,7 @@ constructible.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from typing import Any
 
 import chex
@@ -36,6 +37,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", 1.5),
     ("observation_dim", "4"),
     ("observation_dim", None),
+    ("observation_dim", 2**31),
     ("n_actions", True),
     ("n_actions", False),
     ("n_actions", 0),
@@ -43,6 +45,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_actions", 1.5),
     ("n_actions", "2"),
     ("n_actions", None),
+    ("n_actions", 2**31),
     ("model_hidden_sizes", (True,)),
     ("model_hidden_sizes", (False,)),
     ("model_hidden_sizes", (0,)),
@@ -51,6 +54,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("model_hidden_sizes", ("64",)),
     ("model_hidden_sizes", [64]),
     ("model_hidden_sizes", 64),
+    ("model_hidden_sizes", (2**31,)),
     ("model_step_size", float("nan")),
     ("model_step_size", float("inf")),
     ("model_step_size", float("-inf")),
@@ -59,6 +63,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("model_step_size", -1.0),
     ("model_step_size", "0.03"),
     ("model_step_size", None),
+    ("model_step_size", 1e100),
     ("model_sparsity", float("nan")),
     ("model_sparsity", float("inf")),
     ("model_sparsity", float("-inf")),
@@ -68,6 +73,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("model_sparsity", 1.1),
     ("model_sparsity", "0.9"),
     ("model_sparsity", None),
+    ("model_sparsity", 1e100),
     ("model_gamma", float("nan")),
     ("model_gamma", float("inf")),
     ("model_gamma", float("-inf")),
@@ -77,6 +83,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("model_gamma", 1.1),
     ("model_gamma", "0.99"),
     ("model_gamma", None),
+    ("model_gamma", 1e100),
     ("model_error_decay", float("nan")),
     ("model_error_decay", float("inf")),
     ("model_error_decay", float("-inf")),
@@ -86,12 +93,14 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("model_error_decay", 1.0),
     ("model_error_decay", "0.99"),
     ("model_error_decay", None),
+    ("model_error_decay", 1e100),
     ("dreaming_warmup_steps", True),
     ("dreaming_warmup_steps", False),
     ("dreaming_warmup_steps", -1),
     ("dreaming_warmup_steps", 1.5),
     ("dreaming_warmup_steps", "100"),
     ("dreaming_warmup_steps", None),
+    ("dreaming_warmup_steps", 2**31),
     ("dreaming_max_model_error", float("nan")),
     ("dreaming_max_model_error", float("inf")),
     ("dreaming_max_model_error", float("-inf")),
@@ -100,6 +109,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("dreaming_max_model_error", -0.1),
     ("dreaming_max_model_error", "1.0"),
     ("dreaming_max_model_error", None),
+    ("dreaming_max_model_error", 1e100),
     ("behavior_model_step_size", float("nan")),
     ("behavior_model_step_size", float("inf")),
     ("behavior_model_step_size", float("-inf")),
@@ -108,12 +118,14 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("behavior_model_step_size", -0.1),
     ("behavior_model_step_size", "0.05"),
     ("behavior_model_step_size", None),
+    ("behavior_model_step_size", 1e100),
     ("planning_budget", True),
     ("planning_budget", False),
     ("planning_budget", -1),
     ("planning_budget", 1.5),
     ("planning_budget", "1"),
     ("planning_budget", None),
+    ("planning_budget", 2**31),
     ("buffer_capacity", True),
     ("buffer_capacity", False),
     ("buffer_capacity", 0),
@@ -121,6 +133,8 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("buffer_capacity", 1.5),
     ("buffer_capacity", "64"),
     ("buffer_capacity", None),
+    ("buffer_capacity", 2**31 - 1),
+    ("buffer_capacity", 2**31),
     ("dream_rollout_horizon", True),
     ("dream_rollout_horizon", False),
     ("dream_rollout_horizon", 0),
@@ -128,6 +142,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("dream_rollout_horizon", 1.5),
     ("dream_rollout_horizon", "1"),
     ("dream_rollout_horizon", None),
+    ("dream_rollout_horizon", 2**31),
     ("dream_candidate_count", True),
     ("dream_candidate_count", False),
     ("dream_candidate_count", 0),
@@ -135,6 +150,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("dream_candidate_count", 1.5),
     ("dream_candidate_count", "1"),
     ("dream_candidate_count", None),
+    ("dream_candidate_count", 2**31),
     ("dream_surprise_weight", float("nan")),
     ("dream_surprise_weight", float("inf")),
     ("dream_surprise_weight", float("-inf")),
@@ -142,6 +158,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("dream_surprise_weight", False),
     ("dream_surprise_weight", "1.0"),
     ("dream_surprise_weight", None),
+    ("dream_surprise_weight", 1e100),
     ("dream_utility_weight", float("nan")),
     ("dream_utility_weight", float("inf")),
     ("dream_utility_weight", float("-inf")),
@@ -149,6 +166,7 @@ _INVALID_STEP9_FIELDS: tuple[tuple[str, Any], ...] = (
     ("dream_utility_weight", False),
     ("dream_utility_weight", "1.0"),
     ("dream_utility_weight", None),
+    ("dream_utility_weight", 1e100),
     ("model_include_action_interactions", 0),
     ("model_include_action_interactions", 1),
     ("model_include_action_interactions", "true"),
@@ -892,3 +910,77 @@ def test_step9_state_stays_finite_over_many_steps() -> None:
     )
     result = run_step9_smoke(cfg, steps=128, seed=7)
     assert result.finite
+
+
+def test_step9_config_rejects_float32_overflow() -> None:
+    with pytest.raises(ValueError, match="model_step_size"):
+        Step9DreamingConfig(model_step_size=1e100)
+    with pytest.raises(ValueError, match="dreaming_max_model_error"):
+        Step9DreamingConfig(dreaming_max_model_error=1e100)
+    with pytest.raises(ValueError, match="dream_surprise_weight"):
+        Step9DreamingConfig(dream_surprise_weight=1e100)
+
+
+def test_step9_config_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    config = Step9DreamingConfig(
+        observation_dim=2**31 - 1,
+        n_actions=2,
+        control=Step6DifferentialSARSAConfig(n_actions=2),
+        model_hidden_sizes=(2**31 - 1,),
+        model_step_size=f32_max,
+        model_sparsity=1.0,
+        model_gamma=1.0,
+        dreaming_warmup_steps=2**31 - 1,
+        dreaming_max_model_error=f32_max,
+        model_error_decay=1.0 - 2**-24,
+        behavior_model_step_size=f32_max,
+        planning_budget=2**31 - 1,
+        dream_rollout_horizon=2**31 - 1,
+        dream_candidate_count=2**31 - 1,
+        dream_surprise_weight=f32_max,
+        dream_utility_weight=f32_max,
+        buffer_capacity=2**31 - 2,
+    )
+    assert config.observation_dim == 2**31 - 1
+    assert config.model_hidden_sizes == (2**31 - 1,)
+    assert config.model_step_size == f32_max
+    assert config.buffer_capacity == 2**31 - 2
+
+
+def test_step9_config_exact_fraction_rounding() -> None:
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    config = Step9DreamingConfig(
+        model_step_size=midpoint,
+        model_sparsity=Fraction(9, 10),
+        model_gamma=Fraction(99, 100),
+        dreaming_max_model_error=midpoint,
+        model_error_decay=Fraction(99, 100),
+        behavior_model_step_size=midpoint,
+        dream_surprise_weight=midpoint,
+        dream_utility_weight=midpoint,
+    )
+    expected_f32 = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    assert config.model_step_size == expected_f32
+    assert config.dreaming_max_model_error == expected_f32
+    assert config.behavior_model_step_size == expected_f32
+    assert config.dream_surprise_weight == expected_f32
+    assert config.dream_utility_weight == expected_f32
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "32"}, "steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step9_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step9_smoke(**kwargs)

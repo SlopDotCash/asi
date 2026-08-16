@@ -25,7 +25,6 @@ floats; legal endpoints stay valid.
 from __future__ import annotations
 
 import functools
-import math
 from dataclasses import asdict, dataclass, field
 from numbers import Integral, Real
 from typing import Any, cast
@@ -34,8 +33,10 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
+from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAState,
@@ -146,7 +147,25 @@ class Step9DreamingConfig:
         """Return a JSON-serializable representation."""
         payload = asdict(self)
         payload["control"] = self.control.to_dict()
-        payload["model_hidden_sizes"] = list(self.model_hidden_sizes)
+        payload["observation_dim"] = int(self.observation_dim)
+        payload["n_actions"] = int(self.n_actions)
+        payload["model_hidden_sizes"] = [int(s) for s in self.model_hidden_sizes]
+        payload["model_step_size"] = float(self.model_step_size)
+        payload["model_sparsity"] = float(self.model_sparsity)
+        payload["model_include_action_interactions"] = bool(self.model_include_action_interactions)
+        payload["model_use_layer_norm"] = bool(self.model_use_layer_norm)
+        payload["model_gamma"] = float(self.model_gamma)
+        payload["dreaming_warmup_steps"] = int(self.dreaming_warmup_steps)
+        payload["dreaming_max_model_error"] = float(self.dreaming_max_model_error)
+        payload["model_error_decay"] = float(self.model_error_decay)
+        payload["behavior_model_step_size"] = float(self.behavior_model_step_size)
+        payload["planning_budget"] = int(self.planning_budget)
+        payload["dream_rollout_horizon"] = int(self.dream_rollout_horizon)
+        payload["dream_candidate_count"] = int(self.dream_candidate_count)
+        payload["dream_surprise_weight"] = float(self.dream_surprise_weight)
+        payload["dream_utility_weight"] = float(self.dream_utility_weight)
+        payload["buffer_capacity"] = int(self.buffer_capacity)
+        payload["dreams_update_average_reward"] = bool(self.dreams_update_average_reward)
         return payload
 
     @classmethod
@@ -176,34 +195,44 @@ class Step9DreamingConfig:
         )
 
 
-def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
+def _require_real(name: str, value: object) -> Any:
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return number
+    return value
+
+
+def _narrow_float32(name: str, value: Any) -> float:
+    """Narrow exactly as downstream JAX kernels do, without intermediate double-rounding."""
+    try:
+        narrowed = round_real_to_float32(value)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not bool(np.isfinite(narrowed)):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    if (type(value) is int or type(value) is float) and (bool(narrowed != 0.0) or value == 0):
+        return float(value)
+    return float(narrowed)
 
 
 def _require_nonneg_real(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if number < 0.0:
+    original = _require_real(name, value)
+    if original < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return number
+    return _narrow_float32(name, original)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number <= 1.0:
+    original = _require_real(name, value)
+    if original < 0.0 or original > 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return number
+    return _narrow_float32(name, original)
 
 
 def _require_half_open_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number < 1.0:
+    original = _require_real(name, value)
+    if original < 0.0 or original >= 1.0:
         raise ValueError(f"{name} must be in [0, 1), got {value!r}")
-    return number
+    return _narrow_float32(name, original)
 
 
 def _require_int(
@@ -213,7 +242,7 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
     number = int(value)
     if minimum is not None and number < minimum:
@@ -223,19 +252,29 @@ def _require_int(
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
 def _require_bool(name: str, value: object) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be a bool, got {value!r}")
-    return value
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    raise ValueError(f"{name} must be a bool, got {value!r}")
 
 
 def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
-    n_actions = _require_int("n_actions", config.n_actions, minimum=1)
+    observation_dim = _require_int(
+        "observation_dim",
+        config.observation_dim,
+        minimum=1,
+        maximum=_INT32_MAX,
+    )
+    n_actions = _require_int(
+        "n_actions",
+        config.n_actions,
+        minimum=1,
+        maximum=_INT32_MAX,
+    )
     if config.control.n_actions != n_actions:
         raise ValueError(
             f"control.n_actions ({config.control.n_actions}) must equal "
@@ -247,7 +286,12 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
             f"{config.model_hidden_sizes!r}"
         )
     model_hidden_sizes = tuple(
-        _require_int("model_hidden_sizes", size, minimum=1)
+        _require_int(
+            "model_hidden_sizes",
+            size,
+            minimum=1,
+            maximum=_INT32_MAX,
+        )
         for size in config.model_hidden_sizes
     )
     model_step_size = _require_nonneg_real("model_step_size", config.model_step_size)
@@ -280,11 +324,17 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         "behavior_model_step_size",
         config.behavior_model_step_size,
     )
-    planning_budget = _require_int("planning_budget", config.planning_budget, minimum=0)
+    planning_budget = _require_int(
+        "planning_budget",
+        config.planning_budget,
+        minimum=0,
+        maximum=_INT32_MAX,
+    )
     dream_rollout_horizon = _require_int(
         "dream_rollout_horizon",
         config.dream_rollout_horizon,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     # Candidate selection publishes selected indices as signed int32 values.
     dream_candidate_count = _require_int(
@@ -293,13 +343,13 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         minimum=1,
         maximum=_INT32_MAX,
     )
-    dream_surprise_weight = _require_real(
+    dream_surprise_weight = _narrow_float32(
         "dream_surprise_weight",
-        config.dream_surprise_weight,
+        _require_real("dream_surprise_weight", config.dream_surprise_weight),
     )
-    dream_utility_weight = _require_real(
+    dream_utility_weight = _narrow_float32(
         "dream_utility_weight",
-        config.dream_utility_weight,
+        _require_real("dream_utility_weight", config.dream_utility_weight),
     )
     # Buffer ``size`` and ``index`` are int32. Leaving one count below the
     # maximum keeps repeated full-buffer increments and modulo updates in range.
@@ -318,6 +368,28 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
     object.__setattr__(config, "model_hidden_sizes", model_hidden_sizes)
     object.__setattr__(config, "model_step_size", model_step_size)
     object.__setattr__(config, "model_sparsity", model_sparsity)
+    object.__setattr__(
+        config,
+        "model_include_action_interactions",
+        model_include_action_interactions,
+    )
+    object.__setattr__(config, "model_use_layer_norm", model_use_layer_norm)
+    object.__setattr__(config, "model_gamma", model_gamma)
+    object.__setattr__(config, "dreaming_warmup_steps", dreaming_warmup_steps)
+    object.__setattr__(config, "dreaming_max_model_error", dreaming_max_model_error)
+    object.__setattr__(config, "model_error_decay", model_error_decay)
+    object.__setattr__(config, "behavior_model_step_size", behavior_model_step_size)
+    object.__setattr__(config, "planning_budget", planning_budget)
+    object.__setattr__(config, "dream_rollout_horizon", dream_rollout_horizon)
+    object.__setattr__(config, "dream_candidate_count", dream_candidate_count)
+    object.__setattr__(config, "dream_surprise_weight", dream_surprise_weight)
+    object.__setattr__(config, "dream_utility_weight", dream_utility_weight)
+    object.__setattr__(config, "buffer_capacity", buffer_capacity)
+    object.__setattr__(
+        config,
+        "dreams_update_average_reward",
+        dreams_update_average_reward,
+    )
     object.__setattr__(
         config,
         "model_include_action_interactions",
@@ -796,8 +868,8 @@ def run_step9_smoke(
     seed: int = 0,
 ) -> Step9SmokeResult:
     """Run a tiny deterministic Step 9 dreaming integration probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step9DreamingConfig()
     agent, model, buffer = make_step9_components(cfg)
