@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import cast
 
 import chex
@@ -59,6 +60,90 @@ class TestValidation:
     def test_invalid_channel_index(self) -> None:
         with pytest.raises(ValueError, match="channels"):
             HistoryFeatureExtractor(raw_dim=4, channels=(0, 5))
+
+    @pytest.mark.parametrize("value", [True, 1.5, 0, 2**31, "4"])
+    def test_raw_dim_requires_supported_signed_int32(self, value: object) -> None:
+        with pytest.raises(ValueError, match="raw_dim"):
+            HistoryFeatureExtractor(raw_dim=value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "rates",
+        [
+            [0.5],
+            (True,),
+            (float("inf"),),
+            (1.0 - 1e-10,),
+            (1e100,),
+            (Fraction(-1, 10**50),),
+        ],
+    )
+    def test_decay_rates_require_exact_tuple_and_float32_domain(
+        self, rates: object
+    ) -> None:
+        with pytest.raises(ValueError, match="decay_rates"):
+            HistoryFeatureExtractor(raw_dim=2, decay_rates=rates)  # type: ignore[arg-type]
+
+    def test_scalar_class_spoofs_are_rejected_without_conversion(self) -> None:
+        class Spoof:
+            @property
+            def __class__(self) -> type[float]:  # type: ignore[override]
+                return float
+
+            def __float__(self) -> float:
+                raise RuntimeError("must not convert")
+
+        with pytest.raises(ValueError, match="raw_dim"):
+            HistoryFeatureExtractor(raw_dim=Spoof())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="decay_rates"):
+            HistoryFeatureExtractor(raw_dim=2, decay_rates=(Spoof(),))  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "channels",
+        [[0], (True,), (1.5,), ("0",), (2,)],
+    )
+    def test_channels_require_exact_tuple_of_in_range_integers(
+        self, channels: object
+    ) -> None:
+        with pytest.raises(ValueError, match="channels"):
+            HistoryFeatureExtractor(raw_dim=2, channels=channels)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("value", [1, 0, np.bool_(True), "true"])
+    def test_include_raw_requires_actual_bool(self, value: object) -> None:
+        with pytest.raises(ValueError, match="include_raw"):
+            HistoryFeatureExtractor(raw_dim=2, include_raw=value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("integer_type", [np.longlong, np.ulonglong])
+    def test_numpy_integer_scalars_are_canonicalized(
+        self, integer_type: type[np.integer[object]]
+    ) -> None:
+        extractor = HistoryFeatureExtractor(
+            raw_dim=integer_type(3),
+            channels=(integer_type(0), integer_type(2)),
+        )
+        assert type(extractor.raw_dim) is int
+        assert all(type(channel) is int for channel in extractor.channels)
+
+    def test_nonbuiltin_real_rates_are_canonicalized_for_json(self) -> None:
+        extractor = HistoryFeatureExtractor(
+            raw_dim=2,
+            decay_rates=(np.float32(0.5), Fraction(3, 4)),
+        )
+        assert all(type(rate) is float for rate in extractor.decay_rates)
+        assert extractor.to_config()["decay_rates"] == [0.5, 0.75]
+
+    def test_derived_feature_dim_requires_signed_int32(self) -> None:
+        with pytest.raises(ValueError, match="feature_dim"):
+            HistoryFeatureExtractor(
+                raw_dim=2**31 - 1,
+                decay_rates=(0.5,),
+                channels=(0,),
+            )
+        boundary = HistoryFeatureExtractor(
+            raw_dim=2**31 - 2,
+            decay_rates=(0.5,),
+            channels=(0,),
+        )
+        assert boundary.feature_dim() == 2**31 - 1
 
 
 class TestStep:

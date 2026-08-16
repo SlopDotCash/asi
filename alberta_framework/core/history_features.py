@@ -30,14 +30,17 @@ nexting work.
 from __future__ import annotations
 
 import functools
-import math
-from typing import Any
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Float
+
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 # =============================================================================
 # Types
@@ -59,6 +62,64 @@ class HistoryFeatureState:
 # =============================================================================
 # Extractor
 # =============================================================================
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_decay_rates(value: object) -> tuple[float, ...]:
+    if type(value) is not tuple:
+        raise ValueError("decay_rates must be an actual tuple")
+    rates = cast(tuple[object, ...], value)
+    return tuple(
+        validated_float32_scalar(
+            f"decay_rates[{index}]",
+            rate,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        for index, rate in enumerate(rates)
+    )
+
+
+def _require_channels(value: object, raw_dim: int) -> tuple[int, ...] | None:
+    if value is None:
+        return None
+    if type(value) is not tuple:
+        raise ValueError("channels must be an actual tuple or None")
+    return tuple(
+        _require_int32(
+            f"channels[{index}]",
+            channel,
+            minimum=0,
+            maximum=raw_dim - 1,
+        )
+        for index, channel in enumerate(cast(tuple[object, ...], value))
+    )
 
 
 class HistoryFeatureExtractor:
@@ -116,20 +177,28 @@ class HistoryFeatureExtractor:
             include_raw: If True (default), the raw observation is
                 concatenated to the front of the augmented observation.
         """
-        if any(not math.isfinite(b) or (b < 0.0) or (b >= 1.0) for b in decay_rates):
+        raw_dim = _require_int32(
+            "raw_dim", raw_dim, minimum=1, maximum=_INT32_MAX
+        )
+        decay_rates = _require_decay_rates(decay_rates)
+        canonical_channels = _require_channels(channels, raw_dim)
+        if type(include_raw) is not bool:
+            raise ValueError("include_raw must be an actual bool")
+
+        channel_count = raw_dim if canonical_channels is None else len(canonical_channels)
+        feature_dim = channel_count * len(decay_rates)
+        if include_raw:
+            feature_dim += raw_dim
+        if feature_dim < 1 or feature_dim > _INT32_MAX:
             raise ValueError(
-                f"decay_rates must be finite and lie in [0, 1); got {decay_rates}"
+                f"feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
             )
-        if channels is None:
-            channels = tuple(range(raw_dim))
-        if any(c < 0 or c >= raw_dim for c in channels):
-            raise ValueError(
-                f"channels {channels} contains an index outside [0, {raw_dim})"
-            )
+        if canonical_channels is None:
+            canonical_channels = tuple(range(raw_dim))
 
         self._raw_dim = raw_dim
         self._decay_rates = decay_rates
-        self._channels = channels
+        self._channels = canonical_channels
         self._include_raw = include_raw
 
     @property
@@ -233,9 +302,15 @@ class HistoryFeatureExtractor:
         """Reconstruct from config dict."""
         config = dict(config)
         config.pop("type", None)
+        raw_rates = config["decay_rates"]
+        if type(raw_rates) is list:
+            raw_rates = tuple(raw_rates)
+        raw_channels = config["channels"]
+        if type(raw_channels) is list:
+            raw_channels = tuple(raw_channels)
         return cls(
-            raw_dim=int(config["raw_dim"]),
-            decay_rates=tuple(config["decay_rates"]),
-            channels=tuple(config["channels"]) if config["channels"] is not None else None,
-            include_raw=bool(config["include_raw"]),
+            raw_dim=config["raw_dim"],
+            decay_rates=raw_rates,
+            channels=raw_channels,
+            include_raw=config["include_raw"],
         )
