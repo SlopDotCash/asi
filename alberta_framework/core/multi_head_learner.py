@@ -129,6 +129,30 @@ def _require_int32_product(name: str, left: int, right: int) -> int:
     return left * right
 
 
+def _validate_direct_state_resources(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> None:
+    """Preflight aggregate arrays allocated directly by ``init``."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameter_count = n_heads * (final_width + 1)
+    parameter_count = trunk_parameter_count + head_parameter_count
+    direct_state_scalars = 2 * parameter_count + sum(hidden_sizes) + 3
+    for name, value in (
+        ("parameter_count", parameter_count),
+        ("direct_state_scalars", direct_state_scalars),
+        ("direct_state_bytes", 4 * direct_state_scalars),
+    ):
+        if not 1 <= value <= _INT32_MAX:
+            raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so IEEE ``0 * inf`` does not become NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -442,6 +466,7 @@ class MultiHeadMLPLearner:
         _require_int32_product("per_head_metrics_scalars", n_heads, 3)
         if hidden_sizes:
             _require_int32_product("head_weight_scalars", n_heads, hidden_sizes[-1])
+        _validate_direct_state_resources(n_heads, hidden_sizes, feature_dim=1)
         if per_head_gamma_lamda is not None and type(per_head_gamma_lamda) is not tuple:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
@@ -647,6 +672,7 @@ class MultiHeadMLPLearner:
             )
         else:
             _require_int32_product("linear_head_weight_scalars", self._n_heads, feature_dim)
+        _validate_direct_state_resources(self._n_heads, self._hidden_sizes, feature_dim)
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
 

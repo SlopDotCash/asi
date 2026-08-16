@@ -183,11 +183,11 @@ class TestMultiHeadInit:
         with pytest.raises(ValueError, match="per_head_metrics"):
             MultiHeadMLPLearner(n_heads=(2**31 - 1) // 3 + 1, hidden_sizes=())
 
-        boundary = MultiHeadMLPLearner(
-            n_heads=1,
-            hidden_sizes=(1, 2**31 - 1),
-        )
-        assert boundary.hidden_sizes == (1, 2**31 - 1)
+        with pytest.raises(ValueError, match="parameter_count"):
+            MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1, 2**31 - 1))
+
+        boundary = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1, 1_000))
+        assert boundary.hidden_sizes == (1, 1_000)
 
     def test_init_preflights_derived_allocations_before_sparse_init(
         self, monkeypatch: pytest.MonkeyPatch
@@ -213,8 +213,16 @@ class TestMultiHeadInit:
 
         boundary = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1,))
         with pytest.raises(AssertionError, match="allocator reached"):
-            boundary.init(2**31 - 1, jr.key(0))
+            boundary.init(268_435_450, jr.key(0))
         assert calls == 1
+
+    def test_aggregate_direct_state_resources_fail_before_allocation(self):
+        with pytest.raises(ValueError, match="direct_state_bytes"):
+            MultiHeadMLPLearner(n_heads=134_217_728, hidden_sizes=())
+
+        learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=())
+        with pytest.raises(ValueError, match="direct_state_bytes"):
+            learner.init(feature_dim=300_000_000, key=jr.key(0))
 
     def test_trunk_shapes_single_hidden(self):
         """Trunk with one hidden layer has correct shapes."""
