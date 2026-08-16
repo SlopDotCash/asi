@@ -84,9 +84,10 @@ def _strict_float32(
 ) -> float:
     """Return a finite normal float32-compatible configuration scalar."""
 
-    if not isinstance(value, Real) or isinstance(value, bool):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real scalar, not boolean")
-    normalized = float(value)
+    normalized = float(cast(Real, value))
     if not math.isfinite(normalized) or abs(normalized) > _FLOAT32_MAX:
         raise ValueError(f"{name} must be finite and float32-compatible")
     if positive and (normalized < 0.0 or (not allow_zero and normalized == 0.0)):

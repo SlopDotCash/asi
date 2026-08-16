@@ -457,14 +457,12 @@ class ActionConditionedWorldModel:
         discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
         return jnp.concatenate([normalized_delta, reward_target, discount_target], axis=0)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def predict(
+    def _prediction_and_raw_diagnostics(
         self,
         state: ActionConditionedWorldModelState,
         observation: Array,
         action: Array,
-    ) -> WorldModelPrediction:
-        """Predict the next observation, reward, and discount."""
+    ) -> tuple[WorldModelPrediction, Array, Array]:
         inputs, inputs_valid, safe_obs = self._safe_input_features(
             observation,
             action,
@@ -477,7 +475,7 @@ class ActionConditionedWorldModel:
             -self._config.max_delta_scale,
             self._config.max_delta_scale,
         )
-        next_observation = jnp.where(
+        decoded_next_observation = jnp.where(
             self._config.predict_delta,
             safe_obs + normalized_delta * obs_scale,
             normalized_delta * obs_scale,
@@ -486,14 +484,16 @@ class ActionConditionedWorldModel:
         has_bounds = state.step_count > 0
         low = state.observation_min - self._config.observation_clip_margin
         high = state.observation_max + self._config.observation_clip_margin
-        clipped_next = jnp.clip(next_observation, low, high)
-        next_observation = jnp.where(has_bounds, clipped_next, next_observation)
+        clipped_next = jnp.clip(decoded_next_observation, low, high)
+        next_observation = jnp.where(
+            has_bounds, clipped_next, decoded_next_observation
+        )
 
-        reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
+        raw_reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
         reward_low = state.reward_min - self._config.observation_clip_margin
         reward_high = state.reward_max + self._config.observation_clip_margin
-        clipped_reward = jnp.clip(reward, reward_low, reward_high)
-        reward = jnp.where(has_bounds, clipped_reward, reward)
+        clipped_reward = jnp.clip(raw_reward, reward_low, reward_high)
+        reward = jnp.where(has_bounds, clipped_reward, raw_reward)
 
         discount = jnp.clip(
             raw_predictions[self._config.observation_dim + 1],
@@ -510,6 +510,12 @@ class ActionConditionedWorldModel:
             invalid_observation,
         )
         reward = jnp.where(inputs_valid, reward, invalid_scalar)
+        decoded_next_observation = jnp.where(
+            inputs_valid,
+            decoded_next_observation,
+            invalid_observation,
+        )
+        raw_reward = jnp.where(inputs_valid, raw_reward, invalid_scalar)
         discount = jnp.where(inputs_valid, discount, invalid_scalar)
         raw_predictions = jnp.where(
             inputs_valid,
@@ -517,12 +523,29 @@ class ActionConditionedWorldModel:
             invalid_raw,
         )
 
-        return WorldModelPrediction(
-            next_observation=next_observation,
-            reward=reward,
-            raw_predictions=raw_predictions,
-            discount=discount,
+        return (
+            WorldModelPrediction(
+                next_observation=next_observation,
+                reward=reward,
+                raw_predictions=raw_predictions,
+                discount=discount,
+            ),
+            decoded_next_observation,
+            raw_reward,
         )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def predict(
+        self,
+        state: ActionConditionedWorldModelState,
+        observation: Array,
+        action: Array,
+    ) -> WorldModelPrediction:
+        """Predict the guarded next observation, reward, and discount."""
+        prediction, _, _ = self._prediction_and_raw_diagnostics(
+            state, observation, action
+        )
+        return prediction
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -572,19 +595,19 @@ class ActionConditionedWorldModel:
             inputs_valid, next_obs, jnp.zeros_like(next_obs)
         )
 
-        prediction = self.predict(state, safe_obs, safe_action)
+        prediction, decoded_next_observation, decoded_reward = (
+            self._prediction_and_raw_diagnostics(state, safe_obs, safe_action)
+        )
         targets = self.targets(
             safe_obs, safe_reward, safe_discount, safe_next_obs
         )
         inputs = self.input_features(safe_obs, safe_action)
         learner_result = self._learner.update(state.learner_state, inputs, targets)
 
-        observation_mse = jnp.mean(
-            (prediction.next_observation - safe_next_obs) ** 2
-        )
-        reward_error = prediction.reward - safe_reward
+        next_observation_errors = decoded_next_observation - safe_next_obs
+        observation_mse = jnp.mean(next_observation_errors**2)
+        reward_error = decoded_reward - safe_reward
         discount_error = prediction.discount - safe_discount
-        next_observation_errors = prediction.next_observation - safe_next_obs
         prediction_error = observation_mse + reward_error**2 + discount_error**2
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)

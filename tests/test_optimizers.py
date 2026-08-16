@@ -136,6 +136,21 @@ class TestIDBD:
         )
         assert bool(jnp.all(jnp.isfinite(recovered.new_state.log_step_sizes)))
 
+    def test_collapsed_h_decay_does_not_multiply_inf_traces(self) -> None:
+        """When 1 - alpha x^2 collapses to 0, leftover inf h-traces are 0*inf."""
+        optimizer = IDBD(initial_step_size=0.01, meta_step_size=0.0)
+        state = optimizer.init(feature_dim=2)
+        observation = jnp.array([10.0, 10.0], dtype=jnp.float32)
+        state = state.replace(traces=jnp.full(2, jnp.inf, dtype=jnp.float32))
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = optimizer.update(state, jnp.array(1.0, dtype=jnp.float32), observation)
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.new_state.traces)
+        expected = jnp.exp(state.log_step_sizes) * observation
+        chex.assert_trees_all_close(result.new_state.traces, expected)
+
     def test_finite_overflow_product_keeps_meta_update_zero(self):
         """|error * x| overflowing float32 must not NaN a zero-trace channel.
 
@@ -390,6 +405,26 @@ class TestAutostep:
         chex.assert_trees_all_equal(result.weight_delta, jnp.zeros(2))
         chex.assert_trees_all_equal(result.bias_delta, jnp.array(0.0))
         chex.assert_trees_all_equal(result.new_state, state)
+
+    def test_collapsed_h_decay_does_not_multiply_inf_traces(self) -> None:
+        """When 1 - alpha z^2 collapses to 0, leftover inf h-traces are 0*inf.
+
+        The linear Autostep path jointly normalizes bias into M, so the
+        collapse is exact on the bias-free parameter path.
+        """
+        optimizer = Autostep(initial_step_size=0.01, meta_step_size=0.0)
+        state = optimizer.init_for_shape((1,))
+        state = state.replace(traces=jnp.full(1, jnp.inf, dtype=jnp.float32))
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = optimizer.update_from_gradient_checked(
+            state,
+            jnp.array([10.0], dtype=jnp.float32),
+            error=jnp.array(1.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.new_state.traces)
 
     def test_nonfinite_guards_compile_under_jit(self):
         import jax

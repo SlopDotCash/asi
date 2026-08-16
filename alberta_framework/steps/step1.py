@@ -24,7 +24,8 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.baseline_optimizers import NADALINE, AdaGain, Adam, RMSprop
 from alberta_framework.core.learners import LinearLearner, run_learning_loop
 from alberta_framework.core.normalizers import (
@@ -62,65 +63,72 @@ _VALID_OPTIMIZERS: frozenset[str] = frozenset(
 )
 _VALID_NORMALIZERS: frozenset[str] = frozenset({"none", "ema", "welford", "streaming_batch"})
 _VALID_STREAMS: frozenset[str] = frozenset({"alberta", "xdist_shift"})
+_INT32_MAX: int = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> tuple[float, float]:
-    """Return a JSON scalar and the value consumed by float32 JAX sinks."""
-    if isinstance(value, bool) or not isinstance(value, Real):
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
     try:
-        narrowed = round_real_to_float32(value)
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
     except (FloatingPointError, OverflowError, TypeError, ValueError):
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
     if not math.isfinite(narrowed):
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
     if not isinstance(value, (int, float, np.floating)):
-        return narrowed, narrowed
+        return narrowed
     try:
         number = float(value)
     except (OverflowError, TypeError, ValueError):
-        raise ValueError(f"{name} must be a finite real number, got {value!r}") from None
+        return narrowed
     if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-
-    # Preserve ordinary built-in/NumPy-float serialization when it narrows to
-    # exactly the checked sink value.  Extended-precision inputs at a rounding
-    # boundary must instead retain the direct float32 value: routing them
-    # through binary64 can double-round a finite float32 to infinity.
+        raise ValueError("scalar must be finite")
     with np.errstate(invalid="ignore", over="ignore", under="ignore"):
         renarrowed = np.asarray(number, dtype=np.float32)
     if not bool(np.array_equal(narrowed, renarrowed)):
         number = float(narrowed)
-    return number, float(narrowed)
+    return number
+
+
+def _require_real(name: str, value: object) -> tuple[float, float]:
+    """Return a JSON scalar and the value consumed by float32 JAX sinks."""
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed), narrowed
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    if value < 0.0 or not value <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    number, _ = _require_real(name, value)
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    if value < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    number, _ = _require_real(name, value)
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    if value <= 0.0:
-        raise ValueError(f"{name} must be positive, got {value!r}")
-    number, narrowed = _require_real(name, value)
-    if narrowed <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must remain positive in float32, got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 # Exact trusted integer scalar types, compared by identity in _require_int.
@@ -137,7 +145,7 @@ def _require_int(
     value: object,
     *,
     minimum: int | None = None,
-    exclusive_maximum: int | None = None,
+    maximum: int | None = None,
 ) -> int:
     # Identity-only admission: an actual ``int`` subclass can override
     # ``__int__``/``__index__``/``__repr__`` with hostile hooks, so anything
@@ -153,14 +161,14 @@ def _require_int(
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
-    if exclusive_maximum is not None and number >= exclusive_maximum:
-        raise ValueError(f"{name} must be smaller than int32 max, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
     return number
 
 
 def _validate_step1_config(config: Step1KernelConfig) -> None:
-    feature_dim = _require_int("feature_dim", config.feature_dim, minimum=1)
-    num_relevant = _require_int("num_relevant", config.num_relevant, minimum=1)
+    feature_dim = _require_int("feature_dim", config.feature_dim, minimum=1, maximum=_INT32_MAX)
+    num_relevant = _require_int("num_relevant", config.num_relevant, minimum=1, maximum=_INT32_MAX)
     if num_relevant > feature_dim:
         raise ValueError(
             f"num_relevant ({num_relevant}) must be <= feature_dim ({feature_dim})"
@@ -369,12 +377,9 @@ def run_step1_smoke(
     the production kernel can initialize, compile, update online, and return
     finite metrics.
     """
-    steps = _require_int("steps", steps, minimum=1)
-    final_window = _require_int("final_window", final_window, minimum=1)
-    if final_window > steps:
-        raise ValueError(
-            f"final_window must be in [1, steps], got {final_window}"
-        )
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
+    final_window = _require_int("final_window", final_window, minimum=1, maximum=steps)
     cfg = config or Step1KernelConfig()
     learner = make_step1_learner(cfg)
     stream = make_step1_stream(cfg)

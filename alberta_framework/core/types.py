@@ -668,7 +668,8 @@ class TraceMode(enum.Enum):
 def _normalized_gvf_probability(name: str, value: object) -> float:
     """Return one static GVF probability with stable float32 semantics."""
     message = f"{name} must be a real non-boolean scalar in [0, 1]"
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
+    actual_type = type(value)
+    if issubclass(actual_type, (bool, np.bool_)) or not issubclass(actual_type, Real):
         raise ValueError(message)
     try:
         comparable = cast(Any, value)
@@ -676,7 +677,7 @@ def _normalized_gvf_probability(name: str, value: object) -> float:
             raise ValueError(message)
         if comparable != 0 and comparable < _FLOAT32_TINY:
             raise ValueError(f"{name} must be zero or a normal float32 value in [0, 1]")
-        normalized = float(value)
+        normalized = float(comparable)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(message) from exc
     if not math.isfinite(normalized) or not 0.0 <= normalized <= 1.0:

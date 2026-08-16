@@ -273,3 +273,59 @@ def test_gtd_backend_masks_nan_cumulants() -> None:
     assert float(jnp.linalg.norm(result.state.head_w[1] - warm.state.head_w[1])) > 0.0
     assert bool(jnp.isnan(result.td_errors[0]))
     assert bool(jnp.isfinite(result.correction_norms[0]))
+
+
+def test_gtd_backend_rejects_non_finite_cumulant() -> None:
+    """An inf (not NaN) cumulant must reject that head without poisoning it."""
+    learner = NonlinearSharedGTDHordeLearner(
+        _spec(gammas=(0.8, 0.8)),
+        hidden_size=4,
+        primary_step_size=0.01,
+        secondary_step_size=0.01,
+        ratio_clip=10.0,
+    )
+    state = learner.init(2, jax.random.key(7))
+    obs = jnp.array([1.0, 0.2], dtype=jnp.float32)
+    next_obs = jnp.array([-0.4, 1.0], dtype=jnp.float32)
+    rhos = jnp.array([1.5, 1.5], dtype=jnp.float32)
+    discounts = jnp.array([0.8, 0.8], dtype=jnp.float32)
+
+    result = learner.update_with_ratios_and_discounts(
+        state,
+        obs,
+        jnp.array([jnp.inf, 1.0], dtype=jnp.float32),
+        next_obs,
+        rhos,
+        discounts,
+    )
+
+    chex.assert_tree_all_finite(result.state)
+    assert not bool(result.head_updates_applied[0])
+    assert bool(result.head_updates_applied[1])
+    assert bool(result.update_applied)
+    assert float(jnp.linalg.norm(result.state.head_w[1] - state.head_w[1])) > 0.0
+    assert float(jnp.linalg.norm(result.state.head_w[0] - state.head_w[0])) == 0.0
+
+
+def test_gtd_backend_rejects_non_finite_observation() -> None:
+    """A NaN observation must fail closed and leave the state untouched."""
+    learner = NonlinearSharedGTDHordeLearner(
+        _spec(gammas=(0.8,)),
+        hidden_size=4,
+        primary_step_size=0.01,
+        secondary_step_size=0.01,
+        ratio_clip=10.0,
+    )
+    state = learner.init(2, jax.random.key(9))
+    result = learner.update_with_ratios_and_discounts(
+        state,
+        jnp.array([jnp.nan, 0.2], dtype=jnp.float32),
+        jnp.array([1.0], dtype=jnp.float32),
+        jnp.array([-0.4, 1.0], dtype=jnp.float32),
+        jnp.array([1.5], dtype=jnp.float32),
+        jnp.array([0.8], dtype=jnp.float32),
+    )
+
+    chex.assert_trees_all_close(result.state.trunk_w, state.trunk_w, atol=0.0)
+    chex.assert_trees_all_close(result.state.head_w, state.head_w, atol=0.0)
+    assert not bool(result.update_applied)

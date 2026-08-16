@@ -173,6 +173,45 @@ class TestGVFSpec:
         with pytest.raises(ValueError, match=field):
             GVFSpec.from_config(config)
 
+    @pytest.mark.parametrize("field", ["gamma", "lamda"])
+    def test_discount_and_trace_decay_reject_class_spoofed_float(self, field):
+        class _SpoofedFloat:
+            """Mimics ``float`` via ``__class__`` to defeat ``isinstance``."""
+
+            @property
+            def __class__(self) -> type:  # type: ignore[override]
+                return float
+
+            def __float__(self) -> float:
+                return 0.5
+
+            def __lt__(self, other: object) -> bool:
+                return 0.5 < other  # type: ignore[operator]
+
+            def __gt__(self, other: object) -> bool:
+                return 0.5 > other  # type: ignore[operator]
+
+            def __eq__(self, other: object) -> bool:
+                return 0.5 == other
+
+            def __ne__(self, other: object) -> bool:
+                return 0.5 != other
+
+            def __hash__(self) -> int:
+                return hash(0.5)
+
+        kwargs = {
+            "name": "invalid",
+            "demon_type": DemonType.PREDICTION,
+            "gamma": 0.9,
+            "lamda": 0.8,
+            "cumulant_index": 0,
+        }
+        kwargs[field] = _SpoofedFloat()
+
+        with pytest.raises(ValueError, match=field):
+            GVFSpec(**kwargs)
+
     def test_discount_and_trace_decay_normalize_supported_real_scalars(self):
         spec = GVFSpec(
             name="boundary",

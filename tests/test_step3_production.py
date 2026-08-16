@@ -201,6 +201,25 @@ def test_step3_horde_scalars_reject_invalid_inputs(field: str, value: object) ->
         make_step3_horde(_config_with(**{field: value}))
 
 
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+def test_step3_horde_hidden_sizes_rejects_class_spoofed_integers() -> None:
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        make_step3_horde(_config_with(hidden_sizes=(_SpoofedInt(),)))
+
+
 def test_step3_horde_scalars_preserve_legal_boundaries() -> None:
     config = Step3HordeConfig(
         gammas=(0.0, 1.0),

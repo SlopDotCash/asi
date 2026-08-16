@@ -188,6 +188,11 @@ class HistoryFeatureExtractor:
         # Select tracked channels
         channel_indices = jnp.asarray(self._channels, dtype=jnp.int32)
         observation = jnp.asarray(observation, dtype=jnp.float32)
+        if observation.shape != (self._raw_dim,):
+            raise ValueError(
+                f"observation must have shape ({self._raw_dim},), "
+                f"got {observation.shape}"
+            )
         observation_valid = jnp.all(jnp.isfinite(observation))
         safe_observation = jnp.where(
             jnp.isfinite(observation), observation, jnp.zeros_like(observation)

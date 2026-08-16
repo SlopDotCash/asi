@@ -957,9 +957,15 @@ class ExperientialMemory:
             _saturating_increment(entries.recency_ages),
             entries.recency_ages,
         )
+        utility_decay = jnp.asarray(self._config.utility_decay, dtype=jnp.float32)
+        decayed_utilities = jax.lax.select(
+            utility_decay == 0.0,
+            jnp.zeros_like(entries.utilities),
+            entries.utilities * utility_decay,
+        )
         utilities = jnp.where(
             valid,
-            entries.utilities * jnp.asarray(self._config.utility_decay, dtype=jnp.float32),
+            decayed_utilities,
             entries.utilities,
         )
         return ExperientialMemoryState(

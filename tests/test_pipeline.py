@@ -7,6 +7,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 import alberta_framework as af
@@ -565,6 +566,333 @@ def test_observation_channel_cumulant_fn_rejects_invalid_shapes() -> None:
 
     with pytest.raises(ValueError, match="observation_dim must be positive"):
         observation_channel_cumulant_fn(n_demons=1, observation_dim=0)
+
+
+_INVALID_PIPELINE_FEATURE_FIELDS: tuple[tuple[str, object], ...] = (
+    ("observation_dim", 0),
+    ("observation_dim", -1),
+    ("observation_dim", 2**31),
+    ("observation_dim", True),
+    ("observation_dim", "4"),
+    ("ema_decay", -0.1),
+    ("ema_decay", 1.0),
+    ("ema_decay", 1.1),
+    ("ema_decay", 1e100),
+    ("ema_decay", float("nan")),
+    ("ema_decay", True),
+    ("ema_decay", "0.95"),
+    ("periods", (0.0,)),
+    ("periods", (-1.0,)),
+    ("periods", (1e100,)),
+    ("periods", (float("nan"),)),
+    ("periods", (True,)),
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _INVALID_PIPELINE_FEATURE_FIELDS)
+def test_pipeline_feature_fields_reject_invalid_inputs(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        Step2FeatureConfig(**{field: value})
+
+
+_INVALID_PIPELINE_UPGD_FIELDS: tuple[tuple[str, object], ...] = (
+    ("observation_dim", 0),
+    ("observation_dim", 2**31),
+    ("observation_dim", True),
+    ("n_heads", 0),
+    ("n_heads", 2**31),
+    ("n_heads", True),
+    ("hidden_sizes", ()),
+    ("hidden_sizes", (0,)),
+    ("hidden_sizes", (2**31,)),
+    ("hidden_sizes", (True,)),
+    ("step_size", -0.01),
+    ("step_size", 1e100),
+    ("step_size", float("nan")),
+    ("step_size", True),
+    ("sparsity", -0.1),
+    ("sparsity", 1.1),
+    ("sparsity", 1e100),
+    ("sparsity", float("nan")),
+    ("sparsity", True),
+    ("use_layer_norm", 1),
+    ("learner_preset", "unknown_preset"),
+    ("loss_normalization", "unknown_norm"),
+    ("readout_mode", "unknown_mode"),
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _INVALID_PIPELINE_UPGD_FIELDS)
+def test_pipeline_upgd_fields_reject_invalid_inputs(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        Step2UPGDConfig(**{field: value})
+
+
+_INVALID_PIPELINE_ASSOCIATIVE_FIELDS: tuple[tuple[str, object], ...] = (
+    ("vocab_size", 1),
+    ("vocab_size", 2**31),
+    ("vocab_size", True),
+    ("block_size", 0),
+    ("block_size", 2**31),
+    ("block_size", True),
+    ("suffix_length", 1),
+    ("suffix_length", 9),
+    ("suffix_length", True),
+    ("max_features", 0),
+    ("max_features", 2**31),
+    ("max_features", True),
+    ("write_lr", -0.1),
+    ("write_lr", 1e100),
+    ("write_lr", True),
+    ("retention", -0.1),
+    ("retention", 1.1),
+    ("retention", 1e100),
+    ("retention", True),
+    ("utility_lr", -0.1),
+    ("utility_lr", 1e100),
+    ("utility_lr", True),
+    ("utility_decay", -0.1),
+    ("utility_decay", 1.1),
+    ("utility_decay", 1e100),
+    ("utility_decay", True),
+    ("min_weight", -0.01),
+    ("min_weight", 1e100),
+    ("min_weight", True),
+    ("max_weight", 0.0),
+    ("max_weight", -1.0),
+    ("max_weight", 1e100),
+    ("max_weight", True),
+    ("logit_scale", 0.0),
+    ("logit_scale", -1.0),
+    ("logit_scale", 1e100),
+    ("logit_scale", True),
+    ("normalize_by_weight", 1),
+    ("adaptive_feature_family", 1),
+    ("adaptive_window", 1),
+    ("adaptive_budget", 1),
+    ("scope_lr", -0.1),
+    ("scope_lr", 1e100),
+    ("scope_lr", True),
+    ("budget_lr", -0.1),
+    ("budget_lr", 1e100),
+    ("budget_lr", True),
+    ("initial_budget_fraction", 0.0),
+    ("initial_budget_fraction", -0.1),
+    ("initial_budget_fraction", 1.1),
+    ("initial_budget_fraction", 1e100),
+    ("initial_budget_fraction", True),
+    ("min_effective_budget", 0),
+    ("min_effective_budget", 513),
+    ("min_effective_budget", True),
+    ("scope_logit_clip", 0.0),
+    ("scope_logit_clip", -1.0),
+    ("scope_logit_clip", 1e100),
+    ("scope_logit_clip", True),
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _INVALID_PIPELINE_ASSOCIATIVE_FIELDS)
+def test_pipeline_associative_fields_reject_invalid_inputs(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError):
+        Step2AssociativePipelineConfig(**{field: value})
+
+
+_INVALID_PIPELINE_HORDE_AC_FIELDS: tuple[tuple[str, object], ...] = (
+    ("n_actions", 0),
+    ("n_actions", 2**31),
+    ("n_actions", True),
+    ("actor_step_size", -0.01),
+    ("actor_step_size", 1e100),
+    ("actor_step_size", True),
+    ("actor_lamda", -0.1),
+    ("actor_lamda", 1.1),
+    ("actor_lamda", 1e100),
+    ("actor_lamda", True),
+    ("temperature", 0.0),
+    ("temperature", -1.0),
+    ("temperature", 1e100),
+    ("temperature", True),
+    ("value_head_index", -1),
+    ("value_head_index", 2**31),
+    ("value_head_index", True),
+    ("actor_obgd_kappa", 0.0),
+    ("actor_obgd_kappa", -1.0),
+    ("actor_obgd_kappa", 1e100),
+    ("actor_obgd_kappa", True),
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _INVALID_PIPELINE_HORDE_AC_FIELDS)
+def test_pipeline_horde_ac_fields_reject_invalid_inputs(field: str, value: object) -> None:
+    with pytest.raises(ValueError):
+        HordeActorCriticPipelineConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "24"}, "steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_pipeline_smoke_rejects_invalid_inputs(kwargs: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_pipeline_smoke(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_pipeline_unit_interval_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"sparsity must be in \[0, 1\]"):
+        Step2UPGDConfig(sparsity=HiddenBoundaryFloat(0.5))
+
+
+def test_pipeline_nonnegative_rejects_adversarial_negative_ratio() -> None:
+    class HiddenNegativeFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 1)
+
+    with pytest.raises(ValueError, match=r"step_size must be non-negative"):
+        Step2UPGDConfig(step_size=HiddenNegativeFloat(0.5))
+
+
+def test_pipeline_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        Step2UPGDConfig(step_size=value)  # type: ignore[arg-type]
+
+
+def test_pipeline_require_int_rejects_lying_int_subclass() -> None:
+    """int subclasses are rejected before their __int__/__index__ hooks run."""
+
+    class LieInt(int):
+        def __int__(self) -> int:
+            return 4
+
+        def __index__(self) -> int:
+            return 4
+
+    with pytest.raises(ValueError, match="observation_dim must be an integer"):
+        Step2UPGDConfig(observation_dim=LieInt(-1))
+
+
+def test_pipeline_accepts_numpy_integers_and_stores_builtin_int() -> None:
+    config = Step2UPGDConfig(observation_dim=np.int32(3), n_heads=np.int64(2))
+    assert config.observation_dim == 3
+    assert type(config.observation_dim) is int
+    assert type(config.n_heads) is int
+    json.dumps(config.to_dict())
+
+
+class _SpoofedBool:
+    @property
+    def __class__(self) -> type[bool]:  # type: ignore[override]
+        return bool
+
+    def __bool__(self) -> bool:
+        return True
+
+    def __repr__(self) -> str:
+        return "SpoofedBool()"
+
+
+def test_pipeline_bool_flags_reject_class_spoofing() -> None:
+    with pytest.raises(ValueError, match="use_layer_norm must be a bool"):
+        Step2UPGDConfig(use_layer_norm=_SpoofedBool())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="normalize_by_weight must be a bool"):
+        Step2AssociativePipelineConfig(
+            normalize_by_weight=_SpoofedBool()  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="include_raw must be a bool"):
+        Step2FeatureConfig(include_raw=_SpoofedBool())  # type: ignore[arg-type]
+
+
+class _EqualsString:
+    """Non-str object that compares equal to one target string."""
+
+    def __init__(self, target: str) -> None:
+        self._target = target
+
+    def __eq__(self, other: object) -> bool:
+        return other == self._target
+
+    def __hash__(self) -> int:
+        return hash(self._target)
+
+
+def test_pipeline_string_discriminators_require_actual_str() -> None:
+    with pytest.raises(ValueError, match="unknown learner_preset"):
+        Step2UPGDConfig(
+            learner_preset=_EqualsString("default")  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unknown loss_normalization"):
+        Step2UPGDConfig(
+            loss_normalization=_EqualsString("target_structure")  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unknown readout_mode"):
+        Step2UPGDConfig(
+            readout_mode=_EqualsString("linear_mse")  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unknown feature_family"):
+        Step2AssociativePipelineConfig(
+            feature_family=_EqualsString("token_suffix_pair")  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unknown step2 mode"):
+        AlbertaPipelineConfig(
+            step2=_EqualsString("temporal_context")  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="unknown control_mode"):
+        AlbertaPipelineConfig(
+            control_mode=_EqualsString("sarsa")  # type: ignore[arg-type]
+        )
+
+
+def test_pipeline_associative_rejects_unknown_feature_family() -> None:
+    with pytest.raises(ValueError, match="unknown feature_family"):
+        Step2AssociativePipelineConfig(
+            feature_family="unknown_family"  # type: ignore[arg-type]
+        )
+
+
+def test_pipeline_full_config_json_roundtrip() -> None:
+    config = AlbertaPipelineConfig(
+        upgd=Step2UPGDConfig(),
+        associative=Step2AssociativePipelineConfig(),
+        horde_ac=HordeActorCriticPipelineConfig(),
+        step2="upgd",
+        control_mode="horde_ac",
+    )
+    payload = json.loads(json.dumps(config.to_dict()))
+    assert AlbertaPipelineConfig.from_dict(payload) == config
 
 
 # silence the import lint warnings used in the test runner

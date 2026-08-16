@@ -189,6 +189,34 @@ def test_step7_planning_fields_reject_invalid_inputs(field: str, value: object) 
         _config_with(**{field: value})
 
 
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "planning_steps",
+        "planning_rollout_depth",
+        "planning_warmup_steps",
+        "planning_memory_size",
+    ],
+)
+def test_step7_planning_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: _SpoofedInt()})
+
+
 def test_step7_planning_fields_preserve_legal_endpoints() -> None:
     config = Step7DynaConfig(
         control=Step6DifferentialSARSAConfig(n_actions=N_ACTIONS),

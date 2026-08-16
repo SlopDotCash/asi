@@ -13,11 +13,14 @@ minimal representation lies outside a one-layer feature bank — is probed by
 :mod:`alberta_framework.streams.out_of_class`.
 """
 
-from typing import Any
+import math
+from numbers import Integral, Real
+from typing import Any, cast
 
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
@@ -25,7 +28,77 @@ from alberta_framework._fixed_count_selection import (
     require_positive_builtin_int,
     stable_smallest_mask,
 )
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.types import TimeStep
+
+_INT32_MAX = 2**31 - 1
+
+
+def _finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def _canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = _finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return _canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = _finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return _canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 @chex.dataclass(frozen=True)
@@ -108,29 +181,34 @@ class NonlinearFeatureDiscoveryStream:
             linear_scale: Scale of the direct linear target component.
             noise_std: Standard deviation of target noise.
         """
-        if feature_dim < 1:
-            raise ValueError("feature_dim must be positive")
-        if n_tasks < 1:
-            raise ValueError("n_tasks must be positive")
-        if n_latents < 1:
-            raise ValueError("n_latents must be positive")
-        if n_contexts < 1:
-            raise ValueError("n_contexts must be positive")
-        if context_length < 1:
-            raise ValueError("context_length must be positive")
-        if active_latents_per_context < 1:
-            raise ValueError("active_latents_per_context must be positive")
+        feature_dim_val = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
+        n_tasks_val = _require_int("n_tasks", n_tasks, minimum=1, maximum=_INT32_MAX)
+        n_latents_val = _require_int("n_latents", n_latents, minimum=1, maximum=_INT32_MAX)
+        n_contexts_val = _require_int("n_contexts", n_contexts, minimum=1, maximum=_INT32_MAX)
+        context_length_val = _require_int(
+            "context_length", context_length, minimum=1, maximum=_INT32_MAX
+        )
+        active_latents_per_context_val = _require_int(
+            "active_latents_per_context",
+            active_latents_per_context,
+            minimum=1,
+            maximum=_INT32_MAX,
+        )
+        feature_std_val = _require_positive_real("feature_std", feature_std)
+        latent_scale_val = _require_positive_real("latent_scale", latent_scale)
+        linear_scale_val = _require_nonnegative_real("linear_scale", linear_scale)
+        noise_std_val = _require_nonnegative_real("noise_std", noise_std)
 
-        self._feature_dim = feature_dim
-        self._n_tasks = n_tasks
-        self._n_latents = n_latents
-        self._n_contexts = n_contexts
-        self._context_length = context_length
-        self._active_latents_per_context = active_latents_per_context
-        self._feature_std = feature_std
-        self._latent_scale = latent_scale
-        self._linear_scale = linear_scale
-        self._noise_std = noise_std
+        self._feature_dim = feature_dim_val
+        self._n_tasks = n_tasks_val
+        self._n_latents = n_latents_val
+        self._n_contexts = n_contexts_val
+        self._context_length = context_length_val
+        self._active_latents_per_context = active_latents_per_context_val
+        self._feature_std = feature_std_val
+        self._latent_scale = latent_scale_val
+        self._linear_scale = linear_scale_val
+        self._noise_std = noise_std_val
 
     @property
     def feature_dim(self) -> int:
@@ -143,9 +221,49 @@ class NonlinearFeatureDiscoveryStream:
         return self._n_tasks
 
     @property
+    def n_tasks(self) -> int:
+        """Return the number of supervised tasks."""
+        return self._n_tasks
+
+    @property
     def n_latents(self) -> int:
         """Return the number of hidden oracle features."""
         return self._n_latents
+
+    @property
+    def n_contexts(self) -> int:
+        """Return the number of recurring relevance contexts."""
+        return self._n_contexts
+
+    @property
+    def context_length(self) -> int:
+        """Return the context length."""
+        return self._context_length
+
+    @property
+    def active_latents_per_context(self) -> int:
+        """Return the active latents per context."""
+        return self._active_latents_per_context
+
+    @property
+    def feature_std(self) -> float:
+        """Return the feature standard deviation."""
+        return self._feature_std
+
+    @property
+    def latent_scale(self) -> float:
+        """Return the latent scale."""
+        return self._latent_scale
+
+    @property
+    def linear_scale(self) -> float:
+        """Return the linear scale."""
+        return self._linear_scale
+
+    @property
+    def noise_std(self) -> float:
+        """Return the noise standard deviation."""
+        return self._noise_std
 
     def init(self, key: Array) -> NonlinearFeatureDiscoveryState:
         """Initialize stream state."""
@@ -231,6 +349,12 @@ def collect_feature_discovery_stream(
     """
     import jax
 
+    num_steps = _require_int("num_steps", num_steps, minimum=1, maximum=_INT32_MAX)
+    if not hasattr(stream, "init") or not callable(stream.init):
+        raise TypeError("stream must provide a callable init method")
+    if not hasattr(stream, "step") or not callable(stream.step):
+        raise TypeError("stream must provide a callable step method")
+
     state = stream.init(key)
 
     def step_fn(
@@ -286,28 +410,37 @@ class InteractionFeatureDiscoveryStream:
             noise_std: Standard deviation of target noise.
             include_squares: Whether to include ``x_i * x_i`` oracle features.
         """
-        if feature_dim < 2:
-            raise ValueError("feature_dim must be at least 2")
-        if n_tasks < 1:
-            raise ValueError("n_tasks must be positive")
-        if n_contexts < 1:
-            raise ValueError("n_contexts must be positive")
-        if context_length < 1:
-            raise ValueError("context_length must be positive")
-        active_pairs_per_context = require_positive_builtin_int(
+        feature_dim_val = _require_int("feature_dim", feature_dim, minimum=2, maximum=_INT32_MAX)
+        n_tasks_val = _require_int("n_tasks", n_tasks, minimum=1, maximum=_INT32_MAX)
+        n_contexts_val = _require_int("n_contexts", n_contexts, minimum=1, maximum=_INT32_MAX)
+        context_length_val = _require_int(
+            "context_length", context_length, minimum=1, maximum=_INT32_MAX
+        )
+        active_pairs_per_context_val = require_positive_builtin_int(
             active_pairs_per_context,
             name="active_pairs_per_context",
         )
+        if active_pairs_per_context_val > _INT32_MAX:
+            raise ValueError(f"active_pairs_per_context must be <= {_INT32_MAX}")
+        feature_std_val = _require_positive_real("feature_std", feature_std)
+        linear_scale_val = _require_nonnegative_real("linear_scale", linear_scale)
+        noise_std_val = _require_nonnegative_real("noise_std", noise_std)
+        if type(include_squares) is bool or type(include_squares) is np.bool_:
+            include_squares_val = bool(include_squares)
+        else:
+            raise TypeError(
+                f"include_squares must be a boolean, got {include_squares!r}"
+            )
 
-        self._feature_dim = feature_dim
-        self._n_tasks = n_tasks
-        self._n_contexts = n_contexts
-        self._context_length = context_length
-        self._active_pairs_per_context = active_pairs_per_context
-        self._feature_std = feature_std
-        self._linear_scale = linear_scale
-        self._noise_std = noise_std
-        self._include_squares = include_squares
+        self._feature_dim = feature_dim_val
+        self._n_tasks = n_tasks_val
+        self._n_contexts = n_contexts_val
+        self._context_length = context_length_val
+        self._active_pairs_per_context = active_pairs_per_context_val
+        self._feature_std = feature_std_val
+        self._linear_scale = linear_scale_val
+        self._noise_std = noise_std_val
+        self._include_squares = include_squares_val
 
     @property
     def feature_dim(self) -> int:
@@ -318,6 +451,46 @@ class InteractionFeatureDiscoveryStream:
     def target_dim(self) -> int:
         """Return the number of supervised tasks."""
         return self._n_tasks
+
+    @property
+    def n_tasks(self) -> int:
+        """Return the number of supervised tasks."""
+        return self._n_tasks
+
+    @property
+    def n_contexts(self) -> int:
+        """Return the number of recurring relevance contexts."""
+        return self._n_contexts
+
+    @property
+    def context_length(self) -> int:
+        """Return the context length."""
+        return self._context_length
+
+    @property
+    def active_pairs_per_context(self) -> int:
+        """Return the active pairs per context."""
+        return self._active_pairs_per_context
+
+    @property
+    def feature_std(self) -> float:
+        """Return the feature standard deviation."""
+        return self._feature_std
+
+    @property
+    def linear_scale(self) -> float:
+        """Return the linear scale."""
+        return self._linear_scale
+
+    @property
+    def noise_std(self) -> float:
+        """Return the noise standard deviation."""
+        return self._noise_std
+
+    @property
+    def include_squares(self) -> bool:
+        """Return whether square interactions are included."""
+        return self._include_squares
 
     def _pairs(self) -> tuple[Array, Array]:
         pairs = []

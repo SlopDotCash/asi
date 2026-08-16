@@ -206,6 +206,35 @@ def test_step5_config_from_dict_requires_exact_keys(payload: dict[str, object]) 
     assert str(exc_info.value) == expected
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("steps", True), ("steps", 1.5), ("feature_dim", False), ("feature_dim", 1.5)),
+)
+def test_step5_smoke_rejects_non_integral_dimensions(field: str, value: Any) -> None:
+    with pytest.raises(ValueError, match=field):
+        run_step5_smoke(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("steps", 0),
+        ("steps", 2**31),
+        ("feature_dim", 0),
+        ("feature_dim", 2**31),
+        ("seed", -1),
+        ("seed", 2**31),
+        ("seed", True),
+    ],
+)
+def test_step5_smoke_rejects_out_of_range_dimensions_and_seed(
+    field: str,
+    value: Any,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        run_step5_smoke(**{field: value})
+
+
 def test_step5_smoke_health_gate_reports_any_refused_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -155,6 +155,8 @@ class NonlinearSharedGTDHordeUpdateResult:
     clipped_rhos: Float[Array, " n_demons"]
     correction_norms: Float[Array, " n_demons"]
     secondary_norms: Float[Array, " n_demons"]
+    head_updates_applied: Bool[Array, " n_demons"]
+    update_applied: Bool[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -1015,7 +1017,18 @@ class NonlinearSharedGTDHordeLearner:
         )
         td_targets = cumulants + discounts * bootstrap_predictions
         td_errors = td_targets - predictions
-        active_mask = ~jnp.isnan(td_targets)
+        requested = ~jnp.isnan(cumulants)
+        active_mask = (
+            requested
+            & jnp.isfinite(cumulants)
+            & jnp.isfinite(rhos)
+            & jnp.isfinite(discounts)
+            & jnp.isfinite(td_targets)
+        )
+        inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(
+            jnp.isfinite(next_observation)
+        )
+        head_updates_applied = active_mask & inputs_valid
         safe_td_errors = jnp.where(active_mask, td_errors, 0.0)
         clipped_rhos = jnp.minimum(
             jnp.maximum(jnp.asarray(rhos, dtype=jnp.float32), 0.0),
@@ -1060,7 +1073,7 @@ class NonlinearSharedGTDHordeLearner:
             # importance sampling, Sutton & Barto 2nd ed., Section 11.7;
             # GQ(0) with e = rho grad, Maei & Sutton 2010).  Inactive demons
             # (NaN cumulant) contribute nothing this step.
-            masked_rho = jnp.where(active_mask[i], clipped_rhos[i], 0.0)
+            masked_rho = jnp.where(head_updates_applied[i], clipped_rhos[i], 0.0)
             terminated_i = discounts[i] == 0.0
             rho_dot = jnp.where(
                 terminated_i,
@@ -1102,7 +1115,7 @@ class NonlinearSharedGTDHordeLearner:
                 primary_alpha * (rho_delta * grad_head_b - correction_head_b)
             )
 
-            masked_beta = jnp.where(active_mask[i], secondary_beta, 0.0)
+            masked_beta = jnp.where(head_updates_applied[i], secondary_beta, 0.0)
             sec_trunk_w = state.secondary_trunk_w[i] + masked_beta * (
                 rho_delta * grad_trunk_w - secondary_dot * grad_trunk_w
             )
@@ -1136,7 +1149,7 @@ class NonlinearSharedGTDHordeLearner:
                 )
             )
 
-        new_state = state.replace(  # type: ignore[attr-defined]
+        proposed_state = state.replace(  # type: ignore[attr-defined]
             trunk_w=state.trunk_w + trunk_w_step,
             trunk_b=state.trunk_b + trunk_b_step,
             head_w=state.head_w + head_w_step,
@@ -1146,6 +1159,12 @@ class NonlinearSharedGTDHordeLearner:
             secondary_head_w=jnp.stack(new_secondary_head_w),
             secondary_head_b=jnp.stack(new_secondary_head_b),
             step_count=state.step_count + 1,
+        )
+        update_applied = inputs_valid & (jnp.any(active_mask) | jnp.all(~requested))
+        new_state = jax.lax.cond(
+            update_applied,
+            lambda: proposed_state,
+            lambda: state,
         )
         return NonlinearSharedGTDHordeUpdateResult(  # type: ignore[call-arg]
             state=new_state,
@@ -1158,6 +1177,8 @@ class NonlinearSharedGTDHordeLearner:
             clipped_rhos=clipped_rhos,
             correction_norms=jnp.stack(correction_norms),
             secondary_norms=jnp.stack(secondary_norms),
+            head_updates_applied=head_updates_applied,
+            update_applied=update_applied,
         )
 
 

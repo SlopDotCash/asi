@@ -87,6 +87,96 @@ def test_config_rejects_invalid_adaptive_scalars(
             AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
 
 
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+
+class _RaisingSpoofedFloat:
+    """Mimics ``float`` via ``__class__`` but raises when actually converted."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 1
+
+
+class _RaisingSpoofedInt:
+    """Mimics ``int`` via ``__class__`` but raises when actually converted."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        raise RuntimeError("untrusted __int__ hook executed")
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["scope_lr", "budget_lr", "initial_budget_fraction", "scope_logit_clip"],
+)
+def test_config_rejects_class_spoofed_real_fields(field: str) -> None:
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload[field] = _SpoofedFloat()
+
+    with pytest.raises(ValueError, match=field):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["scope_lr", "budget_lr", "initial_budget_fraction", "scope_logit_clip"],
+)
+def test_config_raising_spoofed_real_field_stays_a_value_error(field: str) -> None:
+    """A spoofed real whose ``__float__`` raises must not leak a raw exception."""
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload[field] = _RaisingSpoofedFloat()
+
+    with pytest.raises(ValueError, match=field):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+def test_config_rejects_class_spoofed_min_effective_budget() -> None:
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload["min_effective_budget"] = _SpoofedInt()
+
+    with pytest.raises(ValueError, match="min_effective_budget"):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+def test_config_raising_spoofed_min_effective_budget_stays_a_value_error() -> None:
+    """A spoofed int whose ``__int__`` raises must not leak a raw exception."""
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload["min_effective_budget"] = _RaisingSpoofedInt()
+
+    with pytest.raises(ValueError, match="min_effective_budget"):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
 def test_silent_feature_does_not_turn_inf_value_into_nan() -> None:
     """Weight 0 times an inf stored row is 0*inf = NaN in the evidence sum."""
     learner = AssociativeMemoryLearner(

@@ -36,6 +36,24 @@ class TestRandomWalkStream:
         assert state.key is not None
         chex.assert_shape(state.true_weights, (10,))
 
+    def test_rejects_invalid_feature_dim(self):
+        """Should reject non-positive, bool, or non-integer feature_dim."""
+        for feature_dim in (0, -1, True, 2.5):
+            with pytest.raises(ValueError, match="feature_dim"):
+                RandomWalkStream(feature_dim=feature_dim)
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative drift_rate, noise_std, feature_std."""
+        for name, value in (
+            ("drift_rate", float("nan")),
+            ("drift_rate", float("inf")),
+            ("drift_rate", -1.0),
+            ("noise_std", float("nan")),
+            ("feature_std", -0.5),
+        ):
+            with pytest.raises(ValueError, match=name):
+                RandomWalkStream(feature_dim=4, **{name: value})
+
     def test_step_produces_valid_timestep(self, rng_key):
         """Step should produce valid observation and target."""
         stream = RandomWalkStream(feature_dim=10)
@@ -96,6 +114,16 @@ class TestRandomWalkStream:
 
 class TestAbruptChangeStream:
     """Tests for the AbruptChangeStream class."""
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative noise_std and feature_std."""
+        for name, value in (
+            ("noise_std", float("nan")),
+            ("noise_std", float("inf")),
+            ("feature_std", -1.0),
+        ):
+            with pytest.raises(ValueError, match=name):
+                AbruptChangeStream(feature_dim=4, **{name: value})
 
     @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
     def test_initial_weights_last_for_first_full_segment(self, rng_key, compiled):
@@ -175,6 +203,16 @@ class TestSuttonExperiment1Stream:
 class TestCyclicStream:
     """Tests for the CyclicStream class."""
 
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative noise_std and feature_std."""
+        for name, value in (
+            ("noise_std", float("nan")),
+            ("noise_std", float("inf")),
+            ("feature_std", -1.0),
+        ):
+            with pytest.raises(ValueError, match=name):
+                CyclicStream(feature_dim=4, **{name: value})
+
     def test_cycles_through_configurations(self, rng_key):
         """Should cycle through configurations."""
         stream = CyclicStream(
@@ -230,6 +268,17 @@ class TestCyclicStream:
 
 class TestPeriodicChangeStream:
     """Tests for the PeriodicChangeStream class."""
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative amplitude, noise_std, feature_std."""
+        for name, value in (
+            ("amplitude", float("nan")),
+            ("amplitude", float("inf")),
+            ("noise_std", -0.5),
+            ("feature_std", float("nan")),
+        ):
+            with pytest.raises(ValueError, match=name):
+                PeriodicChangeStream(feature_dim=4, **{name: value})
 
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""
@@ -682,6 +731,8 @@ class TestScaleDriftStream:
             ({"max_log_scale": Fraction(10**400)}, "max_log_scale must be finite"),
             ({"min_log_scale": True}, "min_log_scale must be finite"),
             ({"max_log_scale": False}, "max_log_scale must be finite"),
+            ({"min_log_scale": -88.0}, "min_log_scale must be finite"),
+            ({"max_log_scale": 89.0}, "max_log_scale must be finite"),
         ],
     )
     def test_rejects_reversed_or_nonfinite_log_scale_bounds(self, kwargs, message):
@@ -694,20 +745,22 @@ class TestScaleDriftStream:
         timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
         chex.assert_tree_all_finite(timestep.observation)
 
-    def test_log_scale_bounds_are_narrowed_once_before_comparison(self, rng_key):
+    def test_log_scale_bounds_are_narrowed_once_before_comparison(self):
         """A Fraction midpoint rounds once (ties-to-even) to the float32 clip bound."""
         midpoint = Fraction(1) + Fraction(1, 2**24)
         stream = ScaleDriftStream(feature_dim=4, min_log_scale=midpoint, max_log_scale=1.0)
         assert stream._min_log_scale == 1.0
         assert stream._max_log_scale == 1.0
         assert type(stream._min_log_scale) is float
-        max_finite = float(np.finfo(np.float32).max)
-        stream = ScaleDriftStream(
-            feature_dim=4, min_log_scale=-max_finite, max_log_scale=max_finite
+
+    def test_log_scale_bounds_have_positive_finite_float32_exponentials(self):
+        """Accepted clip endpoints cannot collapse or overflow the scale factor."""
+        stream = ScaleDriftStream(feature_dim=4, min_log_scale=-87.0, max_log_scale=88.0)
+        endpoint_scales = jnp.exp(
+            jnp.asarray([stream._min_log_scale, stream._max_log_scale], dtype=jnp.float32)
         )
-        assert stream._max_log_scale == max_finite
-        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
-        chex.assert_tree_all_finite(timestep.observation)
+        assert bool(jnp.all(endpoint_scales > 0.0))
+        assert bool(jnp.all(jnp.isfinite(endpoint_scales)))
 
     def test_clip_bounds_stay_finite_at_execution(self, rng_key):
         """The stored bounds are exactly what jnp.clip receives, so the walk is bounded."""

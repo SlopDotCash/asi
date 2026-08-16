@@ -588,3 +588,106 @@ class TestNormalizerABC:
         out = normalizer.normalize_only(state, jnp.array([max_f32], dtype=jnp.float32))
         assert not bool(jnp.isfinite(out[0]))
         assert float(out[0]) != 0.0
+
+
+class _FloatSpoof:
+    """Not a Real at all, but reports ``float`` through ``__class__``."""
+
+    def __init__(self, value: float) -> None:
+        self._value = value
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return self._value
+
+
+class _RaisingFloatSpoof:
+    """A ``__class__`` spoof whose ``__float__`` hook raises when trusted."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class TestNormalizerScalarSpoofRejection:
+    """``epsilon``/``decay``/``momentum`` must reject ``__class__``-spoofed reals.
+
+    ``isinstance(value, Real)`` consults the overridable ``__class__``
+    attribute, so an object that only lies about its class via a
+    ``__class__`` property previously passed validation even though its
+    actual type is not a registered ``Real``.
+    """
+
+    @pytest.mark.parametrize(
+        ("ctor", "field"),
+        [
+            (EMANormalizer, "epsilon"),
+            (EMANormalizer, "decay"),
+            (StreamingBatchNormalizer, "epsilon"),
+            (StreamingBatchNormalizer, "momentum"),
+            (WelfordNormalizer, "epsilon"),
+        ],
+        ids=[
+            "ema-epsilon",
+            "ema-decay",
+            "streaming-epsilon",
+            "streaming-momentum",
+            "welford-epsilon",
+        ],
+    )
+    def test_rejects_class_spoofed_real_field(self, ctor, field) -> None:
+        """A well-behaved ``__class__``-spoofed real must not be accepted."""
+        in_domain = {"epsilon": 1e-6, "decay": 0.5, "momentum": 0.5}[field]
+        with pytest.raises(TypeError, match="must be a finite real number"):
+            ctor(**{field: _FloatSpoof(in_domain)})
+
+    @pytest.mark.parametrize(
+        ("ctor", "field"),
+        [
+            (EMANormalizer, "epsilon"),
+            (EMANormalizer, "decay"),
+            (StreamingBatchNormalizer, "epsilon"),
+            (StreamingBatchNormalizer, "momentum"),
+            (WelfordNormalizer, "epsilon"),
+        ],
+        ids=[
+            "ema-epsilon",
+            "ema-decay",
+            "streaming-epsilon",
+            "streaming-momentum",
+            "welford-epsilon",
+        ],
+    )
+    def test_raising_spoofed_field_stays_a_type_error(self, ctor, field) -> None:
+        """A spoof with a raising ``__float__`` must not leak its raw exception."""
+        with pytest.raises(TypeError, match="must be a finite real number"):
+            ctor(**{field: _RaisingFloatSpoof()})
+
+    def test_rejects_bool_epsilon(self) -> None:
+        with pytest.raises(TypeError, match="epsilon must be a finite real number"):
+            EMANormalizer(epsilon=True)
+
+    def test_rejects_bool_decay(self) -> None:
+        with pytest.raises(TypeError, match="decay must be a finite real number"):
+            EMANormalizer(decay=False)
+
+    def test_rejects_bool_momentum(self) -> None:
+        with pytest.raises(TypeError, match="momentum must be a finite real number"):
+            StreamingBatchNormalizer(momentum=True)
+
+    def test_accepts_genuine_numpy_scalar_decay(self) -> None:
+        """A real (non-spoofed) numpy scalar type must remain accepted."""
+        np = pytest.importorskip("numpy")
+        normalizer = EMANormalizer(decay=np.float64(0.75))
+        assert normalizer._decay == pytest.approx(0.75)
+
+    def test_accepts_genuine_int_momentum(self) -> None:
+        """A real (non-spoofed) int must remain accepted and coerced to float."""
+        normalizer = StreamingBatchNormalizer(momentum=1)
+        assert normalizer._momentum == 1.0

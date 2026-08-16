@@ -597,6 +597,101 @@ def test_partial_reinforcement_rejects_illegal_p(value: object) -> None:
         partial_reinforcement_scenario(p=value)  # type: ignore[arg-type]
 
 
+class _SpoofedReal:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    def __init__(self, value: float = 0.5) -> None:
+        self._value = value
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return self._value
+
+    def __lt__(self, other: object) -> bool:
+        return self._value < other  # type: ignore[operator]
+
+    def __le__(self, other: object) -> bool:
+        return self._value <= other  # type: ignore[operator]
+
+
+class _RaisingSpoofedReal:
+    """A ``__class__`` spoof whose numeric hooks raise when actually used."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+    def __lt__(self, other: object) -> bool:
+        raise RuntimeError("untrusted __lt__ hook executed")
+
+    def __le__(self, other: object) -> bool:
+        raise RuntimeError("untrusted __le__ hook executed")
+
+    def __repr__(self) -> str:
+        raise RuntimeError("untrusted __repr__ hook executed")
+
+    def __str__(self) -> str:
+        raise RuntimeError("untrusted __str__ hook executed")
+
+
+def test_construct_rejects_class_spoofed_noise_std() -> None:
+    """A non-real whose ``__class__`` reports ``float`` must still be rejected."""
+    with pytest.raises(ValueError, match="noise_std"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(),),
+            noise_std=_SpoofedReal(0.1),  # type: ignore[arg-type]
+        )
+
+
+def test_construct_raising_class_spoofed_noise_std_stays_a_value_error() -> None:
+    """A spoof with raising numeric hooks must not leak its raw exception."""
+    with pytest.raises(ValueError, match="noise_std"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(),),
+            noise_std=_RaisingSpoofedReal(),  # type: ignore[arg-type]
+        )
+
+
+def test_construct_rejects_class_spoofed_distractor_prob() -> None:
+    """A non-real whose ``__class__`` reports ``float`` must still be rejected."""
+    with pytest.raises(ValueError, match="distractor_prob"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(),),
+            distractor_prob=_SpoofedReal(0.1),  # type: ignore[arg-type]
+        )
+
+
+def test_construct_raising_class_spoofed_distractor_prob_stays_a_value_error() -> None:
+    """A spoof with raising numeric hooks must not leak its raw exception."""
+    with pytest.raises(ValueError, match="distractor_prob"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(),),
+            distractor_prob=_RaisingSpoofedReal(),  # type: ignore[arg-type]
+        )
+
+
+def test_construct_rejects_class_spoofed_phase_contingency() -> None:
+    """A non-real whose ``__class__`` reports ``float`` must still be rejected."""
+    with pytest.raises(ValueError, match="cs_us_contingency"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(cs_us_contingency=_SpoofedReal(0.1)),)
+        )
+
+
+def test_construct_raising_class_spoofed_phase_contingency_stays_a_value_error() -> None:
+    """A spoof with raising numeric/repr hooks must not leak its raw exception."""
+    with pytest.raises(ValueError, match="cs_us_contingency"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(cs_us_contingency=_RaisingSpoofedReal()),)
+        )
+
+
 def test_construct_accepts_zero_noise_and_zero_distractor_prob() -> None:
     stream = ClassicalConditioningStream(
         phases=(_valid_phase(),),

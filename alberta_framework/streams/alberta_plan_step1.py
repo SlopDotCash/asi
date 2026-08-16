@@ -21,13 +21,88 @@ protocol and are JIT-friendly (no Python control flow on traced values).
 Reference: Sutton et al., "The Alberta Plan for AI Research", Step 1.
 """
 
+import math
+from numbers import Integral, Real
+from typing import cast
+
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.types import TimeStep
+
+_INT32_MAX = 2**31 - 1
+
+
+def _finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def _canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = _finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return _canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = _finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return _canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 @chex.dataclass(frozen=True)
@@ -102,21 +177,24 @@ class AlbertaPlanStep1Stream:
             ValueError: If ``num_relevant > feature_dim`` or either is
                 non-positive.
         """
-        if feature_dim <= 0:
-            raise ValueError(f"feature_dim must be positive, got {feature_dim}")
-        if num_relevant <= 0:
-            raise ValueError(f"num_relevant must be positive, got {num_relevant}")
-        if num_relevant > feature_dim:
+        feature_dim_val = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
+        num_relevant_val = _require_int("num_relevant", num_relevant, minimum=1, maximum=_INT32_MAX)
+        if num_relevant_val > feature_dim_val:
             raise ValueError(
-                f"num_relevant ({num_relevant}) must not exceed "
-                f"feature_dim ({feature_dim})"
+                f"num_relevant ({num_relevant_val}) must not exceed "
+                f"feature_dim ({feature_dim_val})"
             )
-        self._feature_dim = feature_dim
-        self._num_relevant = num_relevant
-        self._drift_rate_w = drift_rate_w
-        self._drift_rate_b = drift_rate_b
-        self._noise_std = noise_std
-        self._feature_std = feature_std
+        drift_rate_w_val = _require_nonnegative_real("drift_rate_w", drift_rate_w)
+        drift_rate_b_val = _require_nonnegative_real("drift_rate_b", drift_rate_b)
+        noise_std_val = _require_nonnegative_real("noise_std", noise_std)
+        feature_std_val = _require_positive_real("feature_std", feature_std)
+
+        self._feature_dim = feature_dim_val
+        self._num_relevant = num_relevant_val
+        self._drift_rate_w = drift_rate_w_val
+        self._drift_rate_b = drift_rate_b_val
+        self._noise_std = noise_std_val
+        self._feature_std = feature_std_val
 
     @property
     def feature_dim(self) -> int:
@@ -127,6 +205,26 @@ class AlbertaPlanStep1Stream:
     def num_relevant(self) -> int:
         """Return the number of relevant input dimensions."""
         return self._num_relevant
+
+    @property
+    def drift_rate_w(self) -> float:
+        """Return the weight drift rate."""
+        return self._drift_rate_w
+
+    @property
+    def drift_rate_b(self) -> float:
+        """Return the bias drift rate."""
+        return self._drift_rate_b
+
+    @property
+    def noise_std(self) -> float:
+        """Return the target noise standard deviation."""
+        return self._noise_std
+
+    @property
+    def feature_std(self) -> float:
+        """Return the feature standard deviation."""
+        return self._feature_std
 
     def init(self, key: Array) -> AlbertaPlanStep1State:
         """Initialize stream state.
@@ -272,30 +370,48 @@ class XDistShiftStream:
                 ``scale_min >= scale_max``, ``scale_change_interval <= 0``, or
                 if ``feature_dim`` / ``num_relevant`` are non-positive.
         """
-        if feature_dim <= 0:
-            raise ValueError(f"feature_dim must be positive, got {feature_dim}")
-        if num_relevant <= 0:
-            raise ValueError(f"num_relevant must be positive, got {num_relevant}")
-        if num_relevant > feature_dim:
+        feature_dim_val = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
+        num_relevant_val = _require_int("num_relevant", num_relevant, minimum=1, maximum=_INT32_MAX)
+        if num_relevant_val > feature_dim_val:
             raise ValueError(
-                f"num_relevant ({num_relevant}) must not exceed "
-                f"feature_dim ({feature_dim})"
+                f"num_relevant ({num_relevant_val}) must not exceed "
+                f"feature_dim ({feature_dim_val})"
             )
-        if scale_change_interval <= 0:
+        noise_std_val = _require_nonnegative_real("noise_std", noise_std)
+        scale_change_interval_val = _require_int(
+            "scale_change_interval",
+            scale_change_interval,
+            minimum=1,
+            maximum=_INT32_MAX,
+        )
+        scale_min_val = _require_positive_real("scale_min", scale_min)
+        scale_max_val = _require_positive_real("scale_max", scale_max)
+        if scale_min_val >= scale_max_val:
             raise ValueError(
-                f"scale_change_interval must be positive, got {scale_change_interval}"
+                f"scale_min ({scale_min_val}) must be less than scale_max ({scale_max_val})"
             )
-        if scale_min >= scale_max:
+        narrowed_scale_min = float(np.float32(scale_min_val))
+        narrowed_scale_max = float(np.float32(scale_max_val))
+        if narrowed_scale_min >= narrowed_scale_max:
             raise ValueError(
-                f"scale_min ({scale_min}) must be less than scale_max ({scale_max})"
+                f"scale_min ({scale_min_val}) must remain less than "
+                f"scale_max ({scale_max_val}) after float32 narrowing; both narrow "
+                f"to [{narrowed_scale_min}, {narrowed_scale_max}]"
             )
-        self._feature_dim = feature_dim
-        self._num_relevant = num_relevant
-        self._noise_std = noise_std
-        self._scale_change_interval = scale_change_interval
-        self._scale_min = scale_min
-        self._scale_max = scale_max
-        self._noise_in_target = noise_in_target
+        if type(noise_in_target) is bool or type(noise_in_target) is np.bool_:
+            noise_in_target_val = bool(noise_in_target)
+        else:
+            raise TypeError(
+                f"noise_in_target must be a boolean, got {noise_in_target!r}"
+            )
+
+        self._feature_dim = feature_dim_val
+        self._num_relevant = num_relevant_val
+        self._noise_std = noise_std_val
+        self._scale_change_interval = scale_change_interval_val
+        self._scale_min = scale_min_val
+        self._scale_max = scale_max_val
+        self._noise_in_target = noise_in_target_val
 
     @property
     def feature_dim(self) -> int:
@@ -306,6 +422,31 @@ class XDistShiftStream:
     def num_relevant(self) -> int:
         """Return the number of relevant input dimensions."""
         return self._num_relevant
+
+    @property
+    def noise_std(self) -> float:
+        """Return the target noise standard deviation."""
+        return self._noise_std
+
+    @property
+    def scale_change_interval(self) -> int:
+        """Return the scale change interval."""
+        return self._scale_change_interval
+
+    @property
+    def scale_min(self) -> float:
+        """Return the minimum scale."""
+        return self._scale_min
+
+    @property
+    def scale_max(self) -> float:
+        """Return the maximum scale."""
+        return self._scale_max
+
+    @property
+    def noise_in_target(self) -> bool:
+        """Return whether target noise is enabled."""
+        return self._noise_in_target
 
     def init(self, key: Array) -> XDistShiftState:
         """Initialize stream state.

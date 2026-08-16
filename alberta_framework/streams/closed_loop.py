@@ -67,11 +67,12 @@ _FLOAT32_TINY_RATIO = _FLOAT32_TINY.as_integer_ratio()
 def _exact_real_ratio(name: str, value: object) -> tuple[int, int]:
     """Return the exact ratio of a supported concrete real scalar."""
     message = f"{name} must be finite, positive, and a normal float32 probability"
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
+    actual_type = type(value)
+    if issubclass(actual_type, (bool, np.bool_)) or not issubclass(actual_type, Real):
         raise ValueError(message)
     try:
-        if isinstance(value, Integral):
-            ratio = (int(value), 1)
+        if issubclass(actual_type, Integral):
+            ratio = (int(cast(Any, value)), 1)
         else:
             ratio = cast(Any, value).as_integer_ratio()
         numerator, denominator = ratio
@@ -423,20 +424,38 @@ class RiverSwimMDP:
             raise ValueError(
                 f"initial_state must lie in [0, {config.n_states}), got {config.initial_state}"
             )
-        config = config.replace(  # type: ignore[attr-defined]
-            p_right_up=p_right_up,
-            p_right_down=p_right_down,
+        if isinstance(config.initial_state, bool) or not isinstance(
+            config.initial_state, Integral
+        ):
+            raise ValueError(
+                "initial_state must be an integer, got "
+                f"{config.initial_state!r}"
+            )
+        if not np.isfinite(config.reward_left):
+            raise ValueError(
+                f"reward_left must be finite, got {config.reward_left}"
+            )
+        if not np.isfinite(config.reward_right):
+            raise ValueError(
+                f"reward_right must be finite, got {config.reward_right}"
+            )
+        config = cast(
+            RiverSwimConfig,
+            config.replace(
+                p_right_up=p_right_up,
+                p_right_down=p_right_down,
+            ),
         )
-        self._config = config
-        self._n_states = int(config.n_states)
-        self._transitions_np = self._build_transitions(config)
-        self._rewards_np = self._build_rewards(config)
-        self._transition_logits = jnp.where(
+        self._config: RiverSwimConfig = config
+        self._n_states: int = int(config.n_states)
+        self._transitions_np: np.ndarray = self._build_transitions(config)
+        self._rewards_np: np.ndarray = self._build_rewards(config)
+        self._transition_logits: Array = jnp.where(
             jnp.asarray(self._transitions_np) > 0.0,
             jnp.log(jnp.clip(jnp.asarray(self._transitions_np), 1e-30, 1.0)),
             -jnp.inf,
         )
-        self._rewards = jnp.asarray(self._rewards_np)
+        self._rewards: Array = jnp.asarray(self._rewards_np)
 
     @staticmethod
     def _build_transitions(config: RiverSwimConfig) -> np.ndarray:

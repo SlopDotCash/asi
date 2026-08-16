@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 from numbers import Real
+from typing import cast
 
 import chex
 import jax
@@ -64,10 +65,18 @@ def _require_finite_real(
     nonnegative: bool = False,
 ) -> float:
     """Return a finite real, rejecting bools, NaN, and infinities."""
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a finite real, got {value!r}")
+    # ``isinstance(value, Real)`` consults the overridable ``__class__``
+    # attribute, so an object whose ``__class__`` property returns ``float``
+    # passes the check even though its true type is not a registered
+    # ``Real``. Use the non-spoofable ``type()`` slot instead, and do not
+    # interpolate the untrusted value into the rejection message before its
+    # type is confirmed safe.
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a finite real")
+    real_value = cast(Real, value)
     try:
-        number = float(value)
+        number = float(real_value)
     except (OverflowError, ValueError) as error:
         raise ValueError(f"{name} must be a finite real, got {value!r}") from error
     if not math.isfinite(number):
@@ -84,12 +93,16 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
     below the float32 subnormal range are accepted as exact zero, matching the
     noise-free trajectory they produce in the stream's float32 arithmetic.
     """
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
-    if value < 0:
+    # See ``_require_finite_real``: ``type()`` cannot be spoofed through a
+    # ``__class__`` property override the way ``isinstance`` can.
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a non-negative finite real")
+    real_value = cast(Real, value)
+    if real_value < 0:
         raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
     try:
-        narrowed = round_real_to_float32(value)
+        narrowed = round_real_to_float32(real_value)
     except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
         raise ValueError(
             f"{name} must remain finite when rounded to float32, got {value!r}"
@@ -103,9 +116,12 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
 
 def _require_unit_interval(value: object, *, name: str) -> float:
     """Return a finite real in ``[0, 1]``, rejecting bool aliases."""
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    number = float(value)
+    # See ``_require_finite_real``: ``type()`` cannot be spoofed through a
+    # ``__class__`` property override the way ``isinstance`` can.
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be in [0, 1]")
+    number = float(cast(Real, value))
     if not math.isfinite(number) or not 0.0 <= number <= 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return number
@@ -322,9 +338,12 @@ class ClassicalConditioningStream:
                     phase.cs_us_contingency, name="cs_us_contingency"
                 )
             except ValueError as error:
+                # ``phase.cs_us_contingency`` is untrusted here (validation
+                # just rejected it); do not format it through its own
+                # __repr__/__str__ hook, which a hostile object can make
+                # raise an arbitrary exception instead of this ValueError.
                 raise ValueError(
-                    f"phase {phase.name!r} cs_us_contingency must be in [0, 1], "
-                    f"got {phase.cs_us_contingency}"
+                    f"phase {phase.name!r} cs_us_contingency must be in [0, 1]"
                 ) from error
             _require_builtin_int(phase.n_steps, name="n_steps", minimum=1)
             compound_index = _require_builtin_int(

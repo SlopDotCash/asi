@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from fractions import Fraction
 
@@ -26,6 +27,7 @@ from alberta_framework.core.dreaming import (
 from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelConfig,
+    ActionConditionedWorldModelState,
     WorldModelPrediction,
     run_action_conditioned_world_model_learning_loop,
 )
@@ -517,3 +519,90 @@ def test_action_conditioned_dream_rollout_converts_to_gvf_items() -> None:
     chex.assert_shape(gvf_item.observations, (2, 2))
     chex.assert_shape(gvf_item.cumulants, (2, 1))
     chex.assert_shape(gvf_item.discounts, (2,))
+
+
+def test_diagnostics_reflect_true_decodes_not_guard_clips() -> None:
+    """Regression test for #391.
+
+    The public prediction remains guarded for dream rollouts, while update
+    diagnostics score both decoded observation and reward before those guards.
+    """
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=1,
+        n_actions=2,
+        hidden_sizes=(),
+        sparsity=0.0,
+        observation_clip_margin=0.05,
+    )
+    model = ActionConditionedWorldModel(config)
+    init_state = model.init(jr.key(0))
+    reward_head = config.observation_dim  # heads: [obs deltas..., reward, discount]
+
+    def warmed_state_with_biases(
+        observation_bias: float, reward_bias: float
+    ) -> ActionConditionedWorldModelState:
+        head_params = init_state.learner_state.head_params
+        new_weights = tuple(
+            jnp.zeros_like(w) if i in (0, reward_head) else w
+            for i, w in enumerate(head_params.weights)
+        )
+        new_biases = tuple(
+            jnp.full_like(
+                b,
+                observation_bias if i == 0 else reward_bias,
+            )
+            if i in (0, reward_head)
+            else b
+            for i, b in enumerate(head_params.biases)
+        )
+        learner_state = dataclasses.replace(
+            init_state.learner_state,
+            head_params=dataclasses.replace(
+                head_params, weights=new_weights, biases=new_biases
+            ),
+        )
+        return dataclasses.replace(
+            init_state,
+            learner_state=learner_state,
+            observation_min=jnp.array([0.0], dtype=jnp.float32),
+            observation_max=jnp.array([0.0], dtype=jnp.float32),
+            reward_min=jnp.array(5.0, dtype=jnp.float32),
+            reward_max=jnp.array(5.0, dtype=jnp.float32),
+            step_count=jnp.array(1, dtype=jnp.int32),
+        )
+
+    obs = jnp.array([0.0], dtype=jnp.float32)
+    action = jnp.array(0, dtype=jnp.int32)
+    true_reward = jnp.array(5.0, dtype=jnp.float32)
+    discount = jnp.array(0.9, dtype=jnp.float32)
+
+    near_state = warmed_state_with_biases(0.05, 5.05)
+    far_state = warmed_state_with_biases(50.0, 50.0)
+
+    near_result = model.update(near_state, obs, action, true_reward, discount, obs)
+    far_result = model.update(far_state, obs, action, true_reward, discount, obs)
+
+    assert bool(near_result.update_applied)
+    assert bool(far_result.update_applied)
+
+    # The guard published to dream rollouts stays clipped to the observed
+    # reward range +/- the margin, unchanged by this fix.
+    assert float(far_result.prediction.reward) == pytest.approx(5.05, abs=1e-4)
+    assert float(near_result.prediction.reward) == pytest.approx(5.05, abs=1e-4)
+    assert float(far_result.prediction.next_observation[0]) == pytest.approx(
+        0.05, abs=1e-4
+    )
+    assert float(near_result.prediction.next_observation[0]) == pytest.approx(
+        0.05, abs=1e-4
+    )
+
+    # reward_error must separate a badly wrong head from a nearly-correct one
+    # instead of both saturating at observation_clip_margin.
+    assert float(near_result.reward_error) == pytest.approx(0.05, abs=1e-3)
+    assert float(far_result.reward_error) == pytest.approx(45.0, abs=1e-3)
+    assert float(near_result.next_observation_errors[0]) == pytest.approx(
+        0.05, abs=1e-3
+    )
+    assert float(far_result.next_observation_errors[0]) == pytest.approx(
+        config.max_delta_scale, abs=1e-3
+    )

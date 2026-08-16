@@ -113,6 +113,53 @@ class TestStep:
         chex.assert_trees_all_close(aug, jnp.array([10.0, 20.0]), atol=1e-7)
 
 
+class TestStepShapeContract:
+    """The docstring promises ``observation`` has shape ``(raw_dim,)`` and
+    ``augmented`` has shape ``(out_dim,)``; ``step`` must enforce the input
+    side rather than silently truncating/duplicating channels via JAX's
+    clipped out-of-bounds indexing."""
+
+    def test_rejects_short_observation(self) -> None:
+        ex = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5, 0.9))
+        s = ex.init()
+        short_obs = jnp.array([1.0, 2.0])
+        with pytest.raises(ValueError, match="observation must have shape"):
+            ex.step(s, short_obs)
+
+    def test_rejects_long_observation(self) -> None:
+        ex = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5, 0.9))
+        s = ex.init()
+        long_obs = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
+        with pytest.raises(ValueError, match="observation must have shape"):
+            ex.step(s, long_obs)
+
+    def test_rejects_rank_two_observation(self) -> None:
+        ex = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5, 0.9))
+        s = ex.init()
+        rank2_obs = jnp.ones((4, 1))
+        with pytest.raises(ValueError, match="observation must have shape"):
+            ex.step(s, rank2_obs)
+
+    def test_short_observation_would_silently_duplicate_channels_if_unchecked(
+        self,
+    ) -> None:
+        """Documents the exact corruption this validation prevents: JAX
+        clips out-of-bounds fancy-index reads instead of raising, so an
+        under-shaped observation used to make channel 3 silently reuse the
+        value at channel 1 instead of failing."""
+        ex = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5,), include_raw=False)
+        s = ex.init()
+        short_obs = jnp.array([10.0, 20.0])
+        channel_indices = jnp.asarray(ex.channels, dtype=jnp.int32)
+        clipped_read = short_obs[channel_indices]
+        # Without the guard, channels 2 and 3 would clip to index 1 (=20.0)
+        # instead of raising -- the corrupted trace this function must never
+        # produce.
+        chex.assert_trees_all_close(clipped_read, jnp.array([10.0, 20.0, 20.0, 20.0]))
+        with pytest.raises(ValueError, match="observation must have shape"):
+            ex.step(s, short_obs)
+
+
 class TestJitAndScan:
     def test_step_jit_compiles(self) -> None:
         ex = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5, 0.9))
