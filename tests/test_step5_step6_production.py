@@ -227,6 +227,39 @@ def test_step5_smoke_health_gate_reports_any_refused_update(
     assert not result.finite
 
 
+def test_step5_exact_fraction_rounding() -> None:
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    config = Step5AverageRewardTDConfig(
+        step_size=midpoint,
+        average_reward_step_size=Fraction(1, 100),
+        trace_decay=Fraction(0, 1),
+    )
+    expected_f32 = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    assert config.step_size == expected_f32
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "32"}, "steps"),
+        ({"feature_dim": 0}, "feature_dim"),
+        ({"feature_dim": -1}, "feature_dim"),
+        ({"feature_dim": 2**31}, "feature_dim"),
+        ({"feature_dim": False}, "feature_dim"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step5_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step5_smoke(**kwargs)
+
+
 def test_step6_facade_config_roundtrip_one_step_and_smoke() -> None:
     config = Step6DifferentialSARSAConfig(
         n_actions=2,
