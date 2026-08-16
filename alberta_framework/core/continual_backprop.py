@@ -88,6 +88,11 @@ from alberta_framework.core.normalizers import Normalizer
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import TraceMode
 
+_NUMPY_FLOAT_SCALAR_TYPES = frozenset((np.float16, np.float32, np.float64, np.longdouble))
+_NUMPY_INTEGER_SCALAR_TYPES = frozenset(
+    (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)
+)
+
 # =============================================================================
 # Config / state
 # =============================================================================
@@ -136,7 +141,7 @@ class ContinualBackpropConfig:
         maturity_type = type(self.maturity_threshold)
         if maturity_type is int:
             maturity_threshold = self.maturity_threshold
-        elif issubclass(maturity_type, np.integer):
+        elif maturity_type in _NUMPY_INTEGER_SCALAR_TYPES:
             maturity_threshold = int(self.maturity_threshold)
         else:
             raise ValueError("maturity_threshold must be an integer in the int32 domain")
@@ -174,8 +179,8 @@ def _validated_config_float(
 ) -> float:
     """Validate trusted built-in/NumPy numerics in both host and float32 domains."""
     actual_type = type(value)
-    if actual_type not in (int, float) and not issubclass(
-        actual_type, (np.integer, np.floating)
+    if actual_type not in (int, float) and actual_type not in (
+        _NUMPY_INTEGER_SCALAR_TYPES | _NUMPY_FLOAT_SCALAR_TYPES
     ):
         raise ValueError(f"{name} must be a finite real number")
     return validated_float32_scalar(

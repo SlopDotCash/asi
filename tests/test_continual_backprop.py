@@ -744,6 +744,42 @@ class TestContinualBackpropConfigValidation:
         assert type(config.enabled) is bool
         assert ContinualBackpropConfig.from_config(config.to_config()) == config
 
+    @pytest.mark.parametrize("base", [np.float32, np.float64])
+    def test_rejects_hostile_numpy_float_subclasses(self, base: type[np.floating]) -> None:
+        class LyingFloat(base):  # type: ignore[misc, valid-type]
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (1, 2)
+
+        class RaisingFloat(base):  # type: ignore[misc, valid-type]
+            def as_integer_ratio(self) -> tuple[int, int]:
+                raise RuntimeError("must not run")
+
+        for value in (LyingFloat(float("nan")), RaisingFloat(0.5)):
+            with pytest.raises(ValueError, match="decay_rate"):
+                ContinualBackpropConfig(decay_rate=value)  # type: ignore[arg-type]
+
+    def test_rejects_hostile_numpy_integer_subclasses(self) -> None:
+        class LyingInt(np.int64):
+            def __int__(self) -> int:
+                return 7
+
+        class RaisingInt(np.int64):
+            def __int__(self) -> int:
+                raise RuntimeError("must not run")
+
+        for value in (LyingInt(-1), RaisingInt(7)):
+            with pytest.raises(ValueError, match="maturity_threshold"):
+                ContinualBackpropConfig(maturity_threshold=value)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "value",
+        [np.int8(7), np.int16(7), np.int32(7), np.int64(7), np.uint64(7)],
+    )
+    def test_canonicalizes_supported_numpy_integer_widths(self, value: np.integer) -> None:
+        config = ContinualBackpropConfig(maturity_threshold=value)  # type: ignore[arg-type]
+        assert config.maturity_threshold == 7
+        assert type(config.maturity_threshold) is int
+
 
 class TestConfigRoundtrip:
     """to_config/from_config preserves CBP config + learner hyperparameters."""

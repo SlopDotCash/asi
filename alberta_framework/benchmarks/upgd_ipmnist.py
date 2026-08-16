@@ -114,6 +114,7 @@ from alberta_framework._seed_validation import (
     require_jax_seed,
     require_unique_jax_seeds,
 )
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.baseline_optimizers import Adam
 from alberta_framework.core.canonical_upgd import CanonicalUPGD, CanonicalUPGDConfig
 from alberta_framework.core.update_safety import (
@@ -709,6 +710,20 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
 }
 
 
+def _validated_hyperparameter(name: str, value: object) -> float:
+    """Validate one JSON override in its exact host and float32 execution domains."""
+    if type(value) not in (int, float):
+        raise ValueError(f"hyperparameter {name!r} must be a finite JSON number")
+    label = f"hyperparameter {name!r}"
+    if name in {"step_size", "eps"}:
+        return validated_float32_scalar(label, value, positive=True)
+    if name in {"utility_decay", "beta1", "beta2"}:
+        return validated_float32_scalar(
+            label, value, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+    return validated_float32_scalar(label, value, lower=0.0)
+
+
 @dataclass(frozen=True)
 class IPMNISTRunResult:
     """Host-side result of one learner's multi-seed run.
@@ -747,12 +762,10 @@ def resolve_hyperparameters(
         unknown = set(overrides) - set(merged)
         if unknown:
             raise ValueError(f"unknown hyperparameters for {learner}: {sorted(unknown)}")
+        validated: dict[str, float] = {}
         for name, value in overrides.items():
-            if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError(
-                    f"hyperparameter {name!r} must be a finite JSON number"
-                )
-        merged.update({name: float(value) for name, value in overrides.items()})
+            validated[name] = _validated_hyperparameter(name, value)
+        merged.update(validated)
     return merged
 
 

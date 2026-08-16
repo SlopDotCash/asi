@@ -123,6 +123,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     task_index_for_step,
     validated_ipmnist_data,
 )
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +229,20 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
     "upgd_ema_norm_sigma0": UPGD_EMA_NORM_SIGMA0_HYPERPARAMETERS,
     "sgd_ema_norm": SGD_EMA_NORM_HYPERPARAMETERS,
 }
+
+
+def _validated_hyperparameter(name: str, value: object) -> float:
+    """Validate one JSON override in its exact host and float32 execution domains."""
+    if type(value) not in (int, float):
+        raise ValueError(f"hyperparameter {name!r} must be a finite JSON number")
+    label = f"hyperparameter {name!r}"
+    if name in {"step_size", "eps", "norm_epsilon"}:
+        return validated_float32_scalar(label, value, positive=True)
+    if name in {"utility_decay", "beta1", "beta2", "norm_decay"}:
+        return validated_float32_scalar(
+            label, value, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+    return validated_float32_scalar(label, value, lower=0.0)
 
 
 def _wrapped_v1_factory(
@@ -446,12 +461,10 @@ def resolve_hyperparameters(
         unknown = set(overrides) - set(merged)
         if unknown:
             raise ValueError(f"unknown hyperparameters for {learner}: {sorted(unknown)}")
+        validated: dict[str, float] = {}
         for name, value in overrides.items():
-            if type(value) not in (int, float) or not math.isfinite(value):
-                raise ValueError(
-                    f"hyperparameter {name!r} must be a finite JSON number"
-                )
-        merged.update({name: float(value) for name, value in overrides.items()})
+            validated[name] = _validated_hyperparameter(name, value)
+        merged.update(validated)
     return merged
 
 

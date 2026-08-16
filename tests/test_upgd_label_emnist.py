@@ -92,7 +92,7 @@ class TestConfig:
     def test_resolve_hyperparameters_rejects_nonfinite_or_non_json_numbers(
         self, value: object
     ) -> None:
-        with pytest.raises(ValueError, match="finite JSON number"):
+        with pytest.raises(ValueError, match="hyperparameter 'step_size'"):
             resolve_hyperparameters("upgd_w", {"step_size": value})  # type: ignore[dict-item]
 
     def test_resolve_hyperparameters_rejects_class_spoofed_number(self) -> None:
@@ -104,10 +104,64 @@ class TestConfig:
             def __float__(self) -> float:
                 return 0.1
 
-        with pytest.raises(ValueError, match="finite JSON number"):
+        with pytest.raises(ValueError, match="hyperparameter 'step_size'"):
             resolve_hyperparameters(  # type: ignore[dict-item]
                 "upgd_w", {"step_size": SpoofedNumber()}
             )
+
+    @pytest.mark.parametrize("value", [1e100, 10**400, 1e-50])
+    def test_resolve_hyperparameters_rejects_float32_unsafe_values(
+        self, value: int | float
+    ) -> None:
+        with pytest.raises(ValueError, match="hyperparameter 'step_size'"):
+            resolve_hyperparameters("upgd_w", {"step_size": value})
+
+    def test_resolve_hyperparameters_rejects_hostile_numeric_subclass(self) -> None:
+        class HostileFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                raise RuntimeError("must not run")
+
+        with pytest.raises(ValueError, match="hyperparameter 'step_size'"):
+            resolve_hyperparameters(  # type: ignore[dict-item]
+                "upgd_w", {"step_size": HostileFloat(0.1)}
+            )
+
+    @pytest.mark.parametrize(
+        ("learner", "name", "value"),
+        [
+            ("upgd_w", "step_size", 0.0),
+            ("upgd_w", "utility_decay", 1.0),
+            ("upgd_w", "noise_std", -0.1),
+            ("adamw", "beta1", -0.1),
+            ("adamw", "beta2", 1.0),
+            ("adamw", "eps", 0.0),
+            ("adamw", "weight_decay", -0.1),
+            ("upgd_ema_norm", "norm_decay", 1.0),
+            ("upgd_ema_norm", "norm_epsilon", 0.0),
+            ("sgd_ema_norm", "step_size", 0.0),
+            ("sgd_ema_norm", "weight_decay", -0.1),
+        ],
+    )
+    def test_resolve_hyperparameters_enforces_field_domains(
+        self, learner: str, name: str, value: float
+    ) -> None:
+        with pytest.raises(ValueError, match=f"hyperparameter {name!r}"):
+            resolve_hyperparameters(learner, {name: value})
+
+    def test_resolve_hyperparameters_accepts_endpoints_and_canonicalizes_ints(self) -> None:
+        resolved = resolve_hyperparameters(
+            "upgd_ema_norm",
+            {
+                "utility_decay": 0,
+                "noise_std": 0,
+                "weight_decay": 1,
+                "norm_decay": 0,
+            },
+        )
+        assert all(type(resolved[name]) is float for name in resolved)
+        assert resolved["utility_decay"] == 0.0
+        assert resolved["norm_decay"] == 0.0
+        assert resolved["weight_decay"] == 1.0
 
     def test_normalized_arm_hyperparameters(self):
         """EMA-norm transfer arms: published EMNIST UPGD-W values + the exact
