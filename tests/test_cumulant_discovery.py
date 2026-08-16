@@ -100,9 +100,7 @@ class TestStep:
             predictor_step_size=0.1,
             gamma=0.0,
         )
-        s0 = d.init(jr.key(0)).replace(
-            projections=jnp.array([[1.0, 0.0]], dtype=jnp.float32)
-        )
+        s0 = d.init(jr.key(0)).replace(projections=jnp.array([[1.0, 0.0]], dtype=jnp.float32))
         # If the current observation were used as the cumulant this would
         # produce non-zero utility. GVF/nexting convention uses c_{t+1}.
         s1 = d.step(s0, jnp.array([2.0, 0.0]), jnp.array([0.0, 0.0]))
@@ -132,9 +130,7 @@ class TestStep:
         chex.assert_trees_all_close(recovered.ages, state.ages + 1)
 
     def test_predictor_reduces_td_error(self) -> None:
-        d = CumulantDiscovery(
-            raw_dim=2, n_candidates=1, predictor_step_size=0.1, gamma=0.0
-        )
+        d = CumulantDiscovery(raw_dim=2, n_candidates=1, predictor_step_size=0.1, gamma=0.0)
         s0 = d.init(jr.key(2))
         # Repeatedly present the same observation: predictor should
         # learn to predict the cumulant exactly, so the TD error / utility
@@ -293,3 +289,29 @@ class TestConfig:
         assert restored.raw_dim == 8
         assert restored.n_candidates == 12
         assert restored.enabled is True
+
+
+def test_cumulant_discovery_integer_validation() -> None:
+    with pytest.raises(ValueError, match="raw_dim"):
+        CumulantDiscovery(raw_dim=True, n_candidates=8)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="raw_dim"):
+        CumulantDiscovery(raw_dim=4.5, n_candidates=8)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="raw_dim"):
+        CumulantDiscovery(raw_dim=0, n_candidates=8)
+
+    with pytest.raises(ValueError, match="n_candidates"):
+        CumulantDiscovery(raw_dim=4, n_candidates=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="maturity_threshold"):
+        CumulantDiscovery(raw_dim=4, n_candidates=8, maturity_threshold=True)  # type: ignore[arg-type]
+
+    discovery = CumulantDiscovery(
+        raw_dim=np.int32(4),
+        n_candidates=np.int64(8),
+        maturity_threshold=np.int32(50),
+    )
+    assert discovery._raw_dim == 4
+    assert discovery._n_candidates == 8
+    assert discovery._maturity_threshold == 50
+    assert type(discovery._raw_dim) is int
+    assert type(discovery._n_candidates) is int
+    assert type(discovery._maturity_threshold) is int

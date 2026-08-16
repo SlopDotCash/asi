@@ -54,14 +54,43 @@ Reference:
 from __future__ import annotations
 
 import functools
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
 
 # =============================================================================
 # State
@@ -136,24 +165,15 @@ class CumulantDiscovery:
         gamma: float = 0.0,
         enabled: bool = True,
     ):
-        if raw_dim <= 0:
-            raise ValueError(f"raw_dim must be positive; got {raw_dim}")
-        if n_candidates <= 0:
-            raise ValueError(f"n_candidates must be positive; got {n_candidates}")
+        raw_dim = _require_int32("raw_dim", raw_dim, minimum=1)
+        n_candidates = _require_int32("n_candidates", n_candidates, minimum=1)
+        maturity_threshold = _require_int32("maturity_threshold", maturity_threshold, minimum=0)
         if not 0.0 < decay_rate < 1.0:
             raise ValueError(f"decay_rate must lie in (0, 1); got {decay_rate}")
         if not 0.0 <= replacement_rate <= 1.0:
-            raise ValueError(
-                f"replacement_rate must lie in [0, 1]; got {replacement_rate}"
-            )
-        if maturity_threshold < 0:
-            raise ValueError(
-                f"maturity_threshold must be non-negative; got {maturity_threshold}"
-            )
+            raise ValueError(f"replacement_rate must lie in [0, 1]; got {replacement_rate}")
         if predictor_step_size <= 0:
-            raise ValueError(
-                f"predictor_step_size must be positive; got {predictor_step_size}"
-            )
+            raise ValueError(f"predictor_step_size must be positive; got {predictor_step_size}")
 
         self._raw_dim = raw_dim
         self._n_candidates = n_candidates
@@ -181,16 +201,12 @@ class CumulantDiscovery:
         zero utility, zero ages."""
         k_proj, k_state = jr.split(key)
         # Unit-norm random projections
-        raw_proj = jr.normal(
-            k_proj, (self._n_candidates, self._raw_dim), dtype=jnp.float32
-        )
+        raw_proj = jr.normal(k_proj, (self._n_candidates, self._raw_dim), dtype=jnp.float32)
         norms = jnp.linalg.norm(raw_proj, axis=1, keepdims=True) + 1e-8
         projections = raw_proj / norms
         return CumulantDiscoveryState(  # type: ignore[call-arg]
             projections=projections,
-            weights=jnp.zeros(
-                (self._n_candidates, self._raw_dim), dtype=jnp.float32
-            ),
+            weights=jnp.zeros((self._n_candidates, self._raw_dim), dtype=jnp.float32),
             biases=jnp.zeros(self._n_candidates, dtype=jnp.float32),
             utility=jnp.zeros(self._n_candidates, dtype=jnp.float32),
             ages=jnp.zeros(self._n_candidates, dtype=jnp.int32),
@@ -265,9 +281,7 @@ class CumulantDiscovery:
         )
         # Inf next obs makes 0 @ inf = NaN in V(s') at zero init, then
         # alpha * nan * obs poisons every candidate. Hold the finite state.
-        inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(
-            jnp.isfinite(next_observation)
-        )
+        inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(jnp.isfinite(next_observation))
         proposed_finite = (
             jnp.all(jnp.isfinite(proposed_weights))
             & jnp.all(jnp.isfinite(proposed_biases))
@@ -308,9 +322,7 @@ class CumulantDiscovery:
         # Among mature candidates, find the one with lowest utility
         mature = state.ages >= self._maturity_threshold
         # Disqualify immature candidates by setting their utility to +inf
-        masked_utility = jnp.where(
-            mature, state.utility, jnp.full_like(state.utility, jnp.inf)
-        )
+        masked_utility = jnp.where(mature, state.utility, jnp.full_like(state.utility, jnp.inf))
         # If no candidates are mature, this index is arbitrary
         worst_idx = jnp.argmin(masked_utility)
         any_mature = jnp.any(mature)
