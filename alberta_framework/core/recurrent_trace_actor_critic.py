@@ -36,7 +36,7 @@ import dataclasses
 import functools
 import math
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, NamedTuple, Self, SupportsIndex, cast
 
 import jax
@@ -371,6 +371,19 @@ def _preflight_state_resources(
     return resources
 
 
+def _copy_config_mapping(name: str, config: object) -> dict[str, Any]:
+    """Copy a legacy-compatible mapping while normalizing hostile hooks."""
+    if not isinstance(config, Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    try:
+        payload = dict(config)
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
+    if any(type(key) is not str for key in payload):
+        raise ValueError(f"{name} fields must be strings")
+    return cast(dict[str, Any], payload)
+
+
 @dataclasses.dataclass(frozen=True)
 class RecurrentTraceActorCriticConfig:
     """Configuration for an RTU-RTRL discrete streaming actor-critic.
@@ -568,37 +581,14 @@ class RecurrentTraceActorCriticConfig:
     @classmethod
     def from_config(
         cls,
-        config: dict[str, Any],
+        config: Mapping[str, Any],
     ) -> RecurrentTraceActorCriticConfig:
         """Reconstruct and validate a configuration mapping."""
-        if type(config) is not dict:
-            raise ValueError("config must be an exact built-in dict")
-        required = {
-            field.name
-            for field in dataclasses.fields(cls)
-            if field.name not in {"adaptive_obgd", "beta2", "epsilon"}
-        }
-        optional = {"adaptive_obgd", "beta2", "epsilon"}
-        if (
-            any(type(key) is not str for key in config)
-            or not required <= set(config)
-            or not set(config) <= required | optional
-        ):
-            raise ValueError("config fields do not match the serialized schema")
-        integer_fields = {"n_actions", "hidden_size", "encoder_width", "output_width"}
-        bool_fields = {
-            "normalize_observations",
-            "normalize_rewards",
-            "rtrl_taylor_correction",
-            "adaptive_obgd",
-        }
-        for name, value in config.items():
-            expected_type = (
-                int if name in integer_fields else bool if name in bool_fields else float
-            )
-            if type(value) is not expected_type:
-                raise ValueError("serialized config values must use exact JSON scalar types")
-        return cls(**dict(config))
+        payload = _copy_config_mapping("config", config)
+        try:
+            return cls(**payload)
+        except TypeError as error:
+            raise ValueError("config fields do not match the serialized schema") from error
 
 
 def parameterless_layer_norm(inputs: Array, epsilon: float = 1e-5) -> Array:
@@ -1845,26 +1835,21 @@ class RecurrentTraceActorCriticAgent:
     @classmethod
     def from_config(
         cls,
-        config: dict[str, Any],
+        config: Mapping[str, Any],
     ) -> RecurrentTraceActorCriticAgent:
         """Reconstruct an agent from :meth:`to_config` output."""
-        if type(config) is not dict:
-            raise ValueError("serialized agent must be an exact built-in dict")
-        if any(type(key) is not str for key in config):
-            raise ValueError("serialized agent fields do not match the schema")
-        # Preserve the historical convenience form while keeping both accepted
-        # schemas exact: a caller may provide either the agent envelope or the
-        # configuration payload emitted by ``RecurrentTraceActorCriticConfig``.
-        if "type" not in config:
-            return cls(RecurrentTraceActorCriticConfig.from_config(config))
-        if set(config) != {"type", "config"}:
-            raise ValueError("serialized agent fields do not match the schema")
-        agent_type = config["type"]
+        payload = _copy_config_mapping("serialized agent", config)
+        agent_type = payload.pop("type", cls.__name__)
         if type(agent_type) is not str or agent_type != cls.__name__:
             raise ValueError("unsupported agent type")
-        raw_config = config["config"]
-        if type(raw_config) is not dict:
-            raise ValueError("serialized config must be an exact built-in dict")
+        if "config" in payload:
+            raw_config = payload.pop("config")
+            if payload:
+                raise ValueError("serialized agent fields do not match the schema")
+        else:
+            raw_config = payload
+        if not isinstance(raw_config, Mapping):
+            raise ValueError("serialized config must be a mapping")
         return cls(RecurrentTraceActorCriticConfig.from_config(raw_config))
 
     def init(self, feature_dim: int, key: Array) -> RecurrentTraceActorCriticState:

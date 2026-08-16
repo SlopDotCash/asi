@@ -2068,11 +2068,12 @@ def test_config_rejects_hostile_numeric_and_serialized_container_hooks() -> None
     with pytest.raises(ValueError, match="finite normal float32"):
         _small_config(gamma=10**1000)
     payload = _small_config().to_config()
-    with pytest.raises(ValueError, match="exact built-in dict"):
-        RecurrentTraceActorCriticConfig.from_config(DictSubclass(payload))
+    assert RecurrentTraceActorCriticConfig.from_config(DictSubclass(payload)) == _small_config()
     envelope = RecurrentTraceActorCriticAgent(_small_config()).to_config()
-    with pytest.raises(ValueError, match="exact built-in dict"):
-        RecurrentTraceActorCriticAgent.from_config(DictSubclass(envelope))
+    assert (
+        RecurrentTraceActorCriticAgent.from_config(DictSubclass(envelope)).config
+        == _small_config()
+    )
     with pytest.raises(ValueError, match="fields"):
         RecurrentTraceActorCriticConfig.from_config({**payload, "unknown": 1})
 
@@ -2344,19 +2345,16 @@ def test_config_canonicalizes_supported_numpy_float_families(code: str) -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    (
-        ("n_actions", np.int64(2)),
-        ("gamma", np.float32(0.5)),
-        ("normalize_rewards", np.bool_(True)),
-        ("gamma", 1),
-        ("n_actions", 2.0),
-    ),
+    (("n_actions", np.int64(2)), ("gamma", np.float32(0.5))),
 )
-def test_from_config_requires_exact_json_scalar_types(field: str, value: object) -> None:
+def test_from_config_preserves_supported_runtime_scalar_families(
+    field: str, value: object
+) -> None:
     payload = RecurrentTraceActorCriticConfig(n_actions=2).to_config()
     payload[field] = value
-    with pytest.raises(ValueError, match="exact JSON scalar types"):
-        RecurrentTraceActorCriticConfig.from_config(payload)
+    reconstructed = RecurrentTraceActorCriticConfig.from_config(payload)
+    expected_type = int if field == "n_actions" else float
+    assert type(getattr(reconstructed, field)) is expected_type
 
 
 @pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
@@ -2369,3 +2367,25 @@ def test_init_accepts_supported_numpy_integer_feature_dimensions(code: str) -> N
     )
     state = RecurrentTraceActorCriticAgent(config).init(np.dtype(code).type(3), jr.key(1))
     assert state.last_observation.shape == (3,)
+
+
+@pytest.mark.parametrize(
+    ("taylor", "adaptive"),
+    ((False, False), (True, False), (False, True), (True, True)),
+)
+def test_state_resource_budget_matches_optional_state_trees(
+    taylor: bool, adaptive: bool
+) -> None:
+    config = RecurrentTraceActorCriticConfig(
+        n_actions=3,
+        hidden_size=4,
+        encoder_width=5,
+        output_width=6,
+        rtrl_taylor_correction=taylor,
+        adaptive_obgd=adaptive,
+    )
+    state = RecurrentTraceActorCriticAgent(config).init(7, jr.key(5))
+    leaves = jax.tree_util.tree_leaves(state)
+    budget = config.state_resource_budget(7)
+    assert budget["state_scalars"] == sum(int(leaf.size) for leaf in leaves)
+    assert budget["state_nbytes"] == sum(int(leaf.nbytes) for leaf in leaves)
