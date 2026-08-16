@@ -49,6 +49,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -257,6 +258,25 @@ class LatentWorldModelConfig:
             _require_int32_product(f"hidden_layer[{index}]_scalars", fan_in, fan_out)
         head_input = self.hidden_sizes[-1] if self.hidden_sizes else input_dim
         _require_int32_product("head_weight_scalars", n_heads, head_input)
+        layer_sizes = (input_dim, *self.hidden_sizes)
+        trunk_parameters = sum(
+            fan_out * (fan_in + 1)
+            for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+        )
+        head_parameters = n_heads * (head_input + 1)
+        learner_direct_scalars = (
+            2 * (trunk_parameters + head_parameters) + sum(self.hidden_sizes) + 3
+        )
+        outer_state_scalars = (
+            self.observation_dim * self.latent_dim + 3 * self.latent_dim + 4
+        )
+        total_state_scalars = learner_direct_scalars + outer_state_scalars
+        for name, value in (
+            ("total_persistent_state_scalars", total_state_scalars),
+            ("total_persistent_state_bytes", 4 * total_state_scalars),
+        ):
+            if value > _INT32_MAX:
+                raise ValueError(f"derived {name} must fit in signed int32")
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -269,17 +289,23 @@ class LatentWorldModelConfig:
         return payload
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> LatentWorldModelConfig:
+    def from_config(cls, config: Mapping[str, object]) -> LatentWorldModelConfig:
         """Reconstruct from :meth:`to_config` output."""
-        if type(config) is not dict:
-            raise ValueError("config must be an actual dict")
+        if not issubclass(type(config), Mapping):
+            raise ValueError("config must be an actual mapping")
         payload = dict(config)
         config_type = payload.pop("type", None)
-        if config_type is not None and config_type != "LatentWorldModelConfig":
+        if type(config_type) is not str or config_type != "LatentWorldModelConfig":
             raise ValueError("unexpected latent world model config type")
         expected_fields = {field.name for field in dataclasses.fields(cls)}
-        if not set(payload) <= expected_fields:
-            raise ValueError("config contains unknown fields")
+        legacy_optional = {
+            "encoder_learning",
+            "encoder_step_size",
+            "max_encoder_update",
+            "encoder_collapse_gate_threshold",
+        }
+        if set(payload) - expected_fields or (expected_fields - legacy_optional) - set(payload):
+            raise ValueError("config fields do not match the serialized schema")
         if "hidden_sizes" in payload:
             if type(payload["hidden_sizes"]) is not list:
                 raise ValueError("hidden_sizes must be a list in serialized config")
@@ -292,7 +318,7 @@ class LatentWorldModelConfig:
             if type(payload["trace_mode"]) is not str:
                 raise ValueError("trace_mode must be a string in serialized config")
             payload["trace_mode"] = TraceMode(payload["trace_mode"])
-        return cls(**payload)
+        return cls(**cast(dict[str, Any], payload))
 
 
 @chex.dataclass(frozen=True)
@@ -478,24 +504,26 @@ class LatentWorldModel:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> LatentWorldModel:
+    def from_config(cls, config: Mapping[str, object]) -> LatentWorldModel:
         """Reconstruct from :meth:`to_config` output."""
         from alberta_framework.core.optimizers import (
             bounder_from_config,
             optimizer_from_config,
         )
 
-        if type(config) is not dict:
-            raise ValueError("model config must be an actual dict")
+        if not issubclass(type(config), Mapping):
+            raise ValueError("model config must be an actual mapping")
         if set(config) != {"type", "config", "learner"}:
             raise ValueError("model config fields do not match the serialized schema")
         if config.get("type") != "LatentWorldModel":
             raise ValueError("unexpected latent world model type")
         payload = dict(config)
         payload.pop("type")
-        if type(payload["config"]) is not dict or type(payload["learner"]) is not dict:
-            raise ValueError("nested model configs must be actual dicts")
-        model_config = LatentWorldModelConfig.from_config(payload["config"])
+        if not issubclass(type(payload["config"]), Mapping) or type(payload["learner"]) is not dict:
+            raise ValueError("nested model configs must use canonical mappings")
+        model_config = LatentWorldModelConfig.from_config(
+            cast(Mapping[str, object], payload["config"])
+        )
         learner_cfg = dict(payload["learner"])
         optimizer = optimizer_from_config(learner_cfg["optimizer"])
         bounder_cfg = learner_cfg.get("bounder")

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from types import MappingProxyType
 
 import chex
 import jax.numpy as jnp
@@ -616,26 +617,48 @@ def test_latent_world_model_config_requires_exact_containers_and_schema() -> Non
         )
 
     payload = LatentWorldModelConfig(observation_dim=2, n_actions=2).to_config()
-    with pytest.raises(ValueError, match="actual dict"):
-        LatentWorldModelConfig.from_config(type("ConfigDict", (dict,), {})(payload))
+    assert LatentWorldModelConfig.from_config(MappingProxyType(payload)).to_config() == payload
     malformed = dict(payload)
     malformed["hidden_sizes"] = (64,)
     with pytest.raises(ValueError, match="hidden_sizes"):
         LatentWorldModelConfig.from_config(malformed)
     malformed = dict(payload)
     malformed["task_id"] = 3
-    with pytest.raises(ValueError, match="unknown fields"):
+    with pytest.raises(ValueError, match="fields"):
         LatentWorldModelConfig.from_config(malformed)
 
     model_payload = LatentWorldModel(
         LatentWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
     ).to_config()
-    with pytest.raises(ValueError, match="actual dict"):
-        LatentWorldModel.from_config(type("ModelDict", (dict,), {})(model_payload))
+    assert LatentWorldModel.from_config(MappingProxyType(model_payload)).config.to_config() == (
+        model_payload["config"]
+    )
     malformed_model = dict(model_payload)
     malformed_model["task_id"] = 3
     with pytest.raises(ValueError, match="fields"):
         LatentWorldModel.from_config(malformed_model)
+
+
+def test_latent_config_requires_complete_schema_except_legacy_encoder_defaults() -> None:
+    payload = LatentWorldModelConfig(observation_dim=2, n_actions=2).to_config()
+    missing = dict(payload)
+    del missing["gamma"]
+    with pytest.raises(ValueError, match="fields"):
+        LatentWorldModelConfig.from_config(missing)
+    wrong_type = dict(payload)
+    wrong_type["type"] = type("StringSubclass", (str,), {})("LatentWorldModelConfig")
+    with pytest.raises(ValueError, match="type"):
+        LatentWorldModelConfig.from_config(wrong_type)
+
+
+def test_latent_config_preflights_combined_persistent_state_without_allocation() -> None:
+    with pytest.raises(ValueError, match="total_persistent_state_bytes"):
+        LatentWorldModelConfig(
+            observation_dim=1,
+            n_actions=1,
+            latent_dim=8,
+            hidden_sizes=(16_384, 16_384),
+        )
 
 
 @pytest.mark.parametrize(
