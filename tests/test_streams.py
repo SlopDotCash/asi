@@ -731,6 +731,8 @@ class TestScaleDriftStream:
             ({"max_log_scale": Fraction(10**400)}, "max_log_scale must be finite"),
             ({"min_log_scale": True}, "min_log_scale must be finite"),
             ({"max_log_scale": False}, "max_log_scale must be finite"),
+            ({"min_log_scale": -88.0}, "min_log_scale must be finite"),
+            ({"max_log_scale": 89.0}, "max_log_scale must be finite"),
         ],
     )
     def test_rejects_reversed_or_nonfinite_log_scale_bounds(self, kwargs, message):
@@ -743,20 +745,45 @@ class TestScaleDriftStream:
         timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
         chex.assert_tree_all_finite(timestep.observation)
 
-    def test_log_scale_bounds_are_narrowed_once_before_comparison(self, rng_key):
+    def test_log_scale_bounds_are_narrowed_once_before_comparison(self):
         """A Fraction midpoint rounds once (ties-to-even) to the float32 clip bound."""
         midpoint = Fraction(1) + Fraction(1, 2**24)
         stream = ScaleDriftStream(feature_dim=4, min_log_scale=midpoint, max_log_scale=1.0)
         assert stream._min_log_scale == 1.0
         assert stream._max_log_scale == 1.0
         assert type(stream._min_log_scale) is float
-        max_finite = float(np.finfo(np.float32).max)
-        stream = ScaleDriftStream(
-            feature_dim=4, min_log_scale=-max_finite, max_log_scale=max_finite
+
+    def test_log_scale_bounds_have_positive_finite_float32_exponentials(self):
+        """Accepted clip endpoints cannot collapse or overflow the scale factor."""
+        min_safe = float(
+            np.nextafter(
+                np.float32(np.log(np.finfo(np.float32).tiny)), np.float32(np.inf)
+            )
         )
-        assert stream._max_log_scale == max_finite
-        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
-        chex.assert_tree_all_finite(timestep.observation)
+        max_safe = float(
+            np.nextafter(
+                np.float32(np.log(np.finfo(np.float32).max)), np.float32(-np.inf)
+            )
+        )
+        stream = ScaleDriftStream(
+            feature_dim=4, min_log_scale=min_safe, max_log_scale=max_safe
+        )
+        endpoint_scales = jnp.exp(
+            jnp.asarray([stream._min_log_scale, stream._max_log_scale], dtype=jnp.float32)
+        )
+        assert bool(jnp.all(endpoint_scales > 0.0))
+        assert bool(jnp.all(jnp.isfinite(endpoint_scales)))
+
+        with pytest.raises(ValueError, match="min_log_scale"):
+            ScaleDriftStream(
+                feature_dim=4,
+                min_log_scale=float(np.nextafter(np.float32(min_safe), np.float32(-np.inf))),
+            )
+        with pytest.raises(ValueError, match="max_log_scale"):
+            ScaleDriftStream(
+                feature_dim=4,
+                max_log_scale=float(np.nextafter(np.float32(max_safe), np.float32(np.inf))),
+            )
 
     def test_clip_bounds_stay_finite_at_execution(self, rng_key):
         """The stored bounds are exactly what jnp.clip receives, so the walk is bounded."""

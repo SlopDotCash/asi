@@ -25,6 +25,12 @@ from alberta_framework.streams.base import ScanStream
 _INT32_MAX = 2**31 - 1
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
+_FLOAT32_EXP_SAFE_LOG_MIN = float(
+    np.nextafter(np.float32(math.log(_FLOAT32_TINY)), np.float32(math.inf))
+)
+_FLOAT32_EXP_SAFE_LOG_MAX = float(
+    np.nextafter(np.float32(math.log(_FLOAT32_MAX)), np.float32(-math.inf))
+)
 
 
 def _require_positive_int(name: str, value: object) -> int:
@@ -80,9 +86,14 @@ def _require_finite_nonnegative_float32(name: str, value: object) -> float:
 
 
 def _require_finite_float32_log_scale(name: str, value: object) -> float:
-    """Return a clip bound that stays finite once JAX narrows it to float32."""
-    message = f"{name} must be finite and remain finite once narrowed to float32"
+    """Return a clip bound whose float32 exponential stays positive and finite."""
+    message = (
+        f"{name} must be finite and remain in the float32 exp-safe interval "
+        f"[{_FLOAT32_EXP_SAFE_LOG_MIN}, {_FLOAT32_EXP_SAFE_LOG_MAX}]"
+    )
     _, narrowed = _narrow_real_to_float32(name, value, message)
+    if narrowed < _FLOAT32_EXP_SAFE_LOG_MIN or narrowed > _FLOAT32_EXP_SAFE_LOG_MAX:
+        raise ValueError(message)
     return narrowed
 
 
