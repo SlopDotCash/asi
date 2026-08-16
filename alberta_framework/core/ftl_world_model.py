@@ -34,19 +34,47 @@ from __future__ import annotations
 import dataclasses
 import functools
 import math
+import operator
 from numbers import Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Float, Int
 
 from alberta_framework._float32 import round_real_to_float32
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 _FLOAT32_TINY = 2.0**-126
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _finite_positive_normal_float32(name: str, value: object) -> float:
@@ -97,25 +125,49 @@ class SparseFTLWorldModelConfig:
 
     def __post_init__(self) -> None:
         """Validate all static dimensions and numerical parameters."""
-        if self.observation_dim <= 0:
-            raise ValueError("observation_dim must be positive")
-        if self.action_dim <= 0:
-            raise ValueError("action_dim must be positive")
-        if self.projection_dim <= 0:
-            raise ValueError("projection_dim must be positive")
-        if self.bins < 2:
-            raise ValueError("bins must be at least 2")
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "action_dim",
+            _require_int32("action_dim", self.action_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "projection_dim",
+            _require_int32("projection_dim", self.projection_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "bins",
+            _require_int32("bins", self.bins, minimum=2),
+        )
         ridge = _finite_positive_normal_float32("ridge", self.ridge)
-        if not 0.0 < self.statistics_decay <= 1.0:
-            raise ValueError("statistics_decay must be in (0, 1]")
+        statistics_decay = validated_float32_scalar(
+            "statistics_decay",
+            self.statistics_decay,
+            positive=True,
+            upper=1.0,
+            upper_inclusive=True,
+        )
         prediction_clip = _finite_positive_normal_float32(
             "prediction_clip",
             self.prediction_clip,
         )
-        if not 0.0 <= self.error_decay < 1.0:
-            raise ValueError("error_decay must be in [0, 1)")
+        error_decay = validated_float32_scalar(
+            "error_decay",
+            self.error_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
         object.__setattr__(self, "ridge", ridge)
+        object.__setattr__(self, "statistics_decay", statistics_decay)
         object.__setattr__(self, "prediction_clip", prediction_clip)
+        object.__setattr__(self, "error_decay", error_decay)
 
     @property
     def input_dim(self) -> int:
