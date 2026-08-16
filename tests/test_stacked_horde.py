@@ -801,3 +801,89 @@ def test_stacked_horde_config_accepts_and_canonicalizes_numpy_integers() -> None
     assert cfg.n_demons == 2
     assert cfg.feature_dim == 4
     assert cfg.cumulant_indices == (0, 1)
+
+
+_NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_stacked_horde_config_canonicalizes_every_numpy_integer_family(
+    integer_type: type,
+) -> None:
+    config = StackedHordeConfig(
+        n_demons=integer_type(1),
+        feature_dim=integer_type(2),
+        gammas=(0.9,),
+        lamdas=(0.8,),
+        cumulant_indices=(integer_type(0),),
+    )
+
+    assert type(config.n_demons) is int
+    assert type(config.feature_dim) is int
+    assert type(config.cumulant_indices[0]) is int
+
+
+def test_stacked_horde_rejects_hostile_containers_and_float_values() -> None:
+    class TupleSubclass(tuple):
+        pass
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type:
+            return float
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    with pytest.raises(ValueError, match="gammas"):
+        StackedHordeConfig(
+            n_demons=1,
+            feature_dim=2,
+            gammas=TupleSubclass((0.9,)),
+            lamdas=(0.8,),
+            cumulant_indices=(0,),
+        )
+    with pytest.raises(ValueError, match=r"gammas\[0\]"):
+        _simple_config(n_demons=1, gammas=(ClassSpoof(),))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=r"lamdas\[0\]"):
+        _simple_config(n_demons=1, lamdas=(True,))  # type: ignore[arg-type]
+
+
+def test_stacked_horde_from_config_accepts_only_exact_list_or_tuple_sequences() -> None:
+    payload = _simple_config().to_config()
+    payload["gammas"] = tuple(payload["gammas"])
+    assert StackedHordeConfig.from_config(payload).gammas == (0.9, 0.9)
+
+    payload = _simple_config().to_config()
+    payload["gammas"] = "0.9"
+    with pytest.raises(ValueError, match="gammas"):
+        StackedHordeConfig.from_config(payload)
+
+
+def test_stacked_horde_preflights_aggregate_resources_before_allocation() -> None:
+    last_feature_dim = (2**31 - 1 - 26) // 8
+    StackedHordeConfig(
+        n_demons=1,
+        feature_dim=last_feature_dim,
+        gammas=(0.9,),
+        lamdas=(0.8,),
+        cumulant_indices=(0,),
+    )
+    with pytest.raises(ValueError, match="aggregate bytes"):
+        StackedHordeConfig(
+            n_demons=1,
+            feature_dim=last_feature_dim + 1,
+            gammas=(0.9,),
+            lamdas=(0.8,),
+            cumulant_indices=(0,),
+        )
+
+
+def test_nexting_spec_preflights_before_materializing_derived_demons() -> None:
+    last_feature_dim = (2**31 - 1 - 26) // 8
+    with pytest.raises(ValueError, match="aggregate bytes"):
+        nexting_spec(
+            feature_dim=last_feature_dim + 1,
+            cumulant_indices=(0,),
+            gammas=(0.9,),
+        )

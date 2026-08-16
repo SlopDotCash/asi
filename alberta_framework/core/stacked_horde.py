@@ -51,6 +51,7 @@ from jax import Array
 from jaxtyping import Bool, Float
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 __all__ = [
     "StackedHordeConfig",
@@ -156,6 +157,30 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_sequence(name: str, value: object) -> tuple[object, ...]:
+    if type(value) is not tuple:
+        raise ValueError(f"{name} must be an actual tuple")
+    return cast(tuple[object, ...], value)
+
+
+def _decode_sequence(name: str, value: object) -> tuple[object, ...]:
+    if type(value) not in (list, tuple):
+        raise ValueError(f"{name} must be an actual list or tuple")
+    return tuple(cast(list[object] | tuple[object, ...], value))
+
+
+def _preflight_horde_resources(n_demons: int, feature_dim: int) -> None:
+    parameter_scalars = n_demons * feature_dim
+    # Static gamma/lambda/index arrays, dynamic weights/traces, and all public
+    # per-step result leaves can coexist at the update boundary.
+    aggregate_scalars = 2 * parameter_scalars + 6 * n_demons + 2
+    aggregate_nbytes = 8 * parameter_scalars + 21 * n_demons + 5
+    if aggregate_scalars > _INT32_MAX:
+        raise ValueError("stacked Horde aggregate scalars must fit signed int32")
+    if aggregate_nbytes > _INT32_MAX:
+        raise ValueError("stacked Horde aggregate bytes must fit signed int32")
+
+
 @dataclass(frozen=True)
 class StackedHordeConfig:
     """Static configuration for :class:`StackedLinearHorde`.
@@ -184,25 +209,41 @@ class StackedHordeConfig:
         n_demons = _require_int32("n_demons", self.n_demons, minimum=1)
         feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
 
-        for name, seq in (
-            ("gammas", self.gammas),
-            ("lamdas", self.lamdas),
-            ("cumulant_indices", self.cumulant_indices),
-        ):
+        raw_sequences = {
+            "gammas": _require_sequence("gammas", self.gammas),
+            "lamdas": _require_sequence("lamdas", self.lamdas),
+            "cumulant_indices": _require_sequence(
+                "cumulant_indices", self.cumulant_indices
+            ),
+        }
+        for name, seq in raw_sequences.items():
             if len(seq) != n_demons:
                 raise ValueError(f"{name} must have length n_demons={n_demons}")
-        if any(not 0.0 <= g <= 1.0 for g in self.gammas):
-            raise ValueError("every gamma must be in [0, 1]")
-        if any(not 0.0 <= la <= 1.0 for la in self.lamdas):
-            raise ValueError("every lamda must be in [0, 1]")
+
+        gammas = tuple(
+            validated_float32_scalar(
+                f"gammas[{i}]", value, lower=0.0, upper=1.0
+            )
+            for i, value in enumerate(raw_sequences["gammas"])
+        )
+        lamdas = tuple(
+            validated_float32_scalar(
+                f"lamdas[{i}]", value, lower=0.0, upper=1.0
+            )
+            for i, value in enumerate(raw_sequences["lamdas"])
+        )
 
         cumulant_indices = tuple(
             _require_int32(f"cumulant_indices[{i}]", idx, minimum=0)
-            for i, idx in enumerate(self.cumulant_indices)
+            for i, idx in enumerate(raw_sequences["cumulant_indices"])
         )
+
+        _preflight_horde_resources(n_demons, feature_dim)
 
         object.__setattr__(self, "n_demons", n_demons)
         object.__setattr__(self, "feature_dim", feature_dim)
+        object.__setattr__(self, "gammas", gammas)
+        object.__setattr__(self, "lamdas", lamdas)
         object.__setattr__(self, "cumulant_indices", cumulant_indices)
         object.__setattr__(
             self,
@@ -228,7 +269,7 @@ class StackedHordeConfig:
         config = dict(config)
         config.pop("type", None)
         for key in ("gammas", "lamdas", "cumulant_indices"):
-            config[key] = tuple(config[key])
+            config[key] = _decode_sequence(key, config[key])
         return cls(**config)
 
 
@@ -253,10 +294,26 @@ def nexting_spec(
         lamda: Shared trace decay.
         step_size: Shared TD step-size.
     """
+    feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+    raw_indices = _require_sequence("cumulant_indices", cumulant_indices)
+    raw_gammas = _require_sequence("gammas", gammas)
+    canonical_indices = tuple(
+        _require_int32(f"cumulant_indices[{i}]", value, minimum=0)
+        for i, value in enumerate(raw_indices)
+    )
+    canonical_gammas = tuple(
+        validated_float32_scalar(f"gammas[{i}]", value, lower=0.0, upper=1.0)
+        for i, value in enumerate(raw_gammas)
+    )
+    canonical_lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
+    n_demons = len(canonical_indices) * len(canonical_gammas)
+    if n_demons < 1 or n_demons > _INT32_MAX:
+        raise ValueError("derived n_demons must be in the signed int32 domain")
+    _preflight_horde_resources(n_demons, feature_dim)
     idxs: list[int] = []
     gs: list[float] = []
-    for c in cumulant_indices:
-        for g in gammas:
+    for c in canonical_indices:
+        for g in canonical_gammas:
             idxs.append(c)
             gs.append(g)
     n = len(idxs)
@@ -264,7 +321,7 @@ def nexting_spec(
         n_demons=n,
         feature_dim=feature_dim,
         gammas=tuple(gs),
-        lamdas=(lamda,) * n,
+        lamdas=(canonical_lamda,) * n,
         cumulant_indices=tuple(idxs),
         step_size=step_size,
     )
