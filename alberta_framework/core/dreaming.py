@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
+from numbers import Integral
 from typing import Any, Literal, Protocol, cast
 
 import chex
@@ -31,6 +31,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.behavior_model import (
     BehaviorModel,
     BehaviorModelState,
@@ -46,33 +47,32 @@ from alberta_framework.core.world_model import (
 )
 
 
-def _require_exact_int(value: object, name: str, *, minimum: int) -> None:
-    """Reject bools, floats, and other non-int scalars for count fields."""
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{name} must be an int >= {minimum}")
+def _require_exact_int(value: object, name: str, *, minimum: int) -> int:
+    """Return one canonical signed-int32 count from a trusted integer type."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an int in [{minimum}, {2**31 - 1}]")
+    canonical = int(cast(Integral, value))
+    if not minimum <= canonical <= 2**31 - 1:
+        raise ValueError(f"{name} must be an int in [{minimum}, {2**31 - 1}]")
+    return canonical
 
 
-def _require_finite_nonnegative(value: object, name: str) -> None:
-    """Reject NaN, infinities, negatives, and non-real scalars."""
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int | float)
-        or not math.isfinite(value)
-        or value < 0.0
-    ):
-        raise ValueError(f"{name} must be finite and non-negative")
+def _require_finite_nonnegative(value: object, name: str) -> float:
+    """Return a canonical finite float32-domain non-negative scalar."""
+    return validated_float32_scalar(name, value, lower=0.0)
 
 
-def _require_finite(value: object, name: str) -> None:
-    """Reject NaN, infinities, and non-real scalars (sign-agnostic)."""
-    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
-        raise ValueError(f"{name} must be finite")
+def _require_finite(value: object, name: str) -> float:
+    """Return a canonical finite float32-domain scalar."""
+    return validated_float32_scalar(name, value)
 
 
-def _require_bool(value: object, name: str) -> None:
+def _require_bool(value: object, name: str) -> bool:
     """Reject truthy stand-ins for exact bools."""
-    if not isinstance(value, bool):
+    if type(value) is not bool:
         raise ValueError(f"{name} must be a bool")
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,17 +105,32 @@ class DreamingConfig:
 
     def __post_init__(self) -> None:
         """Validate scalar configuration, rejecting NaN and type stand-ins."""
-        _require_exact_int(self.warmup_steps, "warmup_steps", minimum=0)
-        _require_finite_nonnegative(self.max_model_error_ema, "max_model_error_ema")
-        _require_finite_nonnegative(self.max_uncertainty, "max_uncertainty")
-        _require_finite_nonnegative(self.min_discount, "min_discount")
+        object.__setattr__(
+            self, "warmup_steps", _require_exact_int(self.warmup_steps, "warmup_steps", minimum=0)
+        )
+        for name in (
+            "max_model_error_ema",
+            "max_uncertainty",
+            "min_discount",
+            "confidence_threshold",
+            "max_model_error",
+            "discount_floor",
+        ):
+            object.__setattr__(self, name, _require_finite_nonnegative(getattr(self, name), name))
         if self.max_discount is not None:
-            _require_finite_nonnegative(self.max_discount, "max_discount")
-        _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1)
-        _require_finite_nonnegative(self.confidence_threshold, "confidence_threshold")
-        _require_finite_nonnegative(self.max_model_error, "max_model_error")
-        _require_finite_nonnegative(self.discount_floor, "discount_floor")
-        _require_bool(self.stop_on_terminal, "stop_on_terminal")
+            object.__setattr__(
+                self,
+                "max_discount",
+                _require_finite_nonnegative(self.max_discount, "max_discount"),
+            )
+        object.__setattr__(
+            self,
+            "rollout_horizon",
+            _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1),
+        )
+        object.__setattr__(
+            self, "stop_on_terminal", _require_bool(self.stop_on_terminal, "stop_on_terminal")
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -184,15 +199,20 @@ class DreamSelectionConfig:
 
     def __post_init__(self) -> None:
         """Validate scalar configuration, rejecting NaN and type stand-ins."""
-        _require_exact_int(self.max_items, "max_items", minimum=1)
-        _require_finite(self.surprise_weight, "surprise_weight")
-        _require_finite(self.utility_weight, "utility_weight")
-        _require_finite(self.confidence_weight, "confidence_weight")
-        _require_finite(self.model_error_weight, "model_error_weight")
-        _require_finite(self.min_surprise, "min_surprise")
-        _require_finite(self.min_utility, "min_utility")
-        _require_finite_nonnegative(self.min_confidence, "min_confidence")
-        _require_finite_nonnegative(self.max_model_error, "max_model_error")
+        object.__setattr__(
+            self, "max_items", _require_exact_int(self.max_items, "max_items", minimum=1)
+        )
+        for name in (
+            "surprise_weight",
+            "utility_weight",
+            "confidence_weight",
+            "model_error_weight",
+            "min_surprise",
+            "min_utility",
+        ):
+            object.__setattr__(self, name, _require_finite(getattr(self, name), name))
+        for name in ("min_confidence", "max_model_error"):
+            object.__setattr__(self, name, _require_finite_nonnegative(getattr(self, name), name))
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -457,10 +477,10 @@ class RecentObservationBuffer:
 
     def __init__(self, capacity: int, observation_dim: int):
         """Initialize the buffer shape."""
-        _require_exact_int(capacity, "capacity", minimum=1)
-        _require_exact_int(observation_dim, "observation_dim", minimum=1)
-        self._capacity = capacity
-        self._observation_dim = observation_dim
+        self._capacity = _require_exact_int(capacity, "capacity", minimum=1)
+        self._observation_dim = _require_exact_int(
+            observation_dim, "observation_dim", minimum=1
+        )
 
     @property
     def capacity(self) -> int:
@@ -559,11 +579,16 @@ class DreamRolloutConfig:
 
     def __post_init__(self) -> None:
         """Validate scalar configuration, rejecting NaN and type stand-ins."""
-        _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1)
-        _require_finite_nonnegative(self.confidence_threshold, "confidence_threshold")
-        _require_finite_nonnegative(self.max_model_error, "max_model_error")
-        _require_finite_nonnegative(self.discount_floor, "discount_floor")
-        _require_bool(self.stop_on_terminal, "stop_on_terminal")
+        object.__setattr__(
+            self,
+            "rollout_horizon",
+            _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1),
+        )
+        for name in ("confidence_threshold", "max_model_error", "discount_floor"):
+            object.__setattr__(self, name, _require_finite_nonnegative(getattr(self, name), name))
+        object.__setattr__(
+            self, "stop_on_terminal", _require_bool(self.stop_on_terminal, "stop_on_terminal")
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""

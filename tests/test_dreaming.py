@@ -1,20 +1,24 @@
 from __future__ import annotations
 
 import dataclasses
+from fractions import Fraction
 from typing import Any
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.dreaming import (
     DreamBehaviorModelPrediction,
     DreamingConfig,
     DreamRolloutConfig,
+    DreamSelectionConfig,
     DreamWorldModelPrediction,
     GuardedDreamer,
+    RecentObservationBuffer,
     dream_one_step,
     dream_rollout,
     imagined_rollout_to_gvf_items,
@@ -24,6 +28,75 @@ from alberta_framework.core.dreaming import (
     init_dream_rollout_state,
     slice_imagined_transition,
 )
+
+
+class _ClassSpoof:
+    def __init__(self, reported_type: type[object]) -> None:
+        self._reported_type = reported_type
+
+    @property
+    def __class__(self) -> type[object]:  # type: ignore[override]
+        return self._reported_type
+
+    def __float__(self) -> float:
+        raise RuntimeError("must not convert")
+
+    def __int__(self) -> int:
+        raise RuntimeError("must not convert")
+
+
+def test_dream_configs_reject_class_spoofs_before_conversion() -> None:
+    with pytest.raises(ValueError, match="warmup_steps"):
+        DreamingConfig(warmup_steps=_ClassSpoof(int))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="max_model_error"):
+        DreamingConfig(max_model_error=_ClassSpoof(float))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="stop_on_terminal"):
+        DreamRolloutConfig(stop_on_terminal=_ClassSpoof(bool))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="capacity"):
+        RecentObservationBuffer(_ClassSpoof(int), 2)  # type: ignore[arg-type]
+
+
+def test_dream_configs_validate_and_canonicalize_float32_sink_values() -> None:
+    selection = DreamSelectionConfig(
+        surprise_weight=np.float32(-0.5),
+        utility_weight=Fraction(1, 4),
+        min_confidence=np.float64(0.25),
+    )
+    assert selection.surprise_weight == -0.5
+    assert selection.utility_weight == 0.25
+    assert selection.min_confidence == 0.25
+    assert all(
+        type(value) is float
+        for value in (
+            selection.surprise_weight,
+            selection.utility_weight,
+            selection.min_confidence,
+        )
+    )
+    with pytest.raises(ValueError, match="surprise_weight"):
+        DreamSelectionConfig(surprise_weight=1e100)
+    with pytest.raises(ValueError, match="min_confidence"):
+        DreamSelectionConfig(min_confidence=Fraction(-1, 10**50))
+
+
+@pytest.mark.parametrize("value", [2**31, True, 1.5])
+def test_dream_count_fields_reject_non_int32_values(value: object) -> None:
+    with pytest.raises(ValueError, match="max_items"):
+        DreamSelectionConfig(max_items=value)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="capacity"):
+        RecentObservationBuffer(value, 2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="observation_dim"):
+        RecentObservationBuffer(2, value)  # type: ignore[arg-type]
+
+
+def test_dream_count_fields_accept_int32_endpoint_and_numpy_ints() -> None:
+    selection = DreamSelectionConfig(max_items=np.int32(3))
+    buffer = RecentObservationBuffer(np.int32(2), np.int64(4))
+    endpoint = DreamSelectionConfig(max_items=2**31 - 1)
+    assert type(selection.max_items) is int
+    assert type(buffer.capacity) is int
+    assert type(buffer.observation_dim) is int
+    assert endpoint.max_items == 2**31 - 1
 
 
 def _assert_rollout_state_close(left, right) -> None:  # type: ignore[no-untyped-def]
