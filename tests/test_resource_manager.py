@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from types import MappingProxyType
 
 import chex
 import jax
@@ -532,3 +533,136 @@ def test_generator_meta_resource_manager_integer_validation() -> None:
     assert mgr._op_ids == (1,)
     assert type(mgr._op_ids[0]) is int
     assert type(mgr.n_contexts) is int
+
+
+class _FloatSubclass(float):
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("hostile hook executed")
+
+
+class _TupleSpoof:
+    @property
+    def __class__(self) -> type[tuple[object, ...]]:
+        return tuple
+
+    def __iter__(self) -> object:
+        raise RuntimeError("hostile iterator executed")
+
+
+def _minimal_generator_manager(**overrides: object) -> GeneratorMetaResourceManager:
+    kwargs: dict[str, object] = {
+        "policy_names": ("p1", "p2"),
+        "op_ids": (0, 1),
+        "parent_modes": (0, 1),
+        "replacement_multipliers": (1.0, 1.0),
+        "promotion_margin_multipliers": (1.0, 1.0),
+        "candidate_min_age_multipliers": (1.0, 1.0),
+        "imprint_scales": (0.0, 1.0),
+    }
+    kwargs.update(overrides)
+    return GeneratorMetaResourceManager(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("learning_rate", _FloatSubclass(0.5)),
+        ("discount", 1e100),
+        ("discount", np.float64(1e-100)),
+        ("exploration", np.float64(1e-100)),
+        ("exploration", np.float64(1.0 - 1e-10)),
+        ("loss_decay", np.float64(1.0 - 1e-10)),
+        ("cost_weight", np.float64(1e-100)),
+        ("advantage_clip", True),
+    ],
+)
+def test_learned_resource_manager_rejects_invalid_float32_config(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        LearnedResourceManager(n_actions=2, **{field: value})  # type: ignore[arg-type]
+
+
+def test_resource_manager_float32_config_is_canonical_and_json_safe() -> None:
+    manager = LearnedResourceManager(
+        n_actions=np.int16(2),
+        learning_rate=np.float32(0.5),
+        discount=np.float64(0.75),
+        exploration=np.float16(0.125),
+        loss_decay=np.float32(0.5),
+        cost_weight=np.float64(0.25),
+        advantage_clip=np.float32(2.0),
+    )
+    config = manager.to_config()
+    assert all(type(config[name]) is float for name in (
+        "learning_rate", "discount", "exploration", "loss_decay", "cost_weight",
+        "advantage_clip",
+    ))
+
+
+def test_resource_manager_preflights_complete_state_before_allocation() -> None:
+    # 3 float32 matrices plus one int32 counter must fit a signed-int32 byte count.
+    LearnedResourceManager(n_actions=178_956_970)
+    with pytest.raises(ValueError, match="state exceeds"):
+        LearnedResourceManager(n_actions=178_956_971)
+    with pytest.raises(ValueError, match="state exceeds"):
+        _minimal_generator_manager(n_contexts=89_478_486)
+
+
+def test_generator_config_rejects_hostile_sequences_and_accepts_mapping_proxy() -> None:
+    with pytest.raises(ValueError, match="policy_names"):
+        _minimal_generator_manager(policy_names=_TupleSpoof())
+
+    config = _minimal_generator_manager().to_config()
+    clone = GeneratorMetaResourceManager.from_config(MappingProxyType(config))
+    assert clone.to_config() == config
+    config["op_ids"] = range(2)
+    with pytest.raises(ValueError, match="op_ids"):
+        GeneratorMetaResourceManager.from_config(config)
+
+
+@pytest.mark.parametrize("shape", [(), (1,), (1, 2), (2, 1), (3,)])
+def test_resource_manager_updates_reject_wrong_vector_shapes_under_jit(
+    shape: tuple[int, ...]
+) -> None:
+    learned = LearnedResourceManager(n_actions=2)
+    generator = _minimal_generator_manager()
+    malformed = jnp.zeros(shape, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="losses"):
+        learned.update(learned.init(), malformed)
+    with pytest.raises(ValueError, match="rewards"):
+        generator.update(generator.init(), malformed)
+
+
+def test_generator_float_sequences_are_validated_at_float32_sink() -> None:
+    with pytest.raises(ValueError, match="replacement_multipliers"):
+        _minimal_generator_manager(replacement_multipliers=(1.0, 1e100))
+    with pytest.raises(ValueError, match="initial_preferences"):
+        _minimal_generator_manager(initial_preferences=(0.0, _FloatSubclass(1.0)))
+    with pytest.raises(ValueError, match="initial_preferences span"):
+        _minimal_generator_manager(initial_preferences=(-3e38, 3e38))
+    manager = _minimal_generator_manager(
+        replacement_multipliers=(np.float32(0.5), np.float64(2.0)),
+        initial_preferences=(np.float32(-0.5), np.float64(0.5)),
+    )
+    config = manager.to_config()
+    assert all(type(value) is float for value in config["replacement_multipliers"])
+    assert all(type(value) is float for value in config["initial_preferences"])
+
+
+def test_resource_manager_state_contract_and_counter_saturation() -> None:
+    learned = LearnedResourceManager(n_actions=2)
+    state = learned.init()
+    malformed = state.replace(log_weights=jnp.zeros((2,), dtype=jnp.float32))
+    with pytest.raises(ValueError, match="state.log_weights"):
+        learned.weights(malformed)
+
+    saturated = state.replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
+    result = learned.update(saturated, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1
+
+    invalid = state.replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+    result = learned.update(invalid, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, invalid)
