@@ -48,12 +48,14 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
@@ -75,6 +77,40 @@ from alberta_framework.core.update_safety import (
 
 EVIDENCE_LEVEL = "L0"
 SCIENTIFIC_PROMOTION_ALLOWED = False
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
+    if type(sizes) is not tuple:
+        raise ValueError("hidden_sizes must be an actual tuple")
+    return tuple(
+        _require_int32(f"hidden_sizes[{index}]", size, minimum=1)
+        for index, size in enumerate(sizes)
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -115,6 +151,29 @@ class LatentWorldModelConfig:
     encoder_step_size: float = 0.01
     max_encoder_update: float = 0.1
     encoder_collapse_gate_threshold: float = 0.0
+
+    def __post_init__(self) -> None:
+        """Validate structural dimensions and canonicalize integer types."""
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "n_actions",
+            _require_int32("n_actions", self.n_actions, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "latent_dim",
+            _require_int32("latent_dim", self.latent_dim, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "hidden_sizes",
+            _validate_hidden_sizes(self.hidden_sizes),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -386,9 +445,7 @@ class LatentWorldModel:
         observation: Array,
     ) -> Float[Array, " latent_dim"]:
         """Encode one observation with explicit (differentiable) encoder params."""
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._config.observation_dim,))
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
         scaled = obs / jnp.maximum(scale, jnp.asarray(1e-6, dtype=jnp.float32))
         return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
@@ -555,9 +612,7 @@ class LatentWorldModel:
             encoder_bias: Array,
         ) -> Array:
             latent = self._encode_with(encoder_matrix, encoder_bias, observation)
-            target_next_latent = self._encode_with(
-                encoder_matrix, encoder_bias, next_observation
-            )
+            target_next_latent = self._encode_with(encoder_matrix, encoder_bias, next_observation)
             raw_predictions = self._learner.predict(
                 state.learner_state,
                 self.input_features_from_latent(latent, action),
@@ -586,9 +641,7 @@ class LatentWorldModel:
         )
         step_size = jnp.asarray(config.encoder_step_size, dtype=jnp.float32)
         bound = jnp.asarray(config.max_encoder_update, dtype=jnp.float32)
-        candidate_matrix = state.encoder_matrix + jnp.clip(
-            -step_size * grad_matrix, -bound, bound
-        )
+        candidate_matrix = state.encoder_matrix + jnp.clip(-step_size * grad_matrix, -bound, bound)
         candidate_bias = state.encoder_bias + jnp.clip(-step_size * grad_bias, -bound, bound)
         gate_blocked = collapse_score > jnp.asarray(
             config.encoder_collapse_gate_threshold, dtype=jnp.float32
@@ -630,9 +683,9 @@ class LatentWorldModel:
         )
         reward_arr = jnp.asarray(reward, dtype=jnp.float32)
         discount_arr = jnp.asarray(discount, dtype=jnp.float32)
-        next_observation_arr = jnp.asarray(
-            next_observation, dtype=jnp.float32
-        ).reshape((self._config.observation_dim,))
+        next_observation_arr = jnp.asarray(next_observation, dtype=jnp.float32).reshape(
+            (self._config.observation_dim,)
+        )
         inputs_valid = (
             jnp.all(jnp.isfinite(observation_arr))
             & action_valid
@@ -642,14 +695,10 @@ class LatentWorldModel:
             & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_observation_arr))
         )
-        safe_observation = jnp.where(
-            inputs_valid, observation_arr, jnp.zeros_like(observation_arr)
-        )
+        safe_observation = jnp.where(inputs_valid, observation_arr, jnp.zeros_like(observation_arr))
         safe_action = jnp.where(inputs_valid, action_arr, jnp.zeros_like(action_arr))
         safe_reward = jnp.where(inputs_valid, reward_arr, jnp.zeros_like(reward_arr))
-        safe_discount = jnp.where(
-            inputs_valid, discount_arr, jnp.zeros_like(discount_arr)
-        )
+        safe_discount = jnp.where(inputs_valid, discount_arr, jnp.zeros_like(discount_arr))
         safe_next_observation = jnp.where(
             inputs_valid,
             next_observation_arr,
@@ -681,8 +730,7 @@ class LatentWorldModel:
         next_mean = jnp.where(
             first,
             target_next_latent,
-            collapse_decay * state.latent_mean_ema
-            + (1.0 - collapse_decay) * target_next_latent,
+            collapse_decay * state.latent_mean_ema + (1.0 - collapse_decay) * target_next_latent,
         )
         centered = target_next_latent - next_mean
         next_var = jnp.where(
@@ -705,8 +753,7 @@ class LatentWorldModel:
         next_prediction_error_ema = jnp.where(
             first,
             prediction_error,
-            surprise_decay * state.prediction_error_ema
-            + (1.0 - surprise_decay) * prediction_error,
+            surprise_decay * state.prediction_error_ema + (1.0 - surprise_decay) * prediction_error,
         )
         next_collapse_score_ema = jnp.where(
             first,
@@ -776,9 +823,7 @@ class LatentWorldModel:
             next_latent=neutralize_array(update_applied, prediction.next_latent),
             reward=neutralize_array(update_applied, prediction.reward),
             discount=neutralize_array(update_applied, prediction.discount),
-            raw_predictions=neutralize_array(
-                update_applied, prediction.raw_predictions
-            ),
+            raw_predictions=neutralize_array(update_applied, prediction.raw_predictions),
         )
         return LatentWorldModelUpdateResult(
             state=committed_state,
@@ -796,22 +841,16 @@ class LatentWorldModel:
             learner_result=reported_learner_result,
             encoder_update_applied=encoder_update_applied & update_applied,
             encoder_collapse_gated=encoder_collapse_gated & update_applied,
-            encoder_gradient_norm=neutralize_array(
-                update_applied, encoder_gradient_norm
-            ),
+            encoder_gradient_norm=neutralize_array(update_applied, encoder_gradient_norm),
             update_applied=update_applied,
         )
 
     def _validate_config(self, config: LatentWorldModelConfig) -> LatentWorldModelConfig:
         """Fail closed on malformed configuration and return its canonical float32 form."""
-        if config.observation_dim <= 0:
-            raise ValueError("observation_dim must be positive")
-        if config.n_actions <= 0:
-            raise ValueError("n_actions must be positive")
-        if config.latent_dim <= 0:
-            raise ValueError("latent_dim must be positive")
-        if any(size <= 0 for size in config.hidden_sizes):
-            raise ValueError("hidden_sizes must contain only positive widths")
+        _require_int32("observation_dim", config.observation_dim, minimum=1)
+        _require_int32("n_actions", config.n_actions, minimum=1)
+        _require_int32("latent_dim", config.latent_dim, minimum=1)
+        _validate_hidden_sizes(config.hidden_sizes)
         observation_scale = config.observation_scale
         if observation_scale is not None:
             if len(observation_scale) != config.observation_dim:
@@ -905,23 +944,26 @@ def run_latent_world_model_learning_loop(
             result.update_applied,
         )
 
-    final_state, (
-        latent_predictions,
-        next_latent_predictions,
-        reward_predictions,
-        discount_predictions,
-        target_next_latents,
-        surprises,
-        prediction_errors,
-        reward_errors,
-        discount_errors,
-        latent_std_means,
-        collapse_scores,
-        per_head_metrics,
-        encoder_updates_applied,
-        encoder_collapse_gates,
-        encoder_gradient_norms,
-        updates_applied,
+    (
+        final_state,
+        (
+            latent_predictions,
+            next_latent_predictions,
+            reward_predictions,
+            discount_predictions,
+            target_next_latents,
+            surprises,
+            prediction_errors,
+            reward_errors,
+            discount_errors,
+            latent_std_means,
+            collapse_scores,
+            per_head_metrics,
+            encoder_updates_applied,
+            encoder_collapse_gates,
+            encoder_gradient_norms,
+            updates_applied,
+        ),
     ) = jax.lax.scan(
         _scan_fn,
         state,

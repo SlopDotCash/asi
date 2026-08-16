@@ -555,3 +555,32 @@ def test_trainable_encoder_config_validation_fails_closed(
     )
     with pytest.raises(ValueError):
         LatentWorldModel(config)
+
+
+def test_latent_world_model_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="observation_dim"):
+        LatentWorldModelConfig(observation_dim=True, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        LatentWorldModelConfig(observation_dim=2, n_actions=2.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="latent_dim"):
+        LatentWorldModelConfig(observation_dim=2, n_actions=2, latent_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        LatentWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=(True,))  # type: ignore[arg-type]
+
+
+def test_latent_world_model_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    cfg = LatentWorldModelConfig(
+        observation_dim=np.int32(4),
+        n_actions=np.int64(2),
+        latent_dim=np.uint16(8),
+        hidden_sizes=(np.int32(32), np.int64(16)),
+    )
+    assert type(cfg.observation_dim) is int
+    assert type(cfg.n_actions) is int
+    assert type(cfg.latent_dim) is int
+    assert type(cfg.hidden_sizes[0]) is int
+    assert type(cfg.hidden_sizes[1]) is int
+    assert cfg.observation_dim == 4
+    assert cfg.n_actions == 2
+    assert cfg.latent_dim == 8
+    assert cfg.hidden_sizes == (32, 16)
