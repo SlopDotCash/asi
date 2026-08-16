@@ -88,6 +88,41 @@ class _FloatClassSpoof:
         return 0.1
 
 
+class _ExplodingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises an ordinary exception."""
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class _InterruptingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises a BaseException."""
+
+    def __float__(self) -> float:
+        raise KeyboardInterrupt
+
+
+class _ExplodingRepr:
+    """An invalid hyperparameter value whose repr hook raises."""
+
+    calls = 0
+
+    def __repr__(self) -> str:
+        type(self).calls += 1
+        raise RuntimeError("untrusted __repr__ hook executed")
+
+
+class _ExplodingHashMeta(type):
+    """A metaclass whose hash hook raises inside ABC subclass checks."""
+
+    def __hash__(cls) -> int:
+        raise RuntimeError("untrusted metaclass __hash__ hook executed")
+
+
+class _ExplodingHashClassValue(metaclass=_ExplodingHashMeta):
+    """A value or mapping whose class cannot be hashed by issubclass caches."""
+
+
 TINY = MicroStreamConfig(
     family="input_permutation",
     n_regimes=4,
@@ -858,6 +893,46 @@ class TestShards:
             dataclasses.replace(
                 micro_arm_spec("sgd_raw"),
                 hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {"step_size": _ExplodingConversionFloat(0.1)},
+            {"step_size": _ExplodingHashClassValue()},
+            _ExplodingHashClassValue(),
+        ],
+        ids=["conversion-hook", "metaclass-hash-value", "metaclass-hash-mapping"],
+    )
+    def test_spec_and_result_normalize_hook_failures_to_value_error(
+        self, hyperparameters: object
+    ) -> None:
+        """Ordinary hook failures surface as the documented ValueError, not the hook's type."""
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                self._result(),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    def test_invalid_hyperparameter_rejection_never_calls_repr(self) -> None:
+        _ExplodingRepr.calls = 0
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _ExplodingRepr()},  # type: ignore[arg-type]
+            )
+        assert _ExplodingRepr.calls == 0
+
+    def test_base_exceptions_from_conversion_hooks_still_propagate(self) -> None:
+        with pytest.raises(KeyboardInterrupt):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _InterruptingConversionFloat(0.1)},
             )
 
     def test_payload_rejects_an_unregistered_result_name(self):

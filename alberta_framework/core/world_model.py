@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -263,7 +264,7 @@ class ActionConditionedWorldModel:
         head_optimizer: AnyOptimizer | None = None,
     ):
         """Initialize the world model."""
-        self._validate_config(config)
+        config = self._validate_config(config)
         self._config = config
         self._observation_scale = (
             tuple(1.0 for _ in range(config.observation_dim))
@@ -456,14 +457,12 @@ class ActionConditionedWorldModel:
         discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
         return jnp.concatenate([normalized_delta, reward_target, discount_target], axis=0)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def predict(
+    def _prediction_and_raw_diagnostics(
         self,
         state: ActionConditionedWorldModelState,
         observation: Array,
         action: Array,
-    ) -> WorldModelPrediction:
-        """Predict the next observation, reward, and discount."""
+    ) -> tuple[WorldModelPrediction, Array, Array]:
         inputs, inputs_valid, safe_obs = self._safe_input_features(
             observation,
             action,
@@ -476,7 +475,7 @@ class ActionConditionedWorldModel:
             -self._config.max_delta_scale,
             self._config.max_delta_scale,
         )
-        next_observation = jnp.where(
+        decoded_next_observation = jnp.where(
             self._config.predict_delta,
             safe_obs + normalized_delta * obs_scale,
             normalized_delta * obs_scale,
@@ -485,14 +484,16 @@ class ActionConditionedWorldModel:
         has_bounds = state.step_count > 0
         low = state.observation_min - self._config.observation_clip_margin
         high = state.observation_max + self._config.observation_clip_margin
-        clipped_next = jnp.clip(next_observation, low, high)
-        next_observation = jnp.where(has_bounds, clipped_next, next_observation)
+        clipped_next = jnp.clip(decoded_next_observation, low, high)
+        next_observation = jnp.where(
+            has_bounds, clipped_next, decoded_next_observation
+        )
 
-        reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
+        raw_reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
         reward_low = state.reward_min - self._config.observation_clip_margin
         reward_high = state.reward_max + self._config.observation_clip_margin
-        clipped_reward = jnp.clip(reward, reward_low, reward_high)
-        reward = jnp.where(has_bounds, clipped_reward, reward)
+        clipped_reward = jnp.clip(raw_reward, reward_low, reward_high)
+        reward = jnp.where(has_bounds, clipped_reward, raw_reward)
 
         discount = jnp.clip(
             raw_predictions[self._config.observation_dim + 1],
@@ -509,6 +510,12 @@ class ActionConditionedWorldModel:
             invalid_observation,
         )
         reward = jnp.where(inputs_valid, reward, invalid_scalar)
+        decoded_next_observation = jnp.where(
+            inputs_valid,
+            decoded_next_observation,
+            invalid_observation,
+        )
+        raw_reward = jnp.where(inputs_valid, raw_reward, invalid_scalar)
         discount = jnp.where(inputs_valid, discount, invalid_scalar)
         raw_predictions = jnp.where(
             inputs_valid,
@@ -516,12 +523,29 @@ class ActionConditionedWorldModel:
             invalid_raw,
         )
 
-        return WorldModelPrediction(
-            next_observation=next_observation,
-            reward=reward,
-            raw_predictions=raw_predictions,
-            discount=discount,
+        return (
+            WorldModelPrediction(
+                next_observation=next_observation,
+                reward=reward,
+                raw_predictions=raw_predictions,
+                discount=discount,
+            ),
+            decoded_next_observation,
+            raw_reward,
         )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def predict(
+        self,
+        state: ActionConditionedWorldModelState,
+        observation: Array,
+        action: Array,
+    ) -> WorldModelPrediction:
+        """Predict the guarded next observation, reward, and discount."""
+        prediction, _, _ = self._prediction_and_raw_diagnostics(
+            state, observation, action
+        )
+        return prediction
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -557,6 +581,8 @@ class ActionConditionedWorldModel:
             & action_valid
             & jnp.all(jnp.isfinite(reward_arr))
             & jnp.all(jnp.isfinite(discount_arr))
+            & jnp.all(discount_arr >= 0.0)
+            & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_obs))
         )
         safe_obs = jnp.where(inputs_valid, obs, jnp.zeros_like(obs))
@@ -569,19 +595,19 @@ class ActionConditionedWorldModel:
             inputs_valid, next_obs, jnp.zeros_like(next_obs)
         )
 
-        prediction = self.predict(state, safe_obs, safe_action)
+        prediction, decoded_next_observation, decoded_reward = (
+            self._prediction_and_raw_diagnostics(state, safe_obs, safe_action)
+        )
         targets = self.targets(
             safe_obs, safe_reward, safe_discount, safe_next_obs
         )
         inputs = self.input_features(safe_obs, safe_action)
         learner_result = self._learner.update(state.learner_state, inputs, targets)
 
-        observation_mse = jnp.mean(
-            (prediction.next_observation - safe_next_obs) ** 2
-        )
-        reward_error = prediction.reward - safe_reward
+        next_observation_errors = decoded_next_observation - safe_next_obs
+        observation_mse = jnp.mean(next_observation_errors**2)
+        reward_error = decoded_reward - safe_reward
         discount_error = prediction.discount - safe_discount
-        next_observation_errors = prediction.next_observation - safe_next_obs
         prediction_error = observation_mse + reward_error**2 + discount_error**2
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)
@@ -653,30 +679,44 @@ class ActionConditionedWorldModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: ActionConditionedWorldModelConfig) -> None:
+    def _validate_config(
+        self, config: ActionConditionedWorldModelConfig
+    ) -> ActionConditionedWorldModelConfig:
+        """Fail closed on malformed configuration and return its canonical float32 form."""
         if config.observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
-        if not 0.0 <= config.gamma <= 1.0:
-            raise ValueError("gamma must be in [0, 1]")
-        if config.observation_scale is not None:
-            if len(config.observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            if any(scale <= 0.0 for scale in config.observation_scale):
-                raise ValueError("observation_scale values must be positive")
-        if config.reward_scale <= 0.0:
-            raise ValueError("reward_scale must be positive")
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        if not 0.0 <= config.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= config.error_decay < 1.0:
-            raise ValueError("error_decay must be in [0, 1)")
-        if config.observation_clip_margin < 0.0:
-            raise ValueError("observation_clip_margin must be non-negative")
-        if config.max_delta_scale <= 0.0:
-            raise ValueError("max_delta_scale must be positive")
+        observation_scale = config.observation_scale
+        if observation_scale is not None:
+            if len(observation_scale) != config.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar("observation_scale values", scale, positive=True)
+                for scale in observation_scale
+            )
+        return dataclasses.replace(
+            config,
+            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
+            observation_scale=observation_scale,
+            reward_scale=validated_float32_scalar(
+                "reward_scale", config.reward_scale, positive=True
+            ),
+            utility_decay=validated_float32_scalar(
+                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            error_decay=validated_float32_scalar(
+                "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            observation_clip_margin=validated_float32_scalar(
+                "observation_clip_margin", config.observation_clip_margin, lower=0.0
+            ),
+            max_delta_scale=validated_float32_scalar(
+                "max_delta_scale", config.max_delta_scale, positive=True
+            ),
+        )
 
 
 def run_action_conditioned_world_model_learning_loop(

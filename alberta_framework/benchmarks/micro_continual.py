@@ -146,22 +146,39 @@ _STEP_DOMAIN = 303
 _BAYES_DOMAIN = 404
 
 
+def _is_registered_subclass(cls: type, abc: type) -> bool:
+    """Run one ABC subclass check, normalizing metaclass hook failures to False."""
+    try:
+        return issubclass(cls, abc)
+    except Exception:
+        # ``issubclass`` against an ABC hashes ``cls`` for its caches, so a
+        # metaclass whose ``__hash__`` raises would otherwise leak the hook's
+        # exception through the documented ValueError boundary.
+        return False
+
+
 def _require_finite_real(value: object, name: str) -> float:
-    """Return one canonical float after rejecting non-real and non-finite values."""
-    if type(value) is bool or not issubclass(type(value), Real):
-        raise ValueError(f"{name} must be a finite real number, got {value!r}")
+    """Return one canonical float after rejecting non-real and non-finite values.
+
+    The message never formats ``value``: repr hooks on untrusted objects must
+    not run, and ordinary conversion failures normalize to ``ValueError``
+    while ``BaseException`` (e.g. ``KeyboardInterrupt``) still propagates.
+    """
+    message = f"{name} must be a finite real number"
+    if type(value) is bool or not _is_registered_subclass(type(value), Real):
+        raise ValueError(message)
     try:
         number = float(cast(Any, value))
-    except (OverflowError, TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a finite real number, got {value!r}") from exc
+    except Exception as exc:
+        raise ValueError(message) from exc
     if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real number, got {value!r}")
+        raise ValueError(message)
     return number
 
 
 def _freeze_micro_hyperparameters(value: object, *, context: str) -> Mapping[str, float]:
     """Copy one primitive-only hyperparameter mapping behind an immutable view."""
-    if not issubclass(type(value), Mapping):
+    if not _is_registered_subclass(type(value), Mapping):
         raise ValueError(f"{context} must be an object with non-empty string keys")
     try:
         items = list(cast(Mapping[object, object], value).items())

@@ -3084,3 +3084,186 @@ class TestReplaceFractionRemoval:
         restored = FixedBudgetFeatureLearner.from_config(legacy)
 
         assert restored.to_config() == learner.to_config()
+
+
+class TestFeatureDiscoveryStreamsValidation:
+    """Comprehensive validation tests for Step 2 feature-discovery streams."""
+
+    def test_nonlinear_properties_and_boundaries(self) -> None:
+        stream = NonlinearFeatureDiscoveryStream(
+            feature_dim=16,
+            n_tasks=3,
+            n_latents=64,
+            n_contexts=4,
+            context_length=200,
+            active_latents_per_context=8,
+            feature_std=1.5,
+            latent_scale=0.8,
+            linear_scale=0.02,
+            noise_std=0.05,
+        )
+        assert stream.feature_dim == 16
+        assert stream.target_dim == 3
+        assert stream.n_tasks == 3
+        assert stream.n_latents == 64
+        assert stream.n_contexts == 4
+        assert stream.context_length == 200
+        assert stream.active_latents_per_context == 8
+        assert stream.feature_std == 1.5
+        assert stream.latent_scale == 0.8
+        assert stream.linear_scale == 0.02
+        assert stream.noise_std == 0.05
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"feature_dim": 0}, "feature_dim"),
+            ({"feature_dim": -1}, "feature_dim"),
+            ({"feature_dim": 2**31}, "feature_dim"),
+            ({"feature_dim": True}, "feature_dim"),
+            ({"n_tasks": 0}, "n_tasks"),
+            ({"n_latents": 0}, "n_latents"),
+            ({"n_contexts": 0}, "n_contexts"),
+            ({"context_length": 0}, "context_length"),
+            ({"active_latents_per_context": 0}, "active_latents_per_context"),
+            ({"feature_std": 0.0}, "feature_std"),
+            ({"feature_std": -1.0}, "feature_std"),
+            ({"latent_scale": 0.0}, "latent_scale"),
+            ({"latent_scale": -1.0}, "latent_scale"),
+            ({"linear_scale": -0.01}, "linear_scale"),
+            ({"noise_std": -0.01}, "noise_std"),
+        ],
+    )
+    def test_nonlinear_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
+        base: dict[str, Any] = {"feature_dim": 8}
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            NonlinearFeatureDiscoveryStream(**base)
+
+    def test_nonlinear_rejects_adversarial_ratio(self) -> None:
+        class HiddenBoundaryFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        with pytest.raises(ValueError, match="linear_scale must be non-negative"):
+            NonlinearFeatureDiscoveryStream(feature_dim=8, linear_scale=HiddenBoundaryFloat(0.5))
+
+    def test_nonlinear_rejects_spoofed_int_class(self) -> None:
+        class SpoofedIntFloat(float):
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        with pytest.raises(ValueError, match="noise_std must be non-negative"):
+            NonlinearFeatureDiscoveryStream(feature_dim=8, noise_std=SpoofedIntFloat(0.5))
+
+    def test_nonlinear_rejects_spoofed_ratio_components(self) -> None:
+        class SpoofedComponent:
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def __int__(self) -> int:
+                return 1
+
+        class BadRatioFloat(float):
+            def as_integer_ratio(self) -> tuple[Any, Any]:
+                return (SpoofedComponent(), 2)
+
+        with pytest.raises(ValueError, match="must narrow to a finite float32"):
+            NonlinearFeatureDiscoveryStream(feature_dim=8, noise_std=BadRatioFloat(0.5))
+
+    def test_interaction_properties_and_boundaries(self) -> None:
+        stream = InteractionFeatureDiscoveryStream(
+            feature_dim=12,
+            n_tasks=5,
+            n_contexts=6,
+            context_length=300,
+            active_pairs_per_context=10,
+            feature_std=1.2,
+            linear_scale=0.03,
+            noise_std=0.04,
+            include_squares=True,
+        )
+        assert stream.feature_dim == 12
+        assert stream.target_dim == 5
+        assert stream.n_tasks == 5
+        assert stream.n_contexts == 6
+        assert stream.context_length == 300
+        assert stream.active_pairs_per_context == 10
+        assert stream.feature_std == 1.2
+        assert stream.linear_scale == 0.03
+        assert stream.noise_std == 0.04
+        assert stream.include_squares
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"feature_dim": 1}, "feature_dim"),
+            ({"feature_dim": 0}, "feature_dim"),
+            ({"feature_dim": 2**31}, "feature_dim"),
+            ({"n_tasks": 0}, "n_tasks"),
+            ({"n_contexts": 0}, "n_contexts"),
+            ({"context_length": 0}, "context_length"),
+            ({"active_pairs_per_context": 0}, "active_pairs_per_context"),
+            ({"feature_std": 0.0}, "feature_std"),
+            ({"linear_scale": -0.01}, "linear_scale"),
+            ({"noise_std": -0.01}, "noise_std"),
+        ],
+    )
+    def test_interaction_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
+        base: dict[str, Any] = {"feature_dim": 6}
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            InteractionFeatureDiscoveryStream(**base)
+
+    def test_interaction_rejects_non_bool_include_squares(self) -> None:
+        with pytest.raises(TypeError, match="include_squares must be a boolean"):
+            InteractionFeatureDiscoveryStream(feature_dim=6, include_squares=1)  # type: ignore[arg-type]
+
+    def test_interaction_rejects_spoofed_bool_include_squares(self) -> None:
+        class SpoofedBool:
+            @property
+            def __class__(self) -> type[bool]:
+                return bool
+
+            def __bool__(self) -> bool:
+                return True
+
+        with pytest.raises(TypeError, match="include_squares must be a boolean"):
+            InteractionFeatureDiscoveryStream(
+                feature_dim=6,
+                include_squares=SpoofedBool(),  # type: ignore[arg-type]
+            )
+
+    def test_interaction_accepts_numpy_bool_include_squares(self) -> None:
+        stream = InteractionFeatureDiscoveryStream(
+            feature_dim=6,
+            include_squares=np.True_,  # type: ignore[arg-type]
+        )
+        assert stream.include_squares is True
+
+    def test_interaction_rejects_adversarial_ratio(self) -> None:
+        class HiddenBoundaryFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        with pytest.raises(ValueError, match="linear_scale must be non-negative"):
+            InteractionFeatureDiscoveryStream(feature_dim=6, linear_scale=HiddenBoundaryFloat(0.5))
+
+    def test_collect_feature_discovery_stream_validation(self) -> None:
+        stream = NonlinearFeatureDiscoveryStream(feature_dim=4)
+        key = jr.key(0)
+        with pytest.raises(ValueError, match="num_steps"):
+            collect_feature_discovery_stream(stream, 0, key)
+        with pytest.raises(ValueError, match="num_steps"):
+            collect_feature_discovery_stream(stream, -1, key)
+        with pytest.raises(TypeError, match="init"):
+            collect_feature_discovery_stream(object(), 10, key)

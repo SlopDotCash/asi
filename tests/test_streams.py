@@ -34,6 +34,24 @@ class TestRandomWalkStream:
         assert state.key is not None
         chex.assert_shape(state.true_weights, (10,))
 
+    def test_rejects_invalid_feature_dim(self):
+        """Should reject non-positive, bool, or non-integer feature_dim."""
+        for feature_dim in (0, -1, True, 2.5):
+            with pytest.raises(ValueError, match="feature_dim"):
+                RandomWalkStream(feature_dim=feature_dim)
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative drift_rate, noise_std, feature_std."""
+        for name, value in (
+            ("drift_rate", float("nan")),
+            ("drift_rate", float("inf")),
+            ("drift_rate", -1.0),
+            ("noise_std", float("nan")),
+            ("feature_std", -0.5),
+        ):
+            with pytest.raises(ValueError, match=name):
+                RandomWalkStream(feature_dim=4, **{name: value})
+
     def test_step_produces_valid_timestep(self, rng_key):
         """Step should produce valid observation and target."""
         stream = RandomWalkStream(feature_dim=10)
@@ -94,6 +112,16 @@ class TestRandomWalkStream:
 
 class TestAbruptChangeStream:
     """Tests for the AbruptChangeStream class."""
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative noise_std and feature_std."""
+        for name, value in (
+            ("noise_std", float("nan")),
+            ("noise_std", float("inf")),
+            ("feature_std", -1.0),
+        ):
+            with pytest.raises(ValueError, match=name):
+                AbruptChangeStream(feature_dim=4, **{name: value})
 
     @pytest.mark.parametrize("compiled", [False, True], ids=["eager", "jit"])
     def test_initial_weights_last_for_first_full_segment(self, rng_key, compiled):
@@ -173,6 +201,16 @@ class TestSuttonExperiment1Stream:
 class TestCyclicStream:
     """Tests for the CyclicStream class."""
 
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative noise_std and feature_std."""
+        for name, value in (
+            ("noise_std", float("nan")),
+            ("noise_std", float("inf")),
+            ("feature_std", -1.0),
+        ):
+            with pytest.raises(ValueError, match=name):
+                CyclicStream(feature_dim=4, **{name: value})
+
     def test_cycles_through_configurations(self, rng_key):
         """Should cycle through configurations."""
         stream = CyclicStream(
@@ -228,6 +266,17 @@ class TestCyclicStream:
 
 class TestPeriodicChangeStream:
     """Tests for the PeriodicChangeStream class."""
+
+    def test_rejects_non_finite_or_negative_float_params(self):
+        """Should reject NaN/inf/negative amplitude, noise_std, feature_std."""
+        for name, value in (
+            ("amplitude", float("nan")),
+            ("amplitude", float("inf")),
+            ("noise_std", -0.5),
+            ("feature_std", float("nan")),
+        ):
+            with pytest.raises(ValueError, match=name):
+                PeriodicChangeStream(feature_dim=4, **{name: value})
 
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""
@@ -366,6 +415,16 @@ class TestScaledStreamWrapper:
 
         with pytest.raises(ValueError, match="must match"):
             ScaledStreamWrapper(inner, feature_scales=scales)
+
+    def test_rejects_non_finite_scales(self):
+        """Should raise error if scales contain NaN or infinity."""
+        inner = RandomWalkStream(feature_dim=5)
+        for scales in (
+            jnp.array([1.0, float("nan"), 2.0, 3.0, 4.0]),
+            jnp.array([1.0, float("inf"), 2.0, 3.0, 4.0]),
+        ):
+            with pytest.raises(ValueError, match="finite"):
+                ScaledStreamWrapper(inner, feature_scales=scales)
 
     def test_works_with_different_streams(self, rng_key):
         """Should work with any stream implementing the protocol."""

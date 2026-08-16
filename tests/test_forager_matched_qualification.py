@@ -1907,6 +1907,106 @@ def test_probe_result_accepts_only_reward_blind_unendorsed_payload(tmp_path: Pat
     assert caught.value.__cause__ is overflow
 
 
+def _minimal_qualification_manifest() -> dict[str, Any]:
+    """Build the smallest manifest that reaches the authority/boundary gate.
+
+    Every field ahead of ``load_matched_current_qualification_bundle``'s
+    authority/reward-blind-boundary comparison (schema/status/candidate_order
+    consistency) is populated with its exact expected value; every field the
+    loader only inspects *after* that gate is populated with a placeholder,
+    since a manifest that fails the gate under test must never reach them.
+    """
+    candidate_order = list(builder.MATCHED_CURRENT_CANDIDATE_IDS)
+    return {
+        "schema_version": qualification.MATCHED_CURRENT_QUALIFICATION_SCHEMA_VERSION,
+        "classification": "content_only_unendorsed_nonpromoting",
+        "status": "structurally_qualified_external_trust_resolution_required",
+        "promotion_authorized": False,
+        "performance_claim": False,
+        "external_verification_required": True,
+        "authority": {
+            "identity": qualification.MATCHED_CURRENT_AUTHORITY_IDENTITY,
+            "content_only": True,
+            "externally_endorsed": False,
+            "external_signature_created": False,
+            "trust_profile_created": False,
+        },
+        "reward_blind_boundary": {
+            "qualification_seed": qualification.PUBLIC_QUALIFICATION_SEED,
+            "qualification_seed_class": "public_nonbenchmark_seed",
+            "tuning_seeds_used": [],
+            "evaluation_seeds_used": [],
+            "environment_resets": len(candidate_order),
+            "environment_transitions": 0,
+            "reward_arrays_read": 0,
+            "result_archives_opened": 0,
+        },
+        "runtime_qualification": {},
+        "qualification_probe": {},
+        "resource_accounting_semantics": {},
+        "executor_qualification_roots": {},
+        "frozen_executor_qualification_artifacts": {},
+        "candidate_order": candidate_order,
+        "sources": {},
+        "candidates": {},
+        "open_protocol_sha256": "",
+    }
+
+
+def _write_qualification_manifest(root: Path, manifest: dict[str, Any]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    manifest_raw = qualification._canonical_json_bytes(manifest)  # noqa: SLF001
+    (root / "manifest.json").write_bytes(manifest_raw)
+    digest = hashlib.sha256(manifest_raw).hexdigest()
+    (root / "manifest.json.sha256").write_bytes(f"{digest}\n".encode("ascii"))
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "alias"),
+    [
+        ("authority", "content_only", 1),
+        ("authority", "externally_endorsed", 0),
+        ("reward_blind_boundary", "environment_transitions", False),
+        ("reward_blind_boundary", "reward_arrays_read", 0.0),
+    ],
+)
+def test_manifest_rejects_wrong_type_numeric_aliases_in_authority_boundary(
+    tmp_path: Path,
+    section: str,
+    field: str,
+    alias: object,
+) -> None:
+    manifest = _minimal_qualification_manifest()
+    manifest[section][field] = alias
+    root = tmp_path / "qualification"
+    _write_qualification_manifest(root, manifest)
+
+    with pytest.raises(
+        qualification.ForagerMatchedQualificationError,
+        match="qualification authority boundary drifted",
+    ):
+        qualification.load_matched_current_qualification_bundle(root)
+
+
+def test_manifest_with_true_types_reaches_past_authority_boundary_gate(
+    tmp_path: Path,
+) -> None:
+    """A byte-identical, correctly-typed manifest must not trip this gate.
+
+    It is still rejected further down (placeholder executor/source/candidate
+    fields), proving the gate under test is not merely rejecting everything.
+    """
+    manifest = _minimal_qualification_manifest()
+    root = tmp_path / "qualification"
+    _write_qualification_manifest(root, manifest)
+
+    with pytest.raises(
+        qualification.ForagerMatchedQualificationError,
+        match="runtime qualification drifted",
+    ):
+        qualification.load_matched_current_qualification_bundle(root)
+
+
 @pytest.mark.parametrize(
     ("section", "field", "alias"),
     [

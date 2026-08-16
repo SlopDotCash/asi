@@ -165,9 +165,10 @@ def _require_unit_interval(name: str, value: object) -> float:
 
 
 def _require_int(name: str, value: object, *, minimum: int | None = None) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -175,6 +176,12 @@ def _require_int(name: str, value: object, *, minimum: int | None = None) -> int
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
     return number
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool, got {value!r}")
+    return value
 
 
 def _validate_planning_config(config: Step7DynaConfig) -> None:
@@ -205,6 +212,10 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
     utility_step = _require_unit_interval(
         "planning_utility_step_size",
         config.planning_utility_step_size,
+    )
+    _require_bool(
+        "planning_apply_importance_correction",
+        config.planning_apply_importance_correction,
     )
     if config.planning_strategy not in (
         "random",

@@ -708,6 +708,38 @@ def test_adaptive_obgd_infinite_signal_keeps_finite_updates() -> None:
     chex.assert_trees_all_close(zeroed.second_moment, second_moment)
 
 
+def test_adaptive_obgd_zero_beta2_does_not_multiply_inf_moments() -> None:
+    """beta2=0 drops leftover v; 0 * inf must not freeze the update."""
+    traces = {
+        "first": jnp.asarray((2.0, -1.0), dtype=jnp.float32),
+        "second": jnp.asarray((0.5,), dtype=jnp.float32),
+    }
+    second_moment = {
+        "first": jnp.full((2,), jnp.inf, dtype=jnp.float32),
+        "second": jnp.full((1,), jnp.inf, dtype=jnp.float32),
+    }
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    signal = jnp.asarray(-3.0, dtype=jnp.float32)
+    result = adaptive_obgd_update(
+        traces,
+        second_moment,
+        signal,
+        alpha=0.2,
+        kappa=2.0,
+        beta2=0.0,
+        epsilon=1e-4,
+        step=4,
+    )
+    assert bool(result.update_applied)
+    expected = jax.tree_util.tree_map(
+        lambda trace: jnp.square(signal * trace),
+        traces,
+    )
+    chex.assert_trees_all_close(result.second_moment, expected)
+
+
 def test_adaptive_obgd_matches_memorax_second_moment_formula() -> None:
     traces = {
         "first": jnp.asarray((2.0, -1.0), dtype=jnp.float32),

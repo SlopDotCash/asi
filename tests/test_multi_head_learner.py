@@ -281,6 +281,33 @@ class TestMultiHeadUpdateAllActive:
 # =============================================================================
 
 
+class TestMultiHeadConstructorValidation:
+    """``per_head_gamma_lamda`` values must be finite and in [0, 1]."""
+
+    def test_rejects_wrong_length_per_head_gamma_lamda(self):
+        """The tuple must have exactly one value per head."""
+        with pytest.raises(ValueError, match="length n_heads"):
+            MultiHeadMLPLearner(
+                n_heads=2,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.01,
+                per_head_gamma_lamda=(0.5,),
+            )
+
+    @pytest.mark.parametrize("gl", [float("nan"), float("inf"), -0.1, 1.5, True, "0.5"])
+    def test_rejects_non_finite_or_out_of_range_values(self, gl):
+        """Each per-head trace decay must be a finite real in [0, 1]."""
+        with pytest.raises(ValueError, match=r"per_head_gamma_lamda\[1\]"):
+            MultiHeadMLPLearner(
+                n_heads=2,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.01,
+                per_head_gamma_lamda=(0.5, gl),  # type: ignore[arg-type]
+            )
+
+
 class TestMultiHeadUpdateValidation:
     """``update`` must reject targets that are not one value per head.
 

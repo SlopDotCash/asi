@@ -180,6 +180,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", -1),
     ("observation_dim", 1.5),
     ("observation_dim", "4"),
+    ("observation_dim", 2**31),
     ("observation_dim", None),
     ("n_primitive_actions", True),
     ("n_primitive_actions", False),
@@ -188,6 +189,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_primitive_actions", 1.5),
     ("n_primitive_actions", "2"),
     ("n_primitive_actions", None),
+    ("n_primitive_actions", 2**31),
     ("option_planning_backups_per_step", True),
     ("option_planning_backups_per_step", False),
     ("option_planning_backups_per_step", -1),
@@ -302,6 +304,66 @@ def test_step10_stomp_fields_reject_invalid_inputs(field: str, value: object) ->
         _config_with(**{field: value})
 
 
+@pytest.mark.unit
+def test_step10_stomp_int_dimensions_stay_within_int32() -> None:
+    int32_max = 2**31 - 1
+    upper = Step10STOMPConfig(
+        subtask_specs=(_SPEC1,),
+        observation_dim=int32_max,
+        n_primitive_actions=int32_max,
+    )
+    assert upper.observation_dim == int32_max
+    assert upper.n_primitive_actions == int32_max
+    with pytest.raises(ValueError, match="observation_dim"):
+        Step10STOMPConfig(subtask_specs=(_SPEC1,), observation_dim=int32_max + 1)
+    with pytest.raises(ValueError, match="n_primitive_actions"):
+        Step10STOMPConfig(subtask_specs=(_SPEC1,), n_primitive_actions=int32_max + 1)
+
+
+@pytest.mark.unit
+def test_step10_stomp_feature_index_stays_within_int32() -> None:
+    # An out-of-int32 feature_index can only pass the observation_dim bound
+    # check if observation_dim itself escapes int32, so both must reject.
+    with pytest.raises(ValueError, match="observation_dim"):
+        Step10STOMPConfig(
+            subtask_specs=(SubtaskSpec(feature_index=2**35),),
+            observation_dim=2**40,
+        )
+    spec = SubtaskSpec(feature_index=2**31 - 2)
+    cfg = Step10STOMPConfig(subtask_specs=(spec,), observation_dim=2**31 - 1)
+    assert cfg.subtask_specs[0].feature_index == 2**31 - 2
+
+
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["observation_dim", "n_primitive_actions", "option_planning_backups_per_step"],
+)
+def test_step10_stomp_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: _SpoofedInt()})
+
+
+# Note: SubtaskSpec.feature_index/max_option_steps also route through this
+# module's _require_int, but SubtaskSpec.__post_init__ (core/options.py) runs
+# its own unguarded `< 0`/`< 1` comparison first and raises a raw TypeError
+# on a spoofed object before this module's helper is ever reached. That is a
+# separate, out-of-scope gap in a different file/function - not fixed here.
+
+
 def test_step10_stomp_rejects_non_tuple_subtask_specs() -> None:
     with pytest.raises(ValueError, match="subtask_specs"):
         Step10STOMPConfig(subtask_specs=[_SPEC1])  # type: ignore[arg-type]
@@ -353,7 +415,7 @@ def test_step10_stomp_fields_preserve_legal_endpoints() -> None:
             SubtaskSpec(
                 feature_index=0,
                 threshold=1e-12,
-                pseudo_reward_scale=0.0,
+                pseudo_reward_scale=1e-12,
                 max_option_steps=1,
             ),
         ),
@@ -396,7 +458,7 @@ def test_step10_stomp_fields_preserve_legal_endpoints() -> None:
     assert restored.option_importance_clip == 1e-12
     assert restored.subtask_specs[0].feature_index == 0
     assert restored.subtask_specs[0].threshold == 1e-12
-    assert restored.subtask_specs[0].pseudo_reward_scale == 0.0
+    assert restored.subtask_specs[0].pseudo_reward_scale == 1e-12
     assert restored.subtask_specs[0].max_option_steps == 1
     assert agent.config.option_gamma == 0.0
 

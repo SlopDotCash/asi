@@ -941,6 +941,37 @@ class TestNonlinearHordeActorCriticUpdate:
         result = agent.update(state, jnp.array(1.0), obs)
         assert float(result.state.actor_td_error_normalizer) > 0.0
 
+    def test_zero_td_error_normalizer_decay_does_not_multiply_inf_ema(self) -> None:
+        """decay=0 times leftover inf actor TD-error EMA is NaN."""
+        critic = HordeLearner(
+            create_horde_spec(
+                [GVFSpec(  # type: ignore[call-arg]
+                    name="v", demon_type=DemonType.PREDICTION,
+                    gamma=0.99, lamda=0.0, cumulant_index=0,
+                )]
+            ),
+            hidden_sizes=(8,),
+            step_size=0.03,
+        )
+        cfg = NonlinearHordeActorCriticConfig(
+            n_actions=N_ACTIONS,
+            hidden_sizes=(8,),
+            actor_td_error_normalizer_decay=0.0,
+        )
+        agent = NonlinearHordeActorCriticAgent(cfg, critic)
+        state = agent.init(OBS_DIM, jr.key(5))
+        obs = jr.normal(jr.key(6), (OBS_DIM,))
+        state, _, _ = agent.start(state, obs)
+        state = state.replace(  # type: ignore[attr-defined]
+            actor_td_error_normalizer=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        )
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = agent.update(state, jnp.array(1.0, dtype=jnp.float32), obs)
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.state.actor_td_error_normalizer)
+
     def test_policy_sums_to_one(self) -> None:
         agent = _make_nlhac_agent()
         state = _init_nlhac(agent)

@@ -87,6 +87,28 @@ class TestAdaGain:
 
         assert recreated.to_config() == config
 
+    def test_full_forget_does_not_multiply_inf_traces(self) -> None:
+        """forgetting_rate=1 drops leftover traces; 0 * inf must not freeze."""
+        optimizer = AdaGain(
+            initial_step_size=0.05,
+            meta_step_size=0.0,
+            forgetting_rate=1.0,
+        )
+        state = optimizer.init(feature_dim=2)
+        state = state.replace(
+            gradient_trace=jnp.full(2, jnp.inf, dtype=jnp.float32),
+            bias_gradient_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        )
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        observation = jnp.asarray([0.5, -0.25], dtype=jnp.float32)
+        error = jnp.asarray(1.0, dtype=jnp.float32)
+        result = optimizer.update(state, error, observation)
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(result.new_state.gradient_trace, error * observation)
+        assert float(result.new_state.bias_gradient_trace) == pytest.approx(1.0)
+
 
 # =============================================================================
 # Adam

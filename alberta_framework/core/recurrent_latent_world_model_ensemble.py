@@ -91,9 +91,10 @@ def _finite_float32(
     positive: bool = False,
     nonnegative: bool = False,
 ) -> float:
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
+    actual_type = type(value)
+    if issubclass(actual_type, bool | np.bool_) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real non-boolean scalar")
-    canonical = float(value)
+    canonical = float(cast(Real, value))
     lower_ok = canonical > 0.0 if positive else canonical >= 0.0 if nonnegative else True
     if not math.isfinite(canonical) or not lower_ok or abs(canonical) > _FLOAT32_MAX:
         qualifier = "positive " if positive else "nonnegative " if nonnegative else ""

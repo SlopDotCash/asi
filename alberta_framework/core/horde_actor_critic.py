@@ -63,12 +63,14 @@ def _commit_scan_safe_actor_state(
     proposed: Any,
     inputs_valid: Array,
     nested_update_applied: Array,
+    previous_checked: Any | None = None,
 ) -> tuple[Any, Bool[Array, ""]]:
     """Commit one actor/critic transaction only when every component is valid."""
+    checked = previous if previous_checked is None else previous_checked
     update_applied = (
         jnp.asarray(inputs_valid, dtype=jnp.bool_)
         & jnp.asarray(nested_update_applied, dtype=jnp.bool_)
-        & _floating_tree_is_finite(previous)
+        & _floating_tree_is_finite(checked)
         & _floating_tree_is_finite(proposed)
     )
     state = jax.lax.cond(update_applied, lambda: proposed, lambda: previous)
@@ -1520,7 +1522,7 @@ class NonlinearHordeActorCriticAgent:
                 cfg.actor_td_error_normalizer_decay, dtype=jnp.float32
             )
             actor_td_error_normalizer = (
-                decay * actor_td_error_normalizer
+                _skip_zero_scale(decay, actor_td_error_normalizer)
                 + (1.0 - decay) * jnp.abs(actor_td_error)
             )
             actor_td_error = actor_td_error / jnp.maximum(
@@ -1708,11 +1710,17 @@ class NonlinearHordeActorCriticAgent:
             & critic_result.head_updates_applied[cfg.value_head_index]
             & jnp.all(jnp.stack(optimizer_updates_applied))
         )
+        previous_checked = state
+        if cfg.actor_td_error_normalizer_decay == 0.0:
+            previous_checked = state.replace(  # type: ignore[attr-defined]
+                actor_td_error_normalizer=jnp.zeros_like(state.actor_td_error_normalizer),
+            )
         new_state, update_applied = _commit_scan_safe_actor_state(
             state,
             proposed_state,
             inputs_valid,
             nested_update_applied,
+            previous_checked,
         )
         committed_critic_result = _rollback_critic_result(
             critic_result,

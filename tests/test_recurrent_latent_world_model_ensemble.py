@@ -159,6 +159,75 @@ def test_initialization_is_distinct_fixed_width_and_exactly_accounted() -> None:
     assert budget.replay_capacity == 0
 
 
+_REAL_SCALAR_FIELDS = (
+    "learning_rate",
+    "variance_floor",
+    "max_variance",
+    "initialization_scale",
+    "gradient_clip_norm",
+    "max_raw_gradient_norm",
+    "max_input_magnitude",
+    "max_parameter_magnitude",
+    "max_prediction_magnitude",
+    "max_loss_magnitude",
+    "bootstrap_probability",
+)
+
+_IN_DOMAIN_SCALARS = {
+    "learning_rate": 0.01,
+    "variance_floor": 1.0e-3,
+    "max_variance": 100.0,
+    "initialization_scale": 0.2,
+    "gradient_clip_norm": 10.0,
+    "max_raw_gradient_norm": 100_000.0,
+    "max_input_magnitude": 1_000.0,
+    "max_parameter_magnitude": 10_000.0,
+    "max_prediction_magnitude": 10_000.0,
+    "max_loss_magnitude": 100_000_000.0,
+    "bootstrap_probability": 0.8,
+}
+
+
+class _FloatSpoof:
+    """Not a Real at all, but reports ``float`` through ``__class__``."""
+
+    def __init__(self, value: float) -> None:
+        self._value = value
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return self._value
+
+
+class _RaisingFloatSpoof:
+    """A ``__class__`` spoof whose ``__float__`` hook raises when trusted."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+@pytest.mark.parametrize("field", _REAL_SCALAR_FIELDS)
+def test_config_rejects_objects_that_only_spoof_float_through_class(field: str) -> None:
+    """An in-domain host value must not smuggle a non-Real type past validation."""
+    spoof = _FloatSpoof(_IN_DOMAIN_SCALARS[field])
+    with pytest.raises(ValueError, match="real non-boolean"):
+        _config(**{field: spoof})
+
+
+@pytest.mark.parametrize("field", _REAL_SCALAR_FIELDS)
+def test_config_raising_spoofed_scalar_stays_a_value_error(field: str) -> None:
+    """A spoof with a raising ``__float__`` must not leak its raw exception."""
+    with pytest.raises(ValueError, match="real non-boolean"):
+        _config(**{field: _RaisingFloatSpoof()})
+
+
 def test_config_rejects_an_initial_variance_bias_outside_the_parameter_bound() -> None:
     """The deterministic variance-head initializer must fit inside max_parameter_magnitude."""
     expected = (

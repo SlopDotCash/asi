@@ -537,20 +537,27 @@ class BehaviorModel:
 
         decay = jnp.asarray(cfg.diagnostic_decay, dtype=jnp.float32)
         first = state.step_count == 0
+        carried_nll = jnp.where(decay == 0.0, jnp.zeros_like(state.nll_ema), decay * state.nll_ema)
+        carried_accuracy = jnp.where(
+            decay == 0.0, jnp.zeros_like(state.accuracy_ema), decay * state.accuracy_ema
+        )
+        carried_confidence = jnp.where(
+            decay == 0.0, jnp.zeros_like(state.confidence_ema), decay * state.confidence_ema
+        )
         nll_ema = jnp.where(
             first,
             loss,
-            decay * state.nll_ema + (1.0 - decay) * loss,
+            carried_nll + (1.0 - decay) * loss,
         )
         accuracy_ema = jnp.where(
             first,
             correct,
-            decay * state.accuracy_ema + (1.0 - decay) * correct,
+            carried_accuracy + (1.0 - decay) * correct,
         )
         confidence_ema = jnp.where(
             first,
             confidence,
-            decay * state.confidence_ema + (1.0 - decay) * confidence,
+            carried_confidence + (1.0 - decay) * confidence,
         )
 
         new_state = state.replace(  # type: ignore[attr-defined]
@@ -563,12 +570,18 @@ class BehaviorModel:
         )
         # Inf observation makes softmax NaN and logit_error * x = 0*inf = NaN
         # on silent features. Hold the previous finite state.
+        diagnostics_required = jnp.asarray(cfg.diagnostic_decay != 0.0, dtype=jnp.bool_)
         source_finite = (
             jnp.all(jnp.isfinite(state.weights))
             & jnp.all(jnp.isfinite(state.bias))
-            & jnp.isfinite(state.nll_ema)
-            & jnp.isfinite(state.accuracy_ema)
-            & jnp.isfinite(state.confidence_ema)
+            & (
+                (~diagnostics_required)
+                | (
+                    jnp.isfinite(state.nll_ema)
+                    & jnp.isfinite(state.accuracy_ema)
+                    & jnp.isfinite(state.confidence_ema)
+                )
+            )
         )
         inputs_valid = (
             jnp.all(jnp.isfinite(obs))

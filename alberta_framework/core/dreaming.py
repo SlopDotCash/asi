@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
 from typing import Any, Literal, Protocol, cast
 
 import chex
@@ -43,6 +44,29 @@ from alberta_framework.core.world_model import (
 from alberta_framework.core.world_model import (
     WorldModelPrediction as ActionWorldModelPrediction,
 )
+
+
+def _require_exact_int(value: object, name: str, *, minimum: int) -> None:
+    """Reject bools, floats, and other non-int scalars for count fields."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise ValueError(f"{name} must be an int >= {minimum}")
+
+
+def _require_finite_nonnegative(value: object, name: str) -> None:
+    """Reject NaN, infinities, negatives, and non-real scalars."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value < 0.0
+    ):
+        raise ValueError(f"{name} must be finite and non-negative")
+
+
+def _require_bool(value: object, name: str) -> None:
+    """Reject truthy stand-ins for exact bools."""
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,6 +96,20 @@ class DreamingConfig:
     max_model_error: float = 1.0e30
     discount_floor: float = 0.0
     stop_on_terminal: bool = True
+
+    def __post_init__(self) -> None:
+        """Validate scalar configuration, rejecting NaN and type stand-ins."""
+        _require_exact_int(self.warmup_steps, "warmup_steps", minimum=0)
+        _require_finite_nonnegative(self.max_model_error_ema, "max_model_error_ema")
+        _require_finite_nonnegative(self.max_uncertainty, "max_uncertainty")
+        _require_finite_nonnegative(self.min_discount, "min_discount")
+        if self.max_discount is not None:
+            _require_finite_nonnegative(self.max_discount, "max_discount")
+        _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1)
+        _require_finite_nonnegative(self.confidence_threshold, "confidence_threshold")
+        _require_finite_nonnegative(self.max_model_error, "max_model_error")
+        _require_finite_nonnegative(self.discount_floor, "discount_floor")
+        _require_bool(self.stop_on_terminal, "stop_on_terminal")
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -184,16 +222,20 @@ class GuardedDreamer:
     def __init__(self, config: DreamingConfig | None = None):
         """Initialize a guarded dream proposer."""
         self._config = config or DreamingConfig()
-        if self._config.warmup_steps < 0:
-            raise ValueError("warmup_steps must be non-negative")
-        if self._config.max_model_error_ema < 0.0:
-            raise ValueError("max_model_error_ema must be non-negative")
-        if self._config.max_uncertainty < 0.0:
-            raise ValueError("max_uncertainty must be non-negative")
-        if self._config.min_discount < 0.0:
-            raise ValueError("min_discount must be non-negative")
-        if self._config.max_discount is not None and self._config.max_discount < 0.0:
-            raise ValueError("max_discount must be non-negative")
+        # DreamingConfig.__post_init__ validates on construction; re-validate here
+        # so instances mutated through object.__setattr__ (or crafted subclasses)
+        # cannot smuggle NaN or type stand-ins past the guard.
+        _require_exact_int(self._config.warmup_steps, "warmup_steps", minimum=0)
+        _require_finite_nonnegative(self._config.max_model_error_ema, "max_model_error_ema")
+        _require_finite_nonnegative(self._config.max_uncertainty, "max_uncertainty")
+        _require_finite_nonnegative(self._config.min_discount, "min_discount")
+        if self._config.max_discount is not None:
+            _require_finite_nonnegative(self._config.max_discount, "max_discount")
+        _require_exact_int(self._config.rollout_horizon, "rollout_horizon", minimum=1)
+        _require_finite_nonnegative(self._config.confidence_threshold, "confidence_threshold")
+        _require_finite_nonnegative(self._config.max_model_error, "max_model_error")
+        _require_finite_nonnegative(self._config.discount_floor, "discount_floor")
+        _require_bool(self._config.stop_on_terminal, "stop_on_terminal")
 
     @property
     def config(self) -> DreamingConfig:
@@ -509,15 +551,12 @@ class DreamRolloutConfig:
     stop_on_terminal: bool = True
 
     def __post_init__(self) -> None:
-        """Validate scalar configuration."""
-        if self.rollout_horizon < 1:
-            raise ValueError("rollout_horizon must be positive")
-        if self.confidence_threshold < 0.0:
-            raise ValueError("confidence_threshold must be non-negative")
-        if self.max_model_error < 0.0:
-            raise ValueError("max_model_error must be non-negative")
-        if self.discount_floor < 0.0:
-            raise ValueError("discount_floor must be non-negative")
+        """Validate scalar configuration, rejecting NaN and type stand-ins."""
+        _require_exact_int(self.rollout_horizon, "rollout_horizon", minimum=1)
+        _require_finite_nonnegative(self.confidence_threshold, "confidence_threshold")
+        _require_finite_nonnegative(self.max_model_error, "max_model_error")
+        _require_finite_nonnegative(self.discount_floor, "discount_floor")
+        _require_bool(self.stop_on_terminal, "stop_on_terminal")
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -711,11 +750,16 @@ def dream_one_step(
         dtype=jnp.float32,
     )
     terminated = jnp.logical_or(world_prediction.terminated, discount_terminal)
-    # A non-finite model prediction can never be a valid imagined step: it would
-    # otherwise ship to the control learner with full weight and poison every
-    # later step of the rollout through the carried observation.
+    # A non-finite imagined step can never be valid: it would otherwise ship to
+    # the control learner with full weight and poison every later step of the
+    # rollout through the carried observation. The anchor observation and the
+    # sampled action are gated alongside the model prediction because both are
+    # copied verbatim into the emitted transition (mirroring the one-step
+    # guard's REJECT_NONFINITE, which also requires a finite anchor).
     finite = (
-        jnp.all(jnp.isfinite(world_prediction.next_observation))
+        jnp.all(jnp.isfinite(jnp.asarray(rollout_state.observation, dtype=jnp.float32)))
+        & jnp.all(jnp.isfinite(jnp.asarray(behavior_prediction.action, dtype=jnp.float32)))
+        & jnp.all(jnp.isfinite(world_prediction.next_observation))
         & jnp.all(jnp.isfinite(world_prediction.reward))
         & jnp.all(jnp.isfinite(world_prediction.discount))
         & jnp.all(jnp.isfinite(world_prediction.confidence))

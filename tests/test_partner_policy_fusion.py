@@ -207,6 +207,32 @@ def test_config_rejects_invalid_values(field: str, value: Any) -> None:
         PartnerPolicyFusionConfig(**kwargs)
 
 
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["learning_rate", "max_abs_weight", "communication_cost_weight"],
+)
+def test_config_rejects_class_spoofed_float_fields(field: str) -> None:
+    kwargs: dict[str, Any] = {
+        "max_partners": 2,
+        "context_dim": 2,
+        "n_actions": 3,
+        field: _SpoofedFloat(),
+    }
+    with pytest.raises(ValueError, match=field):
+        PartnerPolicyFusionConfig(**kwargs)
+
+
 def test_strict_config_roundtrip_and_l0_status() -> None:
     fusion = _fusion()
     restored = PartnerPolicyFusion.from_config(fusion.to_config())

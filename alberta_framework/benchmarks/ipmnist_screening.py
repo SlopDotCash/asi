@@ -7261,8 +7261,15 @@ def _validated_ipmnist_data(
     *,
     input_dim: int | None,
     n_classes: int | None,
+    min_length: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    return validated_ipmnist_data(data_x, data_y, input_dim=input_dim, n_classes=n_classes)
+    return validated_ipmnist_data(
+        data_x,
+        data_y,
+        input_dim=input_dim,
+        n_classes=n_classes,
+        min_length=min_length,
+    )
 
 
 def ipmnist_permutation_sha256(permutation: np.ndarray | Array) -> str:
@@ -7699,14 +7706,15 @@ def run_screening_config(
         noise_mode,
         noise_pool_steps if noise_mode == "pool" else None,
     )
-    data_x = jnp.asarray(data_x, dtype=jnp.float32)
-    data_y = jnp.asarray(data_y, dtype=jnp.int32)
-    if data_x.ndim != 2 or data_x.shape[1] != config.input_dim:
-        raise ValueError(
-            f"data_x must have shape (n_train, {config.input_dim}), got {data_x.shape}"
-        )
-    if data_y.shape != (data_x.shape[0],):
-        raise ValueError("data_y must be (n_train,) aligned with data_x")
+    resolved_x, resolved_y = _validated_ipmnist_data(
+        data_x,
+        data_y,
+        input_dim=config.input_dim,
+        n_classes=config.n_classes,
+        min_length=config.task_length,
+    )
+    data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
+    data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
     n_train = int(data_x.shape[0])
 
     init_fn, step_fn = spec.factory(spec.hyperparameters)

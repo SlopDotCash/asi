@@ -206,6 +206,35 @@ def test_step5_config_from_dict_requires_exact_keys(payload: dict[str, object]) 
     assert str(exc_info.value) == expected
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("steps", True), ("steps", 1.5), ("feature_dim", False), ("feature_dim", 1.5)),
+)
+def test_step5_smoke_rejects_non_integral_dimensions(field: str, value: Any) -> None:
+    with pytest.raises(ValueError, match=field):
+        run_step5_smoke(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("steps", 0),
+        ("steps", 2**31),
+        ("feature_dim", 0),
+        ("feature_dim", 2**31),
+        ("seed", -1),
+        ("seed", 2**31),
+        ("seed", True),
+    ],
+)
+def test_step5_smoke_rejects_out_of_range_dimensions_and_seed(
+    field: str,
+    value: Any,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        run_step5_smoke(**{field: value})
+
+
 def test_step5_smoke_health_gate_reports_any_refused_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -280,6 +309,10 @@ def test_step6_smoke_rejects_non_integral_dimensions(field: str, value: Any) -> 
         ("seed", -1),
         ("seed", 2**31),
         ("seed", True),
+        ("steps", np.int64(2**31)),
+        ("feature_dim", np.int64(2**31)),
+        ("seed", np.int64(2**31)),
+        ("seed", np.int64(-1)),
     ],
 )
 def test_step6_smoke_rejects_out_of_range_dimensions_and_seed(
@@ -290,7 +323,7 @@ def test_step6_smoke_rejects_out_of_range_dimensions_and_seed(
         run_step6_smoke(**{field: value})
 
 
-@pytest.mark.parametrize("feature_dim", [0, 2**31, True])
+@pytest.mark.parametrize("feature_dim", [0, 2**31, True, np.int64(2**31)])
 def test_init_step6_state_rejects_invalid_feature_dim(feature_dim: Any) -> None:
     agent = make_step6_differential_sarsa_agent()
 
@@ -437,6 +470,34 @@ def test_step6_fields_canonicalize_nonbuiltin_numbers() -> None:
     assert type(payload["epsilon_start"]) is float
     assert type(payload["epsilon_end"]) is float
     assert agent.config.n_actions == 3
+
+
+def test_step6_fields_canonicalize_longdouble_and_fraction_scalars() -> None:
+    config = Step6DifferentialSARSAConfig(
+        q_step_size=np.longdouble("0.05"),
+        average_reward_step_size=np.longdouble("0.01"),
+        trace_decay=Fraction(1, 3),
+        epsilon_start=Fraction(1, 10),
+        epsilon_end=np.longdouble("0.01"),
+    )
+    fields = (
+        "q_step_size",
+        "average_reward_step_size",
+        "trace_decay",
+        "epsilon_start",
+        "epsilon_end",
+    )
+    for field in fields:
+        assert type(getattr(config, field)) is float, field
+    assert config.q_step_size == float(np.float32(0.05))
+    assert config.trace_decay == float(np.float32(1.0 / 3.0))
+    assert config.epsilon_start == float(np.float32(0.1))
+    payload = config.to_dict()
+    json.dumps(payload, allow_nan=False)
+    for field in fields:
+        assert type(payload[field]) is float, field
+    restored = Step6DifferentialSARSAConfig.from_dict(payload)
+    assert restored == config
 
 
 @pytest.mark.parametrize(

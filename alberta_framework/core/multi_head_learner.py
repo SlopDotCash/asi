@@ -20,6 +20,7 @@ import functools
 import math
 import time
 from collections.abc import Mapping
+from numbers import Real
 from typing import Any
 
 import chex
@@ -399,6 +400,23 @@ class MultiHeadMLPLearner:
                 f"trace decay with a shared trunk."
             )
             raise ValueError(msg)
+        if per_head_gamma_lamda is not None:
+            if len(per_head_gamma_lamda) != self._n_heads:
+                raise ValueError(
+                    f"per_head_gamma_lamda must have length n_heads ({self._n_heads}), "
+                    f"got {len(per_head_gamma_lamda)}"
+                )
+            for head_index, gl in enumerate(per_head_gamma_lamda):
+                if not isinstance(gl, Real) or isinstance(gl, bool):
+                    raise ValueError(
+                        f"per_head_gamma_lamda[{head_index}] must be a real number, "
+                        f"got {gl!r}"
+                    )
+                if not math.isfinite(float(gl)) or not 0.0 <= float(gl) <= 1.0:
+                    raise ValueError(
+                        f"per_head_gamma_lamda[{head_index}] must be finite and in "
+                        f"[0, 1], got {gl}"
+                    )
 
     @property
     def n_heads(self) -> int:

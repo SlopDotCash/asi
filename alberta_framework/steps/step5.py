@@ -24,6 +24,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from numbers import Integral
 from typing import Any, cast
 
 import jax.numpy as jnp
@@ -44,6 +45,30 @@ _STEP5_CONFIG_KEYS_ERROR = (
     "Step5AverageRewardTDConfig payload keys must be exactly "
     "['average_reward_step_size', 'step_size', 'trace_decay']"
 )
+_INT32_MAX = 2**31 - 1
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Reject non-integers (including bool and class-spoofed actual types)."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 def _finite_float32_scalar(name: str, value: object) -> tuple[int, int, float]:
@@ -194,10 +219,9 @@ def run_step5_smoke(
     seed: int = 0,
 ) -> Step5SmokeResult:
     """Run a tiny deterministic Step 5 integration probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
-    if feature_dim < 1:
-        raise ValueError("feature_dim must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    feature_dim = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step5AverageRewardTDConfig()
     learner = make_step5_td_learner(cfg)

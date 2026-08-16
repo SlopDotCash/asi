@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import chex
 import jax.numpy as jnp
+import numpy as np
+import pytest
 
 from alberta_framework.core.reward_model import RLSRewardModel, RLSRewardModelConfig
 
@@ -67,6 +69,62 @@ def test_rls_reward_model_rejects_invalid_config() -> None:
             pass
         else:
             raise AssertionError(f"expected ValueError for {config}")
+
+
+@pytest.mark.parametrize("value", [True, 1.0, "1", np.int64(1)])
+def test_rls_reward_model_rejects_non_builtin_feature_dim(value: object) -> None:
+    """Dimensions must not accept bool or integer-like aliases."""
+    payload = RLSRewardModelConfig(feature_dim=1).to_config()
+    payload["feature_dim"] = value
+
+    with pytest.raises(ValueError, match="feature_dim"):
+        RLSRewardModel(RLSRewardModelConfig.from_config(payload))
+
+
+class _FloatSpoof:
+    """Non-real object that spoofs ``float`` through ``__class__``."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("forgetting", True),
+        ("forgetting", "0.5"),
+        ("forgetting", float("nan")),
+        ("forgetting", float("inf")),
+        ("forgetting", float("-inf")),
+        ("ridge", True),
+        ("ridge", "1.0"),
+        ("ridge", float("nan")),
+        ("ridge", float("inf")),
+        ("ridge", float("-inf")),
+        ("error_decay", True),
+        ("error_decay", "0.5"),
+        ("error_decay", float("nan")),
+        ("error_decay", float("inf")),
+        ("error_decay", float("-inf")),
+        pytest.param("forgetting", _FloatSpoof(), id="forgetting-class-spoof"),
+        pytest.param("ridge", _FloatSpoof(), id="ridge-class-spoof"),
+        pytest.param("error_decay", _FloatSpoof(), id="error-decay-class-spoof"),
+    ],
+)
+def test_rls_reward_model_rejects_non_real_or_non_finite_scalars(
+    field: str,
+    value: object,
+) -> None:
+    """Serialized config must reject booleans, objects, NaN, and infinities."""
+    payload = RLSRewardModelConfig(feature_dim=1).to_config()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        RLSRewardModel(RLSRewardModelConfig.from_config(payload))
 
 
 def test_rls_infinite_reward_on_zero_feature_does_not_poison_weights() -> None:

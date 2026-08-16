@@ -519,12 +519,28 @@ class SARSAAgent:
 
         # Build cumulants: NaN for all except last_action gets sarsa_target
         cumulants = jnp.full(self._horde.n_demons, jnp.nan, dtype=jnp.float32)
-        # Only update the head corresponding to the action we took at s_t
-        cumulants = cumulants.at[state.last_action].set(sarsa_target)
+        # Only update the head corresponding to the action we took at s_t.
+        # An update before select_action leaves last_action == -1, which
+        # modular-indexes to the last head; gate it out instead so no control
+        # head learns from a premature update.
+        action_valid = (state.last_action >= 0) & (state.last_action < n_actions)
+        safe_last_action = jnp.clip(
+            state.last_action,
+            0,
+            n_actions - 1,
+        )
+        updated_cumulants = cumulants.at[safe_last_action].set(sarsa_target)
+        cumulants = jnp.where(action_valid, updated_cumulants, cumulants)
 
         # Add prediction demon cumulants if any
         if prediction_cumulants is not None:
-            cumulants = cumulants.at[n_actions:].set(prediction_cumulants)
+            cumulants = cumulants.at[n_actions:].set(
+                jnp.where(
+                    action_valid,
+                    prediction_cumulants,
+                    jnp.full_like(prediction_cumulants, jnp.nan),
+                )
+            )
 
         # Horde update: learns from (s_t, cumulants, s'). Control heads use
         # zero transition discounts (the SARSA target above already contains
@@ -563,8 +579,8 @@ class SARSAAgent:
             new_learner_state = new_learner_state.replace(head_traces=tuple(head_traces))
 
         # TD error for the taken action
-        q_old = q_previous[state.last_action]
-        td_error = sarsa_target - q_old
+        q_old = q_previous[safe_last_action]
+        td_error = jnp.where(action_valid, sarsa_target - q_old, 0.0)
 
         # Epsilon decay
         cfg = self._sarsa_config

@@ -24,14 +24,95 @@ learner can overfit.
 from __future__ import annotations
 
 import functools
+import math
 from dataclasses import asdict, dataclass
+from numbers import Integral, Real
 from typing import Any, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Float
+
+from alberta_framework._float32 import round_real_to_float32_with_ratio
+
+_INT32_MAX: int = 2**31 - 1
+
+
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_half_open_zero_one_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real < 1.0
+        or numerator < 0
+        or numerator >= denominator
+        or narrowed < 0.0
+        or not narrowed < 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1), got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
 
 
 @dataclass(frozen=True)
@@ -55,6 +136,10 @@ class TemporalContextConfig:
     include_phase_products: bool = False
     ema_decay: float = 0.95
     periods: tuple[float, ...] = (50.0, 100.0, 200.0)
+
+    def __post_init__(self) -> None:
+        """Validate and canonicalize configuration."""
+        _validate_config(self)
 
     def output_dim(self) -> int:
         """Return the transformed feature dimensionality."""
@@ -89,14 +174,38 @@ class TemporalContextState:
 
 
 def _validate_config(config: TemporalContextConfig) -> None:
-    if config.input_dim < 1:
-        raise ValueError("input_dim must be positive")
+    input_dim = _require_int(
+        "input_dim", config.input_dim, minimum=1, maximum=_INT32_MAX
+    )
+    if type(config.include_raw) is not bool:
+        raise ValueError(f"include_raw must be a bool, got {config.include_raw!r}")
+    if type(config.include_ema) is not bool:
+        raise ValueError(f"include_ema must be a bool, got {config.include_ema!r}")
+    if type(config.include_delta) is not bool:
+        raise ValueError(f"include_delta must be a bool, got {config.include_delta!r}")
+    if type(config.include_phase_products) is not bool:
+        raise ValueError(
+            f"include_phase_products must be a bool, got {config.include_phase_products!r}"
+        )
     if not (config.include_raw or config.include_ema or config.include_delta):
         raise ValueError("at least one observation feature block must be included")
-    if not 0.0 <= config.ema_decay < 1.0:
-        raise ValueError("ema_decay must be in [0, 1)")
-    if any(period <= 0.0 for period in config.periods):
-        raise ValueError("all temporal periods must be positive")
+    ema_decay = _require_half_open_zero_one_interval("ema_decay", config.ema_decay)
+    if type(config.periods) is not tuple:
+        raise ValueError(
+            f"periods must be an actual tuple, got {type(config.periods).__name__}"
+        )
+    canonical_periods = tuple(
+        _require_positive_real("period", p) for p in config.periods
+    )
+    object.__setattr__(config, "input_dim", input_dim)
+    object.__setattr__(config, "include_raw", bool(config.include_raw))
+    object.__setattr__(config, "include_ema", bool(config.include_ema))
+    object.__setattr__(config, "include_delta", bool(config.include_delta))
+    object.__setattr__(
+        config, "include_phase_products", bool(config.include_phase_products)
+    )
+    object.__setattr__(config, "ema_decay", ema_decay)
+    object.__setattr__(config, "periods", canonical_periods)
 
 
 class TemporalContextFeaturizer:

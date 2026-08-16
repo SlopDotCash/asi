@@ -18,6 +18,7 @@ the packaged Step 2 retained-view memory
 from __future__ import annotations
 
 import functools
+import math
 from typing import Any, cast
 
 import chex
@@ -119,11 +120,11 @@ def _validate_config(config: PrototypeMemoryConfig) -> None:
         raise ValueError("n_classes must be at least 2")
     if config.slots_per_class < 1:
         raise ValueError("slots_per_class must be positive")
-    if not 0.0 < config.update_rate <= 1.0:
+    if not 0.0 < config.update_rate <= 1.0 or not math.isfinite(config.update_rate):
         raise ValueError("update_rate must be in (0, 1]")
-    if config.novelty_threshold < 0.0:
+    if config.novelty_threshold < 0.0 or not math.isfinite(config.novelty_threshold):
         raise ValueError("novelty_threshold must be non-negative")
-    if config.bandwidth <= 0.0:
+    if config.bandwidth <= 0.0 or not math.isfinite(config.bandwidth):
         raise ValueError("bandwidth must be positive")
 
 

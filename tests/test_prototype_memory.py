@@ -4,6 +4,7 @@
 import chex
 import jax
 import jax.numpy as jnp
+import pytest
 
 from alberta_framework.core.prototype_memory import (
     PrototypeMemoryConfig,
@@ -153,3 +154,39 @@ def test_config_roundtrip() -> None:
 
     assert PrototypeMemoryConfig.from_config(config.to_config()) == config
     assert PrototypeMemoryLearner.from_config(learner.to_config()).config == config
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"bandwidth": float("inf")}, "bandwidth"),
+        ({"bandwidth": float("nan")}, "bandwidth"),
+        ({"novelty_threshold": float("inf")}, "novelty_threshold"),
+        ({"novelty_threshold": float("nan")}, "novelty_threshold"),
+        ({"update_rate": float("nan")}, "update_rate"),
+    ],
+)
+def test_config_rejects_nonfinite_floats(kwargs: dict[str, float], match: str) -> None:
+    """Non-finite kernel hyperparameters must fail closed at construction."""
+    with pytest.raises(ValueError, match=match):
+        PrototypeMemoryLearner(
+            PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=1, **kwargs)
+        )
+
+
+def test_infinite_observation_prediction_stays_nonfinite() -> None:
+    """Inf observations corrupt logits; predict must stay fail-visible, not a uniform simplex."""
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=3, slots_per_class=2)
+    )
+    state = learner.init()
+    target = jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float32)
+    state = learner.update(
+        state, jnp.asarray([0.25, 0.75], dtype=jnp.float32), target
+    ).state
+    obs = jnp.asarray([jnp.inf, 0.0], dtype=jnp.float32)
+
+    logits = learner.class_logits(state, obs)
+    assert not bool(jnp.all(jnp.isfinite(logits)))
+    prediction = learner.predict(state, obs)
+    assert not bool(jnp.all(jnp.isfinite(prediction)))

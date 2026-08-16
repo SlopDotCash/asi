@@ -98,7 +98,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import chex
 import jax
@@ -482,7 +482,11 @@ def run_label_emnist(
     if config is None:
         config = LabelEMNISTConfig()
     resolved_x, resolved_y = validated_ipmnist_data(
-        data_x, data_y, input_dim=config.input_dim, n_classes=config.n_classes
+        data_x,
+        data_y,
+        input_dim=config.input_dim,
+        n_classes=config.n_classes,
+        min_length=config.task_length,
     )
     hp = resolve_hyperparameters(learner, hyperparameters)
     init_fn, step_fn = _FULL_STEP_FACTORIES[learner](hp)
@@ -490,8 +494,6 @@ def run_label_emnist(
     data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
     data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
     n_train = int(data_x.shape[0])
-    if n_train < config.task_length:
-        raise ValueError("dataset smaller than task_length; cannot sample without replacement")
 
     seeds_array = jnp.asarray(seed_tuple, dtype=jnp.uint32)
     initialization_config = IPMNISTConfig(**config.to_config())
@@ -878,6 +880,33 @@ def _strict_json_object(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _validated_float_hyperparameters(
+    value: object, learner: str, *, context: str
+) -> dict[str, float]:
+    """Require every hyperparameter to be an exact finite ``float``.
+
+    Python's ``0 == 0.0`` and ``True == 1.0`` make ``float(v)`` coercion and
+    dict ``==`` alias-tolerant, so an int/bool-aliased arm could slip through
+    intake and be measured under a different hyperparameter vector than the
+    registered one. Mirror ``ipmnist_screening``'s strict gate instead:
+    ``type(...) is float`` (rejecting bool, the int subclass, and every other
+    alias) plus finiteness, before any comparison.
+    """
+    if not isinstance(value, dict):
+        raise ValueError(f"{context}: {learner} hyperparameters must be an object")
+    invalid = sorted(
+        str(name)
+        for name, entry in value.items()
+        if type(entry) is not float or not math.isfinite(entry)
+    )
+    if invalid:
+        raise ValueError(
+            f"{context}: {learner} hyperparameters must be finite floats "
+            f"(int/bool aliases are forbidden); invalid field(s): {invalid}"
+        )
+    return {str(name): cast(float, entry) for name, entry in value.items()}
+
+
 def load_plan(path: Path) -> dict[str, Any]:
     """Load and structurally validate a v1 plan file."""
     payload = _strict_json_object(path)
@@ -901,12 +930,16 @@ def load_plan(path: Path) -> dict[str, Any]:
     if sorted(body["hyperparameters"]) != sorted(learner_ids):
         raise ValueError(f"{path}: hyperparameter learner keys differ from learner_ids")
     for learner in learner_ids:
-        resolved = resolve_hyperparameters(
-            learner,
-            {k: float(v) for k, v in body["hyperparameters"][learner].items()},
+        provided = _validated_float_hyperparameters(
+            body["hyperparameters"][learner], learner, context=str(path)
         )
-        if resolved != {k: float(v) for k, v in body["hyperparameters"][learner].items()}:
-            raise ValueError(f"{path}: {learner} hyperparameters have unknown keys")
+        resolved = resolve_hyperparameters(learner, provided)
+        if sorted(resolved) != sorted(provided) or any(
+            resolved[name].hex() != provided[name].hex() for name in provided
+        ):
+            raise ValueError(
+                f"{path}: {learner} hyperparameters must list the complete arm"
+            )
     raw_seeds = body.get("seed_ids")
     if not isinstance(raw_seeds, list):
         raise ValueError(f"{path}: plan seed_ids must be a list")
@@ -954,7 +987,15 @@ def _validated_partial(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
     learner = payload.get("learner")
     if learner not in body["learner_ids"]:
         raise ValueError(f"{path}: learner {learner!r} is not planned")
-    if payload.get("hyperparameters") != body["hyperparameters"][learner]:
+    shard_hp = _validated_float_hyperparameters(
+        payload.get("hyperparameters"), str(learner), context=str(path)
+    )
+    planned_hp = _validated_float_hyperparameters(
+        body["hyperparameters"][learner], str(learner), context=f"{path}: plan"
+    )
+    if sorted(shard_hp) != sorted(planned_hp) or any(
+        shard_hp[name].hex() != planned_hp[name].hex() for name in shard_hp
+    ):
         raise ValueError(f"{path}: hyperparameters differ from the plan")
     seed = require_jax_seed(payload.get("seed_id"), name=f"{path}: seed_id")
     if seed not in body["seed_ids"]:

@@ -4925,25 +4925,29 @@ def load_matched_current_qualification_bundle(
         or manifest.get("promotion_authorized") is not False
         or manifest.get("performance_claim") is not False
         or manifest.get("external_verification_required") is not True
-        or authority
-        != {
-            "identity": MATCHED_CURRENT_AUTHORITY_IDENTITY,
-            "content_only": True,
-            "externally_endorsed": False,
-            "external_signature_created": False,
-            "trust_profile_created": False,
-        }
-        or boundary
-        != {
-            "qualification_seed": PUBLIC_QUALIFICATION_SEED,
-            "qualification_seed_class": "public_nonbenchmark_seed",
-            "tuning_seeds_used": [],
-            "evaluation_seeds_used": [],
-            "environment_resets": len(builder.MATCHED_CURRENT_CANDIDATE_IDS),
-            "environment_transitions": 0,
-            "reward_arrays_read": 0,
-            "result_archives_opened": 0,
-        }
+        or not _json_exact_equal(
+            authority,
+            {
+                "identity": MATCHED_CURRENT_AUTHORITY_IDENTITY,
+                "content_only": True,
+                "externally_endorsed": False,
+                "external_signature_created": False,
+                "trust_profile_created": False,
+            },
+        )
+        or not _json_exact_equal(
+            boundary,
+            {
+                "qualification_seed": PUBLIC_QUALIFICATION_SEED,
+                "qualification_seed_class": "public_nonbenchmark_seed",
+                "tuning_seeds_used": [],
+                "evaluation_seeds_used": [],
+                "environment_resets": len(builder.MATCHED_CURRENT_CANDIDATE_IDS),
+                "environment_transitions": 0,
+                "reward_arrays_read": 0,
+                "result_archives_opened": 0,
+            },
+        )
     ):
         raise ForagerMatchedQualificationError("qualification authority boundary drifted")
     candidate_order = manifest.get("candidate_order")

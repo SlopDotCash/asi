@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
+from numbers import Real
 from typing import Any
 
 import chex
@@ -29,6 +31,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.optimizers import Bounder, bounder_from_config
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
@@ -796,6 +799,34 @@ class ContinuousActorCriticAgent:
             raise ValueError("action_dim must be positive")
         if config.log_sigma_min > config.log_sigma_max:
             raise ValueError("log_sigma_min must be <= log_sigma_max")
+        canonical_bounds: dict[str, float | None] = {}
+        for name in ("action_low", "action_high"):
+            bound = getattr(config, name)
+            if bound is None:
+                canonical_bounds[name] = None
+                continue
+            actual_type = type(bound)
+            if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+                raise ValueError(f"{name} must be a finite real number when set")
+            try:
+                narrowed = round_real_to_float32(bound)
+            except Exception as exc:
+                raise ValueError(f"{name} must be finite when set") from exc
+            if not math.isfinite(narrowed):
+                raise ValueError(f"{name} must remain finite once narrowed to float32")
+            # Only an actual built-in float is already the binary64 payload JAX will
+            # narrow exactly; ints and other reals store the validated binary32 value.
+            canonical_bounds[name] = bound if type(bound) is float else narrowed
+        low = canonical_bounds["action_low"]
+        high = canonical_bounds["action_high"]
+        if low is not None and high is not None and low > high:
+            raise ValueError("action_low must be <= action_high")
+        if (low, high) != (config.action_low, config.action_high) or any(
+            type(value) is not float
+            for value in (config.action_low, config.action_high)
+            if value is not None
+        ):
+            config = dataclasses.replace(config, action_low=low, action_high=high)
         self._config = config
         self._bounder = bounder
 

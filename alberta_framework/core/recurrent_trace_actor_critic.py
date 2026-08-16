@@ -1307,7 +1307,7 @@ def adaptive_obgd_update(
     epsilon_array = jnp.asarray(epsilon, dtype=signal.dtype)
     proposed_second_moment = jax.tree_util.tree_map(
         lambda previous, trace: (
-            beta * previous
+            jnp.where(beta == 0.0, jnp.zeros_like(previous), beta * previous)
             + (1.0 - beta) * jnp.square(signal * trace)
         ),
         second_moment,
@@ -1342,6 +1342,10 @@ def adaptive_obgd_update(
     )
     alpha_array = jnp.asarray(alpha, dtype=signal.dtype)
     kappa_array = jnp.asarray(kappa, dtype=signal.dtype)
+    checked_second_moment = jax.tree_util.tree_map(
+        lambda previous: jnp.where(beta == 0.0, jnp.zeros_like(previous), previous),
+        second_moment,
+    )
     update_applied = (
         jnp.isfinite(signal)
         & jnp.isfinite(alpha_array)
@@ -1354,7 +1358,7 @@ def adaptive_obgd_update(
         & jnp.isfinite(epsilon_array)
         & (epsilon_array > 0.0)
         & _floating_tree_is_finite(traces)
-        & _floating_tree_is_finite(second_moment)
+        & _floating_tree_is_finite(checked_second_moment)
         & _floating_tree_is_finite(proposed_second_moment)
         & _floating_tree_is_finite(proposed_updates)
         & jnp.isfinite(step_size)

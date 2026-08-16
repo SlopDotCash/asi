@@ -8,6 +8,7 @@ All streams use JAX-compatible pure functions that work with jax.lax.scan.
 """
 
 import math
+from numbers import Real
 from typing import Any
 
 import chex
@@ -58,6 +59,20 @@ def _require_normal_float32_scale(name: str, value: float) -> float:
     return narrowed
 
 
+def _require_finite_nonnegative_float32(name: str, value: object) -> float:
+    """Require a finite non-negative float32 execution value."""
+    message = f"{name} must be a finite non-negative float32 value"
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(message)
+    try:
+        narrowed = float(np.float32(value))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(narrowed) or narrowed < 0.0:
+        raise ValueError(message)
+    return narrowed
+
+
 @chex.dataclass(frozen=True)
 class RandomWalkState:
     """State for RandomWalkStream.
@@ -101,10 +116,10 @@ class RandomWalkStream:
             noise_std: Std dev of target noise
             feature_std: Std dev of feature values
         """
-        self._feature_dim = feature_dim
-        self._drift_rate = drift_rate
-        self._noise_std = noise_std
-        self._feature_std = feature_std
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        self._drift_rate = _require_finite_nonnegative_float32("drift_rate", drift_rate)
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
+        self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
 
     @property
     def feature_dim(self) -> int:
@@ -306,10 +321,10 @@ class AbruptChangeStream:
             noise_std: Std dev of target noise
             feature_std: Std dev of feature values
         """
-        self._feature_dim = feature_dim
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
         self._change_interval = _require_positive_int("change_interval", change_interval)
-        self._noise_std = noise_std
-        self._feature_std = feature_std
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
+        self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
 
     @property
     def feature_dim(self) -> int:
@@ -562,13 +577,13 @@ class CyclicStream:
             noise_std: Std dev of target noise
             feature_std: Std dev of feature values
         """
-        self._feature_dim = feature_dim
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
         self._cycle_length = _require_positive_int("cycle_length", cycle_length)
         self._num_configurations = _require_positive_int(
             "num_configurations", num_configurations
         )
-        self._noise_std = noise_std
-        self._feature_std = feature_std
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
+        self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
 
     @property
     def feature_dim(self) -> int:
@@ -678,11 +693,11 @@ class PeriodicChangeStream:
             noise_std: Std dev of target noise
             feature_std: Std dev of feature values
         """
-        self._feature_dim = feature_dim
+        self._feature_dim = _require_positive_int("feature_dim", feature_dim)
         self._period = _require_positive_int("period", period)
-        self._amplitude = amplitude
-        self._noise_std = noise_std
-        self._feature_std = feature_std
+        self._amplitude = _require_finite_nonnegative_float32("amplitude", amplitude)
+        self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
+        self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
 
     @property
     def feature_dim(self) -> int:
@@ -798,6 +813,8 @@ class ScaledStreamWrapper:
                 f"feature_scales shape ({self._feature_scales.shape}) "
                 f"must match inner stream's feature_dim ({inner_stream.feature_dim})"
             )
+        if not bool(jnp.all(jnp.isfinite(self._feature_scales))):
+            raise ValueError("feature_scales must contain only finite float32 values")
 
     @property
     def feature_dim(self) -> int:

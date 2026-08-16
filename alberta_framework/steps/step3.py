@@ -224,9 +224,10 @@ def _require_positive_real(name: str, value: object) -> float:
 
 
 def _require_positive_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be a positive integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if number < 1:
         raise ValueError(f"{name} must be positive, got {value!r}")
     if number > _INT32_MAX:

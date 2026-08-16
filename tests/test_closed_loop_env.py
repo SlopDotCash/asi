@@ -1,6 +1,7 @@
 """Tests for the closed-loop micro-MDPs (actions affect observations)."""
 
 from fractions import Fraction
+from numbers import Real
 
 import chex
 import jax
@@ -151,6 +152,28 @@ class TestSwitchingTwoStateDynamics:
                 SwitchingTwoStateConfig(payoffs_a=((0.0, 1.0, 2.0),) * 2)  # type: ignore[arg-type]
             )
 
+    @pytest.mark.parametrize(
+        "payoffs_a",
+        [
+            ((float("nan"), 0.0), (0.0, 1.0)),
+            ((float("inf"), 0.0), (0.0, 1.0)),
+            ((-1.0, 0.0), (0.0, float("-inf"))),
+        ],
+    )
+    def test_non_finite_payoffs_raise(self, payoffs_a):
+        """Payoff matrices must contain only finite values."""
+        with pytest.raises(ValueError, match="finite"):
+            SwitchingTwoStateMDP(SwitchingTwoStateConfig(payoffs_a=payoffs_a))
+
+    def test_non_finite_payoffs_b_raise(self):
+        """payoffs_b is validated like payoffs_a."""
+        with pytest.raises(ValueError, match="finite"):
+            SwitchingTwoStateMDP(
+                SwitchingTwoStateConfig(
+                    payoffs_b=((0.0, float("nan")), (1.0, 0.0))  # type: ignore[arg-type]
+                )
+            )
+
 
 # =============================================================================
 # Switching two-state MDP: analytic helpers
@@ -272,6 +295,24 @@ class TestSwitchingScanRollout:
 
 class TestRiverSwim:
     """Dynamics, rewards, and analytic helpers of the stochastic variant."""
+
+    @pytest.mark.parametrize("reward_left", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_reward_left_raises(self, reward_left):
+        """reward_left must be finite."""
+        with pytest.raises(ValueError, match="reward_left must be finite"):
+            RiverSwimMDP(RiverSwimConfig(reward_left=reward_left))
+
+    @pytest.mark.parametrize("reward_right", [float("nan"), float("inf")])
+    def test_non_finite_reward_right_raises(self, reward_right):
+        """reward_right must be finite."""
+        with pytest.raises(ValueError, match="reward_right must be finite"):
+            RiverSwimMDP(RiverSwimConfig(reward_right=reward_right))
+
+    @pytest.mark.parametrize("initial_state", [1.5, True, 2.0])
+    def test_non_integer_initial_state_raises(self, initial_state):
+        """initial_state must be a canonical integer in range."""
+        with pytest.raises(ValueError, match="initial_state must be an integer"):
+            RiverSwimMDP(RiverSwimConfig(initial_state=initial_state))  # type: ignore[arg-type]
 
     def test_transition_tensor_structure(self):
         """Kernels are row-stochastic with drift folded at the boundaries."""
@@ -413,6 +454,30 @@ class TestRiverSwim:
         kwargs = {field: value}
         with pytest.raises(ValueError, match=field):
             RiverSwimMDP(RiverSwimConfig(**kwargs))
+
+    @pytest.mark.parametrize("field", ["p_right_up", "p_right_down"])
+    def test_transition_probabilities_reject_class_spoofed_reals(self, field):
+        """``__class__``-spoofed non-``Real`` objects must not defeat validation."""
+
+        class _SpoofedFloat:
+            """Mimics ``float`` via ``__class__`` to defeat ``isinstance``."""
+
+            @property
+            def __class__(self) -> type:  # type: ignore[override]
+                return float
+
+            def __float__(self) -> float:
+                return 0.3
+
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (3, 10)
+
+        assert isinstance(_SpoofedFloat(), Real)
+        assert not issubclass(type(_SpoofedFloat()), Real)
+
+        kwargs = {field: _SpoofedFloat()}
+        with pytest.raises(ValueError, match=field):
+            RiverSwimMDP(RiverSwimConfig(**kwargs))  # type: ignore[arg-type]
 
     def test_transition_probabilities_preserve_real_scalars_and_normalize_runtime(self):
         env = RiverSwimMDP(

@@ -99,6 +99,29 @@ def test_config_rejects_nonfinite_negative_or_unknown_rules(
         RepresentationGradientMixerConfig(**kwargs)  # type: ignore[arg-type]
 
 
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["behavior_weight", "grounded_world_weight", "normalization_epsilon"],
+)
+def test_config_rejects_class_spoofed_float_fields(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        RepresentationGradientMixerConfig(
+            representation_dim=2,
+            **{field: _SpoofedFloat()},  # type: ignore[arg-type]
+        )
+
+
 def test_full_mode_matches_disclosed_weighted_algebra() -> None:
     config = RepresentationGradientMixerConfig(
         representation_dim=3,

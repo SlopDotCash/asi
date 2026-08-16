@@ -387,6 +387,36 @@ class TestRunTDLearningLoop:
         chex.assert_tree_all_finite(state.optimizer_state.h_traces)
         chex.assert_tree_all_finite(metrics)
 
+    def test_zero_gamma_does_not_multiply_inf_next_observation(self) -> None:
+        """gamma=0 must skip V(s') so an unused inf next observation can still commit."""
+        learner = TDLinearLearner()
+        state = learner.init(2)
+        observation = jnp.array([1.0, 0.0], dtype=jnp.float32)
+        reward = jnp.array(0.5, dtype=jnp.float32)
+        next_observation = jnp.array([jnp.inf, 0.0], dtype=jnp.float32)
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = learner.update(
+            state,
+            observation,
+            reward,
+            next_observation,
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.state.weights)
+        chex.assert_tree_all_finite(result.td_error)
+        finite_next = learner.update(
+            state,
+            observation,
+            reward,
+            jnp.zeros_like(next_observation),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(result.state.weights, finite_next.state.weights)
+        chex.assert_trees_all_close(result.td_error, finite_next.td_error)
+
 
 class TestTDLearnerWithDifferentOptimizers:
     """Integration tests comparing TDIDBD and AutoTDIDBD in learning loops."""

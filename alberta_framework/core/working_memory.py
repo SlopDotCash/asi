@@ -318,7 +318,13 @@ class WorkingMemoryFeaturizer:
             return traces
         decay = jnp.asarray(decay_rates, dtype=jnp.float32)[:, None]
         update_rate = (1.0 - decay) * gate
-        return traces + update_rate * (value[None, :] - traces)
+        persist = 1.0 - update_rate
+        delta_update = traces + update_rate * (value[None, :] - traces)
+        return jnp.where(
+            persist == 0.0,
+            jnp.broadcast_to(value[None, :], traces.shape),
+            jnp.where(update_rate == 0.0, traces, delta_update),
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def features(
@@ -427,9 +433,22 @@ class WorkingMemoryFeaturizer:
             step_count=state.step_count + 1,
             last_gate=jnp.stack([observation_gate, action_gate, reward_gate]),
         )
+        previous_checked = state
+        if cfg.observation_decay_rates and all(rate == 0.0 for rate in cfg.observation_decay_rates):
+            previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
+                observation_traces=jnp.zeros_like(state.observation_traces),
+            )
+        if cfg.action_decay_rates and all(rate == 0.0 for rate in cfg.action_decay_rates):
+            previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
+                action_traces=jnp.zeros_like(state.action_traces),
+            )
+        if cfg.reward_decay_rates and all(rate == 0.0 for rate in cfg.reward_decay_rates):
+            previous_checked = previous_checked.replace(  # type: ignore[attr-defined]
+                reward_traces=jnp.zeros_like(state.reward_traces),
+            )
         update_applied = (
             inputs_valid
-            & floating_tree_is_finite(state)
+            & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(candidate)
         )
         return WorkingMemoryUpdateResult(

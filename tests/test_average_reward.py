@@ -186,6 +186,25 @@ def test_average_reward_horde_infinite_cumulant_does_not_poison_rbar() -> None:
     assert bool(jnp.all(recovered.head_updates_applied))
 
 
+def test_average_reward_horde_rejects_scalar_cumulant() -> None:
+    """A scalar cumulant must not broadcast to every demon head."""
+    learner = AverageRewardHordeLearner(
+        n_demons=3,
+        hidden_sizes=(4,),
+        sparsity=0.0,
+        use_layer_norm=False,
+    )
+    state = learner.init(3, jr.key(11))
+    obs = jnp.ones(3, dtype=jnp.float32)
+    nxt = jnp.ones(3, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="cumulants must have shape"):
+        learner.update(state, obs, jnp.array(1.0, dtype=jnp.float32), nxt)
+
+    with pytest.raises(ValueError, match="cumulants must have shape"):
+        learner.update(state, obs, jnp.array([1.0], dtype=jnp.float32), nxt)
+
+
 def test_differential_td_scan_shapes_and_finite_metrics() -> None:
     learner = DifferentialTDLearner(DifferentialTDConfig(trace_decay=0.2))
     state = learner.init(2)
