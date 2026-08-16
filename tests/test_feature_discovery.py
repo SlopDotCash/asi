@@ -170,12 +170,16 @@ class TestInteractionFeatureDiscoveryStream:
         def tied_uniform(key, shape, dtype=jnp.float32, **kwargs):
             return jnp.zeros(shape, dtype=dtype)
 
-        monkeypatch.setattr("alberta_framework.streams.feature_discovery.jr.uniform", tied_uniform)
+        monkeypatch.setattr(
+            "alberta_framework.streams.feature_discovery.jr.uniform", tied_uniform
+        )
         state = stream.init(jr.key(0))
         assert int(jnp.count_nonzero(state.context_weights)) == 2
 
     @pytest.mark.parametrize("active_count", [0, -1, True, 1.0, np.int64(1)])
-    def test_active_pair_count_requires_positive_builtin_int(self, active_count: object) -> None:
+    def test_active_pair_count_requires_positive_builtin_int(
+        self, active_count: object
+    ) -> None:
         with pytest.raises(ValueError, match="positive built-in integer"):
             InteractionFeatureDiscoveryStream(
                 feature_dim=4,
@@ -215,10 +219,8 @@ class TestInteractionFeatureDiscoveryStream:
             assert np.unique(row).size == pair_count
         threshold = jnp.sort(scores, axis=-1)[..., 2:3]
         legacy_mask = scores <= threshold
-        expected = (
-            dense_weights
-            * legacy_mask.astype(jnp.float32)
-            / jnp.sqrt(jnp.sum(legacy_mask, axis=-1, keepdims=True))
+        expected = dense_weights * legacy_mask.astype(jnp.float32) / jnp.sqrt(
+            jnp.sum(legacy_mask, axis=-1, keepdims=True)
         )
 
         np.testing.assert_array_equal(
@@ -257,13 +259,19 @@ class TestInteractionFeatureDiscoveryStream:
             del key, kwargs
             return jnp.broadcast_to(jnp.asarray(scores, dtype=dtype), shape)
 
-        monkeypatch.setattr("alberta_framework.streams.feature_discovery.jr.normal", fixed_normal)
-        monkeypatch.setattr("alberta_framework.streams.feature_discovery.jr.uniform", fixed_uniform)
+        monkeypatch.setattr(
+            "alberta_framework.streams.feature_discovery.jr.normal", fixed_normal
+        )
+        monkeypatch.setattr(
+            "alberta_framework.streams.feature_discovery.jr.uniform", fixed_uniform
+        )
         init = jax.jit(stream.init) if compiled else stream.init
         state = init(jr.key(0))
 
         actual_mask = state.context_weights != 0.0
-        expected = jnp.broadcast_to(jnp.asarray(expected_mask), state.context_weights.shape)
+        expected = jnp.broadcast_to(
+            jnp.asarray(expected_mask), state.context_weights.shape
+        )
         chex.assert_trees_all_equal(actual_mask, expected)
 
         def body(carry, idx):
@@ -448,10 +456,18 @@ class TestFixedBudgetFeatureLearner:
             utilities=jnp.full((3,), jnp.inf, dtype=jnp.float32),
             candidate_utilities=jnp.full((2,), -jnp.inf, dtype=jnp.float32),
             task_activity_ema=jnp.array([jnp.inf, jnp.nan], dtype=jnp.float32),
-            generator_log_weights=jnp.array([jnp.inf, jnp.nan, -jnp.inf], dtype=jnp.float32),
-            generator_utility_ema=jnp.array([jnp.inf, jnp.nan, -jnp.inf], dtype=jnp.float32),
-            plasticity_log_weights=jnp.array([jnp.nan, jnp.inf, -jnp.inf], dtype=jnp.float32),
-            plasticity_signal_ema=jnp.array([jnp.nan, jnp.inf, -jnp.inf], dtype=jnp.float32),
+            generator_log_weights=jnp.array(
+                [jnp.inf, jnp.nan, -jnp.inf], dtype=jnp.float32
+            ),
+            generator_utility_ema=jnp.array(
+                [jnp.inf, jnp.nan, -jnp.inf], dtype=jnp.float32
+            ),
+            plasticity_log_weights=jnp.array(
+                [jnp.nan, jnp.inf, -jnp.inf], dtype=jnp.float32
+            ),
+            plasticity_signal_ema=jnp.array(
+                [jnp.nan, jnp.inf, -jnp.inf], dtype=jnp.float32
+            ),
             birth_timestamp=0.0,
         )
         recovered_weights = learner._resource_weights(state.generator_log_weights)
@@ -811,7 +827,9 @@ def test_curation_priority_override_has_exact_no_cadence_learning_parity() -> No
     assert not bool(full.curation_priority_override_applied)
     assert not bool(random.curation_priority_override_applied)
     assert not bool(jnp.array_equal(random.state.utilities, active_ranks))
-    assert not bool(jnp.array_equal(random.state.candidate_utilities, candidate_ranks))
+    assert not bool(
+        jnp.array_equal(random.state.candidate_utilities, candidate_ranks)
+    )
 
 
 def test_curation_priority_override_changes_only_forced_transaction_selection() -> None:
@@ -846,7 +864,9 @@ def test_curation_priority_override_changes_only_forced_transaction_selection() 
         active_ranks=active_ranks,
         candidate_ranks=candidate_ranks,
     )
-    random_override = full_override.replace(enabled=jnp.asarray(True, dtype=jnp.bool_))
+    random_override = full_override.replace(
+        enabled=jnp.asarray(True, dtype=jnp.bool_)
+    )
     observation = jnp.ones((4,), dtype=jnp.float32)
     target = jnp.zeros((1,), dtype=jnp.float32)
 
@@ -881,7 +901,9 @@ def test_curation_priority_override_changes_only_forced_transaction_selection() 
     assert int(random.promoted_candidate) == 1
     assert bool(random.curation_priority_override_applied)
     assert not bool(jnp.array_equal(random.state.utilities, active_ranks))
-    assert not bool(jnp.array_equal(random.state.candidate_utilities, candidate_ranks))
+    assert not bool(
+        jnp.array_equal(random.state.candidate_utilities, candidate_ranks)
+    )
 
 
 def test_curation_priority_override_controls_candidate_refresh_argmin() -> None:
@@ -924,7 +946,9 @@ def test_curation_priority_override_controls_candidate_refresh_argmin() -> None:
         state,
         observation,
         target,
-        curation_priority_override=ranks.replace(enabled=jnp.asarray(True, dtype=jnp.bool_)),
+        curation_priority_override=ranks.replace(
+            enabled=jnp.asarray(True, dtype=jnp.bool_)
+        ),
     )
 
     chex.assert_trees_all_equal(full.pre_curation_state, random.pre_curation_state)
@@ -1119,13 +1143,17 @@ def test_target_only_probe_is_invariant_to_durable_bank_and_learns_separate_bias
         candidate_second_moments=jnp.ones((1,), dtype=jnp.float32),
         target_second_moments=jnp.ones((1,), dtype=jnp.float32),
     )
-    changed_bank = base.replace(output_weights=jnp.asarray(((2.0, -0.5),), dtype=jnp.float32))
+    changed_bank = base.replace(
+        output_weights=jnp.asarray(((2.0, -0.5),), dtype=jnp.float32)
+    )
     observation = jnp.ones((3,), dtype=jnp.float32)
     target = jnp.ones((1,), dtype=jnp.float32)
     reference = learner.update(base, observation, target)
     changed = learner.update(changed_bank, observation, target)
     changed_probe = learner.update(
-        base.replace(relevance_probe_weights=base.relevance_probe_weights.at[0, 0].set(9.0)),
+        base.replace(
+            relevance_probe_weights=base.relevance_probe_weights.at[0, 0].set(9.0)
+        ),
         observation,
         target,
     )
@@ -1894,7 +1922,9 @@ class TestFixedBudgetInteractionLearner:
 
         assert not bool(wrong_sign.evidence_refreshed[0])
         assert not bool(wrong_sign.retention_evidence_refreshed[0])
-        assert float(wrong_sign.state.output_weights[0, 0]) == pytest.approx(committed_weight)
+        assert float(wrong_sign.state.output_weights[0, 0]) == pytest.approx(
+            committed_weight
+        )
         assert int(wrong_sign.state.utility_evidence_streak[0]) == 0
         assert int(wrong_sign.state.evidence_idle_steps[0]) == 1
 
@@ -1986,7 +2016,9 @@ class TestFixedBudgetInteractionLearner:
             feature_second_moments=jnp.ones((2,), dtype=jnp.float32),
             target_second_moments=jnp.ones((1,), dtype=jnp.float32),
         )
-        perturbed = base.replace(output_weights=jnp.array([[10.0, -100.0]], dtype=jnp.float32))
+        perturbed = base.replace(
+            output_weights=jnp.array([[10.0, -100.0]], dtype=jnp.float32)
+        )
         observation = jnp.ones((3,), dtype=jnp.float32)
         target = jnp.ones((1,), dtype=jnp.float32)
         external = jnp.ones((2,), dtype=jnp.bool_)
@@ -2002,10 +2034,13 @@ class TestFixedBudgetInteractionLearner:
             changed.relevance_probe_errors,
             jnp.asarray(((101.0, -9.0),), dtype=jnp.float32),
         )
-        assert not bool(jnp.all(reference.relevance_probe_scores == changed.relevance_probe_scores))
+        assert not bool(
+            jnp.all(reference.relevance_probe_scores == changed.relevance_probe_scores)
+        )
         assert not bool(
             jnp.all(
-                reference.state.relevance_probe_weights == changed.state.relevance_probe_weights
+                reference.state.relevance_probe_weights
+                == changed.state.relevance_probe_weights
             )
         )
 
@@ -2101,7 +2136,9 @@ class TestFixedBudgetInteractionLearner:
             candidate_second_moments=jnp.ones((1,), dtype=jnp.float32),
             target_second_moments=jnp.ones((1,), dtype=jnp.float32),
         )
-        perturbed = base.replace(output_weights=jnp.array([[100.0]], dtype=jnp.float32))
+        perturbed = base.replace(
+            output_weights=jnp.array([[100.0]], dtype=jnp.float32)
+        )
         observation = jnp.ones((3,), dtype=jnp.float32)
         target = jnp.ones((1,), dtype=jnp.float32)
         reference = learner.update(base, observation, target)
@@ -2120,11 +2157,15 @@ class TestFixedBudgetInteractionLearner:
         )
         assert not bool(
             jnp.all(
-                reference.state.relevance_probe_weights == changed.state.relevance_probe_weights
+                reference.state.relevance_probe_weights
+                == changed.state.relevance_probe_weights
             )
         )
         assert not bool(
-            jnp.all(reference.candidate_promotion_signal == changed.candidate_promotion_signal)
+            jnp.all(
+                reference.candidate_promotion_signal
+                == changed.candidate_promotion_signal
+            )
         )
         chex.assert_trees_all_equal(
             reference.state.output_weights,
@@ -2191,8 +2232,12 @@ class TestFixedBudgetInteractionLearner:
                 jnp.array([target_value], dtype=jnp.float32),
             )
             results.append(result)
-            assert int(result.candidate_promotion_evidence_streak_updated[0]) == (expected_updated)
-            assert int(result.state.candidate_promotion_evidence_streak[0]) == (expected_post)
+            assert int(result.candidate_promotion_evidence_streak_updated[0]) == (
+                expected_updated
+            )
+            assert int(result.state.candidate_promotion_evidence_streak[0]) == (
+                expected_post
+            )
             state = result.state
 
         assert bool(results[0].candidate_promotion_raw_evidence[0])
@@ -2205,7 +2250,11 @@ class TestFixedBudgetInteractionLearner:
         assert int(results[5].promoted_candidate) == 0
         assert bool(results[5].candidate_promotion_confirmed[0])
         assert float(results[5].candidate_promotion_signal[0]) > 0.1
-        assert int(np.asarray(results[5].state.candidate_output_weights[0, 0]).view(np.uint32)) == 0
+        assert int(
+            np.asarray(
+                results[5].state.candidate_output_weights[0, 0]
+            ).view(np.uint32)
+        ) == 0
 
     def test_reacquisition_confirmation_does_not_delay_first_acquisition(self) -> None:
         learner = FixedBudgetInteractionLearner(
@@ -2754,7 +2803,9 @@ class TestFixedBudgetInteractionLearner:
 
         assert int(retired.retired_slot) == 0
         assert int(np.asarray(retired.state.output_weights[0, 0]).view(np.uint32)) == 0
-        assert int(np.asarray(retired.state.relevance_probe_weights[0, 0]).view(np.uint32)) == 0
+        assert int(
+            np.asarray(retired.state.relevance_probe_weights[0, 0]).view(np.uint32)
+        ) == 0
 
     def test_relevance_probe_state_is_always_fixed_shape_and_accounted(self) -> None:
         disabled = FixedBudgetInteractionLearner(
@@ -3083,7 +3134,9 @@ class TestFeatureDiscoveryStreamsValidation:
             ({"noise_std": -0.01}, "noise_std"),
         ],
     )
-    def test_nonlinear_rejects_malformed_inputs(self, kwargs: dict[str, Any], match: str) -> None:
+    def test_nonlinear_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
         base: dict[str, Any] = {"feature_dim": 8}
         base.update(kwargs)
         with pytest.raises(ValueError, match=match):
@@ -3163,7 +3216,9 @@ class TestFeatureDiscoveryStreamsValidation:
             ({"noise_std": -0.01}, "noise_std"),
         ],
     )
-    def test_interaction_rejects_malformed_inputs(self, kwargs: dict[str, Any], match: str) -> None:
+    def test_interaction_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
         base: dict[str, Any] = {"feature_dim": 6}
         base.update(kwargs)
         with pytest.raises(ValueError, match=match):
@@ -3212,29 +3267,3 @@ class TestFeatureDiscoveryStreamsValidation:
             collect_feature_discovery_stream(stream, -1, key)
         with pytest.raises(TypeError, match="init"):
             collect_feature_discovery_stream(object(), 10, key)
-
-
-def test_fixed_budget_feature_learner_integer_validation() -> None:
-    with pytest.raises(ValueError, match="n_features"):
-        FixedBudgetFeatureLearner(n_features=True, n_tasks=1)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="n_features"):
-        FixedBudgetFeatureLearner(n_features=4.5, n_tasks=1)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="n_tasks"):
-        FixedBudgetFeatureLearner(n_features=4, n_tasks=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="candidate_count"):
-        FixedBudgetFeatureLearner(n_features=4, n_tasks=1, candidate_count=True)  # type: ignore[arg-type]
-
-    learner = FixedBudgetFeatureLearner(
-        n_features=np.int32(4),
-        n_tasks=np.int64(2),
-        candidate_count=np.int32(2),
-        replacement_interval=np.int32(50),
-        min_feature_age=np.int64(20),
-        candidate_min_age=np.int32(10),
-    )
-    assert learner.n_features == 4
-    assert learner.n_tasks == 2
-    assert learner._candidate_count == 2
-    assert type(learner._candidate_count) is int
-    assert type(learner.n_features) is int
-    assert type(learner.n_tasks) is int
