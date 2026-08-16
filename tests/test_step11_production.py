@@ -152,6 +152,7 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", float("nan")),
     ("observation_dim", float("inf")),
     ("observation_dim", None),
+    ("observation_dim", 2**31),
     ("n_primitive_actions", 0),
     ("n_primitive_actions", -1),
     ("n_primitive_actions", True),
@@ -161,8 +162,8 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_primitive_actions", float("nan")),
     ("n_primitive_actions", float("inf")),
     ("n_primitive_actions", None),
+    ("n_primitive_actions", 2**31),
     ("option_planning_backups_per_step", -1),
-    ("option_planning_backups_per_step", 2**31 - 1),
     ("option_planning_backups_per_step", 2**31),
     ("option_planning_backups_per_step", True),
     ("option_planning_backups_per_step", False),
@@ -179,12 +180,14 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("base_step_size", -1.0),
     ("base_step_size", "0.05"),
     ("base_step_size", None),
+    ("base_step_size", 1e100),
     ("base_avg_reward_step_size", float("nan")),
     ("base_avg_reward_step_size", float("inf")),
     ("base_avg_reward_step_size", True),
     ("base_avg_reward_step_size", False),
     ("base_avg_reward_step_size", -0.01),
     ("base_avg_reward_step_size", "0.01"),
+    ("base_avg_reward_step_size", 1e100),
     ("base_trace_decay", float("nan")),
     ("base_trace_decay", float("inf")),
     ("base_trace_decay", True),
@@ -192,23 +195,27 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("base_trace_decay", -0.1),
     ("base_trace_decay", 1.1),
     ("base_trace_decay", "0.0"),
+    ("base_trace_decay", 1e100),
     ("option_step_size", float("nan")),
     ("option_step_size", float("inf")),
     ("option_step_size", True),
     ("option_step_size", False),
     ("option_step_size", -1.0),
     ("option_step_size", "0.05"),
+    ("option_step_size", 1e100),
     ("option_avg_reward_step_size", float("nan")),
     ("option_avg_reward_step_size", float("inf")),
     ("option_avg_reward_step_size", True),
     ("option_avg_reward_step_size", False),
     ("option_avg_reward_step_size", -0.01),
+    ("option_avg_reward_step_size", 1e100),
     ("option_trace_decay", float("nan")),
     ("option_trace_decay", float("inf")),
     ("option_trace_decay", True),
     ("option_trace_decay", False),
     ("option_trace_decay", -0.1),
     ("option_trace_decay", 1.1),
+    ("option_trace_decay", 1e100),
     ("option_gamma", float("nan")),
     ("option_gamma", float("inf")),
     ("option_gamma", float("-inf")),
@@ -217,6 +224,7 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_gamma", -0.1),
     ("option_gamma", 1.1),
     ("option_gamma", "0.99"),
+    ("option_gamma", 1e100),
     ("option_model_decay", float("nan")),
     ("option_model_decay", float("inf")),
     ("option_model_decay", True),
@@ -224,12 +232,14 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_model_decay", -0.1),
     ("option_model_decay", 1.1),
     ("option_model_decay", "0.95"),
+    ("option_model_decay", 1e100),
     ("option_model_step_size", float("nan")),
     ("option_model_step_size", float("inf")),
     ("option_model_step_size", True),
     ("option_model_step_size", False),
     ("option_model_step_size", -0.1),
     ("option_model_step_size", "0.1"),
+    ("option_model_step_size", 1e100),
     ("epsilon_base", float("nan")),
     ("epsilon_base", float("inf")),
     ("epsilon_base", True),
@@ -237,12 +247,14 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("epsilon_base", -0.1),
     ("epsilon_base", 1.1),
     ("epsilon_base", "0.1"),
+    ("epsilon_base", 1e100),
     ("epsilon_option", float("nan")),
     ("epsilon_option", float("inf")),
     ("epsilon_option", True),
     ("epsilon_option", False),
     ("epsilon_option", -0.1),
     ("epsilon_option", 1.1),
+    ("epsilon_option", 1e100),
     ("utility_ema_decay", float("nan")),
     ("utility_ema_decay", float("inf")),
     ("utility_ema_decay", float("-inf")),
@@ -251,6 +263,7 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("utility_ema_decay", -0.1),
     ("utility_ema_decay", 1.1),
     ("utility_ema_decay", "0.99"),
+    ("utility_ema_decay", 1e100),
     ("curation_threshold", float("nan")),
     ("curation_threshold", float("inf")),
     ("curation_threshold", float("-inf")),
@@ -259,6 +272,7 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("curation_threshold", -0.1),
     ("curation_threshold", "0.0"),
     ("curation_threshold", None),
+    ("curation_threshold", 1e100),
 )
 
 
@@ -377,7 +391,7 @@ def test_step11_oak_fields_preserve_legal_endpoints() -> None:
     assert restored.utility_ema_decay == 0.0
     assert restored.curation_threshold == 0.0
     assert restored.subtask_specs[0].feature_index == 0
-    assert restored.subtask_specs[0].threshold == float(np.float32(1e-12))
+    assert restored.subtask_specs[0].threshold == 1e-12
     assert restored.subtask_specs[0].pseudo_reward_scale == 0.0
     assert restored.subtask_specs[0].max_option_steps == 1
     assert agent.config.stomp.option_gamma == 0.0
@@ -1058,3 +1072,86 @@ def test_step11_state_stays_finite_200_steps() -> None:
     chex.assert_tree_all_finite(result.state.stomp_state.base_learner_state)
     chex.assert_tree_all_finite(result.state.utility_ema)
     chex.assert_tree_all_finite(result.td_errors)
+
+
+def test_step11_config_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    spec = SubtaskSpec(
+        feature_index=2**31 - 2,
+        threshold=f32_max,
+        pseudo_reward_scale=f32_max,
+        max_option_steps=2**31 - 1,
+    )
+    config = Step11OaKConfig(
+        subtask_specs=(spec,),
+        observation_dim=2**31 - 1,
+        n_primitive_actions=2**31 - 1,
+        base_step_size=f32_max,
+        base_avg_reward_step_size=f32_max,
+        base_trace_decay=1.0,
+        option_step_size=f32_max,
+        option_avg_reward_step_size=f32_max,
+        option_trace_decay=1.0,
+        option_gamma=1.0,
+        option_model_decay=1.0,
+        option_model_step_size=f32_max,
+        option_planning_backups_per_step=2**31 - 1,
+        epsilon_base=1.0,
+        epsilon_option=1.0,
+        utility_ema_decay=1.0,
+        curation_threshold=f32_max,
+    )
+    assert config.observation_dim == 2**31 - 1
+    assert config.option_planning_backups_per_step == 2**31 - 1
+    assert config.base_step_size == f32_max
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "64"}, "steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step11_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step11_smoke(**kwargs)
+
+
+def test_step11_oak_rejects_spoofed_subtask_specs_container() -> None:
+    class SpoofedTuple(list):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    with pytest.raises(ValueError, match="subtask_specs"):
+        Step11OaKConfig(
+            subtask_specs=SpoofedTuple([SubtaskSpec(feature_index=0)]),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_step11_oak_rejects_adversarial_ratio_floats(ratio: tuple[int, int]) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match="option_gamma"):
+        Step11OaKConfig(
+            subtask_specs=(SubtaskSpec(feature_index=0),),
+            option_gamma=HiddenBoundaryFloat(0.5),
+        )
