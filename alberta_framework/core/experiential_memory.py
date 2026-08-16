@@ -840,7 +840,10 @@ class ExperientialMemory:
         neighbor_mask = jnp.isfinite(top_scores) & (top_scores > 0.0)
         positive_scores = jnp.where(neighbor_mask, top_scores, 0.0)
         score_sum = jnp.sum(positive_scores)
-        neighbor_weights = positive_scores / jnp.maximum(score_sum, 1.0e-12)
+        # Use the real score_sum when positive; fall back to 1.0 only when exactly zero.
+        # The previous unconditional 1e-12 floor corrupted weights for small-but-nonzero
+        # score_sum (e.g. exp(-36) ~ 2e-16), producing weights ~2e-4 instead of 1.0.
+        neighbor_weights = positive_scores / jnp.where(score_sum > 0.0, score_sum, 1.0)
 
         neighbor_similarities = similarities[indices]
         neighbor_reliabilities = effective_reliabilities[indices]
