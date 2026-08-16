@@ -148,12 +148,35 @@ class TestSwitchingTwoStateDynamics:
     @pytest.mark.parametrize("phase_length", _INVALID_PHASE_LENGTHS)
     def test_invalid_phase_length_raises(self, phase_length):
         """Schedule divisors must be built-in positive JAX-int32 integers."""
-        with pytest.raises(
-            ValueError,
-            match=rf"phase_length must be a positive integer in \[1, {_INT32_MAX}\]",
-        ):
+        with pytest.raises(ValueError, match=r"phase_length must be"):
             SwitchingTwoStateMDP(
                 SwitchingTwoStateConfig(phase_length=phase_length)  # type: ignore[arg-type]
+            )
+
+    def test_phase_length_class_spoofed_int_raises(self):
+        """A ``__class__`` override that fakes ``int`` must still be rejected.
+
+        ``isinstance(value, int)`` consults the overridable ``__class__``
+        property, so a non-int object could previously spoof the isinstance
+        check and reach ``int(config.phase_length)`` unvalidated, raising an
+        undocumented ``TypeError`` from deep inside JAX construction instead
+        of the clean ``ValueError`` this constructor promises.
+        """
+
+        class _SpoofedInt:
+            @property
+            def __class__(self) -> type:  # noqa: A003 - deliberate spoof target
+                return int
+
+            def __lt__(self, other: object) -> bool:
+                return False
+
+            def __gt__(self, other: object) -> bool:
+                return False
+
+        with pytest.raises(ValueError, match=r"phase_length must be a built-in integer"):
+            SwitchingTwoStateMDP(
+                SwitchingTwoStateConfig(phase_length=_SpoofedInt())  # type: ignore[arg-type]
             )
 
     def test_int32_max_phase_length_runs_first_eager_and_jit_query(self):
@@ -376,8 +399,42 @@ class TestRiverSwim:
     @pytest.mark.parametrize("initial_state", [1.5, True, 2.0])
     def test_non_integer_initial_state_raises(self, initial_state):
         """initial_state must be a canonical integer in range."""
-        with pytest.raises(ValueError, match="initial_state must be an integer"):
+        with pytest.raises(ValueError, match="initial_state must be a built-in integer"):
             RiverSwimMDP(RiverSwimConfig(initial_state=initial_state))  # type: ignore[arg-type]
+
+    def test_initial_state_class_spoofed_int_raises(self):
+        """A ``__class__`` override that fakes ``int`` must still be rejected.
+
+        Previously ``isinstance(config.initial_state, Integral)`` consulted
+        the overridable ``__class__`` property, so this object would pass
+        validation and reach ``jnp.array(self._config.initial_state, ...)``
+        inside :meth:`RiverSwimMDP.init` unvalidated.
+        """
+
+        class _SpoofedInt:
+            @property
+            def __class__(self) -> type:  # noqa: A003 - deliberate spoof target
+                return int
+
+            def __ge__(self, other: object) -> bool:
+                return True
+
+            def __lt__(self, other: object) -> bool:
+                return True
+
+        with pytest.raises(ValueError, match="initial_state must be a built-in integer"):
+            RiverSwimMDP(RiverSwimConfig(initial_state=_SpoofedInt()))  # type: ignore[arg-type]
+
+    def test_non_integer_n_states_raises(self):
+        """n_states must be a canonical built-in integer, not merely numeric.
+
+        Previously ``n_states`` had no type check at all: a float such as
+        ``6.5`` passed the ``config.n_states < 2`` comparison and then raised
+        an undocumented ``TypeError`` from ``range(n)`` deep inside
+        ``_build_transitions`` instead of a clean ``ValueError``.
+        """
+        with pytest.raises(ValueError, match="n_states must be a built-in integer"):
+            RiverSwimMDP(RiverSwimConfig(n_states=6.5))  # type: ignore[arg-type]
 
     def test_transition_tensor_structure(self):
         """Kernels are row-stochastic with drift folded at the boundaries."""
