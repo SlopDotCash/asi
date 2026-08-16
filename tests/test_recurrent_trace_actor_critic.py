@@ -2306,6 +2306,27 @@ def test_float32_endpoints_check_exact_numpy_value(field: str) -> None:
         RecurrentTraceActorCriticConfig(n_actions=2, **{field: above_one})
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "gamma",
+        "actor_lamda",
+        "critic_lamda",
+        "actor_alpha",
+        "critic_alpha",
+        "entropy_coefficient",
+        "sparsity",
+        "r_min",
+        "leaky_relu_slope",
+        "beta2",
+    ),
+)
+def test_nonzero_longdouble_cannot_underflow_into_legal_zero(field: str) -> None:
+    nonzero = np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
+    with pytest.raises(ValueError, match=rf"{field}.*finite normal float32"):
+        RecurrentTraceActorCriticConfig(n_actions=2, **{field: nonzero})
+
+
 @pytest.mark.parametrize("code", ("e", "f", "d", "g"))
 def test_config_canonicalizes_supported_numpy_float_families(code: str) -> None:
     value = np.dtype(code).type(0.5)

@@ -46,7 +46,7 @@ import numpy as np
 from jax import Array
 from jax.nn.initializers import lecun_normal
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
@@ -282,7 +282,12 @@ def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
         raise ValueError(
             f"{name} must be exactly zero or representable as a finite normal float32"
         )
-    normalized = validated_float32_scalar(name, value, **bounds)
+    normalized, numerator, _ = validated_float32_scalar_with_ratio(name, value, **bounds)
+    narrowed_magnitude = abs(float(np.float32(normalized)))
+    if numerator != 0 and narrowed_magnitude < _FLOAT32_TINY:
+        raise ValueError(
+            f"{name} must be exactly zero or representable as a finite normal float32"
+        )
     _validate_normal_float32_config_value(name, normalized)
     return normalized
 
