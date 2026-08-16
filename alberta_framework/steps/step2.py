@@ -111,10 +111,12 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.int16,
     np.int32,
     np.int64,
+    np.longlong,
     np.uint8,
     np.uint16,
     np.uint32,
     np.uint64,
+    np.ulonglong,
 )
 
 

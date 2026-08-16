@@ -1079,6 +1079,42 @@ def test_step2_configs_reject_hostile_integral_subclasses() -> None:
             config_type(**{field: LieInt(-1)})
 
 
+@pytest.mark.parametrize("integer_type", [np.longlong, np.ulonglong])
+def test_step2_configs_accept_and_canonicalize_remaining_numpy_integers(
+    integer_type: type[np.integer[Any]],
+) -> None:
+    kernel = Step2KernelConfig(
+        feature_dim=integer_type(8),
+        n_heads=integer_type(3),
+        hidden_sizes=(integer_type(16),),
+        context_length=integer_type(32),
+    )
+    strict = Step2StrictDigitReadoutConfig(
+        n_heads=integer_type(3),
+        hidden_sizes=(integer_type(16),),
+    )
+    memory = Step2MemoryConfig(
+        feature_dim=integer_type(8),
+        n_classes=integer_type(3),
+        slots_per_class=integer_type(2),
+    )
+
+    assert all(
+        type(value) is int
+        for value in (
+            kernel.feature_dim,
+            kernel.n_heads,
+            *kernel.hidden_sizes,
+            kernel.context_length,
+            strict.n_heads,
+            *strict.hidden_sizes,
+            memory.feature_dim,
+            memory.n_classes,
+            memory.slots_per_class,
+        )
+    )
+
+
 def test_step2_configs_require_actual_tuple_containers() -> None:
     class TupleSpoof(list[int]):
         @property
@@ -1092,20 +1128,29 @@ def test_step2_configs_require_actual_tuple_containers() -> None:
 
 @pytest.mark.parametrize("field", ["stream", "readout_mode", "loss_normalization"])
 def test_step2_kernel_requires_actual_string_discriminators(field: str) -> None:
-    class StringStandIn:
+    values = {
+        "stream": "polynomial",
+        "readout_mode": "linear_mse",
+        "loss_normalization": "target_structure",
+    }
+
+    class StringClassSpoof:
+        @property
+        def __class__(self) -> type[str]:
+            return str
+
         def __eq__(self, other: object) -> bool:
-            return True
+            return other == values[field]
 
         def __hash__(self) -> int:
-            values = {
-                "stream": "polynomial",
-                "readout_mode": "linear_mse",
-                "loss_normalization": "target_structure",
-            }
             return hash(values[field])
 
-    with pytest.raises(ValueError, match=field):
-        Step2KernelConfig(**{field: StringStandIn()})
+    class StringSubclass(str):
+        pass
+
+    for value in (StringClassSpoof(), StringSubclass(values[field])):
+        with pytest.raises(ValueError, match=field):
+            Step2KernelConfig(**{field: value})
 
 
 @pytest.mark.parametrize(
