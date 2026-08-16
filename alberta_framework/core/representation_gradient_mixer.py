@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import operator
 from collections.abc import Mapping
 from numbers import Real
-from typing import Any, Literal, cast
+from typing import Any, Literal, SupportsIndex, cast
 
 import chex
 import jax.numpy as jnp
@@ -34,6 +35,31 @@ _VALID_MODES = frozenset({"full", "behavior_only", "world_only", "discard"})
 _VALID_NORMALIZATIONS = frozenset({"none", "unit_l2"})
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _strict_float32_scalar(
@@ -83,8 +109,11 @@ class RepresentationGradientMixerConfig:
     def __post_init__(self) -> None:
         """Reject ambiguous, dynamic, or non-float32-representable rules."""
 
-        if type(self.representation_dim) is not int or self.representation_dim <= 0:
-            raise ValueError("representation_dim must be a positive strict integer")
+        object.__setattr__(
+            self,
+            "representation_dim",
+            _require_int32("representation_dim", self.representation_dim, minimum=1),
+        )
         if type(self.mode) is not str or self.mode not in _VALID_MODES:
             raise ValueError(
                 "mode must be full, behavior_only, world_only, or discard"

@@ -452,3 +452,16 @@ def test_jit_matches_eager_and_dynamic_false_predicate_rejects() -> None:
     )
     assert bool(rejected.rejected)
     assert not bool(rejected.valid)
+
+
+def test_representation_gradient_mixer_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="representation_dim"):
+        RepresentationGradientMixerConfig(representation_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="representation_dim"):
+        RepresentationGradientMixerConfig(representation_dim=4.5)  # type: ignore[arg-type]
+
+
+def test_representation_gradient_mixer_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    config = RepresentationGradientMixerConfig(representation_dim=np.int32(8))
+    assert type(config.representation_dim) is int
+    assert config.representation_dim == 8
