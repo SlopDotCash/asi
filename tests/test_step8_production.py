@@ -190,6 +190,26 @@ def test_step8_world_model_fields_reject_invalid_inputs(field: str, value: objec
         make_step8_world_model(_config_with(**{field: value}))
 
 
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize("field", ["observation_dim", "n_actions", "action_dim"])
+def test_step8_world_model_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        make_step8_world_model(_config_with(**{field: _SpoofedInt()}))
+
+
 def test_step8_world_model_rejects_nonpositive_vector_action_dim() -> None:
     with pytest.raises(ValueError, match="action_dim"):
         make_step8_world_model(_config_with(n_actions=None, action_dim=0))
