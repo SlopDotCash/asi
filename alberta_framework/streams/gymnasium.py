@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import Array
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.learners import LinearLearner
 from alberta_framework.core.types import LearnerState, TimeStep
 
@@ -183,6 +184,7 @@ def make_epsilon_greedy_policy(
     Returns:
         Epsilon-greedy policy
     """
+    epsilon = validated_float32_scalar("epsilon", epsilon, lower=0.0, upper=1.0)
     random_policy = make_random_policy(env, seed + 1)
     rng = jr.key(seed)
 
@@ -233,6 +235,7 @@ def collect_trajectory(
         Tuple of (observations, targets) as JAX arrays with shape
         (num_steps, feature_dim) and (num_steps, target_dim)
     """
+    gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
     if policy is None:
         policy = make_random_policy(env, seed)
 
@@ -391,7 +394,9 @@ class GymnasiumStream:
         """
         self._env = env
         self._mode = mode
-        self._gamma = gamma
+        self._gamma = validated_float32_scalar(
+            "gamma", gamma, lower=0.0, upper=1.0
+        )
         self._include_action_in_features = include_action_in_features
         self._seed = seed
         self._reset_count = 0
@@ -553,7 +558,9 @@ class TDStream:
             seed: Random seed
         """
         self._env = env
-        self._gamma = gamma
+        self._gamma = validated_float32_scalar(
+            "gamma", gamma, lower=0.0, upper=1.0
+        )
         self._include_action_in_features = include_action_in_features
         self._seed = seed
         self._reset_count = 0
@@ -675,6 +682,8 @@ def make_gymnasium_stream(
         GymnasiumStream wrapping the environment
     """
     import gymnasium
+
+    gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
 
     env = gymnasium.make(env_id, **env_kwargs)
     return GymnasiumStream(

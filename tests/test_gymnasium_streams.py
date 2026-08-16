@@ -28,6 +28,48 @@ class TestPredictionMode:
         assert PredictionMode.VALUE.value == "value"
 
 
+@pytest.mark.parametrize("invalid", (True, float("nan"), float("inf"), -0.1, 1.1))
+def test_gamma_entry_points_reject_invalid_float32_probabilities(invalid: object) -> None:
+    env = gymnasium.make("CartPole-v1")
+    try:
+        with pytest.raises(ValueError, match="gamma"):
+            GymnasiumStream(env, gamma=invalid)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="gamma"):
+            TDStream(env, gamma=invalid)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="gamma"):
+            collect_trajectory(  # type: ignore[arg-type]
+                env, None, num_steps=1, gamma=invalid
+            )
+        with pytest.raises(ValueError, match="gamma"):
+            make_gymnasium_stream(  # type: ignore[arg-type]
+                "CartPole-v1", gamma=invalid
+            )
+    finally:
+        env.close()
+
+
+def test_probability_entry_points_normalize_hostile_real_failures_without_repr() -> None:
+    class HostileFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("untrusted ratio hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook executed")
+
+    env = gymnasium.make("CartPole-v1")
+    try:
+        with pytest.raises(ValueError, match="gamma"):
+            GymnasiumStream(env, gamma=HostileFloat(0.5))
+        with pytest.raises(ValueError, match="epsilon"):
+            make_epsilon_greedy_policy(
+                lambda _observation: 0,
+                env,
+                epsilon=HostileFloat(0.5),
+            )
+    finally:
+        env.close()
+
+
 class TestGymnasiumStreamRewardMode:
     """Tests for GymnasiumStream with REWARD prediction mode."""
 
