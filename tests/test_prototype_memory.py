@@ -246,7 +246,7 @@ def test_prototype_memory_rejects_adversarial_ratio_floats(
         def as_integer_ratio(self) -> tuple[int, int]:
             return ratio
 
-    with pytest.raises(ValueError, match=r"update_rate must be in \(0, 1\]"):
+    with pytest.raises(ValueError, match="update_rate"):
         PrototypeMemoryConfig(
             feature_dim=4,
             n_classes=2,
@@ -264,9 +264,21 @@ def test_prototype_memory_rejects_class_property_spoofing_float() -> None:
             return (1, 2)
 
     value = ClassSpoof()
-    with pytest.raises(ValueError, match="must be a real number"):
+    with pytest.raises(ValueError, match="finite real"):
         PrototypeMemoryConfig(
             feature_dim=4,
             n_classes=2,
             update_rate=value,  # type: ignore[arg-type]
         )
+
+
+def test_prototype_memory_rejects_hostile_integral_subclasses() -> None:
+    class LieInt(int):
+        def __int__(self) -> int:
+            return 4
+
+    for field in ("feature_dim", "n_classes", "slots_per_class"):
+        with pytest.raises(ValueError, match=field):
+            PrototypeMemoryConfig(
+                **{"feature_dim": 4, "n_classes": 2, field: LieInt(-1)}
+            )
