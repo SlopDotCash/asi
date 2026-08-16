@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import math
 from numbers import Real
+from typing import Any, cast
 
 import chex
 import jax
@@ -64,10 +65,11 @@ def _require_finite_real(
     nonnegative: bool = False,
 ) -> float:
     """Return a finite real, rejecting bools, NaN, and infinities."""
-    if isinstance(value, bool) or not isinstance(value, Real):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a finite real, got {value!r}")
     try:
-        number = float(value)
+        number = float(cast(Any, value))
     except (OverflowError, ValueError) as error:
         raise ValueError(f"{name} must be a finite real, got {value!r}") from error
     if not math.isfinite(number):
@@ -84,12 +86,13 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
     below the float32 subnormal range are accepted as exact zero, matching the
     noise-free trajectory they produce in the stream's float32 arithmetic.
     """
-    if isinstance(value, bool) or not isinstance(value, Real):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
-    if value < 0:
+    if cast(Any, value) < 0:
         raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
     try:
-        narrowed = round_real_to_float32(value)
+        narrowed = round_real_to_float32(cast(Any, value))
     except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
         raise ValueError(
             f"{name} must remain finite when rounded to float32, got {value!r}"
@@ -103,9 +106,10 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
 
 def _require_unit_interval(value: object, *, name: str) -> float:
     """Return a finite real in ``[0, 1]``, rejecting bool aliases."""
-    if isinstance(value, bool) or not isinstance(value, Real):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number) or not 0.0 <= number <= 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return number

@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 from fractions import Fraction
+from numbers import Real
 
 import chex
 import jax
@@ -581,6 +582,52 @@ def test_construct_rejects_illegal_distractor_prob(value: object) -> None:
             phases=(_valid_phase(),),
             distractor_prob=value,  # type: ignore[arg-type]
         )
+
+
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance``."""
+
+    @property  # type: ignore[misc]
+    def __class__(self) -> type:
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+    def __lt__(self, other: object) -> bool:
+        return 0.5 < other  # type: ignore[operator]
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 2)
+
+
+def test_construct_rejects_class_spoofed_distractor_prob() -> None:
+    """A ``__class__``-spoofed non-``Real`` must not defeat ``distractor_prob``.
+
+    ``isinstance()`` consults the overridable ``__class__`` attribute rather
+    than the real type slot, so an object whose ``__class__`` property
+    returns ``float`` passes ``isinstance(value, Real)`` even though its
+    actual type has no relationship to ``numbers.Real``.
+    """
+    fake = _SpoofedFloat()
+    assert isinstance(fake, Real)
+    assert not issubclass(type(fake), Real)
+
+    with pytest.raises(ValueError, match="distractor_prob"):
+        ClassicalConditioningStream(
+            phases=(_valid_phase(),),
+            distractor_prob=fake,  # type: ignore[arg-type]
+        )
+
+
+def test_construct_rejects_class_spoofed_cs_us_contingency() -> None:
+    """A ``__class__``-spoofed non-``Real`` must not defeat ``cs_us_contingency``."""
+    fake = _SpoofedFloat()
+    assert isinstance(fake, Real)
+    assert not issubclass(type(fake), Real)
+
+    with pytest.raises(ValueError, match="cs_us_contingency"):
+        ClassicalConditioningStream(phases=(_valid_phase(cs_us_contingency=fake),))
 
 
 @pytest.mark.parametrize("value", [True, False])
