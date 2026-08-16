@@ -32,10 +32,11 @@ solution.  All updates are predict-act-observe-update and use no replay.
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter, perf_counter_ns
-from typing import Literal
+from typing import Literal, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -71,6 +72,31 @@ CONDITION_MASKS: tuple[tuple[ConditionName, tuple[bool, bool]], ...] = (
     ("learner_only", (True, False)),
     ("joint_adaptive", (True, True)),
 )
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 @dataclass(frozen=True)
@@ -91,30 +117,42 @@ class ContinualMultiAgentConfig:
     bootstrap_seed: int = 2_026_073_000
 
     def __post_init__(self) -> None:
-        if self.phase_steps < 2:
-            raise ValueError("phase_steps must be at least 2")
-        if self.nuisance_dim < 0:
-            raise ValueError("nuisance_dim must be non-negative")
+        phase_steps = _require_int32("phase_steps", self.phase_steps, minimum=2)
+        nuisance_dim = _require_int32("nuisance_dim", self.nuisance_dim, minimum=0)
+        probe_horizon = _require_int32(
+            "probe_horizon", self.probe_horizon, minimum=1, maximum=phase_steps
+        )
+        probe_tail_steps = _require_int32(
+            "probe_tail_steps", self.probe_tail_steps, minimum=1, maximum=probe_horizon
+        )
+        recovery_window = _require_int32(
+            "recovery_window", self.recovery_window, minimum=1, maximum=phase_steps
+        )
+        bootstrap_resamples = _require_int32(
+            "bootstrap_resamples", self.bootstrap_resamples, minimum=1000
+        )
+        bootstrap_seed = _require_int32(
+            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=2**32 - 1
+        )
+
+        object.__setattr__(self, "phase_steps", phase_steps)
+        object.__setattr__(self, "nuisance_dim", nuisance_dim)
+        object.__setattr__(self, "probe_horizon", probe_horizon)
+        object.__setattr__(self, "probe_tail_steps", probe_tail_steps)
+        object.__setattr__(self, "recovery_window", recovery_window)
+        object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
+        object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
+
         if not 0.0 < self.learning_rate <= 1.0:
             raise ValueError("learning_rate must lie in (0, 1]")
         if not 0.0 <= self.exploration_rate <= 1.0:
             raise ValueError("exploration_rate must lie in [0, 1]")
-        if not 1 <= self.probe_tail_steps <= self.probe_horizon:
-            raise ValueError("probe_tail_steps must lie in [1, probe_horizon]")
-        if self.probe_horizon > self.phase_steps:
-            raise ValueError("probe_horizon cannot cross a phase boundary")
         if not 0.0 <= self.recovery_reward_threshold <= 1.0:
             raise ValueError("recovery_reward_threshold must lie in [0, 1]")
-        if not 1 <= self.recovery_window <= self.phase_steps:
-            raise ValueError("recovery_window must lie in [1, phase_steps]")
         if not 0.0 <= self.stability_reference_reward <= 1.0:
             raise ValueError("stability_reference_reward must lie in [0, 1]")
-        if self.bootstrap_resamples < 1_000:
-            raise ValueError("bootstrap_resamples must be at least 1000")
         if not 0.0 < self.confidence_level < 1.0:
             raise ValueError("confidence_level must lie in (0, 1)")
-        if not 0 <= self.bootstrap_seed < 2**32:
-            raise ValueError("bootstrap_seed must lie in [0, 2**32)")
 
 
 @dataclass(frozen=True)
@@ -141,6 +179,18 @@ class AcceptanceThresholds:
     maximum_mean_recurrence_recovery_steps: float = 16.0
     maximum_mean_stability_gap: float = 0.20
     maximum_update_latency_ms: float = 5.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "minimum_seed_count",
+            _require_int32("minimum_seed_count", self.minimum_seed_count, minimum=1),
+        )
+        object.__setattr__(
+            self,
+            "evidence_seed_start",
+            _require_int32("evidence_seed_start", self.evidence_seed_start, minimum=0),
+        )
 
 
 @dataclass(frozen=True)
