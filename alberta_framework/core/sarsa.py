@@ -22,6 +22,7 @@ import dataclasses
 import functools
 import operator
 import time
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -51,6 +52,9 @@ from alberta_framework.core.types import (
     TraceMode,
     create_horde_spec,
 )
+from alberta_framework.core.update_safety import (
+    floating_tree_is_finite as _floating_tree_is_finite,
+)
 
 # =============================================================================
 # Types
@@ -58,6 +62,30 @@ from alberta_framework.core.types import (
 
 
 _INT32_MAX = 2**31 - 1
+_SARSA_CONFIG_FIELDS = {
+    "n_actions",
+    "gamma",
+    "epsilon_start",
+    "epsilon_end",
+    "epsilon_decay_steps",
+}
+_SARSA_AGENT_CONFIG_FIELDS = {
+    "type",
+    "state_schema",
+    "sarsa_config",
+    "hidden_sizes",
+    "optimizer",
+    "bounder",
+    "normalizer",
+    "head_optimizer",
+    "sparsity",
+    "leaky_relu_slope",
+    "use_layer_norm",
+    "lamda",
+    "prediction_demons",
+    "trace_mode",
+    "utility_decay",
+}
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -101,6 +129,31 @@ def _preflight_sarsa_resources(n_actions: int, feature_dim: object) -> None:
     state_nbytes = 4 * (width + 5)
     if logical_scalars > _INT32_MAX or state_nbytes > _INT32_MAX:
         raise ValueError("derived SARSA wrapper resources must fit signed int32")
+
+
+def _preflight_sarsa_direct_state(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> None:
+    """Bound the Horde arrays plus SARSA-owned state before JAX allocation."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameters = n_heads * (final_width + 1)
+    horde_direct_scalars = 2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+    # last_observation, last_action, epsilon, step_count, and the two-word
+    # Threefry key are all four-byte public-state leaves.
+    aggregate_scalars = horde_direct_scalars + feature_dim + 5
+    for name, value in (
+        ("aggregate_direct_state_scalars", aggregate_scalars),
+        ("aggregate_direct_state_bytes", 4 * aggregate_scalars),
+    ):
+        if not 1 <= value <= _INT32_MAX:
+            raise ValueError(f"derived SARSA {name} must be at most {_INT32_MAX}")
 
 
 @chex.dataclass(frozen=True)
@@ -155,7 +208,7 @@ class SARSAConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "SARSAConfig":
+    def from_config(cls, config: Mapping[str, Any]) -> "SARSAConfig":
         """Reconstruct from config dict."""
         if type(config) is not dict:
             raise ValueError("config must be an exact built-in dict")
@@ -370,13 +423,32 @@ class SARSAAgent:
         """
         if type(sarsa_config) is not SARSAConfig:
             raise ValueError("sarsa_config must be an exact SARSAConfig")
-        if prediction_demons is not None:
-            if type(prediction_demons) is not list:
-                raise ValueError("prediction_demons must be an exact list or None")
-            if any(type(demon) is not GVFSpec for demon in prediction_demons):
-                raise ValueError("prediction_demons entries must be exact GVFSpec values")
+        lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
+        if prediction_demons is not None and type(prediction_demons) is not list:
+            raise ValueError("prediction_demons must be an actual list or None")
+        if prediction_demons is not None and any(
+            type(demon) is not GVFSpec for demon in prediction_demons
+        ):
+            raise ValueError("prediction_demons entries must be exact GVFSpec values")
+        n_predictions = len(prediction_demons) if prediction_demons is not None else 0
+        total_heads = _require_int32(
+            "total control and prediction demons",
+            sarsa_config.n_actions + n_predictions,
+            minimum=1,
+        )
+        # MultiHeadMLPLearner canonicalizes the tuple and its elements. This
+        # minimum-dimension preflight happens before constructing one Python
+        # GVF object per action, so an impossible state cannot first exhaust
+        # host memory in `_make_control_demons`.
+        if type(hidden_sizes) is not tuple:
+            raise ValueError("hidden_sizes must be an actual tuple")
+        canonical_hidden = tuple(
+            _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
+            for index, width in enumerate(hidden_sizes)
+        )
+        _preflight_sarsa_direct_state(total_heads, canonical_hidden, 1)
         self._sarsa_config = sarsa_config
-        self._hidden_sizes = hidden_sizes
+        self._hidden_sizes = canonical_hidden
         self._lamda = lamda
 
         # Build HordeSpec: control demons first, then prediction demons
@@ -386,13 +458,13 @@ class SARSAAgent:
         all_demons: list[GVFSpec] = list(control_demons)
         if prediction_demons is not None:
             all_demons.extend(prediction_demons)
-        self._n_prediction_demons = len(prediction_demons) if prediction_demons else 0
+        self._n_prediction_demons = n_predictions
 
         horde_spec = create_horde_spec(all_demons)
 
         self._horde = HordeLearner(
             horde_spec=horde_spec,
-            hidden_sizes=hidden_sizes,
+            hidden_sizes=canonical_hidden,
             optimizer=optimizer,
             step_size=step_size,
             bounder=bounder,
@@ -531,6 +603,12 @@ class SARSAAgent:
             Initial SARSAState with zeroed last_action/observation
         """
         _preflight_sarsa_resources(self.n_actions, feature_dim)
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        _preflight_sarsa_direct_state(
+            self._horde.n_demons,
+            self._hidden_sizes,
+            feature_dim,
+        )
         key, subkey = jr.split(key)
         learner_state = self._horde.init(feature_dim, subkey)
 
@@ -698,7 +776,7 @@ class SARSAAgent:
 
         # Epsilon decay
         cfg = self._sarsa_config
-        new_step_count = state.step_count + 1
+        new_step_count = jnp.minimum(state.step_count, _INT32_MAX - 1) + 1
         new_epsilon = jax.lax.cond(
             cfg.epsilon_decay_steps > 0,
             lambda: jnp.maximum(

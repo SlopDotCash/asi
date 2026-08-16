@@ -1273,3 +1273,110 @@ def test_sarsa_agent_from_config_rejects_nonexact_outer_containers() -> None:
     hostile["hidden_sizes"] = tuple(hostile["hidden_sizes"])
     with pytest.raises(ValueError, match="hidden_sizes"):
         SARSAAgent.from_config(hostile)
+
+
+@pytest.mark.parametrize(
+    "integer_type",
+    [
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    ],
+)
+def test_sarsa_config_accepts_full_numpy_integer_family(integer_type) -> None:
+    config = SARSAConfig(
+        n_actions=integer_type(2),
+        epsilon_decay_steps=integer_type(3),
+    )
+    assert type(config.n_actions) is int
+    assert type(config.epsilon_decay_steps) is int
+
+
+def test_sarsa_config_rejects_hostile_integer_hook_without_calling_it() -> None:
+    class HostileIndex:
+        def __index__(self) -> int:
+            raise AssertionError("untrusted __index__ must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted __repr__ must not run")
+
+    with pytest.raises(ValueError, match="n_actions"):
+        SARSAConfig(n_actions=HostileIndex())  # type: ignore[arg-type]
+
+
+def test_sarsa_config_from_config_requires_exact_compatibility_schema() -> None:
+    class DictSubclass(dict):
+        pass
+
+    payload = SARSAConfig(n_actions=2).to_config()
+    assert SARSAConfig.from_config(payload).to_config() == payload
+    with pytest.raises(ValueError, match="actual dict"):
+        SARSAConfig.from_config(DictSubclass(payload))
+    with pytest.raises(ValueError, match="fields"):
+        SARSAConfig.from_config({**payload, "extra": 1})
+
+
+def test_sarsa_agent_rejects_hostile_lambda_before_horde_construction() -> None:
+    class HostileFloat:
+        def __float__(self) -> float:
+            raise AssertionError("untrusted __float__ must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted __repr__ must not run")
+
+    with pytest.raises(ValueError, match="lamda"):
+        SARSAAgent(SARSAConfig(n_actions=2), lamda=HostileFloat())  # type: ignore[arg-type]
+
+
+def test_sarsa_agent_roundtrip_and_exact_schema() -> None:
+    class DictSubclass(dict):
+        pass
+
+    agent = SARSAAgent(SARSAConfig(n_actions=2), hidden_sizes=())
+    payload = agent.to_config()
+    restored = SARSAAgent.from_config(payload)
+    assert restored.to_config() == payload
+    with pytest.raises(ValueError, match="fields"):
+        SARSAAgent.from_config({**payload, "extra": None})
+    with pytest.raises(ValueError, match="actual dict"):
+        SARSAAgent.from_config(DictSubclass(payload))
+
+
+def test_sarsa_init_rejects_aggregate_state_overflow_before_jax_allocation() -> None:
+    agent = SARSAAgent(SARSAConfig(n_actions=2), hidden_sizes=())
+    # Linear two-head state uses (5 * feature_dim + 12) direct scalars.
+    first_overflow = ((2**31 - 1) // 4 - 12) // 5 + 1
+    with pytest.raises(ValueError, match="aggregate_direct_state_bytes"):
+        agent.init(feature_dim=first_overflow, key=jr.key(0))
+
+
+def test_sarsa_constructor_rejects_impossible_hidden_state_before_demon_list() -> None:
+    with pytest.raises(ValueError, match="aggregate_direct_state"):
+        SARSAAgent(
+            SARSAConfig(n_actions=1),
+            hidden_sizes=(2**31 - 1,),
+        )
+
+
+def test_sarsa_step_count_saturates_without_wrapping_under_jit() -> None:
+    agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(
+        last_action=jnp.array(0, dtype=jnp.int32),
+        last_observation=jnp.ones(2, dtype=jnp.float32),
+        step_count=jnp.array(2**31 - 1, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=jnp.ones(2, dtype=jnp.float32),
+        terminated=jnp.array(0.0, dtype=jnp.float32),
+        next_action=jnp.array(0, dtype=jnp.int32),
+    )
+    assert int(result.state.step_count) == 2**31 - 1
