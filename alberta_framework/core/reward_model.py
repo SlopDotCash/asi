@@ -137,7 +137,11 @@ class RLSRewardModel:
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(self, state: RLSRewardModelState, features: Array) -> Array:
         """Predict reward from one feature vector."""
-        x = jnp.asarray(features, dtype=jnp.float32).reshape((self._config.feature_dim,))
+        x = jnp.asarray(features, dtype=jnp.float32)
+        if x.shape != (self._config.feature_dim,):
+            raise ValueError(
+                f"features must have shape ({self._config.feature_dim},), got {x.shape}"
+            )
         return jnp.dot(state.weights, x)
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -164,7 +168,11 @@ class RLSRewardModel:
         unless the reward function is genuinely nonstationary and the
         feature stream stays exciting.
         """
-        x = jnp.asarray(features, dtype=jnp.float32).reshape((self._config.feature_dim,))
+        x = jnp.asarray(features, dtype=jnp.float32)
+        if x.shape != (self._config.feature_dim,):
+            raise ValueError(
+                f"features must have shape ({self._config.feature_dim},), got {x.shape}"
+            )
         target = jnp.asarray(reward, dtype=jnp.float32)
         prediction = jnp.dot(state.weights, x)
         error = target - prediction

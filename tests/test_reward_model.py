@@ -3,11 +3,48 @@
 from __future__ import annotations
 
 import chex
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from alberta_framework.core.reward_model import RLSRewardModel, RLSRewardModelConfig
+
+
+@pytest.mark.parametrize("operation", ["predict", "update"])
+@pytest.mark.parametrize("shape", [(), (4, 1), (1, 4), (2, 2), (3,), (5,)])
+def test_rls_reward_model_rejects_non_vector_feature_shapes(
+    operation: str,
+    shape: tuple[int, ...],
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4))
+    state = model.init()
+    features = jnp.zeros(shape, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match=r"features must have shape \(4,\)"):
+        if operation == "predict":
+            model.predict(state, features)
+        else:
+            model.update(state, features, jnp.array(0.0, dtype=jnp.float32))
+
+
+def test_rls_reward_model_feature_shape_guard_is_jit_stable() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4))
+    state = model.init()
+    predict = jax.jit(lambda features: model.predict(state, features))
+    update = jax.jit(
+        lambda features: model.update(
+            state,
+            features,
+            jnp.array(0.0, dtype=jnp.float32),
+        ).state.weights
+    )
+
+    chex.assert_shape(predict(jnp.ones((4,), dtype=jnp.float32)), ())
+    chex.assert_shape(update(jnp.ones((4,), dtype=jnp.float32)), (4,))
+    for call in (predict, update):
+        with pytest.raises(ValueError, match=r"features must have shape \(4,\)"):
+            call(jnp.ones((2, 2), dtype=jnp.float32))
 
 
 def test_rls_reward_model_config_roundtrip() -> None:
