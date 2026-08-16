@@ -16,7 +16,7 @@ import math
 from numbers import Real
 from typing import Any, cast
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 
 
 def validated_float32_scalar(
@@ -40,16 +40,16 @@ def validated_float32_scalar(
         raise ValueError(f"{name} must be a finite real number")
     real = cast(Any, value)
     try:
-        narrowed = round_real_to_float32(real)
-    except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except Exception as error:
         raise ValueError(f"{name} must be a finite real number") from error
     if not math.isfinite(narrowed):
         raise ValueError(f"{name} must remain finite once narrowed to float32")
 
-    def in_domain(candidate: Any) -> bool:
-        if positive and not candidate > 0:
+    def narrowed_in_domain(candidate: float) -> bool:
+        if positive and candidate <= 0.0:
             return False
-        if lower is not None and not candidate >= lower:
+        if lower is not None and candidate < lower:
             return False
         if upper is not None:
             if upper_inclusive:
@@ -57,10 +57,27 @@ def validated_float32_scalar(
             return bool(candidate < upper)
         return True
 
+    def ratio_compares_to(bound: float) -> int:
+        bound_numerator, bound_denominator = bound.as_integer_ratio()
+        left = numerator * bound_denominator
+        right = bound_numerator * denominator
+        return (left > right) - (left < right)
+
+    def exact_in_domain() -> bool:
+        if positive and numerator <= 0:
+            return False
+        if lower is not None and ratio_compares_to(lower) < 0:
+            return False
+        if upper is not None:
+            comparison = ratio_compares_to(upper)
+            if comparison > 0 or (comparison == 0 and not upper_inclusive):
+                return False
+        return True
+
     domain = _describe_domain(positive, lower, upper, upper_inclusive)
-    if not in_domain(real):
+    if not exact_in_domain():
         raise ValueError(f"{name} must be {domain}")
-    if not in_domain(narrowed):
+    if not narrowed_in_domain(narrowed):
         raise ValueError(f"{name} must remain {domain} once narrowed to float32")
     return real if type(real) is float else narrowed
 

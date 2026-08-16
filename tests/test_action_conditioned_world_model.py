@@ -359,6 +359,41 @@ def test_config_canonicalizes_real_scalars_and_preserves_builtin_floats() -> Non
     assert restored.config == model.config
 
 
+def test_config_normalizes_real_comparison_hooks_and_conversion_failures() -> None:
+    class LyingFraction(Fraction):
+        def __gt__(self, other: object) -> bool:
+            return True
+
+        def __ge__(self, other: object) -> bool:
+            return True
+
+        def __le__(self, other: object) -> bool:
+            return True
+
+    class BrokenFraction(Fraction):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("conversion hook failed")
+
+    with pytest.raises(ValueError, match="reward_scale must be positive"):
+        ActionConditionedWorldModel(
+            ActionConditionedWorldModelConfig(
+                observation_dim=2,
+                n_actions=2,
+                hidden_sizes=(),
+                reward_scale=LyingFraction(-1, 1),
+            )
+        )
+    with pytest.raises(ValueError, match="gamma must be a finite real number"):
+        ActionConditionedWorldModel(
+            ActionConditionedWorldModelConfig(
+                observation_dim=2,
+                n_actions=2,
+                hidden_sizes=(),
+                gamma=BrokenFraction(1, 2),
+            )
+        )
+
+
 @pytest.mark.parametrize("discount", [1.5, -0.5, 5.0])
 def test_update_rejects_out_of_range_discounts(discount: float) -> None:
     config = ActionConditionedWorldModelConfig(
