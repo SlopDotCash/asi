@@ -203,16 +203,22 @@ def test_random_box_policy_rejects_nonfinite_bounds() -> None:
         make_random_policy(StubEnv(), seed=0)  # type: ignore[arg-type]
 
 
-def test_random_box_policy_rejects_float32_span_overflow() -> None:
+def test_random_box_policy_samples_full_finite_float32_domain() -> None:
     maximum = np.finfo(np.float32).max
 
     class StubEnv:
         action_space = gymnasium.spaces.Box(
-            -maximum, maximum, shape=(1,), dtype=np.float32
+            np.asarray((-maximum, -maximum, maximum / 2), dtype=np.float32),
+            np.asarray((maximum, -maximum / 2, maximum), dtype=np.float32),
+            dtype=np.float32,
         )
 
-    with pytest.raises(ValueError, match="finite float32 span"):
-        make_random_policy(StubEnv(), seed=0)  # type: ignore[arg-type]
+    policy = make_random_policy(StubEnv(), seed=0)  # type: ignore[arg-type]
+    for _ in range(20):
+        action = policy(jnp.zeros(1, dtype=jnp.float32))
+        assert bool(jnp.all(jnp.isfinite(action)))
+        assert bool(jnp.all(action >= StubEnv.action_space.low))
+        assert bool(jnp.all(action < StubEnv.action_space.high))
 
 
 def test_random_box_preflights_dimension_before_jax_bound_conversion(
@@ -257,6 +263,30 @@ def test_runtime_values_must_match_declared_flattened_shapes_and_be_finite() -> 
         _flatten_observation(np.asarray((0.0, np.nan), dtype=np.float32), box)
     with pytest.raises(ValueError, match="action.*finite"):
         _flatten_action(np.asarray((0.0, np.inf), dtype=np.float32), box)
+
+
+def test_runtime_shape_metadata_rejects_before_jax_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    box = gymnasium.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32)
+
+    class OversizedStub:
+        shape = (2**31 - 1,)
+
+        def __array__(self, *_args: object, **_kwargs: object) -> np.ndarray:
+            raise AssertionError("array conversion ran before shape preflight")
+
+    monkeypatch.setattr(
+        gymnasium_stream_module.jnp,
+        "asarray",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("JAX conversion ran before shape preflight")
+        ),
+    )
+    with pytest.raises(ValueError, match="observation.*declared shape"):
+        _flatten_observation(OversizedStub(), box)
+    with pytest.raises(ValueError, match="action.*declared shape"):
+        _flatten_action(OversizedStub(), box)
 
 
 def test_factory_rejects_noncallable_policy_before_environment_construction(

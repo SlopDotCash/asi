@@ -153,6 +153,10 @@ def _flatten_observation(obs: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     """
     import gymnasium
 
+    if isinstance(space, (gymnasium.spaces.Box, gymnasium.spaces.MultiDiscrete)):
+        _require_runtime_shape("observation", obs, tuple(space.shape))
+    elif isinstance(space, gymnasium.spaces.Discrete):
+        _require_runtime_shape("observation", obs, ())
     try:
         if isinstance(space, gymnasium.spaces.Box):
             flattened = jnp.asarray(obs, dtype=jnp.float32).reshape((-1,))
@@ -182,6 +186,10 @@ def _flatten_action(action: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     """
     import gymnasium
 
+    if isinstance(space, (gymnasium.spaces.Box, gymnasium.spaces.MultiDiscrete)):
+        _require_runtime_shape("action", action, tuple(space.shape))
+    elif isinstance(space, gymnasium.spaces.Discrete):
+        _require_runtime_shape("action", action, ())
     try:
         if isinstance(space, gymnasium.spaces.Box):
             flattened = jnp.asarray(action, dtype=jnp.float32).reshape((-1,))
@@ -197,6 +205,28 @@ def _flatten_action(action: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     if flattened.shape != (expected,) or not bool(jnp.all(jnp.isfinite(flattened))):
         raise ValueError("action must match its declared flattened shape and be finite")
     return flattened
+
+
+def _require_runtime_shape(name: str, value: object, expected: tuple[int, ...]) -> None:
+    """Check host shape metadata before conversion can allocate a device array."""
+    try:
+        metadata = getattr(value, "shape", None)
+        actual = tuple(metadata) if metadata is not None else tuple(np.shape(cast(Any, value)))
+    except Exception as error:
+        raise ValueError(f"{name} shape metadata could not be read") from error
+    if actual != expected:
+        raise ValueError(f"{name} must have declared shape {expected}; got {actual}")
+
+
+def _sample_finite_box(key: Array, low: Array, high: Array) -> Array:
+    """Sample a finite float32 Box without forming the possibly-overflowing full span."""
+    unit = jr.uniform(key, low.shape, dtype=jnp.float32)
+    midpoint = low / 2.0 + high / 2.0
+    lower = low + (midpoint - low) * (2.0 * unit)
+    upper = midpoint + (high - midpoint) * (2.0 * unit - 1.0)
+    sample = jnp.where(unit < 0.5, lower, upper)
+    upper_open = jnp.nextafter(high, low)
+    return jnp.where(low < high, jnp.minimum(sample, upper_open), low)
 
 
 def _make_random_policy(
@@ -219,21 +249,16 @@ def _make_random_policy(
             raise ValueError("Discrete action bounds must fit JAX signed int32")
     elif isinstance(action_space, gymnasium.spaces.Box):
         _require_float32_allocation("random Box bounds and action", 3 * action_dim)
-        with np.errstate(over="ignore", invalid="ignore"):
-            low_array = np.asarray(action_space.low, dtype=np.float32)
-            high_array = np.asarray(action_space.high, dtype=np.float32)
-            finite_span = np.isfinite(high_array - low_array)
+        low_array = np.asarray(action_space.low, dtype=np.float32)
+        high_array = np.asarray(action_space.high, dtype=np.float32)
         if not bool(
             np.all(
                 np.isfinite(low_array)
                 & np.isfinite(high_array)
-                & finite_span
                 & (low_array <= high_array)
             )
         ):
-            raise ValueError(
-                "Box random actions require finite ordered bounds with a finite float32 span"
-            )
+            raise ValueError("Box random actions require finite ordered float32 bounds")
         low = jnp.asarray(low_array)
         high = jnp.asarray(high_array)
     elif isinstance(action_space, gymnasium.spaces.MultiDiscrete):
@@ -263,7 +288,7 @@ def _make_random_policy(
         if isinstance(action_space, gymnasium.spaces.Discrete):
             return int(jr.randint(key, (), discrete_low, discrete_high))
         if isinstance(action_space, gymnasium.spaces.Box):
-            return jr.uniform(key, action_space.shape, minval=low, maxval=high)
+            return _sample_finite_box(key, low, high)
         if isinstance(action_space, gymnasium.spaces.MultiDiscrete):
             samples = np.fromiter(
                 (
