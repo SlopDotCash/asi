@@ -33,6 +33,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from alberta_framework._seed_validation import require_unique_jax_seeds
 from alberta_framework.core.interaction_features import (
     FixedBudgetInteractionLearner,
 )
@@ -589,15 +590,19 @@ def run_scale_robust_feature_evaluation(
     The public default is the fresh namespace-derived 30-seed schedule.
     Alternate schedules are useful only for development diagnostics; the v2
     evidence validator will not accept them.
+
+    Raises:
+        ValueError: If ``seeds`` is empty, contains a non-canonical-``int``
+            value (a ``bool``, a ``float`` that would otherwise be silently
+            truncated by ``int()``, a numpy/JAX scalar, or a numeric
+            string), a duplicate, or a value outside the JAX uint32 scalar
+            key domain ``[0, 2**32 - 1]`` -- ``jax.random.key`` reduces an
+            out-of-range seed modulo ``2**32``, so two distinct declared
+            seeds could otherwise silently execute the identical random
+            stream while being recorded as different identities.
     """
 
-    seed_schedule = tuple(int(seed) for seed in seeds)
-    if not seed_schedule:
-        raise ValueError("seeds must be non-empty")
-    if len(set(seed_schedule)) != len(seed_schedule):
-        raise ValueError("seeds must be unique")
-    if any(seed < 0 for seed in seed_schedule):
-        raise ValueError("seeds must be non-negative")
+    seed_schedule = require_unique_jax_seeds(seeds, name="seeds")
 
     stream = GauntletStream(frozen_stream_config())
     records: list[ConditionSeedRecord] = []
