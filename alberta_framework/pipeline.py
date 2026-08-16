@@ -35,6 +35,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.associative_memory import (
     AssociativeFeatureFamily,
     AssociativeMemoryConfig,
@@ -228,15 +229,24 @@ class Step2FeatureConfig:
         include_raw = _require_bool("include_raw", self.include_raw)
         include_ema = _require_bool("include_ema", self.include_ema)
         include_delta = _require_bool("include_delta", self.include_delta)
-        _require_bool("include_phase_products", self.include_phase_products)
+        include_phase_products = _require_bool(
+            "include_phase_products",
+            self.include_phase_products,
+        )
         if not (include_raw or include_ema or include_delta):
             msg = "at least one of include_raw/include_ema/include_delta is required"
             raise ValueError(msg)
         ema_decay = _require_half_open_zero_one_interval("ema_decay", self.ema_decay)
+        if type(self.periods) is not tuple:
+            raise ValueError(f"periods must be a tuple, got {self.periods!r}")
         canonical_periods = tuple(
             _require_positive_real("period", p) for p in self.periods
         )
         object.__setattr__(self, "observation_dim", observation_dim)
+        object.__setattr__(self, "include_raw", include_raw)
+        object.__setattr__(self, "include_ema", include_ema)
+        object.__setattr__(self, "include_delta", include_delta)
+        object.__setattr__(self, "include_phase_products", include_phase_products)
         object.__setattr__(self, "ema_decay", ema_decay)
         object.__setattr__(self, "periods", canonical_periods)
 
@@ -446,12 +456,14 @@ class Step2AssociativePipelineConfig:
         max_features = _require_int(
             "max_features", self.max_features, minimum=1, maximum=_INT32_MAX
         )
-        write_lr = _require_nonnegative_real("write_lr", self.write_lr)
+        write_lr = _require_positive_real("write_lr", self.write_lr)
         retention = _require_unit_interval("retention", self.retention)
         utility_lr = _require_nonnegative_real("utility_lr", self.utility_lr)
         utility_decay = _require_unit_interval("utility_decay", self.utility_decay)
-        min_weight = _require_nonnegative_real("min_weight", self.min_weight)
+        min_weight = _require_positive_real("min_weight", self.min_weight)
         max_weight = _require_positive_real("max_weight", self.max_weight)
+        if max_weight < min_weight:
+            raise ValueError("max_weight must be >= min_weight")
         logit_scale = _require_positive_real("logit_scale", self.logit_scale)
         feature_family = _require_str_choice(
             "feature_family",
@@ -1338,7 +1350,7 @@ def run_pipeline_smoke(
 ) -> AlbertaPipelineSmokeResult:
     """Run a deterministic Step 1-4 pipeline smoke probe."""
     steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
-    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
     cfg = config or AlbertaPipelineConfig()
     pipeline = make_alberta_pipeline(cfg)
 

@@ -586,6 +586,7 @@ _INVALID_PIPELINE_FEATURE_FIELDS: tuple[tuple[str, object], ...] = (
     ("periods", (1e100,)),
     ("periods", (float("nan"),)),
     ("periods", (True,)),
+    ("periods", [32.0]),
 )
 
 
@@ -642,6 +643,7 @@ _INVALID_PIPELINE_ASSOCIATIVE_FIELDS: tuple[tuple[str, object], ...] = (
     ("max_features", 2**31),
     ("max_features", True),
     ("write_lr", -0.1),
+    ("write_lr", 0.0),
     ("write_lr", 1e100),
     ("write_lr", True),
     ("retention", -0.1),
@@ -656,6 +658,7 @@ _INVALID_PIPELINE_ASSOCIATIVE_FIELDS: tuple[tuple[str, object], ...] = (
     ("utility_decay", 1e100),
     ("utility_decay", True),
     ("min_weight", -0.01),
+    ("min_weight", 0.0),
     ("min_weight", 1e100),
     ("min_weight", True),
     ("max_weight", 0.0),
@@ -739,13 +742,27 @@ def test_pipeline_horde_ac_fields_reject_invalid_inputs(field: str, value: objec
         ({"steps": True}, "steps"),
         ({"steps": "24"}, "steps"),
         ({"seed": -1}, "seed"),
-        ({"seed": 2**31}, "seed"),
+        ({"seed": 2**32}, "seed"),
         ({"seed": True}, "seed"),
     ],
 )
 def test_pipeline_smoke_rejects_invalid_inputs(kwargs: dict[str, object], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         run_pipeline_smoke(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("seed", [2**31, 2**32 - 1])
+def test_pipeline_smoke_accepts_full_uint32_seed_domain(seed: int) -> None:
+    result = run_pipeline_smoke(steps=2, seed=seed)
+    assert result.seed == seed
+
+
+def test_pipeline_associative_requires_ordered_weight_bounds() -> None:
+    with pytest.raises(ValueError, match="max_weight must be >= min_weight"):
+        Step2AssociativePipelineConfig(min_weight=2.0, max_weight=1.0)
+
+    config = Step2AssociativePipelineConfig(min_weight=1.0, max_weight=1.0)
+    assert config.min_weight == config.max_weight == 1.0
 
 
 @pytest.mark.parametrize(
