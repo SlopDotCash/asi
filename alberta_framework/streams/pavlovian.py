@@ -39,6 +39,8 @@ References
 
 from __future__ import annotations
 
+import math
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -48,6 +50,33 @@ from jaxtyping import Int, PRNGKeyArray
 
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
+
+
+def _validate_positive_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer, got {type(value).__name__}")
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+
+
+def _validate_nonnegative_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer, got {type(value).__name__}")
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+
+
+def _validate_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer, got {type(value).__name__}")
+
+
+def _validate_finite_float(name: str, value: float) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a real number, got {type(value).__name__}")
+    if not math.isfinite(value):
+        raise ValueError(f"{name} must be finite, got {value}")
+
 
 # =============================================================================
 # State and phase descriptors
@@ -205,16 +234,20 @@ class ClassicalConditioningStream:
         """
         if not phases:
             raise ValueError("phases must be non-empty")
-        if n_cs <= 0:
-            raise ValueError(f"n_cs must be positive, got {n_cs}")
-        if n_distractors < 0:
-            raise ValueError(f"n_distractors must be >= 0, got {n_distractors}")
-        if cs_us_delay <= 0:
-            raise ValueError(f"cs_us_delay must be positive, got {cs_us_delay}")
-        if cs_duration <= 0:
-            raise ValueError(f"cs_duration must be positive, got {cs_duration}")
-        if iti_min < 0 or iti_max < iti_min:
+        _validate_positive_int("n_cs", n_cs)
+        _validate_nonnegative_int("n_distractors", n_distractors)
+        _validate_positive_int("cs_us_delay", cs_us_delay)
+        _validate_positive_int("cs_duration", cs_duration)
+        _validate_nonnegative_int("iti_min", iti_min)
+        _validate_int("iti_max", iti_max)
+        if iti_max < iti_min:
             raise ValueError(f"need 0 <= iti_min <= iti_max, got {iti_min}, {iti_max}")
+        _validate_finite_float("noise_std", noise_std)
+        if noise_std < 0.0:
+            raise ValueError(f"noise_std must be >= 0, got {noise_std}")
+        _validate_finite_float("distractor_prob", distractor_prob)
+        if not 0.0 <= distractor_prob <= 1.0:
+            raise ValueError(f"distractor_prob must be in [0, 1], got {distractor_prob}")
 
         for phase in phases:
             for cs_idx in phase.cs_active:
