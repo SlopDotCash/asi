@@ -290,7 +290,6 @@ _INVALID_UPGD_MEMORY_CONFIGS: tuple[dict[str, object], ...] = (
     {"feature_dim": 2, "n_heads": -1},
     {"feature_dim": 2, "n_heads": 2**31},
     {"feature_dim": 2, "n_heads": True},
-    {"feature_dim": 2, "n_heads": 2, "hidden_sizes": ()},
     {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (0,)},
     {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (2**31,)},
     {"feature_dim": 2, "n_heads": 2, "hidden_sizes": (True,)},
@@ -398,6 +397,22 @@ _INVALID_UPGD_MEMORY_CONFIGS: tuple[dict[str, object], ...] = (
 def test_upgd_memory_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         UPGDMemoryConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"hidden_sizes": ()},
+        {"target_allocation_rate": 1.0},
+        {"min_novelty_threshold": 0.25, "max_novelty_threshold": 0.25},
+    ],
+)
+def test_upgd_memory_preserves_legal_boundary_configs(
+    overrides: dict[str, object],
+) -> None:
+    config = UPGDMemoryConfig(feature_dim=2, n_heads=2, **overrides)
+    assert config.target_allocation_rate <= 1.0
+    assert config.min_novelty_threshold <= config.max_novelty_threshold
 
 
 @pytest.mark.parametrize(

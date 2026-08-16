@@ -288,14 +288,10 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
         raise TypeError(
             f"hidden_sizes must be an actual tuple, got {type(config.hidden_sizes).__name__}"
         )
-    if not config.hidden_sizes:
-        raise ValueError("hidden_sizes must contain only positive widths")
     canonical_hidden = tuple(
         _require_int("hidden_sizes element", size, minimum=1, maximum=_INT32_MAX)
         for size in config.hidden_sizes
     )
-    if not canonical_hidden:
-        raise ValueError("hidden_sizes must contain only positive widths")
     readout_mode = config.readout_mode
     if type(readout_mode) is not str:
         raise TypeError(

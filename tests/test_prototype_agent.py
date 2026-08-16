@@ -17,8 +17,11 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.dreaming import DreamingConfig
+from alberta_framework.core.dual_replay import DualReplayConfig
 from alberta_framework.core.experiential_memory import ExperientialMemoryConfig
 from alberta_framework.core.intelligence_amplification import IAConfig
+from alberta_framework.core.learning_signals import LearningSignalEstimatorConfig
+from alberta_framework.core.model_replay_rehearsal import ModelReplayRehearsalConfig
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.core.prototype_agent import (
@@ -37,6 +40,7 @@ from alberta_framework.core.prototype_agent import (
 )
 from alberta_framework.core.types import DemonType, GVFSpec, create_horde_spec
 from alberta_framework.core.world_model import ActionConditionedWorldModelConfig
+from alberta_framework.core.world_model_ensemble import WorldModelEnsembleConfig
 
 pytestmark = pytest.mark.slow
 
@@ -101,6 +105,17 @@ def _wm_cfg(
         hidden_sizes=(),  # linear for speed
         step_size=0.1,
         error_decay=0.99,
+    )
+
+
+def _ensemble_cfg(*, gamma: float) -> WorldModelEnsembleConfig:
+    return WorldModelEnsembleConfig(
+        model=_wm_cfg(gamma=gamma),
+        signal_estimator=LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=OBS_DIM + 2,
+        ),
+        ensemble_size=2,
     )
 
 
@@ -274,7 +289,6 @@ class TestPrototypeAgentConfigValidation:
         next_observation = jnp.ones(OBS_DIM, dtype=jnp.float32)
         with pytest.raises(ValueError, match="use update_transition"):
             agent.update(state, jnp.asarray(1.0), next_observation)
-
         result = agent.update_transition(
             state,
             PrototypeTransition(
@@ -291,6 +305,56 @@ class TestPrototypeAgentConfigValidation:
         )
         assert bool(result.transition_diagnostics.valid)
         assert int(result.state.step_count) == 1
+
+    @pytest.mark.parametrize("lane", ["ensemble", "replay"])
+    def test_legacy_gamma_zero_requires_explicit_boundary(self, lane: str) -> None:
+        kwargs: dict[str, object]
+        if lane == "ensemble":
+            kwargs = {"world_model_ensemble": _ensemble_cfg(gamma=0.0)}
+        else:
+            kwargs = {
+                "model_replay_rehearsal": ModelReplayRehearsalConfig(
+                    ensemble=_ensemble_cfg(gamma=0.0),
+                    replay=DualReplayConfig(
+                        total_capacity=4,
+                        short_term_capacity=2,
+                        observation_dim=OBS_DIM,
+                        action_dim=N_PRIM,
+                        short_term_sample_size=1,
+                        long_term_sample_size=1,
+                    ),
+                )
+            }
+        config = PrototypeAgentConfig(oak=_oak_cfg(), **kwargs)  # type: ignore[arg-type]
+        if lane == "replay":
+            # The replay constructor's independent resource-accounting gate is
+            # outside this wrapper contract. The guard executes before state
+            # access, so a shell instance isolates the dispatch regression.
+            agent = object.__new__(PrototypeAgent)
+            agent._config = config
+            agent._state_builder = None
+            state = object()
+        else:
+            agent = PrototypeAgent(config)
+            state = agent.start(agent.init(jr.key(42)), jnp.zeros(OBS_DIM))
+        with pytest.raises(ValueError, match="use update_transition"):
+            agent.update(
+                state,  # type: ignore[arg-type]
+                jnp.asarray(1.0, dtype=jnp.float32),
+                jnp.ones(OBS_DIM, dtype=jnp.float32),
+            )
+
+    def test_scan_rejects_legacy_gamma_zero_without_explicit_boundaries(self) -> None:
+        agent = PrototypeAgent(
+            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
+        )
+        state = agent.start(agent.init(jr.key(43)), jnp.zeros(OBS_DIM))
+        with pytest.raises(ValueError, match="use update_transition"):
+            agent.scan(
+                state,
+                jnp.ones((1,), dtype=jnp.float32),
+                jnp.ones((1, OBS_DIM), dtype=jnp.float32),
+            )
 
 
 # ---------------------------------------------------------------------------
