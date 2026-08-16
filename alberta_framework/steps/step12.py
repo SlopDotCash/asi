@@ -29,16 +29,17 @@ References:
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from numbers import Integral, Real
-from typing import Any
+from typing import Any, cast
 
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.intelligence_amplification import (
     ExoCerebellumConfig,
     IAAgent,
@@ -156,46 +157,68 @@ class Step12IAConfig:
 _INT32_MAX = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> Any:
-    """Return a concrete real scalar after direct float32 sink validation."""
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
-    return value
-
-
-def _narrow_float32(name: str, value: Any) -> float:
-    """Narrow exactly as downstream JAX kernels do, without intermediate double-rounding."""
+    real = cast(Real, value)
     try:
-        narrowed = round_real_to_float32(value)
-    except (FloatingPointError, OverflowError, TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be finite in float32, got {value!r}") from exc
-    if not bool(np.isfinite(narrowed)):
-        raise ValueError(f"{name} must be finite in float32, got {value!r}")
-    return float(narrowed)
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original < 0.0 or original > 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return _narrow_float32(name, original)
+    return float(narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return _narrow_float32(name, original)
+    return float(narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
-    number = _narrow_float32(name, original)
-    if number <= 0.0:
-        raise ValueError(f"{name} must remain positive in float32, got {value!r}")
-    return number
+    return float(narrowed)
+
+
+def _require_real_scalar(name: str, value: object) -> float:
+    _, _, _, narrowed = finite_real_and_float32(name, value)
+    return float(narrowed)
 
 
 def _require_int(
@@ -205,9 +228,10 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -215,7 +239,7 @@ def _require_int(
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
     return number
 
 
@@ -258,11 +282,10 @@ def _validate_ia_facade_config(config: Step12IAConfig) -> None:
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
             )
         threshold = _require_positive_real("threshold", spec.threshold)
-        pseudo_reward_scale = _require_real(
+        pseudo_reward_scale = _require_real_scalar(
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )
-        pseudo_reward_scale = _narrow_float32("pseudo_reward_scale", pseudo_reward_scale)
         max_option_steps = _require_int(
             "max_option_steps",
             spec.max_option_steps,

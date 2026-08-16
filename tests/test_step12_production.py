@@ -1129,3 +1129,67 @@ def test_step12_config_preserves_float32_boundaries() -> None:
 def test_step12_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
     with pytest.raises(ValueError, match=match):
         run_step12_smoke(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_step12_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"option_gamma must be in \[0, 1\]"):
+        Step12IAConfig(option_gamma=HiddenBoundaryFloat(0.5))
+
+
+def test_step12_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        Step12IAConfig(option_gamma=value)  # type: ignore[arg-type]
+
+
+def test_step12_rejects_spoofed_int_class_with_negative_ratio() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="base_step_size must be non-negative"):
+        Step12IAConfig(base_step_size=SpoofedIntFloat(0.5))
+
+
+def test_step12_rejects_spoofed_ratio_components() -> None:
+    class SpoofedComponent:
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def __int__(self) -> int:
+            return 1
+
+    class BadRatioFloat(float):
+        def as_integer_ratio(self) -> tuple[Any, Any]:
+            return (SpoofedComponent(), 2)
+
+    with pytest.raises(ValueError, match="must narrow to a finite float32"):
+        Step12IAConfig(option_gamma=BadRatioFloat(0.5))
