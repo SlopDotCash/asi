@@ -70,16 +70,16 @@ def _require_int(
     maximum: int | None = None,
 ) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be an integer, got {value!r}")
+        raise ValueError(f"{name} must be an integer")
     number = operator.index(cast(SupportsIndex, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{name} must be positive, got {value!r}")
+            raise ValueError(f"{name} must be positive")
         if minimum == 0:
-            raise ValueError(f"{name} must be non-negative, got {value!r}")
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+            raise ValueError(f"{name} must be non-negative")
+        raise ValueError(f"{name} must be >= {minimum}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}")
     return number
 
 
@@ -899,8 +899,9 @@ def normalizer_state_nbytes_formula(
 ) -> int:
     """Return exact persistent JAX-array bytes for a normalizer state."""
 
-    if type(feature_dim) is not int or feature_dim < 0:
-        raise ValueError("feature_dim must be a non-negative exact integer")
+    feature_dim = _require_int(
+        "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+    )
     if normalizer_type in {"EMANormalizer", "StreamingBatchNormalizer"}:
         return 8 * feature_dim + 16
     if normalizer_type == "WelfordNormalizer":

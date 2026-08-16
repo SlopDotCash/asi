@@ -14,6 +14,7 @@ from alberta_framework import (
     WelfordNormalizer,
     WelfordNormalizerState,
     normalizer_from_config,
+    normalizer_state_nbytes_formula,
 )
 
 
@@ -748,3 +749,93 @@ class TestNormalizerFeatureDimValidation:
         ):
             with pytest.raises(ValueError, match="feature_dim"):
                 normalizer.init(LyingInt(-1))
+
+    @pytest.mark.parametrize(
+        "integer_type",
+        tuple(
+            dict.fromkeys(
+                np.dtype(code).type
+                for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+            )
+        ),
+    )
+    def test_init_accepts_every_dtype_derived_numpy_integer_type(
+        self, integer_type: type
+    ) -> None:
+        for normalizer in (
+            EMANormalizer(),
+            WelfordNormalizer(),
+            StreamingBatchNormalizer(),
+        ):
+            state = normalizer.init(integer_type(4))
+            chex.assert_shape(state.mean, (4,))
+
+    def test_invalid_feature_dim_never_interpolates_hostile_repr(self) -> None:
+        class ClassSpoof:
+            @property
+            def __class__(self) -> type[int]:  # type: ignore[override]
+                return int
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr must not run")
+
+        value = ClassSpoof()
+        for normalizer in (
+            EMANormalizer(),
+            WelfordNormalizer(),
+            StreamingBatchNormalizer(),
+        ):
+            with pytest.raises(ValueError, match="feature_dim"):
+                normalizer.init(value)  # type: ignore[arg-type]
+
+
+class TestNormalizerStateNbytesFormulaValidation:
+    @pytest.mark.parametrize(
+        "feature_dim",
+        [True, np.bool_(True), 0, -1, 1.5, np.float32(4), 2**31, "4", [4]],
+    )
+    def test_formula_matches_initializer_feature_dim_rejections(
+        self, feature_dim: object
+    ) -> None:
+        with pytest.raises(ValueError, match="feature_dim"):
+            normalizer_state_nbytes_formula(
+                "EMANormalizer", feature_dim  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        "integer_type",
+        tuple(
+            dict.fromkeys(
+                [
+                    int,
+                    *(
+                        np.dtype(code).type
+                        for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+                    ),
+                ]
+            )
+        ),
+    )
+    def test_formula_accepts_all_supported_integer_types(self, integer_type: type) -> None:
+        assert normalizer_state_nbytes_formula("EMANormalizer", integer_type(4)) == 48
+
+    def test_formula_accepts_int32_max_without_allocating(self) -> None:
+        maximum = 2**31 - 1
+        assert normalizer_state_nbytes_formula("EMANormalizer", maximum) == 8 * maximum + 16
+        assert normalizer_state_nbytes_formula("WelfordNormalizer", maximum) == (
+            12 * maximum + 12
+        )
+
+    def test_formula_rejects_class_spoof_without_calling_repr(self) -> None:
+        class ClassSpoof:
+            @property
+            def __class__(self) -> type[int]:  # type: ignore[override]
+                return int
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr must not run")
+
+        with pytest.raises(ValueError, match="feature_dim"):
+            normalizer_state_nbytes_formula(
+                "EMANormalizer", ClassSpoof()  # type: ignore[arg-type]
+            )
