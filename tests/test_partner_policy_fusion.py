@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
+import json
 from typing import Any, cast
 
 import jax
@@ -29,10 +31,44 @@ from alberta_framework.core.partner_policy_fusion import (
     PartnerPolicyFusion,
     PartnerPolicyFusionConfig,
     PartnerPolicyFusionFeedback,
+    PartnerPolicyFusionResourceBudget,
     PartnerPolicyFusionState,
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _IntSubclass(int):
+    def __repr__(self) -> str:
+        raise AssertionError("repr must not run")
+
+
+class _IntSpoof:
+    @property
+    def __class__(self) -> type[int]:
+        return int
+
+    def __index__(self) -> int:
+        raise AssertionError("index must not run")
+
+    def __repr__(self) -> str:
+        raise AssertionError("repr must not run")
+
+
+class _StringSubclass(str):
+    pass
+
+
+class _StringSpoof:
+    @property
+    def __class__(self) -> type[str]:
+        return str
+
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("equality must not run")
+
+    def __repr__(self) -> str:
+        raise AssertionError("repr must not run")
 
 
 def _replace[T](value: T, **changes: object) -> T:
@@ -904,21 +940,101 @@ def test_partner_policy_fusion_config_rejects_booleans_and_non_integers() -> Non
 
 
 def test_partner_policy_fusion_config_accepts_and_canonicalizes_numpy_integers() -> None:
-    config = PartnerPolicyFusionConfig(
-        max_partners=np.int32(2),
-        context_dim=np.int64(4),
-        n_actions=np.uint16(2),
-        max_message_horizon=np.int8(8),
-        min_feedback_for_learned_routing=np.uint32(4),
-        counter_cap=np.int32(1_000_000),
-    )
-    assert type(config.max_partners) is int
-    assert type(config.context_dim) is int
-    assert type(config.n_actions) is int
-    assert type(config.max_message_horizon) is int
-    assert type(config.min_feedback_for_learned_routing) is int
-    assert type(config.counter_cap) is int
+    integer_types = {
+        np.dtype(code).type for code in "bBhHiIlLqQpP" if np.dtype(code).kind in "iu"
+    }
+    for integer_type in integer_types:
+        config = PartnerPolicyFusionConfig(
+            max_partners=integer_type(2),
+            context_dim=integer_type(4),
+            n_actions=integer_type(2),
+            max_message_horizon=integer_type(8),
+            min_feedback_for_learned_routing=integer_type(4),
+            counter_cap=integer_type(8),
+        )
+        for field in (
+            "max_partners",
+            "context_dim",
+            "n_actions",
+            "max_message_horizon",
+            "min_feedback_for_learned_routing",
+            "counter_cap",
+        ):
+            assert type(getattr(config, field)) is int
+        json.dumps(config.to_config())
 
-    assert config.max_partners == 2
-    assert config.context_dim == 4
-    assert config.n_actions == 2
+
+@pytest.mark.parametrize(
+    "hostile",
+    [_IntSubclass(2), _IntSpoof()],
+    ids=["int-subclass", "class-spoof"],
+)
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_partners",
+        "context_dim",
+        "n_actions",
+        "max_message_horizon",
+        "min_feedback_for_learned_routing",
+        "counter_cap",
+    ],
+)
+def test_integer_fields_reject_spoofs_without_hooks(field: str, hostile: object) -> None:
+    values: dict[str, object] = {
+        "max_partners": 2,
+        "context_dim": 4,
+        "n_actions": 2,
+        "max_message_horizon": 8,
+        "min_feedback_for_learned_routing": 4,
+        "counter_cap": 8,
+    }
+    values[field] = hostile
+    with pytest.raises(ValueError, match=field):
+        PartnerPolicyFusionConfig(**values)  # type: ignore[arg-type]
+
+
+def test_dimension_endpoints_and_all_derived_resource_products_fit_int32() -> None:
+    config = PartnerPolicyFusionConfig(
+        max_partners=1024,
+        context_dim=65_536,
+        n_actions=65_536,
+    )
+    budget = PartnerPolicyFusion(config).resource_budget
+    assert config.model_feature_dim == 65_538
+    assert budget.trainable_float32_scalars == 1024 * 65_538
+    assert budget.persistent_state_bytes == 268_714_034
+    assert budget.partner_id_pairwise_equality_comparisons_per_decision == 1024**2
+    for value in budget.to_config().values():
+        assert 0 <= value <= 2_147_483_647
+
+    with pytest.raises(ValueError, match="max_partners"):
+        PartnerPolicyFusionConfig(max_partners=1025, context_dim=1, n_actions=1)
+    with pytest.raises(ValueError, match="context_dim"):
+        PartnerPolicyFusionConfig(max_partners=1, context_dim=65_537, n_actions=1)
+    with pytest.raises(ValueError, match="n_actions"):
+        PartnerPolicyFusionConfig(max_partners=1, context_dim=1, n_actions=65_537)
+
+
+def test_host_only_resource_record_remains_exact_above_int32() -> None:
+    values = {field.name: 2**40 for field in dataclasses.fields(PartnerPolicyFusionResourceBudget)}
+    record = PartnerPolicyFusionResourceBudget(**values)
+    assert all(value == 2**40 for value in record.to_config().values())
+
+
+@pytest.mark.parametrize(
+    ("field", "hostile", "message"),
+    [
+        ("schema", _StringSubclass("alberta.partner-policy-fusion.config.v1"), "schema"),
+        ("type", _StringSpoof(), "type"),
+        ("mechanism_status", _StringSpoof(), "development L0"),
+    ],
+    ids=["schema-subclass", "type-spoof", "status-spoof"],
+)
+def test_serialized_discriminators_reject_spoofs_without_hooks(
+    field: str, hostile: object, message: str
+) -> None:
+    payload = PartnerPolicyFusionConfig(max_partners=2, context_dim=4, n_actions=2).to_config()
+    payload[field] = hostile
+    with pytest.raises(ValueError, match=message):
+        PartnerPolicyFusionConfig.from_config(payload)

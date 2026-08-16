@@ -94,6 +94,14 @@ def _strict_positive_int(value: object, *, name: str, maximum: int = _INT32_MAX)
     return canonical
 
 
+def _require_derived_int32(name: str, value: int) -> int:
+    """Return an exact derived allocation/count that fits signed int32."""
+
+    if not 0 <= value <= _INT32_MAX:
+        raise ValueError(f"{name} must not exceed signed-int32 capacity")
+    return value
+
+
 def _strict_float32(
     value: object,
     *,
@@ -261,6 +269,38 @@ class PartnerPolicyFusionConfig:
         if self.min_feedback_for_learned_routing > self.counter_cap:
             raise ValueError("min_feedback_for_learned_routing exceeds counter_cap")
 
+        partners = self.max_partners
+        features = self.context_dim + 2
+        trainable_f32 = partners * features
+        persistent_f32 = trainable_f32 + features + 1
+        persistent_i32 = 2 * partners + 9
+        persistent_bool = 2
+        persistent_scalars = persistent_f32 + persistent_i32 + persistent_bool
+        decision_f32 = self.context_dim + 2 + 2 * partners
+        decision_i32 = 6 + 9 * partners
+        decision_bool = self.n_actions + 1 + partners
+        derived_counts = {
+            "model_feature_dim": features,
+            "reliability_weight_scalars": trainable_f32,
+            "reliability_weight_nbytes": 4 * trainable_f32,
+            "persistent_float32_scalars": persistent_f32,
+            "persistent_int32_scalars": persistent_i32,
+            "persistent_bool_scalars": persistent_bool,
+            "persistent_state_scalars": persistent_scalars,
+            "persistent_state_nbytes": 4 * (persistent_f32 + persistent_i32) + persistent_bool,
+            "partner_message_scalars": 12 * partners,
+            "partner_message_nbytes": 45 * partners,
+            "partner_pairwise_comparisons": partners * partners,
+            "context_input_nbytes": 4 * self.context_dim,
+            "action_mask_nbytes": self.n_actions,
+            "decision_input_float32_scalars": decision_f32,
+            "decision_input_int32_scalars": decision_i32,
+            "decision_input_bool_scalars": decision_bool,
+            "decision_input_nbytes": 4 * (decision_f32 + decision_i32) + decision_bool,
+        }
+        for name, value in derived_counts.items():
+            _require_derived_int32(name, value)
+
         for name in (
             "learning_rate",
             "max_abs_weight",
@@ -382,11 +422,14 @@ class PartnerPolicyFusionConfig:
         }
         if set(payload) != expected:
             raise ValueError("config fields do not match the partner-fusion v1 schema")
-        if payload.pop("schema") != PARTNER_POLICY_FUSION_CONFIG_SCHEMA:
+        schema = payload.pop("schema")
+        if type(schema) is not str or schema != PARTNER_POLICY_FUSION_CONFIG_SCHEMA:
             raise ValueError("unexpected partner-fusion config schema")
-        if payload.pop("type") != _CONFIG_TYPE:
+        config_type = payload.pop("type")
+        if type(config_type) is not str or config_type != _CONFIG_TYPE:
             raise ValueError("unexpected partner-fusion config type")
-        if payload.pop("mechanism_status") != MECHANISM_STATUS:
+        mechanism_status = payload.pop("mechanism_status")
+        if type(mechanism_status) is not str or mechanism_status != MECHANISM_STATUS:
             raise ValueError("partner fusion must remain a development L0 mechanism")
         if payload.pop("scientific_promotion_allowed") is not False:
             raise ValueError("partner fusion configuration cannot claim promotion")
@@ -696,12 +739,13 @@ class PartnerPolicyFusion:
         payload = dict(config)
         if set(payload) != {"type", "config"}:
             raise ValueError("fusion construction fields do not match the v1 schema")
-        if payload.get("type") != _FUSION_TYPE:
+        fusion_type = payload.get("type")
+        if type(fusion_type) is not str or fusion_type != _FUSION_TYPE:
             raise ValueError("unexpected partner-fusion construction type")
         nested = payload.get("config")
-        if not isinstance(nested, Mapping):
+        if not issubclass(type(nested), Mapping):
             raise ValueError("fusion construction config must be a mapping")
-        return cls(PartnerPolicyFusionConfig.from_config(nested))
+        return cls(PartnerPolicyFusionConfig.from_config(cast(Mapping[str, object], nested)))
 
     def init(self) -> PartnerPolicyFusionState:
         """Return deterministic zero state; this component owns no RNG."""
