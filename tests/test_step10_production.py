@@ -9,6 +9,7 @@ constructible and accepted numbers canonicalize to builtin ints and floats.
 from __future__ import annotations
 
 import json
+from fractions import Fraction
 from typing import Any
 
 import chex
@@ -100,52 +101,50 @@ def test_config_roundtrip_single_spec() -> None:
     assert Step10STOMPConfig.from_config(cfg.to_config()) == cfg
 
 
-def test_config_roundtrip_two_specs() -> None:
-    cfg = _make_cfg(specs=(_SPEC1, _SPEC2), obs_dim=4)
+def test_config_roundtrip_multiple_specs() -> None:
+    cfg = _make_cfg(specs=(_SPEC1, _SPEC2), obs_dim=8, n_prim=4)
     assert Step10STOMPConfig.from_config(cfg.to_config()) == cfg
 
 
-def test_config_roundtrip_preserves_hyperparams() -> None:
+def test_config_roundtrip_preserves_optional_fields() -> None:
     cfg = Step10STOMPConfig(
         subtask_specs=(_SPEC1,),
-        observation_dim=6,
-        n_primitive_actions=3,
-        base_step_size=0.01,
-        epsilon_base=0.2,
+        observation_dim=4,
+        n_primitive_actions=2,
+        base_step_size=0.1,
+        base_avg_reward_step_size=0.02,
+        base_trace_decay=0.8,
+        option_step_size=0.05,
+        option_avg_reward_step_size=0.01,
+        option_trace_decay=0.7,
         option_gamma=0.95,
+        option_model_decay=0.9,
+        option_model_step_size=0.05,
+        option_planning_backups_per_step=4,
+        epsilon_base=0.05,
+        epsilon_option=0.05,
         option_target_epsilon=0.0,
-        option_importance_clip=2.0,
+        option_importance_clip=5.0,
     )
     restored = Step10STOMPConfig.from_config(cfg.to_config())
-    assert restored.base_step_size == cfg.base_step_size
-    assert restored.epsilon_base == cfg.epsilon_base
-    assert restored.option_gamma == cfg.option_gamma
-    assert restored.n_primitive_actions == cfg.n_primitive_actions
-    assert restored.option_target_epsilon == cfg.option_target_epsilon
-    assert restored.option_importance_clip == cfg.option_importance_clip
-
-
-def test_config_type_tag_stripped_on_roundtrip() -> None:
-    cfg = _make_cfg()
-    d = cfg.to_config()
-    assert d["type"] == "Step10STOMPConfig"
-    restored = Step10STOMPConfig.from_config(d)
     assert restored == cfg
+    assert restored.option_target_epsilon == 0.0
+    assert restored.option_importance_clip == 5.0
+    assert restored.option_planning_backups_per_step == 4
 
 
-def test_config_to_stomp_config_matches_fields() -> None:
-    cfg = _make_cfg(n_prim=3)
-    stomp = cfg.to_stomp_config()
-    assert isinstance(stomp, STOMPConfig)
-    assert stomp.n_primitive_actions == 3
-    assert stomp.observation_dim == cfg.observation_dim
-    assert stomp.subtask_specs == cfg.subtask_specs
+def test_config_to_stomp_config_conversion() -> None:
+    cfg = _make_cfg()
+    core_cfg = cfg.to_stomp_config()
+    assert isinstance(core_cfg, STOMPConfig)
+    assert core_cfg.observation_dim == cfg.observation_dim
+    assert core_cfg.n_primitive_actions == cfg.n_primitive_actions
+    assert core_cfg.subtask_specs == cfg.subtask_specs
 
 
-def test_config_feature_index_out_of_bounds_raises() -> None:
-    bad_spec = SubtaskSpec(feature_index=10)
-    with pytest.raises(ValueError, match="feature_index"):
-        Step10STOMPConfig(subtask_specs=(bad_spec,), observation_dim=4)
+def test_config_invalid_subtask_specs_raises() -> None:
+    with pytest.raises(ValueError, match="SubtaskSpec"):
+        Step10STOMPConfig(subtask_specs=({"feature_index": 0},))  # type: ignore[arg-type]
 
 
 def test_config_without_subtasks_remains_a_serializable_template() -> None:
@@ -181,6 +180,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", 1.5),
     ("observation_dim", "4"),
     ("observation_dim", None),
+    ("observation_dim", 2**31),
     ("n_primitive_actions", True),
     ("n_primitive_actions", False),
     ("n_primitive_actions", 0),
@@ -188,13 +188,14 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_primitive_actions", 1.5),
     ("n_primitive_actions", "2"),
     ("n_primitive_actions", None),
+    ("n_primitive_actions", 2**31),
     ("option_planning_backups_per_step", True),
     ("option_planning_backups_per_step", False),
     ("option_planning_backups_per_step", -1),
     ("option_planning_backups_per_step", 1.5),
     ("option_planning_backups_per_step", "0"),
     ("option_planning_backups_per_step", None),
-    ("option_planning_backups_per_step", 2**31 - 1),
+    ("option_planning_backups_per_step", 2**31),
     ("base_step_size", float("nan")),
     ("base_step_size", float("inf")),
     ("base_step_size", float("-inf")),
@@ -203,29 +204,34 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("base_step_size", -1.0),
     ("base_step_size", "0.05"),
     ("base_step_size", None),
+    ("base_step_size", 1e100),
     ("base_avg_reward_step_size", float("nan")),
     ("base_avg_reward_step_size", float("inf")),
     ("base_avg_reward_step_size", True),
     ("base_avg_reward_step_size", False),
     ("base_avg_reward_step_size", -0.01),
     ("base_avg_reward_step_size", "0.01"),
+    ("base_avg_reward_step_size", 1e100),
     ("option_step_size", float("nan")),
     ("option_step_size", float("inf")),
     ("option_step_size", True),
     ("option_step_size", False),
     ("option_step_size", -1.0),
     ("option_step_size", "0.05"),
+    ("option_step_size", 1e100),
     ("option_avg_reward_step_size", float("nan")),
     ("option_avg_reward_step_size", float("inf")),
     ("option_avg_reward_step_size", True),
     ("option_avg_reward_step_size", False),
     ("option_avg_reward_step_size", -0.01),
+    ("option_avg_reward_step_size", 1e100),
     ("option_model_step_size", float("nan")),
     ("option_model_step_size", float("inf")),
     ("option_model_step_size", True),
     ("option_model_step_size", False),
     ("option_model_step_size", -0.1),
     ("option_model_step_size", "0.1"),
+    ("option_model_step_size", 1e100),
     ("base_trace_decay", float("nan")),
     ("base_trace_decay", float("inf")),
     ("base_trace_decay", True),
@@ -233,12 +239,14 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("base_trace_decay", -0.1),
     ("base_trace_decay", 1.1),
     ("base_trace_decay", "0.0"),
+    ("base_trace_decay", 1e100),
     ("option_trace_decay", float("nan")),
     ("option_trace_decay", float("inf")),
     ("option_trace_decay", True),
     ("option_trace_decay", False),
     ("option_trace_decay", -0.1),
     ("option_trace_decay", 1.1),
+    ("option_trace_decay", 1e100),
     ("option_gamma", float("nan")),
     ("option_gamma", float("inf")),
     ("option_gamma", float("-inf")),
@@ -247,6 +255,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_gamma", -0.1),
     ("option_gamma", 1.1),
     ("option_gamma", "0.99"),
+    ("option_gamma", 1e100),
     ("option_model_decay", float("nan")),
     ("option_model_decay", float("inf")),
     ("option_model_decay", True),
@@ -254,6 +263,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_model_decay", -0.1),
     ("option_model_decay", 1.1),
     ("option_model_decay", "0.95"),
+    ("option_model_decay", 1e100),
     ("epsilon_base", float("nan")),
     ("epsilon_base", float("inf")),
     ("epsilon_base", True),
@@ -261,12 +271,14 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("epsilon_base", -0.1),
     ("epsilon_base", 1.1),
     ("epsilon_base", "0.1"),
+    ("epsilon_base", 1e100),
     ("epsilon_option", float("nan")),
     ("epsilon_option", float("inf")),
     ("epsilon_option", True),
     ("epsilon_option", False),
     ("epsilon_option", -0.1),
     ("epsilon_option", 1.1),
+    ("epsilon_option", 1e100),
     ("option_target_epsilon", float("nan")),
     ("option_target_epsilon", float("inf")),
     ("option_target_epsilon", True),
@@ -274,6 +286,7 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_target_epsilon", -0.1),
     ("option_target_epsilon", 1.1),
     ("option_target_epsilon", "0.0"),
+    ("option_target_epsilon", 1e100),
     ("option_importance_clip", float("nan")),
     ("option_importance_clip", float("inf")),
     ("option_importance_clip", float("-inf")),
@@ -283,6 +296,8 @@ _INVALID_STEP10_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_importance_clip", -1.0),
     ("option_importance_clip", "10.0"),
     ("option_importance_clip", None),
+    ("option_importance_clip", 1e100),
+    ("option_importance_clip", 1e-50),
 )
 
 
@@ -922,3 +937,93 @@ def test_subtasks_from_feature_scores_integrates_with_stomp() -> None:
     state = init_step10_state(agent, key=jr.key(0), initial_observation=jnp.zeros(4))
     result = step10_update(agent, state, jnp.array(0.0), jnp.ones(4))
     assert bool(jnp.isfinite(result.td_error))
+
+
+def test_step10_stomp_rejects_float32_underflow_for_positive_fields() -> None:
+    with pytest.raises(ValueError, match="option_importance_clip"):
+        _config_with(option_importance_clip=1e-50)
+    with pytest.raises(ValueError, match="option_importance_clip"):
+        _config_with(option_importance_clip=1e-46)
+    bad_spec = SubtaskSpec(feature_index=0, threshold=1e-50)
+    with pytest.raises(ValueError, match="threshold"):
+        Step10STOMPConfig(subtask_specs=(bad_spec,))
+
+
+def test_step10_stomp_rejects_float32_overflow() -> None:
+    with pytest.raises(ValueError, match="base_step_size"):
+        _config_with(base_step_size=1e100)
+    with pytest.raises(ValueError, match="option_step_size"):
+        _config_with(option_step_size=1e100)
+    with pytest.raises(ValueError, match="option_importance_clip"):
+        _config_with(option_importance_clip=1e100)
+    bad_spec = SubtaskSpec(feature_index=0, threshold=1e100)
+    with pytest.raises(ValueError, match="threshold"):
+        Step10STOMPConfig(subtask_specs=(bad_spec,))
+
+
+def test_step10_stomp_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    spec = SubtaskSpec(
+        feature_index=0,
+        threshold=f32_max,
+        pseudo_reward_scale=f32_max,
+        max_option_steps=2**31 - 1,
+    )
+    config = Step10STOMPConfig(
+        subtask_specs=(spec,),
+        observation_dim=2**31 - 1,
+        n_primitive_actions=2**31 - 1,
+        base_step_size=f32_max,
+        base_avg_reward_step_size=f32_max,
+        base_trace_decay=1.0,
+        option_step_size=f32_max,
+        option_avg_reward_step_size=f32_max,
+        option_trace_decay=1.0,
+        option_gamma=1.0,
+        option_model_decay=1.0,
+        option_model_step_size=f32_max,
+        option_planning_backups_per_step=2**31 - 1,
+        epsilon_base=1.0,
+        epsilon_option=1.0,
+        option_target_epsilon=1.0,
+        option_importance_clip=f32_max,
+    )
+    assert config.observation_dim == 2**31 - 1
+    assert config.n_primitive_actions == 2**31 - 1
+    assert config.option_planning_backups_per_step == 2**31 - 1
+    assert config.base_step_size == f32_max
+    assert config.option_step_size == f32_max
+    assert config.option_importance_clip == f32_max
+
+
+def test_step10_stomp_exact_fraction_rounding() -> None:
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    spec = SubtaskSpec(
+        feature_index=0,
+        threshold=midpoint,
+        pseudo_reward_scale=midpoint,
+        max_option_steps=8,
+    )
+    config = Step10STOMPConfig(
+        subtask_specs=(spec,),
+        base_step_size=midpoint,
+        base_avg_reward_step_size=Fraction(1, 100),
+        base_trace_decay=Fraction(0, 1),
+        option_step_size=midpoint,
+        option_avg_reward_step_size=Fraction(1, 100),
+        option_trace_decay=Fraction(0, 1),
+        option_gamma=Fraction(99, 100),
+        option_model_decay=Fraction(95, 100),
+        option_model_step_size=midpoint,
+        epsilon_base=Fraction(1, 10),
+        epsilon_option=Fraction(1, 10),
+        option_target_epsilon=Fraction(0, 1),
+        option_importance_clip=midpoint,
+    )
+    expected_f32 = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+    assert config.base_step_size == expected_f32
+    assert config.option_step_size == expected_f32
+    assert config.option_model_step_size == expected_f32
+    assert config.option_importance_clip == expected_f32
+    assert config.subtask_specs[0].threshold == expected_f32
+    assert config.subtask_specs[0].pseudo_reward_scale == expected_f32
