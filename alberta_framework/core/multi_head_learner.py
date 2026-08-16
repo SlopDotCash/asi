@@ -18,13 +18,15 @@ Reference: Elsayed et al. 2024, "Streaming Deep Reinforcement Learning Finally W
 import dataclasses
 import functools
 import math
+import operator
 import time
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, UInt
 
@@ -63,6 +65,41 @@ MULTI_HEAD_LIFETIME_COUNTER_NBYTES = 12
 MULTI_HEAD_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
 _INT32_MAX = 2**31 - 1
+
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative")
+        raise ValueError(f"{name} must be >= {minimum}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return number
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -358,6 +395,22 @@ class MultiHeadMLPLearner:
                 gradient is nonzero, decaying the old trace elsewhere.
             utility_decay: EMA decay for hidden-unit utility diagnostics.
         """
+        n_heads = _require_int("n_heads", n_heads, minimum=1, maximum=_INT32_MAX)
+        if type(hidden_sizes) is not tuple:
+            raise ValueError(
+                f"hidden_sizes must be an actual tuple, got {type(hidden_sizes).__name__}"
+            )
+        hidden_sizes = tuple(
+            _require_int(f"hidden_sizes[{i}]", v, minimum=1, maximum=_INT32_MAX)
+            for i, v in enumerate(hidden_sizes)
+        )
+        for i in range(len(hidden_sizes) - 1):
+            if hidden_sizes[i] * hidden_sizes[i + 1] > _INT32_MAX:
+                raise ValueError(
+                    f"hidden_sizes[{i}] * hidden_sizes[{i+1}] must be <= {_INT32_MAX}"
+                )
+        if hidden_sizes and n_heads * hidden_sizes[-1] > _INT32_MAX:
+            raise ValueError(f"n_heads * hidden_sizes[-1] must be <= {_INT32_MAX}")
         if not 0.0 <= utility_decay < 1.0:
             raise ValueError("utility_decay must be in [0, 1)")
 
@@ -481,9 +534,7 @@ class MultiHeadMLPLearner:
         config.pop("type", None)
         state_schema = config.pop("state_schema", MULTI_HEAD_MLP_STATE_SCHEMA)
         if state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
-            raise ValueError(
-                f"Unsupported MultiHeadMLP state schema: {state_schema!r}"
-            )
+            raise ValueError("Unsupported MultiHeadMLP state schema")
 
         optimizer = optimizer_from_config(config.pop("optimizer"))
         bounder_cfg = config.pop("bounder", None)
@@ -499,16 +550,31 @@ class MultiHeadMLPLearner:
 
         per_head_gl = config.pop("per_head_gamma_lamda", None)
         if per_head_gl is not None:
-            per_head_gl = tuple(per_head_gl)
+            if type(per_head_gl) is not list:
+                raise ValueError(
+                    f"per_head_gamma_lamda must be a list, got {type(per_head_gl).__name__}"
+                )
+            per_head_gl = tuple(
+                validated_float32_scalar(
+                    f"per_head_gamma_lamda[{i}]", v, lower=0.0, upper=1.0
+                )
+                for i, v in enumerate(per_head_gl)
+            )
 
         trace_mode_str = config.pop("trace_mode", None)
         trace_mode = (
             TraceMode(trace_mode_str) if trace_mode_str is not None else TraceMode.ACCUMULATING
         )
 
+        raw_hidden = config.pop("hidden_sizes")
+        if type(raw_hidden) is not list:
+            raise ValueError(
+                f"hidden_sizes must be a list, got {type(raw_hidden).__name__}"
+            )
+
         return cls(
             n_heads=config.pop("n_heads"),
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=tuple(raw_hidden),
             optimizer=optimizer,
             bounder=bounder,
             normalizer=normalizer,
@@ -529,6 +595,16 @@ class MultiHeadMLPLearner:
             Initial state with sparse trunk weights, zero biases, and
             per-head output layers
         """
+        feature_dim = _require_int(
+            "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+        )
+        if self._hidden_sizes:
+            if feature_dim * self._hidden_sizes[0] > _INT32_MAX:
+                raise ValueError(
+                    f"feature_dim * hidden_sizes[0] must be <= {_INT32_MAX}"
+                )
+        elif feature_dim * self._n_heads > _INT32_MAX:
+            raise ValueError(f"feature_dim * n_heads must be <= {_INT32_MAX}")
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
 
