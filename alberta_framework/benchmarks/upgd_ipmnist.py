@@ -94,6 +94,7 @@ import hashlib
 import json
 import logging
 import math
+import operator
 import os
 import platform
 import tempfile
@@ -101,7 +102,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, SupportsIndex, cast
 
 import chex
 import jax
@@ -270,6 +271,30 @@ REPRODUCTION_GAP_THRESHOLD = 0.02
 
 _PLASTICITY_LOSS_FLOOR = 1e-8
 
+_INT32_MAX: int = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int = 1) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
+    if number < minimum or number > _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}]")
+    return number
+
 
 @dataclass(frozen=True)
 class IPMNISTConfig:
@@ -296,9 +321,20 @@ class IPMNISTConfig:
 
     def __post_init__(self) -> None:
         for name in ("n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+            value = _require_int32(name, getattr(self, name), minimum=1)
+            object.__setattr__(self, name, value)
+        # derived allocation guards -- validate counts that drive schedule/model allocation
+        # before any JAX allocation; each product must fit the int32 accounting domain
+        if self.n_tasks * self.task_length > _INT32_MAX:
+            raise ValueError("n_tasks * task_length must be <= 2147483647")
+        if self.n_tasks * self.input_dim > _INT32_MAX:
+            raise ValueError("n_tasks * input_dim must be <= 2147483647")
+        if self.input_dim * self.hidden1 > _INT32_MAX:
+            raise ValueError("input_dim * hidden1 must be <= 2147483647")
+        if self.hidden1 * self.hidden2 > _INT32_MAX:
+            raise ValueError("hidden1 * hidden2 must be <= 2147483647")
+        if self.hidden2 * self.n_classes > _INT32_MAX:
+            raise ValueError("hidden2 * n_classes must be <= 2147483647")
 
     @property
     def n_steps(self) -> int:
