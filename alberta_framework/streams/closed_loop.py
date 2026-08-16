@@ -101,12 +101,21 @@ def _require_builtin_int(
     instead of the ``ValueError`` this contract promises.
     """
     if type(value) is not int:
-        raise ValueError(f"{name} must be a built-in integer, got {value!r}")
+        raise ValueError(f"{name} must be a built-in integer")
     if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}")
     if value > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}")
     return value
+
+
+def _preflight_riverswim_resources(n_states: int) -> None:
+    """Bound all persistent NumPy/JAX transition and reward payloads."""
+    # NumPy transitions/rewards plus their persistent JAX logits/rewards.
+    persistent_scalars = 4 * n_states * n_states + 4 * n_states
+    persistent_bytes = 4 * persistent_scalars
+    if persistent_scalars > _INT32_MAX or persistent_bytes > _INT32_MAX:
+        raise ValueError("derived RiverSwim persistent resources must fit signed int32")
 
 
 def _normalized_finite_float32_reward(name: str, value: object) -> float:
@@ -253,7 +262,11 @@ class SwitchingTwoStateMDP:
 
     def __init__(self, config: SwitchingTwoStateConfig | None = None) -> None:
         config = SwitchingTwoStateConfig() if config is None else config
-        _require_builtin_int(config.phase_length, name="phase_length", minimum=1)
+        if type(config) is not SwitchingTwoStateConfig:
+            raise ValueError("config must be an actual SwitchingTwoStateConfig")
+        phase_length = _require_builtin_int(
+            config.phase_length, name="phase_length", minimum=1
+        )
         phase_payoffs = []
         for name in ("payoffs_a", "payoffs_b"):
             payoff = np.asarray(getattr(config, name), dtype=np.float32)
@@ -264,7 +277,7 @@ class SwitchingTwoStateMDP:
             phase_payoffs.append(payoff)
         payoffs = np.stack(phase_payoffs)
         self._config = config
-        self._phase_length = int(config.phase_length)
+        self._phase_length = phase_length
         self._payoffs_np = payoffs
         self._payoffs = jnp.asarray(payoffs)
 
@@ -444,7 +457,10 @@ class RiverSwimMDP:
 
     def __init__(self, config: RiverSwimConfig | None = None) -> None:
         config = RiverSwimConfig() if config is None else config
+        if type(config) is not RiverSwimConfig:
+            raise ValueError("config must be an actual RiverSwimConfig")
         n_states = _require_builtin_int(config.n_states, name="n_states", minimum=2)
+        _preflight_riverswim_resources(n_states)
         up_numerator, up_denominator = _exact_real_ratio(
             "p_right_up",
             config.p_right_up,

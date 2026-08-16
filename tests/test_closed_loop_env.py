@@ -1,5 +1,6 @@
 """Tests for the closed-loop micro-MDPs (actions affect observations)."""
 
+import math
 from fractions import Fraction
 from numbers import Real
 
@@ -10,6 +11,7 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+import alberta_framework.streams.closed_loop as closed_loop
 from alberta_framework.streams import (
     LEFT_ACTION,
     PHASE_A,
@@ -174,10 +176,30 @@ class TestSwitchingTwoStateDynamics:
             def __gt__(self, other: object) -> bool:
                 return False
 
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
         with pytest.raises(ValueError, match=r"phase_length must be a built-in integer"):
             SwitchingTwoStateMDP(
                 SwitchingTwoStateConfig(phase_length=_SpoofedInt())  # type: ignore[arg-type]
             )
+
+    def test_phase_length_int_subclass_rejected_without_hooks(self):
+        class _HostileInt(int):
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
+        with pytest.raises(ValueError, match="phase_length"):
+            SwitchingTwoStateMDP(
+                SwitchingTwoStateConfig(phase_length=_HostileInt(2))
+            )
+
+    def test_switching_config_requires_exact_type(self):
+        class _ConfigSubclass(SwitchingTwoStateConfig):
+            pass
+
+        with pytest.raises(ValueError, match="actual SwitchingTwoStateConfig"):
+            SwitchingTwoStateMDP(_ConfigSubclass())
 
     def test_int32_max_phase_length_runs_first_eager_and_jit_query(self):
         """The largest JAX-int32 phase divisor is accepted without overflow."""
@@ -422,6 +444,9 @@ class TestRiverSwim:
             def __lt__(self, other: object) -> bool:
                 return True
 
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
         with pytest.raises(ValueError, match="initial_state must be a built-in integer"):
             RiverSwimMDP(RiverSwimConfig(initial_state=_SpoofedInt()))  # type: ignore[arg-type]
 
@@ -435,6 +460,36 @@ class TestRiverSwim:
         """
         with pytest.raises(ValueError, match="n_states must be a built-in integer"):
             RiverSwimMDP(RiverSwimConfig(n_states=6.5))  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["n_states", "initial_state"])
+    def test_riverswim_integer_subclasses_rejected_without_hooks(self, field: str):
+        class _HostileInt(int):
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted __repr__ must not run")
+
+        with pytest.raises(ValueError, match=field):
+            RiverSwimMDP(RiverSwimConfig(**{field: _HostileInt(2)}))
+
+    def test_riverswim_config_requires_exact_type(self):
+        class _ConfigSubclass(RiverSwimConfig):
+            pass
+
+        with pytest.raises(ValueError, match="actual RiverSwimConfig"):
+            RiverSwimMDP(_ConfigSubclass())
+
+    def test_riverswim_resource_boundary_is_allocation_free(self, monkeypatch):
+        # Persistent numeric bytes are 16 * n_states * (n_states + 1).
+        last_valid = (math.isqrt(1 + 4 * (_INT32_MAX // 16)) - 1) // 2
+        closed_loop._preflight_riverswim_resources(last_valid)
+        with pytest.raises(ValueError, match="persistent resources"):
+            closed_loop._preflight_riverswim_resources(last_valid + 1)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("allocation ran before resource preflight")
+
+        monkeypatch.setattr(np, "zeros", forbidden)
+        with pytest.raises(ValueError, match="persistent resources"):
+            RiverSwimMDP(RiverSwimConfig(n_states=last_valid + 1))
 
     def test_transition_tensor_structure(self):
         """Kernels are row-stochastic with drift folded at the boundaries."""
