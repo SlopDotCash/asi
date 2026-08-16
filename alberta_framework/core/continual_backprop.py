@@ -64,8 +64,9 @@ References
 from __future__ import annotations
 
 import functools
+import operator
 import time
-from typing import Any
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -103,6 +104,23 @@ _NUMPY_INTEGER_SCALAR_TYPES = frozenset(
         np.ulonglong,
     )
 )
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset({int, *_NUMPY_INTEGER_SCALAR_TYPES})
+
+
+def _require_hidden_width(name: str, value: object) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [1, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if not 1 <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [1, {_INT32_MAX}]")
+    return number
+
+
+def _require_config_sequence(name: str, value: object) -> list[object] | tuple[object, ...]:
+    if type(value) not in {list, tuple}:
+        raise ValueError(f"{name} must be an actual list or tuple")
+    return cast(list[object] | tuple[object, ...], value)
 
 # =============================================================================
 # Config / state
@@ -772,7 +790,13 @@ class CBPMultiHeadMLPLearner:
                 hidden-unit utility diagnostics.
         """
         self._n_heads = n_heads
-        self._hidden_sizes = hidden_sizes
+        if type(hidden_sizes) is not tuple:
+            raise ValueError("hidden_sizes must be an actual tuple")
+        canonical_hidden_sizes = tuple(
+            _require_hidden_width(f"hidden_sizes[{index}]", value)
+            for index, value in enumerate(hidden_sizes)
+        )
+        self._hidden_sizes = canonical_hidden_sizes
         self._cbp_config = cbp_config or ContinualBackpropConfig()
         self._sparsity = sparsity
         self._leaky_relu_slope = leaky_relu_slope
@@ -780,7 +804,7 @@ class CBPMultiHeadMLPLearner:
 
         self._learner = MultiHeadMLPLearner(
             n_heads=n_heads,
-            hidden_sizes=hidden_sizes,
+            hidden_sizes=canonical_hidden_sizes,
             optimizer=optimizer,
             step_size=step_size,
             bounder=bounder,
@@ -859,7 +883,9 @@ class CBPMultiHeadMLPLearner:
 
         per_head_gl = config.pop("per_head_gamma_lamda", None)
         if per_head_gl is not None:
-            per_head_gl = tuple(per_head_gl)
+            per_head_gl = tuple(
+                _require_config_sequence("per_head_gamma_lamda", per_head_gl)
+            )
 
         trace_mode_str = config.pop("trace_mode", None)
         trace_mode = (
@@ -868,9 +894,13 @@ class CBPMultiHeadMLPLearner:
             else TraceMode.ACCUMULATING
         )
 
+        hidden_sizes = tuple(
+            _require_config_sequence("hidden_sizes", config.pop("hidden_sizes"))
+        )
+
         return cls(
             n_heads=config.pop("n_heads"),
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=hidden_sizes,  # type: ignore[arg-type]
             cbp_config=cbp_config,
             optimizer=optimizer,
             bounder=bounder,

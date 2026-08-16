@@ -810,3 +810,69 @@ class TestConfigRoundtrip:
         rebuilt = CBPMultiHeadMLPLearner.from_config(cfg)
         cfg2 = rebuilt.to_config()
         assert cfg2 == cfg
+
+    @pytest.mark.parametrize(
+        "integer_type",
+        tuple(
+            dict.fromkeys(
+                np.dtype(code).type
+                for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+            )
+        ),
+    )
+    def test_hidden_sizes_accept_every_numpy_integer_type(
+        self, integer_type: type
+    ) -> None:
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(integer_type(4),),
+        )
+
+        assert learner.hidden_sizes == (4,)
+        assert type(learner.hidden_sizes[0]) is int
+
+    @pytest.mark.parametrize(
+        "hidden_sizes",
+        [[4], (True,), (1.5,), (0,), (-1,), (2**31,)],
+    )
+    def test_hidden_sizes_reject_invalid_container_or_widths(
+        self, hidden_sizes: object
+    ) -> None:
+        with pytest.raises(ValueError, match="hidden_sizes"):
+            CBPMultiHeadMLPLearner(
+                n_heads=1,
+                hidden_sizes=hidden_sizes,  # type: ignore[arg-type]
+            )
+
+    def test_from_config_accepts_exact_list_or_tuple_without_coercing_iterables(
+        self,
+    ) -> None:
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=2,
+            hidden_sizes=(4,),
+            per_head_gamma_lamda=(0.25, 0.5),
+        )
+        payload = learner.to_config()
+
+        assert CBPMultiHeadMLPLearner.from_config(payload).to_config() == payload
+        tuple_payload = dict(payload)
+        tuple_payload["hidden_sizes"] = (4,)
+        tuple_payload["per_head_gamma_lamda"] = (0.25, 0.5)
+        assert CBPMultiHeadMLPLearner.from_config(tuple_payload).to_config() == payload
+
+        class SequenceSpoof:
+            @property
+            def __class__(self) -> type[list]:  # type: ignore[override]
+                return list
+
+            def __iter__(self):
+                raise RuntimeError("iteration must not run")
+
+            def __repr__(self) -> str:
+                raise RuntimeError("repr must not run")
+
+        for field in ("hidden_sizes", "per_head_gamma_lamda"):
+            invalid = dict(payload)
+            invalid[field] = SequenceSpoof()
+            with pytest.raises(ValueError, match=field):
+                CBPMultiHeadMLPLearner.from_config(invalid)
