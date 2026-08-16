@@ -2,6 +2,7 @@
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from alberta_framework import (
@@ -14,6 +15,53 @@ from alberta_framework import (
     WelfordNormalizerState,
     normalizer_from_config,
 )
+
+_NORMALIZERS = (EMANormalizer, WelfordNormalizer, StreamingBatchNormalizer)
+
+
+@pytest.mark.parametrize("normalizer_type", _NORMALIZERS)
+@pytest.mark.parametrize(
+    "feature_dim",
+    [
+        4,
+        np.int8(4),
+        np.int32(4),
+        np.int64(4),
+        np.longlong(4),
+        np.uint64(4),
+        np.ulonglong(4),
+    ],
+)
+def test_normalizer_init_accepts_supported_exact_integer_types(
+    normalizer_type,
+    feature_dim,
+) -> None:
+    state = normalizer_type().init(feature_dim)
+    chex.assert_shape(state.mean, (4,))
+    chex.assert_shape(state.var, (4,))
+
+
+@pytest.mark.parametrize("normalizer_type", _NORMALIZERS)
+@pytest.mark.parametrize(
+    "feature_dim",
+    [True, np.bool_(True), 1.5, np.float32(4), 0, -1, 2**31, "4", [4]],
+)
+def test_normalizer_init_rejects_invalid_feature_dimensions(
+    normalizer_type,
+    feature_dim,
+) -> None:
+    with pytest.raises(ValueError, match="feature_dim"):
+        normalizer_type().init(feature_dim)
+
+
+@pytest.mark.parametrize("normalizer_type", _NORMALIZERS)
+def test_normalizer_init_rejects_integer_subclasses(normalizer_type) -> None:
+    class LyingInt(int):
+        def __int__(self) -> int:
+            return 4
+
+    with pytest.raises(ValueError, match="feature_dim"):
+        normalizer_type().init(LyingInt(-1))
 
 
 class TestEMANormalizer:
