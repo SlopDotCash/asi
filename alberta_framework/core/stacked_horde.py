@@ -37,10 +37,11 @@ the NaN-masking convention of the loop-based hordes.
 """
 
 import math
+import operator
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -90,11 +91,7 @@ def _snapshot_exact_fraction(value: Fraction) -> Fraction:
         denominator = value.denominator
     except AttributeError:
         raise ValueError(_STEP_SIZE_ERROR) from None
-    if (
-        type(numerator) is not int
-        or type(denominator) is not int
-        or denominator <= 0
-    ):
+    if type(numerator) is not int or type(denominator) is not int or denominator <= 0:
         raise ValueError(_STEP_SIZE_ERROR)
     return Fraction(numerator, denominator)
 
@@ -132,6 +129,33 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
     return cast(float, value) if preserve_builtin_float else narrowed
 
 
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
 @dataclass(frozen=True)
 class StackedHordeConfig:
     """Static configuration for :class:`StackedLinearHorde`.
@@ -157,25 +181,29 @@ class StackedHordeConfig:
 
     def __post_init__(self) -> None:
         """Validate the configuration."""
-        if self.n_demons < 1:
-            raise ValueError("n_demons must be positive")
-        if self.feature_dim < 1:
-            raise ValueError("feature_dim must be positive")
+        n_demons = _require_int32("n_demons", self.n_demons, minimum=1)
+        feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
+
         for name, seq in (
             ("gammas", self.gammas),
             ("lamdas", self.lamdas),
             ("cumulant_indices", self.cumulant_indices),
         ):
-            if len(seq) != self.n_demons:
-                raise ValueError(f"{name} must have length n_demons={self.n_demons}")
+            if len(seq) != n_demons:
+                raise ValueError(f"{name} must have length n_demons={n_demons}")
         if any(not 0.0 <= g <= 1.0 for g in self.gammas):
             raise ValueError("every gamma must be in [0, 1]")
         if any(not 0.0 <= la <= 1.0 for la in self.lamdas):
             raise ValueError("every lamda must be in [0, 1]")
-        # Identity-only check: bools and numpy integers are refused so a JAX
-        # gather can never wrap (negative) or reinterpret the channel.
-        if any(type(idx) is not int or idx < 0 for idx in self.cumulant_indices):
-            raise ValueError("cumulant_indices entries must be nonnegative builtin ints")
+
+        cumulant_indices = tuple(
+            _require_int32(f"cumulant_indices[{i}]", idx, minimum=0)
+            for i, idx in enumerate(self.cumulant_indices)
+        )
+
+        object.__setattr__(self, "n_demons", n_demons)
+        object.__setattr__(self, "feature_dim", feature_dim)
+        object.__setattr__(self, "cumulant_indices", cumulant_indices)
         object.__setattr__(
             self,
             "step_size",
@@ -346,9 +374,7 @@ class StackedLinearHorde:
         # so a short source would silently train demons on the wrong channel.
         # Shapes are static, so these checks also fire at jit/scan trace time.
         if len(source_shape) != 1:
-            raise ValueError(
-                f"cumulant_source must be rank-one, got shape {source_shape}"
-            )
+            raise ValueError(f"cumulant_source must be rank-one, got shape {source_shape}")
         if source_shape[0] <= self._max_cumulant_index:
             raise ValueError(
                 f"cumulant_source has {source_shape[0]} channels but "
@@ -365,12 +391,8 @@ class StackedLinearHorde:
         # gamma=0 must not multiply an inf bootstrap (0*inf).
         bootstrap = jnp.where(self._gammas == 0.0, 0.0, self._gammas * v_next)
         raw_td_errors = cumulants + bootstrap - v
-        prediction_valid = jnp.isfinite(v) & (
-            (self._gammas == 0.0) | jnp.isfinite(v_next)
-        )
-        channel_valid = (
-            active & rho_valid & prediction_valid & jnp.isfinite(raw_td_errors)
-        )
+        prediction_valid = jnp.isfinite(v) & ((self._gammas == 0.0) | jnp.isfinite(v_next))
+        channel_valid = active & rho_valid & prediction_valid & jnp.isfinite(raw_td_errors)
         safe_cumulants = jnp.where(channel_valid, cumulants, 0.0)
         td_errors = safe_cumulants + bootstrap - v
 
@@ -382,15 +404,10 @@ class StackedLinearHorde:
         # Inactive demons: trace decays but the current gradient is withheld.
         decayed_only = carried
         safe_rho = jnp.where(rho_valid, rho_vec, 0.0)
-        proposed_traces = safe_rho[:, None] * jnp.where(
-            active[:, None], accumulated, decayed_only
-        )
+        proposed_traces = safe_rho[:, None] * jnp.where(active[:, None], accumulated, decayed_only)
 
         masked_delta = jnp.where(channel_valid, td_errors, 0.0)
-        proposed_weights = (
-            state.weights
-            + cfg.step_size * masked_delta[:, None] * proposed_traces
-        )
+        proposed_weights = state.weights + cfg.step_size * masked_delta[:, None] * proposed_traces
         source_weights_finite = jnp.all(jnp.isfinite(state.weights))
         traces_needed = decay[:, 0] != 0.0
         traces_usable = (~traces_needed) | jnp.all(jnp.isfinite(state.traces), axis=1)
@@ -414,12 +431,8 @@ class StackedLinearHorde:
             & traces_usable
         )
         accepted_channels = head_updates_applied | inactive_trace_applied
-        new_weights = jnp.where(
-            head_updates_applied[:, None], proposed_weights, state.weights
-        )
-        new_traces = jnp.where(
-            accepted_channels[:, None], proposed_traces, state.traces
-        )
+        new_weights = jnp.where(head_updates_applied[:, None], proposed_weights, state.weights)
+        new_traces = jnp.where(accepted_channels[:, None], proposed_traces, state.traces)
         update_applied = jnp.any(accepted_channels)
         proposed_state = StackedHordeState(
             weights=new_weights,
@@ -484,9 +497,7 @@ def run_stacked_horde_scan(
     """
     sources_shape = jnp.shape(cumulant_sources)
     if len(sources_shape) != 2:
-        raise ValueError(
-            f"cumulant_sources must be rank-two, got shape {sources_shape}"
-        )
+        raise ValueError(f"cumulant_sources must be rank-two, got shape {sources_shape}")
     max_index = max(horde.config.cumulant_indices)
     if sources_shape[-1] <= max_index:
         raise ValueError(
