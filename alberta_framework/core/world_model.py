@@ -138,19 +138,10 @@ class ActionConditionedWorldModelState:
 
 @chex.dataclass(frozen=True)
 class WorldModelPrediction:
-    """Decoded world-model prediction.
-
-    ``reward`` is the value published to dream rollouts: clipped into the
-    observed reward range (plus guard margin) once bounds exist, for models
-    that apply such a guard. ``raw_reward`` is the same head's decoded
-    output *before* that guard, so callers scoring the model itself (rather
-    than the guard) do not have their diagnostic saturate at the guard's
-    margin. Models with no reward guard set ``raw_reward == reward``.
-    """
+    """Decoded world-model prediction."""
 
     next_observation: Float[Array, " observation_dim"]
     reward: Float[Array, ""]
-    raw_reward: Float[Array, ""]
     raw_predictions: Float[Array, " model_heads"]
     discount: Float[Array, ""]
 
@@ -466,14 +457,12 @@ class ActionConditionedWorldModel:
         discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
         return jnp.concatenate([normalized_delta, reward_target, discount_target], axis=0)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def predict(
+    def _prediction_and_raw_diagnostics(
         self,
         state: ActionConditionedWorldModelState,
         observation: Array,
         action: Array,
-    ) -> WorldModelPrediction:
-        """Predict the next observation, reward, and discount."""
+    ) -> tuple[WorldModelPrediction, Array, Array]:
         inputs, inputs_valid, safe_obs = self._safe_input_features(
             observation,
             action,
@@ -486,7 +475,7 @@ class ActionConditionedWorldModel:
             -self._config.max_delta_scale,
             self._config.max_delta_scale,
         )
-        next_observation = jnp.where(
+        decoded_next_observation = jnp.where(
             self._config.predict_delta,
             safe_obs + normalized_delta * obs_scale,
             normalized_delta * obs_scale,
@@ -495,8 +484,10 @@ class ActionConditionedWorldModel:
         has_bounds = state.step_count > 0
         low = state.observation_min - self._config.observation_clip_margin
         high = state.observation_max + self._config.observation_clip_margin
-        clipped_next = jnp.clip(next_observation, low, high)
-        next_observation = jnp.where(has_bounds, clipped_next, next_observation)
+        clipped_next = jnp.clip(decoded_next_observation, low, high)
+        next_observation = jnp.where(
+            has_bounds, clipped_next, decoded_next_observation
+        )
 
         raw_reward = raw_predictions[self._config.observation_dim] * self._config.reward_scale
         reward_low = state.reward_min - self._config.observation_clip_margin
@@ -519,6 +510,11 @@ class ActionConditionedWorldModel:
             invalid_observation,
         )
         reward = jnp.where(inputs_valid, reward, invalid_scalar)
+        decoded_next_observation = jnp.where(
+            inputs_valid,
+            decoded_next_observation,
+            invalid_observation,
+        )
         raw_reward = jnp.where(inputs_valid, raw_reward, invalid_scalar)
         discount = jnp.where(inputs_valid, discount, invalid_scalar)
         raw_predictions = jnp.where(
@@ -527,13 +523,29 @@ class ActionConditionedWorldModel:
             invalid_raw,
         )
 
-        return WorldModelPrediction(
-            next_observation=next_observation,
-            reward=reward,
-            raw_reward=raw_reward,
-            raw_predictions=raw_predictions,
-            discount=discount,
+        return (
+            WorldModelPrediction(
+                next_observation=next_observation,
+                reward=reward,
+                raw_predictions=raw_predictions,
+                discount=discount,
+            ),
+            decoded_next_observation,
+            raw_reward,
         )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def predict(
+        self,
+        state: ActionConditionedWorldModelState,
+        observation: Array,
+        action: Array,
+    ) -> WorldModelPrediction:
+        """Predict the guarded next observation, reward, and discount."""
+        prediction, _, _ = self._prediction_and_raw_diagnostics(
+            state, observation, action
+        )
+        return prediction
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -583,24 +595,19 @@ class ActionConditionedWorldModel:
             inputs_valid, next_obs, jnp.zeros_like(next_obs)
         )
 
-        prediction = self.predict(state, safe_obs, safe_action)
+        prediction, decoded_next_observation, decoded_reward = (
+            self._prediction_and_raw_diagnostics(state, safe_obs, safe_action)
+        )
         targets = self.targets(
             safe_obs, safe_reward, safe_discount, safe_next_obs
         )
         inputs = self.input_features(safe_obs, safe_action)
         learner_result = self._learner.update(state.learner_state, inputs, targets)
 
-        observation_mse = jnp.mean(
-            (prediction.next_observation - safe_next_obs) ** 2
-        )
-        # Score the model's own decoded reward, not the guard published to dream
-        # rollouts: once bounds exist, `prediction.reward` is clipped into the
-        # observed reward range (+/- observation_clip_margin) and pins
-        # `reward_error` at exactly that margin regardless of the reward head's
-        # actual error (see #391).
-        reward_error = prediction.raw_reward - safe_reward
+        next_observation_errors = decoded_next_observation - safe_next_obs
+        observation_mse = jnp.mean(next_observation_errors**2)
+        reward_error = decoded_reward - safe_reward
         discount_error = prediction.discount - safe_discount
-        next_observation_errors = prediction.next_observation - safe_next_obs
         prediction_error = observation_mse + reward_error**2 + discount_error**2
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)
@@ -649,7 +656,6 @@ class ActionConditionedWorldModel:
                 update_applied, prediction.next_observation
             ),
             reward=neutralize_array(update_applied, prediction.reward),
-            raw_reward=neutralize_array(update_applied, prediction.raw_reward),
             raw_predictions=neutralize_array(
                 update_applied, prediction.raw_predictions
             ),
@@ -1031,7 +1037,6 @@ class OneStepWorldModel:
         return WorldModelPrediction(
             next_observation=next_observation,
             reward=reward,
-            raw_reward=reward,
             raw_predictions=raw_predictions,
             discount=jnp.array(jnp.nan, dtype=jnp.float32),
         )
@@ -1095,7 +1100,6 @@ class OneStepWorldModel:
                 update_applied, prediction.next_observation
             ),
             reward=neutralize_array(update_applied, prediction.reward),
-            raw_reward=neutralize_array(update_applied, prediction.raw_reward),
             raw_predictions=neutralize_array(
                 update_applied, prediction.raw_predictions
             ),

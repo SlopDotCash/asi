@@ -64,17 +64,11 @@ def test_action_conditioned_world_model_update_and_prediction_shapes() -> None:
     chex.assert_tree_all_finite(result.prediction_error)
 
 
-def test_reward_error_reflects_true_model_error_not_the_guard_clip() -> None:
+def test_diagnostics_reflect_true_decodes_not_guard_clips() -> None:
     """Regression test for #391.
 
-    ``predict()`` clips the reward into ``[reward_min, reward_max] +/-
-    observation_clip_margin`` before ``update()`` scores it, so once bounds
-    exist ``reward_error`` saturates at ``observation_clip_margin`` no matter
-    how wrong the reward head is: a head biased by 0.05 and one biased by 45
-    both reported the same ``|reward_error| == 0.05`` on `main`. The fix
-    scores ``update()``'s diagnostics against the unclipped decoded
-    prediction (``WorldModelPrediction.raw_reward``) while leaving the
-    guarded ``prediction.reward`` published to dream rollouts unchanged.
+    The public prediction remains guarded for dream rollouts, while update
+    diagnostics score both decoded observation and reward before those guards.
     """
     config = ActionConditionedWorldModelConfig(
         observation_dim=1,
@@ -87,15 +81,21 @@ def test_reward_error_reflects_true_model_error_not_the_guard_clip() -> None:
     init_state = model.init(jr.key(0))
     reward_head = config.observation_dim  # heads: [obs deltas..., reward, discount]
 
-    def warmed_state_with_reward_bias(bias: float) -> ActionConditionedWorldModelState:
-        """Zero the reward head's weight and fix its bias, with bounds warmed to 5.0."""
+    def warmed_state_with_biases(
+        observation_bias: float, reward_bias: float
+    ) -> ActionConditionedWorldModelState:
         head_params = init_state.learner_state.head_params
         new_weights = tuple(
-            jnp.zeros_like(w) if i == reward_head else w
+            jnp.zeros_like(w) if i in (0, reward_head) else w
             for i, w in enumerate(head_params.weights)
         )
         new_biases = tuple(
-            jnp.full_like(b, bias) if i == reward_head else b
+            jnp.full_like(
+                b,
+                observation_bias if i == 0 else reward_bias,
+            )
+            if i in (0, reward_head)
+            else b
             for i, b in enumerate(head_params.biases)
         )
         learner_state = dataclasses.replace(
@@ -119,8 +119,8 @@ def test_reward_error_reflects_true_model_error_not_the_guard_clip() -> None:
     true_reward = jnp.array(5.0, dtype=jnp.float32)
     discount = jnp.array(0.9, dtype=jnp.float32)
 
-    near_state = warmed_state_with_reward_bias(5.05)
-    far_state = warmed_state_with_reward_bias(50.0)
+    near_state = warmed_state_with_biases(0.05, 5.05)
+    far_state = warmed_state_with_biases(50.0, 50.0)
 
     near_result = model.update(near_state, obs, action, true_reward, discount, obs)
     far_result = model.update(far_state, obs, action, true_reward, discount, obs)
@@ -132,15 +132,23 @@ def test_reward_error_reflects_true_model_error_not_the_guard_clip() -> None:
     # reward range +/- the margin, unchanged by this fix.
     assert float(far_result.prediction.reward) == pytest.approx(5.05, abs=1e-4)
     assert float(near_result.prediction.reward) == pytest.approx(5.05, abs=1e-4)
-
-    # The unclipped decode is exposed and used for the diagnostic.
-    assert float(far_result.prediction.raw_reward) == pytest.approx(50.0, abs=1e-3)
-    assert float(near_result.prediction.raw_reward) == pytest.approx(5.05, abs=1e-3)
+    assert float(far_result.prediction.next_observation[0]) == pytest.approx(
+        0.05, abs=1e-4
+    )
+    assert float(near_result.prediction.next_observation[0]) == pytest.approx(
+        0.05, abs=1e-4
+    )
 
     # reward_error must separate a badly wrong head from a nearly-correct one
     # instead of both saturating at observation_clip_margin.
     assert float(near_result.reward_error) == pytest.approx(0.05, abs=1e-3)
     assert float(far_result.reward_error) == pytest.approx(45.0, abs=1e-3)
+    assert float(near_result.next_observation_errors[0]) == pytest.approx(
+        0.05, abs=1e-3
+    )
+    assert float(far_result.next_observation_errors[0]) == pytest.approx(
+        config.max_delta_scale, abs=1e-3
+    )
 
 
 def test_action_conditioned_world_model_config_roundtrip() -> None:
