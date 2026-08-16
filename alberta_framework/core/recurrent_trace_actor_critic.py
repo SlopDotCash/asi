@@ -585,28 +585,10 @@ class RecurrentTraceActorCriticConfig:
     ) -> RecurrentTraceActorCriticConfig:
         """Reconstruct and validate a configuration mapping."""
         payload = _copy_config_mapping("config", config)
-        required = {
-            field.name
-            for field in dataclasses.fields(cls)
-            if field.name not in {"adaptive_obgd", "beta2", "epsilon"}
-        }
-        optional = {"adaptive_obgd", "beta2", "epsilon"}
-        if not required <= set(payload) or not set(payload) <= required | optional:
-            raise ValueError("config fields do not match the serialized schema")
-        integer_fields = {"n_actions", "hidden_size", "encoder_width", "output_width"}
-        bool_fields = {
-            "normalize_observations",
-            "normalize_rewards",
-            "rtrl_taylor_correction",
-            "adaptive_obgd",
-        }
-        for name, value in payload.items():
-            expected_type = (
-                int if name in integer_fields else bool if name in bool_fields else float
-            )
-            if type(value) is not expected_type:
-                raise ValueError("serialized config values must use exact JSON scalar types")
-        return cls(**payload)
+        try:
+            return cls(**payload)
+        except TypeError as error:
+            raise ValueError("config fields do not match the serialized schema") from error
 
 
 def parameterless_layer_norm(inputs: Array, epsilon: float = 1e-5) -> Array:
@@ -1857,13 +1839,13 @@ class RecurrentTraceActorCriticAgent:
     ) -> RecurrentTraceActorCriticAgent:
         """Reconstruct an agent from :meth:`to_config` output."""
         payload = _copy_config_mapping("serialized agent", config)
-        if "type" in payload or "config" in payload:
-            if set(payload) != {"type", "config"}:
+        agent_type = payload.pop("type", cls.__name__)
+        if type(agent_type) is not str or agent_type != cls.__name__:
+            raise ValueError("unsupported agent type")
+        if "config" in payload:
+            raw_config = payload.pop("config")
+            if payload:
                 raise ValueError("serialized agent fields do not match the schema")
-            agent_type = payload["type"]
-            if type(agent_type) is not str or agent_type != cls.__name__:
-                raise ValueError("unsupported agent type")
-            raw_config = payload["config"]
         else:
             raw_config = payload
         if not isinstance(raw_config, Mapping):
