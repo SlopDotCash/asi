@@ -67,6 +67,125 @@ class TestProtocolConstants:
     def test_shrunk_config_does_not_match_selected_publication_shape(self):
         assert not TINY.matches_selected_publication_configuration
 
+    @pytest.mark.parametrize(
+        "integer_type",
+        sorted(
+            {
+                np.dtype(code).type
+                for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+            },
+            key=lambda value: value.__name__,
+        ),
+    )
+    def test_config_accepts_every_numpy_integer_dtype_family(self, integer_type):
+        config = IPMNISTConfig(
+            n_tasks=integer_type(2),
+            task_length=integer_type(3),
+            input_dim=integer_type(4),
+            hidden1=integer_type(5),
+            hidden2=integer_type(6),
+            n_classes=integer_type(2),
+        )
+        assert all(type(value) is int for value in config.to_config().values())
+
+    @pytest.mark.parametrize(
+        "value",
+        [True, np.bool_(True), 1.0, "1", 0, -1, 2**31],
+    )
+    def test_config_rejects_non_integer_and_out_of_range_dimensions(self, value):
+        with pytest.raises(ValueError, match="n_tasks"):
+            IPMNISTConfig(n_tasks=value)
+
+    def test_config_rejects_spoofs_and_subclasses_without_calling_hooks(self):
+        class HostileIndex:
+            def __index__(self):
+                raise AssertionError("must not call hostile __index__")
+
+            def __repr__(self):
+                raise AssertionError("must not call hostile __repr__")
+
+        class HostileInt(int):
+            def __index__(self):
+                raise AssertionError("must not call subclass __index__")
+
+            def __repr__(self):
+                raise AssertionError("must not call subclass __repr__")
+
+        class HostileNumpyInt(np.int64):
+            def __index__(self):
+                raise AssertionError("must not call NumPy subclass __index__")
+
+            def __repr__(self):
+                raise AssertionError("must not call NumPy subclass __repr__")
+
+        for value in (HostileIndex(), HostileInt(2), HostileNumpyInt(2)):
+            with pytest.raises(ValueError, match="n_tasks"):
+                IPMNISTConfig(n_tasks=value)
+
+    def test_config_derived_horizon_boundaries_are_allocation_free(self):
+        boundary = IPMNISTConfig(n_tasks=1, task_length=2**31 - 1, input_dim=1)
+        assert boundary.n_steps == 2**31 - 1
+        with pytest.raises(ValueError, match="run horizon"):
+            IPMNISTConfig(n_tasks=2, task_length=2**30, input_dim=1)
+
+    def test_config_permutation_schedule_boundaries_are_allocation_free(self):
+        boundary = IPMNISTConfig(n_tasks=2**31 - 1, task_length=1, input_dim=1)
+        assert boundary.n_tasks * boundary.input_dim == 2**31 - 1
+        with pytest.raises(ValueError, match="permutation schedule"):
+            IPMNISTConfig(n_tasks=2, task_length=1, input_dim=2**30)
+
+    @pytest.mark.parametrize(
+        ("field_values"),
+        [
+            {"input_dim": 46_341, "hidden1": 46_341, "hidden2": 1, "n_classes": 1},
+            {"input_dim": 1, "hidden1": 46_341, "hidden2": 46_341, "n_classes": 1},
+            {"input_dim": 1, "hidden1": 1, "hidden2": 46_341, "n_classes": 46_341},
+        ],
+    )
+    def test_config_rejects_each_oversized_parameter_matrix(self, field_values):
+        with pytest.raises(ValueError, match="parameter allocation"):
+            IPMNISTConfig(**field_values)
+
+    def test_config_total_parameter_allocation_boundary_is_exact_and_allocation_free(self):
+        boundary = IPMNISTConfig(
+            n_tasks=1,
+            task_length=1,
+            input_dim=(2**31 - 1) - 5,
+            hidden1=1,
+            hidden2=1,
+            n_classes=1,
+        )
+        assert (
+            boundary.input_dim * boundary.hidden1
+            + boundary.hidden1 * boundary.hidden2
+            + boundary.hidden2 * boundary.n_classes
+            + boundary.hidden1
+            + boundary.hidden2
+            + boundary.n_classes
+            == 2**31 - 1
+        )
+        with pytest.raises(ValueError, match="parameter allocation"):
+            IPMNISTConfig(
+                n_tasks=1,
+                task_length=1,
+                input_dim=(2**31 - 1) - 4,
+                hidden1=1,
+                hidden2=1,
+                n_classes=1,
+            )
+
+    def test_config_roundtrip_canonicalizes_numpy_integer_scalars(self):
+        config = IPMNISTConfig(
+            n_tasks=np.int16(2),
+            task_length=np.uint16(3),
+            input_dim=np.int32(4),
+            hidden1=np.uint32(5),
+            hidden2=np.int64(6),
+            n_classes=np.uint64(2),
+        )
+        assert IPMNISTConfig(**config.to_config()) == config
+        assert all(type(value) is int for value in config.to_config().values())
+
     def test_published_hyperparameters(self):
         assert UPGD_W_PROTOCOL_HYPERPARAMETERS == {
             "step_size": 0.01,
