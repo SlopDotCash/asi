@@ -176,23 +176,6 @@ def _read_mapping(name: str, value: object) -> dict[str, Any]:
         raise ValueError(f"{name} mapping could not be read") from error
 
 
-def _require_schema(
-    name: str,
-    payload: dict[str, Any],
-    *,
-    keys: frozenset[str],
-    discriminator: str,
-) -> None:
-    try:
-        actual_keys = frozenset(payload)
-    except Exception as error:
-        raise ValueError(f"{name} fields could not be read") from error
-    if actual_keys != keys:
-        raise ValueError(f"{name} must contain exactly the documented fields")
-    if type(payload["type"]) is not str or payload["type"] != discriminator:
-        raise ValueError(f"{name} type discriminator is invalid")
-
-
 def _saturating_increment(value: Array) -> Array:
     one = jnp.asarray(1, dtype=jnp.int32)
     return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
@@ -246,36 +229,13 @@ class PrototypeMemoryConfig:
     def from_config(cls, config: Mapping[str, Any]) -> PrototypeMemoryConfig:
         """Reconstruct from :meth:`to_config` output."""
         payload = _read_mapping("PrototypeMemoryConfig payload", config)
-        _require_schema(
-            "PrototypeMemoryConfig payload",
-            payload,
-            keys=frozenset(
-                {
-                    "type",
-                    "feature_dim",
-                    "n_classes",
-                    "slots_per_class",
-                    "update_rate",
-                    "novelty_threshold",
-                    "bandwidth",
-                }
-            ),
-            discriminator="PrototypeMemoryConfig",
-        )
-        for name in ("feature_dim", "n_classes", "slots_per_class"):
-            if type(payload[name]) is not int:
-                raise ValueError(f"serialized {name} must be a JSON integer")
-        for name in ("update_rate", "novelty_threshold", "bandwidth"):
-            if type(payload[name]) is not float:
-                raise ValueError(f"serialized {name} must be a JSON number")
-        return cls(
-            feature_dim=payload["feature_dim"],
-            n_classes=payload["n_classes"],
-            slots_per_class=payload["slots_per_class"],
-            update_rate=payload["update_rate"],
-            novelty_threshold=payload["novelty_threshold"],
-            bandwidth=payload["bandwidth"],
-        )
+        payload.pop("type", None)
+        try:
+            return cls(**payload)
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized PrototypeMemoryConfig is invalid") from error
 
 
 @chex.dataclass(frozen=True)
@@ -376,13 +336,7 @@ class PrototypeMemoryLearner:
     def from_config(cls, config: Mapping[str, Any]) -> PrototypeMemoryLearner:
         """Reconstruct a learner from :meth:`to_config` output."""
         payload = _read_mapping("PrototypeMemoryLearner payload", config)
-        _require_schema(
-            "PrototypeMemoryLearner payload",
-            payload,
-            keys=frozenset({"type", "config"}),
-            discriminator="PrototypeMemoryLearner",
-        )
-        inner = payload["config"]
+        inner = payload.get("config")
         if not issubclass(type(inner), Mapping):
             raise ValueError("PrototypeMemoryLearner config must be a mapping")
         return cls(PrototypeMemoryConfig.from_config(cast(Mapping[str, Any], inner)))

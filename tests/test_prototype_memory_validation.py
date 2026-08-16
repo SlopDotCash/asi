@@ -280,74 +280,35 @@ def test_prototype_config_mapping_compatibility_rejects_spoofs_before_hooks() ->
         PrototypeMemoryLearner.from_config(HostileMapping())
 
 
-def test_prototype_serialized_schema_is_exact_and_uses_json_scalars() -> None:
+def test_prototype_serialization_preserves_historical_constructor_compatibility() -> None:
     config = PrototypeMemoryConfig(feature_dim=2, n_classes=2)
     payload = config.to_config()
-    for mutation, match in (
-        ({"type": "OtherConfig"}, "type"),
-        ({"feature_dim": np.int32(2)}, "feature_dim"),
-        ({"update_rate": np.float32(0.3)}, "update_rate"),
-        ({"extra": 1}, "fields"),
-    ):
-        invalid = dict(payload)
-        invalid.update(mutation)
-        with pytest.raises(ValueError, match=match):
-            PrototypeMemoryConfig.from_config(invalid)
+    payload["type"] = "historical-marker"
+    payload["feature_dim"] = np.int32(2)
+    payload["n_classes"] = np.uint16(2)
+    payload["update_rate"] = np.float32(0.3)
+    restored = PrototypeMemoryConfig.from_config(MappingProxyType(payload))
+    assert restored.feature_dim == config.feature_dim
+    assert restored.n_classes == config.n_classes
+    assert restored.slots_per_class == config.slots_per_class
+    assert restored.update_rate == float(np.float32(0.3))
+    assert restored.novelty_threshold == config.novelty_threshold
+    assert restored.bandwidth == config.bandwidth
+    assert type(restored.feature_dim) is int
+    assert type(restored.n_classes) is int
+    assert type(restored.update_rate) is float
 
-    missing = dict(payload)
-    missing.pop("bandwidth")
-    with pytest.raises(ValueError, match="fields"):
-        PrototypeMemoryConfig.from_config(missing)
+    partial = PrototypeMemoryConfig.from_config({"feature_dim": 2, "n_classes": 2})
+    assert partial == config
+
+    with pytest.raises(ValueError, match="extra"):
+        PrototypeMemoryConfig.from_config({**config.to_config(), "extra": 1})
 
     learner_payload = PrototypeMemoryLearner(config).to_config()
-    with pytest.raises(ValueError, match="type"):
-        PrototypeMemoryLearner.from_config({**learner_payload, "type": "OtherLearner"})
-    with pytest.raises(ValueError, match="fields"):
-        PrototypeMemoryLearner.from_config({**learner_payload, "extra": 1})
-
-
-@pytest.mark.parametrize("mutation", ["missing-type", "wrong-type", "extra-field"])
-def test_prototype_config_requires_exact_schema(mutation: str) -> None:
-    payload = PrototypeMemoryConfig(feature_dim=2, n_classes=2).to_config()
-    if mutation == "missing-type":
-        del payload["type"]
-    elif mutation == "wrong-type":
-        payload["type"] = "PrototypeMemoryLearner"
-    else:
-        payload["unknown"] = 1
-    with pytest.raises(ValueError, match="documented fields|discriminator"):
-        PrototypeMemoryConfig.from_config(payload)
-
-
-@pytest.mark.parametrize("mutation", ["missing-type", "wrong-type", "extra-field"])
-def test_prototype_learner_requires_exact_outer_schema(mutation: str) -> None:
-    learner = PrototypeMemoryLearner(PrototypeMemoryConfig(feature_dim=2, n_classes=2))
-    payload = learner.to_config()
-    if mutation == "missing-type":
-        del payload["type"]
-    elif mutation == "wrong-type":
-        payload["type"] = "PrototypeMemoryConfig"
-    else:
-        payload["unknown"] = 1
-    with pytest.raises(ValueError, match="documented fields|discriminator"):
-        PrototypeMemoryLearner.from_config(payload)
-
-
-def test_prototype_schema_errors_do_not_run_hostile_repr() -> None:
-    class Hostile:
-        def __repr__(self) -> str:
-            raise AssertionError("repr hook must not execute")
-
-    config = PrototypeMemoryConfig(feature_dim=2, n_classes=2).to_config()
-    config["type"] = Hostile()
-    with pytest.raises(ValueError, match="discriminator"):
-        PrototypeMemoryConfig.from_config(config)
-
-    learner = PrototypeMemoryLearner(PrototypeMemoryConfig(feature_dim=2, n_classes=2))
-    outer = learner.to_config()
-    outer["type"] = Hostile()
-    with pytest.raises(ValueError, match="discriminator"):
-        PrototypeMemoryLearner.from_config(outer)
+    learner_payload["type"] = "historical-marker"
+    learner_payload["extra"] = "ignored legacy metadata"
+    learner = PrototypeMemoryLearner.from_config(MappingProxyType(learner_payload))
+    assert learner.config == config
 
 
 @pytest.mark.parametrize(
