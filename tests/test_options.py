@@ -512,6 +512,15 @@ def test_stomp_from_config_preserves_mapping_partial_and_tuple_compatibility() -
     with pytest.raises(ValueError, match="STOMPConfig"):
         STOMPConfig.from_config({"unexpected_field": 1})
 
+    with pytest.raises(ValueError, match="feature_index"):
+        STOMPConfig.from_config(
+            {"subtask_specs": ({"feature_index": True},), "observation_dim": 2}
+        )
+    with pytest.raises(ValueError, match="threshold"):
+        STOMPConfig.from_config(
+            {"subtask_specs": ({"feature_index": 0, "threshold": "invalid"},)}
+        )
+
     for field, value in (
         ("subtask_specs", "not-a-sequence"),
         ("base_hidden_sizes", "not-a-sequence"),

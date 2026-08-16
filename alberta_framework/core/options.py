@@ -1602,7 +1602,13 @@ class STOMPConfig:
             if not issubclass(type(raw), Mapping):
                 raise ValueError("serialized subtask_specs entries must be mappings")
             try:
-                specs.append(SubtaskSpec(**dict(raw)))
+                decoded = dict(raw)
+            except Exception as error:
+                raise ValueError("serialized SubtaskSpec mapping could not be read") from error
+            try:
+                specs.append(SubtaskSpec(**decoded))
+            except ValueError:
+                raise
             except Exception as error:
                 raise ValueError("serialized SubtaskSpec is invalid") from error
         if "base_hidden_sizes" in payload:
