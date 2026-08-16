@@ -1,4 +1,4 @@
-# mypy: disable-error-code="call-arg,attr-defined"
+# mypy: disable-error-code="call-arg"
 """Closed-loop micro-MDPs where actions affect observations.
 
 Every other stream in this package is open-loop: the observation sequence is
@@ -81,32 +81,6 @@ _SUPPORTED_NUMPY_REWARD_TYPES: tuple[type[object], ...] = (
     np.float64,
     np.longdouble,
 )
-
-
-def _require_builtin_int(
-    value: object,
-    *,
-    name: str,
-    minimum: int,
-    maximum: int = _INT32_MAX,
-) -> int:
-    """Return a built-in int at or above ``minimum``; reject bool and numpy ints.
-
-    ``type(value) is not int`` is deliberate: ``isinstance(value, int)``
-    consults the overridable ``__class__`` attribute, so an object whose
-    ``__class__`` property returns ``int`` would pass an isinstance check
-    even though its true type never implements the integer protocol,
-    letting it reach downstream integer-only sinks (``range``, JAX array
-    construction) and raise an undocumented, unclean exception there
-    instead of the ``ValueError`` this contract promises.
-    """
-    if type(value) is not int:
-        raise ValueError(f"{name} must be a built-in integer, got {value!r}")
-    if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
-    if value > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
-    return value
 
 
 def _normalized_finite_float32_reward(name: str, value: object) -> float:
@@ -253,7 +227,16 @@ class SwitchingTwoStateMDP:
 
     def __init__(self, config: SwitchingTwoStateConfig | None = None) -> None:
         config = SwitchingTwoStateConfig() if config is None else config
-        _require_builtin_int(config.phase_length, name="phase_length", minimum=1)
+        if (
+            isinstance(config.phase_length, bool)
+            or not isinstance(config.phase_length, int)
+            or config.phase_length < 1
+            or config.phase_length > _INT32_MAX
+        ):
+            raise ValueError(
+                "phase_length must be a positive integer in "
+                f"[1, {_INT32_MAX}], got {config.phase_length!r}"
+            )
         phase_payoffs = []
         for name in ("payoffs_a", "payoffs_b"):
             payoff = np.asarray(getattr(config, name), dtype=np.float32)
@@ -444,7 +427,8 @@ class RiverSwimMDP:
 
     def __init__(self, config: RiverSwimConfig | None = None) -> None:
         config = RiverSwimConfig() if config is None else config
-        n_states = _require_builtin_int(config.n_states, name="n_states", minimum=2)
+        if config.n_states < 2:
+            raise ValueError(f"n_states must be at least 2, got {config.n_states}")
         up_numerator, up_denominator = _exact_real_ratio(
             "p_right_up",
             config.p_right_up,
@@ -482,12 +466,17 @@ class RiverSwimMDP:
                 "p_right_up + p_right_down must not exceed 1, got "
                 f"{config.p_right_up} + {config.p_right_down}"
             )
-        _require_builtin_int(
-            config.initial_state,
-            name="initial_state",
-            minimum=0,
-            maximum=n_states - 1,
-        )
+        if not 0 <= config.initial_state < config.n_states:
+            raise ValueError(
+                f"initial_state must lie in [0, {config.n_states}), got {config.initial_state}"
+            )
+        if isinstance(config.initial_state, bool) or not isinstance(
+            config.initial_state, Integral
+        ):
+            raise ValueError(
+                "initial_state must be an integer, got "
+                f"{config.initial_state!r}"
+            )
         config = cast(
             RiverSwimConfig,
             config.replace(
@@ -498,7 +487,7 @@ class RiverSwimMDP:
             ),
         )
         self._config: RiverSwimConfig = config
-        self._n_states: int = n_states
+        self._n_states: int = int(config.n_states)
         self._transitions_np: np.ndarray = self._build_transitions(config)
         self._rewards_np: np.ndarray = self._build_rewards(config)
         self._transition_logits: Array = jnp.where(
