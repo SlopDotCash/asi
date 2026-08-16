@@ -561,9 +561,10 @@ def test_config_rejects_derived_feature_dimension_above_int32() -> None:
         WorkingMemoryConfig(observation_dim=2**31 - 1)
 
 
-def test_config_accepts_exact_int32_max_derived_feature_dimension() -> None:
+def test_config_feature_byte_boundary_is_allocation_free() -> None:
+    last_valid = (2**31 - 1) // 4
     config = WorkingMemoryConfig(
-        observation_dim=2**31 - 1,
+        observation_dim=last_valid,
         action_dim=0,
         reward_dim=0,
         observation_decay_rates=(),
@@ -574,7 +575,32 @@ def test_config_accepts_exact_int32_max_derived_feature_dimension() -> None:
         include_traces=False,
     )
 
-    assert config.feature_dim() == 2**31 - 1
+    assert config.feature_dim() == last_valid
+    with pytest.raises(ValueError, match="feature output byte count"):
+        WorkingMemoryConfig(
+            observation_dim=last_valid,
+            action_dim=1,
+            reward_dim=0,
+            observation_decay_rates=(),
+            action_decay_rates=(),
+            reward_decay_rates=(),
+            include_current_action=True,
+            include_current_reward=False,
+            include_traces=False,
+        )
+
+
+def test_working_memory_step_count_saturates_at_int32_max() -> None:
+    memory = WorkingMemoryFeaturizer(_minimal_config())
+    state = memory.init().replace(step_count=jnp.array(2**31 - 1, dtype=jnp.int32))
+    result = memory.update_checked(
+        state,
+        jnp.ones((2,), dtype=jnp.float32),
+        jnp.empty((0,), dtype=jnp.float32),
+        jnp.empty((0,), dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1
 
 
 @pytest.mark.parametrize("method", ["features", "update_checked", "step"])

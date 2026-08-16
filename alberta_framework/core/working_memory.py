@@ -214,9 +214,6 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     return number
 
 
-_UINT32_MAX: int = 4294967295
-
-
 def _require_float32_resource(
     name: str,
     *,
@@ -228,6 +225,16 @@ def _require_float32_resource(
         raise ValueError(f"{name} scalar count must fit signed int32")
     if 4 * total_scalars > _INT32_MAX:
         raise ValueError(f"{name} byte count must fit signed int32")
+
+
+def _preflight_array_transform_resources(steps: int, feature_dim: int) -> None:
+    """Bound returned scan arrays and the default gate workspace."""
+    feature_scalars = steps * feature_dim
+    if feature_scalars > _INT32_MAX:
+        raise ValueError("working-memory array output scalar count must fit signed int32")
+    # float32 features, bool verdicts, and the possible default float32 gate vector.
+    if 4 * feature_scalars + 5 * steps > _INT32_MAX:
+        raise ValueError("working-memory array output byte count must fit signed int32")
 
 
 def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
@@ -289,6 +296,13 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
         raise ValueError(
             f"configuration feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
         )
+    for name, dimension in (
+        ("observation vector", observation_dim),
+        ("action vector", action_dim),
+        ("reward vector", reward_dim),
+        ("working-memory feature output", feature_dim),
+    ):
+        _require_float32_resource(name, vector_scalars=dimension)
     trace_scalars = (
         observation_dim * len(observation_decay_rates)
         + action_dim * len(action_decay_rates)
@@ -296,17 +310,11 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
     )
     if trace_scalars > _INT32_MAX:
         raise ValueError("WorkingMemoryConfig dimensions must fit signed int32")
-    total_state_scalars = trace_scalars + 4
     _require_float32_resource(
         "WorkingMemoryConfig state",
         vector_scalars=trace_scalars,
         fixed_scalars=4,
     )
-    persistent_bytes = 4 * total_state_scalars
-    if persistent_bytes > _INT32_MAX:
-        raise ValueError("WorkingMemoryConfig state byte count must fit signed int32")
-    if persistent_bytes > _UINT32_MAX:
-        raise ValueError("working memory allocation exceeds uint32 byte accounting")
 
 
 def _empty_or_vector(value: Array, dim: int) -> Array:
@@ -538,7 +546,11 @@ class WorkingMemoryFeaturizer:
                 cfg.reward_decay_rates,
                 reward_gate,
             ),
-            step_count=state.step_count + 1,
+            step_count=jnp.where(
+                state.step_count < _INT32_MAX,
+                state.step_count + 1,
+                state.step_count,
+            ),
             last_gate=jnp.stack([observation_gate, action_gate, reward_gate]),
         )
         previous_checked = state
@@ -653,6 +665,7 @@ def transform_working_memory_arrays(
             "observations/actions/rewards leading dims must match "
             f"(got {_obs.shape[0]}, {_act.shape[0]}, {_rew.shape[0]})"
         )
+    _preflight_array_transform_resources(steps, cfg.feature_dim())
     if state is None:
         state = featurizer.init()
     gates = (

@@ -5,7 +5,10 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from alberta_framework.core.working_memory import WorkingMemoryConfig
+from alberta_framework.core.working_memory import (
+    WorkingMemoryConfig,
+    _preflight_array_transform_resources,
+)
 
 _INT32_MAX = 2**31 - 1
 
@@ -222,6 +225,7 @@ def test_working_state_preflight_bytes_without_allocation() -> None:
         observation_decay_rates=(0.5, 0.9, 0.99),
         action_decay_rates=(),
         reward_decay_rates=(),
+        include_current_observation=False,
     )
     assert cfg.observation_dim == last_legal
     with pytest.raises(ValueError, match="byte count"):
@@ -232,6 +236,7 @@ def test_working_state_preflight_bytes_without_allocation() -> None:
             observation_decay_rates=(0.5, 0.9, 0.99),
             action_decay_rates=(),
             reward_decay_rates=(),
+            include_current_observation=False,
         )
     # Non-minimal should also be allocation-free
     with pytest.raises(ValueError, match="byte count|scalar count|dimensions"):
@@ -250,3 +255,26 @@ def test_working_state_preflight_feature_dim_boundary() -> None:
         match="configuration feature_dim|byte count|scalar count|dimensions",
     ):
         _base_cfg(observation_dim=600_000_000, action_dim=600_000_000, reward_dim=600_000_000)
+
+
+def test_unused_signal_vector_still_fits_public_zero_allocation() -> None:
+    with pytest.raises(ValueError, match="action vector byte count"):
+        WorkingMemoryConfig(
+            observation_dim=1,
+            action_dim=_INT32_MAX // 4 + 1,
+            reward_dim=0,
+            observation_decay_rates=(),
+            action_decay_rates=(),
+            reward_decay_rates=(),
+            include_current_action=False,
+            include_current_reward=False,
+            include_traces=False,
+        )
+
+
+def test_array_transform_output_boundary_is_allocation_free() -> None:
+    feature_dim = 1
+    last_valid = _INT32_MAX // (4 * feature_dim + 5)
+    _preflight_array_transform_resources(last_valid, feature_dim)
+    with pytest.raises(ValueError, match="array output byte count"):
+        _preflight_array_transform_resources(last_valid + 1, feature_dim)
