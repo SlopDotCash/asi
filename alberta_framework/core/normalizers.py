@@ -899,8 +899,9 @@ def normalizer_state_nbytes_formula(
 ) -> int:
     """Return exact persistent JAX-array bytes for a normalizer state."""
 
-    if type(feature_dim) is not int or feature_dim < 0:
-        raise ValueError("feature_dim must be a non-negative exact integer")
+    feature_dim = _require_int(
+        "feature_dim", feature_dim, minimum=0, maximum=_INT32_MAX
+    )
     if normalizer_type in {"EMANormalizer", "StreamingBatchNormalizer"}:
         return 8 * feature_dim + 16
     if normalizer_type == "WelfordNormalizer":
