@@ -773,7 +773,15 @@ class TestContinualBackpropConfigValidation:
 
     @pytest.mark.parametrize(
         "value",
-        [np.int8(7), np.int16(7), np.int32(7), np.int64(7), np.uint64(7)],
+        [
+            np.int8(7),
+            np.int16(7),
+            np.int32(7),
+            np.int64(7),
+            np.longlong(7),
+            np.uint64(7),
+            np.ulonglong(7),
+        ],
     )
     def test_canonicalizes_supported_numpy_integer_widths(self, value: np.integer) -> None:
         config = ContinualBackpropConfig(maturity_threshold=value)  # type: ignore[arg-type]

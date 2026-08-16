@@ -90,7 +90,18 @@ from alberta_framework.core.types import TraceMode
 
 _NUMPY_FLOAT_SCALAR_TYPES = frozenset((np.float16, np.float32, np.float64, np.longdouble))
 _NUMPY_INTEGER_SCALAR_TYPES = frozenset(
-    (np.int8, np.int16, np.int32, np.int64, np.uint8, np.uint16, np.uint32, np.uint64)
+    (
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.longlong,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.ulonglong,
+    )
 )
 
 # =============================================================================
