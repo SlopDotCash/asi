@@ -36,39 +36,40 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
+
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
+        *(np.dtype(code).type
+          for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")),
     }
 )
-
-
-def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
-    if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
-    canonical = operator.index(cast(SupportsIndex, value))
-    if not minimum <= canonical <= maximum:
-        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
-    return canonical
-
-
-_FLOAT32_TINY = float(np.finfo(np.float32).tiny)
-_KERNEL_WIDTH_ERROR = "kernel_width must be positive and finite in float32 kernel arithmetic"
+_FLOAT32_TINY = float.fromhex("0x1.000000p-126")
+_MIN_KERNEL_WIDTH = float.fromhex("0x1.000000p-63")
+_MAX_KERNEL_WIDTH = float.fromhex("0x1.fffffep+63")
+_KERNEL_WIDTH_ERROR = (
+    "kernel_width must be positive and finite in float32 kernel arithmetic"
+)
 _SAMPLES_FINITE_ERROR = "samples must be finite"
 _EMBEDDINGS_FINITE_ERROR = "embeddings must be finite"
 _DIRECTIONS_FINITE_ERROR = "directions must be finite"
 _PROJECTIONS_FINITE_ERROR = "projected samples must be finite"
+
+
+def _require_int32(name: str, value: object, *, minimum: int) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    return canonical
+
+
+def _require_float32_resource(name: str, scalar_count: int) -> None:
+    if not 1 <= scalar_count <= _INT32_MAX or scalar_count > _INT32_MAX // 4:
+        raise ValueError(f"derived {name} float32 allocation must fit in signed int32 bytes")
 
 
 def _normalized_positive_float32(
@@ -77,25 +78,17 @@ def _normalized_positive_float32(
     *,
     squared: bool,
 ) -> float:
-    """Return a concrete real as ``float`` after float32-domain validation."""
+    """Return one operation-safe exact-host and float32 scalar."""
     message = f"{name} must be positive and finite in float32 arithmetic"
-    if isinstance(value, bool) or not isinstance(value, numbers.Real):
-        raise ValueError(message)
     try:
-        concrete = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if not math.isfinite(concrete) or concrete <= 0.0:
-        raise ValueError(message)
-
-    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
-        value32 = np.float32(concrete)
-        squared32 = np.float32(value32 * value32)
-    if not math.isfinite(float(value32)) or float(value32) < _FLOAT32_TINY:
-        raise ValueError(message)
-    if squared and (not math.isfinite(float(squared32)) or float(squared32) < _FLOAT32_TINY):
-        raise ValueError(message)
-    return concrete
+        return validated_float32_scalar(
+            name,
+            value,
+            lower=_MIN_KERNEL_WIDTH if squared else _FLOAT32_TINY,
+            upper=_MAX_KERNEL_WIDTH if squared else None,
+        )
+    except ValueError as error:
+        raise ValueError(message) from error
 
 
 @dataclasses.dataclass(frozen=True)
@@ -137,8 +130,14 @@ class SIGRegConfig:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SIGRegConfig:
         """Reconstruct from :meth:`to_config` output."""
+        if type(config) is not dict:
+            raise ValueError("SIGRegConfig must be an actual dict")
         payload = dict(config)
-        payload.pop("type", None)
+        if set(payload) != {"type", "n_projections", "kernel_width", "eps"}:
+            raise ValueError("SIGRegConfig fields do not match its schema")
+        type_name = payload.pop("type")
+        if type(type_name) is not str or type_name != "SIGRegConfig":
+            raise ValueError("type must be SIGRegConfig")
         return cls(**payload)
 
 
@@ -207,7 +206,8 @@ def _validated_kernel_width(kernel_width: float | Array) -> Array:
     if uncast.shape != ():
         raise ValueError(_KERNEL_WIDTH_ERROR)
     if not (
-        jnp.issubdtype(uncast.dtype, jnp.integer) or jnp.issubdtype(uncast.dtype, jnp.floating)
+        jnp.issubdtype(uncast.dtype, jnp.integer)
+        or jnp.issubdtype(uncast.dtype, jnp.floating)
     ):
         raise ValueError(_KERNEL_WIDTH_ERROR)
 
@@ -237,6 +237,37 @@ def _require_finite_array(values: Array, message: str) -> Array:
     return _runtime_checked_value(array, predicate, message)
 
 
+def _preflight_projected_statistic(
+    embeddings: Array,
+    directions: Array,
+) -> tuple[Array, Array, int, int]:
+    z = jnp.asarray(embeddings, dtype=jnp.float32)
+    dirs = jnp.asarray(directions, dtype=jnp.float32)
+    if z.ndim < 2:
+        raise ValueError("embeddings must have shape (..., latent_dim)")
+    if dirs.ndim != 2 or dirs.shape[0] < 1 or dirs.shape[1] != z.shape[-1]:
+        raise ValueError("directions must have shape (n_projections, latent_dim)")
+    sample_count = math.prod(z.shape[:-1])
+    if sample_count < 1:
+        raise ValueError("embeddings must contain at least one sample")
+    n_projections = dirs.shape[0]
+    projection_scalars = sample_count * n_projections
+    pairwise_scalars = sample_count * sample_count * n_projections
+    _require_float32_resource(
+        "projected pairwise workspace",
+        projection_scalars + 3 * pairwise_scalars,
+    )
+    return z, dirs, sample_count, n_projections
+
+
+def _stable_std(values: Array, *, axis: int) -> Array:
+    """Compute float32 standard deviation without overflowing finite inputs."""
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    safe_scale = jnp.where(scale == 0.0, jnp.ones_like(scale), scale)
+    normalized = values / safe_scale
+    return jnp.std(normalized, axis=axis) * jnp.squeeze(scale, axis=axis)
+
+
 def _epps_pulley_gaussian_statistic(samples: Array, width: Array) -> Array:
     """Compute the statistic after ``width`` has passed boundary validation."""
     x = jnp.ravel(jnp.asarray(samples, dtype=jnp.float32))
@@ -244,7 +275,9 @@ def _epps_pulley_gaussian_statistic(samples: Array, width: Array) -> Array:
     diffs = x[:, None] - x[None, :]
     empirical = jnp.mean(jnp.exp(-(diffs**2) / (2.0 * width_squared)))
     cross_scale = jnp.sqrt(width_squared / (width_squared + 1.0))
-    cross = jnp.mean(cross_scale * jnp.exp(-(x**2) / (2.0 * (width_squared + 1.0))))
+    cross = jnp.mean(
+        cross_scale * jnp.exp(-(x**2) / (2.0 * (width_squared + 1.0)))
+    )
     target = jnp.sqrt(width_squared / (width_squared + 2.0))
     return jnp.maximum(empirical - 2.0 * cross + target, 0.0)
 
@@ -256,8 +289,8 @@ def sample_sigreg_directions(
 ) -> Float[Array, "n_projections latent_dim"]:
     """Sample random unit directions for sliced SIGReg."""
     cfg = config or SIGRegConfig()
-    if latent_dim <= 0:
-        raise ValueError("latent_dim must be positive")
+    latent_dim = _require_int32("latent_dim", latent_dim, minimum=1)
+    _require_float32_resource("SIGReg directions", cfg.n_projections * latent_dim)
     directions = jax.random.normal(
         key,
         (cfg.n_projections, latent_dim),
@@ -284,10 +317,13 @@ def epps_pulley_gaussian_statistic(
     :class:`jax.errors.JaxRuntimeError` when the result is synchronized.
     """
     width = _validated_kernel_width(kernel_width)
-    checked = _require_finite_array(
-        jnp.asarray(samples, dtype=jnp.float32),
-        _SAMPLES_FINITE_ERROR,
+    flattened = jnp.ravel(jnp.asarray(samples, dtype=jnp.float32))
+    if flattened.size < 1:
+        raise ValueError("samples must be non-empty")
+    _require_float32_resource(
+        "Epps-Pulley pairwise workspace", 3 * flattened.size * flattened.size
     )
+    checked = _require_finite_array(flattened, _SAMPLES_FINITE_ERROR)
     return _epps_pulley_gaussian_statistic(checked, width)
 
 
@@ -308,10 +344,7 @@ def sliced_sigreg_loss(
     Returns:
         Mean one-dimensional Epps-Pulley/BHEP statistic across directions.
     """
-    z = jnp.asarray(embeddings, dtype=jnp.float32)
-    dirs = jnp.asarray(directions, dtype=jnp.float32)
-    if z.ndim < 2:
-        raise ValueError("embeddings must have shape (..., latent_dim)")
+    z, dirs, _, _ = _preflight_projected_statistic(embeddings, directions)
     width = _validated_kernel_width(kernel_width)
     z = _require_finite_array(z, _EMBEDDINGS_FINITE_ERROR)
     dirs = _require_finite_array(dirs, _DIRECTIONS_FINITE_ERROR)
@@ -331,14 +364,13 @@ def sigreg_diagnostics(
 ) -> SIGRegDiagnostics:
     """Return SIGReg loss plus simple latent distribution diagnostics."""
     cfg = config or SIGRegConfig()
-    z = jnp.asarray(embeddings, dtype=jnp.float32)
-    dirs = jnp.asarray(directions, dtype=jnp.float32)
+    z, dirs, _, _ = _preflight_projected_statistic(embeddings, directions)
     z = _require_finite_array(z, _EMBEDDINGS_FINITE_ERROR)
     dirs = _require_finite_array(dirs, _DIRECTIONS_FINITE_ERROR)
     flat = jnp.reshape(z, (-1, z.shape[-1]))
     projected = _require_finite_array(flat @ dirs.T, _PROJECTIONS_FINITE_ERROR)
-    latent_std = jnp.std(flat, axis=0)
-    projected_std = jnp.std(projected, axis=0)
+    latent_std = _stable_std(flat, axis=0)
+    projected_std = _stable_std(projected, axis=0)
     return SIGRegDiagnostics(
         loss=sliced_sigreg_loss(flat, dirs, kernel_width=cfg.kernel_width),
         latent_mean_abs=jnp.mean(jnp.abs(jnp.mean(flat, axis=0))),
