@@ -34,6 +34,7 @@ from typing import Any, cast
 
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
 from alberta_framework.core.oak import (
