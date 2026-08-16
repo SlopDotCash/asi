@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -36,6 +37,46 @@ _NEW = jnp.asarray(
     ],
     dtype=jnp.int32,
 )
+
+_NUMPY_INTEGER_TYPES = tuple(
+    dict.fromkeys(
+        np.dtype(code).type
+        for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q", "p", "P")
+    )
+)
+
+
+class _RaisingIntegerSpoof:
+    @property
+    def __class__(self) -> type[int]:
+        return int
+
+    def __index__(self) -> int:
+        raise AssertionError("__index__ must not be called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("__repr__ must not be called")
+
+
+class _IntegerSubclass(int):
+    def __repr__(self) -> str:
+        raise AssertionError("__repr__ must not be called")
+
+
+class _StringSubclass(str):
+    pass
+
+
+class _RaisingStringSpoof:
+    @property
+    def __class__(self) -> type[str]:
+        return str
+
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("__eq__ must not be called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("__repr__ must not be called")
 
 
 def _router() -> FeatureBankRouter:
@@ -515,51 +556,71 @@ def test_router_config_rejects_booleans_and_non_integers() -> None:
 
 
 @pytest.mark.unit
-def test_router_config_accepts_and_canonicalizes_numpy_integers() -> None:
-    integer_types = {
-        np.dtype(code).type for code in "bBhHiIlLqQpP" if np.dtype(code).kind in "iu"
-    }
-    for integer_type in integer_types:
-        config = FeatureBankRouterConfig(
-            base_dim=integer_type(4),
-            active_slots=integer_type(4),
-        )
-        assert type(config.base_dim) is int
-        assert type(config.active_slots) is int
-        assert config.base_dim == 4
-        assert config.active_slots == 4
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_router_config_accepts_and_canonicalizes_all_numpy_integers(
+    integer_type: type[np.integer[Any]],
+) -> None:
+    config = FeatureBankRouterConfig(
+        base_dim=integer_type(4),
+        active_slots=integer_type(4),
+    )
+    assert type(config.base_dim) is int
+    assert type(config.active_slots) is int
+    assert config.base_dim == 4
+    assert config.active_slots == 4
+    assert json.loads(json.dumps(config.to_config())) == config.to_config()
 
 
 @pytest.mark.unit
-def test_router_config_rejects_spoofs_and_float32_sink_overflow() -> None:
-    class HostileInt(int):
-        def __repr__(self) -> str:
-            raise AssertionError("invalid subclass repr must not run")
+def test_router_config_rejects_derived_feature_width_outside_signed_int32() -> None:
+    with pytest.raises(ValueError, match="total_feature_dim"):
+        FeatureBankRouterConfig(base_dim=2**31 - 1, active_slots=1)
 
-    class ClassSpoof:
-        @property
-        def __class__(self) -> type[int]:
-            return int
-
-    for value in (HostileInt(4), ClassSpoof(), np.bool_(True), np.float32(4.0)):
-        with pytest.raises(ValueError, match="base_dim"):
-            FeatureBankRouterConfig(base_dim=value, active_slots=1)  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="active_slots"):
-            FeatureBankRouterConfig(base_dim=4, active_slots=value)  # type: ignore[arg-type]
-
-    maximum = 2**31 - 1
-    config = FeatureBankRouterConfig(base_dim=maximum - 1, active_slots=1)
-    assert config.total_feature_dim == maximum
-    with pytest.raises(ValueError, match="active_slots"):
-        FeatureBankRouterConfig(base_dim=maximum, active_slots=1)
-    with pytest.raises(ValueError, match="active_slots"):
-        FeatureBankRouterConfig(base_dim=maximum - 1, active_slots=2)
+    boundary = FeatureBankRouterConfig(base_dim=2**31 - 2, active_slots=1)
+    assert boundary.total_feature_dim == 2**31 - 1
 
 
 @pytest.mark.unit
-def test_router_config_roundtrip_preserves_canonical_int32_dimensions() -> None:
-    config = FeatureBankRouterConfig(base_dim=np.longlong(4), active_slots=np.ulonglong(3))
-    payload = config.to_config()
-    assert type(payload["base_dim"]) is int
-    assert type(payload["active_slots"]) is int
-    assert FeatureBankRouterConfig.from_config(payload) == config
+def test_router_config_preflights_derived_state_counts_before_allocation() -> None:
+    with pytest.raises(ValueError, match="router_state_scalars"):
+        FeatureBankRouterConfig(base_dim=2, active_slots=1_073_741_823)
+    with pytest.raises(ValueError, match="router_state_nbytes"):
+        FeatureBankRouterConfig(base_dim=2, active_slots=268_435_455)
+
+    boundary = FeatureBankRouterConfig(base_dim=2, active_slots=268_435_454)
+    assert 4 * (2 * boundary.active_slots + 2) == 2_147_483_640
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "hostile",
+    [_RaisingIntegerSpoof(), _IntegerSubclass(4), np.bool_(True), np.float32(4.0)],
+    ids=["class-spoof", "int-subclass", "numpy-bool", "numpy-float"],
+)
+def test_router_config_rejects_integer_spoofs_without_invoking_hooks(hostile: object) -> None:
+    with pytest.raises(ValueError, match="base_dim"):
+        FeatureBankRouterConfig(base_dim=hostile, active_slots=4)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="active_slots"):
+        FeatureBankRouterConfig(base_dim=4, active_slots=hostile)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "hostile", "message"),
+    [
+        ("type", _StringSubclass("FeatureBankRouter"), "type is invalid"),
+        ("type", _RaisingStringSpoof(), "type is invalid"),
+        ("schema_version", _StringSubclass(CONFIG_SCHEMA_VERSION), "schema version"),
+        ("schema_version", _RaisingStringSpoof(), "schema version"),
+    ],
+    ids=["type-str-subclass", "type-class-spoof", "schema-str-subclass", "schema-class-spoof"],
+)
+def test_router_config_rejects_string_spoofs_without_invoking_hooks(
+    field: str,
+    hostile: object,
+    message: str,
+) -> None:
+    serialized = FeatureBankRouterConfig(base_dim=4, active_slots=4).to_config()
+    serialized[field] = hostile
+    with pytest.raises(ValueError, match=message):
+        FeatureBankRouterConfig.from_config(serialized)

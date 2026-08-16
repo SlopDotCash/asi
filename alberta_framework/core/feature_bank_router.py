@@ -43,16 +43,10 @@ _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
+        *(
+            np.dtype(code).type
+            for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q", "p", "P")
+        ),
     }
 )
 
@@ -84,7 +78,6 @@ class FeatureBankRouterConfig:
             "active_slots",
             self.active_slots,
             minimum=1,
-            maximum=_INT32_MAX - base_dim,
         )
         object.__setattr__(
             self,
@@ -96,6 +89,13 @@ class FeatureBankRouterConfig:
             "active_slots",
             active_slots,
         )
+        if self.base_dim + self.active_slots > _INT32_MAX:
+            raise ValueError("total_feature_dim must be an integer in [3, 2147483647]")
+        router_state_scalars = 2 * self.active_slots + 2
+        if router_state_scalars > _INT32_MAX:
+            raise ValueError("router_state_scalars must not exceed 2147483647")
+        if 4 * router_state_scalars > _INT32_MAX:
+            raise ValueError("router_state_nbytes must not exceed 2147483647")
 
     @property
     def total_feature_dim(self) -> int:
@@ -128,9 +128,11 @@ class FeatureBankRouterConfig:
         }
         if set(config) != expected_keys:
             raise ValueError("feature-bank router config keys do not match the v1 schema")
-        if config.get("type") != "FeatureBankRouter":
+        config_type = config.get("type")
+        if type(config_type) is not str or config_type != "FeatureBankRouter":
             raise ValueError("feature-bank router config type is invalid")
-        if config.get("schema_version") != CONFIG_SCHEMA_VERSION:
+        schema_version = config.get("schema_version")
+        if type(schema_version) is not str or schema_version != CONFIG_SCHEMA_VERSION:
             raise ValueError("feature-bank router config schema version is unsupported")
         return cls(
             base_dim=config["base_dim"],  # type: ignore[arg-type]
