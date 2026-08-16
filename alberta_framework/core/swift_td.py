@@ -42,7 +42,8 @@ A Fast and Robust Algorithm for Temporal Difference Learning." RLJ/RLC 2024.
 """
 
 import math
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax.numpy as jnp
@@ -62,7 +63,35 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so IEEE ``0 * inf`` does not become NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
+
 # Paper default for the step-size floor: eta_min = e^-15.
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
 _DEFAULT_ETA_MIN = math.exp(-15.0)
 
 _SUPPORTED_CONFIG_REAL_TYPES: tuple[type[object], ...] = (
@@ -280,6 +309,7 @@ class SwiftTD:
         Returns:
             SwiftTD state with per-feature log step-sizes and zeroed traces
         """
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         aug_dim = feature_dim + 1
         # The dense reference implementation clips beta into
         # [ln(eta_min), ln(eta)] on every pass, including the (otherwise
@@ -361,9 +391,7 @@ class SwiftTD:
         trace_dot = jnp.dot(state.eligibility_traces, phi)
         z_ext = state.eligibility_traces + z_delta * (1.0 - trace_dot)
         p_ext = state.p_traces + state.h_old_traces * phi
-        z_bar_ext = state.z_bar_traces + z_delta * (
-            1.0 - trace_dot - state.z_bar_traces * phi
-        )
+        z_bar_ext = state.z_bar_traces + z_delta * (1.0 - trace_dot - state.z_bar_traces * phi)
         h_temp_ext = (
             state.h_traces
             - state.h_old_traces * phi * (z_ext - z_delta)

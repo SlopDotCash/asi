@@ -69,19 +69,14 @@ class _RefSwiftTDNonSparse:
             self.delta_w[i] = delta * self.z[i] - self.z_delta[i] * self.v_delta
             self.w[i] += self.delta_w[i]
             self.beta[i] += (
-                self.meta_step_size
-                / np.exp(self.beta[i])
-                * (delta - self.v_delta)
-                * self.p[i]
+                self.meta_step_size / np.exp(self.beta[i]) * (delta - self.v_delta) * self.p[i]
             )
             if np.exp(self.beta[i]) > self.eta:
                 self.beta[i] = np.log(self.eta)
             if np.exp(self.beta[i]) < self.eta_min:
                 self.beta[i] = np.log(self.eta_min)
             self.h_old[i] = self.h[i]
-            self.h[i] = (
-                self.h_temp[i] + delta * self.z_bar[i] - self.z_delta[i] * self.v_delta
-            )
+            self.h[i] = self.h_temp[i] + delta * self.z_bar[i] - self.z_delta[i] * self.v_delta
             self.h_temp[i] = self.h[i]
             self.z_delta[i] = 0.0
             self.z[i] *= self.gamma * self.lam
@@ -134,9 +129,7 @@ class TestSwiftTDInit:
 
     def test_init_creates_correct_state(self):
         """Arrays get feature_dim + 1 entries (bias last), traces start at zero."""
-        optimizer = SwiftTD(
-            initial_step_size=0.01, meta_step_size=0.001, trace_decay=0.9, eta=0.1
-        )
+        optimizer = SwiftTD(initial_step_size=0.01, meta_step_size=0.001, trace_decay=0.9, eta=0.1)
         state = optimizer.init(feature_dim=10)
 
         chex.assert_shape(state.log_step_sizes, (11,))
@@ -272,9 +265,7 @@ class TestSwiftTDMatchesReference:
         for t in range(1, steps):
             obs = jnp.asarray(xs[t - 1], dtype=jnp.float32)
             nxt = jnp.asarray(xs[t], dtype=jnp.float32)
-            td_error = (
-                rewards[t] + gamma * (jnp.dot(w, nxt) + b) - (jnp.dot(w, obs) + b)
-            )
+            td_error = rewards[t] + gamma * (jnp.dot(w, nxt) + b) - (jnp.dot(w, obs) + b)
             upd = optimizer.update(state, td_error, obs, nxt, jnp.array(gamma))
             w = w + upd.weight_delta
             b = b + upd.bias_delta
@@ -378,9 +369,7 @@ class TestSwiftTDBehavior:
         )
         assert float(upd.metrics["decay_triggered"]) == 1.0
         expected = float(jnp.log(0.05) + jnp.log(0.99))  # phi_i^2 = 1 for all entries
-        chex.assert_trees_all_close(
-            upd.new_state.log_step_sizes, jnp.full(3, expected), atol=1e-6
-        )
+        chex.assert_trees_all_close(upd.new_state.log_step_sizes, jnp.full(3, expected), atol=1e-6)
 
         # tau = 0.02 * 3 = 0.06 < eta = 0.1 -> no decay, step-sizes unchanged.
         optimizer = SwiftTD(
@@ -403,9 +392,7 @@ class TestSwiftTDBehavior:
         obs = jnp.ones(3, dtype=jnp.float32)
 
         result = optimizer.update(state, jnp.array(1.0), obs, obs, jnp.array(0.0))
-        chex.assert_trees_all_close(
-            result.new_state.eligibility_traces, jnp.zeros(4), atol=1e-7
-        )
+        chex.assert_trees_all_close(result.new_state.eligibility_traces, jnp.zeros(4), atol=1e-7)
 
         result = optimizer.update(state, jnp.array(1.0), obs, obs, jnp.array(0.9))
         assert float(jnp.max(jnp.abs(result.new_state.eligibility_traces))) > 0.0
@@ -424,9 +411,7 @@ class TestSwiftTDBehavior:
         )
         assert bool(result.update_applied)
         assert bool(jnp.all(jnp.isfinite(result.weight_delta)))
-        chex.assert_trees_all_close(
-            result.new_state.eligibility_traces, jnp.zeros(3), atol=1e-7
-        )
+        chex.assert_trees_all_close(result.new_state.eligibility_traces, jnp.zeros(3), atol=1e-7)
 
     def test_zero_gamma_does_not_disguise_consumed_inf_trace_state(self) -> None:
         optimizer = SwiftTD(initial_step_size=0.01, trace_decay=0.0)
@@ -519,9 +504,7 @@ def _run_swift_seed(initial_step_size, key):
         (w, b, opt_state), s_state = carry
         ts, s_new = stream.step(s_state, idx)
         td_error = jnp.squeeze(ts.target) - (jnp.dot(w, ts.observation) + b)
-        upd = optimizer.update(
-            opt_state, td_error, ts.observation, ts.observation, jnp.array(0.0)
-        )
+        upd = optimizer.update(opt_state, td_error, ts.observation, ts.observation, jnp.array(0.0))
         new_carry = ((w + upd.weight_delta, b + upd.bias_delta, upd.new_state), s_new)
         return new_carry, td_error**2
 
@@ -560,8 +543,7 @@ class TestSwiftTDLearningQuality:
         swift_mean = float(jnp.mean(finals))
         best_fixed = _best_fixed_lms_mean()
         assert swift_mean < best_fixed, (
-            f"SwiftTD final MSE {swift_mean:.4f} should beat best fixed "
-            f"step-size {best_fixed:.4f}"
+            f"SwiftTD final MSE {swift_mean:.4f} should beat best fixed step-size {best_fixed:.4f}"
         )
         # Sanity: close to the stream's noise floor (0.1^2), far from divergence.
         assert swift_mean < 0.05
@@ -576,3 +558,17 @@ class TestSwiftTDLearningQuality:
         swift_mean = float(jnp.mean(finals))
         assert swift_mean < _best_fixed_lms_mean()
         assert swift_mean < 0.05
+
+
+def test_swift_td_integer_validation() -> None:
+    swift = SwiftTD(initial_step_size=0.01)
+
+    with pytest.raises(ValueError, match="feature_dim"):
+        swift.init(feature_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="feature_dim"):
+        swift.init(feature_dim=4.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="feature_dim"):
+        swift.init(feature_dim=0)
+
+    state = swift.init(feature_dim=np.int32(4))
+    assert state.log_step_sizes.shape == (5,)
