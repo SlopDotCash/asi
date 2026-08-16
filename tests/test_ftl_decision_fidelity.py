@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+from numbers import Real
 
 import jax
 import numpy as np
@@ -251,3 +253,158 @@ def test_decision_fidelity_config_accepts_and_canonicalizes_numpy_integers() -> 
     assert type(cfg.bootstrap_seed) is int
     assert cfg.phase_steps == 180
     assert cfg.horizon == 6
+
+
+_INTEGER_FIELDS_AND_VALUES = (
+    ("phase_steps", 180),
+    ("horizon", 6),
+    ("probes_per_domain", 12),
+    ("projection_dim", 12),
+    ("bins", 7),
+    ("bootstrap_resamples", 5_000),
+    ("bootstrap_seed", 2_026_073_001),
+)
+_NUMPY_INTEGER_TYPES = tuple(
+    dict.fromkeys(
+        (
+            np.int8,
+            np.int16,
+            np.int32,
+            np.int64,
+            np.uint8,
+            np.uint16,
+            np.uint32,
+            np.uint64,
+            np.longlong,
+            np.ulonglong,
+        )
+    )
+)
+
+
+@pytest.mark.parametrize(("field", "value"), _INTEGER_FIELDS_AND_VALUES)
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_every_integer_field_accepts_every_representable_numpy_family(
+    field: str, value: int, integer_type: type[np.integer],
+) -> None:
+    try:
+        typed_value = integer_type(value)
+    except OverflowError:
+        pytest.skip("value is not representable by this NumPy integer type")
+    config = DecisionFidelityConfig(**{field: typed_value})
+    assert type(getattr(config, field)) is int
+    assert getattr(config, field) == value
+
+
+class _IntSubclass(int):
+    pass
+
+
+class _IndexStandIn:
+    def __index__(self) -> int:
+        raise AssertionError("an unapproved __index__ hook must not run")
+
+
+class _ClassSpoof:
+    @property
+    def __class__(self) -> type[int]:
+        return int
+
+    def __repr__(self) -> str:
+        raise AssertionError("error reporting must not call repr")
+
+
+class _HostileReal(float, Real):
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("hostile ratio")
+
+    def __repr__(self) -> str:
+        raise AssertionError("error reporting must not call repr")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, _IntSubclass(180), _IndexStandIn(), _ClassSpoof()],
+    ids=("bool", "int-subclass", "index-stand-in", "class-spoof"),
+)
+def test_integer_gate_rejects_subclasses_spoofs_and_hooks_without_invoking_repr(
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match="phase_steps"):
+        DecisionFidelityConfig(phase_steps=value)  # type: ignore[arg-type]
+
+
+def test_float_and_menu_gates_are_exact_canonical_and_hook_safe() -> None:
+    config = DecisionFidelityConfig(
+        menu_amplitudes=(np.float32(-0.5), np.float64(0.0), np.float32(0.5)),
+        ridge=np.float64(0.01),
+        prediction_clip=np.float32(3.0),
+        state_bound=np.float64(1.75),
+        action_cost=np.float32(0.025),
+        confidence_level=np.float64(0.95),
+    )
+    assert type(config.menu_amplitudes) is tuple
+    assert all(type(value) is float for value in config.menu_amplitudes)
+    assert all(
+        type(getattr(config, field)) is float
+        for field in ("ridge", "prediction_clip", "state_bound", "action_cost", "confidence_level")
+    )
+    for field in ("ridge", "prediction_clip", "state_bound", "action_cost", "confidence_level"):
+        with pytest.raises(ValueError, match=field):
+            DecisionFidelityConfig(**{field: _HostileReal(0.5)})
+
+
+def test_menu_rejects_container_subclasses_and_float32_collisions() -> None:
+    class TupleSubclass(tuple):
+        pass
+
+    with pytest.raises(ValueError, match="exact tuple"):
+        DecisionFidelityConfig(menu_amplitudes=TupleSubclass((-0.5, 0.0, 0.5)))
+    with pytest.raises(ValueError, match="unique"):
+        DecisionFidelityConfig(
+            menu_amplitudes=(1.0, np.nextafter(1.0, 2.0), 2.0)
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"phase_steps": 2**31 // 3 + 1},
+        {"projection_dim": 100_000, "bins": 2},
+        {"bootstrap_resamples": 2**31 - 1},
+        {"bootstrap_seed": 2**32 - 1},
+        {"prediction_clip": np.finfo(np.float32).max},
+        {
+            "menu_amplitudes": (-np.finfo(np.float32).max, 0.0, np.finfo(np.float32).max),
+            "action_cost": 1.0,
+        },
+    ],
+)
+def test_derived_resource_and_operation_overflow_is_rejected_before_allocation(
+    monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, object]
+) -> None:
+    def forbidden(*args: object, **kwds: object) -> None:
+        raise AssertionError("allocation occurred before validation")
+
+    monkeypatch.setattr(np, "empty", forbidden)
+    with pytest.raises(ValueError):
+        DecisionFidelityConfig(**kwargs)  # type: ignore[arg-type]
+
+
+def test_default_config_json_and_numpy_canonicalization_preserve_frozen_payload() -> None:
+    expected = {
+        "phase_steps": 180,
+        "horizon": 6,
+        "probes_per_domain": 12,
+        "menu_amplitudes": [-0.85, -0.45, 0.0, 0.45, 0.85],
+        "projection_dim": 12,
+        "bins": 7,
+        "ridge": 0.01,
+        "prediction_clip": 3.0,
+        "state_bound": 1.75,
+        "action_cost": 0.025,
+        "bootstrap_resamples": 5_000,
+        "confidence_level": 0.95,
+        "bootstrap_seed": 2_026_073_001,
+    }
+    assert json.loads(json.dumps(dataclasses.asdict(DecisionFidelityConfig()))) == expected

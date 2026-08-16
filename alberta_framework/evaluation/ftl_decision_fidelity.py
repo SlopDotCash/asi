@@ -30,6 +30,7 @@ completion of the Alberta Plan.
 
 from __future__ import annotations
 
+import math
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -42,6 +43,10 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 from alberta_framework.core.ftl_world_model import (
     SparseFTLWorldModel,
     SparseFTLWorldModelConfig,
@@ -66,6 +71,9 @@ CONDITION_NAMES = (
 DEVELOPMENT_SEEDS = tuple(range(30))
 EVIDENCE_SEEDS = tuple(range(30, 60))
 _INT32_MAX = 2**31 - 1
+_UINT32_MAX = 2**32 - 1
+_BOOTSTRAP_MAX_SEED_OFFSET = 103
+_FLOAT32_REWARD_TERM_LIMIT = math.sqrt(float(np.finfo(np.float32).max) / 2.0)
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -90,6 +98,29 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_uint32(name: str, value: object) -> int:
+    return _require_int32(name, value, minimum=0, maximum=_UINT32_MAX)
+
+
+def _require_derived_int32(name: str, value: int) -> int:
+    if value > _INT32_MAX:
+        raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
+    return value
+
+
+def _validate_bootstrap_capacity(config: DecisionFidelityConfig, sample_count: int) -> None:
+    """Reject the exact bootstrap working set before NumPy allocates it."""
+
+    draws = _require_derived_int32(
+        "bootstrap draw count", config.bootstrap_resamples * sample_count
+    )
+    # NumPy holds the int64 index matrix and indexed float64 samples together,
+    # then materializes one float64 mean per row.
+    _require_derived_int32(
+        "bootstrap working bytes", 16 * draws + 8 * config.bootstrap_resamples
+    )
 
 
 @dataclass(frozen=True)
@@ -145,9 +176,7 @@ class DecisionFidelityConfig:
         bootstrap_resamples = _require_int32(
             "bootstrap_resamples", self.bootstrap_resamples, minimum=1000
         )
-        bootstrap_seed = _require_int32(
-            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=2**32 - 1
-        )
+        bootstrap_seed = _require_uint32("bootstrap_seed", self.bootstrap_seed)
 
         object.__setattr__(self, "phase_steps", phase_steps)
         object.__setattr__(self, "horizon", horizon)
@@ -157,22 +186,85 @@ class DecisionFidelityConfig:
         object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
         object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
 
+        if type(self.menu_amplitudes) is not tuple:
+            raise ValueError("menu_amplitudes must be an exact tuple")
         if len(self.menu_amplitudes) < 3:
             raise ValueError("menu_amplitudes must contain at least three choices")
-        if len(set(self.menu_amplitudes)) != len(self.menu_amplitudes):
+        menu_values: list[float] = []
+        menu_ratios: list[tuple[int, int]] = []
+        for index, value in enumerate(self.menu_amplitudes):
+            stored, numerator, denominator = validated_float32_scalar_with_ratio(
+                f"menu_amplitudes[{index}]", value
+            )
+            menu_values.append(stored)
+            menu_ratios.append((numerator, denominator))
+        if len(set(menu_ratios)) != len(menu_ratios) or len(set(menu_values)) != len(menu_values):
             raise ValueError("menu_amplitudes must be unique")
-        if not all(np.isfinite(self.menu_amplitudes)):
-            raise ValueError("menu_amplitudes must be finite")
-        if self.ridge <= 0.0:
-            raise ValueError("ridge must be positive")
-        if self.prediction_clip <= 0.0:
-            raise ValueError("prediction_clip must be positive")
-        if self.state_bound <= 0.0:
-            raise ValueError("state_bound must be positive")
-        if self.action_cost < 0.0:
-            raise ValueError("action_cost must be non-negative")
-        if not 0.0 < self.confidence_level < 1.0:
-            raise ValueError("confidence_level must lie in (0, 1)")
+        menu_amplitudes = tuple(menu_values)
+        ridge = validated_float32_scalar("ridge", self.ridge, positive=True)
+        prediction_clip = validated_float32_scalar(
+            "prediction_clip", self.prediction_clip, positive=True
+        )
+        state_bound = validated_float32_scalar("state_bound", self.state_bound, positive=True)
+        action_cost = validated_float32_scalar("action_cost", self.action_cost, lower=0.0)
+        confidence_level = validated_float32_scalar(
+            "confidence_level",
+            self.confidence_level,
+            positive=True,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        object.__setattr__(self, "menu_amplitudes", menu_amplitudes)
+        object.__setattr__(self, "ridge", ridge)
+        object.__setattr__(self, "prediction_clip", prediction_clip)
+        object.__setattr__(self, "state_bound", state_bound)
+        object.__setattr__(self, "action_cost", action_cost)
+        object.__setattr__(self, "confidence_level", confidence_level)
+
+        menu_count = len(menu_amplitudes)
+        probe_count = _require_derived_int32("probe count", 2 * probes_per_domain)
+        _require_derived_int32("phase schedule length", 3 * phase_steps)
+        _require_derived_int32("phase array bytes", 12 * phase_steps)
+        _require_derived_int32("action menu scalars", menu_count * horizon)
+        rollout_scalars = _require_derived_int32(
+            "probe rollout work", probe_count * menu_count * horizon
+        )
+        _require_derived_int32(
+            "probe and rollout array bytes",
+            16 * rollout_scalars
+            + 8 * probe_count * menu_count
+            + 8 * menu_count * horizon
+            + 16 * probe_count,
+        )
+        sparse_config = SparseFTLWorldModelConfig(
+            observation_dim=1,
+            action_dim=1,
+            projection_dim=projection_dim,
+            bins=bins,
+            ridge=ridge,
+            statistics_decay=1.0,
+            prediction_clip=prediction_clip,
+        )
+        _require_derived_int32("SparseFTL feature dimension", sparse_config.feature_dim)
+        _require_derived_int32(
+            "SparseFTL persistent state bytes", SparseFTLWorldModel(sparse_config).state_nbytes
+        )
+        maximum_predicted_distance = 1.89 * state_bound + horizon * prediction_clip
+        if (
+            not math.isfinite(maximum_predicted_distance)
+            or maximum_predicted_distance > _FLOAT32_REWARD_TERM_LIMIT
+        ):
+            raise ValueError("state_bound and prediction_clip exceed the float32 reward domain")
+        maximum_amplitude = max(abs(value) for value in menu_amplitudes)
+        if action_cost > 0.0 and maximum_amplitude > _FLOAT32_REWARD_TERM_LIMIT / math.sqrt(
+            action_cost
+        ):
+            raise ValueError("menu_amplitudes and action_cost exceed the float32 reward domain")
+        if bootstrap_seed + _BOOTSTRAP_MAX_SEED_OFFSET > _UINT32_MAX:
+            raise ValueError(
+                "bootstrap_seed plus the frozen maximum offset must lie in [0, 2**32)"
+            )
+        _validate_bootstrap_capacity(self, len(EVIDENCE_SEEDS))
 
 
 @dataclass(frozen=True)
@@ -391,8 +483,7 @@ def precompute_decision_probes(
 ) -> DecisionProbeSet:
     """Precompute true outcomes without consulting a learned model."""
 
-    if not 0 <= seed < 2**31:
-        raise ValueError("seed must lie in [0, 2**31)")
+    seed = _require_int32("seed", seed, minimum=0)
     initial, goals, domains, action_sequences = _probe_inputs(config, seed)
     probe_count = initial.shape[0]
     menu_size = action_sequences.shape[0]
@@ -693,11 +784,13 @@ def _bootstrap_mean(
 ) -> BootstrapEstimate:
     if values.ndim != 1 or values.size == 0:
         raise ValueError("bootstrap values must be a non-empty vector")
+    _validate_bootstrap_capacity(config, int(values.size))
     generator = np.random.default_rng(config.bootstrap_seed + seed_offset)
     indices = generator.integers(
         0,
         values.size,
         size=(config.bootstrap_resamples, values.size),
+        dtype=np.int64,
     )
     resampled_means = values[indices].mean(axis=1)
     tail = (1.0 - config.confidence_level) / 2.0
@@ -832,13 +925,29 @@ def run_ftl_decision_fidelity_evaluation(
     """
 
     resolved = DecisionFidelityConfig() if config is None else config
-    seed_tuple = tuple(int(seed) for seed in seeds)
+    try:
+        raw_seeds = tuple(seeds)
+    except Exception as error:
+        raise ValueError("seeds must be a finite sequence of exact integers") from error
+    seed_tuple = tuple(
+        _require_int32(f"seeds[{index}]", seed, minimum=0)
+        for index, seed in enumerate(raw_seeds)
+    )
     if not seed_tuple:
         raise ValueError("seeds must be non-empty")
     if len(set(seed_tuple)) != len(seed_tuple):
         raise ValueError("seeds must be unique for paired evidence")
-    if not all(0 <= seed < 2**31 for seed in seed_tuple):
-        raise ValueError("seeds must lie in [0, 2**31)")
+    seed_count = len(seed_tuple)
+    probe_count = 2 * resolved.probes_per_domain
+    menu_count = len(resolved.menu_amplitudes)
+    _require_derived_int32(
+        "evaluation phase transitions", seed_count * 3 * resolved.phase_steps
+    )
+    _require_derived_int32(
+        "evaluation rollout work",
+        seed_count * probe_count * menu_count * resolved.horizon * len(CONDITION_NAMES),
+    )
+    _validate_bootstrap_capacity(resolved, seed_count)
 
     sparse_model = SparseFTLWorldModel(
         SparseFTLWorldModelConfig(
