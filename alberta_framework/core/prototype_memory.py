@@ -93,6 +93,22 @@ def _require_int(
     return number
 
 
+_UINT32_MAX: int = 4294967295
+
+
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
 @chex.dataclass(frozen=True)
 class PrototypeMemoryConfig:
     """Configuration for :class:`PrototypeMemoryLearner`.
@@ -197,6 +213,22 @@ def _validate_config(config: PrototypeMemoryConfig) -> None:
     object.__setattr__(config, "update_rate", update_rate)
     object.__setattr__(config, "novelty_threshold", novelty_threshold)
     object.__setattr__(config, "bandwidth", bandwidth)
+    if n_classes * slots_per_class > _INT32_MAX:
+        raise ValueError("PrototypeMemoryConfig dimensions must fit signed int32")
+    if n_classes * slots_per_class * feature_dim > _INT32_MAX:
+        raise ValueError("PrototypeMemoryConfig dimensions must fit signed int32")
+    total_means_scalars = n_classes * slots_per_class * feature_dim
+    total_state_scalars = total_means_scalars + 2 * n_classes * slots_per_class + 1
+    _require_float32_resource(
+        "PrototypeMemoryConfig state",
+        vector_scalars=total_means_scalars,
+        fixed_scalars=2 * n_classes * slots_per_class + 1,
+    )
+    persistent_bytes = 4 * total_state_scalars
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("PrototypeMemoryConfig state byte count must fit signed int32")
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("prototype memory allocation exceeds uint32 byte accounting")
 
 
 def _softmax(logits: Array) -> Array:
