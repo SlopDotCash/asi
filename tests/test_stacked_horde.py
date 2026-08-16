@@ -887,3 +887,54 @@ def test_nexting_spec_preflights_before_materializing_derived_demons() -> None:
             cumulant_indices=(0,),
             gammas=(0.9,),
         )
+
+
+def test_stacked_horde_deserializers_require_exact_schemas() -> None:
+    class DictSubclass(dict):
+        pass
+
+    config_payload = _simple_config().to_config()
+    with pytest.raises(ValueError, match="actual dict"):
+        StackedHordeConfig.from_config(DictSubclass(config_payload))
+    with pytest.raises(ValueError, match="fields"):
+        StackedHordeConfig.from_config({**config_payload, "extra": None})
+    with pytest.raises(ValueError, match="config type"):
+        StackedHordeConfig.from_config({**config_payload, "type": "wrong"})
+
+    horde_payload = StackedLinearHorde(_simple_config()).to_config()
+    with pytest.raises(ValueError, match="fields"):
+        StackedLinearHorde.from_config({**horde_payload, "extra": None})
+    with pytest.raises(ValueError, match="nested config"):
+        StackedLinearHorde.from_config({**horde_payload, "config": DictSubclass()})
+
+
+def test_stacked_horde_step_count_saturates_without_jit_wraparound() -> None:
+    horde = StackedLinearHorde(_simple_config(n_demons=1, feature_dim=2))
+    state = horde.init().replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
+    result = jax.jit(horde.update)(
+        state,
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+    )
+    assert int(result.state.step_count) == 2**31 - 1
+
+
+def test_stacked_horde_scan_rejects_derived_result_overflow_without_allocation() -> None:
+    horde = StackedLinearHorde(_simple_config(n_demons=2, feature_dim=3))
+    state = horde.init()
+    first_overflowing_steps = (2**31 - 1) // (4 * horde.config.n_demons) + 2
+    features = jax.ShapeDtypeStruct(
+        (first_overflowing_steps, horde.config.feature_dim),
+        jnp.float32,
+    )
+    sources = jax.ShapeDtypeStruct((first_overflowing_steps, 2), jnp.float32)
+    with pytest.raises(ValueError, match="scan result bytes"):
+        run_stacked_horde_scan(horde, state, features, sources)  # type: ignore[arg-type]
+
+
+def test_stacked_horde_public_state_shape_rejected_before_dot() -> None:
+    horde = StackedLinearHorde(_simple_config(n_demons=1, feature_dim=2))
+    state = horde.init().replace(weights=jnp.zeros((1, 3), dtype=jnp.float32))
+    with pytest.raises(ValueError, match="weights"):
+        horde.predict(state, jnp.ones(2, dtype=jnp.float32))
