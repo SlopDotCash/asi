@@ -52,7 +52,6 @@ Reference:
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -60,8 +59,11 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Int
+
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 UPGDMode = Literal["protecting", "non_protecting"]
 UPGDNormalization = Literal["global", "local"]
@@ -97,6 +99,30 @@ _RAW_GLOBAL_PROFILES = frozenset(
     }
 )
 _INT32_MAX = 2_147_483_647
+_UINT32_MAX = 4_294_967_295
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_float32_resource(
+    name: str, *, vector_scalars: int, fixed_scalars: int = 0
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
 
 
 def _static_zero_scale(scale: float, value: Array) -> Array:
@@ -148,40 +174,48 @@ class CanonicalUPGDConfig:
     epsilon: float = 1e-8
 
     def __post_init__(self) -> None:
-        for name in (
-            "step_size",
-            "utility_decay",
-            "noise_std",
-            "weight_decay",
-            "epsilon",
-        ):
-            if isinstance(getattr(self, name), bool):
-                raise ValueError(f"{name} must be numeric, not boolean")
-        if not math.isfinite(self.step_size) or self.step_size <= 0.0:
-            raise ValueError("step_size must be finite and positive")
-        if not math.isfinite(self.utility_decay) or not 0.0 <= self.utility_decay < 1.0:
-            raise ValueError("utility_decay must be finite and in [0, 1)")
-        if not math.isfinite(self.noise_std) or self.noise_std < 0.0:
-            raise ValueError("noise_std must be finite and non-negative")
-        if not math.isfinite(self.weight_decay) or self.weight_decay < 0.0:
-            raise ValueError("weight_decay must be finite and non-negative")
+        step_size = validated_float32_scalar(
+            "step_size", self.step_size, lower=0.0, positive=True
+        )
+        # Host domain for decay is [0,1) exact; narrowed 1.0 is tolerated for
+        # continuity with existing lifetime-counter tests (e.g. 0.999999999
+        # rounds to 1.0 in float32 but remains <1.0 as a host ratio).
+        utility_decay = validated_float32_scalar(
+            "utility_decay", self.utility_decay, lower=0.0
+        )
+        if not 0.0 <= float(utility_decay) < 1.0:
+            raise ValueError("utility_decay must be in [0.0, 1.0)")
+        noise_std = validated_float32_scalar(
+            "noise_std", self.noise_std, lower=0.0
+        )
+        weight_decay = validated_float32_scalar(
+            "weight_decay", self.weight_decay, lower=0.0
+        )
+        epsilon = validated_float32_scalar(
+            "epsilon", self.epsilon, lower=0.0, positive=True
+        )
+        object.__setattr__(self, "step_size", step_size)
+        object.__setattr__(self, "utility_decay", utility_decay)
+        object.__setattr__(self, "noise_std", noise_std)
+        object.__setattr__(self, "weight_decay", weight_decay)
+        object.__setattr__(self, "epsilon", epsilon)
         if self.mode not in {"protecting", "non_protecting"}:
-            raise ValueError("mode must be 'protecting' or 'non_protecting'")
+            raise ValueError("mode must be protecting or non_protecting")
         if self.profile not in _SOURCE_PROFILES | {"safe_extended"}:
             raise ValueError(
                 "profile must name a paper, official implementation, or safe_extended profile"
             )
         if self.profile == "safe_extended":
             if self.normalization not in {"global", "local"}:
-                raise ValueError("safe_extended requires normalization='global' or 'local'")
+                raise ValueError("safe_extended requires normalization=global or local")
         else:
             fixed_normalization = "global" if self.profile in _GLOBAL_PROFILES else "local"
             if self.normalization not in {None, fixed_normalization}:
-                raise ValueError(f"{self.profile} fixes normalization={fixed_normalization!r}")
+                raise ValueError(
+                    f"{self.profile} fixes normalization to {fixed_normalization}"
+                )
         if self.profile == "official_readme_global" and self.mode != "protecting":
             raise ValueError("official_readme_global only defines protecting UPGD")
-        if not math.isfinite(self.epsilon) or self.epsilon <= 0.0:
-            raise ValueError("epsilon must be finite and positive")
 
     @property
     def is_source_profile(self) -> bool:
@@ -248,7 +282,7 @@ class CanonicalUPGDConfig:
             raise ValueError("config fields do not match the CanonicalUPGD schema")
         type_name = payload.pop("type")
         if type_name != "CanonicalUPGD":
-            raise ValueError(f"expected CanonicalUPGD config, got {type_name!r}")
+            raise ValueError("expected CanonicalUPGD config, got invalid value")
         return cls(**payload)  # type: ignore[arg-type]
 
 
@@ -752,50 +786,32 @@ class AlbertaAdaUPGDConfig:
             raise ValueError(
                 "profile must be the explicit Alberta-derived AdaUPGD profile"
             )
-        for name in (
-            "step_size",
-            "utility_decay",
-            "second_moment_decay",
-            "noise_std",
-            "weight_decay",
-            "epsilon",
-        ):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(f"{name} must be a real number, not boolean")
-            if not math.isfinite(float(value)):
-                raise ValueError(f"{name} must be finite")
-        if self.step_size <= 0.0:
-            raise ValueError("step_size must be positive")
-        if not 0.0 <= self.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= self.second_moment_decay < 1.0:
-            raise ValueError("second_moment_decay must be in [0, 1)")
-        if self.noise_std < 0.0:
-            raise ValueError("noise_std must be non-negative")
-        if self.weight_decay < 0.0:
-            raise ValueError("weight_decay must be non-negative")
+        step_size = validated_float32_scalar(
+            "step_size", self.step_size, lower=0.0, positive=True
+        )
+        utility_decay = validated_float32_scalar(
+            "utility_decay", self.utility_decay, lower=0.0
+        )
+        if not 0.0 <= float(utility_decay) < 1.0:
+            raise ValueError("utility_decay must be in [0.0, 1.0)")
+        second_moment_decay = validated_float32_scalar(
+            "second_moment_decay", self.second_moment_decay, lower=0.0
+        )
+        if not 0.0 <= float(second_moment_decay) < 1.0:
+            raise ValueError("second_moment_decay must be in [0.0, 1.0)")
+        noise_std = validated_float32_scalar("noise_std", self.noise_std, lower=0.0)
+        weight_decay = validated_float32_scalar("weight_decay", self.weight_decay, lower=0.0)
+        epsilon = validated_float32_scalar("epsilon", self.epsilon, lower=0.0, positive=True)
+        object.__setattr__(self, "step_size", step_size)
+        object.__setattr__(self, "utility_decay", utility_decay)
+        object.__setattr__(self, "second_moment_decay", second_moment_decay)
+        object.__setattr__(self, "noise_std", noise_std)
+        object.__setattr__(self, "weight_decay", weight_decay)
+        object.__setattr__(self, "epsilon", epsilon)
         if self.mode not in {"protecting", "non_protecting"}:
-            raise ValueError("mode must be 'protecting' or 'non_protecting'")
+            raise ValueError("mode must be protecting or non_protecting")
         if self.normalization not in {"global", "local"}:
-            raise ValueError("normalization must be 'global' or 'local'")
-        if self.epsilon <= 0.0:
-            raise ValueError("epsilon must be positive")
-        # Config constants participate in float32 arithmetic.  Reject silent
-        # overflow while preserving ordinary Python numeric spellings.
-        for name in (
-            "step_size",
-            "utility_decay",
-            "second_moment_decay",
-            "noise_std",
-            "weight_decay",
-            "epsilon",
-        ):
-            narrowed = jnp.asarray(getattr(self, name), dtype=jnp.float32)
-            if not bool(jnp.isfinite(narrowed)):
-                raise ValueError(f"{name} must be finite in float32")
-            if float(getattr(self, name)) != 0.0 and float(narrowed) == 0.0:
-                raise ValueError(f"{name} must not underflow in float32")
+            raise ValueError("normalization must be global or local")
 
     @property
     def official_reference_parity(self) -> bool:
@@ -851,7 +867,7 @@ class AlbertaAdaUPGDConfig:
             raise ValueError("config fields do not match the AlbertaAdaUPGD schema")
         type_name = payload.pop("type")
         if type_name != "AlbertaAdaUPGD":
-            raise ValueError(f"expected AlbertaAdaUPGD config, got {type_name!r}")
+            raise ValueError("expected AlbertaAdaUPGD config, got invalid value")
         return cls(**payload)  # type: ignore[arg-type]
 
 
@@ -1532,39 +1548,30 @@ class OfficialAdaUPGDConfig:
             raise ValueError("source_commit must match the pinned AdaptiveUPGD commit")
         if self.source_path != OFFICIAL_ADAUPGD_PATH:
             raise ValueError("source_path must match the pinned AdaptiveUPGD path")
-        for name in (
-            "step_size",
-            "weight_decay",
-            "utility_decay",
-            "noise_std",
-            "beta1",
-            "beta2",
-            "epsilon",
-        ):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise TypeError(f"{name} must be a real number, not boolean")
-            if not math.isfinite(float(value)):
-                raise ValueError(f"{name} must be finite")
-            narrowed = jnp.asarray(value, dtype=jnp.float32)
-            if not bool(jnp.isfinite(narrowed)):
-                raise ValueError(f"{name} must be finite in float32")
-            if float(value) != 0.0 and float(narrowed) == 0.0:
-                raise ValueError(f"{name} must not underflow in float32")
-        if self.step_size <= 0.0:
-            raise ValueError("step_size must be positive")
-        if self.weight_decay < 0.0:
-            raise ValueError("weight_decay must be non-negative")
-        if not 0.0 <= self.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if self.noise_std < 0.0:
-            raise ValueError("noise_std must be non-negative")
-        if not 0.0 <= self.beta1 < 1.0:
-            raise ValueError("beta1 must be in [0, 1)")
-        if not 0.0 <= self.beta2 < 1.0:
-            raise ValueError("beta2 must be in [0, 1)")
-        if self.epsilon <= 0.0:
-            raise ValueError("epsilon must be positive")
+        step_size = validated_float32_scalar(
+            "step_size", self.step_size, lower=0.0, positive=True
+        )
+        weight_decay = validated_float32_scalar("weight_decay", self.weight_decay, lower=0.0)
+        utility_decay = validated_float32_scalar(
+            "utility_decay", self.utility_decay, lower=0.0
+        )
+        if not 0.0 <= float(utility_decay) < 1.0:
+            raise ValueError("utility_decay must be in [0.0, 1.0)")
+        noise_std = validated_float32_scalar("noise_std", self.noise_std, lower=0.0)
+        beta1 = validated_float32_scalar("beta1", self.beta1, lower=0.0)
+        if not 0.0 <= float(beta1) < 1.0:
+            raise ValueError("beta1 must be in [0.0, 1.0)")
+        beta2 = validated_float32_scalar("beta2", self.beta2, lower=0.0)
+        if not 0.0 <= float(beta2) < 1.0:
+            raise ValueError("beta2 must be in [0.0, 1.0)")
+        epsilon = validated_float32_scalar("epsilon", self.epsilon, lower=0.0, positive=True)
+        object.__setattr__(self, "step_size", step_size)
+        object.__setattr__(self, "weight_decay", weight_decay)
+        object.__setattr__(self, "utility_decay", utility_decay)
+        object.__setattr__(self, "noise_std", noise_std)
+        object.__setattr__(self, "beta1", beta1)
+        object.__setattr__(self, "beta2", beta2)
+        object.__setattr__(self, "epsilon", epsilon)
 
     @property
     def official_reference_parity(self) -> bool:
@@ -1619,7 +1626,7 @@ class OfficialAdaUPGDConfig:
             raise ValueError("config fields do not match the OfficialAdaUPGD schema")
         type_name = payload.pop("type")
         if type_name != "OfficialAdaUPGD":
-            raise ValueError(f"expected OfficialAdaUPGD config, got {type_name!r}")
+            raise ValueError("expected OfficialAdaUPGD config, got invalid value")
         return cls(**payload)  # type: ignore[arg-type]
 
 
