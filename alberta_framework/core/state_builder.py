@@ -123,6 +123,13 @@ def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
     )
 
 
+def _require_derived_int32(name: str, value: int, *, minimum: int = 0) -> int:
+    """Validate a derived JAX shape/count without constraining host-only budgets."""
+    if not minimum <= value <= _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}]")
+    return value
+
+
 _FLOAT32_MAX = 3.4028234663852886e38
 
 
@@ -955,6 +962,18 @@ class FixedTraceStateBuilderConfig:
             and not self.outcome_decay_rates
         ):
             raise ValueError("configuration must emit at least one feature")
+        trace_scalars = (
+            self.observation_dim * len(self.observation_decay_rates)
+            + self.n_actions * len(self.action_decay_rates)
+            + 2 * len(self.outcome_decay_rates)
+        )
+        feature_dim = trace_scalars + (
+            self.observation_dim if self.include_raw_observation else 0
+        )
+        state_scalars = trace_scalars + 4
+        _require_derived_int32("feature_dim", feature_dim, minimum=1)
+        _require_derived_int32("state_scalars", state_scalars)
+        _require_derived_int32("state_bytes", 4 * state_scalars)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -1306,6 +1325,22 @@ class OnlineGatedStateBuilderConfig:
                 "initialization_scale", self.initialization_scale, positive=True
             ),
         )
+        event_dim = self.observation_dim + self.n_actions + 2
+        feature_dim = self.hidden_dim + (
+            self.observation_dim if self.include_raw_observation else 0
+        )
+        parameter_count = 2 * self.hidden_dim * (event_dim + 1)
+        state_scalars = (
+            parameter_count
+            + self.hidden_dim
+            + self.hidden_dim * parameter_count
+            + 3
+        )
+        _require_derived_int32("event_dim", event_dim, minimum=1)
+        _require_derived_int32("feature_dim", feature_dim, minimum=1)
+        _require_derived_int32("parameter_count", parameter_count, minimum=1)
+        _require_derived_int32("state_scalars", state_scalars, minimum=1)
+        _require_derived_int32("state_bytes", 4 * state_scalars, minimum=1)
 
     def event_dim(self) -> int:
         """Return observation + one-hot action + reward + discount width."""

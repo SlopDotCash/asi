@@ -1345,3 +1345,86 @@ def test_online_builder_positive_scalars_are_valid_at_float32_sink(field, value)
 def test_online_builder_gate_bias_is_finite_at_float32_sink(value) -> None:
     with pytest.raises(ValueError, match="initial_gate_bias"):
         OnlineGatedStateBuilderConfig(observation_dim=4, initial_gate_bias=value)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        (
+            {
+                "observation_dim": 2**31 - 1,
+                "n_actions": 0,
+                "observation_decay_rates": (0.5,),
+                "action_decay_rates": (),
+                "outcome_decay_rates": (),
+            },
+            "feature_dim",
+        ),
+        (
+            {
+                "observation_dim": 2**31 - 3,
+                "n_actions": 0,
+                "observation_decay_rates": (0.5,),
+                "action_decay_rates": (),
+                "outcome_decay_rates": (),
+                "include_raw_observation": False,
+            },
+            "state_scalars",
+        ),
+        (
+            {
+                "observation_dim": 600_000_000,
+                "n_actions": 0,
+                "observation_decay_rates": (0.5,),
+                "action_decay_rates": (),
+                "outcome_decay_rates": (),
+                "include_raw_observation": False,
+            },
+            "state_bytes",
+        ),
+    ],
+)
+def test_fixed_trace_rejects_derived_int32_overflow_without_allocation(
+    kwargs: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        FixedTraceStateBuilderConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"observation_dim": 2**31 - 1}, "event_dim"),
+        (
+            {
+                "observation_dim": 2**31 - 3,
+                "hidden_dim": 4,
+                "include_raw_observation": True,
+            },
+            "feature_dim",
+        ),
+        ({"observation_dim": 1, "hidden_dim": 300_000_000}, "parameter_count"),
+        ({"observation_dim": 1, "hidden_dim": 20_000}, "state_scalars"),
+        ({"observation_dim": 1, "hidden_dim": 10_000}, "state_bytes"),
+    ],
+)
+def test_online_builder_rejects_derived_int32_overflow_without_allocation(
+    kwargs: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        OnlineGatedStateBuilderConfig(**kwargs)  # type: ignore[arg-type]
+
+
+def test_derived_preflights_do_not_bound_host_only_budget_values() -> None:
+    budget = StateBuilderBudget(
+        output_scalars=2**31,
+        trainable_scalars=2**32,
+        state_scalars=2**33,
+        state_bytes=2**35,
+    )
+    assert budget.to_config() == {
+        "output_scalars": 2**31,
+        "trainable_scalars": 2**32,
+        "state_scalars": 2**33,
+        "state_bytes": 2**35,
+    }
