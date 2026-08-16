@@ -115,9 +115,10 @@ class WorkingMemoryConfig:
         ):
             if key in payload:
                 value = payload[key]
-                if type(value) is not list:
-                    raise ValueError(f"{key} must be a list")
-                payload[key] = tuple(value)
+                if type(value) is list:
+                    payload[key] = tuple(value)
+                elif type(value) is not tuple:
+                    raise ValueError(f"{key} must be an actual list or tuple")
         return cls(**payload)
 
 

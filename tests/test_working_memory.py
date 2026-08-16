@@ -41,6 +41,78 @@ def test_working_memory_config_roundtrip_and_shapes() -> None:
     chex.assert_shape(state.last_gate, (3,))
 
 
+def test_working_memory_from_config_preserves_canonical_tuple_compatibility() -> None:
+    config = WorkingMemoryConfig(
+        observation_dim=2,
+        observation_decay_rates=(0.5,),
+        action_decay_rates=(),
+        reward_decay_rates=(0.25,),
+    )
+    payload = config.to_config()
+    for key in (
+        "observation_decay_rates",
+        "action_decay_rates",
+        "reward_decay_rates",
+    ):
+        payload[key] = tuple(payload[key])
+
+    assert WorkingMemoryConfig.from_config(payload) == config
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["observation_decay_rates", "action_decay_rates", "reward_decay_rates"],
+)
+@pytest.mark.parametrize("value", ["0.5", 0.5, range(1)])
+def test_working_memory_from_config_rejects_arbitrary_iterables(
+    key: str, value: object
+) -> None:
+    payload = WorkingMemoryConfig(observation_dim=2).to_config()
+    payload[key] = value
+    with pytest.raises(ValueError, match=key):
+        WorkingMemoryConfig.from_config(payload)
+
+
+def test_working_memory_from_config_rejects_container_subclasses_and_spoofs() -> None:
+    class ListSubclass(list[float]):
+        pass
+
+    class TupleSubclass(tuple[float, ...]):
+        pass
+
+    class ListSpoof:
+        @property
+        def __class__(self) -> type[list[object]]:  # type: ignore[override]
+            return list
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("iteration must not run")
+
+        def __repr__(self) -> str:
+            raise RuntimeError("repr must not run")
+
+    for value in (ListSubclass([0.5]), TupleSubclass((0.5,)), ListSpoof()):
+        payload = WorkingMemoryConfig(observation_dim=2).to_config()
+        payload["observation_decay_rates"] = value
+        with pytest.raises(ValueError, match="observation_decay_rates"):
+            WorkingMemoryConfig.from_config(payload)
+
+
+@pytest.mark.parametrize("value", [True, float("nan"), float("inf")])
+def test_working_memory_from_config_delegates_list_element_validation(
+    value: object,
+) -> None:
+    payload = WorkingMemoryConfig(observation_dim=2).to_config()
+    payload["observation_decay_rates"] = [value]
+    with pytest.raises(ValueError, match="observation_decay_rates"):
+        WorkingMemoryConfig.from_config(payload)
+
+
+def test_working_memory_from_config_keeps_missing_decay_defaults() -> None:
+    restored = WorkingMemoryConfig.from_config({"observation_dim": 2})
+    assert restored == WorkingMemoryConfig(observation_dim=2)
+
+
 def test_working_memory_trace_decay_and_feature_causality() -> None:
     config = WorkingMemoryConfig(
         observation_dim=1,
