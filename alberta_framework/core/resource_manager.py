@@ -29,13 +29,15 @@ from __future__ import annotations
 
 import functools
 import math
+import operator
 import struct
-from typing import Any
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
@@ -45,6 +47,32 @@ from alberta_framework.core.update_safety import (
     safe_discrete_action,
     select_transaction,
 )
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _skip_zero_scale(scale: float, value: Array) -> Array:
@@ -93,11 +121,7 @@ def _weighted_cost_terms(costs: Array, cost_weight: float) -> tuple[Array, Array
     weight = jnp.asarray(cost_weight, dtype=jnp.float32)
     weighted = weight * costs
     used = weight != 0.0
-    valid = (~used) | (
-        jnp.isfinite(costs)
-        & (costs >= 0.0)
-        & jnp.isfinite(weighted)
-    )
+    valid = (~used) | (jnp.isfinite(costs) & (costs >= 0.0) & jnp.isfinite(weighted))
     terms = jnp.where(used & valid, weighted, jnp.zeros_like(weighted))
     return terms, valid
 
@@ -157,10 +181,7 @@ def finite_candidate_hedge_regret_bound(
         return 0.0
     if learning_rate == 0.0:
         return math.inf
-    return (
-        math.log(n_actions) / learning_rate
-        + learning_rate * horizon * loss_bound**2 / 8.0
-    )
+    return math.log(n_actions) / learning_rate + learning_rate * horizon * loss_bound**2 / 8.0
 
 
 @chex.dataclass(frozen=True)
@@ -249,10 +270,8 @@ class LearnedResourceManager:
         Raises:
             ValueError: If any hyperparameter is outside its valid range.
         """
-        if n_actions < 1:
-            raise ValueError("n_actions must be positive")
-        if n_contexts < 1:
-            raise ValueError("n_contexts must be positive")
+        n_actions = _require_int32("n_actions", n_actions, minimum=1)
+        n_contexts = _require_int32("n_contexts", n_contexts, minimum=1)
         if learning_rate < 0.0:
             raise ValueError("learning_rate must be non-negative")
         if not 0.0 <= discount <= 1.0:
@@ -394,9 +413,7 @@ class LearnedResourceManager:
         adjusted = jnp.where(valid_actions, safe_losses + cost_terms, 0.0)
 
         weights = self.weights(state, context)
-        finite_weight_sum = jnp.maximum(
-            jnp.sum(jnp.where(valid_actions, weights, 0.0)), 1e-12
-        )
+        finite_weight_sum = jnp.maximum(jnp.sum(jnp.where(valid_actions, weights, 0.0)), 1e-12)
         masked_weights = jnp.where(valid_actions, weights / finite_weight_sum, 0.0)
         baseline = jnp.sum(masked_weights * adjusted)
         advantages = jnp.where(valid_actions, baseline - adjusted, 0.0)
@@ -408,8 +425,7 @@ class LearnedResourceManager:
 
         old_context_logits = state.log_weights[context]
         new_context_logits = (
-            _skip_zero_scale(self._discount, old_context_logits)
-            + self._learning_rate * advantages
+            _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         # Remove an arbitrary additive constant for numerical stability.
         new_context_logits = new_context_logits - jnp.mean(new_context_logits)
@@ -418,8 +434,7 @@ class LearnedResourceManager:
         old_ema = state.loss_ema[context]
         new_ema = jnp.where(
             valid_actions,
-            _skip_zero_scale(self._loss_decay, old_ema)
-            + (1.0 - self._loss_decay) * adjusted,
+            _skip_zero_scale(self._loss_decay, old_ema) + (1.0 - self._loss_decay) * adjusted,
             old_ema,
         )
         new_loss_ema = state.loss_ema.at[context].set(new_ema)
@@ -577,8 +592,11 @@ class GeneratorMetaResourceManager:
         }
         if lengths != {n_policies}:
             raise ValueError("all generator policy tuples must have the same length")
-        if n_contexts < 1:
-            raise ValueError("n_contexts must be positive")
+        n_contexts = _require_int32("n_contexts", n_contexts, minimum=1)
+        op_ids = tuple(_require_int32("op_ids element", op_id, minimum=0) for op_id in op_ids)
+        parent_modes = tuple(
+            _require_int32("parent_modes element", mode, minimum=0) for mode in parent_modes
+        )
         if learning_rate < 0.0:
             raise ValueError("learning_rate must be non-negative")
         if not 0.0 <= discount <= 1.0:
@@ -646,12 +664,8 @@ class GeneratorMetaResourceManager:
             "op_ids": list(self._op_ids),
             "parent_modes": list(self._parent_modes),
             "replacement_multipliers": list(self._replacement_multipliers),
-            "promotion_margin_multipliers": list(
-                self._promotion_margin_multipliers
-            ),
-            "candidate_min_age_multipliers": list(
-                self._candidate_min_age_multipliers
-            ),
+            "promotion_margin_multipliers": list(self._promotion_margin_multipliers),
+            "candidate_min_age_multipliers": list(self._candidate_min_age_multipliers),
             "imprint_scales": list(self._imprint_scales),
             "n_contexts": self._n_contexts,
             "learning_rate": self._learning_rate,
@@ -665,9 +679,7 @@ class GeneratorMetaResourceManager:
         }
 
     @classmethod
-    def from_config(
-        cls, config: dict[str, Any]
-    ) -> GeneratorMetaResourceManager:
+    def from_config(cls, config: dict[str, Any]) -> GeneratorMetaResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
         config = dict(config)
         config.pop("type", None)
@@ -677,12 +689,8 @@ class GeneratorMetaResourceManager:
             op_ids=tuple(config.pop("op_ids")),
             parent_modes=tuple(config.pop("parent_modes")),
             replacement_multipliers=tuple(config.pop("replacement_multipliers")),
-            promotion_margin_multipliers=tuple(
-                config.pop("promotion_margin_multipliers")
-            ),
-            candidate_min_age_multipliers=tuple(
-                config.pop("candidate_min_age_multipliers")
-            ),
+            promotion_margin_multipliers=tuple(config.pop("promotion_margin_multipliers")),
+            candidate_min_age_multipliers=tuple(config.pop("candidate_min_age_multipliers")),
             imprint_scales=tuple(config.pop("imprint_scales")),
             initial_preferences=(
                 None if initial_preferences is None else tuple(initial_preferences)
@@ -740,9 +748,7 @@ class GeneratorMetaResourceManager:
         )
         weights = self.weights(state, context)
         selection_valid = (
-            context_valid
-            & floating_tree_is_finite(state)
-            & jnp.all(jnp.isfinite(weights))
+            context_valid & floating_tree_is_finite(state) & jnp.all(jnp.isfinite(weights))
         )
         action = jr.categorical(key, jnp.log(weights + 1e-8)).astype(jnp.int32)
         op_ids = jnp.asarray(self._op_ids, dtype=jnp.int32)
@@ -848,9 +854,7 @@ class GeneratorMetaResourceManager:
                 & jnp.all(raw_probability > 0.0)
                 & jnp.all(raw_probability <= 1.0)
             )
-            probability = jnp.maximum(
-                jnp.where(probability_valid, raw_probability, 1.0), 1e-6
-            )
+            probability = jnp.maximum(jnp.where(probability_valid, raw_probability, 1.0), 1e-6)
             selection_input_valid = action_valid & probability_valid
             selected_finite = finite[action] & selection_input_valid
             reward_hat = jnp.where(
@@ -871,8 +875,7 @@ class GeneratorMetaResourceManager:
 
         old_context_logits = state.log_weights[context]
         new_context_logits = (
-            _skip_zero_scale(self._discount, old_context_logits)
-            + self._learning_rate * advantages
+            _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         new_context_logits = new_context_logits - jnp.mean(new_context_logits)
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
@@ -880,8 +883,7 @@ class GeneratorMetaResourceManager:
         old_ema = state.reward_ema[context]
         new_ema = jnp.where(
             finite,
-            _skip_zero_scale(self._reward_decay, old_ema)
-            + (1.0 - self._reward_decay) * adjusted,
+            _skip_zero_scale(self._reward_decay, old_ema) + (1.0 - self._reward_decay) * adjusted,
             old_ema,
         )
         new_reward_ema = state.reward_ema.at[context].set(new_ema)
