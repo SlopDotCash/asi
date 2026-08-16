@@ -919,12 +919,17 @@ class AverageRewardHordeLearner:
         next_observation: Array,
     ) -> AverageRewardHordeUpdateResult:
         """Apply one shared-trunk differential Horde update."""
+        cumulants_arr = jnp.asarray(cumulants)
+        if cumulants_arr.shape != (self._n_demons,):
+            raise ValueError(
+                f"cumulants must have shape ({self._n_demons},) (got {cumulants_arr.shape})"
+            )
         next_predictions = self._learner.predict(state.learner_state, next_observation)
         # NaN remains the inactive-head sentinel. Other non-finite cumulants
         # are rejected per head and reported separately from inactivity.
-        requested = ~jnp.isnan(cumulants)
-        raw_targets = cumulants - state.average_rewards + next_predictions
-        active = requested & jnp.isfinite(cumulants) & jnp.isfinite(raw_targets)
+        requested = ~jnp.isnan(cumulants_arr)
+        raw_targets = cumulants_arr - state.average_rewards + next_predictions
+        active = requested & jnp.isfinite(cumulants_arr) & jnp.isfinite(raw_targets)
         targets = jnp.where(active, raw_targets, jnp.nan)
         result = self._learner.update(state.learner_state, observation, targets)
         td_errors = result.errors
@@ -1421,6 +1426,18 @@ def run_average_reward_horde_from_arrays(
     next_observations: Float[Array, "num_steps feature_dim"],
 ) -> AverageRewardHordeLearningResult:
     """Run a shared-trunk average-reward Horde over transition arrays."""
+    _obs = jnp.asarray(observations)
+    _cum = jnp.asarray(cumulants)
+    _next = jnp.asarray(next_observations)
+    if _cum.ndim != 2 or _cum.shape[1] != learner._n_demons:
+        raise ValueError(
+            f"cumulants must have shape (num_steps, {learner._n_demons}) (got {_cum.shape})"
+        )
+    if _cum.shape[0] != _obs.shape[0] or _cum.shape[0] != _next.shape[0]:
+        raise ValueError(
+            f"cumulants leading dim {_cum.shape[0]} must match observations "
+            f"({_obs.shape[0]}) and next_observations ({_next.shape[0]})"
+        )
     start = time.time()
 
     def _scan_fn(
@@ -1449,7 +1466,7 @@ def run_average_reward_horde_from_arrays(
     ) = jax.lax.scan(
         _scan_fn,
         state,
-        (observations, cumulants, next_observations),
+        (_obs, _cum, _next),
     )
     elapsed = time.time() - start
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
