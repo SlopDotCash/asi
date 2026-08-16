@@ -1028,7 +1028,8 @@ class NonlinearSharedGTDHordeLearner:
         inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(
             jnp.isfinite(next_observation)
         )
-        head_updates_applied = active_mask & inputs_valid
+        source_state_finite = _floating_tree_is_finite(state)
+        effective_mask = active_mask & inputs_valid & source_state_finite
         safe_td_errors = jnp.where(active_mask, td_errors, 0.0)
         clipped_rhos = jnp.minimum(
             jnp.maximum(jnp.asarray(rhos, dtype=jnp.float32), 0.0),
@@ -1073,7 +1074,7 @@ class NonlinearSharedGTDHordeLearner:
             # importance sampling, Sutton & Barto 2nd ed., Section 11.7;
             # GQ(0) with e = rho grad, Maei & Sutton 2010).  Inactive demons
             # (NaN cumulant) contribute nothing this step.
-            masked_rho = jnp.where(head_updates_applied[i], clipped_rhos[i], 0.0)
+            masked_rho = jnp.where(effective_mask[i], clipped_rhos[i], 0.0)
             terminated_i = discounts[i] == 0.0
             rho_dot = jnp.where(
                 terminated_i,
@@ -1115,7 +1116,7 @@ class NonlinearSharedGTDHordeLearner:
                 primary_alpha * (rho_delta * grad_head_b - correction_head_b)
             )
 
-            masked_beta = jnp.where(head_updates_applied[i], secondary_beta, 0.0)
+            masked_beta = jnp.where(effective_mask[i], secondary_beta, 0.0)
             sec_trunk_w = state.secondary_trunk_w[i] + masked_beta * (
                 rho_delta * grad_trunk_w - secondary_dot * grad_trunk_w
             )
@@ -1160,7 +1161,14 @@ class NonlinearSharedGTDHordeLearner:
             secondary_head_b=jnp.stack(new_secondary_head_b),
             step_count=state.step_count + 1,
         )
-        update_applied = inputs_valid & (jnp.any(active_mask) | jnp.all(~requested))
+        candidate_state_finite = _floating_tree_is_finite(proposed_state)
+        update_applied = (
+            inputs_valid
+            & source_state_finite
+            & candidate_state_finite
+            & (jnp.any(active_mask) | jnp.all(~requested))
+        )
+        head_updates_applied = effective_mask & update_applied
         new_state = jax.lax.cond(
             update_applied,
             lambda: proposed_state,
