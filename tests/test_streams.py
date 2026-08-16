@@ -54,20 +54,23 @@ class TestRandomWalkStream:
             with pytest.raises(ValueError, match=name):
                 RandomWalkStream(feature_dim=4, **{name: value})
 
-    def test_rejects_class_spoofed_float_params(self):
-        """A __class__-spoofed non-float must not bypass the Real check."""
-
-        class _SpoofedFloat:
+    def test_rejects_spoofed_hostile_and_exact_negative_float_params(self):
+        class ClassSpoof:
             @property
-            def __class__(self) -> type:  # type: ignore[override]
+            def __class__(self):
                 return float
 
-            def __float__(self) -> float:
+            def __float__(self):
                 return 0.1
 
+        class HostileFloat(float):
+            def as_integer_ratio(self):
+                raise RuntimeError("untrusted ratio hook executed")
+
         for name in ("drift_rate", "noise_std", "feature_std"):
-            with pytest.raises(ValueError, match=name):
-                RandomWalkStream(feature_dim=4, **{name: _SpoofedFloat()})
+            for value in (ClassSpoof(), HostileFloat(0.1), Fraction(-1, 10**400)):
+                with pytest.raises(ValueError, match=name):
+                    RandomWalkStream(feature_dim=4, **{name: value})
 
     def test_step_produces_valid_timestep(self, rng_key):
         """Step should produce valid observation and target."""
