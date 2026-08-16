@@ -52,6 +52,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Required `PartialObservationWrapper`'s RANDOM-mode `mask_prob` to be a
+  concrete, non-bool real number in `[0, 1]` before use. The prior check
+  compared the raw value directly (`0.0 <= mask_prob <= 1.0`) with no type
+  gate at all, so any object supporting `__le__`/`__ge__` — including a
+  `__class__`-spoofed non-real whose comparison hooks raise — reached that
+  comparison and could leak an uncaught exception instead of the documented
+  `ValueError`, or silently pass through as a non-canonical value.
 - Required persisted micro-stream scalar fields to be concrete real values and
   canonicalized them to built-in floats, preventing numeric strings or custom
   conversion objects from crossing the strict development-artifact boundary.

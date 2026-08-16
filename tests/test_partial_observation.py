@@ -74,6 +74,55 @@ class TestRandom:
                 inner, mode=MaskMode.RANDOM, mask_prob=1.5
             )
 
+    def test_random_rejects_bool_mask_prob(self) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        with pytest.raises(ValueError, match="mask_prob"):
+            PartialObservationWrapper(inner, mode=MaskMode.RANDOM, mask_prob=True)
+
+    def test_random_rejects_non_real_mask_prob(self) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        with pytest.raises(ValueError, match="mask_prob"):
+            PartialObservationWrapper(
+                inner,
+                mode=MaskMode.RANDOM,
+                mask_prob="0.5",  # type: ignore[arg-type]
+            )
+
+    def test_random_rejects_nan_mask_prob(self) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        with pytest.raises(ValueError, match="mask_prob"):
+            PartialObservationWrapper(
+                inner, mode=MaskMode.RANDOM, mask_prob=float("nan")
+            )
+
+    def test_random_rejects_class_spoofed_non_real_mask_prob(self) -> None:
+        """A ``__class__``-spoofed object must not bypass validation.
+
+        ``isinstance(value, Real)`` consults the overridable ``__class__``
+        attribute, so an object that fakes ``__class__ == float`` would pass
+        an ``isinstance``-based gate. The gate must instead check
+        ``type(value)`` directly. A spoof whose comparison dunder hooks raise
+        must still surface a clean ``ValueError``, not the raw exception.
+        """
+
+        class Spoof:
+            @property
+            def __class__(self) -> type:  # type: ignore[override]
+                return float
+
+            def __le__(self, other: object) -> bool:
+                raise RuntimeError("untrusted __le__ hook executed")
+
+            def __ge__(self, other: object) -> bool:
+                raise RuntimeError("untrusted __ge__ hook executed")
+
+            def __float__(self) -> float:
+                raise RuntimeError("untrusted __float__ hook executed")
+
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        with pytest.raises(ValueError, match="mask_prob"):
+            PartialObservationWrapper(inner, mode=MaskMode.RANDOM, mask_prob=Spoof())
+
 
 class TestPeriodic:
     def test_periodic_cycles(self) -> None:

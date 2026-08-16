@@ -21,7 +21,8 @@ just receives less information about the underlying state.
 from __future__ import annotations
 
 import enum
-from typing import TypeVar
+from numbers import Real
+from typing import TypeVar, cast
 
 import chex
 import jax.numpy as jnp
@@ -46,6 +47,28 @@ class MaskMode(enum.Enum):
     FIXED = "fixed"
     RANDOM = "random"
     PERIODIC = "periodic"
+
+
+def _require_unit_interval_probability(name: str, value: object) -> float:
+    """Return a real number in ``[0, 1]``, rejecting non-real and bool values.
+
+    Uses ``type(value)`` rather than ``isinstance(value, Real)``: ``isinstance``
+    consults the overridable ``__class__`` attribute, so an object whose
+    ``__class__`` property reports ``float`` would otherwise pass the check
+    while still routing the raw ``<=`` comparison to its own (potentially
+    raising) dunder hooks, leaking an uncaught exception instead of the
+    documented ``ValueError``.
+    """
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number in [0, 1]; got {value!r}")
+    try:
+        number = float(cast(Real, value))
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a real number in [0, 1]; got {value!r}") from error
+    if not (0.0 <= number <= 1.0):
+        raise ValueError(f"{name} must lie in [0, 1]; got {value!r}")
+    return number
 
 
 # =============================================================================
@@ -148,8 +171,7 @@ class PartialObservationWrapper[InnerStateT]:
             self._schedule = None
 
         if mode == MaskMode.RANDOM:
-            if not (0.0 <= mask_prob <= 1.0):
-                raise ValueError(f"mask_prob must lie in [0, 1]; got {mask_prob}")
+            self._mask_prob = _require_unit_interval_probability("mask_prob", mask_prob)
 
     @property
     def feature_dim(self) -> int:
