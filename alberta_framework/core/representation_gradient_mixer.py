@@ -36,6 +36,7 @@ _VALID_NORMALIZATIONS = frozenset({"none", "unit_l2"})
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _INT32_MAX = 2**31 - 1
+_MAX_REPRESENTATION_DIM = _INT32_MAX // 4
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -112,7 +113,12 @@ class RepresentationGradientMixerConfig:
         object.__setattr__(
             self,
             "representation_dim",
-            _require_int32("representation_dim", self.representation_dim, minimum=1),
+            _require_int32(
+                "representation_dim",
+                self.representation_dim,
+                minimum=1,
+                maximum=_MAX_REPRESENTATION_DIM,
+            ),
         )
         if type(self.mode) is not str or self.mode not in _VALID_MODES:
             raise ValueError(
@@ -208,6 +214,34 @@ class RepresentationGradientMixerConfig:
         if payload.pop("type") != _CONFIG_TYPE:
             raise ValueError("config type differs")
         return cls(**cast(dict[str, Any], payload))
+
+    @property
+    def resource_budget(self) -> RepresentationGradientMixerResourceBudget:
+        """Return the allocation contract for this stateless mixer."""
+
+        return RepresentationGradientMixerResourceBudget(
+            representation_dim=self.representation_dim,
+            persistent_state_scalars=0,
+            persistent_state_bytes=0,
+            output_float32_scalars=self.representation_dim,
+            output_nbytes=4 * self.representation_dim,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class RepresentationGradientMixerResourceBudget:
+    """Exact persistent-state and fixed-width output allocation accounting."""
+
+    representation_dim: int
+    persistent_state_scalars: int
+    persistent_state_bytes: int
+    output_float32_scalars: int
+    output_nbytes: int
+
+    def to_dict(self) -> dict[str, int]:
+        """Return a JSON-compatible resource record."""
+
+        return dataclasses.asdict(self)
 
 
 @chex.dataclass(frozen=True)
@@ -597,5 +631,6 @@ __all__ = [
     "RepresentationGradientMixDiagnostics",
     "RepresentationGradientMixResult",
     "RepresentationGradientMixerConfig",
+    "RepresentationGradientMixerResourceBudget",
     "mix_representation_gradients",
 ]

@@ -465,3 +465,56 @@ def test_representation_gradient_mixer_config_accepts_and_canonicalizes_numpy_in
     config = RepresentationGradientMixerConfig(representation_dim=np.int32(8))
     assert type(config.representation_dim) is int
     assert config.representation_dim == 8
+
+
+@pytest.mark.parametrize(
+    "integer_type",
+    tuple(
+        dict.fromkeys(
+            np.dtype(code).type
+            for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+        )
+    ),
+)
+def test_gradient_mixer_canonicalizes_every_numpy_integer_type(
+    integer_type: type,
+) -> None:
+    config = RepresentationGradientMixerConfig(representation_dim=integer_type(3))
+    assert type(config.representation_dim) is int
+    assert config.representation_dim == 3
+    assert RepresentationGradientMixerConfig.from_config(config.to_config()) == config
+
+
+def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
+    class IntSubclass(int):
+        pass
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[int]:  # type: ignore[override]
+            return int
+
+        def __repr__(self) -> str:
+            raise RuntimeError("repr must not run")
+
+    for value in (True, np.bool_(True), 0, -1, 1.0, IntSubclass(3), ClassSpoof()):
+        with pytest.raises(ValueError, match="representation_dim"):
+            RepresentationGradientMixerConfig(
+                representation_dim=value  # type: ignore[arg-type]
+            )
+
+
+def test_gradient_mixer_allocation_contract_endpoints_are_allocation_free() -> None:
+    last_legal = (2**31 - 1) // 4
+    config = RepresentationGradientMixerConfig(representation_dim=last_legal)
+    budget = config.resource_budget
+
+    assert budget.representation_dim == last_legal
+    assert budget.persistent_state_scalars == 0
+    assert budget.persistent_state_bytes == 0
+    assert budget.output_float32_scalars == last_legal
+    assert budget.output_nbytes == 4 * last_legal
+    json.dumps(budget.to_dict(), allow_nan=False)
+
+    with pytest.raises(ValueError, match="representation_dim"):
+        RepresentationGradientMixerConfig(representation_dim=last_legal + 1)
