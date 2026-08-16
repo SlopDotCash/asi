@@ -172,15 +172,19 @@ class SwiftTD:
         Raises:
             ValueError: If a hyperparameter is outside its valid range
         """
-        if initial_step_size <= 0.0:
-            raise ValueError(f"initial_step_size must be positive, got {initial_step_size}")
-        if eta <= 0.0:
-            raise ValueError(f"eta must be positive, got {eta}")
-        if eta_min <= 0.0:
-            raise ValueError(f"eta_min must be positive, got {eta_min}")
-        if not 0.0 < step_size_decay <= 1.0:
+        if initial_step_size <= 0.0 or not math.isfinite(initial_step_size):
+            raise ValueError(
+                f"initial_step_size must be finite and positive, got {initial_step_size}"
+            )
+        if meta_step_size <= 0.0 or not math.isfinite(meta_step_size):
+            raise ValueError(f"meta_step_size must be finite and positive, got {meta_step_size}")
+        if eta <= 0.0 or not math.isfinite(eta):
+            raise ValueError(f"eta must be finite and positive, got {eta}")
+        if eta_min <= 0.0 or not math.isfinite(eta_min):
+            raise ValueError(f"eta_min must be finite and positive, got {eta_min}")
+        if not 0.0 < step_size_decay <= 1.0 or not math.isfinite(step_size_decay):
             raise ValueError(f"step_size_decay must be in (0, 1], got {step_size_decay}")
-        if not 0.0 <= trace_decay <= 1.0:
+        if not 0.0 <= trace_decay <= 1.0 or not math.isfinite(trace_decay):
             raise ValueError(f"trace_decay must be in [0, 1], got {trace_decay}")
         self._initial_step_size = initial_step_size
         self._meta_step_size = meta_step_size

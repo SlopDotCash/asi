@@ -153,13 +153,29 @@ class TestSwiftTDInit:
 
     def test_invalid_hyperparameters_raise(self):
         with pytest.raises(ValueError, match="initial_step_size"):
+            SwiftTD(initial_step_size=float("nan"))
+        with pytest.raises(ValueError, match="initial_step_size"):
             SwiftTD(initial_step_size=0.0)
+        with pytest.raises(ValueError, match="meta_step_size"):
+            SwiftTD(meta_step_size=float("nan"))
+        with pytest.raises(ValueError, match="meta_step_size"):
+            SwiftTD(meta_step_size=-0.1)
         with pytest.raises(ValueError, match="eta"):
             SwiftTD(eta=-1.0)
+        with pytest.raises(ValueError, match="eta"):
+            SwiftTD(eta=float("nan"))
+        with pytest.raises(ValueError, match="eta_min"):
+            SwiftTD(eta_min=-0.1)
+        with pytest.raises(ValueError, match="eta_min"):
+            SwiftTD(eta_min=float("nan"))
         with pytest.raises(ValueError, match="step_size_decay"):
             SwiftTD(step_size_decay=0.0)
+        with pytest.raises(ValueError, match="step_size_decay"):
+            SwiftTD(step_size_decay=1.5)
         with pytest.raises(ValueError, match="trace_decay"):
             SwiftTD(trace_decay=1.5)
+        with pytest.raises(ValueError, match="trace_decay"):
+            SwiftTD(trace_decay=-0.5)
 
     def test_update_returns_correct_shapes(self):
         optimizer = SwiftTD(initial_step_size=0.01)
@@ -259,7 +275,7 @@ class TestSwiftTDBehavior:
         phi_sq_sum = float(jnp.sum(obs**2)) + 1.0  # + bias feature
 
         for alpha, eta in ((0.01, 0.1), (0.05, 0.1)):  # tau < eta, tau > eta
-            optimizer = SwiftTD(initial_step_size=alpha, meta_step_size=0.0, eta=eta)
+            optimizer = SwiftTD(initial_step_size=alpha, meta_step_size=0.001, eta=eta)
             state = optimizer.init(3)
             w = jnp.zeros(3, dtype=jnp.float32)
             b = jnp.array(0.0, dtype=jnp.float32)
@@ -321,7 +337,7 @@ class TestSwiftTDBehavior:
 
         # tau = 0.05 * 3 = 0.15 > eta = 0.1 -> decay triggers.
         optimizer = SwiftTD(
-            initial_step_size=0.05, meta_step_size=0.0, eta=0.1, step_size_decay=0.99
+            initial_step_size=0.05, meta_step_size=0.001, eta=0.1, step_size_decay=0.99
         )
         state = optimizer.init(2)
         upd, _, _, _ = _supervised_update(
@@ -335,7 +351,7 @@ class TestSwiftTDBehavior:
 
         # tau = 0.02 * 3 = 0.06 < eta = 0.1 -> no decay, step-sizes unchanged.
         optimizer = SwiftTD(
-            initial_step_size=0.02, meta_step_size=0.0, eta=0.1, step_size_decay=0.99
+            initial_step_size=0.02, meta_step_size=0.001, eta=0.1, step_size_decay=0.99
         )
         state = optimizer.init(2)
         upd, _, _, _ = _supervised_update(
