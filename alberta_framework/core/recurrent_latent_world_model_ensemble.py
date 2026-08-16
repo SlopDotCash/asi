@@ -46,10 +46,11 @@ import functools
 import hashlib
 import json
 import math
+import operator
 from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -71,17 +72,35 @@ RECURRENT_LATENT_WORLD_MODEL_ENSEMBLE_CHECKPOINT_SCHEMA = (
     "alberta.recurrent_latent_world_model_ensemble.v1"
 )
 
-_INT32_MAX = 2**31 - 1
 _MAX_STATE_NBYTES = 256 * 1024 * 1024
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _LOG_TWO_PI = float(math.log(2.0 * math.pi))
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
 
 
 def _positive_int(value: object, *, name: str, maximum: int = _INT32_MAX) -> int:
-    if type(value) is not int or not 1 <= value <= maximum:
+    if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(f"{name} must be an integer in 1..{maximum}")
-    return value
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not 1 <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in 1..{maximum}")
+    return canonical
 
 
 def _finite_float32(
@@ -201,9 +220,7 @@ def _saturating_increment(value: Array, maximum: int) -> Array:
 
 def _static_signature(tree: Any) -> tuple[Any, tuple[tuple[tuple[int, ...], Any], ...]]:
     leaves, structure = jax.tree_util.tree_flatten(tree)
-    return structure, tuple(
-        (jnp.asarray(leaf).shape, jnp.asarray(leaf).dtype) for leaf in leaves
-    )
+    return structure, tuple((jnp.asarray(leaf).shape, jnp.asarray(leaf).dtype) for leaf in leaves)
 
 
 def _validate_static_signature(
@@ -269,18 +286,45 @@ class RecurrentLatentWorldModelEnsembleConfig:
     max_updates: int = _INT32_MAX
 
     def __post_init__(self) -> None:
-        _positive_int(self.observation_dim, name="observation_dim")
-        _positive_int(self.n_actions, name="n_actions")
-        _positive_int(self.latent_dim, name="latent_dim")
-        _positive_int(self.ensemble_size, name="ensemble_size")
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _positive_int(self.observation_dim, name="observation_dim"),
+        )
+        object.__setattr__(
+            self,
+            "n_actions",
+            _positive_int(self.n_actions, name="n_actions"),
+        )
+        object.__setattr__(
+            self,
+            "latent_dim",
+            _positive_int(self.latent_dim, name="latent_dim"),
+        )
+        object.__setattr__(
+            self,
+            "ensemble_size",
+            _positive_int(self.ensemble_size, name="ensemble_size"),
+        )
         if self.ensemble_size < 2:
             raise ValueError("ensemble_size must be at least 2 for epistemic disagreement")
-        _positive_int(self.max_updates, name="max_updates")
+        object.__setattr__(
+            self,
+            "max_updates",
+            _positive_int(self.max_updates, name="max_updates"),
+        )
         if (
-            type(self.uncertainty_warmup_steps) is not int
-            or not 0 <= self.uncertainty_warmup_steps <= self.max_updates
+            type(self.uncertainty_warmup_steps) not in _ACTUAL_INT_TYPES
+            or not 0
+            <= operator.index(cast(SupportsIndex, self.uncertainty_warmup_steps))
+            <= self.max_updates
         ):
             raise ValueError("uncertainty_warmup_steps must be in 0..max_updates")
+        object.__setattr__(
+            self,
+            "uncertainty_warmup_steps",
+            operator.index(cast(SupportsIndex, self.uncertainty_warmup_steps)),
+        )
 
         positive_fields = (
             "learning_rate",
@@ -370,9 +414,7 @@ class RecurrentLatentWorldModelEnsembleConfig:
     @property
     def state_nbytes(self) -> int:
         """Exact persistent logical array bytes for this configuration."""
-        float32_scalars = self.ensemble_size * (
-            self.trainable_scalars_per_member + self.latent_dim
-        )
+        float32_scalars = self.ensemble_size * (self.trainable_scalars_per_member + self.latent_dim)
         int32_scalars = self.ensemble_size + 3
         uint32_scalars = 2
         bool_scalars = self.ensemble_size
@@ -556,12 +598,7 @@ class _LogicalAccounting:
 
     @property
     def logical_scalars(self) -> int:
-        return (
-            self.float32_scalars
-            + self.int32_scalars
-            + self.uint32_scalars
-            + self.bool_scalars
-        )
+        return self.float32_scalars + self.int32_scalars + self.uint32_scalars + self.bool_scalars
 
     @property
     def logical_bytes(self) -> int:
@@ -969,9 +1006,7 @@ class RecurrentLatentWorldModelEnsemble:
             member_mean_predictions=means,
             mean_prediction=jnp.mean(means, axis=0),
             member_next_observations=means[:, : self._config.observation_dim],
-            mean_next_observation=jnp.mean(
-                means[:, : self._config.observation_dim], axis=0
-            ),
+            mean_next_observation=jnp.mean(means[:, : self._config.observation_dim], axis=0),
             member_rewards=means[:, -2],
             mean_reward=jnp.mean(means[:, -2]),
             member_continuations=means[:, -1],
@@ -1011,9 +1046,7 @@ class RecurrentLatentWorldModelEnsemble:
             (act >= 0)
             & (act < self._config.n_actions)
             & jnp.all(jnp.isfinite(start_cache.observation))
-            & jnp.all(
-                jnp.abs(start_cache.observation) <= self._config.max_input_magnitude
-            )
+            & jnp.all(jnp.abs(start_cache.observation) <= self._config.max_input_magnitude)
         )
         can_predict = self._state_valid(state) & ownership & input_valid
 
@@ -1089,12 +1122,8 @@ class RecurrentLatentWorldModelEnsemble:
             predictions_valid=false,
             losses_valid=false,
             representation_gradient_valid=false,
-            member_gradients_valid=jnp.zeros(
-                (self._config.ensemble_size,), dtype=jnp.bool_
-            ),
-            candidate_parameters_valid=jnp.zeros(
-                (self._config.ensemble_size,), dtype=jnp.bool_
-            ),
+            member_gradients_valid=jnp.zeros((self._config.ensemble_size,), dtype=jnp.bool_),
+            candidate_parameters_valid=jnp.zeros((self._config.ensemble_size,), dtype=jnp.bool_),
             candidate_state_valid=false,
             recurrent_advanced_once=false,
             recurrent_reset=false,
@@ -1161,14 +1190,10 @@ class RecurrentLatentWorldModelEnsemble:
             ),
             mean_negative_log_likelihood=jnp.asarray(0.0, dtype=jnp.float32),
             representation_objective=jnp.asarray(0.0, dtype=jnp.float32),
-            representation_gradient=jnp.zeros(
-                (self._config.observation_dim,), dtype=jnp.float32
-            ),
+            representation_gradient=jnp.zeros((self._config.observation_dim,), dtype=jnp.float32),
             representation_gradient_available=jnp.asarray(False, dtype=jnp.bool_),
             bootstrap_mask=jnp.zeros((self._config.ensemble_size,), dtype=jnp.bool_),
-            member_updates_applied=jnp.zeros(
-                (self._config.ensemble_size,), dtype=jnp.bool_
-            ),
+            member_updates_applied=jnp.zeros((self._config.ensemble_size,), dtype=jnp.bool_),
             next_start_cache=recoverable_cache,
             diagnostics=diagnostics,
         )
@@ -1291,9 +1316,7 @@ class RecurrentLatentWorldModelEnsemble:
         )
 
         def accepted_branch(_: None) -> RecurrentLatentWorldModelUpdateResult:
-            targets = jnp.concatenate(
-                (bootstrap_observation, reward[None], discount[None]), axis=0
-            )
+            targets = jnp.concatenate((bootstrap_observation, reward[None], discount[None]), axis=0)
             stopped_targets = jax.lax.stop_gradient(targets)
             prediction = self._predict_unchecked(state, observation, action)
             cached_prediction_exact = _tree_equal(prediction, decision_cache.prediction)
@@ -1371,8 +1394,10 @@ class RecurrentLatentWorldModelEnsemble:
                     cfg.gradient_clip_norm / jnp.maximum(gradient_norm_array[index], 1.0e-12),
                 )
                 updated = jax.tree_util.tree_map(
-                    lambda parameter, gradient: parameter
-                    - jnp.asarray(cfg.learning_rate, dtype=jnp.float32) * scale * gradient,
+                    lambda parameter, gradient: (
+                        parameter
+                        - jnp.asarray(cfg.learning_rate, dtype=jnp.float32) * scale * gradient
+                    ),
                     parameters,
                     member_gradients[index],
                 )
@@ -1532,9 +1557,7 @@ class RecurrentLatentWorldModelEnsemble:
             latent_dim=self._config.latent_dim,
             target_dim=self._config.target_dim,
             trainable_scalars_per_member=trainable.float32_scalars,
-            total_trainable_scalars=(
-                self._config.ensemble_size * trainable.float32_scalars
-            ),
+            total_trainable_scalars=(self._config.ensemble_size * trainable.float32_scalars),
             persistent_float32_scalars=persistent.float32_scalars,
             persistent_int32_scalars=persistent.int32_scalars,
             persistent_uint32_scalars=persistent.uint32_scalars,
