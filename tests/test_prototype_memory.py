@@ -321,3 +321,42 @@ def test_prototype_memory_rejects_hostile_integral_subclasses() -> None:
             PrototypeMemoryConfig(
                 **{"feature_dim": 4, "n_classes": 2, field: LieInt(-1)}
             )
+
+
+@pytest.mark.parametrize(
+    "integer_type",
+    tuple(
+        dict.fromkeys(
+            np.dtype(code).type
+            for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
+        )
+    ),
+)
+def test_prototype_memory_canonicalizes_every_numpy_integer_type(
+    integer_type: type,
+) -> None:
+    config = PrototypeMemoryConfig(
+        feature_dim=integer_type(4),
+        n_classes=integer_type(4),
+        slots_per_class=integer_type(4),
+    )
+
+    assert type(config.feature_dim) is int
+    assert type(config.n_classes) is int
+    assert type(config.slots_per_class) is int
+
+
+def test_prototype_memory_integer_errors_do_not_interpolate_hostile_repr() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[int]:  # type: ignore[override]
+            return int
+
+        def __repr__(self) -> str:
+            raise RuntimeError("repr must not run")
+
+    with pytest.raises(ValueError, match="feature_dim"):
+        PrototypeMemoryConfig(
+            feature_dim=ClassSpoof(),  # type: ignore[arg-type]
+            n_classes=2,
+        )
