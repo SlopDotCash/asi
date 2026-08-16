@@ -9,7 +9,7 @@ All streams use JAX-compatible pure functions that work with jax.lax.scan.
 
 import math
 from numbers import Real
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax.numpy as jnp
@@ -18,6 +18,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
+from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -40,21 +41,26 @@ def _require_positive_int(name: str, value: object) -> int:
     return value
 
 
-def _require_normal_float32_scale(name: str, value: float) -> float:
+def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[Real, float]:
+    """Return an actual real together with its single exact binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(message)
+    real = cast(Real, value)
+    try:
+        narrowed = round_real_to_float32(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    if not math.isfinite(narrowed):
+        raise ValueError(message)
+    return real, narrowed
+
+
+def _require_normal_float32_scale(name: str, value: object) -> float:
     """Return a positive bound with stable JAX float32 logarithm semantics."""
     message = f"{name} must be finite, positive, and representable as a normal float32 value"
-    try:
-        normalized = float(value)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if (
-        not math.isfinite(normalized)
-        or normalized < _FLOAT32_TINY
-        or normalized > _FLOAT32_MAX
-    ):
-        raise ValueError(message)
-    narrowed = float(np.float32(normalized))
-    if not math.isfinite(narrowed) or narrowed < _FLOAT32_TINY or narrowed > _FLOAT32_MAX:
+    real, narrowed = _narrow_real_to_float32(name, value, message)
+    if real <= 0 or narrowed < _FLOAT32_TINY or narrowed > _FLOAT32_MAX:
         raise ValueError(message)
     return narrowed
 
@@ -70,6 +76,12 @@ def _require_finite_nonnegative_float32(name: str, value: object) -> float:
         raise ValueError(message) from exc
     if not math.isfinite(narrowed) or narrowed < 0.0:
         raise ValueError(message)
+
+
+def _require_finite_float32_log_scale(name: str, value: object) -> float:
+    """Return a clip bound that stays finite once JAX narrows it to float32."""
+    message = f"{name} must be finite and remain finite once narrowed to float32"
+    _, narrowed = _narrow_real_to_float32(name, value, message)
     return narrowed
 
 
@@ -1138,13 +1150,10 @@ class ScaleDriftStream:
         self._feature_dim = feature_dim
         self._weight_drift_rate = weight_drift_rate
         self._scale_drift_rate = scale_drift_rate
-        for name, bound in (("min_log_scale", min_log_scale), ("max_log_scale", max_log_scale)):
-            if isinstance(bound, bool) or not isinstance(bound, Real) or not math.isfinite(bound):
-                raise ValueError(f"{name} must be finite")
-        if min_log_scale > max_log_scale:
+        self._min_log_scale = _require_finite_float32_log_scale("min_log_scale", min_log_scale)
+        self._max_log_scale = _require_finite_float32_log_scale("max_log_scale", max_log_scale)
+        if self._min_log_scale > self._max_log_scale:
             raise ValueError("min_log_scale must be <= max_log_scale")
-        self._min_log_scale = min_log_scale
-        self._max_log_scale = max_log_scale
         self._noise_std = noise_std
 
     @property
