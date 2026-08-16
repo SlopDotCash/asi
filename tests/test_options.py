@@ -1,6 +1,7 @@
 """Tests for STOMP checkpoint payloads and state migration (core/options.py)."""
 
 import dataclasses
+from types import MappingProxyType
 
 import chex
 import jax
@@ -440,9 +441,6 @@ def test_stomp_config_integer_validation() -> None:
 
 
 def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
-    class DictSubclass(dict[str, object]):
-        pass
-
     spec = SubtaskSpec(
         feature_index=0,
         threshold=np.float64(0.5),
@@ -452,16 +450,6 @@ def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
     assert type(spec.pseudo_reward_scale) is float
     with pytest.raises(ValueError, match="threshold"):
         SubtaskSpec(feature_index=0, threshold=1.0e100)
-
-    payload = STOMPConfig().to_config()
-    with pytest.raises(ValueError, match="actual dict"):
-        STOMPConfig.from_config(DictSubclass(payload))  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="fields"):
-        STOMPConfig.from_config({**payload, "extra": 1})
-    with pytest.raises(ValueError, match="base_hidden_sizes"):
-        STOMPConfig.from_config({**payload, "base_hidden_sizes": ()})
-    with pytest.raises(ValueError, match="observation_dim"):
-        STOMPConfig.from_config({**payload, "observation_dim": np.int32(4)})
 
     last_legal_observation_dim = (2**29 - 1 - 22) // 4
     STOMPConfig(observation_dim=last_legal_observation_dim, n_primitive_actions=1)
@@ -487,3 +475,45 @@ def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
         for field in dataclasses.fields(STOMPSpecArrays)
     )
     assert 4 * _stomp_direct_array_scalars(measured_config) == array_bytes
+
+
+@pytest.mark.unit
+def test_stomp_from_config_preserves_mapping_partial_and_tuple_compatibility() -> None:
+    class MappingSpoof:
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            return dict
+
+        def __iter__(self) -> object:
+            raise AssertionError("iteration hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook executed")
+
+    config = STOMPConfig(
+        subtask_specs=(SubtaskSpec(feature_index=0),),
+        observation_dim=2,
+    )
+    payload = config.to_config()
+    payload["subtask_specs"] = tuple(payload["subtask_specs"])
+    payload["base_hidden_sizes"] = tuple(payload["base_hidden_sizes"])
+    payload["type"] = "historical-marker"
+    assert STOMPConfig.from_config(MappingProxyType(payload)) == config
+
+    partial = STOMPConfig.from_config(
+        {"subtask_specs": ({"feature_index": 0},), "observation_dim": 2}
+    )
+    assert partial.subtask_specs == (SubtaskSpec(feature_index=0),)
+    assert partial.option_planning_backups_per_step == 0
+
+    with pytest.raises(ValueError, match="mapping"):
+        STOMPConfig.from_config(MappingSpoof())  # type: ignore[arg-type]
+
+    for field, value in (
+        ("subtask_specs", "not-a-sequence"),
+        ("base_hidden_sizes", "not-a-sequence"),
+    ):
+        invalid = config.to_config()
+        invalid[field] = value
+        with pytest.raises(ValueError, match=field):
+            STOMPConfig.from_config(invalid)

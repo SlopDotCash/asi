@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -1584,52 +1585,35 @@ class STOMPConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> STOMPConfig:
+    def from_config(cls, config: Mapping[str, Any]) -> STOMPConfig:
         """Reconstruct from :meth:`to_config` output."""
-        if type(config) is not dict:
-            raise ValueError("STOMP config must be an actual dict")
-        payload = dict(config)
-        if payload.pop("type", None) != "STOMPConfig":
-            raise ValueError("STOMP config type is invalid")
-        expected = {field.name for field in dataclasses.fields(cls)}
-        legacy_optional = {"subtask_specs", "base_hidden_sizes", "option_planning_backups_per_step"}
-        if set(payload) - expected or (expected - legacy_optional) - set(payload):
-            raise ValueError("STOMP config fields do not match its schema")
+        if not issubclass(type(config), Mapping):
+            raise ValueError("STOMPConfig payload must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("STOMPConfig mapping could not be read") from error
+        payload.pop("type", None)
         specs_raw = payload.pop("subtask_specs", [])
-        if type(specs_raw) is not list or any(type(spec) is not dict for spec in specs_raw):
-            raise ValueError("serialized subtask_specs must be an actual list of actual dicts")
-        spec_fields = {field.name for field in dataclasses.fields(SubtaskSpec)}
-        if any(set(spec) != spec_fields for spec in specs_raw):
-            raise ValueError("serialized SubtaskSpec fields do not match its schema")
-        if any(
-            type(spec["feature_index"]) is not int
-            or type(spec["max_option_steps"]) is not int
-            or type(spec["threshold"]) is not float
-            or type(spec["pseudo_reward_scale"]) is not float
-            for spec in specs_raw
-        ):
-            raise ValueError("serialized SubtaskSpec scalars must be canonical JSON scalars")
-        specs = tuple(SubtaskSpec(**s) for s in specs_raw)
-        hidden_raw = payload.pop("base_hidden_sizes", [])
-        if type(hidden_raw) is not list or any(type(size) is not int for size in hidden_raw):
-            raise ValueError("serialized base_hidden_sizes must be an actual list of JSON integers")
-        payload["base_hidden_sizes"] = tuple(hidden_raw)
-        for name in ("observation_dim", "n_primitive_actions", "option_planning_backups_per_step"):
-            if name in payload and type(payload[name]) is not int:
-                raise ValueError(f"serialized {name} must be a JSON integer")
-        for name in (
-            "base_step_size", "base_avg_reward_step_size", "base_trace_decay",
-            "option_step_size", "option_avg_reward_step_size", "option_trace_decay",
-            "option_gamma", "option_model_decay", "option_model_step_size",
-            "epsilon_base", "epsilon_option", "option_importance_clip",
-        ):
-            if type(payload[name]) is not float:
-                raise ValueError(f"serialized {name} must be a JSON number")
-        if payload["option_target_epsilon"] is not None and type(
-            payload["option_target_epsilon"]
-        ) is not float:
-            raise ValueError("serialized option_target_epsilon must be null or a JSON number")
-        return cls(subtask_specs=specs, **payload)
+        if type(specs_raw) not in (list, tuple):
+            raise ValueError("serialized subtask_specs must be an actual list or tuple")
+        specs: list[SubtaskSpec] = []
+        for raw in specs_raw:
+            if not issubclass(type(raw), Mapping):
+                raise ValueError("serialized subtask_specs entries must be mappings")
+            try:
+                specs.append(SubtaskSpec(**dict(raw)))
+            except Exception as error:
+                raise ValueError("serialized SubtaskSpec is invalid") from error
+        if "base_hidden_sizes" in payload:
+            raw_hidden = payload["base_hidden_sizes"]
+            if type(raw_hidden) not in (list, tuple):
+                raise ValueError(
+                    "serialized base_hidden_sizes must be an actual list or tuple"
+                )
+            sequence = cast(list[object] | tuple[object, ...], raw_hidden)
+            payload["base_hidden_sizes"] = tuple(sequence)
+        return cls(subtask_specs=tuple(specs), **payload)
 
 
 # ---------------------------------------------------------------------------
