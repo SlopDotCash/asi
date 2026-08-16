@@ -214,6 +214,22 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     return number
 
 
+_UINT32_MAX: int = 4294967295
+
+
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
 def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
     if type(rates) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
@@ -273,6 +289,24 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
         raise ValueError(
             f"configuration feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
         )
+    trace_scalars = (
+        observation_dim * len(observation_decay_rates)
+        + action_dim * len(action_decay_rates)
+        + reward_dim * len(reward_decay_rates)
+    )
+    if trace_scalars > _INT32_MAX:
+        raise ValueError("WorkingMemoryConfig dimensions must fit signed int32")
+    total_state_scalars = trace_scalars + 4
+    _require_float32_resource(
+        "WorkingMemoryConfig state",
+        vector_scalars=trace_scalars,
+        fixed_scalars=4,
+    )
+    persistent_bytes = 4 * total_state_scalars
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("WorkingMemoryConfig state byte count must fit signed int32")
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("working memory allocation exceeds uint32 byte accounting")
 
 
 def _empty_or_vector(value: Array, dim: int) -> Array:
