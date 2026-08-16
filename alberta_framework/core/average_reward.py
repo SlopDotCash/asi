@@ -1427,6 +1427,28 @@ def run_average_reward_horde_from_arrays(
     next_observations: Float[Array, "num_steps feature_dim"],
 ) -> AverageRewardHordeLearningResult:
     """Run a shared-trunk average-reward Horde over transition arrays."""
+    observations = jnp.asarray(observations)
+    cumulants = jnp.asarray(cumulants)
+    next_observations = jnp.asarray(next_observations)
+    if observations.ndim != 2:
+        raise ValueError(
+            f"observations must have shape (num_steps, feature_dim), got {observations.shape}"
+        )
+    if next_observations.ndim != 2:
+        raise ValueError(
+            "next_observations must have shape (num_steps, feature_dim), "
+            f"got {next_observations.shape}"
+        )
+    if observations.shape != next_observations.shape:
+        raise ValueError(
+            "observations and next_observations must have matching shapes, got "
+            f"{observations.shape} and {next_observations.shape}"
+        )
+    expected_cumulant_shape = (observations.shape[0], learner.n_demons)
+    if cumulants.shape != expected_cumulant_shape:
+        raise ValueError(
+            f"cumulants must have shape {expected_cumulant_shape}, got {cumulants.shape}"
+        )
     start = time.time()
 
     def _scan_fn(

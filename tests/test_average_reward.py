@@ -348,6 +348,36 @@ def test_average_reward_horde_shared_trunk_scan_learns_reward_rates() -> None:
     chex.assert_tree_all_finite(result)
 
 
+@pytest.mark.parametrize(
+    ("observations_shape", "cumulants_shape", "next_observations_shape", "match"),
+    [
+        ((5, 3), (), (5, 3), "cumulants"),
+        ((5, 3), (5,), (5, 3), "cumulants"),
+        ((5, 3), (5, 1), (5, 3), "cumulants"),
+        ((5, 3), (4, 2), (5, 3), "cumulants"),
+        ((5,), (5, 2), (5, 3), "observations"),
+        ((5, 3), (5, 2), (5,), "next_observations"),
+        ((5, 3), (5, 2), (5, 4), "matching shapes"),
+    ],
+)
+def test_average_reward_horde_scan_rejects_misaligned_arrays(
+    observations_shape,
+    cumulants_shape,
+    next_observations_shape,
+    match,
+) -> None:
+    learner = AverageRewardHordeLearner(n_demons=2, hidden_sizes=())
+    state = learner.init(3, jr.key(2))
+    with pytest.raises(ValueError, match=match):
+        run_average_reward_horde_from_arrays(
+            learner,
+            state,
+            jnp.zeros(observations_shape, dtype=jnp.float32),
+            jnp.zeros(cumulants_shape, dtype=jnp.float32),
+            jnp.zeros(next_observations_shape, dtype=jnp.float32),
+        )
+
+
 def test_average_reward_horde_actor_critic_single_update_is_finite() -> None:
     agent = AverageRewardHordeActorCriticAgent(
         AverageRewardHordeActorCriticConfig(
