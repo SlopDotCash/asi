@@ -468,3 +468,30 @@ def test_ia_configs_accept_and_canonicalize_numpy_integers() -> None:
     assert type(cfg.obs_dim) is int
     assert cfg.n_demons == 8
     assert cfg.obs_dim == 16
+
+    protocol = RecommendationProtocolConfig(acceptance_ema_decay=np.float32(0.5))
+    assert type(protocol.acceptance_ema_decay) is float
+
+
+@pytest.mark.parametrize("field", ["n_demons", "obs_dim"])
+@pytest.mark.parametrize("value", [0, -1, 2**31, np.uint64(2**63)])
+def test_exo_cerebellum_dimensions_use_signed_int32_domain(field, value) -> None:
+    with pytest.raises(ValueError, match=field):
+        ExoCerebellumConfig(**{field: value})
+
+
+def test_ia_configs_reject_class_spoofed_scalars() -> None:
+    class Spoof:
+        @property
+        def __class__(self):
+            return int
+
+        def __index__(self):
+            return 4
+
+    with pytest.raises(ValueError, match="n_demons"):
+        ExoCerebellumConfig(n_demons=Spoof())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="acceptance_ema_decay"):
+        RecommendationProtocolConfig(  # type: ignore[arg-type]
+            acceptance_ema_decay=Spoof()
+        )

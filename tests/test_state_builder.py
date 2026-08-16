@@ -436,9 +436,7 @@ def test_online_learn_equals_propose_then_same_state_commit() -> None:
 
 def test_online_proposal_capacity_max_minus_one_and_exhaustion_are_fail_closed() -> None:
     builder, source, gradient = _online_learning_source()
-    almost_exhausted = source.replace(
-        update_count=jnp.asarray(2**31 - 2, dtype=jnp.int32)
-    )
+    almost_exhausted = source.replace(update_count=jnp.asarray(2**31 - 2, dtype=jnp.int32))
     proposal = builder.propose_learning_update(almost_exhausted, gradient)
     final_state, final_diagnostics = builder.commit_learning_update(
         almost_exhausted,
@@ -501,9 +499,7 @@ def test_online_commit_rejects_corrupt_proposal_and_static_contract_errors() -> 
     "builder",
     [
         IdentityStateBuilder(IdentityStateBuilderConfig(observation_dim=2)),
-        FixedTraceStateBuilder(
-            FixedTraceStateBuilderConfig(observation_dim=2, n_actions=2)
-        ),
+        FixedTraceStateBuilder(FixedTraceStateBuilderConfig(observation_dim=2, n_actions=2)),
     ],
     ids=("identity", "fixed-trace"),
 )
@@ -1268,6 +1264,15 @@ def test_state_builder_budget_validation() -> None:
     assert type(budget.state_scalars) is int
     assert type(budget.state_bytes) is int
 
+    large_host_budget = StateBuilderBudget(
+        output_scalars=1,
+        trainable_scalars=0,
+        state_scalars=2**31,
+        state_bytes=2**33,
+    )
+    assert large_host_budget.state_scalars == 2**31
+    assert large_host_budget.state_bytes == 2**33
+
     with pytest.raises(ValueError, match="output_scalars"):
         StateBuilderBudget(
             output_scalars=-1,
@@ -1282,3 +1287,61 @@ def test_state_builder_budget_validation() -> None:
             state_scalars=0,
             state_bytes=True,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda value: IdentityStateBuilderConfig(observation_dim=value),
+        lambda value: FixedTraceStateBuilderConfig(observation_dim=value),
+        lambda value: OnlineGatedStateBuilderConfig(observation_dim=value),
+    ],
+)
+@pytest.mark.parametrize("value", [2**31, np.uint64(2**63), -1])
+def test_builder_dimensions_reject_values_outside_signed_int32(factory, value) -> None:
+    with pytest.raises(ValueError, match="observation_dim"):
+        factory(value)
+
+
+def test_fixed_trace_from_config_does_not_coerce_invalid_scalars() -> None:
+    base = FixedTraceStateBuilderConfig(observation_dim=4).to_config()
+    for field, value in (
+        ("observation_dim", True),
+        ("n_actions", False),
+        ("include_raw_observation", 1),
+        ("include_raw_observation", "false"),
+    ):
+        payload = {**base, field: value}
+        with pytest.raises(ValueError, match=field):
+            FixedTraceStateBuilderConfig.from_config(payload)
+
+
+def test_builder_configs_reject_class_spoofed_scalars() -> None:
+    class Spoof:
+        @property
+        def __class__(self):
+            return int
+
+        def __index__(self):
+            return 4
+
+    with pytest.raises(ValueError, match="observation_dim"):
+        IdentityStateBuilderConfig(observation_dim=Spoof())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="step_size"):
+        OnlineGatedStateBuilderConfig(  # type: ignore[arg-type]
+            observation_dim=4,
+            step_size=Spoof(),
+        )
+
+
+@pytest.mark.parametrize("field", ["step_size", "gradient_clip", "initialization_scale"])
+@pytest.mark.parametrize("value", [True, 1e100, 1e-100])
+def test_online_builder_positive_scalars_are_valid_at_float32_sink(field, value) -> None:
+    with pytest.raises(ValueError, match=field):
+        OnlineGatedStateBuilderConfig(observation_dim=4, **{field: value})
+
+
+@pytest.mark.parametrize("value", [True, 1e100])
+def test_online_builder_gate_bias_is_finite_at_float32_sink(value) -> None:
+    with pytest.raises(ValueError, match="initial_gate_bias"):
+        OnlineGatedStateBuilderConfig(observation_dim=4, initial_gate_bias=value)

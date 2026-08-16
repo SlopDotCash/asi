@@ -87,13 +87,24 @@ _ACTUAL_INT_TYPES = frozenset(
 )
 
 
-def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+def _require_integer(
+    name: str,
+    value: object,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+        raise ValueError(f"{name} must be an integer")
     canonical = operator.index(cast(SupportsIndex, value))
-    if not minimum <= canonical <= maximum:
-        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    if canonical < minimum or (maximum is not None and canonical > maximum):
+        domain = f"[{minimum}, {maximum}]" if maximum is not None else f">= {minimum}"
+        raise ValueError(f"{name} must be an integer in {domain}")
     return canonical
+
+
+def _require_int32(name: str, value: object, *, minimum: int) -> int:
+    return _require_integer(name, value, minimum=minimum, maximum=_INT32_MAX)
 
 
 def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
@@ -110,6 +121,8 @@ def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
         )
         for index, rate in enumerate(rates)
     )
+
+
 _FLOAT32_MAX = 3.4028234663852886e38
 
 
@@ -117,6 +130,7 @@ def _saturating_int32_increment(value: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     counter = jnp.asarray(value, dtype=jnp.int32)
     return jnp.minimum(jnp.maximum(counter, 0), maximum - 1) + 1
+
 
 StateT = TypeVar("StateT")
 
@@ -142,22 +156,22 @@ class StateBuilderBudget:
         object.__setattr__(
             self,
             "output_scalars",
-            _require_int32("output_scalars", self.output_scalars, minimum=0),
+            _require_integer("output_scalars", self.output_scalars, minimum=0),
         )
         object.__setattr__(
             self,
             "trainable_scalars",
-            _require_int32("trainable_scalars", self.trainable_scalars, minimum=0),
+            _require_integer("trainable_scalars", self.trainable_scalars, minimum=0),
         )
         object.__setattr__(
             self,
             "state_scalars",
-            _require_int32("state_scalars", self.state_scalars, minimum=0),
+            _require_integer("state_scalars", self.state_scalars, minimum=0),
         )
         object.__setattr__(
             self,
             "state_bytes",
-            _require_int32("state_bytes", self.state_bytes, minimum=0),
+            _require_integer("state_bytes", self.state_bytes, minimum=0),
         )
 
     def to_config(self) -> dict[str, int]:
@@ -338,9 +352,7 @@ def _zero_learning_diagnostics(
     zero = jnp.asarray(0.0, dtype=jnp.float32)
     valid_array = jnp.asarray(valid, dtype=jnp.bool_)
     proposal_valid_array = (
-        valid_array
-        if proposal_valid is None
-        else jnp.asarray(proposal_valid, dtype=jnp.bool_)
+        valid_array if proposal_valid is None else jnp.asarray(proposal_valid, dtype=jnp.bool_)
     )
     return StateBuilderLearningDiagnostics(
         gradient_norm=zero,
@@ -542,8 +554,7 @@ def replace_state_builder_learning_proposal_update(
     source_shape = tuple(proposal.source_parameters.shape)
     if len(source_shape) != 1:
         raise ValueError(
-            "proposal.source_parameters must be a rank-one parameter vector; "
-            f"got {source_shape}"
+            f"proposal.source_parameters must be a rank-one parameter vector; got {source_shape}"
         )
     parameter_count = source_shape[0]
     _validate_learning_proposal_static_contract(proposal, parameter_count)
@@ -587,11 +598,6 @@ def replace_state_builder_learning_proposal_update(
             rejected=~valid,
         ),
     )
-
-
-def _validate_observation_dim(observation_dim: int) -> None:
-    if observation_dim < 1:
-        raise ValueError("observation_dim must be positive")
 
 
 def _action_features(action: Array | int, n_actions: int) -> Array:
@@ -968,12 +974,12 @@ class FixedTraceStateBuilderConfig:
         data = dict(payload)
         data.pop("type", None)
         return cls(
-            observation_dim=int(data["observation_dim"]),
-            n_actions=int(data.get("n_actions", 0)),
+            observation_dim=data["observation_dim"],
+            n_actions=data.get("n_actions", 0),
             observation_decay_rates=tuple(data.get("observation_decay_rates", ())),
             action_decay_rates=tuple(data.get("action_decay_rates", ())),
             outcome_decay_rates=tuple(data.get("outcome_decay_rates", ())),
-            include_raw_observation=bool(data.get("include_raw_observation", True)),
+            include_raw_observation=data.get("include_raw_observation", True),
         )
 
 
@@ -1543,9 +1549,7 @@ class OnlineGatedStateBuilder:
             last_gradient_norm=state.last_gradient_norm,
         )
         update_applied = (
-            event_valid
-            & self._state_is_valid(state)
-            & self._state_is_valid(candidate_state)
+            event_valid & self._state_is_valid(state) & self._state_is_valid(candidate_state)
         )
         next_state = select_transaction(update_applied, candidate_state, state)
         representation = self.encode(next_state, raw_observation)
@@ -1700,21 +1704,15 @@ class OnlineGatedStateBuilder:
             safe_gradient_norm,
             jnp.asarray(_FLOAT32_MAX, dtype=jnp.float32),
         )
-        clipped_parameter_gradient_valid = jnp.all(
-            jnp.isfinite(clipped_parameter_gradient)
-        )
+        clipped_parameter_gradient_valid = jnp.all(jnp.isfinite(clipped_parameter_gradient))
         candidate_parameter_update = (
-            -jnp.asarray(self._config.step_size, dtype=jnp.float32)
-            * clipped_parameter_gradient
+            -jnp.asarray(self._config.step_size, dtype=jnp.float32) * clipped_parameter_gradient
         )
-        candidate_parameter_update_valid = jnp.all(
-            jnp.isfinite(candidate_parameter_update)
-        )
+        candidate_parameter_update_valid = jnp.all(jnp.isfinite(candidate_parameter_update))
         candidate_parameters = source_state.parameters + candidate_parameter_update
         candidate_parameters_valid = jnp.all(jnp.isfinite(candidate_parameters))
-        capacity_available = (
-            (source_state.update_count >= 0)
-            & (source_state.update_count < _INT32_MAX)
+        capacity_available = (source_state.update_count >= 0) & (
+            source_state.update_count < _INT32_MAX
         )
         valid = (
             source_state_valid
@@ -1784,13 +1782,10 @@ class OnlineGatedStateBuilder:
             )
         )
         update_valid = jnp.all(jnp.isfinite(proposal.candidate_parameter_update))
-        candidate_parameters = (
-            proposal.source_parameters + proposal.candidate_parameter_update
-        )
+        candidate_parameters = proposal.source_parameters + proposal.candidate_parameter_update
         candidate_parameters_valid = jnp.all(jnp.isfinite(candidate_parameters))
-        capacity_available = (
-            (proposal.source_update_count >= 0)
-            & (proposal.source_update_count < _INT32_MAX)
+        capacity_available = (proposal.source_update_count >= 0) & (
+            proposal.source_update_count < _INT32_MAX
         )
         expected_valid = (
             proposal.source_state_valid
@@ -1871,9 +1866,7 @@ class OnlineGatedStateBuilder:
             & (destination_state.update_count < _INT32_MAX)
             & proposal.capacity_available
         )
-        candidate_parameters = (
-            destination_state.parameters + proposal.candidate_parameter_update
-        )
+        candidate_parameters = destination_state.parameters + proposal.candidate_parameter_update
         candidate_parameters_valid = jnp.all(jnp.isfinite(candidate_parameters))
         proposal_valid = proposal_integrity & proposal.valid
         applied = (
@@ -1944,9 +1937,7 @@ class OnlineGatedStateBuilder:
 
 
 StateBuilderConfig = (
-    IdentityStateBuilderConfig
-    | FixedTraceStateBuilderConfig
-    | OnlineGatedStateBuilderConfig
+    IdentityStateBuilderConfig | FixedTraceStateBuilderConfig | OnlineGatedStateBuilderConfig
 )
 
 
