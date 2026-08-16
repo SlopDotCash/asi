@@ -253,7 +253,7 @@ def test_config_integer_families_canonicalize_and_allocations_preflight() -> Non
     ):
         assert type(getattr(config, field_name)) is int
 
-    with pytest.raises(ValueError, match="uint32 byte accounting|int32"):
+    with pytest.raises(ValueError, match="uint32 byte accounting"):
         _config(
             total_capacity=2_147_483_647,
             short_term_capacity=3,
