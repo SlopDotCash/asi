@@ -11,7 +11,6 @@ updates.
 from __future__ import annotations
 
 import functools
-import math
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from typing import Any, cast
@@ -19,9 +18,11 @@ from typing import Any, cast
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -184,44 +185,63 @@ class WorkingMemoryArrayResult:
         yield self.features
 
 
-def _validate_decay_rates(name: str, rates: tuple[float, ...]) -> None:
-    if not isinstance(rates, tuple):
-        raise ValueError(f"{name} must be a tuple")
-    for v in rates:
-        if isinstance(v, bool) or not isinstance(v, int | float):
-            raise ValueError(f"{name} must contain finite values in [0, 1); got {rates!r}")
-        if not math.isfinite(float(v)) or v < 0.0 or v >= 1.0:
-            raise ValueError(f"{name} must contain finite values in [0, 1); got {rates!r}")
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = int(cast(int, value))
+    if number < minimum or number > _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}]")
+    return number
+
+
+def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
+    if type(rates) is not tuple:
+        raise ValueError(f"{name} must be an actual tuple")
+    return tuple(
+        validated_float32_scalar(
+            f"{name}[{index}]",
+            value,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        for index, value in enumerate(rates)
+    )
 
 
 def _validate_config(config: WorkingMemoryConfig) -> None:
-    if isinstance(config.observation_dim, bool) or not isinstance(config.observation_dim, int):
-        raise ValueError("observation_dim must be an int")
-    if config.observation_dim < 1:
-        raise ValueError("observation_dim must be positive")
-    if isinstance(config.action_dim, bool) or not isinstance(config.action_dim, int):
-        raise ValueError("action_dim must be an int")
-    if config.action_dim < 0:
-        raise ValueError("action_dim must be non-negative")
-    if isinstance(config.reward_dim, bool) or not isinstance(config.reward_dim, int):
-        raise ValueError("reward_dim must be an int")
-    if config.reward_dim < 0:
-        raise ValueError("reward_dim must be non-negative")
-    _validate_decay_rates("observation_decay_rates", config.observation_decay_rates)
-    _validate_decay_rates("action_decay_rates", config.action_decay_rates)
-    _validate_decay_rates("reward_decay_rates", config.reward_decay_rates)
-    if isinstance(config.gate_threshold, bool) or not isinstance(
-        config.gate_threshold, int | float
-    ):
-        raise ValueError("gate_threshold must be finite")
-    if not math.isfinite(float(config.gate_threshold)) or config.gate_threshold < 0.0:
-        raise ValueError("gate_threshold must be finite and non-negative")
-    if isinstance(config.gate_temperature, bool) or not isinstance(
-        config.gate_temperature, int | float
-    ):
-        raise ValueError("gate_temperature must be finite")
-    if not math.isfinite(float(config.gate_temperature)) or config.gate_temperature <= 0.0:
-        raise ValueError("gate_temperature must be finite and positive")
+    observation_dim = _require_int32("observation_dim", config.observation_dim, minimum=1)
+    action_dim = _require_int32("action_dim", config.action_dim, minimum=0)
+    reward_dim = _require_int32("reward_dim", config.reward_dim, minimum=0)
+    observation_decay_rates = _validate_decay_rates(
+        "observation_decay_rates", config.observation_decay_rates
+    )
+    action_decay_rates = _validate_decay_rates(
+        "action_decay_rates", config.action_decay_rates
+    )
+    reward_decay_rates = _validate_decay_rates(
+        "reward_decay_rates", config.reward_decay_rates
+    )
+    gate_threshold = validated_float32_scalar(
+        "gate_threshold", config.gate_threshold, lower=0.0
+    )
+    gate_temperature = validated_float32_scalar(
+        "gate_temperature", config.gate_temperature, positive=True
+    )
     for name in (
         "include_current_observation",
         "include_current_action",
@@ -230,10 +250,23 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
         "include_innovations",
         "gated_update",
     ):
-        if not isinstance(getattr(config, name), bool):
-            raise ValueError(f"{name} must be a bool")
-    if config.feature_dim() < 1:
-        raise ValueError("configuration must produce at least one feature")
+        if type(getattr(config, name)) is not bool:
+            raise ValueError(f"{name} must be an actual bool")
+
+    object.__setattr__(config, "observation_dim", observation_dim)
+    object.__setattr__(config, "action_dim", action_dim)
+    object.__setattr__(config, "reward_dim", reward_dim)
+    object.__setattr__(config, "observation_decay_rates", observation_decay_rates)
+    object.__setattr__(config, "action_decay_rates", action_decay_rates)
+    object.__setattr__(config, "reward_decay_rates", reward_decay_rates)
+    object.__setattr__(config, "gate_threshold", gate_threshold)
+    object.__setattr__(config, "gate_temperature", gate_temperature)
+
+    feature_dim = config.feature_dim()
+    if feature_dim < 1 or feature_dim > _INT32_MAX:
+        raise ValueError(
+            f"configuration feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
+        )
 
 
 def _empty_or_vector(value: Array, dim: int) -> Array:

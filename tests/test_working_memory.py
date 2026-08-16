@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from alberta_framework.core.working_memory import (
@@ -391,6 +394,221 @@ def _minimal_config(**overrides: object) -> WorkingMemoryConfig:
     }
     payload.update(overrides)
     return WorkingMemoryConfig(**payload)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("observation_dim", True),
+        ("observation_dim", 1.5),
+        ("observation_dim", 0),
+        ("observation_dim", 2**31),
+        ("action_dim", True),
+        ("action_dim", -1),
+        ("action_dim", 2**31),
+        ("reward_dim", True),
+        ("reward_dim", -1),
+        ("reward_dim", 2**31),
+    ],
+)
+def test_config_rejects_invalid_int32_dimensions(field: str, value: object) -> None:
+    with pytest.raises(ValueError, match=field):
+        _minimal_config(**{field: value})
+
+
+def test_config_rejects_hostile_integral_subclasses() -> None:
+    class LieInt(int):
+        def __int__(self) -> int:
+            return 2
+
+    for field in ("observation_dim", "action_dim", "reward_dim"):
+        with pytest.raises(ValueError, match=field):
+            _minimal_config(**{field: LieInt(1)})
+
+
+def test_config_canonicalizes_supported_numpy_dimensions() -> None:
+    config = _minimal_config(
+        observation_dim=np.int64(2),
+        action_dim=np.uint16(1),
+        reward_dim=np.int32(0),
+    )
+    assert type(config.observation_dim) is int
+    assert type(config.action_dim) is int
+    assert type(config.reward_dim) is int
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [[0.5], 0.5, (False,), (1.0,), (-0.1,), (1e100,)],
+)
+def test_config_rejects_invalid_decay_containers_and_float32_values(
+    rates: object,
+) -> None:
+    with pytest.raises(ValueError, match="observation_decay_rates"):
+        _minimal_config(observation_decay_rates=rates)
+
+
+def test_config_rejects_tuple_and_bool_class_spoofs() -> None:
+    class TupleSubclass(tuple):
+        pass
+
+    class BoolSpoof:
+        @property
+        def __class__(self) -> type[bool]:
+            return bool
+
+    with pytest.raises(ValueError, match="observation_decay_rates"):
+        _minimal_config(observation_decay_rates=TupleSubclass((0.5,)))
+    for field in (
+        "include_current_observation",
+        "include_current_action",
+        "include_current_reward",
+        "include_traces",
+        "include_innovations",
+        "gated_update",
+    ):
+        with pytest.raises(ValueError, match=field):
+            _minimal_config(**{field: BoolSpoof()})
+
+
+@pytest.mark.parametrize(
+    ("field", "ratio"),
+    [
+        ("observation_decay_rates", (-1, 2**200)),
+        ("observation_decay_rates", (2**200 - 1, 2**200)),
+        ("gate_threshold", (-1, 2**200)),
+        ("gate_temperature", (-1, 2**200)),
+    ],
+)
+def test_config_rejects_hostile_exact_float_ratios(
+    field: str,
+    ratio: tuple[int, int],
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    value: object = HiddenBoundaryFloat(0.5)
+    if field.endswith("decay_rates"):
+        value = (value,)
+    with pytest.raises(ValueError, match=field):
+        _minimal_config(**{field: value})
+
+
+def test_config_canonicalizes_float32_scalars_and_round_trips() -> None:
+    config = _minimal_config(
+        observation_decay_rates=(
+            Fraction(1, 10),
+            np.float64(0.25),
+            Fraction(1, 10**400),
+        ),
+        gate_threshold=Fraction(1, 10),
+        gate_temperature=np.float64(0.5),
+    )
+    assert config.observation_decay_rates == (float(np.float32(0.1)), 0.25, 0.0)
+    assert type(config.gate_threshold) is float
+    assert config.gate_threshold == float(np.float32(0.1))
+    assert type(config.gate_temperature) is float
+    assert WorkingMemoryConfig.from_config(config.to_config()) == config
+
+
+def test_config_rejects_derived_feature_dimension_above_int32() -> None:
+    with pytest.raises(ValueError, match="feature_dim"):
+        WorkingMemoryConfig(observation_dim=2**31 - 1)
+
+
+@pytest.mark.parametrize("method", ["features", "update_checked", "step"])
+@pytest.mark.parametrize(
+    ("field", "shape"),
+    [
+        ("observation", (2, 1)),
+        ("observation", (1, 2)),
+        ("observation", ()),
+        ("action", (1, 1)),
+        ("action", ()),
+        ("reward", (1, 1)),
+        ("reward", ()),
+    ],
+)
+def test_vector_entry_points_reject_same_size_wrong_shapes(
+    method: str,
+    field: str,
+    shape: tuple[int, ...],
+) -> None:
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(action_dim=1, reward_dim=1, include_current_action=True)
+    )
+    values = {
+        "observation": jnp.ones((2,), dtype=jnp.float32),
+        "action": jnp.ones((1,), dtype=jnp.float32),
+        "reward": jnp.ones((1,), dtype=jnp.float32),
+    }
+    values[field] = jnp.ones(shape, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="vector must have shape"):
+        getattr(memory, method)(
+            memory.init(),
+            values["observation"],
+            values["action"],
+            values["reward"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "shape"),
+    [
+        ("observations", (3,)),
+        ("observations", (3, 1)),
+        ("actions", (3,)),
+        ("actions", (3, 2)),
+        ("rewards", (3,)),
+        ("rewards", (3, 2)),
+        ("actions", (2, 1)),
+        ("rewards", (4, 1)),
+        ("external_gates", (3, 1)),
+        ("external_gates", (2,)),
+    ],
+)
+def test_batch_transform_rejects_wrong_shapes(
+    field: str,
+    shape: tuple[int, ...],
+) -> None:
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(action_dim=1, reward_dim=1, include_current_action=True)
+    )
+    values: dict[str, object] = {
+        "observations": jnp.ones((3, 2), dtype=jnp.float32),
+        "actions": jnp.ones((3, 1), dtype=jnp.float32),
+        "rewards": jnp.ones((3, 1), dtype=jnp.float32),
+        "external_gates": jnp.ones((3,), dtype=jnp.float32),
+    }
+    values[field] = jnp.ones(shape, dtype=jnp.float32)
+    with pytest.raises(ValueError, match=field if field != "external_gates" else "external_gates"):
+        transform_working_memory_arrays(
+            memory,
+            values["observations"],  # type: ignore[arg-type]
+            values["actions"],  # type: ignore[arg-type]
+            values["rewards"],  # type: ignore[arg-type]
+            external_gates=values["external_gates"],  # type: ignore[arg-type]
+        )
+
+
+def test_zero_width_vectors_and_batches_preserve_exact_shapes() -> None:
+    memory = WorkingMemoryFeaturizer(_minimal_config())
+    state = memory.init()
+    features = memory.features(
+        state,
+        jnp.ones((2,), dtype=jnp.float32),
+        jnp.empty((0,), dtype=jnp.float32),
+        jnp.empty((0,), dtype=jnp.float32),
+    )
+    result = transform_working_memory_arrays(
+        memory,
+        jnp.ones((3, 2), dtype=jnp.float32),
+        jnp.empty((3, 0), dtype=jnp.float32),
+        jnp.empty((3, 0), dtype=jnp.float32),
+    )
+    chex.assert_shape(features, (memory.feature_dim(),))
+    chex.assert_shape(result.features, (3, memory.feature_dim()))
 
 
 @pytest.mark.parametrize("field", [
