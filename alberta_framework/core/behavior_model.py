@@ -51,6 +51,26 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _behavior_model_resource_counts(n_actions: int, feature_dim: int) -> tuple[int, int]:
+    """Preflight every fixed-width state/resource count without allocating arrays."""
+    trainable = n_actions * feature_dim + n_actions
+    diagnostics = 3
+    administrative = 1
+    rng_words = 2
+    state_scalars = trainable + diagnostics + administrative + rng_words
+    state_nbytes = 4 * state_scalars
+    touched = trainable + diagnostics
+    for name, count in (
+        ("trainable_float32_scalars", trainable),
+        ("state_scalars", state_scalars),
+        ("state_nbytes", state_nbytes),
+        ("learned_float32_scalars_touched_per_update", touched),
+    ):
+        if count > _INT32_MAX:
+            raise ValueError(f"derived {name} must be <= {_INT32_MAX}")
+    return trainable, state_nbytes
+
+
 def _saturating_int32_increment(value: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     counter = jnp.asarray(value, dtype=jnp.int32)
@@ -201,11 +221,9 @@ class BehaviorModelConfig:
 
     def __post_init__(self) -> None:
         """Validate scalar hyperparameters."""
-        object.__setattr__(
-            self,
-            "n_actions",
-            _require_int32("n_actions", self.n_actions, minimum=1),
-        )
+        n_actions = _require_int32("n_actions", self.n_actions, minimum=1)
+        _behavior_model_resource_counts(n_actions, 1)
+        object.__setattr__(self, "n_actions", n_actions)
         step_size = validated_float32_scalar("step_size", self.step_size, lower=0.0)
         temperature = validated_float32_scalar("temperature", self.temperature, positive=True)
         l2_penalty = validated_float32_scalar("l2_penalty", self.l2_penalty, lower=0.0)
@@ -388,6 +406,7 @@ class BehaviorModel:
     def init(self, feature_dim: int, key: Array) -> BehaviorModelState:
         """Initialize parameters and diagnostics."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        _behavior_model_resource_counts(self._config.n_actions, feature_dim)
         return BehaviorModelState(
             weights=jnp.zeros(
                 (self._config.n_actions, feature_dim),
@@ -409,11 +428,13 @@ class BehaviorModel:
         and stores a default JAX typed key backed by two uint32 words.
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        trainable = self._config.n_actions * feature_dim + self._config.n_actions
+        trainable, state_nbytes = _behavior_model_resource_counts(
+            self._config.n_actions,
+            feature_dim,
+        )
         diagnostics = 3
         administrative = 1
         rng_words = 2
-        state_nbytes = 4 * (trainable + diagnostics + administrative + rng_words)
         return BehaviorModelResourceBudget(
             feature_dim=feature_dim,
             n_actions=self._config.n_actions,

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+
+import alberta_framework.core.behavior_model as behavior_model_module
 
 try:
     from alberta_framework.core.behavior_model import (
@@ -480,3 +484,85 @@ def test_behavior_model_config_accepts_and_canonicalizes_numpy_integers() -> Non
     budget = model.resource_budget(np.uint16(4))
     assert budget.feature_dim == 4
     assert type(budget.feature_dim) is int
+
+
+@pytest.mark.parametrize("dtype", [np.dtype(code).type for code in "bBhHiIlLqQ"])
+def test_behavior_model_accepts_every_supported_numpy_integer_dtype(dtype: type[Any]) -> None:
+    config = BehaviorModelConfig(n_actions=dtype(3))
+    model = BehaviorModel(config)
+    budget = model.resource_budget(dtype(4))
+
+    assert type(config.n_actions) is int
+    assert type(budget.feature_dim) is int
+    assert json.loads(json.dumps(config.to_config())) == config.to_config()
+    assert BehaviorModelConfig.from_config(config.to_config()) == config
+
+
+def test_behavior_model_rejects_hostile_integer_impostors() -> None:
+    class IntegerSubclass(int):
+        pass
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("validation must not inspect hostile repr")
+
+    for value in (IntegerSubclass(2), ClassSpoof()):
+        with pytest.raises(ValueError, match="n_actions"):
+            BehaviorModelConfig(n_actions=value)  # type: ignore[arg-type]
+
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    for value in (IntegerSubclass(2), ClassSpoof()):
+        with pytest.raises(ValueError, match="feature_dim"):
+            model.resource_budget(value)  # type: ignore[arg-type]
+
+
+def test_behavior_model_derived_resource_endpoints_are_allocation_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    max_actions_at_minimum_width = ((2**31 - 1) // 4 - 6) // 2
+    config = BehaviorModelConfig(n_actions=max_actions_at_minimum_width)
+    assert config.n_actions == max_actions_at_minimum_width
+    with pytest.raises(ValueError, match="derived state_nbytes"):
+        BehaviorModelConfig(n_actions=max_actions_at_minimum_width + 1)
+
+    model = BehaviorModel(BehaviorModelConfig(n_actions=1))
+    max_feature_dim = (2**31 - 1) // 4 - 7
+    budget = model.resource_budget(max_feature_dim)
+    assert budget.state_nbytes <= 2**31 - 1
+    with pytest.raises(ValueError, match="derived state_nbytes"):
+        model.resource_budget(max_feature_dim + 1)
+
+    monkeypatch.setattr(
+        behavior_model_module.jnp,
+        "zeros",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("allocated")),
+    )
+    with pytest.raises(ValueError, match="derived state_nbytes"):
+        model.init(max_feature_dim + 1, jax.random.key(0))
+
+
+@pytest.mark.parametrize(
+    ("field", "legal", "illegal"),
+    [
+        ("step_size", Fraction(0), Fraction(-1, 10**100)),
+        ("temperature", Fraction(1, 2), Fraction(0)),
+        ("l2_penalty", Fraction(0), Fraction(-1, 10**100)),
+        ("max_gradient_norm", Fraction(1, 2), Fraction(0)),
+        ("min_probability", Fraction(1, 2), Fraction(1)),
+        ("ratio_clip", Fraction(1, 2), Fraction(0)),
+        ("diagnostic_decay", Fraction(0), Fraction(1)),
+    ],
+)
+def test_behavior_model_scalar_boundaries_use_exact_float32_contract(
+    field: str,
+    legal: Fraction,
+    illegal: Fraction,
+) -> None:
+    config = BehaviorModelConfig(**{"n_actions": 2, field: legal})
+    assert type(getattr(config, field)) is float
+    with pytest.raises(ValueError, match=field):
+        BehaviorModelConfig(**{"n_actions": 2, field: illegal})
