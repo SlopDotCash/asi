@@ -425,6 +425,22 @@ def test_step9_count_fields_preserve_int32_upper_endpoints() -> None:
     json.dumps(config.to_dict(), allow_nan=False)
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "observation_dim",
+        "n_actions",
+        "model_hidden_sizes",
+        "planning_budget",
+        "dream_rollout_horizon",
+    ],
+)
+def test_step9_remaining_fields_enforce_int32_upper_bound(field: str) -> None:
+    value: object = (2**31,) if field == "model_hidden_sizes" else 2**31
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: value})
+
+
 # ---------------------------------------------------------------------------
 # Factory and init tests
 # ---------------------------------------------------------------------------
@@ -830,6 +846,20 @@ def test_step9_smoke_rejects_class_spoofed_integer_steps() -> None:
 
     with pytest.raises(ValueError, match="steps must be an integer"):
         run_step9_smoke(steps=_SpoofedInt())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 2**31}, "steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step9_smoke_enforces_int32_inputs(kwargs: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step9_smoke(**kwargs)  # type: ignore[arg-type]
 
 
 def test_step9_smoke_linear_model() -> None:

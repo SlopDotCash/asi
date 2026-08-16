@@ -248,8 +248,12 @@ def _require_bool(name: str, value: object) -> bool:
 
 
 def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
-    n_actions = _require_int("n_actions", config.n_actions, minimum=1)
+    observation_dim = _require_int(
+        "observation_dim", config.observation_dim, minimum=1, maximum=_INT32_MAX
+    )
+    n_actions = _require_int(
+        "n_actions", config.n_actions, minimum=1, maximum=_INT32_MAX
+    )
     if config.control.n_actions != n_actions:
         raise ValueError(
             f"control.n_actions ({config.control.n_actions}) must equal "
@@ -261,7 +265,7 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
             f"{config.model_hidden_sizes!r}"
         )
     model_hidden_sizes = tuple(
-        _require_int("model_hidden_sizes", size, minimum=1)
+        _require_int("model_hidden_sizes", size, minimum=1, maximum=_INT32_MAX)
         for size in config.model_hidden_sizes
     )
     model_step_size = _require_nonneg_real("model_step_size", config.model_step_size)
@@ -294,11 +298,14 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         "behavior_model_step_size",
         config.behavior_model_step_size,
     )
-    planning_budget = _require_int("planning_budget", config.planning_budget, minimum=0)
+    planning_budget = _require_int(
+        "planning_budget", config.planning_budget, minimum=0, maximum=_INT32_MAX
+    )
     dream_rollout_horizon = _require_int(
         "dream_rollout_horizon",
         config.dream_rollout_horizon,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     # Candidate selection publishes selected indices as signed int32 values.
     dream_candidate_count = _require_int(
@@ -810,7 +817,8 @@ def run_step9_smoke(
     seed: int = 0,
 ) -> Step9SmokeResult:
     """Run a tiny deterministic Step 9 dreaming integration probe."""
-    steps = _require_int("steps", steps, minimum=1)
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step9DreamingConfig()
     agent, model, buffer = make_step9_components(cfg)
