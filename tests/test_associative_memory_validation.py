@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
+from types import MappingProxyType
+
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework.core.associative_memory import AssociativeMemoryConfig
+from alberta_framework.core.associative_memory import (
+    AssociativeMemoryConfig,
+    AssociativeMemoryLearner,
+    run_associative_memory_arrays,
+)
 
 _INT32_MAX = 2**31 - 1
 
@@ -183,9 +191,8 @@ def test_associative_dimensions_preflight_without_allocation() -> None:
 
 
 def test_associative_state_preflight_bytes_without_allocation() -> None:
-    # Simplified total = max_features*vocab + 8*max_features + vocab + suffix +5
-    # With vocab=2,suffix=2 -> total=10*max+9, persistent=40*max+36
-    last_legal = (2**31 - 1 - 36) // 40
+    # With vocab=block=suffix=2, the conservative update bound is 34*max+244.
+    last_legal = (_INT32_MAX // 4 - 244) // 34
     _base_cfg(
         vocab_size=2,
         block_size=2,
@@ -218,3 +225,84 @@ def test_associative_float_validators_accept_valid_values() -> None:
     )
     assert cfg.write_lr == 1.0
     assert cfg.retention == 0.9
+
+
+def test_associative_pair_descriptors_preflight_before_learner_construction() -> None:
+    with pytest.raises(
+        ValueError, match="pair count|active feature|feature-key|descriptor|query"
+    ):
+        AssociativeMemoryConfig(
+            vocab_size=2,
+            block_size=50_000,
+            suffix_length=50_000,
+            max_features=1,
+        )
+
+
+def test_associative_serialization_preserves_historical_compatibility() -> None:
+    config = _base_cfg()
+    payload = config.to_config()
+    payload["type"] = "historical-marker"
+    payload["vocab_size"] = np.int32(config.vocab_size)
+    restored = AssociativeMemoryConfig.from_config(MappingProxyType(payload))
+    assert restored == config
+    partial = AssociativeMemoryConfig.from_config(
+        {"vocab_size": 4, "block_size": 8, "suffix_length": 2, "max_features": 4}
+    )
+    assert partial == config
+    learner_payload = AssociativeMemoryLearner(config).to_config()
+    learner_payload["type"] = "historical-marker"
+    learner_payload["metadata"] = 1
+    assert AssociativeMemoryLearner.from_config(learner_payload).config == config
+    with pytest.raises(ValueError, match="serialized AssociativeMemoryConfig"):
+        AssociativeMemoryConfig.from_config({**config.to_config(), "unknown": 1})
+
+
+def test_associative_public_contracts_and_counters() -> None:
+    learner = AssociativeMemoryLearner(_base_cfg())
+    state = learner.init()
+    context = jnp.zeros((8,), dtype=jnp.int32)
+    label = jnp.asarray(1, dtype=jnp.int32)
+    with pytest.raises(ValueError, match="context"):
+        learner.predict(state, jnp.zeros((1, 8), dtype=jnp.int32))
+    with pytest.raises(TypeError, match="context"):
+        learner.predict(state, jnp.zeros((8,), dtype=jnp.int16))
+    malformed = dataclasses.replace(
+        state, values=jnp.zeros((4, 4), dtype=jnp.float16)
+    )
+    with pytest.raises(TypeError, match="state.values"):
+        learner.update(malformed, context, label)
+
+    maximum = dataclasses.replace(
+        state,
+        allocations=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+        replacements=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+        step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+    )
+    result = learner.update(maximum, context, label)
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == _INT32_MAX
+    assert int(result.state.allocations) == _INT32_MAX
+    assert int(result.state.replacements) == _INT32_MAX
+
+
+def test_associative_scan_preflight_precedes_conversion() -> None:
+    learner = AssociativeMemoryLearner(_base_cfg())
+    first_overflow = _INT32_MAX // (4 * (learner.config.vocab_size + 9)) + 1
+
+    class HostArray:
+        dtype = np.dtype(np.int32)
+
+        def __init__(self, shape: tuple[int, ...]):
+            self.shape = shape
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("conversion must not run")
+
+    with pytest.raises(ValueError, match="scalar count|byte count"):
+        run_associative_memory_arrays(
+            learner,
+            learner.init(),
+            HostArray((first_overflow, 8)),  # type: ignore[arg-type]
+            HostArray((first_overflow,)),  # type: ignore[arg-type]
+        )
