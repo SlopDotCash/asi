@@ -339,6 +339,16 @@ class TestRiverSwim:
             1.0e100,
             -1.0e100,
         ],
+        ids=(
+            "bool",
+            "numpy-bool",
+            "string",
+            "object",
+            "class-spoof",
+            "exploding-ratio",
+            "positive-overflow",
+            "negative-overflow",
+        ),
     )
     def test_rewards_reject_untrusted_or_non_float32_values(
         self,
