@@ -73,7 +73,9 @@ EVIDENCE_SEEDS = tuple(range(30, 60))
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _BOOTSTRAP_MAX_SEED_OFFSET = 103
-_FLOAT32_REWARD_TERM_LIMIT = math.sqrt(float(np.finfo(np.float32).max) / 2.0)
+_FLOAT32_MAX_BELOW_OVERFLOW = float(
+    np.nextafter(np.float32(np.finfo(np.float32).max), np.float32(0.0))
+)
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -249,17 +251,23 @@ class DecisionFidelityConfig:
         _require_derived_int32(
             "SparseFTL persistent state bytes", SparseFTLWorldModel(sparse_config).state_nbytes
         )
-        maximum_predicted_distance = 1.89 * state_bound + horizon * prediction_clip
+        reward_term_limit = math.sqrt(
+            _FLOAT32_MAX_BELOW_OVERFLOW / (2.0 * horizon)
+        )
+        # Probe initial states are bounded by 1.30 independently of state_bound;
+        # goals are clipped to 0.89 * state_bound. Slightly wider decimal
+        # coefficients conservatively cover float32 narrowing at both sinks.
+        maximum_predicted_distance = 1.31 + 0.90 * state_bound + horizon * prediction_clip
         if (
             not math.isfinite(maximum_predicted_distance)
-            or maximum_predicted_distance > _FLOAT32_REWARD_TERM_LIMIT
+            or maximum_predicted_distance > reward_term_limit
         ):
-            raise ValueError("state_bound and prediction_clip exceed the float32 reward domain")
+            raise ValueError(
+                "state_bound and prediction_clip exceed the float32 return domain"
+            )
         maximum_amplitude = max(abs(value) for value in menu_amplitudes)
-        if action_cost > 0.0 and maximum_amplitude > _FLOAT32_REWARD_TERM_LIMIT / math.sqrt(
-            action_cost
-        ):
-            raise ValueError("menu_amplitudes and action_cost exceed the float32 reward domain")
+        if action_cost > 0.0 and maximum_amplitude > reward_term_limit / math.sqrt(action_cost):
+            raise ValueError("menu_amplitudes and action_cost exceed the float32 return domain")
         if bootstrap_seed + _BOOTSTRAP_MAX_SEED_OFFSET > _UINT32_MAX:
             raise ValueError(
                 "bootstrap_seed plus the frozen maximum offset must lie in [0, 2**32)"
@@ -925,19 +933,11 @@ def run_ftl_decision_fidelity_evaluation(
     """
 
     resolved = DecisionFidelityConfig() if config is None else config
-    try:
-        raw_seeds = tuple(seeds)
-    except Exception as error:
-        raise ValueError("seeds must be a finite sequence of exact integers") from error
-    seed_tuple = tuple(
-        _require_int32(f"seeds[{index}]", seed, minimum=0)
-        for index, seed in enumerate(raw_seeds)
-    )
-    if not seed_tuple:
+    if type(seeds) not in (tuple, list):
+        raise ValueError("seeds must be an actual tuple or list of exact integers")
+    seed_count = len(seeds)
+    if seed_count == 0:
         raise ValueError("seeds must be non-empty")
-    if len(set(seed_tuple)) != len(seed_tuple):
-        raise ValueError("seeds must be unique for paired evidence")
-    seed_count = len(seed_tuple)
     probe_count = 2 * resolved.probes_per_domain
     menu_count = len(resolved.menu_amplitudes)
     _require_derived_int32(
@@ -948,6 +948,13 @@ def run_ftl_decision_fidelity_evaluation(
         seed_count * probe_count * menu_count * resolved.horizon * len(CONDITION_NAMES),
     )
     _validate_bootstrap_capacity(resolved, seed_count)
+    raw_seeds = tuple(seeds)
+    seed_tuple = tuple(
+        _require_int32(f"seeds[{index}]", seed, minimum=0)
+        for index, seed in enumerate(raw_seeds)
+    )
+    if len(set(seed_tuple)) != len(seed_tuple):
+        raise ValueError("seeds must be unique for paired evidence")
 
     sparse_model = SparseFTLWorldModel(
         SparseFTLWorldModelConfig(

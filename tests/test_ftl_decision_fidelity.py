@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 from numbers import Real
 
 import jax
@@ -408,3 +409,28 @@ def test_default_config_json_and_numpy_canonicalization_preserve_frozen_payload(
         "bootstrap_seed": 2_026_073_001,
     }
     assert json.loads(json.dumps(dataclasses.asdict(DecisionFidelityConfig()))) == expected
+
+
+def test_return_accumulation_domain_is_preflighted_not_only_each_reward() -> None:
+    horizon = 6
+    individually_safe_clip = (
+        math.sqrt(float(np.finfo(np.float32).max) / 2.0) / horizon * 0.9
+    )
+    with pytest.raises(ValueError, match="return domain"):
+        DecisionFidelityConfig(
+            horizon=horizon,
+            state_bound=np.finfo(np.float32).tiny,
+            prediction_clip=individually_safe_clip,
+        )
+
+
+def test_custom_seed_container_rejects_hostile_iterables_without_iteration() -> None:
+    class HostileIterable:
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("iteration hook must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    with pytest.raises(ValueError, match="actual tuple or list"):
+        run_ftl_decision_fidelity_evaluation(seeds=HostileIterable())  # type: ignore[arg-type]
