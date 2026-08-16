@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any, cast
 
 import jax
@@ -630,19 +631,26 @@ def test_router_config_rejects_string_spoofs_without_invoking_hooks(
 
 
 @pytest.mark.unit
-def test_router_from_config_requires_an_exact_dict_and_exact_schema() -> None:
+def test_router_from_config_accepts_mappings_and_normalizes_hostile_hooks() -> None:
     payload = FeatureBankRouterConfig(base_dim=4, active_slots=3).to_config()
 
-    class HostileDict(dict[str, object]):
+    class HostileMapping(Mapping[str, object]):
         def __iter__(self) -> Any:
-            raise AssertionError("mapping hooks must not run")
+            raise RuntimeError("mapping hooks must be normalized")
+
+        def __len__(self) -> int:
+            return len(payload)
+
+        def __getitem__(self, key: str) -> object:
+            return payload[key]
 
         def __repr__(self) -> str:
             raise AssertionError("repr hook must not run")
 
     for loader in (FeatureBankRouterConfig.from_config, FeatureBankRouter.from_config):
-        with pytest.raises(TypeError, match="exact dict"):
-            loader(HostileDict(payload))  # type: ignore[arg-type]
+        assert loader(MappingProxyType(payload)).to_config() == payload
+        with pytest.raises(ValueError, match="could not be read"):
+            loader(HostileMapping())
         with pytest.raises(ValueError, match="keys"):
             loader({key: value for key, value in payload.items() if key != "active_slots"})
         with pytest.raises(ValueError, match="keys"):

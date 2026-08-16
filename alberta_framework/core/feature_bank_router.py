@@ -28,6 +28,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import jax
@@ -140,13 +141,16 @@ class FeatureBankRouterConfig:
     @classmethod
     def from_config(
         cls,
-        config: dict[str, object],
+        config: Mapping[str, object],
     ) -> FeatureBankRouterConfig:
         """Reconstruct only the exact versioned configuration schema."""
 
-        if type(config) is not dict:
-            raise TypeError("feature-bank router config must be an exact dict")
-        payload = dict(config)
+        if not issubclass(type(config), Mapping):
+            raise ValueError("feature-bank router config must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception:
+            raise ValueError("feature-bank router config could not be read") from None
         expected_keys = {
             "type",
             "schema_version",
@@ -421,7 +425,7 @@ class FeatureBankRouter:
     @classmethod
     def from_config(
         cls,
-        config: dict[str, object],
+        config: Mapping[str, object],
     ) -> FeatureBankRouter:
         """Construct a router from the strict versioned configuration."""
 
