@@ -1,5 +1,7 @@
 """Tests for experience streams."""
 
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -595,6 +597,40 @@ class TestMakeScaleRange:
 class TestDynamicScaleShiftStream:
     """Tests for the DynamicScaleShiftStream class."""
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"min_scale": 0.0},
+            {"min_scale": -1.0},
+            {"min_scale": float("nan")},
+            {"max_scale": float("inf")},
+            {"min_scale": 10.0, "max_scale": 1.0},
+            {"max_scale": 1e39},
+            {"max_scale": Fraction(10**400)},
+            {"min_scale": True},
+            {"max_scale": True},
+            {"min_scale": 1e-40},
+        ],
+    )
+    def test_rejects_nonpositive_nonfinite_or_reversed_scale_bounds(self, kwargs):
+        """These bounds produced NaN/inf observations or an inverted log-uniform range."""
+        with pytest.raises(ValueError, match="scale"):
+            DynamicScaleShiftStream(feature_dim=4, **kwargs)
+
+    def test_scale_bounds_are_narrowed_once_and_compared_after_narrowing(self, rng_key):
+        """Exact-ratio inputs round straight to float32; equal narrowed bounds are accepted."""
+        midpoint = Fraction(1) + Fraction(1, 2**24)
+        stream = DynamicScaleShiftStream(feature_dim=4, min_scale=midpoint, max_scale=midpoint)
+        assert stream._min_scale == 1.0
+        assert stream._max_scale == 1.0
+        assert type(stream._min_scale) is float
+        max_finite = float(np.finfo(np.float32).max)
+        stream = DynamicScaleShiftStream(feature_dim=4, min_scale=1.0, max_scale=max_finite)
+        assert stream._max_scale == max_finite
+        stream = DynamicScaleShiftStream(feature_dim=4, min_scale=0.5, max_scale=0.5)
+        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
+        chex.assert_tree_all_finite(timestep.observation)
+
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""
         stream = DynamicScaleShiftStream(feature_dim=10)
@@ -680,6 +716,59 @@ class TestDynamicScaleShiftStream:
 
 class TestScaleDriftStream:
     """Tests for the ScaleDriftStream class."""
+
+    @pytest.mark.parametrize(
+        ("kwargs", "message"),
+        [
+            (
+                {"min_log_scale": 4.0, "max_log_scale": -4.0},
+                "min_log_scale must be <= max_log_scale",
+            ),
+            ({"min_log_scale": float("nan")}, "min_log_scale must be finite"),
+            ({"max_log_scale": float("inf")}, "max_log_scale must be finite"),
+            ({"min_log_scale": -1e100, "max_log_scale": 1e100}, "min_log_scale must be finite"),
+            ({"max_log_scale": 1e39}, "max_log_scale must be finite"),
+            ({"max_log_scale": Fraction(10**400)}, "max_log_scale must be finite"),
+            ({"min_log_scale": True}, "min_log_scale must be finite"),
+            ({"max_log_scale": False}, "max_log_scale must be finite"),
+        ],
+    )
+    def test_rejects_reversed_or_nonfinite_log_scale_bounds(self, kwargs, message):
+        """Reversed clip bounds pin every scale to max_log_scale: a stationary stream."""
+        with pytest.raises(ValueError, match=message):
+            ScaleDriftStream(feature_dim=4, **kwargs)
+
+    def test_equal_log_scale_bounds_are_accepted(self, rng_key):
+        stream = ScaleDriftStream(feature_dim=4, min_log_scale=0.0, max_log_scale=0.0)
+        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
+        chex.assert_tree_all_finite(timestep.observation)
+
+    def test_log_scale_bounds_are_narrowed_once_before_comparison(self, rng_key):
+        """A Fraction midpoint rounds once (ties-to-even) to the float32 clip bound."""
+        midpoint = Fraction(1) + Fraction(1, 2**24)
+        stream = ScaleDriftStream(feature_dim=4, min_log_scale=midpoint, max_log_scale=1.0)
+        assert stream._min_log_scale == 1.0
+        assert stream._max_log_scale == 1.0
+        assert type(stream._min_log_scale) is float
+        max_finite = float(np.finfo(np.float32).max)
+        stream = ScaleDriftStream(
+            feature_dim=4, min_log_scale=-max_finite, max_log_scale=max_finite
+        )
+        assert stream._max_log_scale == max_finite
+        timestep, _ = stream.step(stream.init(rng_key), jnp.array(0))
+        chex.assert_tree_all_finite(timestep.observation)
+
+    def test_clip_bounds_stay_finite_at_execution(self, rng_key):
+        """The stored bounds are exactly what jnp.clip receives, so the walk is bounded."""
+        stream = ScaleDriftStream(
+            feature_dim=4, scale_drift_rate=10.0, min_log_scale=-1.0, max_log_scale=1.0
+        )
+        state = stream.init(rng_key)
+        for step in range(50):
+            _, state = stream.step(state, jnp.array(step))
+        assert bool(jnp.all(jnp.isfinite(state.log_scales)))
+        assert bool(jnp.all(state.log_scales >= -1.0))
+        assert bool(jnp.all(state.log_scales <= 1.0))
 
     def test_init_creates_valid_state(self, rng_key):
         """Stream init should create valid state with correct shapes."""

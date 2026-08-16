@@ -110,9 +110,9 @@ class _FloatSpoof:
         ("error_decay", float("nan")),
         ("error_decay", float("inf")),
         ("error_decay", float("-inf")),
-        ("forgetting", _FloatSpoof()),
-        ("ridge", _FloatSpoof()),
-        ("error_decay", _FloatSpoof()),
+        pytest.param("forgetting", _FloatSpoof(), id="forgetting-class-spoof"),
+        pytest.param("ridge", _FloatSpoof(), id="ridge-class-spoof"),
+        pytest.param("error_decay", _FloatSpoof(), id="error-decay-class-spoof"),
     ],
 )
 def test_rls_reward_model_rejects_non_real_or_non_finite_scalars(

@@ -75,6 +75,12 @@ from alberta_framework.core.update_safety import (
 )
 from alberta_framework.streams.base import ScanStream
 
+
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Skip a collapsed 0*inf product before it becomes NaN."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 # Type variable for TD stream state
 StateT = TypeVar("StateT")
 
@@ -1795,9 +1801,10 @@ class TDLinearLearner:
         next_prediction = self.predict(state, next_observation)
 
         gamma_scalar = jnp.squeeze(gamma)
+        next_value = jnp.squeeze(next_prediction)
         td_error = (
             jnp.squeeze(reward)
-            + gamma_scalar * jnp.squeeze(next_prediction)
+            + _skip_zero_scale(gamma_scalar, next_value)
             - jnp.squeeze(prediction)
         )
 
@@ -1833,7 +1840,7 @@ class TDLinearLearner:
         inputs_valid = (
             jnp.all(jnp.isfinite(observation))
             & jnp.all(jnp.isfinite(reward))
-            & jnp.all(jnp.isfinite(next_observation))
+            & (jnp.all(jnp.isfinite(next_observation)) | (gamma_scalar == 0.0))
             & jnp.all(jnp.isfinite(gamma))
         )
         update_applied = (
@@ -1944,13 +1951,20 @@ class TrueOnlineTDLearner:
 
         value = jnp.squeeze(self.predict(state, observation))
         next_value = jnp.squeeze(self.predict(state, next_observation))
-        td_error = jnp.squeeze(reward) + gamma_scalar * next_value - value
+        td_error = jnp.squeeze(reward) + _skip_zero_scale(gamma_scalar, next_value) - value
 
         trace_dot = jnp.dot(state.eligibility_traces, observation)
         trace_dot = trace_dot + state.bias_eligibility_trace
-        trace_scale = 1.0 - alpha * gamma_scalar * lamda * trace_dot
-        new_traces = gamma_scalar * lamda * state.eligibility_traces + trace_scale * observation
-        new_bias_trace = gamma_scalar * lamda * state.bias_eligibility_trace + trace_scale
+        decay_scale = jnp.where(
+            (gamma_scalar == 0.0) | (lamda == 0.0),
+            jnp.zeros_like(gamma_scalar),
+            gamma_scalar * lamda,
+        )
+        trace_scale = 1.0 - alpha * _skip_zero_scale(decay_scale, trace_dot)
+        new_traces = (
+            _skip_zero_scale(decay_scale, state.eligibility_traces) + trace_scale * observation
+        )
+        new_bias_trace = _skip_zero_scale(decay_scale, state.bias_eligibility_trace) + trace_scale
 
         correction = value - state.v_old
         update_scale = alpha * (td_error + correction)
@@ -1984,7 +1998,7 @@ class TrueOnlineTDLearner:
         inputs_valid = (
             jnp.all(jnp.isfinite(observation))
             & jnp.isfinite(jnp.squeeze(reward))
-            & jnp.all(jnp.isfinite(next_observation))
+            & (jnp.all(jnp.isfinite(next_observation)) | (gamma_scalar == 0.0))
             & jnp.isfinite(gamma_scalar)
         )
         proposed_finite = (
@@ -2018,7 +2032,7 @@ class TrueOnlineTDLearner:
             ),
             next_prediction=jnp.where(
                 update_applied,
-                jnp.atleast_1d(next_value),
+                jnp.atleast_1d(jnp.where(jnp.isfinite(next_value), next_value, 0.0)),
                 jnp.zeros_like(jnp.atleast_1d(next_value)),
             ),
             td_error=jnp.where(

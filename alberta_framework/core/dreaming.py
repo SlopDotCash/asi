@@ -63,6 +63,12 @@ def _require_finite_nonnegative(value: object, name: str) -> None:
         raise ValueError(f"{name} must be finite and non-negative")
 
 
+def _require_finite(value: object, name: str) -> None:
+    """Reject NaN, infinities, and non-real scalars (sign-agnostic)."""
+    if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value):
+        raise ValueError(f"{name} must be finite")
+
+
 def _require_bool(value: object, name: str) -> None:
     """Reject truthy stand-ins for exact bools."""
     if not isinstance(value, bool):
@@ -177,13 +183,16 @@ class DreamSelectionConfig:
     max_model_error: float = 1.0e30
 
     def __post_init__(self) -> None:
-        """Validate scalar configuration."""
-        if self.max_items <= 0:
-            raise ValueError("max_items must be positive")
-        if self.min_confidence < 0.0:
-            raise ValueError("min_confidence must be non-negative")
-        if self.max_model_error < 0.0:
-            raise ValueError("max_model_error must be non-negative")
+        """Validate scalar configuration, rejecting NaN and type stand-ins."""
+        _require_exact_int(self.max_items, "max_items", minimum=1)
+        _require_finite(self.surprise_weight, "surprise_weight")
+        _require_finite(self.utility_weight, "utility_weight")
+        _require_finite(self.confidence_weight, "confidence_weight")
+        _require_finite(self.model_error_weight, "model_error_weight")
+        _require_finite(self.min_surprise, "min_surprise")
+        _require_finite(self.min_utility, "min_utility")
+        _require_finite_nonnegative(self.min_confidence, "min_confidence")
+        _require_finite_nonnegative(self.max_model_error, "max_model_error")
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -448,10 +457,8 @@ class RecentObservationBuffer:
 
     def __init__(self, capacity: int, observation_dim: int):
         """Initialize the buffer shape."""
-        if capacity <= 0:
-            raise ValueError("capacity must be positive")
-        if observation_dim <= 0:
-            raise ValueError("observation_dim must be positive")
+        _require_exact_int(capacity, "capacity", minimum=1)
+        _require_exact_int(observation_dim, "observation_dim", minimum=1)
         self._capacity = capacity
         self._observation_dim = observation_dim
 

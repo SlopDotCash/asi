@@ -78,6 +78,36 @@ class TestInit:
         assert bool(jnp.all(jnp.isfinite(result.prediction)))
         assert bool(jnp.all(jnp.isfinite(result.next_prediction)))
 
+    def test_zero_gamma_does_not_multiply_inf_next_observation(self) -> None:
+        """gamma=0 must skip V(s') so an unused inf next observation can still commit."""
+        learner = TrueOnlineTDLearner(step_size=0.1, trace_decay=0.5)
+        state = learner.init(2)
+        observation = jnp.array([1.0, 0.0], dtype=jnp.float32)
+        reward = jnp.array(0.25, dtype=jnp.float32)
+        next_observation = jnp.array([jnp.inf, 0.0], dtype=jnp.float32)
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = learner.update(
+            state,
+            observation,
+            reward,
+            next_observation,
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.state.weights)
+        chex.assert_tree_all_finite(result.td_error)
+        finite_next = learner.update(
+            state,
+            observation,
+            reward,
+            jnp.zeros_like(next_observation),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(result.state.weights, finite_next.state.weights)
+        chex.assert_trees_all_close(result.td_error, finite_next.td_error)
+
 
 # =============================================================================
 # TD(0) equivalence to supervised LMS for one-step gamma=0 supervision

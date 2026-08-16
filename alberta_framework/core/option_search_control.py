@@ -619,15 +619,21 @@ class OptionSearchControl:
                 learner_state,
                 predicted_next,
             )
+            discount = models.discount_ema[index]
+            bootstrap = jnp.where(
+                discount == 0.0,
+                jnp.zeros_like(discount),
+                discount * jnp.max(next_values),
+            )
             target = (
                 models.env_return_ema[index]
                 - state.base_average_reward * models.baseline_mass_ema[index]
-                + models.discount_ema[index] * jnp.max(next_values)
+                + bootstrap
             )
             residual = target - option_values[index]
             prediction_finite = (
-                jnp.all(jnp.isfinite(predicted_next))
-                & jnp.all(jnp.isfinite(next_values))
+                ((discount == 0.0) | jnp.all(jnp.isfinite(predicted_next)))
+                & ((discount == 0.0) | jnp.all(jnp.isfinite(next_values)))
                 & jnp.isfinite(option_values[index])
                 & jnp.isfinite(target)
                 & jnp.isfinite(residual)

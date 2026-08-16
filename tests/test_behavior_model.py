@@ -119,6 +119,33 @@ def test_infinite_observation_does_not_poison_weights() -> None:
     assert bool(recovered.update_applied)
 
 
+def test_zero_diagnostic_decay_does_not_multiply_inf_ema() -> None:
+    """decay=0 times an infinite diagnostic EMA is NaN and would reject a finite sample."""
+    model = BehaviorModel(
+        BehaviorModelConfig(n_actions=2, step_size=0.1, diagnostic_decay=0.0)
+    )
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    obs = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    action = jnp.array(0, dtype=jnp.int32)
+    state = model.update(state, obs, action).state
+    state = state.replace(  # type: ignore[attr-defined]
+        nll_ema=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        accuracy_ema=jnp.asarray(jnp.inf, dtype=jnp.float32),
+        confidence_ema=jnp.asarray(jnp.inf, dtype=jnp.float32),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    result = model.update(state, obs, action)
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.state.nll_ema)
+    chex.assert_tree_all_finite(result.state.accuracy_ema)
+    chex.assert_tree_all_finite(result.state.confidence_ema)
+    chex.assert_trees_all_close(result.state.nll_ema, result.loss)
+    chex.assert_trees_all_close(result.state.accuracy_ema, result.correct)
+    chex.assert_trees_all_close(result.state.confidence_ema, result.confidence)
+
+
 def test_infinite_observation_marks_input_loss_gradient_invalid() -> None:
     """The state-builder bridge returns a neutral payload with a false verdict.
 

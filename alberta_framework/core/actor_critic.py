@@ -808,6 +808,8 @@ class ContinuousActorCriticAgent:
             actual_type = type(bound)
             if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
                 raise ValueError(f"{name} must be a finite real number when set")
+            if not math.isfinite(bound):
+                raise ValueError(f"{name} must be finite when set")
             try:
                 narrowed = round_real_to_float32(bound)
             except Exception as exc:

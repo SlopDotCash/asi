@@ -49,6 +49,58 @@ def _make_agent(
 # =============================================================================
 
 
+class TestSARSAConfigValidation:
+    @pytest.mark.parametrize("n_actions", [0, -1, True, 2.0])
+    def test_rejects_invalid_action_count(self, n_actions):
+        with pytest.raises(ValueError, match="n_actions"):
+            SARSAConfig(n_actions=n_actions)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("epsilon_decay_steps", [-1, True, 2.0])
+    def test_rejects_invalid_decay_steps(self, epsilon_decay_steps):
+        with pytest.raises(ValueError, match="epsilon_decay_steps"):
+            SARSAConfig(n_actions=2, epsilon_decay_steps=epsilon_decay_steps)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("name", ["gamma", "epsilon_start", "epsilon_end"])
+    @pytest.mark.parametrize(
+        "value", [float("nan"), float("inf"), -0.1, 1.1, True, "0.5"]
+    )
+    def test_rejects_invalid_probability(self, name, value):
+        with pytest.raises(ValueError, match=name):
+            SARSAConfig(n_actions=2, **{name: value})
+
+    @pytest.mark.parametrize("value", [0.0, 1.0])
+    def test_accepts_probability_endpoints(self, value):
+        config = SARSAConfig(
+            n_actions=2,
+            gamma=value,
+            epsilon_start=value,
+            epsilon_end=value,
+        )
+        assert config.gamma == value
+
+    def test_rejects_class_spoofed_scalars(self):
+        class SpoofedInt:
+            @property
+            def __class__(self):
+                return int
+
+            def __int__(self):
+                return 2
+
+        class SpoofedFloat:
+            @property
+            def __class__(self):
+                return float
+
+            def __float__(self):
+                return 0.5
+
+        with pytest.raises(ValueError, match="n_actions"):
+            SARSAConfig(n_actions=SpoofedInt())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="gamma"):
+            SARSAConfig(n_actions=2, gamma=SpoofedFloat())  # type: ignore[arg-type]
+
+
 class TestSARSAInit:
     """Tests for SARSAAgent initialization."""
 
