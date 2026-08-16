@@ -72,9 +72,7 @@ def test_epps_pulley_rejects_invalid_static_kernel_width(kernel_width: object) -
 
 def test_epps_pulley_dynamic_jit_keeps_valid_width_and_signals_invalid_widths() -> None:
     samples = jnp.asarray([-1.0, 0.0, 1.0], dtype=jnp.float32)
-    compiled = jax.jit(
-        lambda width: epps_pulley_gaussian_statistic(samples, kernel_width=width)
-    )
+    compiled = jax.jit(lambda width: epps_pulley_gaussian_statistic(samples, kernel_width=width))
 
     eager = epps_pulley_gaussian_statistic(samples, kernel_width=1.0)
     chex.assert_trees_all_close(compiled(jnp.asarray(1.0)), eager, atol=1.0e-6)
@@ -103,9 +101,7 @@ def test_epps_pulley_accepts_supported_concrete_real_scalars() -> None:
 def test_epps_pulley_vmap_preserves_valid_widths_and_signals_invalid_lanes() -> None:
     samples = jnp.asarray([-1.0, 0.0, 1.0], dtype=jnp.float32)
     mapped = jax.jit(
-        jax.vmap(
-            lambda width: epps_pulley_gaussian_statistic(samples, kernel_width=width)
-        )
+        jax.vmap(lambda width: epps_pulley_gaussian_statistic(samples, kernel_width=width))
     )
     valid_widths = jnp.asarray([0.5, 1.0, 2.0], dtype=jnp.float32)
     expected = jnp.asarray(
@@ -178,7 +174,7 @@ def test_sigreg_config_rejects_invalid_static_numeric_contracts() -> None:
     ):
         with pytest.raises(ValueError):
             SIGRegConfig(eps=bad_eps)  # type: ignore[arg-type]
-    for bad_count in (0, -1, True, 1.0, np.int64(1)):
+    for bad_count in (0, -1, True, 1.0, "1", [1]):
         with pytest.raises(ValueError):
             SIGRegConfig(n_projections=bad_count)  # type: ignore[arg-type]
 
@@ -300,3 +296,24 @@ def test_sliced_sigreg_rejects_nonfinite_derived_projections() -> None:
     assert bool(jnp.isfinite(directions).all())
     with pytest.raises(ValueError, match="projected samples must be finite"):
         sliced_sigreg_loss(embeddings, directions)
+
+
+def test_sigreg_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="n_projections"):
+        SIGRegConfig(n_projections=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_projections"):
+        SIGRegConfig(n_projections=32.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_projections"):
+        SIGRegConfig(n_projections=0)
+
+
+def test_sigreg_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    cfg = SIGRegConfig(
+        n_projections=np.int32(64),
+        kernel_width=np.float32(1.5),
+        eps=np.float32(1e-7),
+    )
+    assert type(cfg.n_projections) is int
+    assert type(cfg.kernel_width) is float
+    assert type(cfg.eps) is float
+    assert cfg.n_projections == 64

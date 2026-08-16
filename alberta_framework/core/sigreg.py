@@ -26,7 +26,8 @@ from __future__ import annotations
 import dataclasses
 import math
 import numbers
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -35,10 +36,35 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float
 
-_FLOAT32_TINY = float(np.finfo(np.float32).tiny)
-_KERNEL_WIDTH_ERROR = (
-    "kernel_width must be positive and finite in float32 kernel arithmetic"
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
 )
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+_FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+_KERNEL_WIDTH_ERROR = "kernel_width must be positive and finite in float32 kernel arithmetic"
 _SAMPLES_FINITE_ERROR = "samples must be finite"
 _EMBEDDINGS_FINITE_ERROR = "embeddings must be finite"
 _DIRECTIONS_FINITE_ERROR = "directions must be finite"
@@ -67,9 +93,7 @@ def _normalized_positive_float32(
         squared32 = np.float32(value32 * value32)
     if not math.isfinite(float(value32)) or float(value32) < _FLOAT32_TINY:
         raise ValueError(message)
-    if squared and (
-        not math.isfinite(float(squared32)) or float(squared32) < _FLOAT32_TINY
-    ):
+    if squared and (not math.isfinite(float(squared32)) or float(squared32) < _FLOAT32_TINY):
         raise ValueError(message)
     return concrete
 
@@ -93,14 +117,14 @@ class SIGRegConfig:
 
     def __post_init__(self) -> None:
         """Validate the configuration."""
-        if type(self.n_projections) is not int or self.n_projections <= 0:
-            raise ValueError("n_projections must be positive")
+        n_projections = _require_int32("n_projections", self.n_projections, minimum=1)
         kernel_width = _normalized_positive_float32(
             "kernel_width",
             self.kernel_width,
             squared=True,
         )
         eps = _normalized_positive_float32("eps", self.eps, squared=False)
+        object.__setattr__(self, "n_projections", n_projections)
         object.__setattr__(self, "kernel_width", kernel_width)
         object.__setattr__(self, "eps", eps)
 
@@ -183,8 +207,7 @@ def _validated_kernel_width(kernel_width: float | Array) -> Array:
     if uncast.shape != ():
         raise ValueError(_KERNEL_WIDTH_ERROR)
     if not (
-        jnp.issubdtype(uncast.dtype, jnp.integer)
-        or jnp.issubdtype(uncast.dtype, jnp.floating)
+        jnp.issubdtype(uncast.dtype, jnp.integer) or jnp.issubdtype(uncast.dtype, jnp.floating)
     ):
         raise ValueError(_KERNEL_WIDTH_ERROR)
 
@@ -221,9 +244,7 @@ def _epps_pulley_gaussian_statistic(samples: Array, width: Array) -> Array:
     diffs = x[:, None] - x[None, :]
     empirical = jnp.mean(jnp.exp(-(diffs**2) / (2.0 * width_squared)))
     cross_scale = jnp.sqrt(width_squared / (width_squared + 1.0))
-    cross = jnp.mean(
-        cross_scale * jnp.exp(-(x**2) / (2.0 * (width_squared + 1.0)))
-    )
+    cross = jnp.mean(cross_scale * jnp.exp(-(x**2) / (2.0 * (width_squared + 1.0))))
     target = jnp.sqrt(width_squared / (width_squared + 2.0))
     return jnp.maximum(empirical - 2.0 * cross + target, 0.0)
 
