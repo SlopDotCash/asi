@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from typing import Any, cast
 
 import jax
@@ -922,3 +923,104 @@ def test_partner_policy_fusion_config_accepts_and_canonicalizes_numpy_integers()
     assert config.max_partners == 2
     assert config.context_dim == 4
     assert config.n_actions == 2
+
+
+@pytest.mark.parametrize("dtype", [np.dtype(code).type for code in "bBhHiIlLqQ"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_partners",
+        "context_dim",
+        "n_actions",
+        "max_message_horizon",
+        "min_feedback_for_learned_routing",
+        "counter_cap",
+    ],
+)
+def test_partner_policy_fusion_accepts_full_numpy_integer_matrix(
+    dtype: type[Any],
+    field: str,
+) -> None:
+    kwargs: dict[str, Any] = {
+        "max_partners": 2,
+        "context_dim": 4,
+        "n_actions": 2,
+        "min_feedback_for_learned_routing": 1,
+    }
+    kwargs[field] = dtype(2)
+    config = PartnerPolicyFusionConfig(**kwargs)
+
+    assert type(getattr(config, field)) is int
+    serialized = config.to_config()
+    assert json.loads(json.dumps(serialized)) == serialized
+    assert PartnerPolicyFusionConfig.from_config(serialized) == config
+
+
+def test_partner_policy_fusion_rejects_hostile_integer_impostors() -> None:
+    class IntegerSubclass(int):
+        pass
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("validation must not inspect hostile repr")
+
+    for field in (
+        "max_partners",
+        "context_dim",
+        "n_actions",
+        "max_message_horizon",
+        "min_feedback_for_learned_routing",
+        "counter_cap",
+    ):
+        for value in (IntegerSubclass(2), ClassSpoof()):
+            kwargs: dict[str, Any] = {
+                "max_partners": 2,
+                "context_dim": 4,
+                "n_actions": 2,
+                field: value,
+            }
+            with pytest.raises(ValueError, match=field):
+                PartnerPolicyFusionConfig(**kwargs)
+
+
+def test_partner_policy_fusion_maximum_declared_resources_are_int32_safe() -> None:
+    config = PartnerPolicyFusionConfig(
+        max_partners=1024,
+        context_dim=65_536,
+        n_actions=65_536,
+        max_message_horizon=2**31 - 1,
+        min_feedback_for_learned_routing=2**31 - 1,
+        counter_cap=2**31 - 1,
+    )
+    budget = PartnerPolicyFusion(config).resource_budget
+
+    for value in budget.to_config().values():
+        assert type(value) is int
+        assert 0 <= value <= 2**31 - 1
+    assert budget.model_feature_dim == 65_538
+    assert budget.partner_id_pairwise_equality_comparisons_per_decision == 1024**2
+    assert json.loads(json.dumps(budget.to_config())) == budget.to_config()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("max_partners", 1025), ("context_dim", 65_537), ("n_actions", 65_537)],
+)
+def test_partner_policy_fusion_rejects_first_declared_dimension_overflow(
+    field: str,
+    value: int,
+) -> None:
+    kwargs = {"max_partners": 2, "context_dim": 4, "n_actions": 2, field: value}
+    with pytest.raises(ValueError, match=field):
+        PartnerPolicyFusionConfig(**kwargs)
+
+
+def test_partner_policy_fusion_serialized_integer_contract_is_json_exact() -> None:
+    payload = PartnerPolicyFusionConfig(max_partners=2, context_dim=4, n_actions=2).to_config()
+    payload["max_partners"] = np.int32(2)
+    with pytest.raises(ValueError, match="serialized max_partners"):
+        PartnerPolicyFusionConfig.from_config(payload)

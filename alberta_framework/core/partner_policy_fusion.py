@@ -94,6 +94,40 @@ def _strict_positive_int(value: object, *, name: str, maximum: int = _INT32_MAX)
     return canonical
 
 
+def _partner_fusion_resource_counts(
+    max_partners: int,
+    context_dim: int,
+    n_actions: int,
+) -> dict[str, int]:
+    """Compute and preflight all dimension-derived logical resource counts."""
+
+    features = context_dim + 2
+    counts = {
+        "model_feature_dim": features,
+        "trainable_float32_scalars": max_partners * features,
+        "persistent_float32_scalars": max_partners * features + features + 1,
+        "persistent_int32_scalars": 2 * max_partners + 9,
+        "persistent_bool_scalars": 2,
+        "partner_id_pairwise_equality_comparisons_per_decision": max_partners
+        * max_partners,
+        "decision_input_float32_scalars": context_dim + 2 + 2 * max_partners,
+        "decision_input_int32_scalars": 6 + 9 * max_partners,
+        "decision_input_bool_scalars": n_actions + 1 + max_partners,
+    }
+    counts["persistent_state_scalars"] = (
+        counts["persistent_float32_scalars"]
+        + counts["persistent_int32_scalars"]
+        + counts["persistent_bool_scalars"]
+    )
+    counts["persistent_state_bytes"] = 4 * (
+        counts["persistent_float32_scalars"] + counts["persistent_int32_scalars"]
+    ) + counts["persistent_bool_scalars"]
+    for name, count in counts.items():
+        if count > _INT32_MAX:
+            raise ValueError(f"derived {name} must be <= {_INT32_MAX}")
+    return counts
+
+
 def _strict_float32(
     value: object,
     *,
@@ -235,6 +269,7 @@ class PartnerPolicyFusionConfig:
             "n_actions",
             _strict_positive_int(self.n_actions, name="n_actions", maximum=65_536),
         )
+        _partner_fusion_resource_counts(self.max_partners, self.context_dim, self.n_actions)
         object.__setattr__(
             self,
             "max_message_horizon",
@@ -652,29 +687,28 @@ class PartnerPolicyFusion:
 
         cfg = self._config
         partners = cfg.max_partners
-        features = cfg.model_feature_dim
-        persistent_f32 = partners * features + features + 1
-        persistent_i32 = 2 * partners + 9
-        persistent_bool = 2
-        persistent_scalars = persistent_f32 + persistent_i32 + persistent_bool
+        counts = _partner_fusion_resource_counts(partners, cfg.context_dim, cfg.n_actions)
+        features = counts["model_feature_dim"]
         return PartnerPolicyFusionResourceBudget(
             max_partners=partners,
             context_dim=cfg.context_dim,
             n_actions=cfg.n_actions,
             model_feature_dim=features,
-            trainable_float32_scalars=partners * features,
-            persistent_float32_scalars=persistent_f32,
-            persistent_int32_scalars=persistent_i32,
-            persistent_bool_scalars=persistent_bool,
-            persistent_state_scalars=persistent_scalars,
-            persistent_state_bytes=4 * (persistent_f32 + persistent_i32) + persistent_bool,
+            trainable_float32_scalars=counts["trainable_float32_scalars"],
+            persistent_float32_scalars=counts["persistent_float32_scalars"],
+            persistent_int32_scalars=counts["persistent_int32_scalars"],
+            persistent_bool_scalars=counts["persistent_bool_scalars"],
+            persistent_state_scalars=counts["persistent_state_scalars"],
+            persistent_state_bytes=counts["persistent_state_bytes"],
             max_messages_per_decision=partners,
             max_model_scores_per_decision=partners,
-            partner_id_pairwise_equality_comparisons_per_decision=partners * partners,
+            partner_id_pairwise_equality_comparisons_per_decision=counts[
+                "partner_id_pairwise_equality_comparisons_per_decision"
+            ],
             max_trainable_scalars_touched_per_feedback=features,
-            decision_input_float32_scalars=cfg.context_dim + 2 + 2 * partners,
-            decision_input_int32_scalars=6 + 9 * partners,
-            decision_input_bool_scalars=cfg.n_actions + 1 + partners,
+            decision_input_float32_scalars=counts["decision_input_float32_scalars"],
+            decision_input_int32_scalars=counts["decision_input_int32_scalars"],
+            decision_input_bool_scalars=counts["decision_input_bool_scalars"],
             feedback_input_float32_scalars=1,
             feedback_input_int32_scalars=4,
             feedback_input_bool_scalars=4,
