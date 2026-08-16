@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fail-closed process-local single-writer phase ledger. This is an L0 protocol surface, not a
   concrete adapter,
   whole-life runner, exact-resume result, `reference-dev` selection, or scientific claim.
+- Added a development-only, manifest-bound Prototype L0 transaction bridge. It supports only
+  primitive actions, exact dispatch, and continuing-task outcomes; foreign-configuration state,
+  replacement/veto, boundary transactions, stale or relabelled decisions, and premature
+  disarming fail closed without committing the functional candidate. It is not an
+  environment/executor adapter, closed-loop runner, whole-life checkpoint or exact-resume
+  result, options/rebinding/boundary conformance, `reference-dev`, or evidence.
 - Added the ASI research roadmap, proposed reference-agent protocol ADR, repository anti-LARP
   audit, documentation index, and mutable IPMNIST campaign index. The project identity changes
   while the `alberta-framework` distribution, `alberta_framework` imports, `alberta-*` CLIs,

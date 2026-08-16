@@ -26,17 +26,26 @@ existing import surface intact.
 
 **Current program hillclimb:** continue implementing the selected shared
 reference-agent protocol in `docs/design/asi-reference-agent-protocol.md`. The
-versioned L0 transaction ledger in `alberta_framework/reference_agent.py` and
-its 17 retained tests cover immutable typed payloads, separate authorization,
-settlement, receipt, and outcome records, explicit reset identities, and
-fail-closed phase/rejection semantics. It is not a current `reference-dev`
-designation: concrete Prototype and robot adapters, aggregate life state and
-runner, adapter-level dispatch settlement, whole-life checkpoint/exact resume,
-and a CI-cheap regression panel still have to pass the Proposed ADR's remaining
-acceptance sequence. The L0 receipt is an executor acknowledgement, not proof
-of physical dispatch. The current robot and Forager paths do not consume
-`PrototypeAgent`, and Forager's extended-action dispatch edge remains open. In
-the monorepo, use
+`preview1` transaction schemas in `alberta_framework/reference_agent.py` are
+versioned but not frozen v1. The retained tests cover immutable typed payloads,
+separate authorization/settlement/receipt/outcome records, reset observation IDs,
+and a process-local single-writer ledger whose lock/current-object CAS rejects
+stale snapshots and repeated initialization. Rejection leaves the event
+unconsumed and the ledger `HALTED` with recovery required; the final uint64 event
+is consumed before `EXHAUSTED`. The live ledger is deliberately non-picklable,
+reward/discount are scalar-only, and no sidecars, wire decoder, durable
+replay/restore, or exact-resume guarantee exists. Rebinding remains an adapter
+assertion awaiting conformance, and the receipt is only an executor
+acknowledgement. A development-only manifest-bound, primitive-only,
+exact-dispatch, continuing-task L0 agent transaction bridge now connects these
+records to `PrototypeAgent`; its retained tests are in
+`tests/test_prototype_reference_adapter.py`. It is not an environment/executor
+adapter, closed-loop runner, whole-life checkpoint/exact resume,
+options/rebinding/boundary conformance, `reference-dev`, or evidence. The
+closed-loop Prototype slice, robot adapter, aggregate life state and runner,
+and CI-cheap regression panel remain open. The current robot and Forager paths
+do not consume `PrototypeAgent`, and Forager's extended-action dispatch edge
+remains open. In the monorepo, use
 `../robot/docs/asimov-1.md` and
 `../robot/docs/ALBERTA_PRODUCTION_READINESS.md` as the existing ASIMOV-1
 application interface and open-gate record; do not create a duplicate robotics
@@ -103,7 +112,9 @@ Key documents:
 
 - Mission and hillclimb ladder: `docs/research/asi-roadmap.md`
 - Proposed reference-agent protocol: `docs/design/asi-reference-agent-protocol.md`
-- Implemented L0 transaction ledger: `alberta_framework/reference_agent.py`
+- Implemented `preview1` L0 transaction ledger and primitive Prototype bridge:
+  `alberta_framework/reference_agent.py` ·
+  `alberta_framework/prototype_reference_adapter.py`
 - Status & evidence: `docs/status.md` (levels L0–L3, completion gates) ·
   `docs/evidence/methodology.md` (property-by-property map)
 - Active campaign: `docs/research/ipmnist-theory.md` ·

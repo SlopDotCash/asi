@@ -10,10 +10,15 @@ The package overview and normal development entry points remain in
   application ladder, whole-life scorecard, and current program priorities.
 - [`design/asi-reference-agent-protocol.md`](design/asi-reference-agent-protocol.md) — Proposed
   shared reference-life protocol, state ownership, dispatch invariants, adapter boundaries, and
-  exact-resume acceptance gate. Its [L0 transaction ledger](../alberta_framework/reference_agent.py)
-  and [retained contract tests](../tests/test_reference_agent_protocol.py) complete only the first
-  acceptance step; no adapter, whole-life runner/checkpoint, exact-resume result, or
-  `reference-dev` agent exists.
+  exact-resume acceptance gate. Its
+  [`preview1` L0 transaction ledger](../alberta_framework/reference_agent.py) and
+  [retained contract tests](../tests/test_reference_agent_protocol.py), plus the
+  primitive-only exact-dispatch
+  [Prototype bridge](../alberta_framework/prototype_reference_adapter.py) and its
+  [retained tests](../tests/test_prototype_reference_adapter.py), implement narrow
+  L0 slices. The schemas are not frozen v1, and no environment/executor adapter,
+  authoritative runner, whole-life checkpoint/exact-resume result, options/rebinding/boundary
+  conformance, `reference-dev`, or evidence exists.
 - [`status.md`](status.md) — requirement-to-evidence status and completion gates.
 - [`evidence/methodology.md`](evidence/methodology.md) — evidence levels, artifact rules,
   validators, and the property map.

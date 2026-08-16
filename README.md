@@ -61,15 +61,31 @@ The selected architectural direction is a shared reference-agent protocol with a
 retained `PrototypeAgent` and the sibling robot controller. The
 [Proposed protocol ADR](docs/design/asi-reference-agent-protocol.md) specifies state ownership,
 dispatch lineage, an exact-resume acceptance gate, and its ordered implementation sequence. The
-[initial L0 transaction contract](alberta_framework/reference_agent.py) and its
-[retained contract tests](tests/test_reference_agent_protocol.py) now cover immutable typed payloads,
-separate authorization, learner settlement, dispatch receipt, and receipt-bound outcome records,
-explicit reset identities, counter exhaustion, and a fail-closed process-local single-writer
-phase ledger. This is not a concrete
-adapter or whole-life conformance result. It does not populate `reference-dev`: no Prototype or
-robot adapter, aggregate life state or runner, whole-life checkpoint, or exact-resume result
-exists. The robot and Forager paths do not currently consume `PrototypeAgent`, and Forager still
-records an unresolved extended-action dispatch edge.
+[preview1 L0 transaction contract](alberta_framework/reference_agent.py) and its
+[retained contract tests](tests/test_reference_agent_protocol.py) now cover immutable typed
+payloads, separate authorization, learner settlement, dispatch receipt, and receipt-bound outcome
+records and explicit bootstrap/reset observation IDs. Its process-local ledger uses a lock and
+current-object identity compare-and-swap to reject stale snapshots and repeated initialization
+inside one live ledger. A rejected event remains unconsumed and leaves that ledger halted with
+recovery required; the final uint64-indexed event is consumed before the ledger becomes exhausted.
+
+The development-only
+[Prototype reference adapter](alberta_framework/prototype_reference_adapter.py) and its
+[retained tests](tests/test_prototype_reference_adapter.py) implement a second L0 slice: a
+manifest-bound, primitive-only, exact-dispatch agent transaction bridge for continuing tasks.
+Its immutable envelope binds the Prototype state to the manifest/configuration and owns the
+host lifecycle, decision index, and observation identity. It supports neither options nor action
+replacement/rebinding and rejects boundary transactions.
+
+The `preview1` schemas are versioned previews, not frozen v1 contracts. Reward and discount are
+finite scalars, there are no protocol sidecars or wire decoder, and the live ledger deliberately
+cannot be pickled. Replacement settlement remains an adapter assertion awaiting a rebinding-capable
+adapter, and a `DispatchReceipt` is an executor acknowledgement rather than proof of physical
+dispatch. The Prototype bridge is not an environment/executor adapter, closed-loop runner,
+whole-life checkpoint or exact-resume result, options/rebinding/boundary conformance, a selected
+`reference-dev`, or evidence. No robot adapter, aggregate life state, authoritative runner, or
+whole-life checkpoint exists. The robot and Forager paths do not currently consume
+`PrototypeAgent`, and Forager still records an unresolved extended-action dispatch edge.
 
 The package also contains inherited surfaces related to all twelve steps of the Alberta Plan.
 That crosswalk is useful for finding gaps, but completing a checklist of Plan mechanisms would

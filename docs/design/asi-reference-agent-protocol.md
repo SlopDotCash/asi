@@ -46,31 +46,59 @@ Proposed until the conformance and exact-resume gates below pass. A separate
 record must name the first `reference-dev` configuration after those gates; this
 document cannot do so by assertion.
 
-### Implemented L0 transaction slice
+### Implemented `preview1` L0 transaction slice
 
-The [versioned host transaction module](../../alberta_framework/reference_agent.py)
+The [host transaction module](../../alberta_framework/reference_agent.py)
 and its [retained contract tests](../../tests/test_reference_agent_protocol.py)
 implement the first acceptance slice:
 
+- `asi.reference_agent.preview1`, `asi.reference_agent_manifest.preview1`, and
+  `asi.reference_transaction_state.preview1` identify a versioned preview, not a
+  frozen v1 contract;
 - canonical configuration and manifest identities plus fixed, exact-dtype
   observation/action spaces;
 - deeply immutable typed payloads and manifest-bound, lifecycle-scoped decisions;
-- separate authorization, learner settlement, executor receipt, and
+- separate independent authorization, learner settlement, executor receipt, and
   receipt-bound outcome records;
-- explicit bootstrap and post-reset observation identities at episode boundaries;
-- immutable transaction snapshots and a process-local single-writer phase ledger from `ready` through
-  `armed`, `authorized`, `settled`, `dispatched`, and `outcome`, with fail-closed
-  halt and counter-exhaustion behavior; and
-- acceptance/rejection records that forbid a rejected event from reporting a
-  parameter change or arming a next decision and require it to remain retryable.
+- explicit bootstrap and post-reset observation IDs at episode boundaries;
+- a process-local, single-writer live ledger whose lock-protected current-object
+  identity compare-and-swap rejects stale snapshots, phase/chain forgery, and
+  repeated `init()` within that ledger object;
+- rejection semantics that leave the event unconsumed, retain its transaction in
+  `halted`, arm no next decision, and require recovery; and
+- a bounded uint64 decision index whose final accepted event is consumed before
+  the ledger clears the transaction and enters `exhausted` without wrapping.
 
 This is an L0 host transaction contract, not an agent, environment, safety, or
 metrics adapter. It does not implement the canonical life configuration,
 aggregate life state, authoritative runner, whole-life checkpoint, exact resume,
-or `reference-dev`. The `exact_checkpoint_resume` capability is a declaration,
-not evidence that the exact-resume gate passed. Its receipt records an executor
-acknowledgement; without an adapter and external attestation it is not proof
-that a physical action occurred.
+or `reference-dev`. The live ledger deliberately refuses pickling and supplies
+no durable replay protection, restore path, wire decoder, checkpoint format, or
+cross-process exact-resume claim. The preview accepts only finite scalar reward
+and discount values and defines no extension sidecars.
+
+For an authorized action replacement, the ledger checks that the manifest
+declares rebinding and that the adapter asserts `rebinding_applied=True`. It
+cannot prove that a concrete adapter updated every credit owner and action-bound
+cache; that remains an adapter conformance gate. Its `DispatchReceipt` is a typed
+executor acknowledgement, not proof of physical dispatch.
+
+### Implemented Prototype L0 agent transaction bridge
+
+The development-only
+[Prototype reference adapter](../../alberta_framework/prototype_reference_adapter.py)
+and its [retained tests](../../tests/test_prototype_reference_adapter.py) implement a
+manifest-bound, primitive-only, exact-dispatch bridge from the preview records to a
+sidecar-free `PrototypeAgent` configuration on continuing transactions. Its immutable state
+envelope binds the underlying agent state to the manifest and configuration and owns the host
+lifecycle, decision index, and observation identity. It stages functional updates, preserves
+the supplied state on rejection, and advances only an exact receipt-bound transaction.
+
+This is an L0 agent transaction bridge, not an environment or executor adapter. It neither proves
+that the acknowledged action reached an environment nor supplies an authoritative runner,
+aggregate life state, whole-life checkpoint, durable replay/restore, or exact resume. Options,
+action replacement/rebinding, and episode-boundary semantics are deliberately unsupported; the
+bridge is not closed-loop conformance, `reference-dev`, or scientific evidence.
 
 ## Protocol records
 
@@ -88,12 +116,16 @@ The canonical, JSON-compatible life configuration binds:
 - dispatch and independent safety-authority configuration;
 - agent, environment, and adapter seed schedules;
 - task/regime schedule and all exposed boundary signals;
+- canonical `max_accepted_events`, bounded by the smallest non-wrapping counter
+  capacity declared by every selected agent, environment, dispatch, metrics, and
+  runner component;
 - checkpoint cadence and transaction-boundary policy;
 - metric definitions, resource ceilings, and latency deadlines; and
 - source, dependency, and runtime identity required by the declared lane.
 
 Defaults that affect behavior are materialized before hashing. Unknown fields,
-noncanonical encodings, and incompatible adapter combinations fail closed.
+noncanonical encodings, incompatible adapter combinations, and event horizons
+above any selected component's capacity fail closed before initialization.
 
 ### Life state
 
@@ -125,15 +157,16 @@ authorized action, whether it differs from the proposal, the authority and
 policy version that made the decision, and an authorization ID. The agent
 adapter then returns a distinct settlement record binding learner credit to the
 authorized action. A configuration that cannot safely settle a changed action
-must halt rather than learn from a counterfactual proposal. After execution, a
-distinct receipt binds the settlement, effective action, executor, and receipt
-ID.
+must halt rather than learn from a counterfactual proposal. After the host
+reports execution, a distinct receipt binds the settlement, effective action,
+executor, and receipt ID.
 
 An outcome is bound to the exact dispatch receipt and therefore to its
-lifecycle and decision. It contains reward or other declared learning signals,
-continuation discount, termination and truncation flags, the final observation
-and identity used for bootstrapping, and the potentially distinct post-reset
-observation and identity used for the next decision.
+lifecycle and decision. In `preview1` it contains one finite scalar reward and
+one finite scalar continuation discount, termination and truncation flags, the
+final observation and identity used for bootstrapping, and the potentially
+distinct post-reset observation and identity used for the next decision.
+Additional learning-signal sidecars require a future protocol version.
 
 ## Lifecycle
 
@@ -157,6 +190,11 @@ consumed and before the next action has been dispatched. In-flight physical
 actions are outside its planned exact-resume gate until a later protocol defines
 durable, idempotent dispatch and acknowledgement semantics.
 
+In the preview ledger, rejecting an outcome leaves its event unconsumed, retains
+the transaction in `halted`, and requires an external recovery protocol that is
+not yet defined. Accepting the event at the maximum uint64 decision index consumes
+that final event and moves the ledger to `exhausted`; it never wraps the counter.
+
 ## Dispatch and transition invariants
 
 Conforming implementations must enforce all of the following:
@@ -176,11 +214,13 @@ Conforming implementations must enforce all of the following:
   observation is absent until an explicit arm after a non-autoreset boundary.
 - Termination, truncation, and discount semantics are explicit and validated.
 - One accepted environment event causes one atomic learner transaction. A
-  rejected transaction leaves every agent state and RNG synchronized with the
-  still-unconsumed event.
+  rejected event remains unconsumed and halts the runner for recovery. Concrete
+  adapter conformance must prove that every agent state and RNG remains
+  synchronized with that event.
 - Independent safety authority may veto or replace an action and may halt the
   runner. The learner cannot weaken, train through, or relabel that authority.
-- Counter exhaustion disarms the life; counters never wrap silently.
+- The final uint64-indexed event is consumed before counter exhaustion disarms
+  the life; the state becomes `exhausted` and the counter never wraps.
 
 ## Exact-resume gate
 
@@ -213,19 +253,29 @@ exact resume.
 
 ## Prototype adapter
 
-The Prototype adapter will map the protocol as follows:
+The implemented primitive-only L0 bridge maps the agent transaction subset as follows:
 
 - `PrototypeAgent.init(..., lifecycle_id=...)` initializes agent state.
-- `start` arms the initial decision; `decision` supplies the current primitive
-  action and lifecycle-scoped decision ID.
+- `start` arms the initial decision; the adapter derives the primitive action
+  and all host decision identity from its manifest-bound state envelope.
 - The adapter constructs the explicit `PrototypeTransition` and calls
   `update_transition`; the legacy `update` path is not conforming.
-- The existing v3 Prototype checkpoint is nested as the agent portion of the
-  whole-life bundle, not treated as the entire bundle.
-- A public, decision-bound settlement path must either preserve or atomically
-  rebind OaK/STOMP base-versus-option credit when authorization changes the
-  primitive action. It must also update every action-bound cache. Direct runner
-  mutation of Prototype internals is forbidden.
+- Only exact primitive dispatch is accepted; veto and replacement are rejected
+  without mutating the supplied functional state.
+
+The current bridge does not support the host ledger's full uint64 horizon:
+Prototype decision/cache validity may disarm at its int32 telemetry or observation
+capacity before the host reaches its final decision index. The retained fail-stop
+test establishes atomic rejection only. A future runner must bind the declared
+Prototype capacity into `max_accepted_events` and reject an oversized life during
+construction rather than discover the mismatch mid-run.
+
+The remaining conforming Prototype adapter must nest the existing v3 Prototype
+checkpoint as the agent portion of the future whole-life bundle, not treat it as
+the entire bundle. A public, decision-bound settlement path must either preserve
+or atomically rebind OaK/STOMP base-versus-option credit when authorization
+changes the primitive action, and it must update every action-bound cache. Direct
+runner mutation of Prototype internals is forbidden.
 
 The adapter first targets the pure continuing environments in
 `alberta_framework.streams.closed_loop`. Before it may enter Forager or be called
@@ -274,21 +324,28 @@ This ADR does not:
 
 The proposal advances only in this order:
 
-1. **Host transaction contract — implemented at L0.** The versioned manifest and
-   transaction-state schemas, immutable typed payloads, distinct authorization,
-   settlement, receipt, and outcome records, explicit reset identities,
-   process-local single-writer phase ledger and retained fail-closed tests implement the host
-   transaction slice. This is structural and nonpromoting.
+1. **Host transaction preview — implemented at L0.** The versioned-but-unfrozen
+   `preview1` manifest and transaction-state schemas, immutable typed payloads,
+   distinct authorization, settlement, receipt, and outcome records, explicit
+   bootstrap/reset observation IDs, process-local current-object ledger, and
+   retained validation/ownership tests implement the host transaction slice.
+   This is structural and nonpromoting; it is not a frozen compatibility version.
 2. **Whole-life conformance core — open.** Define the canonical life
    configuration and aggregate life state; implement agent, environment,
    dispatch/safety, and metric adapter contracts plus the authoritative runner;
-   add the whole-life checkpoint schema and mock whole-life conformance fixture.
-   Every mutable owner and RNG must be explicit. Step 1 does not satisfy this
-   gate.
-3. **Prototype closed-loop adapter.** Run one canonical but explicitly
-   development-only configuration on both retained continuing micro-MDPs.
-   Exercise active-option dispatch, action replacement/veto, boundary semantics,
-   stale-event rejection, and counter disarming.
+   define extension/sidecar policy, wire decoding, halted-event recovery, and the
+   whole-life checkpoint schema; and add a mock whole-life conformance fixture.
+   Every mutable owner and RNG must be explicit, and the runner must provide
+   durable transaction-state ownership plus restart replay/restore semantics and
+   reject `max_accepted_events` above any selected component's counter capacity.
+   Step 1 does not satisfy this gate.
+3. **Prototype agent bridge — partial; closed-loop adapter open.** The retained
+   primitive-only, exact-dispatch, continuing-task tests implement the L0 agent
+   transaction bridge. Still run one canonical but explicitly development-only
+   configuration through a real environment/executor path on both retained
+   continuing micro-MDPs. Exercise active-option dispatch, action replacement and
+   rebinding, veto, boundary semantics, stale-event rejection, and counter
+   disarming. The implemented bridge does not satisfy this closed-loop gate.
 4. **Prototype exact resume.** Pass the uninterrupted-versus-restored gate,
    including environment, runner, metrics, decision lineage, and every RNG.
 5. **Forager bridge.** Implement the ordinary-observation policy adapter, retain

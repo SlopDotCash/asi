@@ -75,17 +75,35 @@ The architectural direction is selected in the
 [Proposed reference-agent protocol ADR](../design/asi-reference-agent-protocol.md):
 one semantic lifecycle, dispatch, state-ownership, and exact-resume contract with
 adapters for `PrototypeAgent` and the sibling robot controller. The
-[versioned L0 transaction ledger](../../alberta_framework/reference_agent.py) and
-its [retained contract tests](../../tests/test_reference_agent_protocol.py) now cover
-immutable typed payloads, distinct authorization/settlement/receipt/outcome
-records, explicit reset identities, and fail-closed phase and rejection
-semantics. This resolves the initial host transaction slice, not completion of
-the implementation or baseline selection. No concrete adapter, aggregate life
-state or runner, whole-life checkpoint, or exact-resume result exists. The robot
-path still does not import `PrototypeAgent`, the retained Forager agent still
-excludes it because closed-loop dispatch has not demonstrated preservation of
-the OaK/STOMP credited extended action, and neither adapter has passed the ADR's
-acceptance sequence. None is already canonical.
+[unfrozen `preview1` L0 transaction ledger](../../alberta_framework/reference_agent.py)
+and its [retained contract tests](../../tests/test_reference_agent_protocol.py)
+use versioned preview schemas, not frozen v1, and cover immutable typed payloads, distinct
+authorization/settlement/receipt/outcome records, explicit bootstrap/reset
+observation IDs, and a process-local single-writer/current-object ledger. Its
+lock/CAS rejects stale snapshots and repeated initialization inside one live
+object. Rejection leaves the event unconsumed and the ledger halted for recovery;
+the final uint64-indexed event is consumed before the state becomes exhausted.
+This resolves the initial host transaction slice, not completion of the
+implementation or baseline selection.
+The development-only
+[Prototype reference adapter](../../alberta_framework/prototype_reference_adapter.py)
+and its [retained tests](../../tests/test_prototype_reference_adapter.py) add a
+manifest-bound, primitive-only, exact-dispatch L0 agent transaction bridge for
+continuing tasks. It owns host decision identity around functional Prototype state
+and rejects foreign-configuration state, replacement or vetoed authorization,
+and boundaries.
+The live ledger cannot be pickled and supplies no durable replay, restore, or
+exact-resume guarantee. Reward/discount are scalar-only, no sidecar or wire
+decoder exists, replacement rebinding remains an unproven adapter assertion, and
+the receipt is an executor acknowledgement rather than physical-dispatch proof.
+The Prototype bridge is not an environment/executor adapter, closed-loop runner,
+whole-life checkpoint or exact-resume result, options/rebinding/boundary conformance,
+`reference-dev`, or evidence. No aggregate life state, authoritative runner,
+whole-life checkpoint, or robot adapter exists. The robot path still does not
+import `PrototypeAgent`, the retained Forager agent still excludes it because
+closed-loop dispatch has not demonstrated preservation of the OaK/STOMP credited
+extended action, and no concrete adapter has passed the ADR's closed-loop acceptance
+gate. None is already canonical.
 
 Every proposed subsystem should answer four questions:
 
@@ -202,11 +220,18 @@ dimensions. Post-hoc tradeoff weights cannot turn a regression into a win.
 
 1. **Continue implementing the selected reference-life protocol.** Build the
    aggregate life configuration/state, authoritative runner, whole-life
-   checkpoint, and adapter-level dispatch settlement around the completed L0
-   transaction ledger. Then add the Prototype and robot adapters, exact-resume
-   gate, and low-cost whole-life regression panel. Only then may a separate
-   decision select one executable `reference-dev` configuration, environment
-   interface, checkpoint contract, command, and rollback policy.
+   checkpoint, recovery contract, wire decoder/extension policy, and adapter-level
+   dispatch settlement around the implemented `preview1` L0 transaction ledger.
+   Canonically bind `max_accepted_events` and reject runner construction when it
+   exceeds any selected agent or environment adapter's non-wrapping counter capacity;
+   the current Prototype bridge can disarm at its int32 capacity before the host
+   ledger's uint64 limit.
+   The runner must own transaction state durably and define replay/restore across
+   process restarts. Then carry the primitive Prototype bridge through a real
+   environment/executor path, add the robot adapter, exact-resume gate, and
+   low-cost whole-life regression panel. Only then may a separate decision
+   select one executable `reference-dev` configuration, environment interface,
+   checkpoint contract, command, and rollback policy.
 2. **Turn plasticity gains into agent gains.** Use the development-only IPMNIST
    campaign to generate mechanisms, then remeasure controls and test survivors
    on recurrence, a complementary stream, and continual control. Do not promote
