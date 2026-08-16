@@ -259,10 +259,42 @@ class TestPrototypeAgentConfigValidation:
         state = agent.start(agent.init(jr.key(0)), jnp.zeros(OBS_DIM))
         assert int(agent.update(state, 0.1, jnp.ones(OBS_DIM)).state.step_count) == 1
 
-    def test_legacy_world_model_gamma_zero_is_rejected(self) -> None:
-        """gamma == 0 makes the legacy update synthesize discount=0, terminated=False forever."""
-        with pytest.raises(ValueError, match="world_model.gamma must be positive"):
+    def test_gamma_zero_remains_available_to_explicit_transitions(self) -> None:
+        agent = PrototypeAgent(
             PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
+        )
+        state = agent.start(agent.init(jr.key(41)), jnp.zeros(OBS_DIM))
+        next_observation = jnp.ones(OBS_DIM, dtype=jnp.float32)
+        result = agent.update_transition(
+            state,
+            PrototypeTransition(
+                observation=state.current_raw_observation,
+                action=state.current_action,
+                decision_id=state.current_decision_id,
+                reward=jnp.asarray(1.0, dtype=jnp.float32),
+                discount=jnp.asarray(0.0, dtype=jnp.float32),
+                terminated=jnp.asarray(True),
+                truncated=jnp.asarray(False),
+                next_observation=next_observation,
+                next_decision_observation=next_observation,
+            ),
+        )
+        assert bool(result.transition_diagnostics.valid)
+        assert int(result.state.step_count) == 1
+
+    def test_legacy_gamma_zero_synthesizes_terminal_transition(self) -> None:
+        agent = PrototypeAgent(
+            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
+        )
+        state = agent.start(agent.init(jr.key(42)), jnp.zeros(OBS_DIM))
+        result = agent.update(
+            state,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.ones(OBS_DIM, dtype=jnp.float32),
+        )
+        assert bool(result.transition_diagnostics.boundary_semantics_valid)
+        assert bool(result.transition_diagnostics.valid)
+        assert int(result.state.step_count) == 1
 
 
 # ---------------------------------------------------------------------------

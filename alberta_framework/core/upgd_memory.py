@@ -337,14 +337,10 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
         raise TypeError(
             f"hidden_sizes must be an actual tuple, got {type(config.hidden_sizes).__name__}"
         )
-    if not config.hidden_sizes:
-        raise ValueError("hidden_sizes must contain only positive widths")
     canonical_hidden = tuple(
         _require_int("hidden_sizes element", size, minimum=1, maximum=_INT32_MAX)
         for size in config.hidden_sizes
     )
-    if not canonical_hidden:
-        raise ValueError("hidden_sizes must contain only positive widths")
     readout_mode = config.readout_mode
     if type(readout_mode) is not str:
         raise TypeError(
@@ -433,7 +429,7 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     novelty_adaptation_rate = _require_nonnegative_real(
         "novelty_adaptation_rate", config.novelty_adaptation_rate
     )
-    target_allocation_rate = _require_half_open_zero_one_interval(
+    target_allocation_rate = _require_unit_interval(
         "target_allocation_rate", config.target_allocation_rate
     )
     min_novelty_threshold = _require_positive_real(
@@ -442,8 +438,8 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     max_novelty_threshold = _require_positive_real(
         "max_novelty_threshold", config.max_novelty_threshold
     )
-    if min_novelty_threshold >= max_novelty_threshold:
-        raise ValueError("min_novelty_threshold must be strictly less than max_novelty_threshold")
+    if min_novelty_threshold > max_novelty_threshold:
+        raise ValueError("min_novelty_threshold must be <= max_novelty_threshold")
 
     object.__setattr__(config, "feature_dim", feature_dim)
     object.__setattr__(config, "n_heads", n_heads)

@@ -613,12 +613,6 @@ class PrototypeAgentConfig:
                     f"got {self.world_model.n_actions} and "
                     f"{self.oak.n_primitive_actions}"
                 )
-            if self.world_model.gamma <= 0.0:
-                raise ValueError(
-                    "world_model.gamma must be positive: the legacy update synthesizes "
-                    "transitions with discount=gamma and terminated=False, which the "
-                    "boundary contract rejects when gamma is zero"
-                )
         if self.world_model_ensemble is not None:
             ensemble_model = self.world_model_ensemble.model
             if ensemble_model.observation_dim != self.oak.observation_dim:
@@ -5271,7 +5265,9 @@ class PrototypeAgent:
         explicit discount.  This wrapper preserves the former behavior:
         primitive control bootstraps with one, option returns use
         ``STOMPConfig.option_gamma``, and the world model (when enabled)
-        receives its configured gamma as the target discount.
+        receives its configured gamma as the target discount. A zero legacy
+        model gamma denotes a terminal one-step transition, matching the
+        explicit transition contract that zero discount requires termination.
         """
         if self._state_builder is not None:
             raise ValueError(
@@ -5335,7 +5331,10 @@ class PrototypeAgent:
                 decision_id=legacy_state.current_decision_id,
                 reward=reward,
                 discount=jnp.asarray(legacy_model_discount, dtype=jnp.float32),
-                terminated=jnp.array(False),
+                terminated=jnp.asarray(
+                    legacy_model_discount == 0.0,
+                    dtype=jnp.bool_,
+                ),
                 truncated=jnp.array(False),
                 next_observation=next_observation,
                 next_decision_observation=next_observation,
