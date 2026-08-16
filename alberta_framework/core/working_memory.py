@@ -114,7 +114,10 @@ class WorkingMemoryConfig:
             "reward_decay_rates",
         ):
             if key in payload:
-                payload[key] = tuple(payload[key])
+                value = payload[key]
+                if type(value) is not list:
+                    raise ValueError(f"{key} must be a list")
+                payload[key] = tuple(value)
         return cls(**payload)
 
 
