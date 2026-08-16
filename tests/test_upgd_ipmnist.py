@@ -88,6 +88,24 @@ class TestProtocolConstants:
         with pytest.raises(ValueError, match="unknown learner"):
             resolve_hyperparameters("sgd", None)
 
+    def test_resolve_hyperparameters_rejects_untrusted_or_nonfinite_values(self):
+        class FloatSpoof:
+            @property
+            def __class__(self):
+                return float
+
+            def __float__(self):
+                raise AssertionError("untrusted conversion hook executed")
+
+            def __repr__(self):
+                raise AssertionError("untrusted representation hook executed")
+
+        for value in (True, float("nan"), float("inf"), FloatSpoof()):
+            with pytest.raises(ValueError, match="finite int or float"):
+                resolve_hyperparameters("upgd_w", {"step_size": value})
+
+        assert resolve_hyperparameters("upgd_w", {"step_size": 1})["step_size"] == 1.0
+
 
 class TestSchedule:
     def test_task_index_changes_exactly_at_multiples_of_task_length(self):

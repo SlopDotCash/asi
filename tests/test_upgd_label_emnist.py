@@ -88,6 +88,24 @@ class TestConfig:
         with pytest.raises(ValueError, match="unknown learner"):
             resolve_hyperparameters("sgd")
 
+    def test_resolve_hyperparameters_rejects_untrusted_or_nonfinite_values(self):
+        class FloatSpoof:
+            @property
+            def __class__(self):
+                return float
+
+            def __float__(self):
+                raise AssertionError("untrusted conversion hook executed")
+
+            def __repr__(self):
+                raise AssertionError("untrusted representation hook executed")
+
+        for value in (True, float("nan"), float("inf"), FloatSpoof()):
+            with pytest.raises(ValueError, match="finite int or float"):
+                resolve_hyperparameters("upgd_w", {"step_size": value})
+
+        assert resolve_hyperparameters("upgd_w", {"step_size": 1})["step_size"] == 1.0
+
     def test_normalized_arm_hyperparameters(self):
         """EMA-norm transfer arms: published EMNIST UPGD-W values + the exact
         screening-lane normalizer settings (norm_decay=0.999, eps=1e-8)."""
