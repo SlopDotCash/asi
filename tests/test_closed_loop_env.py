@@ -20,6 +20,11 @@ from alberta_framework.streams import (
     SwitchingTwoStateConfig,
     SwitchingTwoStateMDP,
 )
+from alberta_framework.streams.closed_loop import (
+    RiverSwimState,
+    SwitchingTwoStateState,
+    _riverswim_persistent_resources,
+)
 
 _INT32_MAX = 2**31 - 1
 _INVALID_PHASE_LENGTHS = (0, -1, False, True, 1.5, None, 2**31, 10**100)
@@ -589,3 +594,116 @@ class TestRiverSwim:
                     p_right_down=p_right_down,
                 )
             )
+
+
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_closed_loop_integer_configs_accept_and_canonicalize_numpy_families(code: str) -> None:
+    integer_type = np.dtype(code).type
+    switching = SwitchingTwoStateMDP(
+        SwitchingTwoStateConfig(phase_length=integer_type(3))
+    )
+    river = RiverSwimMDP(
+        RiverSwimConfig(n_states=integer_type(4), initial_state=integer_type(1))
+    )
+    assert type(switching.config.phase_length) is int
+    assert type(river.config.n_states) is int
+    assert type(river.config.initial_state) is int
+
+
+def test_closed_loop_integer_rejection_never_invokes_hostile_hooks() -> None:
+    class HostileInt(int):
+        def __index__(self) -> int:
+            raise AssertionError("untrusted index hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook executed")
+
+    for config in (
+        SwitchingTwoStateConfig(phase_length=HostileInt(2)),
+        SwitchingTwoStateConfig(phase_length=ClassSpoof()),  # type: ignore[arg-type]
+    ):
+        with pytest.raises(ValueError, match="phase_length"):
+            SwitchingTwoStateMDP(config)
+    with pytest.raises(ValueError, match="n_states"):
+        RiverSwimMDP(RiverSwimConfig(n_states=ClassSpoof()))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="initial_state"):
+        RiverSwimMDP(RiverSwimConfig(initial_state=HostileInt(0)))
+
+
+def test_riverswim_resource_formula_matches_resident_arrays() -> None:
+    env = RiverSwimMDP(RiverSwimConfig(n_states=5))
+    actual_bytes = (
+        env._transitions_np.nbytes
+        + env._rewards_np.nbytes
+        + env._transition_logits.nbytes
+        + env._rewards.nbytes
+    )
+    assert env.persistent_resource_budget == _riverswim_persistent_resources(5)
+    assert env.persistent_resource_budget["persistent_bytes"] == actual_bytes
+
+
+def test_riverswim_resource_limit_fails_before_numpy_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _riverswim_persistent_resources(2047)["persistent_bytes"] <= 64 * 1024 * 1024
+    monkeypatch.setattr(
+        np,
+        "zeros",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("allocation started")),
+    )
+    with pytest.raises(ValueError, match="64 MiB"):
+        RiverSwimMDP(RiverSwimConfig(n_states=2048))
+
+
+def test_riverswim_exact_policy_api_has_separate_practical_bound() -> None:
+    env = RiverSwimMDP(RiverSwimConfig(n_states=13))
+    with pytest.raises(ValueError, match="at most 12"):
+        env.optimal_policy()
+    with pytest.raises(ValueError, match="at most 12"):
+        env.optimal_average_reward()
+
+
+def test_closed_loop_step_counts_saturate_eager_and_outer_jit() -> None:
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    switching = SwitchingTwoStateMDP()
+    switching_state = SwitchingTwoStateState(
+        state_index=jnp.asarray(0, dtype=jnp.int32), step_count=maximum
+    )
+    switched = jax.jit(lambda state: switching.step(state, jnp.asarray(1), jr.key(0))[2])(
+        switching_state
+    )
+    assert int(switched.step_count) == _INT32_MAX
+
+    river = RiverSwimMDP()
+    river_state = RiverSwimState(
+        state_index=jnp.asarray(0, dtype=jnp.int32), step_count=maximum
+    )
+    advanced = river.step(river_state, jnp.asarray(0), jr.key(1))[2]
+    assert int(advanced.step_count) == _INT32_MAX
+
+
+@pytest.mark.parametrize(
+    "state",
+    (
+        RiverSwimState(
+            state_index=jnp.zeros((1,), dtype=jnp.int32),
+            step_count=jnp.asarray(0, dtype=jnp.int32),
+        ),
+        RiverSwimState(
+            state_index=jnp.asarray(0, dtype=jnp.int16),
+            step_count=jnp.asarray(0, dtype=jnp.int32),
+        ),
+    ),
+)
+def test_riverswim_rejects_invalid_static_state_contract(state: RiverSwimState) -> None:
+    env = RiverSwimMDP()
+    with pytest.raises((TypeError, ValueError), match="state.state_index"):
+        env.step(state, jnp.asarray(0), jr.key(0))

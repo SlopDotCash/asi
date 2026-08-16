@@ -1,4 +1,4 @@
-# mypy: disable-error-code="call-arg"
+# mypy: disable-error-code="call-arg,attr-defined"
 """Closed-loop micro-MDPs where actions affect observations.
 
 Every other stream in this package is open-loop: the observation sequence is
@@ -37,9 +37,10 @@ The state and config records are immutable chex dataclasses.
 from __future__ import annotations
 
 import itertools
+import operator
 from fractions import Fraction
 from numbers import Integral, Real
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -63,6 +64,8 @@ RIGHT_ACTION = 1
 _TWO_STATE_N = 2
 _TWO_STATE_ACTIONS = 2
 _INT32_MAX = 2**31 - 1
+_MAX_RIVERSWIM_PERSISTENT_BYTES = 64 * 1024 * 1024
+_MAX_EXACT_POLICY_STATES = 12
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _FLOAT32_TINY_RATIO = _FLOAT32_TINY.as_integer_ratio()
 _SUPPORTED_NUMPY_REWARD_TYPES: tuple[type[object], ...] = (
@@ -81,6 +84,60 @@ _SUPPORTED_NUMPY_REWARD_TYPES: tuple[type[object], ...] = (
     np.float64,
     np.longdouble,
 )
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    """Canonicalize supported concrete integers without invoking hostile hooks."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _riverswim_persistent_resources(n_states: int) -> dict[str, int]:
+    """Return the exact resident NumPy+JAX array envelope before allocation."""
+    transition_scalars = 2 * n_states * n_states
+    reward_scalars = 2 * n_states
+    persistent_scalars = 2 * (transition_scalars + reward_scalars)
+    persistent_bytes = 4 * persistent_scalars
+    if persistent_scalars > _INT32_MAX:
+        raise ValueError("derived RiverSwim persistent scalars must fit signed int32")
+    if persistent_bytes > _MAX_RIVERSWIM_PERSISTENT_BYTES:
+        raise ValueError(
+            "derived RiverSwim persistent bytes exceed the 64 MiB micro-MDP budget"
+        )
+    return {
+        "transition_scalars": transition_scalars,
+        "reward_scalars": reward_scalars,
+        "persistent_scalars": persistent_scalars,
+        "persistent_bytes": persistent_bytes,
+    }
+
+
+def _saturating_step_count(step_count: Array) -> Array:
+    counter = jnp.asarray(step_count, dtype=jnp.int32)
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    return jnp.minimum(jnp.maximum(counter, 0), maximum - 1) + 1
+
+
+def _validate_state_contract(
+    name: str, state: object, *, expected_type: type[object]
+) -> None:
+    """Validate the immutable public state's static JAX boundary contract."""
+    if type(state) is not expected_type:
+        raise TypeError(f"{name} must be an actual {expected_type.__name__}")
+    record = cast(Any, state)
+    for field_name in ("state_index", "step_count"):
+        value = jnp.asarray(getattr(record, field_name))
+        if value.shape != ():
+            raise ValueError(f"{name}.{field_name} must be scalar")
+        if value.dtype != jnp.dtype(jnp.int32):
+            raise TypeError(f"{name}.{field_name} must have dtype int32")
 
 
 def _normalized_finite_float32_reward(name: str, value: object) -> float:
@@ -227,16 +284,12 @@ class SwitchingTwoStateMDP:
 
     def __init__(self, config: SwitchingTwoStateConfig | None = None) -> None:
         config = SwitchingTwoStateConfig() if config is None else config
-        if (
-            isinstance(config.phase_length, bool)
-            or not isinstance(config.phase_length, int)
-            or config.phase_length < 1
-            or config.phase_length > _INT32_MAX
-        ):
+        try:
+            phase_length = _require_int32("phase_length", config.phase_length, minimum=1)
+        except ValueError:
             raise ValueError(
-                "phase_length must be a positive integer in "
-                f"[1, {_INT32_MAX}], got {config.phase_length!r}"
-            )
+                f"phase_length must be a positive integer in [1, {_INT32_MAX}]"
+            ) from None
         phase_payoffs = []
         for name in ("payoffs_a", "payoffs_b"):
             payoff = np.asarray(getattr(config, name), dtype=np.float32)
@@ -246,8 +299,9 @@ class SwitchingTwoStateMDP:
                 raise ValueError(f"{name} must contain only finite values, got {payoff.tolist()}")
             phase_payoffs.append(payoff)
         payoffs = np.stack(phase_payoffs)
+        config = cast(SwitchingTwoStateConfig, config.replace(phase_length=phase_length))
         self._config = config
-        self._phase_length = int(config.phase_length)
+        self._phase_length = phase_length
         self._payoffs_np = payoffs
         self._payoffs = jnp.asarray(payoffs)
 
@@ -284,6 +338,9 @@ class SwitchingTwoStateMDP:
     def phase_id(self, state: SwitchingTwoStateState) -> Array:
         """Return the active reward phase (``PHASE_A`` or ``PHASE_B``)."""
 
+        _validate_state_contract(
+            "state", state, expected_type=SwitchingTwoStateState
+        )
         segment = jnp.floor_divide(state.step_count, self._phase_length)
         return jnp.mod(segment, 2).astype(jnp.int32)
 
@@ -298,6 +355,9 @@ class SwitchingTwoStateMDP:
     def observe(self, state: SwitchingTwoStateState) -> Float[Array, " feature_dim"]:
         """One-hot observation of the latent state."""
 
+        _validate_state_contract(
+            "state", state, expected_type=SwitchingTwoStateState
+        )
         return jax.nn.one_hot(state.state_index, _TWO_STATE_N, dtype=jnp.float32)
 
     def step(
@@ -319,12 +379,15 @@ class SwitchingTwoStateMDP:
         """
 
         del key  # deterministic dynamics
+        _validate_state_contract(
+            "state", state, expected_type=SwitchingTwoStateState
+        )
         action_index = jnp.clip(jnp.asarray(action, dtype=jnp.int32), 0, _TWO_STATE_ACTIONS - 1)
         phase = self.phase_id(state)
         reward = self._payoffs[phase, state.state_index, action_index]
         new_state = SwitchingTwoStateState(
             state_index=action_index,
-            step_count=state.step_count + jnp.array(1, dtype=jnp.int32),
+            step_count=_saturating_step_count(state.step_count),
         )
         return self.observe(new_state), reward, new_state
 
@@ -427,8 +490,11 @@ class RiverSwimMDP:
 
     def __init__(self, config: RiverSwimConfig | None = None) -> None:
         config = RiverSwimConfig() if config is None else config
-        if config.n_states < 2:
-            raise ValueError(f"n_states must be at least 2, got {config.n_states}")
+        n_states = _require_int32("n_states", config.n_states, minimum=2)
+        initial_state = _require_int32(
+            "initial_state", config.initial_state, minimum=0, maximum=n_states - 1
+        )
+        _riverswim_persistent_resources(n_states)
         up_numerator, up_denominator = _exact_real_ratio(
             "p_right_up",
             config.p_right_up,
@@ -466,20 +532,11 @@ class RiverSwimMDP:
                 "p_right_up + p_right_down must not exceed 1, got "
                 f"{config.p_right_up} + {config.p_right_down}"
             )
-        if not 0 <= config.initial_state < config.n_states:
-            raise ValueError(
-                f"initial_state must lie in [0, {config.n_states}), got {config.initial_state}"
-            )
-        if isinstance(config.initial_state, bool) or not isinstance(
-            config.initial_state, Integral
-        ):
-            raise ValueError(
-                "initial_state must be an integer, got "
-                f"{config.initial_state!r}"
-            )
         config = cast(
             RiverSwimConfig,
             config.replace(
+                n_states=n_states,
+                initial_state=initial_state,
                 p_right_up=p_right_up,
                 p_right_down=p_right_down,
                 reward_left=reward_left,
@@ -487,7 +544,7 @@ class RiverSwimMDP:
             ),
         )
         self._config: RiverSwimConfig = config
-        self._n_states: int = int(config.n_states)
+        self._n_states: int = n_states
         self._transitions_np: np.ndarray = self._build_transitions(config)
         self._rewards_np: np.ndarray = self._build_rewards(config)
         self._transition_logits: Array = jnp.where(
@@ -561,6 +618,12 @@ class RiverSwimMDP:
 
         return self._rewards_np.copy()
 
+    @property
+    def persistent_resource_budget(self) -> dict[str, int]:
+        """Exact resident NumPy and JAX array accounting."""
+
+        return _riverswim_persistent_resources(self._n_states)
+
     def init(self, key: Array) -> RiverSwimState:
         """Create the initial state at ``config.initial_state``.
 
@@ -578,6 +641,7 @@ class RiverSwimMDP:
     def observe(self, state: RiverSwimState) -> Float[Array, " feature_dim"]:
         """One-hot observation of the latent state."""
 
+        _validate_state_contract("state", state, expected_type=RiverSwimState)
         return jax.nn.one_hot(state.state_index, self._n_states, dtype=jnp.float32)
 
     def step(
@@ -597,6 +661,7 @@ class RiverSwimMDP:
             Tuple of (observation of the new state, reward, new state).
         """
 
+        _validate_state_contract("state", state, expected_type=RiverSwimState)
         action_index = jnp.clip(jnp.asarray(action, dtype=jnp.int32), 0, 1)
         reward = self._rewards[state.state_index, action_index]
         next_index = jr.categorical(
@@ -604,7 +669,7 @@ class RiverSwimMDP:
         ).astype(jnp.int32)
         new_state = RiverSwimState(
             state_index=next_index,
-            step_count=state.step_count + jnp.array(1, dtype=jnp.int32),
+            step_count=_saturating_step_count(state.step_count),
         )
         return self.observe(new_state), reward, new_state
 
@@ -657,6 +722,11 @@ class RiverSwimMDP:
         return _stationary_average_reward(kernel, step_rewards)
 
     def _enumerate_optimal(self) -> tuple[tuple[int, ...], float]:
+        if self._n_states > _MAX_EXACT_POLICY_STATES:
+            raise ValueError(
+                "exact RiverSwim policy enumeration supports at most "
+                f"{_MAX_EXACT_POLICY_STATES} states"
+            )
         best_policy = (LEFT_ACTION,) * self._n_states
         best_gain = -np.inf
         for candidate in itertools.product((LEFT_ACTION, RIGHT_ACTION), repeat=self._n_states):
