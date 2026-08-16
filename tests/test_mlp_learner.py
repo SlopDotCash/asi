@@ -1,5 +1,6 @@
 """Tests for the MLPLearner and run_mlp_learning_loop."""
 
+import math
 import time
 
 import chex
@@ -714,9 +715,30 @@ class TestAGCBounding:
         bounder = AGCBounding(clip_factor=0.01, eps=1e-3)
         _, frac = bounder.bound(steps, error, params)
 
-        # 2D has 3 output units (all clipped), 1D has 3 elements (none clipped)
-        # Total units = 6, clipped = 3 -> frac = 0.5
-        assert float(frac) == pytest.approx(0.5, abs=0.01)
+        # 2D (fan_out=2, fan_in=3) has 2 output units (all clipped), 1D has 3
+        # elements (none clipped). Total units = 5, clipped = 2 -> frac = 0.4
+        assert float(frac) == pytest.approx(0.4, abs=0.01)
+
+    def test_clipping_is_per_output_unit_not_per_input_column(self):
+        """Rows of (fan_out, fan_in) are the units; a loud row must not shield a quiet one."""
+        bounder = AGCBounding(clip_factor=0.01, eps=1e-3)
+        error = jnp.array(1.0)
+        # Case 1: identical unit weights, unit 0 takes a huge step, unit 1 a tiny one.
+        params = (jnp.ones((2, 2)),)
+        steps = (jnp.array([[1e3, 0.0], [1e-3, 0.0]], dtype=jnp.float32),)
+        (clipped,), frac = bounder.bound(steps, error, params)
+        # unit 1's own budget is clip_factor * ||w_1|| = 0.01 * sqrt(2) > 1e-3: untouched
+        assert float(clipped[1, 0]) == pytest.approx(1e-3, rel=1e-5)
+        # unit 0 is clipped to its own budget
+        assert float(jnp.linalg.norm(clipped[0])) == pytest.approx(0.01 * math.sqrt(2.0), rel=1e-4)
+        assert float(frac) == pytest.approx(0.5)
+        # Case 2: unit 0 has huge weights, unit 1 tiny weights; only unit 1 moves.
+        params = (jnp.array([[1e3, 1e3], [1e-3, 1e-3]], dtype=jnp.float32),)
+        steps = (jnp.array([[0.0, 0.0], [0.5, 0.5]], dtype=jnp.float32),)
+        (clipped,), frac = bounder.bound(steps, error, params)
+        # unit 1's budget is 0.01 * ||[1e-3, 1e-3]|| = 1.41e-5; its step must be clipped there
+        assert float(jnp.linalg.norm(clipped[1])) == pytest.approx(0.01 * math.sqrt(2e-6), rel=1e-4)
+        assert float(frac) == pytest.approx(0.5)
 
     def test_mlp_with_agc_runs(self):
         """MLPLearner with AGCBounding should run without error in a scan loop."""

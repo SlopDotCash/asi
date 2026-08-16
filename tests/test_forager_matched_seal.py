@@ -537,6 +537,26 @@ def test_qualification_manifest_cross_carrier_tampering_fails_closed(
         )
 
 
+@pytest.mark.parametrize("invalid_horizon", [499_712.0, True])
+def test_execution_plan_rejects_non_integer_horizon(
+    tmp_path: Path,
+    invalid_horizon: object,
+) -> None:
+    completed, _ = _completed_campaign(tmp_path)
+    plan_payload = seal._decode_canonical(
+        completed.plan.canonical_bytes,
+        "test execution plan",
+    )
+    plan_payload["horizon"] = invalid_horizon
+
+    with pytest.raises(seal.ForagerMatchedSealError, match="horizon must be an integer"):
+        seal._validate_execution_plan_snapshot(
+            plan_payload,
+            completed.protocol,
+            completed.score_evidence,
+        )
+
+
 def test_literal_v1_qualification_carriers_and_seal_manifest_are_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

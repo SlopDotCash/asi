@@ -19,7 +19,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, cast
 
 import jax.numpy as jnp
@@ -27,7 +27,6 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAArrayResult,
@@ -36,41 +35,39 @@ from alberta_framework.core.average_reward import (
     DifferentialSARSAUpdateResult,
     run_differential_sarsa_from_arrays,
 )
+from alberta_framework.steps._float32_validation import finite_real_and_float32
 
 _INT32_MAX = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> Any:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    return value
-
-
-def _narrow_float32(name: str, value: Any) -> float:
-    """Narrow exactly as the JAX core does, without an intermediate float64."""
-    try:
-        narrowed = round_real_to_float32(value)
-    except (FloatingPointError, OverflowError, TypeError, ValueError):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
-    if not bool(np.isfinite(narrowed)):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
-    if type(value) in (int, float) and (bool(narrowed != 0.0) or value == 0):
+def _compatible_float32_storage(value: object, narrowed: float) -> float:
+    """Preserve compatible builtin payloads without changing the JAX sink."""
+    if type(value) is float and (narrowed != 0.0 or value == 0):
+        return value
+    if type(value) is int and value == narrowed:
         return float(value)
     return narrowed
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if not 0.0 <= original <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return _narrow_float32(name, original)
+    return _compatible_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return _narrow_float32(name, original)
+    return _compatible_float32_storage(real, narrowed)
 
 
 def _require_int(
@@ -80,9 +77,10 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if actual_type in (bool, np.bool_) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -142,7 +140,15 @@ class Step6DifferentialSARSAConfig:
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        return {
+            "n_actions": int(self.n_actions),
+            "q_step_size": float(self.q_step_size),
+            "average_reward_step_size": float(self.average_reward_step_size),
+            "trace_decay": float(self.trace_decay),
+            "epsilon_start": float(self.epsilon_start),
+            "epsilon_end": float(self.epsilon_end),
+            "epsilon_decay_steps": int(self.epsilon_decay_steps),
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> Step6DifferentialSARSAConfig:
@@ -203,6 +209,9 @@ def init_step6_state(
     initial_features: Array,
 ) -> DifferentialSARSAState:
     """Initialize and prime a differential SARSA state."""
+    feature_dim = _require_int(
+        "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+    )
     state = agent.init(feature_dim, key)
     state, _action = agent.start(state, initial_features)
     return cast(DifferentialSARSAState, state)
@@ -236,10 +245,11 @@ def run_step6_smoke(
     seed: int = 0,
 ) -> Step6SmokeResult:
     """Run a tiny deterministic Step 6 integration probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
-    if feature_dim < 1:
-        raise ValueError("feature_dim must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    feature_dim = _require_int(
+        "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
+    )
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step6DifferentialSARSAConfig()
     agent = make_step6_differential_sarsa_agent(cfg)

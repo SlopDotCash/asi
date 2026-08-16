@@ -6,18 +6,21 @@ import dataclasses
 from collections.abc import Mapping
 from typing import Any
 
+import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 from jax import Array
 
 from alberta_framework.benchmarks.ipmnist_screening import (
+    SCREENING_REGISTRY,
     build_recurring_ipmnist_online_indices,
     ipmnist_permutation_sha256,
     ipmnist_sentinel_set_sha256,
     run_recurring_ipmnist_retention_development,
     screening_spec,
 )
-from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig
+from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig, init_mlp_params
 
 pytestmark = pytest.mark.unit
 
@@ -214,3 +217,34 @@ def test_adapter_rejects_ambiguous_or_unbound_recurrence_inputs(
             sentinel_indices=sentinels,
             relearning_window=1,
         )
+
+
+def _hidden_rms_active(spec: Any) -> bool:
+    return any(
+        float(spec.hyperparameters.get(key, 0.0)) != 0.0
+        for key in ("hidden_rms", "flag_hidden_rms")
+    )
+
+
+def test_hidden_rms_active_arms_refuse_plain_mlp_sentinel_probes() -> None:
+    """Arms whose forward pass RMS-normalizes hidden layers cannot be probed with mlp_logits."""
+    active = sorted(name for name, spec in SCREENING_REGISTRY.items() if _hidden_rms_active(spec))
+    assert {"sigma0_hidden_norm", "disc_r1", "disc_r2", "disc_r3", "disc_r1_pscale"} <= set(active)
+    sentinel_inputs = jnp.zeros((2, CONFIG.input_dim), dtype=jnp.float32)
+    for name in active:
+        spec = SCREENING_REGISTRY[name]
+        init_fn, _step_fn = spec.factory(spec.hyperparameters)
+        state = init_fn(init_mlp_params(jr.key(0), CONFIG))
+        with pytest.raises(NotImplementedError, match="hidden-RMS"):
+            spec.frozen_probe_input(state, sentinel_inputs, spec.hyperparameters)
+
+
+def test_hidden_rms_inactive_sibling_keeps_its_input_side_probe() -> None:
+    spec = screening_spec("disc_r1_pscale_norms")
+    assert not _hidden_rms_active(spec)
+    init_fn, _step_fn = spec.factory(spec.hyperparameters)
+    state = init_fn(init_mlp_params(jr.key(0), CONFIG))
+    sentinel_inputs = jnp.ones((2, CONFIG.input_dim), dtype=jnp.float32)
+    probed = spec.frozen_probe_input(state, sentinel_inputs, spec.hyperparameters)
+    assert probed.shape == sentinel_inputs.shape
+

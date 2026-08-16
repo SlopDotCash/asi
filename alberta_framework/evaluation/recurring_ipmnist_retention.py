@@ -299,6 +299,12 @@ class RecurringIPMNISTProtocol:
         )
         if len(set(permutation_digests)) != len(permutation_digests):
             raise ValueError("A and B must bind distinct pixel permutation digests")
+        sentinel_digests = tuple(binding.sentinel_set_sha256 for binding in self.sentinel_bindings)
+        if len(set(sentinel_digests)) != len(sentinel_digests):
+            raise ValueError("A and B must bind distinct sentinel set digests")
+        sentinel_ids = tuple(binding.sentinel_set_id for binding in self.sentinel_bindings)
+        if len(set(sentinel_ids)) != len(sentinel_ids):
+            raise ValueError("A and B must bind distinct sentinel set identities")
 
         _positive_int(self.relearning_window, name="relearning_window")
         if self.relearning_window > self.phases[0].length:
@@ -637,6 +643,15 @@ def _validate_sentinel_snapshots(
         )
         if prior_state != snapshot.learner_state_sha256_before:
             raise ValueError("all sentinel probes at one checkpoint must use one frozen state")
+    states_by_digest: dict[str, list[int]] = {}
+    for checkpoint_step, digest in checkpoint_states.items():
+        states_by_digest.setdefault(digest, []).append(checkpoint_step)
+    for shared_steps in states_by_digest.values():
+        if len(shared_steps) > 1:
+            raise ValueError(
+                "sentinel probes at different checkpoints must use distinct frozen states; "
+                f"checkpoint steps {sorted(shared_steps)} all declare one learner state"
+            )
     return resolved
 
 

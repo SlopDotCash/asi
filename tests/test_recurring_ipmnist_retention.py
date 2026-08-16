@@ -243,6 +243,60 @@ def test_missing_reordered_or_malformed_sentinel_snapshots_fail_closed() -> None
         dataclasses.replace(snapshots[0], learner_state_sha256_after=_sha("f"))
 
 
+def test_sentinel_probes_at_one_checkpoint_must_share_one_frozen_state() -> None:
+    protocol = _protocol()
+    snapshots = _snapshots(protocol, retaining=True)
+    drifted = dataclasses.replace(
+        snapshots[2], learner_state_sha256_before=_sha("9"), learner_state_sha256_after=_sha("9")
+    )
+    with pytest.raises(ValueError, match="one frozen state"):
+        build_recurring_ipmnist_retention_report(
+            protocol=protocol,
+            trace=_trace(retaining=True),
+            sentinel_snapshots=(*snapshots[:2], drifted, *snapshots[3:]),
+        )
+
+
+def test_sentinel_probes_at_different_checkpoints_must_use_distinct_frozen_states() -> None:
+    """Re-scoring one learner state at every boundary would report zero forgetting."""
+    protocol = _protocol()
+    one_state = _sha("7")
+    snapshots = tuple(
+        dataclasses.replace(
+            snapshot,
+            learner_state_sha256_before=one_state,
+            learner_state_sha256_after=one_state,
+        )
+        for snapshot in _snapshots(protocol, retaining=True)
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"^sentinel probes at different checkpoints must use distinct frozen states; "
+        r"checkpoint steps \[4, 8, 12\] all declare one learner state$",
+    ):
+        build_recurring_ipmnist_retention_report(
+            protocol=protocol,
+            trace=_trace(retaining=True),
+            sentinel_snapshots=snapshots,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("sentinel_set_sha256", "A and B must bind distinct sentinel set digests"),
+        ("sentinel_set_id", "A and B must bind distinct sentinel set identities"),
+    ],
+)
+def test_protocol_rejects_a_and_b_sharing_one_sentinel_set(field: str, message: str) -> None:
+    """Distinct permutations transform the sentinel inputs, so shared sets cannot be genuine."""
+    protocol = _protocol()
+    a_binding, b_binding = protocol.sentinel_bindings
+    shared = dataclasses.replace(b_binding, **{field: getattr(a_binding, field)})
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        dataclasses.replace(protocol, sentinel_bindings=(a_binding, shared))
+
+
 def test_report_is_explicitly_threshold_free_development_only_and_nonpromoting() -> None:
     protocol = _protocol()
     report = build_recurring_ipmnist_retention_report(

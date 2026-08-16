@@ -8,6 +8,12 @@ from numbers import Integral, Real
 from typing import cast
 
 
+def _is_actual_integral(value: object) -> bool:
+    """Return whether the runtime type is a non-bool Integral subtype."""
+    actual_type = type(value)
+    return not issubclass(actual_type, bool) and issubclass(actual_type, Integral)
+
+
 def _round_quotient_ties_to_even(numerator: int, denominator: int) -> int:
     quotient, remainder = divmod(numerator, denominator)
     doubled_remainder = remainder * 2
@@ -39,45 +45,42 @@ def _float32_from_ratio(
     else:
         exponent = magnitude.bit_length() - denominator.bit_length()
         if exponent >= 0:
-            scaled_numerator = magnitude
-            scaled_denominator = denominator << exponent
-        else:
-            scaled_numerator = magnitude << (-exponent)
-            scaled_denominator = denominator
-        if scaled_numerator < scaled_denominator:
+            if magnitude < denominator << exponent:
+                exponent -= 1
+        elif magnitude << -exponent < denominator:
             exponent -= 1
-        elif scaled_numerator >= (scaled_denominator << 1):
-            exponent += 1
 
-        unbiased_exponent = exponent
-        if unbiased_exponent > 127:
-            raise OverflowError("value overflows IEEE 754 binary32")
-
-        if unbiased_exponent >= -126:
+        if exponent > 127:
+            bits = sign_bits | 0x7F800000
+        elif exponent >= -126:
             shift = 23 - exponent
             if shift >= 0:
-                scaled_num = magnitude << shift
-                scaled_den = denominator
+                significand = _round_quotient_ties_to_even(
+                    magnitude << shift,
+                    denominator,
+                )
             else:
-                scaled_num = magnitude
-                scaled_den = denominator << (-shift)
-            significand_full = _round_quotient_ties_to_even(scaled_num, scaled_den)
-            if significand_full == 1 << 24:
-                unbiased_exponent += 1
-                if unbiased_exponent > 127:
-                    raise OverflowError("value overflows IEEE 754 binary32")
-                significand_full >>= 1
-            biased_exponent = unbiased_exponent + 127
-            significand_bits = significand_full & ((1 << 23) - 1)
-            bits = sign_bits | (biased_exponent << 23) | significand_bits
+                significand = _round_quotient_ties_to_even(
+                    magnitude,
+                    denominator << -shift,
+                )
+            if significand == 1 << 24:
+                significand >>= 1
+                exponent += 1
+            if exponent > 127:
+                bits = sign_bits | 0x7F800000
+            else:
+                bits = (
+                    sign_bits
+                    | ((exponent + 127) << 23)
+                    | (significand - (1 << 23))
+                )
         else:
-            scaled_num = magnitude << 149
-            scaled_den = denominator
-            significand = _round_quotient_ties_to_even(scaled_num, scaled_den)
-            if significand >= (1 << 23):
-                bits = sign_bits | (1 << 23)
-            else:
-                bits = sign_bits | significand
+            significand = _round_quotient_ties_to_even(
+                magnitude << 149,
+                denominator,
+            )
+            bits = sign_bits | significand
     return float(struct.unpack("!f", bits.to_bytes(4, byteorder="big"))[0])
 
 
@@ -86,27 +89,25 @@ def _real_ratio(value: Real) -> tuple[int, int, bool]:
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise TypeError("value must be an actual non-bool real")
-    if issubclass(actual_type, Integral):
+    if _is_actual_integral(value):
         ratio: object = (int(cast(Integral, value)), 1)
     else:
-        ratio_method = getattr(actual_type, "as_integer_ratio", None)
+        ratio_method = getattr(value, "as_integer_ratio", None)
         if not callable(ratio_method):
             raise TypeError("real value must expose as_integer_ratio")
-        ratio = ratio_method(value)
-    if type(ratio) is not tuple or len(ratio) != 2:
+        ratio = ratio_method()
+    if not issubclass(type(ratio), tuple):
         raise TypeError("as_integer_ratio must return an integer pair")
-    numerator_raw, denominator_raw = ratio
-    num_type = type(numerator_raw)
-    den_type = type(denominator_raw)
-    if (
-        issubclass(num_type, bool)
-        or not issubclass(num_type, Integral)
-        or issubclass(den_type, bool)
-        or not issubclass(den_type, Integral)
+    ratio_tuple = cast(tuple[object, ...], ratio)
+    if len(ratio_tuple) != 2:
+        raise TypeError("as_integer_ratio must return an integer pair")
+    numerator_raw, denominator_raw = ratio_tuple
+    if not _is_actual_integral(numerator_raw) or not _is_actual_integral(
+        denominator_raw
     ):
         raise TypeError("as_integer_ratio must return an integer pair")
-    numerator = int(numerator_raw)
-    denominator = int(denominator_raw)
+    numerator = int(cast(Integral, numerator_raw))
+    denominator = int(cast(Integral, denominator_raw))
     if denominator < 0:
         numerator = -numerator
         denominator = -denominator
@@ -117,14 +118,19 @@ def _real_ratio(value: Real) -> tuple[int, int, bool]:
 
 
 def round_real_to_float32_with_ratio(value: Real) -> tuple[int, int, float]:
-    """Read one exact ratio and return it with its binary32 rounding."""
+    """Read one exact ratio and return it with its binary32 rounding.
+
+    Returning the same ratio used for rounding lets domain validators retain
+    facts that disappear at binary32 endpoints, such as a negative value that
+    rounds to ``-0.0`` or a value above one that rounds to ``1.0``.
+    """
     numerator, denominator, negative_zero = _real_ratio(value)
-    narrowed = _float32_from_ratio(
+    rounded = _float32_from_ratio(
         numerator,
         denominator,
         negative_zero=negative_zero,
     )
-    return numerator, denominator, narrowed
+    return numerator, denominator, rounded
 
 
 def round_real_to_float32(value: Real) -> float:
@@ -135,7 +141,8 @@ def round_real_to_float32(value: Real) -> float:
     conversion. Real implementations that cannot expose an exact ratio are
     rejected instead of being silently double-rounded.
     """
-    return round_real_to_float32_with_ratio(value)[2]
+    _, _, rounded = round_real_to_float32_with_ratio(value)
+    return rounded
 
 
 __all__ = ["round_real_to_float32", "round_real_to_float32_with_ratio"]

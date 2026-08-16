@@ -723,7 +723,9 @@ def _summary_validator(inputs: _SealedInputs) -> _SummaryValidator:
             score_evidence,
             request,
         )
-        if campaign._plain(summary) != expected:
+        if campaign.canonical_json_bytes(campaign._plain(summary)) != campaign.canonical_json_bytes(
+            expected
+        ):
             raise ForagerMatchedSealedEvaluationCampaignError(
                 "sealed completion summary differs from its exact v2 schema"
             )

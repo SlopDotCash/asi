@@ -6,7 +6,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import warnings
 from dataclasses import fields, replace
+from fractions import Fraction
 from typing import Any
 
 import jax
@@ -434,6 +436,30 @@ def test_reservoir_selection_contract_and_lifetime_calculations_are_exact() -> N
     assert int(state.long_term_write_count + state.long_term_rejection_count) == 11
 
 
+def test_reservoir_policy_reports_no_aleatoric_control_rather_than_a_veto() -> None:
+    """Reservoir applies no aleatoric control, so ``available`` must be False, not a fake veto."""
+    memory = DualReplayMemory(_config(long_term_policy="reservoir", max_aleatoric_uncertainty=1.0))
+    state = memory.init(jr.key(11))
+    signals = [(0.0, True), (2.0, True), (0.0, False), (2.0, False)]
+    for provenance, (aleatoric, available) in enumerate(signals, start=1):
+        result = memory.record(
+            state,
+            _prediction(
+                provenance,
+                aleatoric=aleatoric,
+                aleatoric_available=available,
+            ),
+            _outcome(provenance),
+        )
+        assert bool(result.input_valid)
+        assert not bool(result.aleatoric_control_available)
+        assert not bool(result.aleatoric_control_passed)
+        assert not bool(result.long_term_priority_available)
+        state = result.state
+    assert int(state.accepted_transition_count) == 4
+    assert int(jnp.sum(state.long_term.valid)) > 0
+
+
 def test_calibrated_priority_uses_surprise_coverage_and_progress_exactly() -> None:
     memory = DualReplayMemory(
         _config(
@@ -459,6 +485,252 @@ def test_calibrated_priority_uses_surprise_coverage_and_progress_exactly() -> No
     assert bool(result.aleatoric_control_available)
     assert bool(result.aleatoric_control_passed)
     assert bool(result.wrote_long_term)
+
+
+def test_calibrated_priority_stays_within_unit_range_for_unequal_weights() -> None:
+    memory = DualReplayMemory(
+        _config(
+            long_term_policy="calibrated",
+            surprise_scale=1.0,
+            coverage_scale=1.0,
+            progress_scale=1.0,
+            surprise_weight=0.1,
+            coverage_weight=0.2,
+            progress_weight=0.4,
+        )
+    )
+    first = memory.record(
+        memory.init(jr.key(3)),
+        _prediction(1, epistemic=1.0, aleatoric=0.1),
+        _outcome(1, progress=1.0),
+    )
+
+    assert float(first.surprise_component) == 1.0
+    assert float(first.coverage_component) == 1.0
+    assert float(first.progress_component) == 1.0
+    assert bool(first.wrote_long_term)
+    assert float(first.long_term_priority) == 1.0
+    assert bool(memory.state_valid(first.state))
+    memory.validate_state(first.state)
+
+    second = memory.record(
+        first.state,
+        _prediction(2, epistemic=0.1, aleatoric=0.1),
+        _outcome(2, progress=0.1),
+    )
+    assert bool(second.state_valid)
+    assert bool(second.wrote_short_term)
+    assert int(second.state.accepted_transition_count) == 2
+
+
+_FLOAT32_SCALARS = (
+    "surprise_scale",
+    "coverage_scale",
+    "progress_scale",
+    "surprise_weight",
+    "coverage_weight",
+    "progress_weight",
+    "aleatoric_downweight_scale",
+    "calibrated_priority_threshold",
+    "calibrated_replacement_margin",
+    "max_aleatoric_uncertainty",
+)
+_ZERO_ALLOWED = (
+    "calibrated_priority_threshold",
+    "calibrated_replacement_margin",
+    "max_aleatoric_uncertainty",
+)
+
+
+def _strict_memory(**overrides: Any) -> DualReplayMemory:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        return DualReplayMemory(_config(long_term_policy="calibrated", **overrides))
+
+
+@pytest.mark.parametrize("field", _FLOAT32_SCALARS)
+@pytest.mark.parametrize(
+    "value",
+    [
+        1e-46,
+        6e38,
+        Fraction(1, 10**400),
+        Fraction(1, 2**150),
+        2**128,
+        float("inf"),
+        np.float64("nan"),
+    ],
+)
+def test_config_rejects_scalars_that_underflow_or_overflow_float32_without_warnings(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        _strict_memory(**{field: value})
+
+
+@pytest.mark.parametrize("field", _FLOAT32_SCALARS)
+def test_config_enforces_exact_float32_underflow_and_overflow_midpoints(field: str) -> None:
+    minimum_subnormal = float(np.nextafter(np.float32(0.0), np.float32(1.0)))
+    underflow_midpoint = Fraction(1, 2**150)
+    overflow_midpoint = Fraction(((2**24 - 1) * 2**104) + 2**103)
+    upper_bounded = field == "calibrated_priority_threshold"
+
+    with pytest.raises(ValueError, match=field):
+        _strict_memory(**{field: underflow_midpoint})
+    above = _strict_memory(**{field: underflow_midpoint + Fraction(1, 2**200)})
+    assert getattr(above.config, field) == minimum_subnormal
+    if upper_bounded:
+        with pytest.raises(ValueError, match=field):
+            _strict_memory(**{field: Fraction(1, 1) + Fraction(1, 2**60)})
+        return
+    below_overflow = _strict_memory(**{field: overflow_midpoint - 1})
+    assert getattr(below_overflow.config, field) == float(np.finfo(np.float32).max)
+    with pytest.raises(ValueError, match=field):
+        _strict_memory(**{field: overflow_midpoint})
+
+
+@pytest.mark.parametrize("field", _ZERO_ALLOWED)
+def test_config_keeps_explicit_zero_where_the_domain_allows_it(field: str) -> None:
+    memory = _strict_memory(**{field: 0.0})
+    assert getattr(memory.config, field) == 0.0
+    memory = _strict_memory(**{field: 0})
+    assert getattr(memory.config, field) == 0
+
+
+@pytest.mark.parametrize("field", _FLOAT32_SCALARS)
+def test_config_rounds_exact_rationals_and_large_integers_directly_to_float32(
+    field: str,
+) -> None:
+    upper_bounded = field == "calibrated_priority_threshold"
+    scale = Fraction(1, 2**4) if upper_bounded else Fraction(1, 1)
+    midpoint = (Fraction(1, 1) + Fraction(1, 2**24)) * scale
+    offset = Fraction(1, 2**60) * scale
+    next_float32 = float(np.nextafter(np.float32(scale), np.float32(2.0 * float(scale))))
+    assert getattr(_strict_memory(**{field: midpoint - offset}).config, field) == float(scale)
+    assert getattr(_strict_memory(**{field: midpoint}).config, field) == float(scale)
+    assert getattr(_strict_memory(**{field: midpoint + offset}).config, field) == next_float32
+    if not upper_bounded:
+        # Above the float32 tie at 2**54 + 2**30, but float64 first rounds it onto the tie
+        # and ties-to-even would then land on 2**54: the exact ratio must round up.
+        big = 2**54 + 2**30 + 1
+        assert getattr(_strict_memory(**{field: big}).config, field) == float(2**54 + 2**31)
+
+
+def test_config_canonicalizes_real_scalars_and_preserves_builtin_payload() -> None:
+    builtin = _strict_memory(surprise_weight=0.1, coverage_weight=0.2, progress_weight=0.4)
+    assert builtin.config.surprise_weight == 0.1
+    assert builtin.config.coverage_weight == 0.2
+    assert builtin.config.progress_weight == 0.4
+    integer = _strict_memory(
+        surprise_weight=2**54 + 1,
+        calibrated_priority_threshold=0,
+    )
+    assert type(integer.config.surprise_weight) is int
+    assert integer.config.surprise_weight == 2**54 + 1
+    assert type(integer.config.calibrated_priority_threshold) is int
+    assert integer.config.calibrated_priority_threshold == 0
+    assert integer.to_config()["config"]["surprise_weight"] == 2**54 + 1
+    assert integer.to_config()["config"]["calibrated_priority_threshold"] == 0
+    canonical = _strict_memory(
+        surprise_weight=np.float64(0.25),
+        coverage_weight=np.int64(1),
+        progress_weight=Fraction(1, 4),
+    )
+    for value in (
+        canonical.config.surprise_weight,
+        canonical.config.coverage_weight,
+        canonical.config.progress_weight,
+    ):
+        assert type(value) is float
+    payload = canonical.to_config()
+    json.dumps(payload, allow_nan=False)
+    assert DualReplayMemory.from_config(payload).config == canonical.config
+
+
+class _LyingFloat(float):
+    """A real float subclass whose exact ratio disagrees with its host value."""
+
+    def __new__(cls, value: float, ratio: tuple[int, int]) -> _LyingFloat:
+        instance = super().__new__(cls, value)
+        instance._ratio = ratio  # type: ignore[attr-defined]
+        return instance
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return self._ratio  # type: ignore[attr-defined,no-any-return]
+
+
+class _FloatSpoof:
+    """Not a Real at all, but reports ``float`` through ``__class__``."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 2)
+
+    def __float__(self) -> float:
+        return 0.5
+
+    def __le__(self, other: Any) -> bool:
+        return bool(0.5 <= other)
+
+    def __lt__(self, other: Any) -> bool:
+        return bool(0.5 < other)
+
+    def __gt__(self, other: Any) -> bool:
+        return bool(0.5 > other)
+
+    def __ge__(self, other: Any) -> bool:
+        return bool(0.5 >= other)
+
+    def __ne__(self, other: object) -> bool:
+        return other != 0.5
+
+    def __eq__(self, other: object) -> bool:
+        return other == 0.5
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+@pytest.mark.parametrize(
+    ("field", "ratio"),
+    [
+        ("surprise_scale", (-1, 1)),
+        ("surprise_weight", (-1, 1)),
+        ("aleatoric_downweight_scale", (0, 1)),
+        ("calibrated_priority_threshold", (-1, 1)),
+        ("calibrated_priority_threshold", (2, 1)),
+        ("calibrated_replacement_margin", (-1, 1)),
+        ("max_aleatoric_uncertainty", (-1, 1)),
+    ],
+)
+def test_config_rejects_reals_whose_exact_ratio_leaves_the_domain(
+    field: str, ratio: tuple[int, int]
+) -> None:
+    """Host value 0.5 is in every domain; the narrowed sink value must be too."""
+    with pytest.raises(ValueError, match=field):
+        _strict_memory(**{field: _LyingFloat(0.5, ratio)})
+
+
+@pytest.mark.parametrize("field", _FLOAT32_SCALARS)
+def test_config_rejects_objects_that_only_spoof_float_through_class(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _strict_memory(**{field: _FloatSpoof()})
+
+
+def test_config_accepts_honest_float_subclasses_as_canonical_floats() -> None:
+    memory = _strict_memory(surprise_weight=_LyingFloat(0.5, (1, 2)))
+    assert type(memory.config.surprise_weight) is float
+    assert memory.config.surprise_weight == 0.5
+    payload = memory.to_config()
+    json.dumps(payload, allow_nan=False)
+    assert DualReplayMemory.from_config(payload).config == memory.config
+
+
+def test_config_rejects_calibration_weights_whose_float32_sum_overflows_without_warnings() -> None:
+    with pytest.raises(ValueError, match="finite float32 sum"):
+        _strict_memory(surprise_weight=2e38, coverage_weight=2e38, progress_weight=2e38)
 
 
 def test_calibrated_coverage_and_long_term_eviction_provenance_are_explicit() -> None:

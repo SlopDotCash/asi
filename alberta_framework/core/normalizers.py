@@ -40,6 +40,12 @@ NORMALIZER_STATE_SCHEMA = "alberta.normalizer-state.v2"
 WELFORD_ESTIMATOR_SCHEMA = "alberta.welford-cumulative-float32-fail-stop-at-2p24.v2"
 BOUNDED_RECENCY_ESTIMATOR_SEMANTICS = "bounded-recency"
 CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS = "cumulative-float32-fail-stop-at-2p24"
+EMA_PRIOR_BOUNDED_RECENCY_ESTIMATOR_SEMANTICS = (
+    "ema-zero-mean-unit-variance-prior-bounded-recency"
+)
+EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS = (
+    "ema-zero-mean-unit-variance-prior-cumulative-float32-fail-stop-at-2p24"
+)
 STATIC_AFTER_FIRST_ESTIMATOR_SEMANTICS = "static-after-first"
 NORMALIZER_LIFETIME_COUNTER_NBYTES = 12
 NORMALIZER_LIFETIME_COUNTER_DELTA_NBYTES = 8
@@ -135,7 +141,9 @@ class EMANormalizerState:
         sample_count: Saturating int32 compatibility telemetry.
         sample_count_words: Exact big-endian ``[high, low]`` uint32 sample
             identity. The all-ones value is terminal.
-        decay: Exponential decay factor for estimates (1.0 = no decay, pure online)
+        decay: Exponential decay factor for estimates. ``1.0`` retains the
+            initial zero-mean, unit-variance pseudo-sample with cumulative
+            weight instead of exponentially forgetting it.
     """
 
     mean: Float[Array, " feature_dim"]
@@ -403,11 +411,14 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
     Estimates mean and variance via EMA, suitable for non-stationary
     environments where recent observations should be weighted more heavily.
 
-    The effective decay ramps up from 0 to the target decay over early steps
-    to prevent instability.  ``decay < 1`` is a bounded-recency estimator and
-    can run until the uint64 word clock is exhausted.  The legacy
-    ``decay == 1`` setting is cumulative in float32: it accepts the event that
-    reaches ``2**24`` and then explicitly fail-stops.
+    The initialized zero mean and unit variance are one explicit prior
+    pseudo-sample. The first effective decay is therefore
+    ``min(decay, 1/2)`` and then ramps toward the target decay over early
+    steps. ``decay < 1`` exponentially forgets that prior as a
+    bounded-recency estimator and can run until the uint64 word clock is
+    exhausted. ``decay == 1`` retains the prior with cumulative weight in
+    float32: it is not an ordinary sample mean or a Welford estimator, and it
+    accepts the event that reaches ``2**24`` before explicitly fail-stopping.
 
     Attributes:
         epsilon: Small constant for numerical stability
@@ -425,9 +436,9 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
 
         Args:
             epsilon: Small constant added to std for numerical stability
-            decay: Exponential decay factor for running estimates.
-                   Lower values adapt faster to changes.
-                   1.0 means pure online average (no decay).
+            decay: Exponential decay factor for running estimates. Lower
+                values adapt faster to changes. ``1.0`` means cumulative
+                prior-regularized moments with no exponential forgetting.
         """
         super().__init__(epsilon=epsilon)
         if isinstance(decay, bool) or not isinstance(decay, Real):
@@ -444,9 +455,9 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
             "type": "EMANormalizer",
             "state_schema": NORMALIZER_STATE_SCHEMA,
             "estimator_semantics": (
-                CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
+                EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
                 if _stored_float32_equals_one(self._decay)
-                else BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
+                else EMA_PRIOR_BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
             ),
             "epsilon": self._epsilon,
             "decay": self._decay,
@@ -459,7 +470,8 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
             feature_dim: Dimension of feature vectors
 
         Returns:
-            Initial normalizer state with zero mean and unit variance
+            Initial normalizer state whose zero mean and unit variance form
+            the estimator's one explicit prior pseudo-sample.
         """
         return EMANormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
@@ -957,6 +969,7 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
         raise ValueError(f"Unsupported normalizer state schema: {state_schema!r}")
     estimator_schema = config.pop("estimator_schema", None)
     estimator_semantics = config.pop("estimator_semantics", None)
+    legacy_estimator_semantics: str | None = None
     if type_name == "WelfordNormalizer":
         if estimator_schema not in {None, WELFORD_ESTIMATOR_SCHEMA}:
             raise ValueError(f"Unsupported Welford estimator schema: {estimator_schema!r}")
@@ -964,11 +977,12 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     elif estimator_schema is not None:
         raise ValueError(f"estimator_schema is not valid for normalizer type {type_name!r}")
     elif type_name == "EMANormalizer":
-        expected_semantics = (
-            CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
-            if _stored_float32_equals_one(config.get("decay", 0.99))
-            else BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
-        )
+        if _stored_float32_equals_one(config.get("decay", 0.99)):
+            expected_semantics = EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
+            legacy_estimator_semantics = CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
+        else:
+            expected_semantics = EMA_PRIOR_BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
+            legacy_estimator_semantics = BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
     elif type_name == "StreamingBatchNormalizer":
         expected_semantics = (
             STATIC_AFTER_FIRST_ESTIMATOR_SEMANTICS
@@ -977,7 +991,13 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
         )
     else:
         expected_semantics = None
-    if estimator_semantics is not None and estimator_semantics != expected_semantics:
+    if estimator_semantics is not None and (
+        type(estimator_semantics) is not str
+        or (
+            estimator_semantics != expected_semantics
+            and estimator_semantics != legacy_estimator_semantics
+        )
+    ):
         raise ValueError(
             "normalizer estimator_semantics does not match its parameters: "
             f"expected {expected_semantics!r}, got {estimator_semantics!r}"
@@ -992,6 +1012,8 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
 __all__ = [
     "BOUNDED_RECENCY_ESTIMATOR_SEMANTICS",
     "CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS",
+    "EMA_PRIOR_BOUNDED_RECENCY_ESTIMATOR_SEMANTICS",
+    "EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS",
     "NORMALIZER_LIFETIME_COUNTER_DELTA_NBYTES",
     "NORMALIZER_LIFETIME_COUNTER_NBYTES",
     "NORMALIZER_STATE_SCHEMA",

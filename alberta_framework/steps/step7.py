@@ -47,9 +47,8 @@ References:
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass, field
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, Literal, cast
 
 import chex
@@ -67,6 +66,10 @@ from alberta_framework.core.world_model import (
     OneStepWorldModel,
     WorldModelState,
     WorldModelUpdateResult,
+)
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
 )
 from alberta_framework.steps.step6 import (
     Step6DifferentialSARSAConfig,
@@ -133,13 +136,32 @@ class Step7DynaConfig:
         return cls(**cast(Any, data))
 
 
-def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return number
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(name: str, value: object, *, minimum: int | None = None) -> int:
@@ -153,6 +175,12 @@ def _require_int(name: str, value: object, *, minimum: int | None = None) -> int
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
     return number
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool, got {value!r}")
+    return value
 
 
 def _validate_planning_config(config: Step7DynaConfig) -> None:
@@ -172,33 +200,22 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         config.planning_memory_size,
         minimum=1,
     )
-    importance_clip = _require_real(
+    importance_clip = _require_positive_real(
         "planning_importance_ratio_clip",
         config.planning_importance_ratio_clip,
     )
-    if importance_clip <= 0.0:
-        raise ValueError(
-            f"planning_importance_ratio_clip must be positive, got "
-            f"{config.planning_importance_ratio_clip!r}"
-        )
-    propagation = _require_real(
+    propagation = _require_nonnegative_real(
         "planning_priority_propagation",
         config.planning_priority_propagation,
     )
-    if propagation < 0.0:
-        raise ValueError(
-            f"planning_priority_propagation must be non-negative, got "
-            f"{config.planning_priority_propagation!r}"
-        )
-    utility_step = _require_real(
+    utility_step = _require_unit_interval(
         "planning_utility_step_size",
         config.planning_utility_step_size,
     )
-    if not 0.0 <= utility_step <= 1.0:
-        raise ValueError(
-            f"planning_utility_step_size must be in [0, 1], got "
-            f"{config.planning_utility_step_size!r}"
-        )
+    _require_bool(
+        "planning_apply_importance_correction",
+        config.planning_apply_importance_correction,
+    )
     if config.planning_strategy not in (
         "random",
         "reward",

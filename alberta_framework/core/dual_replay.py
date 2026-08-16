@@ -38,6 +38,7 @@ import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from numbers import Real
 from typing import Any, Literal, cast
 
 import chex
@@ -47,6 +48,8 @@ import jax.random as jr
 import numpy as np
 import numpy.typing as npt
 from jax import Array
+
+from alberta_framework._float32 import round_real_to_float32
 
 DUAL_REPLAY_CONFIG_SCHEMA = "alberta.dual-replay.config.v1"
 DUAL_REPLAY_CHECKPOINT_SCHEMA = "alberta.dual-replay.checkpoint.v1"
@@ -103,6 +106,31 @@ class DualReplayConfig:
     max_aleatoric_uncertainty: float = 1.0
     aleatoric_downweight_scale: float = 1.0
     max_persistent_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        """Validate float32-consumed scalars in their sink domain and canonicalize them."""
+        for name in _POSITIVE_FLOAT32_FIELDS:
+            object.__setattr__(
+                self,
+                name,
+                _require_float32_real(name, getattr(self, name), strictly_positive=True),
+            )
+        object.__setattr__(
+            self,
+            "calibrated_priority_threshold",
+            _require_float32_real(
+                "calibrated_priority_threshold",
+                self.calibrated_priority_threshold,
+                strictly_positive=False,
+                maximum=1,
+            ),
+        )
+        for name in ("calibrated_replacement_margin", "max_aleatoric_uncertainty"):
+            object.__setattr__(
+                self,
+                name,
+                _require_float32_real(name, getattr(self, name), strictly_positive=False),
+            )
 
     @property
     def long_term_capacity(self) -> int:
@@ -385,13 +413,67 @@ class DualReplayResourceAccounting:
     samples: Array
 
 
-def _validate_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        raise ValueError(f"{name} must be a real number")
-    result = float(value)
-    if not math.isfinite(result):
-        raise ValueError(f"{name} must be finite")
-    return result
+_POSITIVE_FLOAT32_FIELDS = (
+    "surprise_scale",
+    "coverage_scale",
+    "progress_scale",
+    "surprise_weight",
+    "coverage_weight",
+    "progress_weight",
+    "aleatoric_downweight_scale",
+)
+
+
+def _require_float32_real(
+    name: str,
+    value: object,
+    *,
+    strictly_positive: bool,
+    maximum: int | None = None,
+) -> float:
+    """Validate one host scalar in its exact domain and its float32 sink.
+
+    Zero is only admitted where the exact domain allows it; a nonzero value
+    that narrows to zero, or a finite value that narrows to infinity, is
+    rejected because the compiled sink would silently run a different rule.
+    Built-in payloads that already narrow exactly are preserved for
+    serialization; other reals are canonicalized to the exact sink value.
+    """
+    domain = "positive" if strictly_positive else "non-negative"
+    if maximum is not None:
+        domain = f"{domain} and at most {maximum}"
+    preserve_builtin_payload = type(value) is int or type(value) is float
+    actual_type = type(value)
+    if issubclass(actual_type, bool | np.bool_) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be finite and {domain}")
+    real_value = cast(Any, value)
+
+    def in_domain(candidate: Any) -> bool:
+        if strictly_positive:
+            if not candidate > 0:
+                return False
+        elif not candidate >= 0:
+            return False
+        return maximum is None or bool(candidate <= maximum)
+
+    try:
+        if not in_domain(real_value):
+            raise ValueError
+        narrowed = round_real_to_float32(real_value)
+    except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be finite and {domain}") from error
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32")
+    if real_value != 0 and narrowed == 0.0:
+        raise ValueError(f"{name} must not underflow to zero in float32")
+    if not in_domain(narrowed):
+        raise ValueError(f"{name} must remain {domain} once narrowed to float32")
+    if not preserve_builtin_payload:
+        return narrowed
+    number = float(real_value)
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = float(np.float32(number))
+    return cast(float, value) if narrowed == renarrowed else narrowed
 
 
 def _validate_positive_int(name: str, value: object) -> int:
@@ -431,33 +513,17 @@ def _validate_config(config: DualReplayConfig) -> None:
     if config.max_representation_lag < 0:
         raise ValueError("max_representation_lag must be non-negative")
 
-    positive = (
-        "surprise_scale",
-        "coverage_scale",
-        "progress_scale",
-        "surprise_weight",
-        "coverage_weight",
-        "progress_weight",
-        "aleatoric_downweight_scale",
-    )
-    for name in positive:
-        if _validate_real(name, getattr(config, name)) <= 0.0:
-            raise ValueError(f"{name} must be positive")
-    threshold = _validate_real(
-        "calibrated_priority_threshold", config.calibrated_priority_threshold
-    )
-    if not 0.0 <= threshold <= 1.0:
-        raise ValueError("calibrated_priority_threshold must be in [0, 1]")
-    margin = _validate_real(
-        "calibrated_replacement_margin", config.calibrated_replacement_margin
-    )
-    if margin < 0.0:
-        raise ValueError("calibrated_replacement_margin must be non-negative")
-    maximum = _validate_real(
-        "max_aleatoric_uncertainty", config.max_aleatoric_uncertainty
-    )
-    if maximum < 0.0:
-        raise ValueError("max_aleatoric_uncertainty must be non-negative")
+    with np.errstate(over="ignore"):
+        weight_sum = float(
+            np.float32(config.surprise_weight)
+            + np.float32(config.coverage_weight)
+            + np.float32(config.progress_weight)
+        )
+    if not math.isfinite(weight_sum):
+        raise ValueError(
+            "surprise_weight, coverage_weight, and progress_weight must have a "
+            "finite float32 sum"
+        )
     if config.max_persistent_bytes is not None:
         _validate_positive_int("max_persistent_bytes", config.max_persistent_bytes)
         if config.max_persistent_bytes > _UINT32_MAX:
@@ -1354,15 +1420,16 @@ class DualReplayMemory:
             jnp.clip(nearest / jnp.asarray(cfg.coverage_scale, dtype=jnp.float32), 0.0, 1.0),
             jnp.asarray(1.0, dtype=jnp.float32),
         )
-        weight_sum = jnp.asarray(
-            cfg.surprise_weight + cfg.coverage_weight + cfg.progress_weight,
-            dtype=jnp.float32,
+        surprise_weight = jnp.asarray(cfg.surprise_weight, dtype=jnp.float32)
+        coverage_weight = jnp.asarray(cfg.coverage_weight, dtype=jnp.float32)
+        progress_weight = jnp.asarray(cfg.progress_weight, dtype=jnp.float32)
+        weight_sum = surprise_weight + coverage_weight + progress_weight
+        raw_priority = jnp.clip(
+            (surprise_weight * surprise + coverage_weight * coverage + progress_weight * progress)
+            / weight_sum,
+            0.0,
+            1.0,
         )
-        raw_priority = (
-            jnp.asarray(cfg.surprise_weight, dtype=jnp.float32) * surprise
-            + jnp.asarray(cfg.coverage_weight, dtype=jnp.float32) * coverage
-            + jnp.asarray(cfg.progress_weight, dtype=jnp.float32) * progress
-        ) / weight_sum
         components_available = (
             transition.epistemic_surprise_available
             & transition.learning_progress_available
@@ -1498,7 +1565,7 @@ class DualReplayMemory:
             coverage_component = jnp.asarray(0.0, dtype=jnp.float32)
             progress_component = jnp.asarray(0.0, dtype=jnp.float32)
             aleatoric_passed = jnp.asarray(False)
-            aleatoric_available = transition.aleatoric_uncertainty_available
+            aleatoric_available = jnp.asarray(False)
             next_key, draw_key = jr.split(_key_from_data(state.rng_key_data))
             selection = reservoir_selection(draw_key, candidate_number, cfg.long_term_capacity)
             wrote_long = selection.selected

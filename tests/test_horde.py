@@ -3,6 +3,7 @@
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework import (
     Autostep,
@@ -13,6 +14,7 @@ from alberta_framework import (
     HordeLearner,
     HordeLearningResult,
     MultiHeadMLPLearner,
+    MultiHeadMLPState,
     ObGDBounding,
     create_horde_spec,
     run_horde_learning_loop,
@@ -29,6 +31,70 @@ def _make_all_gamma0_spec(n: int) -> list[GVFSpec]:
         )
         for i in range(n)
     ]
+
+
+def _shape_contract_horde() -> tuple[HordeLearner, MultiHeadMLPState]:
+    horde = HordeLearner(
+        horde_spec=create_horde_spec(_make_all_gamma0_spec(3)),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+    )
+    return horde, horde.init(5, jr.key(0))
+
+
+@pytest.mark.parametrize(
+    "cumulants",
+    [
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.ones((1,), dtype=jnp.float32),
+        jnp.ones((3, 1), dtype=jnp.float32),
+    ],
+)
+def test_horde_update_rejects_wrong_cumulant_shape(cumulants: jnp.ndarray) -> None:
+    horde, state = _shape_contract_horde()
+    with pytest.raises(ValueError, match=r"cumulants must have shape \(3,\)"):
+        horde.update(
+            state,
+            jnp.ones((5,), dtype=jnp.float32),
+            cumulants,
+            jnp.zeros((5,), dtype=jnp.float32),
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "cumulants", "discounts"),
+    [
+        (
+            "cumulants",
+            jnp.ones((1,), dtype=jnp.float32),
+            jnp.ones((3,), dtype=jnp.float32),
+        ),
+        (
+            "discounts",
+            jnp.ones((3,), dtype=jnp.float32),
+            jnp.asarray(0.9, dtype=jnp.float32),
+        ),
+        (
+            "discounts",
+            jnp.ones((3,), dtype=jnp.float32),
+            jnp.ones((3, 1), dtype=jnp.float32),
+        ),
+    ],
+)
+def test_horde_update_with_discounts_rejects_wrong_head_vector_shape(
+    field: str,
+    cumulants: jnp.ndarray,
+    discounts: jnp.ndarray,
+) -> None:
+    horde, state = _shape_contract_horde()
+    with pytest.raises(ValueError, match=rf"{field} must have shape \(3,\)"):
+        horde.update_with_discounts(
+            state,
+            jnp.ones((5,), dtype=jnp.float32),
+            cumulants,
+            jnp.zeros((5,), dtype=jnp.float32),
+            discounts,
+        )
 
 
 # =============================================================================

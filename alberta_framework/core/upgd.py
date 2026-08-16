@@ -292,8 +292,9 @@ class UPGDLearner:
         head_repetition_warmup_steps: Number of initial steps before the
             repeated-target boost can turn on.
         unit_replacement_rate: Optional hidden-unit recycling rate per step,
-            expressed as a fraction of units per layer. ``0`` disables
-            recycling while still tracking per-unit utility.
+            expressed as a fraction of the layer's mature units; at most one
+            unit per layer is recycled per step. ``0`` disables recycling
+            while still tracking per-unit utility.
         unit_maturity_threshold: Minimum age before a hidden unit can be
             recycled.
         unit_utility_decay: Optional EMA decay for hidden-unit utilities. When
@@ -327,7 +328,11 @@ class UPGDLearner:
             when no gradient-alignment meta-rule is active. Disable for lean
             non-meta UPGD benchmarks to reduce carry traffic.
         adaptive_kappa_mode: Optional online control law for ObGD ``kappa``.
-            ``"none"`` uses the configured bounder unchanged. ``"loss_ratio"``
+            ``"none"`` uses the configured bounder unchanged, and
+            ``bounder=None`` disables bounding in every mode. When a bounder is
+            configured, every other mode uses plain ObGD at
+            ``adaptive_kappa_base`` (scaled by the law), so it must be an
+            :class:`ObGDBounding` with that same kappa. ``"loss_ratio"``
             computes an effective kappa from the learner's fast/slow loss EMAs,
             lowering kappa when fast loss exceeds slow loss and raising it when
             the stream appears stable. ``"gradient_alignment"`` learns a
@@ -755,6 +760,24 @@ class UPGDLearner:
         if adaptive_kappa_base <= 0.0:
             msg = f"adaptive_kappa_base must be positive, got {adaptive_kappa_base}"
             raise ValueError(msg)
+        if adaptive_kappa_mode != "none" and bounder is not None:
+            configured = bounder.to_config()
+            if type(bounder) is not ObGDBounding:
+                msg = (
+                    "adaptive_kappa_mode bounds every update with plain ObGD at "
+                    "adaptive_kappa_base and would silently discard the configured "
+                    f"{configured.get('type', type(bounder).__name__)} bounder; pass "
+                    "bounder=None or an ObGDBounding whose kappa equals adaptive_kappa_base"
+                )
+                raise ValueError(msg)
+            if float(configured["kappa"]) != float(adaptive_kappa_base):
+                msg = (
+                    "adaptive_kappa_mode bounds every update at adaptive_kappa_base="
+                    f"{adaptive_kappa_base}, which disagrees with the configured "
+                    f"ObGDBounding kappa={configured['kappa']}; make them equal or use "
+                    "adaptive_kappa_mode='none'"
+                )
+                raise ValueError(msg)
         if adaptive_kappa_min <= 0.0:
             msg = f"adaptive_kappa_min must be positive, got {adaptive_kappa_min}"
             raise ValueError(msg)
@@ -1900,7 +1923,18 @@ class UPGDLearner:
         Returns:
             :class:`UPGDUpdateResult` with the updated state, predictions,
             errors, and 1D metrics array.
+
+        Raises:
+            ValueError: If ``targets`` is not one value per head; a
+                broadcastable scalar or length-1 target would train every head
+                while the active-head count normalizing the loss and step
+                sizes counted one.
         """
+        targets = jnp.asarray(targets, dtype=jnp.float32)
+        if targets.shape != (self._n_heads,):
+            raise ValueError(
+                f"targets must have shape ({self._n_heads},), got {targets.shape}"
+            )
         slope = self._leaky_relu_slope
         ln = self._use_layer_norm
         sigma = jnp.array(self._perturbation_sigma, dtype=jnp.float32)
@@ -1969,7 +2003,7 @@ class UPGDLearner:
             trunk_biases: tuple[Array, ...],
             head_weights: tuple[Array, ...],
             head_biases: tuple[Array, ...],
-        ) -> tuple[Array, tuple[Array, Array]]:
+        ) -> tuple[Array, tuple[Array, Array, Array]]:
             logits_for_loss, hidden_for_loss = self._forward_with_readout_input(
                 trunk_weights,
                 trunk_biases,
@@ -2076,7 +2110,12 @@ class UPGDLearner:
                         adaptive_simplex_gate * ce_loss
                         + (1.0 - adaptive_simplex_gate) * mse_loss
                     )
-                return loss, (logits_for_loss, hidden_for_loss)
+                # The gradient-budget scale shapes the differentiated objective only;
+                # the reported loss stays the unscaled prediction loss.
+                reported_loss = (
+                    mse_loss if self._readout_loss_mode == "two_timescale_simplex" else loss
+                )
+                return loss, (logits_for_loss, hidden_for_loss, reported_loss)
             preds = logits_for_loss
             sq = (preds - safe_targets) ** 2
             target_loss_weights = jnp.where(
@@ -2099,10 +2138,10 @@ class UPGDLearner:
                 ),
             )
             loss = 0.5 * jnp.sum(sq_masked) / denom
-            return loss, (logits_for_loss, hidden_for_loss)
+            return loss, (logits_for_loss, hidden_for_loss, loss)
 
         if not use_direct_mse_loss:
-            (loss_value, (logits, hidden_for_readout)), grads = jax.value_and_grad(
+            (_, (logits, hidden_for_readout, loss_value)), grads = jax.value_and_grad(
                 loss_and_aux_fn,
                 argnums=(0, 1, 2, 3),
                 has_aux=True,
@@ -2151,7 +2190,7 @@ class UPGDLearner:
                     ),
                 ),
             )
-            loss_value = slow_simplex_gradient_scale * 0.5 * jnp.sum(sq_masked) / denom
+            loss_value = 0.5 * jnp.sum(sq_masked) / denom
             logit_grads = jnp.where(
                 active_mask,
                 slow_simplex_gradient_scale
@@ -2917,9 +2956,6 @@ class UPGDLearner:
             new_accumulators = []
             new_replacement_counts = []
             for i in range(n_trunk):
-                layer_size = new_unit_utilities[i].shape[0]
-                layer_size_f = jnp.array(layer_size, dtype=jnp.float32)
-
                 mature = new_unit_ages[i] >= maturity
                 if self._unit_replacement_criterion == "stale_gradient_ratio":
                     util_norm = new_unit_long_utilities[i] / (
@@ -2978,9 +3014,13 @@ class UPGDLearner:
                     )
                 else:
                     rate_scale = jnp.array(1.0, dtype=jnp.float32)
+                # Budget accrues against the units that are eligible (mature)
+                # right now, as in the reference GnT scheduler; immature units
+                # earn no budget, so warm-up cannot bank a replacement burst.
+                n_mature = jnp.sum(mature).astype(jnp.float32)
                 accum = (
                     state.unit_replacement_accumulators[i]
-                    + rate * layer_size_f * rate_scale
+                    + rate * n_mature * rate_scale
                 )
                 do_replace = accum >= 1.0
                 gated = jnp.logical_and(
@@ -3080,7 +3120,10 @@ class UPGDLearner:
                 new_unit_ages[i] = unit_age.at[unit_idx].set(
                     jnp.where(gated, jnp.int32(0), unit_age[unit_idx])
                 )
-                new_accumulators.append(jnp.where(gated, accum - 1.0, accum))
+                # Never carry more than the one replacement a step can deliver.
+                new_accumulators.append(
+                    jnp.minimum(jnp.where(gated, accum - 1.0, accum), 1.0)
+                )
                 new_replacement_counts.append(
                     unit_replacement_counts[i] + gated.astype(jnp.float32)
                 )

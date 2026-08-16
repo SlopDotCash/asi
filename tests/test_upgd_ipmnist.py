@@ -136,6 +136,83 @@ class TestSchedule:
             build_schedule(jr.key(0), TINY, TINY.task_length - 1)
 
 
+class TestInputDomain:
+    """Labels index the softmax: JAX clamps out-of-range gathers, so the runner must refuse them."""
+
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            (lambda x, y: (x, y + 100), "must be smaller than"),
+            (lambda x, y: (x, y - 1), "non-negative"),
+            (lambda x, y: (x, y.astype(np.float32) + 0.9), "integer class labels"),
+            (lambda x, y: (x.at[0, 0].set(np.inf), y), "finite"),
+            (lambda x, y: (x.at[3, 1].set(np.nan), y), "finite"),
+            (
+                lambda x, y: (x.astype(jnp.complex64) + jnp.complex64(1j), y),
+                "real numeric",
+            ),
+        ],
+    )
+    def test_run_rejects_out_of_domain_inputs_before_setup(
+        self, monkeypatch: pytest.MonkeyPatch, mutate, message: str
+    ) -> None:
+        def unexpected_setup(*args: object, **kwargs: object) -> None:
+            del args, kwargs
+            raise AssertionError("out-of-domain data reached learner setup")
+
+        x, y = _synthetic_dataset(0, N_TRAIN, TINY.input_dim, TINY.n_classes)
+        x, y = mutate(jnp.asarray(x), jnp.asarray(y))
+        monkeypatch.setattr(upgd_ipmnist, "resolve_hyperparameters", unexpected_setup)
+        with pytest.raises(ValueError, match=message):
+            run_ipmnist(x, y, "adamw", seeds=[0], config=TINY)
+
+
+@pytest.mark.unit
+class TestInputDomainBoundary:
+    """Issue #527: the shared validator is the single gate ahead of learner setup."""
+
+    @staticmethod
+    def _unexpected_setup(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("out-of-domain data reached learner setup")
+
+    def test_run_rejects_timedelta_inputs_before_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        x = np.full((N_TRAIN, TINY.input_dim), np.timedelta64("NaT", "s"))
+        y = np.zeros(N_TRAIN, dtype=np.int32)
+        monkeypatch.setattr(upgd_ipmnist, "resolve_hyperparameters", self._unexpected_setup)
+        with pytest.raises(ValueError, match="real numeric"):
+            run_ipmnist(x, y, "adamw", seeds=[0], config=TINY)
+
+    def test_run_rejects_short_dataset_before_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        x, y = _synthetic_dataset(0, TINY.task_length - 1, TINY.input_dim, TINY.n_classes)
+        monkeypatch.setattr(upgd_ipmnist, "resolve_hyperparameters", self._unexpected_setup)
+        with pytest.raises(ValueError, match="task_length"):
+            run_ipmnist(x, y, "adamw", seeds=[0], config=TINY)
+
+    @pytest.mark.parametrize("kind", ["timedelta64[s]", "datetime64[s]", "bool"])
+    def test_validator_rejects_non_real_dtype_kinds(self, kind: str) -> None:
+        x = np.zeros((4, TINY.input_dim), dtype=kind)
+        y = np.zeros(4, dtype=np.int32)
+        with pytest.raises(ValueError, match="real numeric"):
+            upgd_ipmnist.validated_ipmnist_data(
+                x, y, input_dim=TINY.input_dim, n_classes=TINY.n_classes
+            )
+
+    def test_validator_enforces_min_length(self) -> None:
+        x, y = _synthetic_dataset(0, 5, TINY.input_dim, TINY.n_classes)
+        with pytest.raises(ValueError, match="task_length"):
+            upgd_ipmnist.validated_ipmnist_data(
+                x, y, input_dim=TINY.input_dim, n_classes=TINY.n_classes, min_length=6
+            )
+        upgd_ipmnist.validated_ipmnist_data(
+            x, y, input_dim=TINY.input_dim, n_classes=TINY.n_classes, min_length=5
+        )
+
+
 class TestSeedBoundary:
     @pytest.mark.parametrize(
         "seeds",

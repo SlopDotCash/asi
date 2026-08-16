@@ -27,6 +27,28 @@ N_PRIMITIVE = 2
 N_OPTIONS = 2
 
 
+@pytest.mark.unit
+class TestSubtaskSpecValidation:
+    """SubtaskSpec must reject non-finite thresholds and degenerate scales."""
+
+    def test_valid_spec_accepted(self) -> None:
+        spec = SubtaskSpec(feature_index=0, threshold=0.5, pseudo_reward_scale=2.0)
+        assert spec.threshold == 0.5
+        assert spec.pseudo_reward_scale == 2.0
+
+    @pytest.mark.parametrize("threshold", [float("nan"), float("inf"), 0.0, -1.0])
+    def test_rejects_bad_threshold(self, threshold: float) -> None:
+        with pytest.raises(ValueError, match="threshold"):
+            SubtaskSpec(feature_index=0, threshold=threshold)
+
+    @pytest.mark.parametrize(
+        "scale", [float("nan"), float("inf"), float("-inf"), 0.0, -1.0]
+    )
+    def test_rejects_bad_pseudo_reward_scale(self, scale: float) -> None:
+        with pytest.raises(ValueError, match="pseudo_reward_scale"):
+            SubtaskSpec(feature_index=0, pseudo_reward_scale=scale)
+
+
 def _agent() -> STOMPAgent:
     return STOMPAgent(
         STOMPConfig(
@@ -318,3 +340,67 @@ def test_semidp_q_infinite_reward_does_not_poison_weights() -> None:
     chex.assert_trees_all_close(new_rbar, rbar)
     assert float(td_error) == 0.0
     assert not bool(update_applied)
+
+
+@pytest.mark.unit
+class TestStompConfigScalarValidation:
+    """STOMPConfig must reject non-finite/out-of-range scalar hyperparameters (#523)."""
+
+    _STEP_SIZE_FIELDS = (
+        "base_step_size",
+        "base_avg_reward_step_size",
+        "option_step_size",
+        "option_avg_reward_step_size",
+        "option_model_step_size",
+    )
+    _UNIT_INTERVAL_FIELDS = (
+        "base_trace_decay",
+        "option_trace_decay",
+        "option_model_decay",
+        "epsilon_base",
+        "epsilon_option",
+    )
+
+    @staticmethod
+    def _build(**overrides: float) -> STOMPConfig:
+        return STOMPConfig(
+            subtask_specs=(SubtaskSpec(feature_index=0),),
+            observation_dim=OBS_DIM,
+            n_primitive_actions=N_PRIMITIVE,
+            **overrides,
+        )
+
+    @pytest.mark.parametrize("name", _STEP_SIZE_FIELDS)
+    @pytest.mark.parametrize(
+        "value", [float("nan"), float("inf"), float("-inf"), -0.05]
+    )
+    def test_rejects_invalid_step_sizes(self, name: str, value: float) -> None:
+        with pytest.raises(ValueError, match=f"{name} must be finite and non-negative"):
+            self._build(**{name: value})
+
+    @pytest.mark.parametrize("name", _UNIT_INTERVAL_FIELDS)
+    @pytest.mark.parametrize(
+        "value", [float("nan"), float("inf"), float("-inf"), -0.1, 1.5, 2.0]
+    )
+    def test_rejects_invalid_unit_interval_scalars(self, name: str, value: float) -> None:
+        with pytest.raises(ValueError, match=rf"{name} must be finite and in \[0, 1\]"):
+            self._build(**{name: value})
+
+    @pytest.mark.parametrize("name", _STEP_SIZE_FIELDS)
+    @pytest.mark.parametrize("value", [0.0, 0.5])
+    def test_accepts_valid_step_sizes(self, name: str, value: float) -> None:
+        """Zero step size stays accepted: it is the supported learning-freeze boundary."""
+        config = self._build(**{name: value})
+        assert getattr(config, name) == value
+
+    @pytest.mark.parametrize("name", _UNIT_INTERVAL_FIELDS)
+    @pytest.mark.parametrize("value", [0.0, 0.5, 1.0])
+    def test_accepts_unit_interval_boundaries(self, name: str, value: float) -> None:
+        config = self._build(**{name: value})
+        assert getattr(config, name) == value
+
+    def test_from_config_enforces_scalar_validation(self) -> None:
+        payload = self._build().to_config()
+        payload["base_step_size"] = float("nan")
+        with pytest.raises(ValueError, match="base_step_size must be finite and non-negative"):
+            STOMPConfig.from_config(payload)

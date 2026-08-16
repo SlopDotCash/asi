@@ -7,16 +7,34 @@ drop if a feature's output weight received the LMS update implied by the
 current residual.
 """
 
+import math
+from numbers import Real
 from typing import NamedTuple
 
 import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework._float32 import round_real_to_float32
+
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip ``0 * inf`` so a disabled decay does not poison the next trace."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
+def canonical_float32_ema_decay(name: str, value: object) -> float:
+    """Validate and canonicalize an EMA decay at its float32 execution sink."""
+    message = f"{name} must narrow to a finite float32 in [0, 1)"
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(message)
+    try:
+        narrowed = round_real_to_float32(value)
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError(message) from error
+    if not math.isfinite(narrowed) or not 0.0 <= narrowed < 1.0:
+        raise ValueError(message)
+    return narrowed
 
 
 class FutureUtilityEstimate(NamedTuple):
@@ -410,27 +428,56 @@ def normalize_future_utility_signal(
     utility_decay: float | Array,
     mode: str,
 ) -> tuple[Float[Array, " n_features"], Float[Array, " n_features"]]:
-    """Apply optional causal age/uncertainty normalization to utility signals.
+    """Apply optional causal uncertainty normalization to utility signals.
 
-    ``"age"`` debiases the current EMA warm-up so young features are compared
-    against older features on the same scale.  ``"uncertainty"`` divides by an
-    online RMS of the signal, favoring consistent usefulness over rare spikes.
-    ``"uncertainty_age"`` applies both.  The second moment is updated from the
-    current signal only, so this remains causal.
+    Age correction is deliberately *not* applied to the signal entering the
+    utility EMA.  Scaling every increment compounds correction already retained
+    in the EMA.  Call :func:`bias_correct_future_utility` on the resulting raw
+    EMA when it is ranked or reported instead.  ``"uncertainty"`` and
+    ``"uncertainty_age"`` divide the current signal by an online RMS, favoring
+    consistent usefulness over rare spikes.  The second moment is updated from
+    the current signal only, so this remains causal.
+
+    ``ages`` and ``utility_decay`` remain in this established helper surface so
+    existing callers and serialized configurations remain compatible.
     """
+    del ages, utility_decay
     decay = jnp.asarray(moment_decay, dtype=jnp.float32)
-    utility_decay_arr = jnp.asarray(utility_decay, dtype=jnp.float32)
     new_second_moment = (
         _skip_zero_scale(decay, second_moment) + (1.0 - decay) * signal**2
     )
     normalized = signal
 
-    if mode in {"age", "uncertainty_age"}:
-        age_float = jnp.maximum(ages.astype(jnp.float32), 0.0) + 1.0
-        debias = 1.0 - jnp.power(utility_decay_arr, age_float)
-        normalized = normalized / jnp.maximum(debias, 1e-3)
-
     if mode in {"uncertainty", "uncertainty_age"}:
         normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
 
     return normalized, new_second_moment
+
+
+def bias_correct_future_utility(
+    utilities: Float[Array, " n_features"],
+    ages: Array,
+    utility_decay: float | Array,
+    mode: str,
+) -> Float[Array, " n_features"]:
+    """Return rank/report scores from a standard raw utility EMA.
+
+    ``ages`` is the number of EMA updates since the slot's last reset.  For
+    age-normalized modes, dividing the accumulated EMA by
+    ``1 - utility_decay**ages`` removes only its initialization bias.  The raw
+    EMA remains in learner state, preserving the existing fixed-shape state and
+    checkpoint schemas.  Age-zero slots have no observations and retain their
+    raw value (normally zero).
+    """
+    if mode not in {"age", "uncertainty_age"}:
+        return utilities
+
+    age_count = jnp.maximum(ages.astype(jnp.float32), 0.0)
+    decay = jnp.asarray(utility_decay, dtype=utilities.dtype)
+    debias = 1.0 - jnp.power(decay, age_count)
+    safe_debias = jnp.maximum(
+        debias,
+        jnp.asarray(1e-30, dtype=utilities.dtype),
+    )
+    corrected = utilities / safe_debias
+    return jnp.where(age_count > 0.0, corrected, utilities)

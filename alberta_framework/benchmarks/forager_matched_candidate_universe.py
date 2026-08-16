@@ -1401,6 +1401,18 @@ def _require_false(value: Mapping[str, Any], key: str, context: str) -> None:
         raise ForagerMatchedCandidateUniverseError(f"{context}.{key} must be false")
 
 
+def _require_exact_int(value: Any, path: str) -> int:
+    if type(value) is not int:
+        raise ForagerMatchedCandidateUniverseError(f"{path} must be an integer")
+    return value
+
+
+def _require_exact_int_list(value: Any, path: str) -> list[int]:
+    if type(value) is not list:
+        raise ForagerMatchedCandidateUniverseError(f"{path} must be a list")
+    return [_require_exact_int(item, f"{path}[{index}]") for index, item in enumerate(value)]
+
+
 def _verify_one_screen(
     binding: ScreeningArtifactBinding,
     protocol: Mapping[str, Any],
@@ -1957,15 +1969,27 @@ def _verify_rtu_candidate_generation(
             "rtu_schema23_screening_v1 raw and normalized matrix configurations differ"
         )
     evaluation_seeds = list(range(2_200_001, 2_200_031))
+    matrix_steps = _require_exact_int(
+        matrix.get("steps"), "rtu_schema23_screening_v1.matrix.steps"
+    )
+    matrix_seeds = _require_exact_int_list(
+        matrix.get("seeds"), "rtu_schema23_screening_v1.matrix.seeds"
+    )
+    matrix_tuning_seeds = _require_exact_int_list(
+        matrix.get("tuning_seeds"), "rtu_schema23_screening_v1.matrix.tuning_seeds"
+    )
+    matrix_evaluation_seeds = _require_exact_int_list(
+        matrix.get("evaluation_seeds"), "rtu_schema23_screening_v1.matrix.evaluation_seeds"
+    )
     if any(
         (
             matrix.get("schema_version") != "2.3",
             matrix.get("preset") != "field_of_view",
             matrix.get("stage") != "tuning",
-            matrix.get("steps") != binding.horizon_per_seed,
-            matrix.get("seeds") != list(binding.seeds),
-            matrix.get("tuning_seeds") != list(binding.seeds),
-            matrix.get("evaluation_seeds") != evaluation_seeds,
+            matrix_steps != binding.horizon_per_seed,
+            matrix_seeds != list(binding.seeds),
+            matrix_tuning_seeds != list(binding.seeds),
+            matrix_evaluation_seeds != evaluation_seeds,
             matrix.get("mode") != "vmap",
             matrix.get("source_execution_mode")
             != "content_verified_snapshot_subprocess_unsealed",
@@ -1995,19 +2019,32 @@ def _verify_rtu_candidate_generation(
         protocol.get("future_evaluation"),
         "rtu_schema23_screening_v1.future_evaluation",
     )
+    aperture_size = _require_exact_int(
+        task.get("aperture_size"), "rtu_schema23_screening_v1.task.aperture_size"
+    )
+    task_steps = _require_exact_int(
+        task.get("steps"), "rtu_schema23_screening_v1.task.steps"
+    )
+    task_seeds = _require_exact_int_list(
+        task.get("seeds"), "rtu_schema23_screening_v1.task.seeds"
+    )
+    future_evaluation_seeds = _require_exact_int_list(
+        future_evaluation.get("seeds"),
+        "rtu_schema23_screening_v1.future_evaluation.seeds",
+    )
     if any(
         (
             task.get("env_id") != "ForagaxTwoBiomeLarge-v1",
             task.get("observation_type") != "color",
-            task.get("aperture_size") != 9,
-            task.get("steps") != binding.horizon_per_seed,
-            task.get("seeds") != list(binding.seeds),
+            aperture_size != 9,
+            task_steps != binding.horizon_per_seed,
+            task_seeds != list(binding.seeds),
             protocol_matrix.get("file_sha256")
             != _artifact_raw_sha256(binding, "matrix"),
             protocol_matrix.get("normalized_config_sha256")
             != binding.normalized_matrix_sha256,
             future_evaluation.get("status") != "declared_but_unconsumed",
-            future_evaluation.get("seeds") != evaluation_seeds,
+            future_evaluation_seeds != evaluation_seeds,
         )
     ):
         raise ForagerMatchedCandidateUniverseError(
@@ -2018,9 +2055,14 @@ def _verify_rtu_candidate_generation(
             protocol.get("selection_rule"), "rtu_schema23_screening_v1.selection_rule"
         )
     )
+    advance_count = _require_exact_int(
+        protocol_rule.get("advance_count"),
+        "rtu_schema23_screening_v1.selection_rule.advance_count",
+    )
+    protocol_rule.pop("advance_count", None)
     if (
         protocol_rule.pop("selection_group", None) != "rtu_width_taylor"
-        or protocol_rule.pop("advance_count", None) != 1
+        or advance_count != 1
         or protocol_rule != matrix.get("selection_rule")
     ):
         raise ForagerMatchedCandidateUniverseError(

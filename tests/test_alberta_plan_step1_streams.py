@@ -461,6 +461,31 @@ class TestStep1StreamsValidation:
         with pytest.raises(TypeError, match="noise_in_target must be a boolean"):
             XDistShiftStream(feature_dim=10, num_relevant=3, noise_in_target=1)  # type: ignore[arg-type]
 
+    def test_xdist_shift_stream_rejects_class_spoofed_bool(self) -> None:
+        class SpoofedBool:
+            @property
+            def __class__(self) -> type[bool]:
+                return bool
+
+            def __bool__(self) -> bool:
+                return True
+
+        with pytest.raises(TypeError, match="noise_in_target must be a boolean"):
+            XDistShiftStream(
+                feature_dim=10,
+                num_relevant=3,
+                noise_in_target=SpoofedBool(),  # type: ignore[arg-type]
+            )
+
+    def test_xdist_shift_stream_rejects_interval_collapsed_by_float32(self) -> None:
+        with pytest.raises(ValueError, match="after float32 narrowing"):
+            XDistShiftStream(
+                feature_dim=10,
+                num_relevant=3,
+                scale_min=1.00000001,
+                scale_max=1.00000002,
+            )
+
     def test_xdist_shift_rejects_adversarial_ratio(self) -> None:
         class HiddenBoundaryFloat(float):
             def as_integer_ratio(self) -> tuple[int, int]:

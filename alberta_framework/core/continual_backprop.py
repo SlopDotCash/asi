@@ -46,10 +46,10 @@ original Dohare implementation uses in practice.
 
 Replacement
 -----------
-On every step, ``replacement_rate * num_hidden_units`` units (rounded
-up) per layer are *eligible* for replacement. Of those, only units that
-are at least ``maturity_threshold`` updates old AND have the lowest
-utility in the layer are actually replaced. Replaced units have their
+On every step, ``replacement_rate * num_mature_units`` fractional
+replacements accrue per layer (units younger than ``maturity_threshold``
+earn no budget), and at most one accumulated replacement is delivered per
+step: the mature unit with the lowest utility in the layer is replaced. Replaced units have their
 incoming weights re-drawn via :func:`sparse_init` and their outgoing
 weights zeroed (so a freshly initialized unit does not destabilize the
 prediction immediately). The unit's age and utility are reset to 0.
@@ -144,9 +144,11 @@ class ContinualBackpropState:
             ``utilities``.
         replacement_accumulators: One scalar per hidden layer that
             accumulates the (fractional) number of replacements
-            scheduled by ``replacement_rate * num_units`` each step.
-            Whenever an accumulator exceeds 1.0 a single unit in that
-            layer is replaced and the accumulator is decremented by 1.
+            scheduled by ``replacement_rate * num_mature_units`` each
+            step. Whenever an accumulator reaches 1.0 and a mature unit
+            exists, a single unit in that layer is replaced and the
+            accumulator is decremented by 1; it never carries more than
+            one pending replacement.
             This makes ``replacement_rate << 1`` behave as expected in
             the JIT-compiled scan loop without integer arithmetic.
         rng_key: PRNG key used to draw fresh weights for replaced
@@ -175,7 +177,7 @@ def init_cbp_state(
         mlp_state: An initialized :class:`MultiHeadMLPState`. Used only
             to validate that ``hidden_sizes`` matches the trunk shape.
         hidden_sizes: Hidden layer sizes from the learner constructor.
-            Must match ``len(mlp_state.trunk_params.weights)``.
+            Must match the trunk layer count and every layer's width.
         key: JAX random key for replacement weight sampling.
 
     Returns:
@@ -189,6 +191,14 @@ def init_cbp_state(
             f"count ({len(mlp_state.trunk_params.weights)})."
         )
         raise ValueError(msg)
+    for layer_idx, (width, weight) in enumerate(
+        zip(hidden_sizes, mlp_state.trunk_params.weights, strict=True)
+    ):
+        if int(weight.shape[0]) != int(width):
+            raise ValueError(
+                f"hidden_sizes[{layer_idx}]={width} does not match trunk layer "
+                f"{layer_idx} width ({weight.shape[0]})"
+            )
 
     utilities = tuple(
         jnp.zeros(h, dtype=jnp.float32) for h in hidden_sizes
@@ -465,25 +475,45 @@ def maybe_replace_units(
     Returns:
         Updated ``(mlp_state, cbp_state)``.
     """
-    if not config.enabled:
-        return mlp_state, cbp_state
+    new_mlp_state, new_cbp_state, _replaced = replace_units_with_flags(
+        mlp_state, cbp_state, config, sparsity
+    )
+    return new_mlp_state, new_cbp_state
 
+
+def replace_units_with_flags(
+    mlp_state: MultiHeadMLPState,
+    cbp_state: ContinualBackpropState,
+    config: ContinualBackpropConfig,
+    sparsity: float,
+) -> tuple[MultiHeadMLPState, ContinualBackpropState, Array]:
+    """Run :func:`maybe_replace_units` and also return the per-layer replacement flags.
+
+    Returns:
+        ``(mlp_state, cbp_state, replaced)`` where ``replaced`` is a boolean
+        array with one entry per hidden layer that is ``True`` exactly when
+        that layer's gated replacement fired this step.
+    """
     n_layers = len(cbp_state.utilities)
-    if n_layers == 0:
-        return mlp_state, cbp_state
+    no_replacements = jnp.zeros((n_layers,), dtype=jnp.bool_)
+    if not config.enabled or n_layers == 0:
+        return mlp_state, cbp_state, no_replacements
 
     rate = jnp.asarray(config.replacement_rate, dtype=jnp.float32)
     accum_arr = cbp_state.replacement_accumulators
     new_accum_list: list[Array] = []
+    replaced_flags: list[Array] = []
 
     new_mlp_state = mlp_state
     new_cbp_state = cbp_state
     rng_key = cbp_state.rng_key
     for layer_idx in range(n_layers):
-        layer_size = cbp_state.utilities[layer_idx].shape[0]
-        layer_size_f = jnp.asarray(layer_size, dtype=jnp.float32)
-        # Add this step's fractional replacements to the accumulator.
-        accum = accum_arr[layer_idx] + rate * layer_size_f
+        # Add this step's fractional replacements to the accumulator, accrued
+        # against the units that are actually eligible (mature) right now, as in
+        # the reference GnT implementation; immature units earn no budget.
+        eligible = new_cbp_state.ages[layer_idx] >= config.maturity_threshold
+        n_eligible = jnp.sum(eligible).astype(jnp.float32)
+        accum = accum_arr[layer_idx] + rate * n_eligible
         # Will we replace one unit this step?
         do_replace = accum >= 1.0
         # Pick lowest-utility mature unit from the *current* CBP state.
@@ -504,15 +534,17 @@ def maybe_replace_units(
             new_cbp_state,
             subkey,
         )
-        # Decrement accumulator only if we actually replaced.
-        accum_after = jnp.where(gated, accum - 1.0, accum)
+        # Decrement accumulator only if we actually replaced, and never carry
+        # more than the one replacement a step can deliver.
+        accum_after = jnp.minimum(jnp.where(gated, accum - 1.0, accum), 1.0)
         new_accum_list.append(accum_after)
+        replaced_flags.append(gated)
 
     new_cbp_state = new_cbp_state.replace(  # type: ignore[attr-defined]
         replacement_accumulators=jnp.stack(new_accum_list),
         rng_key=rng_key,
     )
-    return new_mlp_state, new_cbp_state
+    return new_mlp_state, new_cbp_state, jnp.stack(replaced_flags)
 
 
 # =============================================================================
@@ -919,22 +951,14 @@ class CBPMultiHeadMLPLearner:
             self._cbp_config.decay_rate,
         )
 
-        # 4. Possibly replace low-utility mature units.
-        # Track which layers actually replaced for diagnostics. We
-        # detect by checking whether the accumulator decremented.
-        old_accum = new_cbp_state.replacement_accumulators
-        new_post_state, new_cbp_state = maybe_replace_units(
+        # 4. Possibly replace low-utility mature units, reporting the exact
+        #    gated decision per layer as the diagnostic.
+        new_post_state, new_cbp_state, replacements_made = replace_units_with_flags(
             post_state,
             new_cbp_state,
             self._cbp_config,
             self._sparsity,
         )
-        new_accum = new_cbp_state.replacement_accumulators
-        replacements_made = (old_accum + jnp.float32(
-            self._cbp_config.replacement_rate
-        ) * jnp.array(
-            [s for s in self._hidden_sizes], dtype=jnp.float32
-        )) - new_accum >= 0.5
 
         new_state = CBPMultiHeadMLPState(  # type: ignore[call-arg]
             mlp_state=new_post_state,

@@ -11,9 +11,14 @@ the same workload, with a ~144 s compile; see the scaling notes in
 docs/evidence/methodology.md).
 """
 
+import json
+import math
 import time
+from decimal import Decimal
+from fractions import Fraction
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -51,6 +56,337 @@ class TestConfig:
         with pytest.raises(ValueError, match="step_size"):
             _simple_config(step_size=0.0)
 
+    @pytest.mark.parametrize("step_size", [math.nan, math.inf, -math.inf])
+    def test_step_size_must_be_finite_and_positive(self, step_size: float) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            _simple_config(step_size=step_size)
+
+    @pytest.mark.parametrize(
+        "step_size",
+        [
+            1,
+            np.int8(1),
+            np.int64(1),
+            np.uint64(1),
+            np.float16(0.5),
+            np.float32(0.5),
+            np.float64(0.5),
+            np.longdouble(0.5),
+            Fraction(1, 2),
+        ],
+    )
+    def test_step_size_supported_reals_canonicalize_for_json(
+        self, step_size: object
+    ) -> None:
+        cfg = _simple_config(step_size=step_size)
+        payload = cfg.to_config()
+
+        assert type(cfg.step_size) is float
+        json.dumps(payload, allow_nan=False)
+        assert StackedHordeConfig.from_config(payload) == cfg
+
+    def test_builtin_float_step_size_preserves_compatible_payload(self) -> None:
+        cfg = _simple_config(step_size=0.1)
+
+        assert type(cfg.step_size) is float
+        assert cfg.step_size == 0.1
+
+    def test_fraction_step_size_rounds_directly_to_float32(self) -> None:
+        above_half_midpoint = (
+            Fraction(1, 2) + Fraction(1, 2**25) + Fraction(1, 2**70)
+        )
+        expected = float(np.nextafter(np.float32(0.5), np.float32(1.0)))
+
+        cfg = _simple_config(step_size=above_half_midpoint)
+
+        assert cfg.step_size == expected
+
+    @pytest.mark.parametrize(
+        "step_size",
+        [
+            True,
+            np.bool_(True),
+            Decimal("0.1"),
+            jnp.asarray(0.1),
+            jnp.asarray(1),
+        ],
+    )
+    def test_step_size_rejects_non_real_or_array_scalars(self, step_size: object) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            _simple_config(step_size=step_size)
+
+    @pytest.mark.parametrize(
+        "step_size",
+        [
+            1.0e100,
+            Fraction(1, 2**150),
+            Fraction(1, 2**149),
+            float(np.nextafter(np.finfo(np.float32).tiny, np.float32(0.0))),
+        ],
+    )
+    def test_step_size_rejects_nonfinite_or_subnormal_float32_sink(
+        self, step_size: object
+    ) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            _simple_config(step_size=step_size)
+
+    def test_step_size_accepts_float32_normal_boundaries(self) -> None:
+        minimum = float(np.finfo(np.float32).tiny)
+        maximum = float(np.finfo(np.float32).max)
+
+        assert _simple_config(step_size=minimum).step_size == minimum
+        assert _simple_config(step_size=maximum).step_size == maximum
+
+    def test_step_size_comparison_spoof_cannot_hide_negative_value(self) -> None:
+        class NegativeSpoof(float):
+            def __new__(cls) -> "NegativeSpoof":
+                return super().__new__(cls, -0.25)
+
+            def __le__(self, other: object) -> bool:
+                return False
+
+        with pytest.raises(ValueError, match="step_size"):
+            _simple_config(step_size=NegativeSpoof())
+
+    @pytest.mark.parametrize("serialized", [False, True], ids=("direct", "from-config"))
+    def test_step_size_rejects_numeric_subclasses_before_conversion_hooks(
+        self, serialized: bool
+    ) -> None:
+        calls: list[str] = []
+
+        class RatioSpoof(float):
+            def __new__(cls) -> "RatioSpoof":
+                return super().__new__(cls, -0.25)
+
+            def as_integer_ratio(self) -> tuple[int, int]:
+                calls.append("ratio")
+                return (1, 4)
+
+        class IntegerSpoof(int):
+            def __new__(cls) -> "IntegerSpoof":
+                return super().__new__(cls, -1)
+
+            def __int__(self) -> int:
+                calls.append("int")
+                return 1
+
+        class FractionSpoof(Fraction):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                calls.append("fraction-ratio")
+                return (1, 4)
+
+        class ExplodingRatio(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                calls.append("exploding")
+                raise RuntimeError("conversion hook must not run")
+
+        for step_size in (
+            RatioSpoof(),
+            IntegerSpoof(),
+            FractionSpoof(-1, 4),
+            ExplodingRatio(0.25),
+        ):
+            with pytest.raises(ValueError, match="step_size"):
+                if serialized:
+                    payload = _simple_config().to_config()
+                    payload["step_size"] = step_size
+                    StackedLinearHorde.from_config(
+                        {"type": "StackedLinearHorde", "config": payload}
+                    )
+                else:
+                    _simple_config(step_size=step_size)
+
+        assert calls == []
+
+    @pytest.mark.parametrize("serialized", [False, True], ids=("direct", "from-config"))
+    @pytest.mark.parametrize(
+        "attack",
+        ["equality-spoof", "raising-equality", "raising-hash"],
+    )
+    def test_step_size_rejects_hostile_metaclasses_without_hooks(
+        self, serialized: bool, attack: str
+    ) -> None:
+        calls: list[str] = []
+
+        class EqualitySpoofMeta(type):
+            def __eq__(cls, other: object) -> bool:
+                del cls, other
+                calls.append("equality")
+                return True
+
+            def __hash__(cls) -> int:
+                calls.append("hash")
+                return type.__hash__(cls)
+
+        class RaisingEqualityMeta(type):
+            def __eq__(cls, other: object) -> bool:
+                del cls, other
+                calls.append("raising-equality")
+                raise RuntimeError("metaclass equality hook must not run")
+
+            def __hash__(cls) -> int:
+                calls.append("hash")
+                return type.__hash__(cls)
+
+        class RaisingHashMeta(type):
+            def __hash__(cls) -> int:
+                del cls
+                calls.append("raising-hash")
+                raise RuntimeError("metaclass hash hook must not run")
+
+        class EqualitySpoof(float, metaclass=EqualitySpoofMeta):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                calls.append("ratio")
+                return (1, 2)
+
+        class RaisingEquality(float, metaclass=RaisingEqualityMeta):
+            pass
+
+        class RaisingHash(float, metaclass=RaisingHashMeta):
+            pass
+
+        step_sizes = {
+            "equality-spoof": EqualitySpoof(-1.0),
+            "raising-equality": RaisingEquality(0.5),
+            "raising-hash": RaisingHash(0.5),
+        }
+
+        with pytest.raises(ValueError, match="step_size"):
+            if serialized:
+                payload = _simple_config().to_config()
+                payload["step_size"] = step_sizes[attack]
+                StackedLinearHorde.from_config(
+                    {"type": "StackedLinearHorde", "config": payload}
+                )
+            else:
+                _simple_config(step_size=step_sizes[attack])
+
+        assert calls == []
+
+    @pytest.mark.parametrize("serialized", [False, True], ids=("direct", "from-config"))
+    @pytest.mark.parametrize("missing_slot", ["numerator", "denominator"])
+    def test_step_size_rejects_exact_fraction_with_missing_slot(
+        self, serialized: bool, missing_slot: str
+    ) -> None:
+        step_size = object.__new__(Fraction)
+        if missing_slot == "numerator":
+            object.__setattr__(step_size, "_denominator", 2)
+        else:
+            object.__setattr__(step_size, "_numerator", 1)
+
+        with pytest.raises(ValueError, match="step_size"):
+            if serialized:
+                payload = _simple_config().to_config()
+                payload["step_size"] = step_size
+                StackedLinearHorde.from_config(
+                    {"type": "StackedLinearHorde", "config": payload}
+                )
+            else:
+                _simple_config(step_size=step_size)
+
+    @pytest.mark.parametrize("component", ["numerator", "denominator"])
+    @pytest.mark.parametrize("serialized", [False, True], ids=("direct", "from-config"))
+    def test_step_size_rejects_hooks_laundered_through_an_exact_fraction(
+        self, serialized: bool, component: str
+    ) -> None:
+        calls: list[str] = []
+
+        class IntegerSpoof(int):
+            def __int__(self) -> int:
+                calls.append("int")
+                return 1
+
+        class Carrier(Fraction):
+            @property
+            def numerator(self) -> int:
+                return IntegerSpoof(-1) if component == "numerator" else 1
+
+            @property
+            def denominator(self) -> int:
+                return IntegerSpoof(-4) if component == "denominator" else 4
+
+        step_size = Fraction(Carrier(1, 4))
+        assert type(step_size) is Fraction
+        assert step_size.numerator < 0 or step_size.denominator < 0
+
+        with pytest.raises(ValueError, match="step_size"):
+            if serialized:
+                payload = _simple_config().to_config()
+                payload["step_size"] = step_size
+                StackedLinearHorde.from_config(
+                    {"type": "StackedLinearHorde", "config": payload}
+                )
+            else:
+                _simple_config(step_size=step_size)
+
+        assert calls == []
+
+    @pytest.mark.parametrize("serialized", [False, True], ids=("direct", "from-config"))
+    def test_step_size_rejects_exact_fraction_with_zero_denominator(
+        self, serialized: bool
+    ) -> None:
+        property_calls: list[str] = []
+
+        class Carrier(Fraction):
+            @property
+            def numerator(self) -> int:
+                property_calls.append("numerator")
+                return 1
+
+            @property
+            def denominator(self) -> int:
+                property_calls.append("denominator")
+                return 0
+
+        step_size = Fraction(Carrier(1, 1))
+        assert type(step_size) is Fraction
+        assert step_size.denominator == 0
+        calls_after_construction = tuple(property_calls)
+
+        with pytest.raises(ValueError, match="step_size"):
+            if serialized:
+                payload = _simple_config().to_config()
+                payload["step_size"] = step_size
+                StackedLinearHorde.from_config(
+                    {"type": "StackedLinearHorde", "config": payload}
+                )
+            else:
+                _simple_config(step_size=step_size)
+
+        assert tuple(property_calls) == calls_after_construction
+
+    @pytest.mark.parametrize(
+        "step_size",
+        [1.0e100, Fraction(1, 2**149), Decimal("0.1"), jnp.asarray(0.1)],
+    )
+    def test_invalid_serialized_step_size_is_refused_before_runtime(
+        self, step_size: object
+    ) -> None:
+        payload = _simple_config().to_config()
+        payload["step_size"] = step_size
+
+        with pytest.raises(ValueError, match="step_size"):
+            StackedLinearHorde.from_config(
+                {"type": "StackedLinearHorde", "config": payload}
+            )
+
+    def test_minimum_normal_step_size_survives_jit_execution(self) -> None:
+        minimum = float(np.finfo(np.float32).tiny)
+        horde = StackedLinearHorde(_simple_config(n_demons=1, step_size=minimum))
+        state = horde.init()
+        update = jax.jit(horde.update)
+
+        result = update(
+            state,
+            jnp.array([1.0, 0.0, 0.0]),
+            jnp.zeros((3,)),
+            jnp.array([1.0]),
+        )
+
+        assert bool(result.update_applied)
+        assert int(result.state.step_count) == 1
+        assert float(result.state.weights[0, 0]) == minimum
+
     def test_roundtrip(self):
         cfg = _simple_config()
         horde = StackedLinearHorde(cfg)
@@ -62,6 +398,99 @@ class TestConfig:
         assert cfg.n_demons == 4
         assert cfg.cumulant_indices == (0, 0, 2, 2)
         assert cfg.gammas == (0.0, 0.9, 0.0, 0.9)
+
+
+@pytest.mark.unit
+class TestCumulantSourceDomain:
+    """Out-of-range cumulant reads must fail closed, never clip (issue #579)."""
+
+    @staticmethod
+    def _two_channel_horde() -> StackedLinearHorde:
+        return StackedLinearHorde(
+            StackedHordeConfig(
+                n_demons=2,
+                feature_dim=3,
+                gammas=(0.0, 0.0),
+                lamdas=(0.0, 0.0),
+                cumulant_indices=(0, 2),
+                step_size=0.5,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "bad_index",
+        [-1, True, False, np.int32(1), 1.0, "1"],
+        ids=("negative", "true", "false", "numpy-int", "float", "str"),
+    )
+    def test_config_rejects_non_builtin_or_negative_indices(self, bad_index: object) -> None:
+        with pytest.raises(ValueError, match="cumulant_indices"):
+            _simple_config(n_demons=1, gammas=(0.9,), lamdas=(0.5,), cumulant_indices=(bad_index,))
+
+    def test_from_config_rejects_invalid_serialized_indices(self) -> None:
+        payload = _simple_config().to_config()
+        payload["cumulant_indices"] = [0, -1]
+        with pytest.raises(ValueError, match="cumulant_indices"):
+            StackedHordeConfig.from_config(payload)
+
+    def test_update_rejects_source_missing_the_maximum_index(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        with pytest.raises(ValueError, match="cumulant_source"):
+            horde.update(state, x, jnp.zeros(3), jnp.array([1.0, 99.0]))
+        # Nothing may have moved: the horde state is untouched by the rejection.
+        np.testing.assert_array_equal(np.asarray(state.weights), np.zeros((2, 3)))
+        assert int(state.step_count) == 0
+
+    def test_jit_update_rejects_short_source_at_trace_time(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        jitted = jax.jit(horde.update)
+        with pytest.raises(ValueError, match="cumulant_source"):
+            jitted(state, x, jnp.zeros(3), jnp.array([1.0, 99.0]))
+
+    @pytest.mark.parametrize("rank", [0, 2], ids=("rank-zero", "rank-two"))
+    def test_update_rejects_non_rank_one_sources(self, rank: int) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        source = jnp.ones((3,) * rank, dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_source"):
+            horde.update(state, x, jnp.zeros(3), source)
+
+    def test_scan_rejects_non_rank_two_sources(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        features = jnp.zeros((3, 3), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_sources"):
+            run_stacked_horde_scan(horde, state, features, jnp.ones((3,), dtype=jnp.float32))
+
+    def test_scan_rejects_sources_missing_the_maximum_index(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        features = jnp.zeros((3, 3), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_sources"):
+            run_stacked_horde_scan(horde, state, features, jnp.ones((3, 2), dtype=jnp.float32))
+
+    def test_valid_direct_jit_and_scan_updates_are_unchanged(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        source = jnp.array([1.0, 99.0, 4.0])
+
+        direct = horde.update(state, x, jnp.zeros(3), source)
+        np.testing.assert_allclose(np.asarray(direct.td_errors), [1.0, 4.0], rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(direct.state.weights[:, 0]), [0.5, 2.0], rtol=1e-6)
+
+        jitted = jax.jit(horde.update)(state, x, jnp.zeros(3), source)
+        np.testing.assert_allclose(np.asarray(jitted.td_errors), [1.0, 4.0], rtol=1e-6)
+
+        features = jnp.stack([x, jnp.zeros(3)])
+        sources = jnp.stack([source, source])
+        final_state, td_errors = run_stacked_horde_scan(horde, state, features, sources)
+        np.testing.assert_allclose(np.asarray(td_errors), [[1.0, 4.0]], rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(final_state.weights[:, 0]), [0.5, 2.0], rtol=1e-6)
 
 
 class TestExactSemantics:

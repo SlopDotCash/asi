@@ -18,6 +18,7 @@ from typing import Any, BinaryIO, cast
 import numpy as np
 import pytest
 
+from alberta_framework.benchmarks import _foragax_open_screen_probe as probe
 from alberta_framework.benchmarks import _foragax_open_screen_scorer as image_scorer
 from alberta_framework.benchmarks import _foragax_open_screen_scorer_v3 as image_scorer_v3
 from alberta_framework.benchmarks import foragax_open_screen as screen
@@ -1170,3 +1171,64 @@ def test_mocked_screen_preserves_initial_diagnostics_rescores_and_validates_comm
     sidecar.write_text(hashlib.sha256(manifest_bytes).hexdigest() + "\n", encoding="ascii")
     with pytest.raises(screen.ScreenError, match="attempt projection or host command drift"):
         screen.validate_screen(_BASELINE_V3, output, docker="mock-docker")
+
+
+def test_probe_exact_int_rejects_bool_and_non_int_aliases() -> None:
+    assert probe._is_exact_int(1)
+    assert probe._is_exact_int(0)
+    assert not probe._is_exact_int(True)
+    assert not probe._is_exact_int(False)
+    assert not probe._is_exact_int(1.0)
+    assert not probe._is_exact_int("1")
+    assert not probe._is_exact_int(None)
+
+
+def test_probe_task_intake_accepts_exact_int_horizon_and_seeds() -> None:
+    protocol = {"task": {"steps_per_seed": 4, "seeds": [1, 2, 3]}}
+    task, horizon, seeds = probe._validate_task_intake(protocol)
+    assert task is protocol["task"]
+    assert horizon == 4
+    assert seeds == [1, 2, 3]
+    fallback = {"task": {"steps": 6, "seeds": [0]}}
+    _, fallback_horizon, fallback_seeds = probe._validate_task_intake(fallback)
+    assert fallback_horizon == 6
+    assert fallback_seeds == [0]
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        {"steps_per_seed": True, "seeds": [1, 2]},
+        {"steps": True, "seeds": [1, 2]},
+        {"steps_per_seed": 0, "seeds": [1, 2]},
+        {"steps_per_seed": -3, "seeds": [1, 2]},
+        {"steps_per_seed": 4.0, "seeds": [1, 2]},
+        {"seeds": [1, 2]},
+    ],
+)
+def test_probe_task_intake_rejects_invalid_horizon(task: dict[str, Any]) -> None:
+    with pytest.raises(RuntimeError, match="protocol horizon is invalid"):
+        probe._validate_task_intake({"task": task})
+
+
+@pytest.mark.parametrize(
+    "seeds",
+    [[True, 2, 3], [1, False], [1.0], ["1"], [], None],
+)
+def test_probe_task_intake_rejects_invalid_seeds(seeds: Any) -> None:
+    with pytest.raises(RuntimeError, match="protocol seeds are invalid"):
+        probe._validate_task_intake({"task": {"steps_per_seed": 4, "seeds": seeds}})
+
+
+def test_probe_task_intake_rejects_non_object_task() -> None:
+    with pytest.raises(RuntimeError, match="protocol task must be an object"):
+        probe._validate_task_intake({"task": [1]})
+
+
+def test_probe_ppo_schedule_rejects_bool_rollout_and_updates() -> None:
+    assert probe._validate_ppo_schedule(4, 8, 32, "configs/demo.json") == (4, 8)
+    for rollout, updates in ((True, 32), (32, True), (False, 1), (1.0, 32), (None, 32)):
+        with pytest.raises(RuntimeError, match="PPO schedule is not explicit"):
+            probe._validate_ppo_schedule(rollout, updates, 32, "configs/demo.json")
+    with pytest.raises(RuntimeError, match="PPO schedule does not equal the frozen horizon"):
+        probe._validate_ppo_schedule(4, 4, 32, "configs/demo.json")

@@ -132,7 +132,12 @@ class ExperientialMemoryEntry:
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryEntries:
-    """Fixed-capacity structure-of-arrays for persistent exemplars."""
+    """Fixed-capacity structure-of-arrays for persistent exemplars.
+
+    ``ages`` is the exemplar's chronological age. ``recency_ages`` is local
+    time since its last accepted retrieval: zero on write and on access, then
+    incremented once per later memory step while the slot remains valid.
+    """
 
     observations: Float[Array, "capacity observation_dim"]
     keys: Float[Array, "capacity key_dim"]
@@ -272,6 +277,10 @@ def _validate_config(config: ExperientialMemoryConfig) -> None:
         raise ValueError("max_age must be an integer")
     if config.max_age < 0:
         raise ValueError("max_age must be non-negative")
+    if config.max_age > _INT32_MAX:
+        raise ValueError(
+            "max_age must be <= int32 max; ages saturate there, so larger values cannot be met"
+        )
 
     for name in (
         "distance_scale",
@@ -1102,7 +1111,9 @@ class ExperientialMemory:
                 ),
                 valid=current_entries.valid.at[slot].set(True),
                 ages=current_entries.ages.at[slot].set(entry.age),
-                recency_ages=current_entries.recency_ages.at[slot].set(entry.age),
+                # Recency is time since this memory last retrieved the
+                # exemplar, not the exemplar's imported chronological age.
+                recency_ages=current_entries.recency_ages.at[slot].set(0),
                 provenance_ids=current_entries.provenance_ids.at[slot].set(entry.provenance_id),
                 source_ids=current_entries.source_ids.at[slot].set(entry.source_id),
                 retrieval_counts=current_entries.retrieval_counts.at[slot].set(0),
@@ -1245,23 +1256,13 @@ class ExperientialMemory:
             ),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def _step_jit(
+    def _step_from_retrieval(
         self,
         state: ExperientialMemoryState,
-        query_key: Array,
-        representation_version: Array,
-        query_uncertainty: Array,
-        query_uncertainty_available: Array,
+        retrieval: ExperientialMemoryRetrieval,
         entry: ExperientialMemoryEntry,
     ) -> ExperientialMemoryStepResult:
-        retrieval = self._query_jit(
-            state,
-            query_key,
-            representation_version,
-            query_uncertainty,
-            query_uncertainty_available,
-        )
+        """Age, record one already-computed pre-state query, and write once."""
 
         def apply(_: None) -> ExperientialMemoryStepResult:
             advanced = self._advance(state)
@@ -1290,6 +1291,25 @@ class ExperientialMemory:
             ExperientialMemoryStepResult,
             jax.lax.cond(self._state_is_valid(state), apply, reject, operand=None),
         )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _step_jit(
+        self,
+        state: ExperientialMemoryState,
+        query_key: Array,
+        representation_version: Array,
+        query_uncertainty: Array,
+        query_uncertainty_available: Array,
+        entry: ExperientialMemoryEntry,
+    ) -> ExperientialMemoryStepResult:
+        retrieval = self._query_jit(
+            state,
+            query_key,
+            representation_version,
+            query_uncertainty,
+            query_uncertainty_available,
+        )
+        return self._step_from_retrieval(state, retrieval, entry)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def accounting(

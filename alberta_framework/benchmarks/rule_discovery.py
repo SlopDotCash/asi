@@ -778,9 +778,22 @@ def evaluate_population(
 
     Paired evaluation: every genome sees the identical stream and identical
     network init per seed (the screening convention).
+
+    Raises:
+        ValueError: If ``seeds`` are not unique valid seeds, ``genomes`` is not
+            a ``(n_genomes, GENOME_SIZE)`` matrix, or ``batch_size`` is not a
+            positive built-in ``int``.
     """
     seeds = require_unique_jax_seeds(seeds, name="seeds")
+    if type(batch_size) is not int or batch_size < 1:
+        raise ValueError(f"batch_size must be a positive built-in int, got {batch_size!r}")
     genomes = jnp.asarray(genomes, dtype=jnp.float32)
+    if genomes.ndim != 2 or genomes.shape[1] != GENOME_SIZE:
+        raise ValueError(
+            f"genomes must have shape (n_genomes, {GENOME_SIZE}), got {tuple(genomes.shape)}"
+        )
+    if not bool(jnp.all(jnp.isfinite(genomes))):
+        raise ValueError("genomes must contain only finite values")
     n_genomes = int(genomes.shape[0])
     total = np.zeros((n_genomes,), dtype=np.float64)
     for seed in seeds:
@@ -846,6 +859,15 @@ def crossover(key: Array, first: Array, second: Array) -> Array:
     return jnp.where(mask, first, second)
 
 
+def _require_unique_task_names(task_names: Sequence[str], *, name: str) -> tuple[str, ...]:
+    names = tuple(task_names)
+    if not names:
+        raise ValueError(f"{name} must be non-empty")
+    if len(set(names)) != len(names):
+        raise ValueError(f"{name} must contain unique task names; got {list(names)}")
+    return names
+
+
 def evaluate_suite(
     genomes: Array,
     task_names: Sequence[str],
@@ -854,7 +876,13 @@ def evaluate_suite(
     batch_size: int = 256,
     suite: Mapping[str, EvalConfig] | None = None,
 ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """Mean accuracy across the named micro tasks; also per-task vectors."""
+    """Mean accuracy across the named micro tasks; also per-task vectors.
+
+    Raises:
+        ValueError: If ``task_names`` is empty or repeats a task, which would
+            silently turn the equal-weight task mean into a weighted one.
+    """
+    task_names = _require_unique_task_names(task_names, name="task_names")
     registry = MICRO_SUITE if suite is None else suite
     per_task: dict[str, np.ndarray] = {}
     for name in task_names:
@@ -1041,6 +1069,8 @@ def run_search(
     eval_seeds = require_unique_jax_seeds(eval_seeds, name="eval_seeds")
     holdout_seeds = require_unique_jax_seeds(holdout_seeds, name="holdout_seeds")
     search_seed = require_jax_seed(search_seed, name="search_seed")
+    task_names = _require_unique_task_names(task_names, name="task_names")
+    holdout_names = _require_unique_task_names(holdout_names, name="holdout_names")
     if set(task_names) & set(holdout_names):
         raise ValueError("search tasks and holdout tasks must be disjoint")
     if set(eval_seeds) & set(holdout_seeds):

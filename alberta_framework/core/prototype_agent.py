@@ -232,7 +232,7 @@ def feature_to_subtask_specs(
     obs_dim = int(opt_q.shape[-1])
     opt_importance = jnp.max(opt_q_abs.reshape(-1, obs_dim), axis=0)  # (obs_dim,)
 
-    combined = feature_importance + opt_importance
+    combined = jnp.maximum(feature_importance, opt_importance)
     n = min(normalized_n_subtasks, obs_dim)
     ranking = sorted(range(obs_dim), key=lambda i: float(combined[i]), reverse=True)[:n]
 
@@ -1553,7 +1553,12 @@ class PrototypeExperientialMemoryDiagnostics:
 
 @dataclasses.dataclass(frozen=True)
 class PrototypeExperientialMemoryResourceDeclaration:
-    """Exact persistent allocation and bounded work per required transaction."""
+    """Exact persistent allocation and bounded work per required transaction.
+
+    ``categorical_policy_queries`` is the one query shared by proposal and
+    causal access/write accounting. ``causal_step_queries`` counts only an
+    additional query and is therefore zero for the fused transaction.
+    """
 
     persistent_state_bytes: int
     categorical_policy_queries: int
@@ -2021,6 +2026,14 @@ def _unavailable_state_builder_learning_diagnostics() -> StateBuilderLearningDia
     )
 
 
+def _shaped_float_array(value: Any, shape: tuple[int, ...], *, name: str) -> Array:
+    """Coerce to float32 without ever reshaping: static shape drift is a caller error."""
+    array = jnp.asarray(value, dtype=jnp.float32)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    return array
+
+
 def _checked_finite_array(
     value: Any,
     shape: tuple[int, ...],
@@ -2029,7 +2042,7 @@ def _checked_finite_array(
     allow_nan: bool = False,
 ) -> Array:
     """Validate shape/finiteness eagerly and poison invalid traced values."""
-    array = jnp.asarray(value, dtype=jnp.float32).reshape(shape)
+    array = _shaped_float_array(value, shape, name=name)
     element_valid = ~jnp.isinf(array) if allow_nan else jnp.isfinite(array)
     valid = jnp.all(element_valid)
     if not _contains_tracer(array) and not bool(valid):
@@ -2040,7 +2053,7 @@ def _checked_finite_array(
 
 def _checked_unit_discount(value: Any, shape: tuple[int, ...], *, name: str) -> Array:
     """Validate finite ``[0, 1]`` discounts at eager and traced boundaries."""
-    array = jnp.asarray(value, dtype=jnp.float32).reshape(shape)
+    array = _shaped_float_array(value, shape, name=name)
     valid = jnp.all(
         jnp.isfinite(array) & (array >= 0.0) & (array <= 1.0)
     )
@@ -2475,7 +2488,7 @@ class PrototypeAgent:
 
     @property
     def experiential_memory_policy(self) -> ExperientialMemoryPolicy | None:
-        """Return the read-only categorical memory proposal boundary."""
+        """Return the categorical memory proposal/transaction boundary."""
 
         return self._experiential_memory_policy
 
@@ -2483,14 +2496,14 @@ class PrototypeAgent:
     def experiential_memory_resource_declaration(
         self,
     ) -> PrototypeExperientialMemoryResourceDeclaration | None:
-        """Declare memory bytes and both deterministic pre-state queries."""
+        """Declare memory bytes and the single deterministic pre-state query."""
 
         policy = self._experiential_memory_policy
         if policy is None:
             return None
         policy_resources = policy.resource_declaration()
         categorical_queries = policy_resources.memory_queries_per_proposal
-        causal_queries = 1
+        causal_queries = 0
         return PrototypeExperientialMemoryResourceDeclaration(
             persistent_state_bytes=(
                 policy_resources.external_memory_persistent_state_bytes
@@ -4818,14 +4831,6 @@ class PrototypeAgent:
             memory_input.next_action_safety_mask,
             jnp.ones_like(memory_input.next_action_safety_mask),
         )
-        proposal = policy.propose(
-            memory_state,
-            decision_representation,
-            query_version,
-            query_uncertainty,
-            query_uncertainty_available,
-            safety_mask,
-        )
         entry = ExperientialMemoryEntry(
             observation=current_representation,
             key=current_representation,
@@ -4855,28 +4860,44 @@ class PrototypeAgent:
             source_id=memory_input.source_id,
         )
 
-        def apply_step(_: None) -> ExperientialMemoryStepResult:
-            return memory.step(
+        def apply_step(
+            _: None,
+        ) -> tuple[ExperientialMemoryPolicyProposal, ExperientialMemoryStepResult]:
+            return policy.propose_and_step(
                 memory_state,
                 decision_representation,
-                memory_input.query_representation_version,
-                memory_input.query_uncertainty,
-                memory_input.query_uncertainty_available,
+                query_version,
+                query_uncertainty,
+                query_uncertainty_available,
+                safety_mask,
                 entry,
             )
 
-        def skip_step(_: None) -> ExperientialMemoryStepResult:
-            return ExperientialMemoryStepResult(
-                state=memory_state,
-                retrieval=proposal.retrieval,
-                wrote=jnp.asarray(False, dtype=jnp.bool_),
-                slot=jnp.asarray(-1, dtype=jnp.int32),
-                evicted=jnp.asarray(False, dtype=jnp.bool_),
-                evicted_provenance_id=jnp.asarray(-1, dtype=jnp.int32),
+        def skip_step(
+            _: None,
+        ) -> tuple[ExperientialMemoryPolicyProposal, ExperientialMemoryStepResult]:
+            proposal = policy.propose(
+                memory_state,
+                decision_representation,
+                query_version,
+                query_uncertainty,
+                query_uncertainty_available,
+                safety_mask,
+            )
+            return (
+                proposal,
+                ExperientialMemoryStepResult(
+                    state=memory_state,
+                    retrieval=proposal.retrieval,
+                    wrote=jnp.asarray(False, dtype=jnp.bool_),
+                    slot=jnp.asarray(-1, dtype=jnp.int32),
+                    evicted=jnp.asarray(False, dtype=jnp.bool_),
+                    evicted_provenance_id=jnp.asarray(-1, dtype=jnp.int32),
+                ),
             )
 
-        step = cast(
-            ExperientialMemoryStepResult,
+        proposal, step = cast(
+            tuple[ExperientialMemoryPolicyProposal, ExperientialMemoryStepResult],
             jax.lax.cond(
                 transaction_required,
                 apply_step,
@@ -4928,7 +4949,7 @@ class PrototypeAgent:
             query_before_write=transaction_required & retrieval_matches,
             deterministic_prestate_query_count=jnp.where(
                 transaction_required,
-                jnp.asarray(2, dtype=jnp.int32),
+                jnp.asarray(1, dtype=jnp.int32),
                 jnp.asarray(0, dtype=jnp.int32),
             ),
             wrote=step.wrote,

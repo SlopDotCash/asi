@@ -1201,7 +1201,7 @@ def _validate_raw_binding(
         raw_sha,
         raw_size,
     )
-    if payload != expected:
+    if canonical_json_bytes(payload) != canonical_json_bytes(expected):
         raise ForagerMatchedCampaignError("raw archive binding differs from actual opaque file")
     return payload, digest
 

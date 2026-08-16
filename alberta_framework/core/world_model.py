@@ -24,6 +24,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -263,7 +264,7 @@ class ActionConditionedWorldModel:
         head_optimizer: AnyOptimizer | None = None,
     ):
         """Initialize the world model."""
-        self._validate_config(config)
+        config = self._validate_config(config)
         self._config = config
         self._observation_scale = (
             tuple(1.0 for _ in range(config.observation_dim))
@@ -557,6 +558,8 @@ class ActionConditionedWorldModel:
             & action_valid
             & jnp.all(jnp.isfinite(reward_arr))
             & jnp.all(jnp.isfinite(discount_arr))
+            & jnp.all(discount_arr >= 0.0)
+            & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_obs))
         )
         safe_obs = jnp.where(inputs_valid, obs, jnp.zeros_like(obs))
@@ -653,30 +656,44 @@ class ActionConditionedWorldModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: ActionConditionedWorldModelConfig) -> None:
+    def _validate_config(
+        self, config: ActionConditionedWorldModelConfig
+    ) -> ActionConditionedWorldModelConfig:
+        """Fail closed on malformed configuration and return its canonical float32 form."""
         if config.observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
-        if not 0.0 <= config.gamma <= 1.0:
-            raise ValueError("gamma must be in [0, 1]")
-        if config.observation_scale is not None:
-            if len(config.observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            if any(scale <= 0.0 for scale in config.observation_scale):
-                raise ValueError("observation_scale values must be positive")
-        if config.reward_scale <= 0.0:
-            raise ValueError("reward_scale must be positive")
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        if not 0.0 <= config.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= config.error_decay < 1.0:
-            raise ValueError("error_decay must be in [0, 1)")
-        if config.observation_clip_margin < 0.0:
-            raise ValueError("observation_clip_margin must be non-negative")
-        if config.max_delta_scale <= 0.0:
-            raise ValueError("max_delta_scale must be positive")
+        observation_scale = config.observation_scale
+        if observation_scale is not None:
+            if len(observation_scale) != config.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar("observation_scale values", scale, positive=True)
+                for scale in observation_scale
+            )
+        return dataclasses.replace(
+            config,
+            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
+            observation_scale=observation_scale,
+            reward_scale=validated_float32_scalar(
+                "reward_scale", config.reward_scale, positive=True
+            ),
+            utility_decay=validated_float32_scalar(
+                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            error_decay=validated_float32_scalar(
+                "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            observation_clip_margin=validated_float32_scalar(
+                "observation_clip_margin", config.observation_clip_margin, lower=0.0
+            ),
+            max_delta_scale=validated_float32_scalar(
+                "max_delta_scale", config.max_delta_scale, positive=True
+            ),
+        )
 
 
 def run_action_conditioned_world_model_learning_loop(
@@ -690,9 +707,10 @@ def run_action_conditioned_world_model_learning_loop(
 ) -> ActionConditionedWorldModelLearningResult:
     """Run online one-step model learning over transition arrays."""
     if discounts is None:
-        discounts = jnp.full_like(
-            rewards,
+        discounts = jnp.full(
+            jnp.shape(rewards),
             jnp.asarray(model.config.gamma, dtype=jnp.float32),
+            dtype=jnp.float32,
         )
 
     def _scan_fn(

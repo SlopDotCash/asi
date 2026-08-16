@@ -91,9 +91,10 @@ def _finite_float32(
     positive: bool = False,
     nonnegative: bool = False,
 ) -> float:
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
+    actual_type = type(value)
+    if issubclass(actual_type, bool | np.bool_) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real non-boolean scalar")
-    canonical = float(value)
+    canonical = float(cast(Real, value))
     lower_ok = canonical > 0.0 if positive else canonical >= 0.0 if nonnegative else True
     if not math.isfinite(canonical) or not lower_ok or abs(canonical) > _FLOAT32_MAX:
         qualifier = "positive " if positive else "nonnegative " if nonnegative else ""
@@ -226,15 +227,27 @@ class RecurrentLatentWorldModelEnsembleConfig:
     """Fixed architecture, optimizer, warmup, and numeric bounds.
 
     The ``max_*`` fields are fail-closed validity gates, not tuned
-    hyperparameters: an observation, reward, parameter, prediction, loss, or
-    raw gradient whose magnitude exceeds its bound causes the whole event to
-    be rejected with persistent state untouched.  Their internal consistency
-    is validated at construction: ``variance_floor < max_variance``,
-    ``gradient_clip_norm <= max_raw_gradient_norm``, and
-    ``learning_rate * gradient_clip_norm <= max_parameter_magnitude`` (so a
-    single clipped step cannot itself breach the parameter bound).  The
-    default magnitudes are coarse sanity ceilings far above any healthy
-    operating range, not derived quantities.
+    hyperparameters: an observation, reward, parameter, prediction, or loss
+    whose magnitude exceeds its bound causes the whole event to be rejected
+    with persistent state untouched.  Their internal consistency is validated
+    at construction: ``variance_floor < max_variance``, ``gradient_clip_norm
+    <= max_raw_gradient_norm``, and ``learning_rate * gradient_clip_norm <=
+    max_parameter_magnitude`` (so a single clipped step cannot itself breach
+    the parameter bound).  The default magnitudes are coarse sanity ceilings
+    far above any healthy operating range, not derived quantities.
+
+    Per-member raw NLL gradients are validated for finiteness only, not
+    against ``max_raw_gradient_norm``: the reachable raw gradient scales as
+    ``residual / variance``, so a well-trained low-noise member can legally
+    exceed any fixed ceiling on an ordinary in-bounds transition, and because
+    a rejection leaves state unchanged, a norm ceiling here creates a
+    deadlock rather than a safety gate.  ``gradient_clip_norm`` already
+    bounds the committed step magnitude, and ``candidate_parameters_valid`` /
+    ``candidate_state_valid`` independently confirm the post-clip candidate is
+    finite and in-bounds before it is committed.  ``max_raw_gradient_norm``
+    still bounds the representation gradient (a returned diagnostic signal,
+    never itself clipped) and constrains ``gradient_clip_norm`` at
+    construction.
     """
 
     observation_dim: int
@@ -304,6 +317,12 @@ class RecurrentLatentWorldModelEnsembleConfig:
             raise ValueError("gradient_clip_norm cannot exceed max_raw_gradient_norm")
         if self.learning_rate * self.gradient_clip_norm > self.max_parameter_magnitude:
             raise ValueError("one clipped update exceeds max_parameter_magnitude")
+        initial_variance_bias = self.initial_variance_bias_magnitude
+        if initial_variance_bias > self.max_parameter_magnitude:
+            raise ValueError(
+                f"initial variance bias magnitude {initial_variance_bias} exceeds "
+                f"max_parameter_magnitude={self.max_parameter_magnitude}"
+            )
         if self.state_nbytes > _MAX_STATE_NBYTES:
             raise ValueError(
                 f"configured persistent state needs {self.state_nbytes} bytes; "
@@ -333,6 +352,20 @@ class RecurrentLatentWorldModelEnsembleConfig:
         recurrent += self.latent_dim * joined + self.latent_dim
         heads = 2 * (self.target_dim * self.latent_dim + self.target_dim)
         return recurrent + heads
+
+    @property
+    def initial_variance_logit(self) -> float:
+        """Variance-head bias that starts every member at sqrt(floor * max) variance."""
+        desired_variance = math.sqrt(self.variance_floor * self.max_variance)
+        variance_ratio = (desired_variance - self.variance_floor) / (
+            self.max_variance - self.variance_floor
+        )
+        return math.log(variance_ratio / (1.0 - variance_ratio))
+
+    @property
+    def initial_variance_bias_magnitude(self) -> float:
+        """Magnitude of the stored float32 variance bias, as ``_parameters_valid`` sees it."""
+        return float(np.float32(abs(self.initial_variance_logit)))
 
     @property
     def state_nbytes(self) -> int:
@@ -605,7 +638,7 @@ class RecurrentLatentWorldModelEnsemble:
 
     def __init__(self, config: RecurrentLatentWorldModelEnsembleConfig):
         self._config = config
-        template = self.init(jr.key(0))
+        template = self._initial_state(jr.key(0))
         self._member_signature = _static_signature(template.member_parameters[0])
         self._state_signature = _static_signature(template)
         self._start_signature = _static_signature(self._zero_start_cache())
@@ -648,11 +681,7 @@ class RecurrentLatentWorldModelEnsemble:
             fan_in = jnp.asarray(shape[1], dtype=jnp.float32)
             return jr.normal(current_key, shape, dtype=jnp.float32) * scale / jnp.sqrt(fan_in)
 
-        desired_variance = math.sqrt(cfg.variance_floor * cfg.max_variance)
-        variance_ratio = (desired_variance - cfg.variance_floor) / (
-            cfg.max_variance - cfg.variance_floor
-        )
-        variance_logit = math.log(variance_ratio / (1.0 - variance_ratio))
+        variance_logit = cfg.initial_variance_logit
         return RecurrentLatentMemberParameters(
             gate_kernel=kernel(keys[0], (2 * cfg.latent_dim, joined)),
             gate_bias=jnp.zeros((2 * cfg.latent_dim,), dtype=jnp.float32),
@@ -669,7 +698,30 @@ class RecurrentLatentWorldModelEnsemble:
         )
 
     def init(self, key: Array) -> RecurrentLatentWorldModelEnsembleState:
-        """Initialize distinct member parameters and an isolated bootstrap key."""
+        """Initialize distinct member parameters and an isolated bootstrap key.
+
+        This is a deliberately host-side entry point: it evaluates the drawn
+        parameters against ``max_parameter_magnitude`` eagerly and raises, so
+        it must not be wrapped in ``jax.jit``; compile the ``start`` /
+        ``decide`` / ``update`` transitions instead.
+
+        Raises:
+            ValueError: If ``key`` is not one JAX PRNG key, or the drawn
+                initial parameters would already fail the configured
+                ``max_parameter_magnitude`` bound (an initialized state that
+                the module itself rejects would make every later event a
+                silent no-op).
+        """
+        state = self._initial_state(key)
+        if not bool(self._state_valid(state)):
+            raise ValueError(
+                "initialized parameters exceed max_parameter_magnitude="
+                f"{self._config.max_parameter_magnitude}; lower initialization_scale "
+                "or raise the bound"
+            )
+        return state
+
+    def _initial_state(self, key: Array) -> RecurrentLatentWorldModelEnsembleState:
         key_data = jr.key_data(key)
         if key_data.shape != (2,) or key_data.dtype != jnp.uint32:
             raise ValueError("key must be one JAX PRNG key")
@@ -1054,7 +1106,52 @@ class RecurrentLatentWorldModelEnsemble:
         self,
         state: RecurrentLatentWorldModelEnsembleState,
         diagnostics: RecurrentLatentWorldModelDiagnostics,
+        next_decision_observation: Array | None = None,
+        transition_boundary: Array | None = None,
     ) -> RecurrentLatentWorldModelUpdateResult:
+        # A rejection never mutates `state`, but the *cache* previously
+        # defaulted to the invalid zero cache unconditionally.  Since `decide`
+        # and `update` both require a valid, owned start cache, that made
+        # every rejection -- regardless of cause -- a permanent deadlock: no
+        # later event, however legal, could ever be accepted again.
+        #
+        # Re-owning the unchanged state is safe only after an authoritative,
+        # in-domain, off-boundary transition reached a *late* numerical or
+        # candidate-state rejection.  In particular, `cache_valid` says only
+        # that the caller supplied a cache whose own flags are true; ownership
+        # and exact cached-prediction checks are what bind it to this state,
+        # observation, and action.  Minting a valid cache before those checks
+        # would launder an arbitrary `next_decision_observation` through a
+        # stale or tampered decision.  A rejected boundary also cannot recover
+        # this way because the unchanged state has not committed the required
+        # recurrent reset.
+        if next_decision_observation is None or transition_boundary is None:
+            recoverable_cache = self._zero_start_cache()
+        else:
+            recoverable = (
+                diagnostics.state_valid
+                & diagnostics.cache_valid
+                & diagnostics.input_valid
+                & diagnostics.ownership_valid
+                & diagnostics.boundary_semantics_valid
+                & diagnostics.capacity_available
+                & diagnostics.cached_prediction_exact
+                & diagnostics.predictions_valid
+                & ~transition_boundary
+            )
+            recoverable_cache = cast(
+                RecurrentLatentStartCache,
+                jax.lax.cond(
+                    recoverable,
+                    lambda: RecurrentLatentStartCache(
+                        owner_event_count=state.event_count,
+                        owner_hidden_states=state.member_hidden_states,
+                        observation=next_decision_observation,
+                        valid=jnp.asarray(True, dtype=jnp.bool_),
+                    ),
+                    self._zero_start_cache,
+                ),
+            )
         return RecurrentLatentWorldModelUpdateResult(
             state=state,
             prediction=self._zero_prediction(),
@@ -1072,7 +1169,7 @@ class RecurrentLatentWorldModelEnsemble:
             member_updates_applied=jnp.zeros(
                 (self._config.ensemble_size,), dtype=jnp.bool_
             ),
-            next_start_cache=self._zero_start_cache(),
+            next_start_cache=recoverable_cache,
             diagnostics=diagnostics,
         )
 
@@ -1217,10 +1314,14 @@ class RecurrentLatentWorldModelEnsemble:
                 member_losses.append(loss)
                 member_gradients.append(gradient)
                 gradient_norms.append(gradient_norm)
+                # Finiteness only -- see the class docstring.  The raw norm is
+                # not compared against max_raw_gradient_norm: a well-trained
+                # low-noise member legally produces residual / variance
+                # gradients that dwarf any fixed ceiling on an ordinary
+                # in-bounds transition, and gradient_clip_norm (applied below)
+                # already bounds the committed step regardless of raw scale.
                 member_gradients_valid.append(
-                    _tree_all_finite(gradient)
-                    & jnp.isfinite(gradient_norm)
-                    & (gradient_norm <= cfg.max_raw_gradient_norm)
+                    _tree_all_finite(gradient) & jnp.isfinite(gradient_norm)
                 )
             losses = jnp.stack(member_losses)
             gradient_norm_array = jnp.stack(gradient_norms)
@@ -1369,7 +1470,12 @@ class RecurrentLatentWorldModelEnsemble:
                 jax.lax.cond(
                     applied,
                     lambda: result,
-                    lambda: self._rejected_result(state, diagnostics),
+                    lambda: self._rejected_result(
+                        state,
+                        diagnostics,
+                        next_decision_observation,
+                        boundary,
+                    ),
                 ),
             )
 
@@ -1378,7 +1484,12 @@ class RecurrentLatentWorldModelEnsemble:
             jax.lax.cond(
                 can_attempt,
                 accepted_branch,
-                lambda _: self._rejected_result(state, rejected_diagnostics),
+                lambda _: self._rejected_result(
+                    state,
+                    rejected_diagnostics,
+                    next_decision_observation,
+                    boundary,
+                ),
                 operand=None,
             ),
         )
@@ -1513,18 +1624,20 @@ def load_recurrent_latent_world_model_ensemble_checkpoint(
     if metadata.get("scientific_promotion_allowed") is not False:
         raise ValueError("checkpoint cannot claim scientific promotion")
     key = jr.key(0) if template_key is None else template_key
-    template = model.init(key)
-    expected_budget = model.resource_budget(template).to_config()
-    if metadata.get("resource_budget") != expected_budget:
-        raise ValueError("checkpoint resource budget does not match config")
+    # The template supplies only the checkpoint's static PyTree contract.  It
+    # must not make restoration depend on whether this unrelated random draw
+    # happens to fit the configured parameter bound; the persisted state is
+    # validated immediately after it is reconstructed.
+    template = model._initial_state(key)
     restored, second_metadata = load_checkpoint(template, path)
     if second_metadata != metadata:
         raise ValueError("checkpoint metadata changed between reads")
     state = cast(RecurrentLatentWorldModelEnsembleState, restored)
     if not bool(jax.device_get(model.state_valid(state))):
         raise ValueError("restored recurrent latent ensemble state is invalid")
-    if model.resource_budget(state).to_config() != expected_budget:
-        raise ValueError("restored recurrent latent ensemble resource budget is invalid")
+    expected_budget = model.resource_budget(state).to_config()
+    if metadata.get("resource_budget") != expected_budget:
+        raise ValueError("checkpoint resource budget does not match config and state")
     return model, state
 
 

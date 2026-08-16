@@ -74,7 +74,7 @@ from functools import lru_cache
 from numbers import Real
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -146,14 +146,58 @@ _STEP_DOMAIN = 303
 _BAYES_DOMAIN = 404
 
 
+def _is_registered_subclass(cls: type, abc: type) -> bool:
+    """Run one ABC subclass check, normalizing metaclass hook failures to False."""
+    try:
+        return issubclass(cls, abc)
+    except Exception:
+        # ``issubclass`` against an ABC hashes ``cls`` for its caches, so a
+        # metaclass whose ``__hash__`` raises would otherwise leak the hook's
+        # exception through the documented ValueError boundary.
+        return False
+
+
 def _require_finite_real(value: object, name: str) -> float:
-    """Return one canonical float after rejecting non-real and non-finite values."""
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a finite real number, got {value!r}")
-    number = float(value)
+    """Return one canonical float after rejecting non-real and non-finite values.
+
+    The message never formats ``value``: repr hooks on untrusted objects must
+    not run, and ordinary conversion failures normalize to ``ValueError``
+    while ``BaseException`` (e.g. ``KeyboardInterrupt``) still propagates.
+    """
+    message = f"{name} must be a finite real number"
+    if type(value) is bool or not _is_registered_subclass(type(value), Real):
+        raise ValueError(message)
+    try:
+        number = float(cast(Any, value))
+    except Exception as exc:
+        raise ValueError(message) from exc
     if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real number, got {value!r}")
+        raise ValueError(message)
     return number
+
+
+def _freeze_micro_hyperparameters(value: object, *, context: str) -> Mapping[str, float]:
+    """Copy one primitive-only hyperparameter mapping behind an immutable view."""
+    if not _is_registered_subclass(type(value), Mapping):
+        raise ValueError(f"{context} must be an object with non-empty string keys")
+    try:
+        items = list(cast(Mapping[object, object], value).items())
+    except Exception as exc:
+        raise ValueError(
+            f"{context} must be an object with non-empty string keys"
+        ) from exc
+    frozen: dict[str, float] = {}
+    for key, raw_value in items:
+        if type(key) is not str or not key:
+            raise ValueError(f"{context} keys must be non-empty strings")
+        frozen[key] = _require_finite_real(raw_value, f"{context}[{key!r}]")
+    return MappingProxyType(frozen)
+
+
+def _require_nonempty_string(value: object, *, context: str) -> str:
+    if type(value) is not str or not value:
+        raise ValueError(f"{context} must be a non-empty string")
+    return value
 
 
 # =============================================================================
@@ -637,9 +681,20 @@ class MicroArmSpec:
 
     name: str
     mechanism: str
-    hyperparameters: dict[str, float]
+    hyperparameters: Mapping[str, float]
     factory: MicroArmFactory
     description: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.name, context="MicroArmSpec.name")
+        _require_nonempty_string(self.mechanism, context="MicroArmSpec.mechanism")
+        object.__setattr__(
+            self,
+            "hyperparameters",
+            _freeze_micro_hyperparameters(
+                self.hyperparameters, context="MicroArmSpec.hyperparameters"
+            ),
+        )
 
 
 def _make_sgd_raw_learner(
@@ -774,6 +829,8 @@ class MicroRunResult:
 
     family: str
     arm_name: str
+    mechanism: str
+    hyperparameters: Mapping[str, float]
     seed: int
     hidden1: int
     hidden2: int
@@ -783,6 +840,17 @@ class MicroRunResult:
     per_regime_plasticity: np.ndarray
     overall_accuracy: float
     wall_clock_seconds: float
+
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.arm_name, context="MicroRunResult.arm_name")
+        _require_nonempty_string(self.mechanism, context="MicroRunResult.mechanism")
+        object.__setattr__(
+            self,
+            "hyperparameters",
+            _freeze_micro_hyperparameters(
+                self.hyperparameters, context="MicroRunResult.hyperparameters"
+            ),
+        )
 
 
 def run_micro_arm(
@@ -850,6 +918,8 @@ def run_micro_arm(
     return MicroRunResult(
         family=config.family,
         arm_name=spec.name,
+        mechanism=spec.mechanism,
+        hyperparameters=MappingProxyType(dict(spec.hyperparameters)),
         seed=int(seed),
         hidden1=hidden1,
         hidden2=hidden2,
@@ -873,16 +943,20 @@ def micro_shard_path(out_dir: Path | str, family: str, arm_name: str, seed: int)
 
 
 def micro_shard_payload(result: MicroRunResult) -> dict[str, Any]:
-    """Serialize one run to a mergeable shard."""
-    spec = micro_arm_spec(result.arm_name)
+    """Serialize one run to a mergeable shard, recording the spec that actually ran."""
+    if result.arm_name not in MICRO_ARM_REGISTRY:
+        raise ValueError(
+            f"arm_name {result.arm_name!r} is not a registered micro arm; "
+            "unregistered results cannot be serialized into the registered-arm shard schema"
+        )
     return {
         "schema": MICRO_SHARD_SCHEMA,
         "suite_version": MICRO_GAUSS_SUITE_VERSION,
         "evidence_policy": dict(NONPROMOTING_POLICY),
         "family": result.family,
         "arm_name": result.arm_name,
-        "mechanism": spec.mechanism,
-        "hyperparameters": dict(spec.hyperparameters),
+        "mechanism": result.mechanism,
+        "hyperparameters": dict(result.hyperparameters),
         "seed": result.seed,
         "hidden1": result.hidden1,
         "hidden2": result.hidden2,
@@ -910,6 +984,34 @@ def write_micro_shard(path: Path | str, payload: dict[str, Any]) -> None:
     atomic_write_new(Path(path), encoded)
 
 
+_MICRO_CURVE_DOMAINS: dict[str, tuple[float, float | None]] = {
+    "per_regime_accuracy": (0.0, 1.0),
+    "per_regime_loss": (0.0, None),
+    "per_regime_plasticity": (0.0, 1.0),
+}
+
+
+def _validated_curve(
+    value: object,
+    *,
+    n_regimes: int,
+    lower: float,
+    upper: float | None,
+    context: str,
+) -> list[float]:
+    """Return one per-regime curve as exact finite floats inside its metric domain."""
+    if not isinstance(value, list) or len(value) != n_regimes:
+        raise ValueError(f"{context} must be a list of {n_regimes} finite real numbers")
+    curve: list[float] = []
+    for index, entry in enumerate(value):
+        number = _require_finite_real(entry, f"{context}[{index}]")
+        if number < lower or (upper is not None and number > upper):
+            domain = f"[{lower}, {upper}]" if upper is not None else f">= {lower}"
+            raise ValueError(f"{context}[{index}] must lie in {domain}, got {number!r}")
+        curve.append(number)
+    return curve
+
+
 def load_micro_shard(path: Path | str) -> dict[str, Any]:
     """Load and structurally validate one micro shard."""
     path = Path(path)
@@ -927,6 +1029,11 @@ def load_micro_shard(path: Path | str) -> dict[str, Any]:
         raise ValueError(f"{path}: mechanism must be a non-empty string")
     if not isinstance(payload.get("hyperparameters"), dict):
         raise ValueError(f"{path}: hyperparameters must be an object")
+    payload["hyperparameters"] = dict(
+        _freeze_micro_hyperparameters(
+            payload["hyperparameters"], context=f"{path}: hyperparameters"
+        )
+    )
     environment = payload.get("environment")
     required_environment_fields = ("jax", "numpy", "python", "platform")
     if not isinstance(environment, dict) or any(
@@ -944,12 +1051,14 @@ def load_micro_shard(path: Path | str) -> dict[str, Any]:
             f"{path}: family {payload.get('family')!r} does not match "
             f"stream_config family {config.family!r}"
         )
-    for fieldname in ("per_regime_accuracy", "per_regime_loss", "per_regime_plasticity"):
-        values = np.asarray(payload.get(fieldname, []), dtype=np.float64)
-        if values.shape != (config.n_regimes,) or not np.all(np.isfinite(values)):
-            raise ValueError(
-                f"{path}: {fieldname} must be finite with shape ({config.n_regimes},)"
-            )
+    for fieldname, (lower, upper) in _MICRO_CURVE_DOMAINS.items():
+        payload[fieldname] = _validated_curve(
+            payload.get(fieldname),
+            n_regimes=config.n_regimes,
+            lower=lower,
+            upper=upper,
+            context=f"{path}: {fieldname}",
+        )
     payload["wall_clock_seconds"] = _validated_wall_clock_seconds(
         payload.get("wall_clock_seconds"), path
     )
@@ -1026,7 +1135,16 @@ def merge_micro_shards(
     paths: Sequence[Path | str], bayes_samples: int = 200_000
 ) -> dict[str, Any]:
     """Merge shards of one (family, config) into a ranked summary with the
-    analytic Bayes reference attached."""
+    analytic Bayes reference attached.
+
+    Every arm must carry the same seed set: the ranking and the Bayes
+    reference are only meaningful as paired comparisons on shared streams.
+
+    Raises:
+        ValueError: If shards duplicate an ``(arm, seed)`` pair, span more
+            than one stream config or environment, drift within an arm, or
+            cover different seed sets across arms.
+    """
     shards = [load_micro_shard(path) for path in paths]
     config, reference_environment = _micro_shard_batch_contract(shards)
     quarter = max(1, config.n_regimes // 4)
@@ -1039,6 +1157,12 @@ def merge_micro_shards(
                 f"duplicate shard for arm={shard['arm_name']} seed={shard['seed']}"
             )
         per_seed[shard["seed"]] = shard
+    seed_sets = {arm: tuple(sorted(per_seed)) for arm, per_seed in sorted(by_arm.items())}
+    if len(set(seed_sets.values())) != 1:
+        raise ValueError(
+            f"seed sets differ across arms: {seed_sets}; "
+            "merge_micro_shards ranks arms on paired seeds only"
+        )
 
     entries: list[dict[str, Any]] = []
     all_seeds: set[int] = set()
@@ -1445,7 +1569,11 @@ def _run_or_skip_shard(
     hidden1: int,
     hidden2: int,
 ) -> Path:
-    """Idempotent shard execution: existing shards are validated and kept."""
+    """Idempotent shard execution: existing shards are validated and kept.
+
+    A shard is only reused when it was produced by the same stream config
+    and the same network size; anything else must go to a fresh directory.
+    """
     path = micro_shard_path(out_dir, config.family, arm_name, seed)
     if path.exists():
         payload = load_micro_shard(path)
@@ -1453,6 +1581,13 @@ def _run_or_skip_shard(
             raise ValueError(
                 f"{path}: existing shard was produced by a different stream "
                 "config; use a fresh --out directory"
+            )
+        if (payload["hidden1"], payload["hidden2"]) != (hidden1, hidden2):
+            raise ValueError(
+                f"{path}: existing shard was produced by a different network size "
+                f"(hidden1={payload['hidden1']}, hidden2={payload['hidden2']}); "
+                f"requested hidden1={hidden1}, hidden2={hidden2}; "
+                "use a fresh --out directory"
             )
         logger.info("shard exists, skipping: %s", path)
         return path

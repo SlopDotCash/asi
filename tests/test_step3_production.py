@@ -15,6 +15,7 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+import alberta_framework.steps.step3 as step3_module
 from alberta_framework.core.horde import run_horde_learning_loop
 from alberta_framework.steps import (
     Step3HordeConfig,
@@ -176,6 +177,15 @@ def test_step3_config_validation() -> None:
         run_step3_smoke(steps=4, final_window=8)
 
 
+@pytest.mark.parametrize("field", ("use_obgd", "use_layer_norm"))
+def test_step3_config_rejects_non_boolean_algorithm_flags(field: str) -> None:
+    payload = Step3HordeConfig().to_dict()
+    payload[field] = "false"
+
+    with pytest.raises(ValueError, match=rf"{field} must be a boolean"):
+        Step3HordeConfig.from_dict(payload)
+
+
 def _config_with(**overrides: Any) -> Step3HordeConfig:
     payload: dict[str, Any] = {
         "gammas": (0.0,),
@@ -238,3 +248,37 @@ def test_step3_horde_scalars_canonicalize_nonbuiltin_reals() -> None:
     assert type(payload["sparsity"]) is float
     assert type(payload["obgd_kappa"]) is float
     assert horde.horde_spec.demons[0].gamma == 0.5
+
+
+def test_step3_horde_hidden_sizes_stay_in_int32_domain() -> None:
+    config = Step3HordeConfig(hidden_sizes=(np.int64(2**31 - 1),))
+
+    assert config.hidden_sizes == (2**31 - 1,)
+    assert type(config.hidden_sizes[0]) is int
+    with pytest.raises(ValueError, match="hidden_sizes.*int32 max"):
+        Step3HordeConfig(hidden_sizes=(2**31,))
+
+
+@pytest.mark.parametrize(
+    "rejected_field",
+    ["updates_applied", "head_updates_applied"],
+)
+def test_step3_smoke_health_gate_reports_refused_updates(
+    monkeypatch: pytest.MonkeyPatch,
+    rejected_field: str,
+) -> None:
+    original_run = step3_module.run_horde_learning_loop
+
+    def _refuse_update(*args: Any, **kwargs: Any) -> Any:
+        result = original_run(*args, **kwargs)
+        if rejected_field == "updates_applied":
+            return result.replace(updates_applied=result.updates_applied.at[0].set(False))
+        return result.replace(
+            head_updates_applied=result.head_updates_applied.at[0, 0].set(False)
+        )
+
+    monkeypatch.setattr(step3_module, "run_horde_learning_loop", _refuse_update)
+
+    result = run_step3_smoke(steps=8, final_window=4)
+
+    assert not result.finite

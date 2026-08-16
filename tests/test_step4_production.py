@@ -69,9 +69,12 @@ _INVALID_STEP4_SCALARS: tuple[tuple[str, Any], ...] = (
     ("epsilon_decay_steps", False),
     ("epsilon_decay_steps", -1),
     ("epsilon_decay_steps", 1.5),
+    ("epsilon_decay_steps", 2**31),
     ("n_actions", True),
+    ("n_actions", 2**31),
     ("hidden_sizes", (0,)),
     ("hidden_sizes", (True,)),
+    ("hidden_sizes", (2**31,)),
 )
 
 
@@ -202,6 +205,12 @@ def test_step4_sarsa_scalars_reject_invalid_inputs(field: str, value: object) ->
         _config_with(**{field: value})
 
 
+@pytest.mark.parametrize("value", [0, 1, "false", None])
+def test_step4_sarsa_config_requires_exact_boolean_layer_norm(value: object) -> None:
+    with pytest.raises(ValueError, match="use_layer_norm must be a boolean"):
+        _config_with(use_layer_norm=value)
+
+
 def test_step4_sarsa_scalars_preserve_legal_boundaries() -> None:
     config = Step4SARSAConfig(
         n_actions=1,
@@ -284,3 +293,18 @@ def test_step4_sarsa_scalars_canonicalize_nonbuiltin_reals() -> None:
     assert type(payload["epsilon_decay_steps"]) is int
     assert type(payload["hidden_sizes"][0]) is int
     assert agent.to_config()["type"] == "SARSAAgent"
+
+
+def test_step4_sarsa_dimensions_preserve_int32_maximum() -> None:
+    config = Step4SARSAConfig(
+        n_actions=np.int64(2**31 - 1),
+        epsilon_decay_steps=np.int64(2**31 - 1),
+        hidden_sizes=(np.int64(2**31 - 1),),
+    )
+
+    assert config.n_actions == 2**31 - 1
+    assert config.epsilon_decay_steps == 2**31 - 1
+    assert config.hidden_sizes == (2**31 - 1,)
+    assert type(config.n_actions) is int
+    assert type(config.epsilon_decay_steps) is int
+    assert type(config.hidden_sizes[0]) is int

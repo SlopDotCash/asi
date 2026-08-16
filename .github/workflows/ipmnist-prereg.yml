@@ -35,6 +35,7 @@ env:
   JAX_PLATFORMS: cpu
   OMP_NUM_THREADS: "1"
   PYTHONHASHSEED: "0"
+  PYTHONOPTIMIZE: "0"
   XLA_FLAGS: --xla_force_host_platform_device_count=1
   XLA_PYTHON_CLIENT_PREALLOCATE: "false"
 
@@ -44,6 +45,17 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 360
     steps:
+      - name: Require the exact GitHub-hosted runner context
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_ENVIRONMENT" != "github-hosted" \
+             || "$RUNNER_OS" != "macOS" \
+             || "$RUNNER_ARCH" != "ARM64" ]]; then
+            echo "runner context is not GitHub-hosted macOS ARM64" >&2
+            exit 1
+          fi
+
       - name: Check out the exact launch object
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -113,7 +125,13 @@ jobs:
             *) echo "unsupported protocol" >&2; exit 1 ;;
           esac
           target="outputs/ipmnist_screening/$namespace"
-          if [[ -e "$target" ]]; then
+          for parent in outputs outputs/ipmnist_screening; do
+            if [[ -L "$parent" ]]; then
+              echo "output parent must not be a symlink: $parent" >&2
+              exit 1
+            fi
+          done
+          if [[ -e "$target" || -L "$target" ]]; then
             echo "append-only namespace is already occupied: $target" >&2
             exit 1
           fi
@@ -127,12 +145,20 @@ jobs:
             echo "setup-uv did not install exact uv 0.9.24" >&2
             exit 1
           fi
+          if [[ "$PYTHONOPTIMIZE" != "0" ]]; then
+            echo "PYTHONOPTIMIZE must be exactly zero" >&2
+            exit 1
+          fi
           uv python install --managed-python 3.12.12
           python_path="$(uv python find --managed-python --no-project 3.12.12)"
           identity="$("$python_path" -c \
             'import platform; print(platform.python_implementation(), platform.python_version(), platform.machine())')"
           if [[ "$identity" != "CPython 3.12.12 arm64" ]]; then
             echo "uv-managed Python identity mismatch: $identity" >&2
+            exit 1
+          fi
+          if [[ "$("$python_path" -c 'import sys; print(sys.flags.optimize)')" != "0" ]]; then
+            echo "uv-managed Python unexpectedly enabled optimized mode" >&2
             exit 1
           fi
           echo "path=$python_path" >> "$GITHUB_OUTPUT"
@@ -182,40 +208,98 @@ jobs:
           uv run --no-sync python - "$cpu_brand" "$RUNNER_TEMP/prereg-metadata/runner.json" <<'PY'
           import importlib.metadata
           import json
+          import os
           import platform
           import sys
           from pathlib import Path
 
           import jax
 
+          def require(condition, message):
+              if not condition:
+                  raise RuntimeError(message)
+
           expected = {
+              "chex": "0.1.92",
               "jax": "0.11.0",
               "jaxlib": "0.11.0",
               "numpy": "2.5.1",
               "scikit-learn": "1.9.0",
           }
-          assert platform.python_implementation() == "CPython"
-          assert platform.python_version() == "3.12.12"
-          assert platform.system() == "Darwin"
-          assert platform.machine() == "arm64"
-          assert {name: importlib.metadata.version(name) for name in expected} == expected
+          expected_jax_config = {
+              "jax_enable_x64": False,
+              "jax_default_matmul_precision": None,
+              "jax_disable_jit": False,
+              "jax_numpy_dtype_promotion": "standard",
+              "jax_numpy_rank_promotion": "allow",
+              "jax_random_seed_offset": 0,
+              "jax_threefry_partitionable": True,
+              "jax_default_prng_impl": "threefry2x32",
+          }
+          runner_environment = os.environ.get("RUNNER_ENVIRONMENT")
+          runner_os = os.environ.get("RUNNER_OS")
+          runner_arch = os.environ.get("RUNNER_ARCH")
+          macos_version = platform.mac_ver()[0]
+          require(sys.flags.optimize == 0, "Python optimized mode is forbidden")
+          require(os.environ.get("PYTHONOPTIMIZE") == "0", "PYTHONOPTIMIZE must be zero")
+          require(runner_environment == "github-hosted", "runner must be GitHub-hosted")
+          require(runner_os == "macOS", "runner OS must be macOS")
+          require(runner_arch == "ARM64", "runner architecture must be ARM64")
+          require(platform.python_implementation() == "CPython", "CPython is required")
+          require(platform.python_version() == "3.12.12", "Python 3.12.12 is required")
+          require(platform.system() == "Darwin", "Darwin is required")
+          require(platform.machine() == "arm64", "arm64 is required")
+          require(platform.release().split(".", maxsplit=1)[0] == "23", "Darwin 23 is required")
+          require(macos_version.startswith("14."), "macOS 14 is required")
+          package_versions = {
+              name: importlib.metadata.version(name) for name in expected
+          }
+          require(package_versions == expected, "locked package versions differ")
           devices = jax.devices()
-          assert jax.default_backend() == "cpu"
-          assert len(devices) == 1
-          assert devices[0].platform == "cpu"
+          require(jax.default_backend() == "cpu", "JAX backend must be CPU")
+          require(len(devices) == 1, "exactly one JAX device is required")
+          require(devices[0].platform == "cpu", "JAX device must be CPU")
+          jax_config = {
+              "jax_enable_x64": bool(jax.config.jax_enable_x64),
+              "jax_default_matmul_precision": (
+                  None
+                  if jax.config.jax_default_matmul_precision is None
+                  else str(jax.config.jax_default_matmul_precision)
+              ),
+              "jax_disable_jit": bool(jax.config.jax_disable_jit),
+              "jax_numpy_dtype_promotion": str(jax.config.jax_numpy_dtype_promotion),
+              "jax_numpy_rank_promotion": str(jax.config.jax_numpy_rank_promotion),
+              "jax_random_seed_offset": int(jax.config.jax_random_seed_offset),
+              "jax_threefry_partitionable": bool(
+                  jax.config.jax_threefry_partitionable
+              ),
+              "jax_default_prng_impl": str(jax.config.jax_default_prng_impl),
+          }
+          require(jax_config == expected_jax_config, "JAX semantic config differs")
           destination = Path(sys.argv[2])
           destination.parent.mkdir(parents=True, exist_ok=True)
           encoded = (
               json.dumps(
                   {
-                      "schema": "asi.ipmnist_prereg.runner.v1",
+                      "schema": "asi.ipmnist_prereg.runner.v2",
                       "runner_label": "macos-14",
+                      "runner_environment": runner_environment,
+                      "runner_os": runner_os,
+                      "runner_arch": runner_arch,
                       "cpu_brand": sys.argv[1],
-                      "platform": platform.platform(),
+                      "platform": {
+                          "system": platform.system(),
+                          "release": platform.release(),
+                          "machine": platform.machine(),
+                      },
+                      "macos_version": macos_version,
                       "machine": platform.machine(),
                       "python": platform.python_version(),
+                      "python_optimization_level": sys.flags.optimize,
+                      "python_optimize_environment": os.environ.get("PYTHONOPTIMIZE"),
                       "packages": expected,
                       "jax_backend": jax.default_backend(),
+                      "jax_config": jax_config,
                       "jax_devices": [
                           {
                               "id": int(device.id),
@@ -256,6 +340,7 @@ jobs:
           data_home="$RUNNER_TEMP/openml-cache"
           uv run --no-sync python - "$data_home" <<'PY'
           import hashlib
+          import os
           import sys
           from pathlib import Path
 
@@ -267,12 +352,16 @@ jobs:
 
           data_home = Path(sys.argv[1])
           x, y = load_mnist_train(data_home)
-          assert x.shape == (60_000, 784)
-          assert y.shape == (60_000,)
+          if sys.flags.optimize != 0 or os.environ.get("PYTHONOPTIMIZE") != "0":
+              raise RuntimeError("Python optimized mode is forbidden for dataset validation")
+          if x.shape != (60_000, 784) or y.shape != (60_000,):
+              raise RuntimeError(f"unexpected canonical MNIST shapes: {x.shape}, {y.shape}")
           cache = data_home / MNIST_CACHE_RELATIVE_PATH
           raw = cache.read_bytes()
-          assert len(raw) == 15_469_256
-          assert hashlib.sha256(raw).hexdigest() == MNIST_CACHE_SHA256
+          if len(raw) != 15_469_256:
+              raise RuntimeError(f"unexpected canonical MNIST cache size: {len(raw)}")
+          if hashlib.sha256(raw).hexdigest() != MNIST_CACHE_SHA256:
+              raise RuntimeError("canonical MNIST cache digest mismatch")
           PY
 
       - name: Run the frozen arms sequentially and merge once

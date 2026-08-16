@@ -39,6 +39,11 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Return 0 when ``scale`` is 0 so a 0*inf product cannot form."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 def _report_demon_values(
     values: Array,
     requested: Array,
@@ -411,7 +416,31 @@ class OffPolicyHordeLearner:
         )
         td_targets = cumulants + discounts * bootstrap_predictions
         requested_mask = ~jnp.isnan(cumulants)
-        source_state_finite = _floating_tree_is_finite(state)
+        checked_state = state
+        if self._utility_decay == 0.0:
+            checked_state = checked_state.replace(  # type: ignore[attr-defined]
+                hidden_unit_utilities=tuple(
+                    jnp.zeros_like(utility) for utility in state.hidden_unit_utilities
+                )
+            )
+        if replacing:
+            checked_state = checked_state.replace(  # type: ignore[attr-defined]
+                trunk_traces=tuple(jnp.zeros_like(trace) for trace in state.trunk_traces),
+            )
+        lamdas = self._horde_spec.lamdas
+        head_decay_unused = jnp.all(
+            (discounts == 0.0) | (jnp.asarray(lamdas, dtype=jnp.float32) == 0.0)
+        )
+        checked_state = checked_state.replace(  # type: ignore[attr-defined]
+            head_traces=tuple(
+                (
+                    jnp.where(head_decay_unused, jnp.zeros_like(old_w), old_w),
+                    jnp.where(head_decay_unused, jnp.zeros_like(old_b), old_b),
+                )
+                for old_w, old_b in state.head_traces
+            )
+        )
+        source_state_finite = _floating_tree_is_finite(checked_state)
         global_inputs_valid = jnp.all(jnp.isfinite(observation))
         next_observation_valid = jnp.all(jnp.isfinite(next_observation))
         head_inputs_valid = (
@@ -514,7 +543,7 @@ class OffPolicyHordeLearner:
             )
             utility_signal = jnp.abs(activations[i] * trunk_bias_grads[i])
             new_hidden_unit_utilities.append(
-                utility_decay * old_utility
+                _skip_zero_scale(utility_decay, old_utility)
                 + (1.0 - utility_decay) * utility_signal
             )
 
@@ -528,7 +557,7 @@ class OffPolicyHordeLearner:
             w_grad_i = trunk_weight_grads[i]
             old_w_trace = state.trunk_traces[2 * i]
             if replacing:
-                new_w_trace = jnp.where(w_grad_i != 0.0, w_grad_i, old_w_trace * 0.0)
+                new_w_trace = jnp.where(w_grad_i != 0.0, w_grad_i, jnp.zeros_like(old_w_trace))
             else:
                 new_w_trace = w_grad_i
             new_trunk_traces.append(new_w_trace)
@@ -547,7 +576,7 @@ class OffPolicyHordeLearner:
             b_grad_i = trunk_bias_grads[i]
             old_b_trace = state.trunk_traces[2 * i + 1]
             if replacing:
-                new_b_trace = jnp.where(b_grad_i != 0.0, b_grad_i, old_b_trace * 0.0)
+                new_b_trace = jnp.where(b_grad_i != 0.0, b_grad_i, jnp.zeros_like(old_b_trace))
             else:
                 new_b_trace = b_grad_i
             new_trunk_traces.append(new_b_trace)
@@ -621,16 +650,16 @@ class OffPolicyHordeLearner:
                 new_w_trace = jnp.where(
                     w_grad != 0.0,
                     w_grad,
-                    head_gl * old_w_trace,
+                    _skip_zero_scale(head_gl, old_w_trace),
                 )
                 new_b_trace = jnp.where(
                     b_grad != 0.0,
                     b_grad,
-                    head_gl * old_b_trace,
+                    _skip_zero_scale(head_gl, old_b_trace),
                 )
             else:
-                new_w_trace = head_gl * old_w_trace + w_grad
-                new_b_trace = head_gl * old_b_trace + b_grad
+                new_w_trace = _skip_zero_scale(head_gl, old_w_trace) + w_grad
+                new_b_trace = _skip_zero_scale(head_gl, old_b_trace) + b_grad
 
             error_i = masked_td_errors[i]
             w_step, new_w_opt, w_update_applied = (

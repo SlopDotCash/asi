@@ -451,3 +451,31 @@ def test_legal_finite_decay_endpoints_still_construct_and_update() -> None:
     )
     assert bool(checked.update_applied)
     chex.assert_tree_all_finite(checked.state)
+
+
+def test_zero_decay_does_not_multiply_inf_traces() -> None:
+    """decay=0 is a full replace; inf leftover traces must not become NaN."""
+    memory = WorkingMemoryFeaturizer(
+        _minimal_config(observation_decay_rates=(0.0,), gated_update=False)
+    )
+    obs = jnp.asarray([1.0, -2.0], dtype=jnp.float32)
+    state = memory.update_checked(
+        memory.init(),
+        obs,
+        memory.zero_action(),
+        memory.zero_reward(),
+    ).state
+    state = state.replace(  # type: ignore[attr-defined]
+        observation_traces=jnp.full_like(state.observation_traces, jnp.inf),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    result = memory.update_checked(
+        state,
+        obs,
+        memory.zero_action(),
+        memory.zero_reward(),
+    )
+    assert bool(result.update_applied)
+    chex.assert_trees_all_close(result.state.observation_traces, obs[None, :])

@@ -21,7 +21,7 @@ from alberta_framework._seed_validation import require_unique_jax_seeds
 if TYPE_CHECKING:
     import pandas as pd
 
-    from alberta_framework.utils.experiments import AggregatedResults
+    from alberta_framework.utils.experiments import AggregatedResults, MetricSummary
     from alberta_framework.utils.statistics import SignificanceResult
 
 
@@ -266,6 +266,23 @@ def export_to_json(
     _write_text_atomically(filepath, payload)
 
 
+def _finite_table_summaries(
+    results: dict[str, "AggregatedResults"],
+    metric: str,
+) -> dict[str, "MetricSummary"]:
+    """Return display summaries only after validating their rendered statistics."""
+    if not results:
+        raise ValueError("table results must be non-empty")
+
+    summaries: dict[str, MetricSummary] = {}
+    for name, aggregate in results.items():
+        summary = aggregate.summary[metric]
+        mean = float(_exported_number(summary.mean))
+        std = float(_exported_number(summary.std))
+        summaries[name] = summary._replace(mean=mean, std=std)
+    return summaries
+
+
 def generate_latex_table(
     results: dict[str, "AggregatedResults"],
     significance_results: dict[tuple[str, str], "SignificanceResult"] | None = None,
@@ -300,14 +317,14 @@ def generate_latex_table(
     lines.append(r"\midrule")
 
     # Find best result
-    summaries = {name: agg.summary[metric] for name, agg in results.items()}
+    summaries = _finite_table_summaries(results, metric)
     if lower_is_better:
         best_name = min(summaries.keys(), key=lambda k: summaries[k].mean)
     else:
         best_name = max(summaries.keys(), key=lambda k: summaries[k].mean)
 
-    for name, agg in results.items():
-        summary = agg.summary[metric]
+    for name in results:
+        summary = summaries[name]
         mean_str = f"{summary.mean:.4f}"
         std_str = f"{summary.std:.4f}"
 
@@ -395,14 +412,14 @@ def generate_markdown_table(
     lines.append("|--------|-------------------------|-------|")
 
     # Find best result
-    summaries = {name: agg.summary[metric] for name, agg in results.items()}
+    summaries = _finite_table_summaries(results, metric)
     if lower_is_better:
         best_name = min(summaries.keys(), key=lambda k: summaries[k].mean)
     else:
         best_name = max(summaries.keys(), key=lambda k: summaries[k].mean)
 
-    for name, agg in results.items():
-        summary = agg.summary[metric]
+    for name in results:
+        summary = summaries[name]
         mean_str = f"{summary.mean:.4f}"
         std_str = f"{summary.std:.4f}"
 

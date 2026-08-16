@@ -25,9 +25,8 @@ floats; legal endpoints stay valid.
 from __future__ import annotations
 
 import functools
-import math
 from dataclasses import asdict, dataclass, field
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, cast
 
 import chex
@@ -57,6 +56,10 @@ from alberta_framework.core.world_model import (
     ActionConditionedWorldModelConfig,
     ActionConditionedWorldModelState,
     WorldModelUpdateResult,
+)
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
 )
 from alberta_framework.steps.step6 import (
     Step6DifferentialSARSAConfig,
@@ -177,33 +180,43 @@ class Step9DreamingConfig:
 
 
 def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return number
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonneg_real(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if number < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_half_open_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number < 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real < 1.0
+        or numerator < 0
+        or numerator >= denominator
+        or narrowed < 0.0
+        or not narrowed < 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1), got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
@@ -213,9 +226,10 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -796,8 +810,7 @@ def run_step9_smoke(
     seed: int = 0,
 ) -> Step9SmokeResult:
     """Run a tiny deterministic Step 9 dreaming integration probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1)
 
     cfg = config or Step9DreamingConfig()
     agent, model, buffer = make_step9_components(cfg)

@@ -11,6 +11,7 @@ import json
 import math
 from decimal import Decimal
 from fractions import Fraction
+from numbers import Real
 
 import chex
 import jax
@@ -31,6 +32,27 @@ class _FloatCoercible:
 
     def __float__(self) -> float:
         return 0.5
+
+
+class _PositiveRatioFloat(float):
+    """Negative float subclass whose ratio hook reports a positive value."""
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 4)
+
+
+class _PositiveInt(int):
+    """Negative int subclass whose conversion hook reports a positive value."""
+
+    def __int__(self) -> int:
+        return 1
+
+
+class _ExplodingRatioFloat(float):
+    """Float subclass whose ratio hook must never execute during validation."""
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("untrusted ratio hook executed")
 
 
 def _scan_collect(stream, num_steps: int, key) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -68,6 +90,358 @@ class TestOutOfClassPolynomialStream:
                 feature_dim=4,
                 active_triples_per_context=active_count,  # type: ignore[arg-type]
             )
+
+    @pytest.mark.parametrize(
+        "field",
+        ["feature_dim", "n_tasks", "n_contexts", "context_length"],
+    )
+    @pytest.mark.parametrize("value", [True, False, 1.0, np.int64(3), "3", None])
+    def test_dimensions_require_positive_builtin_ints(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("feature_dim", 2),
+            ("n_tasks", 0),
+            ("n_contexts", 0),
+            ("context_length", 0),
+        ],
+    )
+    def test_dimensions_enforce_minimums(self, field: str, value: int) -> None:
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "feature_dim",
+            "n_tasks",
+            "n_contexts",
+            "context_length",
+            "active_triples_per_context",
+        ],
+    )
+    def test_dimensions_reject_values_above_the_int32_domain(self, field: str) -> None:
+        with pytest.raises(ValueError, match=rf"{field}.*int32 max"):
+            OutOfClassPolynomialStream(**{field: 2**31})  # type: ignore[arg-type]
+
+    def test_context_length_accepts_int32_max_and_runs_eager_and_jit_step(self) -> None:
+        maximum = int(np.iinfo(np.int32).max)
+        stream = OutOfClassPolynomialStream(
+            feature_dim=3,
+            n_tasks=1,
+            n_contexts=1,
+            context_length=maximum,
+            active_triples_per_context=1,
+            noise_std=0.0,
+        )
+        state = stream.init(jr.key(98))
+        step_index = jnp.array(0, dtype=jnp.int32)
+
+        eager_timestep, _ = stream.step(state, step_index)
+        jit_timestep, _ = jax.jit(stream.step)(state, step_index)
+
+        assert stream._context_length == maximum  # noqa: SLF001
+        chex.assert_tree_all_finite((eager_timestep, jit_timestep))
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            np.bool_(True),
+            "0.5",
+            Decimal("0.5"),
+            _FloatCoercible(),
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            1e100,
+        ],
+    )
+    def test_scientific_scalars_require_safe_finite_float32_reals(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            _PositiveRatioFloat(-0.25),
+            _PositiveInt(-1),
+            _ExplodingRatioFloat(0.5),
+        ],
+        ids=("forged-float-ratio", "forged-int-conversion", "raising-float-ratio"),
+    )
+    def test_scientific_scalars_reject_untrusted_real_subclasses(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    def test_scientific_scalars_do_not_hash_or_compare_untrusted_actual_types(
+        self,
+        field: str,
+    ) -> None:
+        calls: list[str] = []
+
+        class HostileNumericMeta(type):
+            def __hash__(cls) -> int:
+                calls.append("hash")
+                raise RuntimeError("untrusted metaclass hash hook executed")
+
+            def __eq__(cls, other: object) -> bool:
+                del other
+                calls.append("eq")
+                raise RuntimeError("untrusted metaclass equality hook executed")
+
+        class HostileFloat(float, metaclass=HostileNumericMeta):
+            pass
+
+        calls.clear()
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(  # type: ignore[arg-type]
+                **{field: HostileFloat(1.0)}
+            )
+
+        assert calls == []
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize("slot", ["_numerator", "_denominator"])
+    def test_scientific_scalars_reject_poisoned_exact_fraction_components_without_hooks(
+        self,
+        field: str,
+        slot: str,
+    ) -> None:
+        calls = 0
+
+        class ExplodingInt(int):
+            def __int__(self) -> int:
+                nonlocal calls
+                calls += 1
+                raise RuntimeError("untrusted Fraction component hook executed")
+
+        value = Fraction(1, 4)
+        component = ExplodingInt(1 if slot == "_numerator" else 4)
+        object.__setattr__(value, slot, component)
+
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+        assert calls == 0
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize("slot", ["_numerator", "_denominator"])
+    def test_scientific_scalars_normalize_missing_exact_fraction_slots(
+        self,
+        field: str,
+        slot: str,
+    ) -> None:
+        value = Fraction(1, 4)
+        object.__delattr__(value, slot)
+
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize("denominator", [0, -4])
+    def test_scientific_scalars_reject_nonpositive_exact_fraction_denominators(
+        self,
+        field: str,
+        denominator: int,
+    ) -> None:
+        value = Fraction(1, 4)
+        object.__setattr__(value, "_denominator", denominator)
+
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "scalar_type",
+        [
+            np.int8,
+            np.int16,
+            np.int32,
+            np.int64,
+            np.longlong,
+            np.uint8,
+            np.uint16,
+            np.uint32,
+            np.uint64,
+            np.ulonglong,
+            np.float16,
+            np.float32,
+            np.float64,
+            np.longdouble,
+        ],
+    )
+    def test_scientific_scalars_accept_supported_numpy_types(
+        self,
+        scalar_type: type[np.generic],
+    ) -> None:
+        value = scalar_type(1)
+        stream = OutOfClassPolynomialStream(
+            feature_std=value,
+            linear_scale=value,
+            noise_std=value,
+        )
+
+        assert stream._feature_std == 1.0  # noqa: SLF001
+        assert stream._linear_scale == 1.0  # noqa: SLF001
+        assert stream._noise_std == 1.0  # noqa: SLF001
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize("scalar_type", [np.longlong, np.ulonglong])
+    def test_scientific_scalars_preserve_distinct_numpy_long_integer_types(
+        self,
+        field: str,
+        scalar_type: type[np.generic],
+    ) -> None:
+        stream = OutOfClassPolynomialStream(  # type: ignore[arg-type]
+            **{field: scalar_type(1)}
+        )
+
+        assert getattr(stream, f"_{field}") == 1.0
+
+    @pytest.mark.parametrize("field", ["feature_std", "noise_std"])
+    @pytest.mark.parametrize("value", [-1.0, -Fraction(1, 2**200)])
+    def test_standard_deviations_reject_negative_exact_reals(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+    def test_noise_std_rejects_non_real_with_a_real_class_facade(self) -> None:
+        class RealFacade:
+            @property
+            def __class__(self) -> type[float]:
+                return float
+
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (1, 2)
+
+        value = RealFacade()
+        assert isinstance(value, Real)
+        assert not issubclass(type(value), Real)
+
+        with pytest.raises(ValueError, match="noise_std"):
+            OutOfClassPolynomialStream(noise_std=value)  # type: ignore[arg-type]
+
+    def test_noise_std_rejects_ratio_component_with_an_integral_class_facade(
+        self,
+    ) -> None:
+        class IntegralFacade:
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def __int__(self) -> int:
+                return 1
+
+        class MalformedRatioFloat(float):
+            def as_integer_ratio(self) -> tuple[object, int]:
+                return (IntegralFacade(), 2)
+
+        with pytest.raises(ValueError, match="noise_std"):
+            OutOfClassPolynomialStream(noise_std=MalformedRatioFloat(0.5))
+
+    def test_noise_std_rejects_negative_exact_ratio_from_float_subclass(self) -> None:
+        class NegativeRatioFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        value = NegativeRatioFloat(0.5)
+        assert value >= 0.0
+        assert value.as_integer_ratio()[0] < 0
+
+        with pytest.raises(ValueError, match="noise_std"):
+            OutOfClassPolynomialStream(noise_std=value)
+
+    @pytest.mark.parametrize("field", ["feature_std", "linear_scale", "noise_std"])
+    @pytest.mark.parametrize(
+        ("offset", "expected"),
+        [
+            (Fraction(-1, 2**60), float(np.float32(1.0))),
+            (Fraction(0), float(np.float32(1.0))),
+            (
+                Fraction(1, 2**60),
+                float(np.nextafter(np.float32(1.0), np.float32(2.0))),
+            ),
+        ],
+        ids=("below", "tie-to-even", "above"),
+    )
+    def test_scientific_scalars_round_exact_midpoints_once(
+        self,
+        field: str,
+        offset: Fraction,
+        expected: float,
+    ) -> None:
+        value = Fraction(1) + Fraction(1, 2**24) + offset
+        stream = OutOfClassPolynomialStream(**{field: value})  # type: ignore[arg-type]
+
+        assert getattr(stream, f"_{field}") == expected
+
+    def test_multiplier_products_retain_float32_headroom(self) -> None:
+        multiplier_max = float(np.sqrt(np.finfo(np.float32).max))
+
+        with pytest.raises(ValueError, match="feature_std cubed"):
+            OutOfClassPolynomialStream(feature_std=3_000_000.0)
+        with pytest.raises(ValueError, match="linear_scale and feature_std"):
+            OutOfClassPolynomialStream(
+                feature_std=2.0,
+                linear_scale=multiplier_max,
+            )
+
+    @pytest.mark.parametrize("value", [0, 1, "yes", np.bool_(True)])
+    def test_include_squares_requires_strict_bool(self, value: object) -> None:
+        with pytest.raises(ValueError, match="include_squares"):
+            OutOfClassPolynomialStream(include_squares=value)  # type: ignore[arg-type]
+
+    def test_include_squares_rejects_invalid_type_without_calling_repr(self) -> None:
+        repr_calls = 0
+
+        class ExplodingRepr:
+            def __repr__(self) -> str:
+                nonlocal repr_calls
+                repr_calls += 1
+                raise RuntimeError("untrusted repr hook executed")
+
+        with pytest.raises(ValueError, match="include_squares"):
+            OutOfClassPolynomialStream(include_squares=ExplodingRepr())  # type: ignore[arg-type]
+
+        assert repr_calls == 0
+
+    def test_legal_scalar_endpoints_remain_supported(self) -> None:
+        stream = OutOfClassPolynomialStream(
+            feature_dim=3,
+            n_tasks=1,
+            n_contexts=1,
+            context_length=1,
+            feature_std=0.0,
+            linear_scale=-0.0,
+            noise_std=0.0,
+            include_squares=False,
+        )
+
+        assert stream.feature_dim == 3
+        assert math.copysign(1.0, stream._linear_scale) == -1.0  # noqa: SLF001
+        timestep, _ = stream.step(stream.init(jr.key(97)), jnp.array(0))
+        chex.assert_tree_all_finite((timestep.observation, timestep.target))
 
     def test_active_triple_count_caps_at_available_triples(self) -> None:
         stream = OutOfClassPolynomialStream(

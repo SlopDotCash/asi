@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
+from numbers import Real
 from typing import Any
 
 import chex
@@ -29,6 +31,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.optimizers import Bounder, bounder_from_config
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
@@ -139,7 +142,12 @@ class ActorCriticArrayResult:
     Attributes:
         state: Final agent state.
         actions: Per-step actions, shape ``(num_steps,)``.
-        policies: Per-step policy probabilities, shape ``(num_steps, n_actions)``.
+        policies: Per-step pre-update agent policy probabilities at
+            ``observations[t]``, shape ``(num_steps, n_actions)``. When actions
+            are sampled by this runner, this is the distribution that produced
+            ``actions[t]``. When fixed actions are supplied, this is the current
+            agent policy evaluated at that state, not provenance for the
+            external behavior policy.
         values: Per-step previous-state value estimates, shape ``(num_steps,)``.
         td_errors: Per-step TD errors, shape ``(num_steps,)``.
     """
@@ -531,7 +539,9 @@ def run_actor_critic_from_arrays(
         terminated: Terminal flags, shape ``(num_steps,)``. Required unless
             ``discounts`` is provided.
         next_observations: Next observations, shape ``(num_steps, feature_dim)``.
-        actions: Optional fixed current actions, shape ``(num_steps,)``.
+        actions: Optional fixed current actions, shape ``(num_steps,)``. Their
+            behavior-policy probabilities are not known; returned ``policies``
+            are the current agent policy evaluated before each update.
         discounts: Optional transition discounts, shape ``(num_steps,)``.
 
     Returns:
@@ -560,8 +570,9 @@ def run_actor_critic_from_arrays(
                 last_action=fixed_action.astype(jnp.int32),
             )
             current_action = fixed_action.astype(jnp.int32)
+            current_policy = agent.policy(started_state, obs)
         else:
-            started_state, current_action, _policy = agent.start(carry, obs)
+            started_state, current_action, current_policy = agent.start(carry, obs)
         result = agent.update(
             started_state,
             reward,
@@ -579,7 +590,7 @@ def run_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            result.policy,
+            jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
             result.update_applied,
@@ -788,6 +799,34 @@ class ContinuousActorCriticAgent:
             raise ValueError("action_dim must be positive")
         if config.log_sigma_min > config.log_sigma_max:
             raise ValueError("log_sigma_min must be <= log_sigma_max")
+        canonical_bounds: dict[str, float | None] = {}
+        for name in ("action_low", "action_high"):
+            bound = getattr(config, name)
+            if bound is None:
+                canonical_bounds[name] = None
+                continue
+            actual_type = type(bound)
+            if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+                raise ValueError(f"{name} must be a finite real number when set")
+            try:
+                narrowed = round_real_to_float32(bound)
+            except Exception as exc:
+                raise ValueError(f"{name} must be finite when set") from exc
+            if not math.isfinite(narrowed):
+                raise ValueError(f"{name} must remain finite once narrowed to float32")
+            # Only an actual built-in float is already the binary64 payload JAX will
+            # narrow exactly; ints and other reals store the validated binary32 value.
+            canonical_bounds[name] = bound if type(bound) is float else narrowed
+        low = canonical_bounds["action_low"]
+        high = canonical_bounds["action_high"]
+        if low is not None and high is not None and low > high:
+            raise ValueError("action_low must be <= action_high")
+        if (low, high) != (config.action_low, config.action_high) or any(
+            type(value) is not float
+            for value in (config.action_low, config.action_high)
+            if value is not None
+        ):
+            config = dataclasses.replace(config, action_low=low, action_high=high)
         self._config = config
         self._bounder = bounder
 

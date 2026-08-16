@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
+from jax.experimental import checkify
 
 from alberta_framework import (
     FixedBudgetFeatureLearner,
@@ -301,6 +302,83 @@ class TestInteractionFeatureDiscoveryStream:
 class TestFixedBudgetFeatureLearner:
     """Tests for explicit feature construction, utility, and replacement."""
 
+    def test_active_topk_excludes_inactive_zero_placeholders(self) -> None:
+        """Mirror of the #275 fix for the interaction learner: inactive heads are not zeros."""
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=4,
+            candidate_count=0,
+            utility_aggregation="topk",
+            utility_top_k=2,
+            utility_task_balancing="active",
+        )
+        active_mask = jnp.asarray((True, False, False, False), dtype=jnp.bool_)
+        activity = jnp.ones((4,), dtype=jnp.float32)
+        signed_signal = jnp.asarray(((-4.0,), (99.0,), (99.0,), (99.0,)), dtype=jnp.float32)
+        utility = learner._aggregate_task_feature_signal(signed_signal, active_mask, activity)
+        np.testing.assert_array_equal(utility, np.asarray((-4.0,), dtype=np.float32))
+
+        output_weights = jnp.asarray(((6.0,), (5.0,), (5.0,), (5.0,)), dtype=jnp.float32)
+        features = jnp.ones((1,), dtype=jnp.float32)
+        for top_k in (1, 2, 4):
+            probe = FixedBudgetFeatureLearner(
+                n_features=1,
+                n_tasks=4,
+                candidate_count=0,
+                utility_aggregation="topk",
+                utility_top_k=top_k,
+                utility_task_balancing="active",
+            )
+            utility = probe._output_utility_signal(output_weights, features, active_mask, activity)
+            np.testing.assert_array_equal(utility, np.asarray((6.0,), dtype=np.float32))
+
+    @pytest.mark.parametrize(
+        "reducer_name", ["_aggregate_task_feature_signal", "_output_utility_signal"]
+    )
+    def test_active_topk_all_inactive_avoids_zero_division(self, reducer_name: str) -> None:
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=4,
+            candidate_count=0,
+            utility_aggregation="topk",
+            utility_top_k=2,
+            utility_task_balancing="active",
+        )
+        active_mask = jnp.zeros((4,), dtype=jnp.bool_)
+        activity = jnp.ones((4,), dtype=jnp.float32)
+        if reducer_name == "_aggregate_task_feature_signal":
+            args: tuple[Any, ...] = (
+                jnp.asarray(((1.0,), (2.0,), (3.0,), (4.0,)), dtype=jnp.float32),
+                active_mask,
+                activity,
+            )
+        else:
+            args = (
+                jnp.ones((4, 1), dtype=jnp.float32),
+                jnp.ones((1,), dtype=jnp.float32),
+                active_mask,
+                activity,
+            )
+        checked = checkify.checkify(getattr(learner, reducer_name), errors=checkify.float_checks)
+        error, utility = checked(*args)
+        error.throw()
+        np.testing.assert_array_equal(utility, np.zeros((1,), dtype=np.float32))
+
+    def test_unbalanced_topk_still_averages_largest_heads(self) -> None:
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=4,
+            candidate_count=0,
+            utility_aggregation="topk",
+            utility_top_k=2,
+            utility_task_balancing="none",
+        )
+        signal = jnp.asarray(((4.0,), (2.0,), (0.5,), (0.0,)), dtype=jnp.float32)
+        utility = learner._aggregate_task_feature_signal(
+            signal, jnp.ones((4,), dtype=jnp.bool_), jnp.ones((4,), dtype=jnp.float32)
+        )
+        np.testing.assert_array_equal(utility, np.asarray((3.0,), dtype=np.float32))
+
     def test_init_shapes(self) -> None:
         learner = FixedBudgetFeatureLearner(
             n_features=7,
@@ -510,6 +588,42 @@ class TestFixedBudgetFeatureLearner:
             GENERATOR_MUTATE_PARENT,
             GENERATOR_IMPRINT,
         }
+
+    def test_age_corrected_promotion_restarts_raw_utility_ema(self) -> None:
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=1,
+            step_size_output=0.0,
+            step_size_feature=0.0,
+            utility_decay=0.5,
+            replacement_interval=1,
+            min_feature_age=0,
+            candidate_count=1,
+            candidate_min_age=0,
+            promotion_margin=1.0,
+            future_utility_mix=1.0,
+            future_utility_normalization="age",
+            use_obgd=False,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(431)).replace(
+            utilities=jnp.array([0.1], dtype=jnp.float32),
+            ages=jnp.array([5], dtype=jnp.int32),
+            candidate_utilities=jnp.array([1.0], dtype=jnp.float32),
+            candidate_ages=jnp.array([5], dtype=jnp.int32),
+        )
+
+        promoted = jax.jit(learner.update)(
+            state,
+            jnp.ones((2,), dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+        )
+
+        assert bool(promoted.update_applied)
+        assert int(promoted.promoted_candidate) == 0
+        assert int(promoted.state.ages[0]) == 0
+        assert float(promoted.state.utilities[0]) == 0.0
+        assert float(promoted.state.candidate_utilities[0]) == 0.0
+        chex.assert_tree_all_finite(promoted.metrics)
 
     def test_scan_loop_shapes(self) -> None:
         stream = NonlinearFeatureDiscoveryStream(
@@ -3113,6 +3227,21 @@ class TestFeatureDiscoveryStreamsValidation:
     def test_interaction_rejects_non_bool_include_squares(self) -> None:
         with pytest.raises(TypeError, match="include_squares must be a boolean"):
             InteractionFeatureDiscoveryStream(feature_dim=6, include_squares=1)  # type: ignore[arg-type]
+
+    def test_interaction_rejects_class_spoofed_bool(self) -> None:
+        class SpoofedBool:
+            @property
+            def __class__(self) -> type[bool]:
+                return bool
+
+            def __bool__(self) -> bool:
+                return True
+
+        with pytest.raises(TypeError, match="include_squares must be a boolean"):
+            InteractionFeatureDiscoveryStream(
+                feature_dim=6,
+                include_squares=SpoofedBool(),  # type: ignore[arg-type]
+            )
 
     def test_interaction_rejects_adversarial_ratio(self) -> None:
         class HiddenBoundaryFloat(float):

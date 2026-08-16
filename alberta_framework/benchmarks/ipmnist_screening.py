@@ -173,6 +173,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     lean_upgd_w_update,
     load_mnist_train,
     mlp_logits,
+    validated_ipmnist_data,
 )
 from alberta_framework.evaluation.recurring_ipmnist_retention import (
     RecurringIPMNISTPhase,
@@ -956,7 +957,7 @@ class EMANormState:
 def ema_normalize(
     state: EMANormState, observation: Array, decay: float, epsilon: float
 ) -> tuple[Array, EMANormState]:
-    """Equation-parity restatement of ``EMANormalizer.normalize`` (scan-friendly)."""
+    """Scan-friendly EMA with the core's zero-mean, unit-variance prior sample."""
     new_count = state.count + 1.0
     effective_decay = jnp.minimum(decay, 1.0 - 1.0 / (new_count + 1.0))
     delta = observation - state.mean
@@ -5067,6 +5068,137 @@ def _make_l2init_ema_norm_learner(
     return init_fn, full_step
 
 
+@chex.dataclass(frozen=True)
+class UPGDGatedL2InitNormState:
+    """Lean-UPGD utility EMA/clock, a frozen copy of the initial parameters,
+    and the EMA input-normalizer state (see
+    :func:`_make_sigma0_gated_l2init_learner`)."""
+
+    utility: dict[str, Array]
+    step: Array
+    init_params: dict[str, Array]
+    norm: EMANormState
+
+
+def _make_sigma0_gated_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """``sigma0_ndecay099`` baseline plus an additive, utility-gated pull
+    toward the initial weights.
+
+    Ported idea: continuous utility-scaled soft resets (CCBP,
+    OpenReview:UJqXhFFzKu; Calibrated Partial Resets, arXiv:2607.24996)
+    report that a *continuous*, per-unit-utility-scaled partial pull of
+    every hidden parameter toward its initial value dominates both
+    decay-based (L2/Shrink-and-Perturb) and hard-reset (CBP/ReDO) methods at
+    long horizons. This arm tests that mechanism's isolated marginal
+    contribution on top of that historical baseline, reusing the baseline's own
+    UPGD utility gate as the per-unit "graded reset" weight: ``1 - gate`` is
+    large for low-utility (unprotected) units and near zero for high-utility
+    (protected) ones, so the pull toward init is concentrated exactly where
+    the source papers' utility-scaled reset is meant to act. ``sigma0_ndecay099``
+    exposes no separate hidden-unit-firing utility signal of its own (unlike
+    CBP-family arms), so the UPGD gate is the closest available substitute
+    -- a documented deviation from the source papers' own utility statistic.
+
+    Deviation from the source papers: they replace their baseline's
+    decay/reset term outright; here the pull is an ADDITIVE new term next to
+    the baseline's existing uniform decoupled weight decay (rather than a
+    replacement), so this measures the isolated contribution of graded,
+    utility-gated pull-toward-init rather than a full swap of the
+    regularizer family.
+
+    ``l2init_pull_scale = 0`` (the default) is inert: the new term is
+    multiplied by exactly zero and the step routes through the identical
+    ``lean_upgd_w_update`` call the baseline factory's own inert path uses,
+    so the trajectory is bit-exact against ``sigma0_ndecay099`` (pinned by a
+    unit test) rather than relying on floating-point cancellation of a zero
+    term.
+    """
+    noise_std = hp["noise_std"]
+    norm_decay = hp["norm_decay"]
+    norm_epsilon = hp["norm_epsilon"]
+    pull_scale = hp.get("l2init_pull_scale", 0.0)
+    lean_hp = {
+        name: hp[name] for name in ("step_size", "utility_decay", "noise_std", "weight_decay")
+    }
+
+    def init_fn(params: dict[str, Array]) -> UPGDGatedL2InitNormState:
+        return UPGDGatedL2InitNormState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            init_params={name: value for name, value in params.items()},
+            norm=_init_input_norm_state(params),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: UPGDGatedL2InitNormState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], UPGDGatedL2InitNormState, StepMetrics]:
+        x_norm, new_norm = ema_normalize(state.norm, x, norm_decay, norm_epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        noise = _sorted_flat_noise(key, params, noise_std)
+        if pull_scale == 0.0:
+            # Exact champion path: call the identical function the champion
+            # factory's own inert path calls, rather than relying on
+            # floating-point cancellation of a zero-scaled extra term.
+            lean_state = LeanUPGDState(  # type: ignore[call-arg]
+                utility=state.utility, step=state.step
+            )
+            inert_new_params, new_lean = lean_upgd_w_update(
+                params, lean_state, grads, noise, lean_hp
+            )
+            metrics = _step_metrics(inert_new_params, x_norm, y, loss, logits)
+            return (
+                inert_new_params,
+                UPGDGatedL2InitNormState(  # type: ignore[call-arg]
+                    utility=new_lean.utility,
+                    step=new_lean.step,
+                    init_params=state.init_params,
+                    norm=new_norm,
+                ),
+                metrics,
+            )
+        beta = hp["utility_decay"]
+        step_size = hp["step_size"]
+        decay_factor = 1.0 - step_size * hp["weight_decay"]
+        count = state.step + jnp.array(1, dtype=jnp.int32)
+        utility = {
+            name: beta * state.utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+            for name in params
+        }
+        global_max = jnp.max(
+            jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
+        )
+        bias_correction = 1.0 - jnp.power(
+            jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        )
+        new_params: dict[str, Array] = {}
+        for name in params:
+            gate = jax.nn.sigmoid((utility[name] / bias_correction) / global_max)
+            pull = pull_scale * (1.0 - gate) * (params[name] - state.init_params[name])
+            new_params[name] = (
+                params[name] * decay_factor
+                - step_size * pull
+                - step_size * ((grads[name] + noise[name]) * (1.0 - gate))
+            )
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return (
+            new_params,
+            UPGDGatedL2InitNormState(  # type: ignore[call-arg]
+                utility=utility, step=count, init_params=state.init_params, norm=new_norm
+            ),
+            metrics,
+        )
+
+    return init_fn, full_step
+
+
 # =============================================================================
 # Config registry
 # =============================================================================
@@ -5118,6 +5250,21 @@ def _hidden_rms_frozen_probe_input(
         "sentinel probes are unsupported for hidden-RMS-normalized arms: the "
         "deployed forward pass is not the plain protocol MLP"
     )
+
+
+def _discovered_rule_frozen_probe_input(
+    hyperparameters: Mapping[str, float],
+) -> FrozenProbeInputFn:
+    """Select the sentinel probe for a discovered-rule arm from its flags.
+
+    ``flag_hidden_rms`` switches the discovered-rule forward pass to the same
+    hidden-layer RMS normalization as ``sigma0_hidden_norm``, so those arms
+    must fail closed exactly like it; the remaining discovered rules deploy
+    the plain MLP behind an EMA input normalizer.
+    """
+    if float(hyperparameters.get("flag_hidden_rms", 0.0)) != 0.0:
+        return _hidden_rms_frozen_probe_input
+    return _ema_frozen_probe_input
 
 
 def _rff_frozen_probe_input(
@@ -5659,6 +5806,23 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    specs.append(
+        ScreeningSpec(
+            name="sigma0_ndecay099_gated_l2init",
+            base_learner="upgd_w",
+            mechanism="gated_l2_init",
+            hyperparameters=_sigma0_ext_hp(norm_decay=0.99, l2init_pull_scale=0.01),
+            factory=_make_sigma0_gated_l2init_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "sigma0_ndecay099 historical baseline plus an additive utility-gated pull "
+                "toward init (CCBP/Calibrated-Partial-Resets-style graded reset; "
+                "l2init_pull_scale=0.01, matching the repo's established L2-Init "
+                "regularization strength); l2init_pull_scale=0 reduces bit-exactly "
+                "to the baseline."
+            ),
+        )
+    )
     # --- Wave 8: update-rule family swaps under the sigma0_ndecay099 champion's
     # conditioning (EMA input normalizer decay 0.99 + the exact UPGD utility
     # gate, no perturbation).  Only the descent direction changes per arm.
@@ -5896,7 +6060,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 mechanism="discovered_rule",
                 hyperparameters=_discovered_rule_hp(**disc_hp),
                 factory=_make_discovered_rule_learner,
-                frozen_probe_input=_ema_frozen_probe_input,
+                frozen_probe_input=_discovered_rule_frozen_probe_input(disc_hp),
                 description=disc_description,
             )
         )
@@ -5925,7 +6089,9 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                     surprise_slow=0.9996305719081341,
                 ),
                 factory=_make_discovered_rule_learner,
-                frozen_probe_input=_ema_frozen_probe_input,
+                frozen_probe_input=_discovered_rule_frozen_probe_input(
+                    {"flag_hidden_rms": diag_rms}
+                ),
                 description=(
                     "disc_r1 structure at champion-scale constants "
                     f"({diag_axis}): shift-adaptive norm + surprise-gated "
@@ -7095,26 +7261,15 @@ def _validated_ipmnist_data(
     *,
     input_dim: int | None,
     n_classes: int | None,
+    min_length: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    raw_x = np.asarray(jax.device_get(data_x))
-    raw_y = np.asarray(jax.device_get(data_y))
-    if raw_x.ndim != 2:
-        raise ValueError("data_x must be a two-dimensional example matrix")
-    if input_dim is not None and raw_x.shape[1] != input_dim:
-        raise ValueError(f"data_x must have shape (n_train, {input_dim})")
-    if raw_y.shape != (raw_x.shape[0],):
-        raise ValueError("data_y must be (n_train,) aligned with data_x")
-    if raw_y.dtype.kind not in {"i", "u"}:
-        raise ValueError("data_y must contain integer class labels")
-    if np.any(raw_y < 0) or np.any(raw_y > np.iinfo(np.int32).max):
-        raise ValueError("data_y class labels must fit non-negative int32")
-    resolved_x = np.asarray(raw_x, dtype=np.float32)
-    resolved_y = np.asarray(raw_y, dtype=np.int32)
-    if not np.all(np.isfinite(resolved_x)):
-        raise ValueError("data_x must contain only finite values")
-    if n_classes is not None and np.any(resolved_y >= n_classes):
-        raise ValueError(f"data_y class labels must be smaller than {n_classes}")
-    return resolved_x, resolved_y
+    return validated_ipmnist_data(
+        data_x,
+        data_y,
+        input_dim=input_dim,
+        n_classes=n_classes,
+        min_length=min_length,
+    )
 
 
 def ipmnist_permutation_sha256(permutation: np.ndarray | Array) -> str:
@@ -7551,14 +7706,15 @@ def run_screening_config(
         noise_mode,
         noise_pool_steps if noise_mode == "pool" else None,
     )
-    data_x = jnp.asarray(data_x, dtype=jnp.float32)
-    data_y = jnp.asarray(data_y, dtype=jnp.int32)
-    if data_x.ndim != 2 or data_x.shape[1] != config.input_dim:
-        raise ValueError(
-            f"data_x must have shape (n_train, {config.input_dim}), got {data_x.shape}"
-        )
-    if data_y.shape != (data_x.shape[0],):
-        raise ValueError("data_y must be (n_train,) aligned with data_x")
+    resolved_x, resolved_y = _validated_ipmnist_data(
+        data_x,
+        data_y,
+        input_dim=config.input_dim,
+        n_classes=config.n_classes,
+        min_length=config.task_length,
+    )
+    data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
+    data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
     n_train = int(data_x.shape[0])
 
     init_fn, step_fn = spec.factory(spec.hyperparameters)
@@ -8151,22 +8307,24 @@ def load_shard(path: Path) -> dict[str, Any]:
             payload["dataset_provenance"], config, context=str(path)
         )
     for fieldname in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
-        if is_v2:
-            raw_values = payload[fieldname]
-            if (
-                not isinstance(raw_values, list)
-                or len(raw_values) != config.n_tasks
-                or any(not _is_finite_json_number(value) for value in raw_values)
-            ):
-                raise ValueError(
-                    f"{path}: {fieldname} must be a list of finite JSON numbers "
-                    f"with length {config.n_tasks}"
-                )
-        values = np.asarray(payload[fieldname], dtype=np.float64)
+        # Curve typing and metric-domain checks apply to every schema: the
+        # legacy v1 shards are the campaign's live format, and a numeric
+        # string, boolean, or out-of-domain value would otherwise rank.
+        raw_values = payload.get(fieldname)
+        if (
+            not isinstance(raw_values, list)
+            or len(raw_values) != config.n_tasks
+            or any(not _is_finite_json_number(value) for value in raw_values)
+        ):
+            raise ValueError(
+                f"{path}: {fieldname} must be a list of finite JSON numbers "
+                f"with length {config.n_tasks}"
+            )
+        values = np.asarray(raw_values, dtype=np.float64)
         if values.shape != (config.n_tasks,) or not np.all(np.isfinite(values)):
             raise ValueError(f"{path}: {fieldname} must be finite with shape ({config.n_tasks},)")
-        if is_v2:
-            _require_screening_curve_domain(values, fieldname, context=str(path))
+        _require_screening_curve_domain(values, fieldname, context=str(path))
+        payload[fieldname] = [float(value) for value in values]
     payload["wall_clock_seconds"] = _validated_wall_clock_seconds(
         payload.get("wall_clock_seconds"), path
     )
@@ -8376,7 +8534,12 @@ def merge_shards(
     control_name: str = "upgd_w_control",
     slope_window: int = 15,
 ) -> dict[str, Any]:
-    """Merge shards into a ranked screening summary with paired comparisons."""
+    """Merge shards into a ranked screening summary with paired comparisons.
+
+    Every config must carry exactly the same seed set. The headline ranking
+    and every comparison against the control are therefore computed over the
+    same paired runs; an incomplete worker batch is rejected before ranking.
+    """
     normalized_paths = [Path(path) for path in paths]
     input_bindings = _artifact_file_bindings(
         normalized_paths, context="screening shard input"
@@ -8444,11 +8607,31 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
+    for name, per_seed in sorted(by_config.items()):
+        _validate_screening_arm_contract(name, per_seed)
     control = by_config[control_name]
+    control_seeds = sorted(control)
+    for name, per_seed in sorted(by_config.items()):
+        seeds = sorted(per_seed)
+        if name != control_name and not any(seed in control for seed in seeds):
+            raise ValueError(
+                f"config {name!r} shares no seeds with control {control_name!r} "
+                f"(seeds {seeds} vs {control_seeds}); refusing to rank an "
+                "unpaired entry in the summary"
+            )
+    seed_sets = {
+        name: tuple(sorted(per_seed))
+        for name, per_seed in sorted(by_config.items())
+    }
+    if len(set(seed_sets.values())) != 1:
+        raise ValueError(
+            f"seed sets differ across configs: {seed_sets}; "
+            "merge_shards ranks configs on paired seeds only"
+        )
+
     entries: list[dict[str, Any]] = []
     for name, per_seed in sorted(by_config.items()):
         seeds = sorted(per_seed)
-        _validate_screening_arm_contract(name, per_seed)
         wall_clock_total = _finite_wall_clock_total(
             [per_seed[s]["wall_clock_seconds"] for s in seeds],
             context=f"config {name!r}",
@@ -8484,16 +8667,6 @@ def merge_shards(
             "wall_clock_seconds_total": round(wall_clock_total, 2),
         }
         common = [s for s in seeds if s in control]
-        if name != control_name and not common:
-            # Every comparison in this campaign is paired on shared seeds; an
-            # arm with no seed in common with the control would still rank in
-            # the summary by raw mean with no paired_vs_control block and
-            # nothing marking it unpaired (issue #49).  Refuse instead.
-            raise ValueError(
-                f"config {name!r} shares no seeds with control {control_name!r} "
-                f"(seeds {seeds} vs {sorted(control)}); refusing to rank an "
-                "unpaired entry in the summary"
-            )
         if name != control_name and common:
             control_avg = np.asarray(
                 [

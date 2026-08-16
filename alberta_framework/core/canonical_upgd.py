@@ -96,6 +96,7 @@ _RAW_GLOBAL_PROFILES = frozenset(
         "official_experiment_global",
     }
 )
+_INT32_MAX = 2_147_483_647
 
 
 def _static_zero_scale(scale: float, value: Array) -> Array:
@@ -103,6 +104,18 @@ def _static_zero_scale(scale: float, value: Array) -> Array:
     if scale == 0.0:
         return jnp.zeros_like(value)
     return scale * value
+
+
+def _saturating_increment(value: Array, increment: Array | int = 1) -> Array:
+    """Increment a non-negative int32 counter without lifetime wraparound."""
+
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    increment_array = jnp.asarray(increment, dtype=jnp.int32)
+    return jnp.where(
+        value <= maximum - increment_array,
+        value + increment_array,
+        maximum,
+    )
 
 
 @dataclass(frozen=True)
@@ -367,6 +380,15 @@ class CanonicalUPGD:
         ``noise`` may supply the already-scaled perturbation PyTree ``xi`` for
         equation-level parity tests.  Normal operation omits it and samples
         ``N(0, noise_std**2)`` from ``key``.
+
+        The final representable int32 clock event is applied.  A saturated
+        clock may continue only after its active leaf-dtype bias-correction
+        denominator is exactly one.  If an active saturated clock still needs
+        to advance that denominator, the update rejects atomically: parameters,
+        optimizer state, and the key remain exact; computed payloads are
+        neutral; and ``metrics["update_applied"]`` is false.  The refusal
+        branch excludes the numerical proposal from reverse-mode
+        differentiation, preserving the same identity boundary there.
         """
 
         param_leaves, structure = _flatten_with_none(params)
@@ -395,24 +417,22 @@ class CanonicalUPGD:
             if noise_structure != structure:
                 raise ValueError("noise must share the parameter PyTree structure")
 
-        split_keys = jr.split(key, len(param_leaves) + 1)
-        next_key = split_keys[0]
-        noise_keys = split_keys[1:]
         beta = self._config.utility_decay
-        next_step = state.step + jnp.array(1, dtype=jnp.int32)
+        maximum_counter = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+        next_step = _saturating_increment(state.step)
 
-        corrected_leaves: list[Array] = []
-        new_utility_leaves: list[Array] = []
-        new_age_leaves: list[Array] = []
         finite_masks: list[Array] = []
-        eligible_masks: list[Array] = []
         active_masks: list[Array] = []
         clean_gradients: list[Array] = []
+        new_age_leaves: list[Array] = []
+        correction_denominators: list[Array] = []
+        capacity_available = jnp.asarray(True, dtype=jnp.bool_)
+        eligible_count = jnp.array(0.0, dtype=jnp.float32)
+        nonfinite_count = jnp.array(0.0, dtype=jnp.float32)
 
-        for param, gradient, utility, age, mask_leaf in zip(
+        for param, gradient, age, mask_leaf in zip(
             param_leaves,
             grad_leaves,
-            utility_leaves,
             age_leaves,
             mask_leaves,
             strict=True,
@@ -429,196 +449,252 @@ class CanonicalUPGD:
                 clean_gradient = jnp.where(finite, gradient_array, 0.0)
 
             active = eligible & finite
-            instantaneous = -clean_gradient * param
-            next_utility = jnp.where(
-                active,
-                _static_zero_scale(beta, utility)
-                + (1.0 - beta) * instantaneous,
-                utility,
-            )
             if self._config.uses_global_clock:
                 next_age = jnp.full_like(age, next_step)
                 correction_clock = next_step.astype(param.dtype)
             else:
-                next_age = age + active.astype(jnp.int32)
+                next_age = _saturating_increment(age, active.astype(jnp.int32))
                 correction_clock = next_age.astype(param.dtype)
             bias_correction = 1.0 - jnp.power(beta, correction_clock)
-            corrected = jnp.where(
-                next_age > 0,
-                next_utility
-                / (
-                    jnp.maximum(bias_correction, self._config.epsilon)
-                    if self._config.profile == "safe_extended"
-                    else bias_correction
-                ),
-                0.0,
+            correction_denominator = (
+                jnp.maximum(bias_correction, self._config.epsilon)
+                if self._config.profile == "safe_extended"
+                else bias_correction
             )
+            denominator_converged = correction_denominator == jnp.asarray(
+                1.0, dtype=bias_correction.dtype
+            )
+            if self._config.uses_global_clock:
+                saturated_active = (state.step >= maximum_counter) & jnp.any(active)
+                leaf_capacity_available = (~saturated_active) | jnp.all(
+                    denominator_converged
+                )
+            else:
+                leaf_capacity_available = ~jnp.any(
+                    active
+                    & (age >= maximum_counter)
+                    & ~denominator_converged
+                )
+            capacity_available = capacity_available & leaf_capacity_available
 
             clean_gradients.append(clean_gradient)
             finite_masks.append(finite)
-            eligible_masks.append(eligible)
             active_masks.append(active)
-            new_utility_leaves.append(next_utility)
             new_age_leaves.append(next_age)
-            corrected_leaves.append(corrected)
-
-        if self._config.resolved_normalization == "global":
-            maximum = jnp.array(-jnp.inf, dtype=jnp.float32)
-            has_active = jnp.array(False)
-            reference_leaves = (
-                new_utility_leaves
-                if self._config.profile in _RAW_GLOBAL_PROFILES
-                else corrected_leaves
-            )
-            for reference, active in zip(
-                reference_leaves,
-                active_masks,
-                strict=True,
-            ):
-                leaf_maximum = jnp.max(
-                    jnp.where(active, reference, -jnp.inf),
-                    initial=-jnp.inf,
-                )
-                maximum = jnp.maximum(maximum, leaf_maximum.astype(jnp.float32))
-                has_active = has_active | jnp.any(active)
-            global_maximum = jnp.where(has_active, maximum, 0.0)
-            denominator = (
-                _safe_signed_denominator(
-                    global_maximum,
-                    self._config.epsilon,
-                )
-                if self._config.profile == "safe_extended"
-                else global_maximum
-            )
-            normalized_leaves = [
-                jnp.where(
-                    active,
-                    corrected / denominator.astype(corrected.dtype),
-                    0.0,
-                )
-                for corrected, active in zip(
-                    corrected_leaves,
-                    active_masks,
-                    strict=True,
-                )
-            ]
-        else:
-            global_maximum = jnp.array(jnp.nan, dtype=jnp.float32)
-            if self._config.profile == "paper_local_literal":
-                denominator_leaves = new_utility_leaves
-                local_epsilon: float | None = None
-            elif self._config.profile == "official_experiment_local":
-                denominator_leaves = corrected_leaves
-                local_epsilon = 1e-12
-            else:
-                denominator_leaves = corrected_leaves
-                local_epsilon = self._config.epsilon
-            normalized_leaves = [
-                _local_normalize(
-                    corrected,
-                    denominator_utility,
-                    active,
-                    local_epsilon,
-                )
-                for corrected, denominator_utility, active in zip(
-                    corrected_leaves,
-                    denominator_leaves,
-                    active_masks,
-                    strict=True,
-                )
-            ]
-
-        new_param_leaves: list[Array] = []
-        gate_leaves: list[Array] = []
-        perturbation_leaves: list[Array] = []
-        gate_sum = jnp.array(0.0, dtype=jnp.float32)
-        utility_sum = jnp.array(0.0, dtype=jnp.float32)
-        eligible_count = jnp.array(0.0, dtype=jnp.float32)
-        nonfinite_count = jnp.array(0.0, dtype=jnp.float32)
-
-        for (
-            param,
-            gradient,
-            normalized,
-            corrected,
-            finite,
-            eligible,
-            active,
-            noise_key,
-            supplied_noise,
-        ) in zip(
-            param_leaves,
-            clean_gradients,
-            normalized_leaves,
-            corrected_leaves,
-            finite_masks,
-            eligible_masks,
-            active_masks,
-            noise_keys,
-            supplied_noise_leaves,
-            strict=True,
-        ):
-            gate = jnp.where(active, jax.nn.sigmoid(normalized), 0.0)
-            if supplied_noise is None:
-                sampled_noise = (
-                    jr.normal(noise_key, param.shape, dtype=param.dtype) * self._config.noise_std
-                )
-            else:
-                sampled_noise = jnp.asarray(supplied_noise, dtype=param.dtype)
-                if sampled_noise.shape != param.shape:
-                    raise ValueError("every noise leaf must match its parameter shape")
-            finite_noise = jnp.where(jnp.isfinite(sampled_noise), sampled_noise, 0.0)
-            perturbation = jnp.where(active, finite_noise, 0.0)
-
-            if self._config.mode == "protecting":
-                direction = (gradient + perturbation) * (1.0 - gate)
-            else:
-                direction = gradient + perturbation * (1.0 - gate)
-
-            decayed = param * (1.0 - self._config.step_size * self._config.weight_decay)
-            direction_step = self._config.step_size * self._config.direction_multiplier
-            candidate = decayed - direction_step * direction
-            updated = jnp.where(finite, candidate, param)
-
             count = jnp.sum(active.astype(jnp.float32))
-            gate_sum = gate_sum + jnp.sum(gate.astype(jnp.float32))
-            utility_sum = utility_sum + jnp.sum(
-                jnp.where(active, jnp.abs(corrected), 0.0).astype(jnp.float32)
-            )
             eligible_count = eligible_count + count
             nonfinite_count = nonfinite_count + jnp.sum((~finite).astype(jnp.float32))
+            correction_denominators.append(correction_denominator)
 
-            new_param_leaves.append(updated)
-            gate_leaves.append(gate)
-            perturbation_leaves.append(perturbation)
+        def apply_update(_: None) -> CanonicalUPGDUpdate:
+            split_keys = jr.split(key, len(param_leaves) + 1)
+            next_key = split_keys[0]
+            noise_keys = split_keys[1:]
 
-        count_floor = jnp.maximum(eligible_count, 1.0)
-        next_state = CanonicalUPGDState(  # type: ignore[call-arg]
-            utility_ema=jax.tree_util.tree_unflatten(structure, new_utility_leaves),
-            utility_age=jax.tree_util.tree_unflatten(structure, new_age_leaves),
-            step=next_step,
-        )
-        return CanonicalUPGDUpdate(  # type: ignore[call-arg]
-            params=jax.tree_util.tree_unflatten(structure, new_param_leaves),
-            state=next_state,
-            next_key=next_key,
-            scaled_utility=jax.tree_util.tree_unflatten(structure, gate_leaves),
-            corrected_utility=jax.tree_util.tree_unflatten(
-                structure,
+            corrected_leaves: list[Array] = []
+            new_utility_leaves: list[Array] = []
+            for param, gradient, utility, next_age, active, correction_denominator in zip(
+                param_leaves,
+                clean_gradients,
+                utility_leaves,
+                new_age_leaves,
+                active_masks,
+                correction_denominators,
+                strict=True,
+            ):
+                instantaneous = -gradient * param
+                next_utility = jnp.where(
+                    active,
+                    _static_zero_scale(beta, utility)
+                    + (1.0 - beta) * instantaneous,
+                    utility,
+                )
+                corrected = jnp.where(
+                    next_age > 0,
+                    next_utility / correction_denominator,
+                    0.0,
+                )
+                new_utility_leaves.append(next_utility)
+                corrected_leaves.append(corrected)
+
+            if self._config.resolved_normalization == "global":
+                maximum = jnp.array(-jnp.inf, dtype=jnp.float32)
+                has_active = jnp.array(False)
+                reference_leaves = (
+                    new_utility_leaves
+                    if self._config.profile in _RAW_GLOBAL_PROFILES
+                    else corrected_leaves
+                )
+                for reference, active in zip(
+                    reference_leaves,
+                    active_masks,
+                    strict=True,
+                ):
+                    leaf_maximum = jnp.max(
+                        jnp.where(active, reference, -jnp.inf),
+                        initial=-jnp.inf,
+                    )
+                    maximum = jnp.maximum(maximum, leaf_maximum.astype(jnp.float32))
+                    has_active = has_active | jnp.any(active)
+                global_maximum = jnp.where(has_active, maximum, 0.0)
+                denominator = (
+                    _safe_signed_denominator(
+                        global_maximum,
+                        self._config.epsilon,
+                    )
+                    if self._config.profile == "safe_extended"
+                    else global_maximum
+                )
+                normalized_leaves = [
+                    jnp.where(
+                        active,
+                        corrected / denominator.astype(corrected.dtype),
+                        0.0,
+                    )
+                    for corrected, active in zip(
+                        corrected_leaves,
+                        active_masks,
+                        strict=True,
+                    )
+                ]
+            else:
+                global_maximum = jnp.array(jnp.nan, dtype=jnp.float32)
+                if self._config.profile == "paper_local_literal":
+                    denominator_leaves = new_utility_leaves
+                    local_epsilon: float | None = None
+                elif self._config.profile == "official_experiment_local":
+                    denominator_leaves = corrected_leaves
+                    local_epsilon = 1e-12
+                else:
+                    denominator_leaves = corrected_leaves
+                    local_epsilon = self._config.epsilon
+                normalized_leaves = [
+                    _local_normalize(
+                        corrected,
+                        denominator_utility,
+                        active,
+                        local_epsilon,
+                    )
+                    for corrected, denominator_utility, active in zip(
+                        corrected_leaves,
+                        denominator_leaves,
+                        active_masks,
+                        strict=True,
+                    )
+                ]
+
+            new_param_leaves: list[Array] = []
+            gate_leaves: list[Array] = []
+            perturbation_leaves: list[Array] = []
+            gate_sum = jnp.array(0.0, dtype=jnp.float32)
+            utility_sum = jnp.array(0.0, dtype=jnp.float32)
+
+            for (
+                param,
+                gradient,
+                normalized,
+                corrected,
+                finite,
+                active,
+                noise_key,
+                supplied_noise,
+            ) in zip(
+                param_leaves,
+                clean_gradients,
+                normalized_leaves,
                 corrected_leaves,
-            ),
-            perturbation=jax.tree_util.tree_unflatten(
-                structure,
-                perturbation_leaves,
-            ),
-            metrics={
-                "mean_scaled_utility": gate_sum / count_floor,
-                "mean_absolute_utility": utility_sum / count_floor,
-                "global_maximum_utility": global_maximum,
-                "eligible_parameter_count": eligible_count,
-                "nonfinite_or_missing_count": nonfinite_count,
-            },
+                finite_masks,
+                active_masks,
+                noise_keys,
+                supplied_noise_leaves,
+                strict=True,
+            ):
+                gate = jnp.where(active, jax.nn.sigmoid(normalized), 0.0)
+                if supplied_noise is None:
+                    sampled_noise = (
+                        jr.normal(noise_key, param.shape, dtype=param.dtype)
+                        * self._config.noise_std
+                    )
+                else:
+                    sampled_noise = jnp.asarray(supplied_noise, dtype=param.dtype)
+                    if sampled_noise.shape != param.shape:
+                        raise ValueError("every noise leaf must match its parameter shape")
+                finite_noise = jnp.where(jnp.isfinite(sampled_noise), sampled_noise, 0.0)
+                perturbation = jnp.where(active, finite_noise, 0.0)
+
+                if self._config.mode == "protecting":
+                    direction = (gradient + perturbation) * (1.0 - gate)
+                else:
+                    direction = gradient + perturbation * (1.0 - gate)
+
+                decayed = param * (1.0 - self._config.step_size * self._config.weight_decay)
+                direction_step = self._config.step_size * self._config.direction_multiplier
+                candidate = decayed - direction_step * direction
+                updated = jnp.where(finite, candidate, param)
+
+                gate_sum = gate_sum + jnp.sum(gate.astype(jnp.float32))
+                utility_sum = utility_sum + jnp.sum(
+                    jnp.where(active, jnp.abs(corrected), 0.0).astype(jnp.float32)
+                )
+
+                new_param_leaves.append(updated)
+                gate_leaves.append(gate)
+                perturbation_leaves.append(perturbation)
+
+            count_floor = jnp.maximum(eligible_count, 1.0)
+            proposed_state = CanonicalUPGDState(  # type: ignore[call-arg]
+                utility_ema=jax.tree_util.tree_unflatten(structure, new_utility_leaves),
+                utility_age=jax.tree_util.tree_unflatten(structure, new_age_leaves),
+                step=next_step,
+            )
+            return CanonicalUPGDUpdate(  # type: ignore[call-arg]
+                params=jax.tree_util.tree_unflatten(structure, new_param_leaves),
+                state=proposed_state,
+                next_key=next_key,
+                scaled_utility=jax.tree_util.tree_unflatten(structure, gate_leaves),
+                corrected_utility=jax.tree_util.tree_unflatten(
+                    structure, corrected_leaves
+                ),
+                perturbation=jax.tree_util.tree_unflatten(
+                    structure, perturbation_leaves
+                ),
+                metrics={
+                    "update_applied": jnp.asarray(True, dtype=jnp.bool_),
+                    "mean_scaled_utility": gate_sum / count_floor,
+                    "mean_absolute_utility": utility_sum / count_floor,
+                    "global_maximum_utility": global_maximum,
+                    "eligible_parameter_count": eligible_count,
+                    "nonfinite_or_missing_count": nonfinite_count,
+                },
+            )
+
+        def reject_update(_: None) -> CanonicalUPGDUpdate:
+            zero_tree = jax.tree.map(jnp.zeros_like, params)
+            zero_metric = jnp.array(0.0, dtype=jnp.float32)
+            return CanonicalUPGDUpdate(  # type: ignore[call-arg]
+                params=params,
+                state=state,
+                next_key=key,
+                scaled_utility=zero_tree,
+                corrected_utility=zero_tree,
+                perturbation=zero_tree,
+                metrics={
+                    "update_applied": jnp.asarray(False, dtype=jnp.bool_),
+                    "mean_scaled_utility": zero_metric,
+                    "mean_absolute_utility": zero_metric,
+                    "global_maximum_utility": zero_metric,
+                    "eligible_parameter_count": eligible_count,
+                    "nonfinite_or_missing_count": nonfinite_count,
+                },
+            )
+
+        result: CanonicalUPGDUpdate = jax.lax.cond(
+            capacity_available,
+            apply_update,
+            reject_update,
+            operand=None,
         )
+        return result
 
 
 # This Alberta-derived transform was introduced separately from the official RL
@@ -633,9 +709,6 @@ AlbertaAdaUPGDProfile = Literal["alberta_derived_first_order_adaptive_v1"]
 ALBERTA_ADAUPGD_PROFILE: AlbertaAdaUPGDProfile = (
     "alberta_derived_first_order_adaptive_v1"
 )
-
-_INT32_MAX = 2**31 - 1
-
 
 @dataclass(frozen=True)
 class AlbertaAdaUPGDConfig:

@@ -18,6 +18,7 @@ import dataclasses
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 import chex
 import jax
@@ -76,6 +77,51 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+class _FloatClassSpoof:
+    @property
+    def __class__(self) -> type[float]:
+        return float
+
+    def __float__(self) -> float:
+        return 0.1
+
+
+class _ExplodingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises an ordinary exception."""
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class _InterruptingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises a BaseException."""
+
+    def __float__(self) -> float:
+        raise KeyboardInterrupt
+
+
+class _ExplodingRepr:
+    """An invalid hyperparameter value whose repr hook raises."""
+
+    calls = 0
+
+    def __repr__(self) -> str:
+        type(self).calls += 1
+        raise RuntimeError("untrusted __repr__ hook executed")
+
+
+class _ExplodingHashMeta(type):
+    """A metaclass whose hash hook raises inside ABC subclass checks."""
+
+    def __hash__(cls) -> int:
+        raise RuntimeError("untrusted metaclass __hash__ hook executed")
+
+
+class _ExplodingHashClassValue(metaclass=_ExplodingHashMeta):
+    """A value or mapping whose class cannot be hashed by issubclass caches."""
+
 
 TINY = MicroStreamConfig(
     family="input_permutation",
@@ -785,6 +831,134 @@ class TestShards:
     def _result(self, seed=0, arm="sgd_raw"):
         return run_micro_arm(TINY, arm, seed=seed, hidden1=8, hidden2=6)
 
+    def test_payload_records_the_spec_that_actually_ran(self, tmp_path: Path):
+        """A custom spec sharing a registry name must not be serialized as the registry arm."""
+        registry = micro_arm_spec("sgd_raw")
+        custom = dataclasses.replace(
+            registry, hyperparameters={"step_size": 0.5, "weight_decay": 0.3}
+        )
+        registry_run = run_micro_arm(TINY, "sgd_raw", seed=0, hidden1=8, hidden2=6)
+        custom_run = run_micro_arm(TINY, custom, seed=0, hidden1=8, hidden2=6)
+        assert custom_run.overall_accuracy != registry_run.overall_accuracy
+        assert custom_run.mechanism == registry.mechanism
+        assert custom_run.hyperparameters == {"step_size": 0.5, "weight_decay": 0.3}
+        assert registry_run.hyperparameters == registry.hyperparameters
+
+        payload = micro_shard_payload(custom_run)
+        assert payload["hyperparameters"] == {"step_size": 0.5, "weight_decay": 0.3}
+        assert payload["mechanism"] == registry.mechanism
+        assert payload["hyperparameters"] is not custom_run.hyperparameters
+
+        path_a = micro_shard_path(tmp_path, TINY.family, "sgd_raw", 0)
+        write_micro_shard(path_a, payload)
+        path_b = micro_shard_path(tmp_path, TINY.family, "sgd_raw", 1)
+        write_micro_shard(
+            path_b,
+            micro_shard_payload(run_micro_arm(TINY, "sgd_raw", seed=1, hidden1=8, hidden2=6)),
+        )
+        with pytest.raises(ValueError, match="hyperparameters"):
+            merge_micro_shards([path_a, path_b], bayes_samples=1_000)
+
+    def test_registry_specs_cannot_be_mutated_through_lookup(self):
+        spec = micro_arm_spec("sgd_raw")
+        with pytest.raises(TypeError):
+            spec.hyperparameters["step_size"] = 123.0  # type: ignore[index]
+        assert micro_arm_spec("sgd_raw").hyperparameters["step_size"] != 123.0
+
+    def test_direct_run_result_construction_copies_and_freezes_hyperparameters(self):
+        external = {"step_size": 0.5, "weight_decay": 0.3}
+        result = dataclasses.replace(self._result(), hyperparameters=external)
+        external["step_size"] = 0.9
+
+        assert result.hyperparameters == {"step_size": 0.5, "weight_decay": 0.3}
+        with pytest.raises(TypeError):
+            result.hyperparameters["step_size"] = 0.7  # type: ignore[index]
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {1: 0.1},
+            {"": 0.1},
+            {"step_size": float("nan")},
+            {"step_size": float("inf")},
+            {"step_size": True},
+            {"step_size": [0.1]},
+            {"step_size": _FloatClassSpoof()},
+        ],
+    )
+    def test_arm_specs_reject_noncanonical_hyperparameters(
+        self, hyperparameters: object
+    ) -> None:
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {"step_size": _ExplodingConversionFloat(0.1)},
+            {"step_size": _ExplodingHashClassValue()},
+            _ExplodingHashClassValue(),
+        ],
+        ids=["conversion-hook", "metaclass-hash-value", "metaclass-hash-mapping"],
+    )
+    def test_spec_and_result_normalize_hook_failures_to_value_error(
+        self, hyperparameters: object
+    ) -> None:
+        """Ordinary hook failures surface as the documented ValueError, not the hook's type."""
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                self._result(),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    def test_invalid_hyperparameter_rejection_never_calls_repr(self) -> None:
+        _ExplodingRepr.calls = 0
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _ExplodingRepr()},  # type: ignore[arg-type]
+            )
+        assert _ExplodingRepr.calls == 0
+
+    def test_base_exceptions_from_conversion_hooks_still_propagate(self) -> None:
+        with pytest.raises(KeyboardInterrupt):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _InterruptingConversionFloat(0.1)},
+            )
+
+    def test_payload_rejects_an_unregistered_result_name(self):
+        result = dataclasses.replace(self._result(), arm_name="unregistered_candidate")
+        with pytest.raises(ValueError, match="unregistered_candidate.*registered"):
+            micro_shard_payload(result)
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {"step_size": "0.01"},
+            {"step_size": True},
+            {"step_size": None},
+            {"step_size": [0.01]},
+            {"": 0.01},
+        ],
+    )
+    def test_load_rejects_noncanonical_hyperparameters(
+        self, tmp_path: Path, hyperparameters: object
+    ) -> None:
+        payload = micro_shard_payload(self._result())
+        payload["hyperparameters"] = hyperparameters
+        path = self._write_payload(tmp_path, payload)
+        with pytest.raises(ValueError, match="hyperparameters"):
+            load_micro_shard(path)
+
     def test_payload_roundtrip(self, tmp_path: Path):
         result = self._result()
         payload = micro_shard_payload(result)
@@ -968,6 +1142,41 @@ class TestShards:
             load_micro_shard(path)
 
     @pytest.mark.parametrize(
+        ("fieldname", "mutate", "reason"),
+        [
+            ("per_regime_accuracy", lambda curve: [str(v) for v in curve], "numeric strings"),
+            ("per_regime_accuracy", lambda curve: [True] + curve[1:], "booleans"),
+            ("per_regime_accuracy", lambda curve: [5.0] + curve[1:], "accuracy above 1"),
+            ("per_regime_accuracy", lambda curve: [-0.5] + curve[1:], "negative accuracy"),
+            ("per_regime_loss", lambda curve: [-1.0] + curve[1:], "negative loss"),
+            ("per_regime_loss", lambda curve: [str(v) for v in curve], "numeric strings"),
+            ("per_regime_plasticity", lambda curve: [1.5] + curve[1:], "plasticity above 1"),
+            ("per_regime_plasticity", lambda curve: [False] + curve[1:], "booleans"),
+        ],
+    )
+    def test_load_rejects_curves_outside_their_measured_domain(
+        self, tmp_path: Path, fieldname: str, mutate: Any, reason: str
+    ):
+        """Every per-regime curve is a list of exact reals inside its metric's domain."""
+        payload = micro_shard_payload(self._result())
+        payload[fieldname] = mutate(list(payload[fieldname]))
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match=fieldname):
+            load_micro_shard(path)
+
+    def test_load_canonicalizes_integer_curve_entries_to_floats(self, tmp_path: Path):
+        payload = micro_shard_payload(self._result())
+        payload["per_regime_accuracy"] = [0] + list(payload["per_regime_accuracy"][1:])
+        payload["per_regime_plasticity"] = [1] + list(payload["per_regime_plasticity"][1:])
+        path = tmp_path / "ok.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = load_micro_shard(path)
+        assert loaded["per_regime_accuracy"][0] == 0.0
+        assert type(loaded["per_regime_accuracy"][0]) is float
+        assert loaded["per_regime_plasticity"][0] == 1.0
+
+    @pytest.mark.parametrize(
         ("fieldname", "bad_value"),
         [
             ("mechanism", ""),
@@ -1027,6 +1236,34 @@ class TestShards:
         assert summary["bayes_reference"]["seeds"] == [0, 1]
         assert 0.0 < summary["bayes_reference"]["bayes_accuracy_mean"] <= 1.0
         assert summary["bayes_reference"]["chance"] == pytest.approx(1.0 / 3.0)
+
+    def test_merge_rejects_arms_with_different_seed_sets(self, tmp_path: Path):
+        """A ranked summary must compare arms on the same paired seeds."""
+        paths = []
+        for arm, seeds in (("sgd_raw", (0, 1, 2)), ("naive_bayes", (1, 2, 3))):
+            for seed in seeds:
+                result = run_micro_arm(TINY, arm, seed=seed, hidden1=8, hidden2=6)
+                path = micro_shard_path(tmp_path, TINY.family, arm, seed)
+                write_micro_shard(path, micro_shard_payload(result))
+                paths.append(path)
+        with pytest.raises(
+            ValueError,
+            match=r"^seed sets differ across arms: "
+            r"\{'naive_bayes': \(1, 2, 3\), 'sgd_raw': \(0, 1, 2\)\}; "
+            r"merge_micro_shards ranks arms on paired seeds only$",
+        ):
+            merge_micro_shards(paths, bayes_samples=1_000)
+
+    def test_merge_rejects_arm_missing_one_seed(self, tmp_path: Path):
+        paths = []
+        for arm, seeds in (("sgd_raw", (0, 1)), ("naive_bayes", (0,))):
+            for seed in seeds:
+                result = run_micro_arm(TINY, arm, seed=seed, hidden1=8, hidden2=6)
+                path = micro_shard_path(tmp_path, TINY.family, arm, seed)
+                write_micro_shard(path, micro_shard_payload(result))
+                paths.append(path)
+        with pytest.raises(ValueError, match="seed sets differ across arms"):
+            merge_micro_shards(paths, bayes_samples=1_000)
 
     def test_merge_rejects_mixed_configs(self, tmp_path: Path):
         result_a = run_micro_arm(TINY, "sgd_raw", seed=0, hidden1=8, hidden2=6)
@@ -1270,6 +1507,24 @@ class TestCLI:
         assert path.exists()
         first = path.read_bytes()
         assert main(argv) == 0  # idempotent skip, not an overwrite
+        assert path.read_bytes() == first
+
+    def test_run_refuses_to_skip_a_shard_from_a_different_network_size(self, tmp_path: Path):
+        """The idempotent skip must bind hidden1/hidden2, not only the stream config."""
+        base = [
+            "run", "--family", "input_permutation", "--arm", "sgd_raw",
+            "--seed", "0", "--out", str(tmp_path), *self.ARGS[:-4],
+        ]
+        assert main([*base, "--hidden1", "8", "--hidden2", "6"]) == 0
+        path = micro_shard_path(tmp_path, "input_permutation", "sgd_raw", 0)
+        first = path.read_bytes()
+        with pytest.raises(
+            ValueError,
+            match=r"existing shard was produced by a different network size "
+            r"\(hidden1=8, hidden2=6\); requested hidden1=16, hidden2=6; "
+            r"use a fresh --out directory",
+        ):
+            main([*base, "--hidden1", "16", "--hidden2", "6"])
         assert path.read_bytes() == first
 
     def test_ladder_partial_arms_writes_summary_only(self, tmp_path: Path):

@@ -335,7 +335,7 @@ def test_step11_oak_fields_preserve_legal_endpoints() -> None:
             SubtaskSpec(
                 feature_index=0,
                 threshold=1e-12,
-                pseudo_reward_scale=0.0,
+                pseudo_reward_scale=1e-12,
                 max_option_steps=1,
             ),
         ),
@@ -378,7 +378,7 @@ def test_step11_oak_fields_preserve_legal_endpoints() -> None:
     assert restored.curation_threshold == 0.0
     assert restored.subtask_specs[0].feature_index == 0
     assert restored.subtask_specs[0].threshold == float(np.float32(1e-12))
-    assert restored.subtask_specs[0].pseudo_reward_scale == 0.0
+    assert restored.subtask_specs[0].pseudo_reward_scale == float(np.float32(1e-12))
     assert restored.subtask_specs[0].max_option_steps == 1
     assert agent.config.stomp.option_gamma == 0.0
 
@@ -417,6 +417,13 @@ def test_step11_oak_rejects_float32_underflow_for_positive_fields() -> None:
     with pytest.raises(ValueError, match="threshold"):
         Step11OaKConfig(
             subtask_specs=(SubtaskSpec(feature_index=0, threshold=1e-46),),
+            observation_dim=4,
+        )
+    with pytest.raises(ValueError, match="pseudo_reward_scale"):
+        Step11OaKConfig(
+            subtask_specs=(
+                SubtaskSpec(feature_index=0, pseudo_reward_scale=1e-50),
+            ),
             observation_dim=4,
         )
 
@@ -525,13 +532,13 @@ def test_step11_fraction_float32_overflow_midpoint_is_exact() -> None:
 
 def test_step11_oak_preserves_float32_boundaries() -> None:
     f32_max = float(np.finfo(np.float32).max)
-    f32_min = float(np.finfo(np.float32).min)
+    f32_tiny = float(np.finfo(np.float32).tiny)
     config = Step11OaKConfig(
         subtask_specs=(
             SubtaskSpec(
                 feature_index=0,
                 threshold=f32_max,
-                pseudo_reward_scale=f32_min,
+                pseudo_reward_scale=f32_tiny,
                 max_option_steps=10,
             ),
         ),
@@ -541,7 +548,7 @@ def test_step11_oak_preserves_float32_boundaries() -> None:
     )
     agent = make_step11_oak_agent(config)
     assert agent.config.stomp.subtask_specs[0].threshold == f32_max
-    assert agent.config.stomp.subtask_specs[0].pseudo_reward_scale == f32_min
+    assert agent.config.stomp.subtask_specs[0].pseudo_reward_scale == f32_tiny
     assert config.curation_threshold == f32_max
     assert config.base_step_size == f32_max
 
@@ -1026,6 +1033,30 @@ def test_run_step11_smoke_to_dict_roundtrip() -> None:
 def test_run_step11_smoke_zero_steps_raises() -> None:
     with pytest.raises(ValueError, match="steps"):
         run_step11_smoke(steps=0)
+
+
+@pytest.mark.parametrize("steps", [True, 1.5])
+def test_run_step11_smoke_rejects_non_integer_steps(steps: object) -> None:
+    with pytest.raises(ValueError, match="steps must be an integer"):
+        run_step11_smoke(steps=steps)  # type: ignore[arg-type]
+
+
+def test_run_step11_smoke_rejects_class_spoofed_integer_steps() -> None:
+    class _SpoofedInt:
+        """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            return int
+
+        def __int__(self) -> int:
+            return 3
+
+        def __index__(self) -> int:
+            return 3
+
+    with pytest.raises(ValueError, match="steps must be an integer"):
+        run_step11_smoke(steps=_SpoofedInt())  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

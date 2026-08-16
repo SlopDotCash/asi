@@ -7,6 +7,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.continual_backprop import (
     CBPLearningResult,
@@ -20,6 +21,7 @@ from alberta_framework.core.continual_backprop import (
     _select_replacement_index,
     init_cbp_state,
     maybe_replace_units,
+    replace_units_with_flags,
     run_cbp_learning_loop,
     update_utility,
 )
@@ -72,6 +74,18 @@ class TestInitCbpStateShapes:
         except ValueError:
             return
         raise AssertionError("expected ValueError on mismatched hidden_sizes")
+
+    def test_init_cbp_state_width_mismatch_raises(self):
+        """The count can match while a width does not; that must not silently reshape."""
+        learner = MultiHeadMLPLearner(n_heads=2, hidden_sizes=(8, 4), sparsity=0.0)
+        mlp_state = learner.init(feature_dim=4, key=jr.key(0))
+        with pytest.raises(
+            ValueError,
+            match=r"^hidden_sizes\[1\]=1 does not match trunk layer 1 width \(4\)$",
+        ):
+            init_cbp_state(mlp_state, (8, 1), key=jr.key(1))
+        with pytest.raises(ValueError, match=r"^hidden_sizes\[0\]=1 does not match"):
+            init_cbp_state(mlp_state, (1, 4), key=jr.key(1))
 
 
 # =============================================================================
@@ -329,6 +343,80 @@ class TestReplacement:
         chex.assert_trees_all_close(
             cbp_state.utilities[0], new_cbp.utilities[0]
         )
+
+
+    def _replacement_trace(
+        self, *, n_units: int, rate: float, maturity: int, steps: int
+    ) -> tuple[list[int], float]:
+        """Drive maybe_replace_units with ages advancing one per step; count replacements."""
+        learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(n_units,), sparsity=0.0)
+        mlp_state = learner.init(feature_dim=3, key=jr.key(1))
+        cbp_state = init_cbp_state(mlp_state, (n_units,), key=jr.key(2))
+        config = ContinualBackpropConfig(
+            decay_rate=0.99, replacement_rate=rate, maturity_threshold=maturity, enabled=True
+        )
+        replaced_per_step: list[int] = []
+        for step in range(steps):
+            cbp_state = cbp_state.replace(  # type: ignore[attr-defined]
+                ages=(jnp.full((n_units,), step, dtype=jnp.int32),),
+                utilities=(jnp.linspace(0.001, 1.0, n_units, dtype=jnp.float32),),
+            )
+            mlp_state, cbp_state, replaced = replace_units_with_flags(
+                mlp_state, cbp_state, config, sparsity=0.0
+            )
+            replaced_per_step.append(int(bool(replaced[0])))
+        return replaced_per_step, float(cbp_state.replacement_accumulators[0])
+
+    def test_replacement_budget_does_not_accrue_while_every_unit_is_immature(self):
+        """No warm-up debt: rate 1e-3 on 32 units is ~1 per 31 steps, not 32 in a row."""
+        replaced, _ = self._replacement_trace(n_units=32, rate=1e-3, maturity=1000, steps=1100)
+        assert sum(replaced[:1000]) == 0
+        burst = sum(replaced[1000:1040])
+        assert burst <= 2, f"warm-up debt discharged as a burst of {burst} replacements"
+        assert 1 <= sum(replaced) <= 4
+
+    def test_replacement_budget_never_carries_more_than_one_pending_unit(self):
+        """rate * n_units > 1 saturates at one replacement per step without unbounded debt."""
+        replaced, final_accumulator = self._replacement_trace(
+            n_units=8, rate=0.5, maturity=0, steps=20
+        )
+        assert sum(replaced) == 20
+        assert final_accumulator <= 1.0
+
+
+    def test_wrapper_replacements_made_is_the_gated_decision(self):
+        """replacements_made must not be re-inferred from the old rate * hidden_size formula."""
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(32,),
+            cbp_config=ContinualBackpropConfig(
+                decay_rate=0.99, replacement_rate=0.02, maturity_threshold=1000, enabled=True
+            ),
+            step_size=0.01,
+            sparsity=0.0,
+            use_layer_norm=False,
+        )
+        state = learner.init(feature_dim=4, key=jr.key(9))
+        obs = jnp.array([0.4, -0.2, 0.7, 1.0], dtype=jnp.float32)
+        result = learner.update(state, obs, jnp.array([1.5], dtype=jnp.float32))
+        assert int(jnp.max(result.state.cbp_state.ages[0])) == 1
+        assert float(result.state.cbp_state.replacement_accumulators[0]) == 0.0
+        assert not bool(result.replacements_made[0])
+
+        matured = result.state.replace(  # type: ignore[attr-defined]
+            cbp_state=result.state.cbp_state.replace(  # type: ignore[attr-defined]
+                ages=(jnp.full((32,), 5000, dtype=jnp.int32),),
+                replacement_accumulators=jnp.array([0.9], dtype=jnp.float32),
+            )
+        )
+        weights_before = matured.mlp_state.trunk_params.weights[0]
+        fired = learner.update(matured, obs, jnp.array([1.5], dtype=jnp.float32))
+        assert bool(fired.replacements_made[0])
+        changed_rows = jnp.any(
+            fired.state.mlp_state.trunk_params.weights[0] != weights_before, axis=1
+        )
+        assert int(jnp.sum(fired.state.cbp_state.ages[0] == 0)) == 1
+        assert int(jnp.sum(changed_rows)) >= 1
 
 
 # =============================================================================

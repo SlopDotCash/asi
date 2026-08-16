@@ -595,6 +595,7 @@ def _validate_execution_plan_snapshot(
         _require_int(item, "execution plan seed")
         for item in _require_array(value["active_seeds"], "execution plan active seeds")
     )
+    horizon = _require_int(value["horizon"], "execution plan horizon", minimum=1)
     candidate_order = tuple(
         _require_identifier(item, "execution plan candidate")
         for item in _require_array(value["candidate_order"], "execution plan candidate order")
@@ -616,7 +617,7 @@ def _validate_execution_plan_snapshot(
         value["protocol_sha256"] != open_protocol.protocol_sha256
         or qualification_digest != scores.qualification_manifest_sha256
         or active_seeds != open_protocol.active_seeds
-        or value["horizon"] != open_protocol.horizon
+        or horizon != open_protocol.horizon
         or candidate_order
         != tuple(item.candidate_id for item in scores.candidate_scores)
         or _canonical_sha256(source_manifest) != source_digest

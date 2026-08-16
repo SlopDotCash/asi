@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
+from numbers import Real
 from typing import Any, Literal, cast
 
 import jax.numpy as jnp
@@ -123,6 +123,15 @@ def _require_positive_real(name: str, value: object) -> float:
     return number
 
 
+# Exact trusted integer scalar types, compared by identity in _require_int.
+# ``longlong``/``ulonglong`` are listed via their dtype codes because they can
+# be distinct types from the fixed-width aliases on some platforms.
+_TRUSTED_INT_TYPES: tuple[type, ...] = (
+    int,
+    *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")),
+)
+
+
 def _require_int(
     name: str,
     value: object,
@@ -130,9 +139,14 @@ def _require_int(
     minimum: int | None = None,
     exclusive_maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    # Identity-only admission: an actual ``int`` subclass can override
+    # ``__int__``/``__index__``/``__repr__`` with hostile hooks, so anything
+    # that is not an exact trusted builtin/NumPy integer scalar type is
+    # rejected before conversion, without interpolating the untrusted value.
+    actual_type = type(value)
+    if not any(actual_type is trusted_type for trusted_type in _TRUSTED_INT_TYPES):
+        raise ValueError(f"{name} must be an integer of an exact trusted type")
+    number: int = int(cast(Any, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -326,6 +340,7 @@ def make_step1_stream(
         return XDistShiftStream(
             feature_dim=config.feature_dim,
             num_relevant=config.num_relevant,
+            noise_std=config.noise_std,
             noise_in_target=config.noise_std > 0.0,
         )
     msg = f"unknown Step 1 stream {config.stream!r}"
@@ -354,9 +369,9 @@ def run_step1_smoke(
     the production kernel can initialize, compile, update online, and return
     finite metrics.
     """
-    if steps < 1:
-        raise ValueError(f"steps must be positive, got {steps}")
-    if final_window < 1 or final_window > steps:
+    steps = _require_int("steps", steps, minimum=1)
+    final_window = _require_int("final_window", final_window, minimum=1)
+    if final_window > steps:
         raise ValueError(
             f"final_window must be in [1, steps], got {final_window}"
         )

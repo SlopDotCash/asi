@@ -36,9 +36,8 @@ References:
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, cast
 
 import jax.numpy as jnp
@@ -53,6 +52,10 @@ from alberta_framework.core.options import (
     STOMPState,
     STOMPUpdateResult,
     SubtaskSpec,
+)
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
 )
 
 
@@ -169,34 +172,32 @@ class Step10STOMPConfig:
 _INT32_MAX = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return number
-
-
 def _require_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if number < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if number <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
@@ -204,6 +205,7 @@ def _require_int(
     value: object,
     *,
     minimum: int | None = None,
+    maximum: int | None = None,
     exclusive_maximum: int | None = None,
 ) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
@@ -215,17 +217,27 @@ def _require_int(
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
     if exclusive_maximum is not None and number >= exclusive_maximum:
         raise ValueError(f"{name} must be smaller than int32 max, got {value!r}")
     return number
 
 
 def _validate_stomp_facade_config(config: Step10STOMPConfig) -> None:
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
+    # Observation dimensions and action indices flow into int32 JAX sinks;
+    # bounding both keeps every feature_index (< observation_dim) in range.
+    observation_dim = _require_int(
+        "observation_dim",
+        config.observation_dim,
+        minimum=1,
+        maximum=_INT32_MAX,
+    )
     n_primitive_actions = _require_int(
         "n_primitive_actions",
         config.n_primitive_actions,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     option_planning_backups_per_step = _require_int(
         "option_planning_backups_per_step",
@@ -247,7 +259,7 @@ def _validate_stomp_facade_config(config: Step10STOMPConfig) -> None:
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
             )
         threshold = _require_positive_real("threshold", spec.threshold)
-        pseudo_reward_scale = _require_real(
+        pseudo_reward_scale = _require_positive_real(
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )

@@ -774,6 +774,13 @@ class MultiHeadMLPLearner:
             MultiHeadMLPUpdateResult with updated state, predictions,
             errors, and per-head metrics
 
+        Raises:
+            ValueError: If ``targets`` is not one value per head. A
+                broadcastable scalar or length-1 target would silently reuse
+                its single value for every head via JAX's clamped static
+                indexing, training and reporting a finite (non-NaN) error for
+                heads that were meant to be inactive.
+
         The learner and configured normalizer form one clock transaction. A
         validity, alignment, estimator-horizon, or uint64-capacity failure
         prevents the nested update call and preserves every persistent JAX
@@ -781,6 +788,11 @@ class MultiHeadMLPLearner:
         are outside that bit-exact contract.
         """
         n_heads = self._n_heads
+        targets = jnp.asarray(targets, dtype=jnp.float32)
+        if targets.shape != (n_heads,):
+            raise ValueError(
+                f"targets must have shape ({n_heads},), got {targets.shape}"
+            )
         counter_status = self._counter_status(state)
         inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(
             jnp.isfinite(targets) | jnp.isnan(targets)

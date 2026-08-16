@@ -425,7 +425,7 @@ class InteractionFeatureDiscoveryStream:
         feature_std_val = _require_positive_real("feature_std", feature_std)
         linear_scale_val = _require_nonnegative_real("linear_scale", linear_scale)
         noise_std_val = _require_nonnegative_real("noise_std", noise_std)
-        if isinstance(include_squares, (bool, np.bool_)):
+        if type(include_squares) in (bool, np.bool_):
             include_squares_val = bool(include_squares)
         else:
             raise TypeError(

@@ -57,6 +57,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -267,7 +268,7 @@ class LatentWorldModel:
         head_optimizer: AnyOptimizer | None = None,
     ):
         """Initialize the latent world model."""
-        self._validate_config(config)
+        config = self._validate_config(config)
         self._config = config
         self._observation_scale = (
             tuple(1.0 for _ in range(config.observation_dim))
@@ -637,6 +638,8 @@ class LatentWorldModel:
             & action_valid
             & jnp.all(jnp.isfinite(reward_arr))
             & jnp.all(jnp.isfinite(discount_arr))
+            & jnp.all(discount_arr >= 0.0)
+            & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_observation_arr))
         )
         safe_observation = jnp.where(
@@ -799,44 +802,65 @@ class LatentWorldModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: LatentWorldModelConfig) -> None:
+    def _validate_config(self, config: LatentWorldModelConfig) -> LatentWorldModelConfig:
+        """Fail closed on malformed configuration and return its canonical float32 form."""
         if config.observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
         if config.latent_dim <= 0:
             raise ValueError("latent_dim must be positive")
-        if not 0.0 <= config.gamma <= 1.0:
-            raise ValueError("gamma must be in [0, 1]")
-        if config.observation_scale is not None:
-            if len(config.observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            if any(scale <= 0.0 for scale in config.observation_scale):
-                raise ValueError("observation_scale values must be positive")
-        if config.reward_scale <= 0.0:
-            raise ValueError("reward_scale must be positive")
-        if config.encoder_scale <= 0.0:
-            raise ValueError("encoder_scale must be positive")
-        if config.encoder_bias_scale < 0.0:
-            raise ValueError("encoder_bias_scale must be non-negative")
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        if not 0.0 <= config.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= config.surprise_decay < 1.0:
-            raise ValueError("surprise_decay must be in [0, 1)")
-        if not 0.0 <= config.collapse_decay < 1.0:
-            raise ValueError("collapse_decay must be in [0, 1)")
-        if config.min_latent_std < 0.0:
-            raise ValueError("min_latent_std must be non-negative")
-        if config.max_latent_delta <= 0.0:
-            raise ValueError("max_latent_delta must be positive")
-        if config.encoder_step_size <= 0.0:
-            raise ValueError("encoder_step_size must be positive")
-        if config.max_encoder_update <= 0.0:
-            raise ValueError("max_encoder_update must be positive")
-        if not 0.0 <= config.encoder_collapse_gate_threshold <= 1.0:
-            raise ValueError("encoder_collapse_gate_threshold must be in [0, 1]")
+        observation_scale = config.observation_scale
+        if observation_scale is not None:
+            if len(observation_scale) != config.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar("observation_scale values", scale, positive=True)
+                for scale in observation_scale
+            )
+        return dataclasses.replace(
+            config,
+            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
+            observation_scale=observation_scale,
+            reward_scale=validated_float32_scalar(
+                "reward_scale", config.reward_scale, positive=True
+            ),
+            encoder_scale=validated_float32_scalar(
+                "encoder_scale", config.encoder_scale, positive=True
+            ),
+            encoder_bias_scale=validated_float32_scalar(
+                "encoder_bias_scale", config.encoder_bias_scale, lower=0.0
+            ),
+            min_latent_std=validated_float32_scalar(
+                "min_latent_std", config.min_latent_std, lower=0.0
+            ),
+            max_latent_delta=validated_float32_scalar(
+                "max_latent_delta", config.max_latent_delta, positive=True
+            ),
+            encoder_step_size=validated_float32_scalar(
+                "encoder_step_size", config.encoder_step_size, positive=True
+            ),
+            max_encoder_update=validated_float32_scalar(
+                "max_encoder_update", config.max_encoder_update, positive=True
+            ),
+            encoder_collapse_gate_threshold=validated_float32_scalar(
+                "encoder_collapse_gate_threshold",
+                config.encoder_collapse_gate_threshold,
+                lower=0.0,
+                upper=1.0,
+            ),
+            utility_decay=validated_float32_scalar(
+                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            surprise_decay=validated_float32_scalar(
+                "surprise_decay", config.surprise_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            collapse_decay=validated_float32_scalar(
+                "collapse_decay", config.collapse_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+        )
 
 
 def run_latent_world_model_learning_loop(
@@ -850,9 +874,10 @@ def run_latent_world_model_learning_loop(
 ) -> LatentWorldModelLearningResult:
     """Run online latent world-model learning over transition arrays."""
     if discounts is None:
-        discounts = jnp.full_like(
-            rewards,
+        discounts = jnp.full(
+            jnp.shape(rewards),
             jnp.asarray(model.config.gamma, dtype=jnp.float32),
+            dtype=jnp.float32,
         )
 
     def _scan_fn(

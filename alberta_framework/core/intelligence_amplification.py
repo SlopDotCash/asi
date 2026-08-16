@@ -37,7 +37,9 @@ References:
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping
+from numbers import Real
 from typing import Any, cast
 
 import chex
@@ -46,6 +48,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core.normalizers import (
     _checked_lifetime_words_increment,
     _lifetime_counter_valid,
@@ -84,6 +87,33 @@ RECOMMENDATION_PROTOCOL_LIFETIME_COUNTER_DELTA_NBYTES = 24
 
 _INT32_MAX = 2**31 - 1
 
+
+def _positive_float32_scalar(name: str, value: object) -> float:
+    """Validate and canonicalize a positive scalar in its execution dtype."""
+    message = f"{name} must be a finite positive float32 scalar"
+    preserve_builtin_float = type(value) is float
+    preserve_builtin_int = type(value) is int
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(message)
+    try:
+        if value <= 0:
+            raise ValueError
+        narrowed = round_real_to_float32(value)
+    except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
+        raise ValueError(message) from error
+    if not math.isfinite(narrowed) or narrowed <= 0.0:
+        raise ValueError(message)
+
+    # A valid built-in float already has an exact binary64 payload, so keeping
+    # it preserves existing serialized configs without changing its float32
+    # sink. Other Real implementations are stored as that exact sink. A small
+    # built-in integer is likewise safe only when it is exactly representable.
+    if preserve_builtin_float:
+        return cast(float, value)
+    if preserve_builtin_int and value == narrowed:
+        return float(value)
+    return narrowed
+
 # ---------------------------------------------------------------------------
 # Exo-cerebellum
 # ---------------------------------------------------------------------------
@@ -111,8 +141,8 @@ class ExoCerebellumConfig:
             raise ValueError("n_demons must be positive")
         if self.obs_dim <= 0:
             raise ValueError("obs_dim must be positive")
-        if self.step_size <= 0.0:
-            raise ValueError("step_size must be positive")
+        step_size = _positive_float32_scalar("step_size", self.step_size)
+        object.__setattr__(self, "step_size", step_size)
 
     def to_config(self) -> dict[str, Any]:
         return {"type": "ExoCerebellumConfig", **dataclasses.asdict(self)}

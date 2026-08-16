@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
+
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
+import pytest
 
 from alberta_framework import ContinuousActorCriticAgent as TopLevelContinuousActorCriticAgent
 from alberta_framework.core import (
@@ -200,6 +204,129 @@ def test_continuous_actor_critic_log_sigma_clipping() -> None:
     )
     assert float(result.state.log_sigma[0]) <= 1.0
     assert float(result.state.log_sigma[0]) >= -2.0
+
+
+@pytest.mark.parametrize(
+    ("low", "high", "message"),
+    [
+        (1.0, -1.0, "action_low must be <= action_high"),
+        (float("nan"), 1.0, "action_low must be finite"),
+        (-1.0, float("inf"), "action_high must be finite"),
+        (1e100, None, "action_low must remain finite once narrowed to float32"),
+        (None, -1e100, "action_high must remain finite once narrowed to float32"),
+        (-3.5e38, 3.5e38, "action_low must remain finite once narrowed to float32"),
+        (0.5, 0.5, None),
+        (-float(np.finfo(np.float32).max), float(np.finfo(np.float32).max), None),
+    ],
+)
+def test_continuous_actor_critic_rejects_inverted_or_nonfinite_action_bounds(
+    low: float | None, high: float | None, message: str | None
+) -> None:
+    """low > high makes jnp.clip return high for every input: a constant-action policy."""
+    config = ContinuousActorCriticConfig(action_dim=2, action_low=low, action_high=high)
+    if message is None:
+        agent = ContinuousActorCriticAgent(config)
+        state = agent.init(feature_dim=1, key=jr.key(2))
+        _state, action, _mean, _sigma = agent.start(state, jnp.array([1.0], dtype=jnp.float32))
+        assert bool(jnp.all(jnp.isfinite(action)))
+        return
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=message):
+            ContinuousActorCriticAgent(config)
+
+
+class _FloatSpoof:
+    """Not a Real: reports float through __class__ and never compares as out of range."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (0, 1)
+
+    def __float__(self) -> float:
+        return 0.0
+
+    def __lt__(self, other: object) -> bool:
+        return False
+
+    def __le__(self, other: object) -> bool:
+        return False
+
+    def __gt__(self, other: object) -> bool:
+        return False
+
+    def __ge__(self, other: object) -> bool:
+        return False
+
+
+@pytest.mark.parametrize("field", ["action_low", "action_high"])
+def test_continuous_actor_critic_rejects_bounds_that_only_spoof_float(field: str) -> None:
+    config = ContinuousActorCriticConfig(action_dim=1, **{field: _FloatSpoof()})  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match=f"{field} must be a finite real number"):
+        ContinuousActorCriticAgent(config)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("action_low", (2**25 - 1) * 2**103 - 1),
+        ("action_high", -((2**25 - 1) * 2**103 - 1)),
+        ("action_low", 2**64 + 2**40 + 1),
+    ],
+)
+def test_continuous_actor_critic_stores_exact_float32_for_integer_bounds(
+    field: str, value: int
+) -> None:
+    """A built-in int must not be stored as float(value): that payload double-rounds in JAX."""
+    from alberta_framework._float32 import round_real_to_float32
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        agent = ContinuousActorCriticAgent(
+            ContinuousActorCriticConfig(action_dim=1, **{field: value})  # type: ignore[arg-type]
+        )
+        stored = getattr(agent.config, field)
+        assert type(stored) is float
+        assert stored == round_real_to_float32(value)
+        assert float(np.float32(stored)) == stored
+        state = agent.init(feature_dim=1, key=jr.key(3))
+        _state, action, _mean, _sigma = agent.start(state, jnp.array([1.0], dtype=jnp.float32))
+        assert bool(jnp.all(jnp.isfinite(action)))
+
+
+def test_continuous_actor_critic_canonicalizes_real_bounds_to_float() -> None:
+    from fractions import Fraction
+
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(
+            action_dim=1, action_low=Fraction(-1, 4), action_high=np.float64(0.25)
+        )
+    )
+    assert type(agent.config.action_low) is float and agent.config.action_low == -0.25
+    assert type(agent.config.action_high) is float and agent.config.action_high == 0.25
+    state = agent.init(feature_dim=1, key=jr.key(1))
+    _state, action, _mean, _sigma = agent.start(state, jnp.array([1.0], dtype=jnp.float32))
+    assert float(action[0]) <= 0.25 and float(action[0]) >= -0.25
+
+
+def test_continuous_actor_critic_normalizes_conversion_hook_failures() -> None:
+    from fractions import Fraction
+
+    class BrokenFraction(Fraction):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("conversion hook failed")
+
+    with pytest.raises(ValueError, match="action_low must be finite"):
+        ContinuousActorCriticAgent(
+            ContinuousActorCriticConfig(
+                action_dim=1,
+                action_low=BrokenFraction(-1, 1),
+                action_high=1.0,
+            )
+        )
 
 
 def test_continuous_actor_critic_action_clipping() -> None:

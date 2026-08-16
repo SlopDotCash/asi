@@ -30,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
-from typing import Any
+from typing import Any, cast
 
 import jax.numpy as jnp
 import jax.random as jr
@@ -219,9 +219,10 @@ def _require_int(
     minimum: int | None = None,
     exclusive_maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -260,7 +261,7 @@ def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
             )
         threshold = _require_positive_real("threshold", spec.threshold)
-        pseudo_reward_scale = _require_real(
+        pseudo_reward_scale = _require_positive_real(
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )
@@ -463,8 +464,7 @@ def run_step11_smoke(
     Returns:
         :class:`Step11SmokeResult` with shape/fineness summary.
     """
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1)
 
     cfg = config
     if cfg is None:

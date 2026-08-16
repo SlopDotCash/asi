@@ -91,6 +91,114 @@ class TestEMANormalizer:
         # (not exact due to decay and numerical issues)
         chex.assert_trees_all_close(state.mean, sample_observation, atol=0.5)
 
+    @pytest.mark.parametrize("decay", [0.9, 1.0])
+    def test_warmup_uses_initial_moment_pseudo_sample(self, decay: float) -> None:
+        """Warmup treats the initialized moments as one explicit pseudo-sample."""
+        normalizer = EMANormalizer(decay=decay)
+        state = normalizer.init(1)
+
+        _, state = normalizer.normalize(
+            state,
+            jnp.asarray([5.0], dtype=jnp.float32),
+        )
+        chex.assert_trees_all_equal(state.mean, jnp.asarray([2.5], dtype=jnp.float32))
+        chex.assert_trees_all_equal(state.var, jnp.asarray([6.75], dtype=jnp.float32))
+
+        _, state = normalizer.normalize(
+            state,
+            jnp.asarray([7.0], dtype=jnp.float32),
+        )
+        chex.assert_trees_all_equal(state.mean, jnp.asarray([4.0], dtype=jnp.float32))
+        chex.assert_trees_all_close(
+            state.var,
+            jnp.asarray([9.0], dtype=jnp.float32),
+            atol=1e-6,
+            rtol=0.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("decay", "expected_mean"),
+        [(0.0, 5.0), (0.1, 4.5), (0.49, 2.55)],
+    )
+    def test_warmup_respects_decay_below_one_half(
+        self,
+        decay: float,
+        expected_mean: float,
+    ) -> None:
+        """The first effective decay is the smaller of the target and one half."""
+        normalizer = EMANormalizer(decay=decay)
+        state = normalizer.init(1)
+
+        _, state = normalizer.normalize(
+            state,
+            jnp.asarray([5.0], dtype=jnp.float32),
+        )
+
+        chex.assert_trees_all_close(
+            state.mean,
+            jnp.asarray([expected_mean], dtype=jnp.float32),
+            atol=1e-6,
+            rtol=0.0,
+        )
+
+    @pytest.mark.parametrize(
+        ("decay", "expected"),
+        [
+            (0.9, "ema-zero-mean-unit-variance-prior-bounded-recency"),
+            (
+                1.0,
+                "ema-zero-mean-unit-variance-prior-"
+                "cumulative-float32-fail-stop-at-2p24",
+            ),
+        ],
+    )
+    def test_config_names_prior_regularized_semantics(
+        self,
+        decay: float,
+        expected: str,
+    ) -> None:
+        """Serialized semantics distinguish EMA's prior from other estimators."""
+        assert EMANormalizer(decay=decay).to_config()["estimator_semantics"] == expected
+
+    @pytest.mark.parametrize(
+        ("decay", "legacy"),
+        [
+            (0.9, "bounded-recency"),
+            (1.0, "cumulative-float32-fail-stop-at-2p24"),
+        ],
+    )
+    def test_legacy_generic_semantics_load_and_canonicalize(
+        self,
+        decay: float,
+        legacy: str,
+    ) -> None:
+        """Existing receipts still load, then serialize the explicit contract."""
+        config = EMANormalizer(decay=decay).to_config()
+        config["estimator_semantics"] = legacy
+
+        restored = normalizer_from_config(config)
+
+        assert isinstance(restored, EMANormalizer)
+        assert restored.to_config()["estimator_semantics"].startswith(
+            "ema-zero-mean-unit-variance-prior-"
+        )
+
+    def test_generic_semantics_alias_must_match_decay_family(self) -> None:
+        """A legacy alias cannot disguise a bounded/cumulative mismatch."""
+        config = EMANormalizer(decay=1.0).to_config()
+        config["estimator_semantics"] = "bounded-recency"
+        with pytest.raises(ValueError, match="estimator_semantics"):
+            normalizer_from_config(config)
+
+    @pytest.mark.parametrize("invalid", [[], {}])
+    def test_estimator_semantics_requires_a_string(self, invalid: object) -> None:
+        """Malformed JSON values fail with the loader's stable config error."""
+        config = EMANormalizer(decay=0.9).to_config()
+        config["estimator_semantics"] = invalid
+
+        with pytest.raises(ValueError, match="estimator_semantics"):
+            normalizer_from_config(config)
+
     def test_zero_decay_recovers_from_nonfinite_unused_moments(self) -> None:
         """A zero-decay update does not consume either previous moment."""
         normalizer = EMANormalizer(decay=0.0)

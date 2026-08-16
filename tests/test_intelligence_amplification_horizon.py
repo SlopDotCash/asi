@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
 from typing import Any, cast
 
 import chex
@@ -527,3 +528,49 @@ def test_malformed_shapes_and_dtypes_fail_before_mutation() -> None:
         np.asarray(source.step_words),
         np.zeros((2,), dtype=np.uint32),
     )
+
+
+@pytest.mark.parametrize(
+    "step_size",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        1.0e100,
+        1.0e-100,
+        True,
+        np.bool_(True),
+        np.asarray(0.05),
+    ],
+)
+def test_cerebellum_config_rejects_values_outside_its_float32_sink(
+    step_size: object,
+) -> None:
+    with pytest.raises(ValueError, match="step_size"):
+        ExoCerebellumConfig(step_size=step_size)
+
+
+def test_cerebellum_config_rounds_exact_reals_once_and_updates_with_that_sink() -> None:
+    midpoint_above = Fraction(1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    expected = float(np.nextafter(np.float32(1.0), np.float32(np.inf)))
+
+    config = ExoCerebellumConfig(n_demons=1, obs_dim=1, step_size=midpoint_above)
+    assert type(config.step_size) is float
+    assert config.step_size == expected
+    assert config.to_config()["step_size"] == expected
+
+    agent = ExoCerebellumAgent(config)
+    result = agent.update_result(
+        agent.init(),
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray([1.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert float(result.state.weights[0, 0]) == expected
+
+
+def test_cerebellum_config_preserves_valid_builtin_float_serialization() -> None:
+    config = ExoCerebellumConfig(step_size=0.05)
+    assert type(config.step_size) is float
+    assert config.step_size == 0.05
+    assert config.to_config()["step_size"] == 0.05

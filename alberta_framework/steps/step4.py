@@ -21,9 +21,8 @@ References:
 
 from __future__ import annotations
 
-import math
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any, Literal, cast
 
 import chex
@@ -47,9 +46,15 @@ from alberta_framework.core.sarsa import (
     SARSAUpdateResult,
 )
 from alberta_framework.core.types import GVFSpec, TraceMode
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
+)
 
 Step4OptimizerName = Literal["lms", "idbd", "autostep"]
 Step4BounderName = Literal["none", "obgd"]
+_INT32_MAX = 2**31 - 1
+_FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 
 
 @dataclass(frozen=True)
@@ -134,20 +139,52 @@ class Step4OneStepResult:
     reward: Array
 
 
-def _require_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite, got {value!r}")
-    return number
-
-
 def _require_unit_interval(name: str, value: object) -> float:
-    number = _require_real(name, value)
-    if not 0.0 <= number <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return number
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_gvf_probability(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    if (
+        (numerator != 0 and numerator << 126 < denominator)
+        or (real != 0.0 and real < _FLOAT32_MIN_NORMAL)
+        or (narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL)
+    ):
+        raise ValueError(f"{name} must be zero or a normal float32 value in [0, 1]")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_int(name: str, value: object) -> int:
@@ -156,6 +193,8 @@ def _require_positive_int(name: str, value: object) -> int:
     number = int(value)
     if number < 1:
         raise ValueError(f"{name} must be positive, got {value!r}")
+    if number > _INT32_MAX:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
@@ -165,6 +204,8 @@ def _require_nonneg_int(name: str, value: object) -> int:
     number = int(value)
     if number < 0:
         raise ValueError(f"{name} must be a non-negative integer, got {value!r}")
+    if number > _INT32_MAX:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
@@ -173,21 +214,19 @@ def _validate_sarsa_config(config: Step4SARSAConfig) -> None:
     hidden_sizes = tuple(
         _require_positive_int("hidden_sizes", size) for size in config.hidden_sizes
     )
-    gamma = _require_unit_interval("gamma", config.gamma)
+    gamma = _require_gvf_probability("gamma", config.gamma)
     epsilon_start = _require_unit_interval("epsilon_start", config.epsilon_start)
     epsilon_end = _require_unit_interval("epsilon_end", config.epsilon_end)
     epsilon_decay_steps = _require_nonneg_int("epsilon_decay_steps", config.epsilon_decay_steps)
-    lamda = _require_unit_interval("lamda", config.lamda)
-    step_size = _require_real("step_size", config.step_size)
-    if step_size < 0.0:
-        raise ValueError(f"step_size must be non-negative, got {config.step_size!r}")
-    meta_step_size = _require_real("meta_step_size", config.meta_step_size)
-    if meta_step_size < 0.0:
-        raise ValueError(f"meta_step_size must be non-negative, got {config.meta_step_size!r}")
-    bounder_kappa = _require_real("bounder_kappa", config.bounder_kappa)
-    if bounder_kappa <= 0.0:
-        raise ValueError(f"bounder_kappa must be positive, got {config.bounder_kappa!r}")
+    lamda = _require_gvf_probability("lamda", config.lamda)
+    step_size = _require_nonnegative_real("step_size", config.step_size)
+    meta_step_size = _require_nonnegative_real("meta_step_size", config.meta_step_size)
+    bounder_kappa = _require_positive_real("bounder_kappa", config.bounder_kappa)
     sparsity = _require_unit_interval("sparsity", config.sparsity)
+    if type(config.use_layer_norm) is not bool:
+        raise ValueError(
+            f"use_layer_norm must be a boolean, got {config.use_layer_norm!r}"
+        )
     object.__setattr__(config, "n_actions", n_actions)
     object.__setattr__(config, "hidden_sizes", hidden_sizes)
     object.__setattr__(config, "gamma", gamma)

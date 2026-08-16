@@ -240,10 +240,14 @@ class LinearLearner:
         """
         new_normalizer_state = state.normalizer_state
         obs = observation
+        normalizer_update_applied = jnp.asarray(True, dtype=jnp.bool_)
         if self._normalizer is not None and state.normalizer_state is not None:
-            obs, new_normalizer_state = self._normalizer.normalize(
+            normalizer_result = self._normalizer.normalize_with_diagnostics(
                 state.normalizer_state, observation
             )
+            obs = normalizer_result.normalized
+            new_normalizer_state = normalizer_result.state
+            normalizer_update_applied = normalizer_result.update_applied
 
         prediction = self.predict(
             LearnerState(
@@ -300,6 +304,7 @@ class LinearLearner:
         update_applied = (
             floating_tree_is_finite(state)
             & inputs_valid
+            & normalizer_update_applied
             & opt_update.update_applied
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(prediction))
