@@ -3,7 +3,7 @@ name: IPMNIST preregistration
 run-name: ipmnist-${{ inputs.protocol }}-${{ inputs.launch_sha }}
 
 # This workflow is deliberately manual-only. It is launch infrastructure for
-# two permanently nonpromoting development protocols, not a CI benchmark lane.
+# three permanently nonpromoting development protocols, not a CI benchmark lane.
 "on":
   workflow_dispatch:
     inputs:
@@ -13,6 +13,7 @@ run-name: ipmnist-${{ inputs.protocol }}-${{ inputs.launch_sha }}
         type: choice
         options:
           - issue51
+          - issue184
           - issue188
       launch_sha:
         description: Full 40-character commit SHA of the reviewed launch tag
@@ -121,6 +122,7 @@ jobs:
           set -euo pipefail
           case "$PROTOCOL" in
             issue51) namespace="replication_r1" ;;
+            issue184) namespace="rls_preset_ablation_r1" ;;
             issue188) namespace="gate_ablation_r3" ;;
             *) echo "unsupported protocol" >&2; exit 1 ;;
           esac
@@ -188,6 +190,7 @@ jobs:
             --ref-name "$GITHUB_REF_NAME" \
             --run-id "$GITHUB_RUN_ID" \
             --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --root "$GITHUB_WORKSPACE" \
             --output "$metadata"
 
       - name: Synchronize the committed environment
@@ -379,6 +382,13 @@ jobs:
               seeds=(0 1 2)
               summary="summary.json"
               ;;
+            issue184)
+              namespace="rls_preset_ablation_r1"
+              control="rls_head_resid_l1_preset005"
+              candidate="rls_head_resid_l1_noreset"
+              seeds=(0 1 2)
+              summary="summary.json"
+              ;;
             issue188)
               namespace="gate_ablation_r3"
               control="rls_head_resid_l1_preset005"
@@ -451,6 +461,19 @@ jobs:
             echo "- Validation metadata: result-validation.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Seal a committed-ready completion record
+        shell: bash
+        env:
+          PROTOCOL: ${{ inputs.protocol }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python .github/scripts/ipmnist_prereg.py seal \
+            --protocol "$PROTOCOL" \
+            --root "$GITHUB_WORKSPACE" \
+            --launch-preflight "$RUNNER_TEMP/prereg-metadata/launch-preflight.json" \
+            --result-validation "$RUNNER_TEMP/prereg-metadata/result-validation.json" \
+            --runner-receipt "$RUNNER_TEMP/prereg-metadata/runner.json"
+
       - name: Upload 90-day result or partial recovery bundle
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -458,6 +481,7 @@ jobs:
           name: ipmnist-${{ inputs.protocol }}-${{ inputs.launch_sha }}-${{ github.run_id }}
           path: |
             outputs/ipmnist_screening/replication_r1
+            outputs/ipmnist_screening/rls_preset_ablation_r1
             outputs/ipmnist_screening/gate_ablation_r3
             ${{ runner.temp }}/prereg-metadata
           if-no-files-found: warn

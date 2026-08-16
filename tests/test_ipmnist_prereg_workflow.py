@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import runpy
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any, cast
 
@@ -10,9 +12,11 @@ import pytest
 
 _ROOT = Path(__file__).resolve().parents[1]
 _DRIVER = runpy.run_path(_ROOT / ".github" / "scripts" / "ipmnist_prereg.py")
+_LOCAL_DRIVER = runpy.run_path(_ROOT / ".github" / "scripts" / "ipmnist_local_prereg.py")
 _PROTOCOLS = cast(dict[str, Any], _DRIVER["PROTOCOLS"])
 _authorization_line = cast(Any, _DRIVER["authorization_line"])
 _registration_amendment_line = cast(Any, _DRIVER["registration_amendment_line"])
+_seal_completion_bundle = cast(Any, _DRIVER["seal_completion_bundle"])
 _classify_outcome = cast(Any, _DRIVER["classify_outcome"])
 _strict_json = cast(Any, _DRIVER["_strict_json"])
 _validate_runner_receipt = cast(Any, _DRIVER["_validate_runner_receipt"])
@@ -20,10 +24,13 @@ _validate_runtime = cast(Any, _DRIVER["_validate_runtime"])
 _validate_summary_reconstruction = cast(Any, _DRIVER["_validate_summary_reconstruction"])
 _validate_result_bundle = cast(Any, _DRIVER["validate_result_bundle"])
 _verify_launch_authorization = cast(Any, _DRIVER["verify_launch_authorization"])
+_verify_prerequisite_completion = cast(Any, _DRIVER["_verify_prerequisite_completion"])
 _workflow_runs = cast(Any, _DRIVER["_workflow_runs"])
 _write_json = cast(Any, _DRIVER["_write_json"])
 _DRIVER_GLOBALS = cast(dict[str, Any], _verify_launch_authorization.__globals__)
 _WORKFLOW_RUN_GLOBALS = cast(dict[str, Any], _workflow_runs.__globals__)
+_PREREQUISITE_GLOBALS = cast(dict[str, Any], _verify_prerequisite_completion.__globals__)
+_SEAL_GLOBALS = cast(dict[str, Any], _seal_completion_bundle.__globals__)
 
 
 def test_prereg_protocols_pin_exact_arms_and_seeds() -> None:
@@ -49,6 +56,47 @@ def test_issue184_protocol_pins_exact_arms_namespace_and_seeds() -> None:
     assert issue184.control == "rls_head_resid_l1_preset005"
     assert issue184.candidate == "rls_head_resid_l1_noreset"
     assert issue184.seeds == (0, 1, 2)
+    assert issue184.summary_filename == "summary.json"
+    assert issue184.requires_amendment is True
+    assert issue184.prerequisite == "issue51"
+
+
+def test_issue184_workflow_pins_every_shell_mapping() -> None:
+    workflow = (_ROOT / ".github" / "workflows" / "ipmnist-prereg.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "          - issue184\n" in workflow
+    assert 'issue184) namespace="rls_preset_ablation_r1" ;;' in workflow
+    assert 'candidate="rls_head_resid_l1_noreset"' in workflow
+    assert 'seeds=(0 1 2)' in workflow
+    assert "outputs/ipmnist_screening/rls_preset_ablation_r1" in workflow
+    assert ".github/scripts/ipmnist_prereg.py seal" in workflow
+
+
+def test_issue184_github_and_local_protocols_cannot_drift() -> None:
+    github = _PROTOCOLS["issue184"]
+    local = cast(dict[str, Any], _LOCAL_DRIVER["LOCAL_PROTOCOLS"])["issue184"]
+    assert (github.issue, github.namespace, github.control, github.candidate, github.seeds) == (
+        local.issue,
+        local.namespace,
+        local.control,
+        local.candidate,
+        local.stages[0].seeds,
+    )
+    classify_local = cast(Any, _LOCAL_DRIVER["classify_issue184"])
+    cases = (
+        (0.003, (0.002, 0.003, 0.004)),
+        (-0.003, (-0.002, -0.003, -0.004)),
+        (0.001, (0.0015, -0.0015, 0.0)),
+        (0.002, (0.002, 0.002, 0.002)),
+    )
+    for mean, differences in cases:
+        assert _classify_outcome(
+            "issue184",
+            mean_diff=mean,
+            stderr_diff=0.0,
+            per_seed_diff=differences,
+        ) == classify_local(mean, differences)
 
 
 def test_authorization_line_binds_every_launch_identity() -> None:
@@ -111,6 +159,26 @@ def test_issue188_amendment_line_binds_the_complete_registered_change() -> None:
         "ref=ipmnist-prereg-example "
         "runner=github-hosted-macos-14-arm64-apple-m1 seeds=3,4,5,6,7,8,9,10,11,12 "
         "n=10 compute=uncompensated"
+    )
+
+
+def test_issue184_amendment_line_binds_the_complete_registered_change() -> None:
+    line = _registration_amendment_line(
+        _PROTOCOLS["issue184"],
+        source="1" * 40,
+        tree="2" * 40,
+        uv_lock_sha256="3" * 64,
+        workflow_blob_sha1="4" * 40,
+        driver_blob_sha1="5" * 40,
+        ref_name="ipmnist-prereg-example",
+    )
+    assert line == (
+        "ASI_PREREG_AMENDMENT_V1 issue=184 protocol=issue184 "
+        f"source={'1' * 40} tree={'2' * 40} uv_lock_sha256={'3' * 64} "
+        f"workflow_blob_sha1={'4' * 40} driver_blob_sha1={'5' * 40} "
+        "ref=ipmnist-prereg-example "
+        "runner=github-hosted-macos-14-arm64-apple-m1 seeds=0,1,2 n=3 "
+        "compute=uncompensated"
     )
 
 
@@ -179,6 +247,16 @@ def test_issue184_outcomes_are_frozen(
         )
         == expected
     )
+
+
+def test_issue184_outcome_rejects_incomplete_seed_coverage() -> None:
+    with pytest.raises(ValueError, match="exactly 3"):
+        _classify_outcome(
+            "issue184",
+            mean_diff=0.003,
+            stderr_diff=0.0,
+            per_seed_diff=(0.003, 0.003),
+        )
 
 
 def test_outcome_validation_rejects_nonfinite_values() -> None:
@@ -540,6 +618,86 @@ def test_issue188_amendment_must_be_valid_utc_and_precede_authorization(
         )
 
 
+def test_issue184_requires_prerequisite_closure_before_amendment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    protocol = _PROTOCOLS["issue184"]
+    binding = {
+        "source": "1" * 40,
+        "tree": "2" * 40,
+        "uv_lock_sha256": "3" * 64,
+        "workflow_blob_sha1": "4" * 40,
+        "driver_blob_sha1": "5" * 40,
+        "ref_name": "ipmnist-prereg-example",
+    }
+    amendment = _registration_amendment_line(protocol, **binding)
+    authorization = _authorization_line(protocol, **binding)
+    comments = [
+        {
+            "id": 455,
+            "body": amendment,
+            "user": {"id": 18_633_264, "login": "lalalune"},
+            "author_association": "MEMBER",
+            "created_at": "2026-08-16T09:00:00Z",
+            "updated_at": "2026-08-16T09:00:00Z",
+            "html_url": "https://github.com/elizaOS/asi/issues/184#issuecomment-455",
+        },
+        {
+            "id": 456,
+            "body": authorization,
+            "user": {"id": 18_633_264, "login": "lalalune"},
+            "author_association": "MEMBER",
+            "created_at": "2026-08-16T09:30:00Z",
+            "updated_at": "2026-08-16T09:30:00Z",
+            "html_url": "https://github.com/elizaOS/asi/issues/184#issuecomment-456",
+        },
+    ]
+    current = {
+        "id": 123,
+        "event": "workflow_dispatch",
+        "head_sha": "1" * 40,
+        "display_title": f"ipmnist-issue184-{'1' * 40}",
+        "run_attempt": 1,
+        "path": ".github/workflows/ipmnist-prereg.yml",
+        "created_at": "2026-08-16T10:00:00Z",
+        "html_url": "https://github.com/elizaOS/asi/actions/runs/123",
+    }
+    monkeypatch.setitem(_DRIVER_GLOBALS, "_github_json", lambda *_args, **_kwargs: current)
+    monkeypatch.setitem(_DRIVER_GLOBALS, "_workflow_runs", lambda *_args, **_kwargs: [current])
+    monkeypatch.setitem(_DRIVER_GLOBALS, "_github_pages", lambda *_args, **_kwargs: comments)
+    prerequisite = {
+        "issue_closed_at": "2026-08-16T08:59:59Z",
+        "protocol": "issue51",
+    }
+    monkeypatch.setitem(
+        _DRIVER_GLOBALS,
+        "_verify_prerequisite_completion",
+        lambda *_args, **_kwargs: prerequisite,
+    )
+    payload = _verify_launch_authorization(
+        protocol_key="issue184",
+        repository="elizaOS/asi",
+        run_id=123,
+        run_attempt=1,
+        token="token",
+        root=Path("."),
+        **binding,
+    )
+    assert payload["prerequisite_completion"] == prerequisite
+
+    prerequisite["issue_closed_at"] = "2026-08-16T09:00:00Z"
+    with pytest.raises(RuntimeError, match="closed before"):
+        _verify_launch_authorization(
+            protocol_key="issue184",
+            repository="elizaOS/asi",
+            run_id=123,
+            run_attempt=1,
+            token="token",
+            root=Path("."),
+            **binding,
+        )
+
+
 def _searched_workflow_run(run_id: int) -> dict[str, Any]:
     return {
         "id": run_id,
@@ -728,6 +886,141 @@ def test_metadata_writer_refuses_overwrite(tmp_path: Path) -> None:
     assert json.loads(path.read_text(encoding="utf-8")) == {"value": 1}
 
 
+def test_completion_seal_copies_runner_and_binds_fresh_reconstruction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    protocol = _PROTOCOLS["issue51"]
+    namespace = tmp_path / "outputs" / "ipmnist_screening" / protocol.namespace
+    namespace.mkdir(parents=True)
+    launch = {
+        "schema": "asi.ipmnist_prereg.launch_preflight.v2",
+        "protocol": asdict(protocol),
+        "source": "1" * 40,
+        "tree": "2" * 40,
+        "uv_lock_sha256": "3" * 64,
+        "run_id": 123,
+        "run_url": "https://github.com/elizaOS/asi/actions/runs/123",
+    }
+    result = {
+        "schema": "asi.ipmnist_prereg.result_validation.v1",
+        "protocol": asdict(protocol),
+        "source": "1" * 40,
+        "tree": "2" * 40,
+        "uv_lock_sha256": "3" * 64,
+        "outcome": "replicated",
+        "summary_sha256": "4" * 64,
+    }
+    launch_path = tmp_path / "launch.json"
+    result_path = tmp_path / "result.json"
+    runner_path = tmp_path / "runner.json"
+    _write_json(launch_path, launch)
+    _write_json(result_path, result)
+    _write_json(runner_path, {"runner": "exact"})
+    monkeypatch.setitem(
+        _SEAL_GLOBALS,
+        "validate_result_bundle",
+        lambda **_kwargs: result,
+    )
+
+    completion_path = _seal_completion_bundle(
+        protocol_key="issue51",
+        root=tmp_path,
+        launch_preflight=launch_path,
+        result_validation=result_path,
+        runner_receipt=runner_path,
+    )
+
+    completion = _strict_json(completion_path)
+    committed_runner = namespace / "runner.v2.json"
+    assert completion["launch_preflight"] == json.loads(json.dumps(launch))
+    assert completion["result_validation"] == json.loads(json.dumps(result))
+    assert completion["runner_receipt"] == (
+        "outputs/ipmnist_screening/replication_r1/runner.v2.json"
+    )
+    assert completion["runner_receipt_sha256"] == hashlib.sha256(
+        committed_runner.read_bytes()
+    ).hexdigest()
+    with pytest.raises(FileExistsError):
+        _seal_completion_bundle(
+            protocol_key="issue51",
+            root=tmp_path,
+            launch_preflight=launch_path,
+            result_validation=result_path,
+            runner_receipt=runner_path,
+        )
+
+
+def test_issue184_prerequisite_requires_committed_result_live_success_and_closure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    issue51 = _PROTOCOLS["issue51"]
+    namespace = tmp_path / "outputs" / "ipmnist_screening" / issue51.namespace
+    namespace.mkdir(parents=True)
+    runner_path = namespace / "runner.v2.json"
+    _write_json(runner_path, {"runner": "exact"})
+    result = {
+        "schema": "asi.ipmnist_prereg.result_validation.v1",
+        "protocol": asdict(issue51),
+        "source": "1" * 40,
+        "tree": "2" * 40,
+        "uv_lock_sha256": "3" * 64,
+        "outcome": "replicated",
+        "summary_sha256": "4" * 64,
+    }
+    completion = {
+        "schema": "asi.ipmnist_prereg.completion.v1",
+        "launch_preflight": {
+            "protocol": asdict(issue51),
+            "source": "1" * 40,
+            "tree": "2" * 40,
+            "uv_lock_sha256": "3" * 64,
+            "run_id": 123,
+            "run_url": "https://github.com/elizaOS/asi/actions/runs/123",
+        },
+        "result_validation": result,
+        "runner_receipt": "outputs/ipmnist_screening/replication_r1/runner.v2.json",
+        "runner_receipt_sha256": hashlib.sha256(runner_path.read_bytes()).hexdigest(),
+    }
+    _write_json(namespace / "completion.v1.json", completion)
+    monkeypatch.setitem(
+        _PREREQUISITE_GLOBALS,
+        "validate_result_bundle",
+        lambda **_kwargs: result,
+    )
+
+    def fake_github_json(path: str, *, token: str) -> dict[str, Any]:
+        assert token == "token"
+        if path.endswith("/actions/runs/123"):
+            return {
+                "id": 123,
+                "event": "workflow_dispatch",
+                "head_sha": "1" * 40,
+                "path": ".github/workflows/ipmnist-prereg.yml",
+                "display_title": f"ipmnist-issue51-{'1' * 40}",
+                "run_attempt": 1,
+                "status": "completed",
+                "conclusion": "success",
+                "html_url": "https://github.com/elizaOS/asi/actions/runs/123",
+                "updated_at": "2026-08-16T08:59:00Z",
+            }
+        if path.endswith("/issues/51"):
+            return {"state": "closed", "closed_at": "2026-08-16T09:00:00Z"}
+        assert "/compare/" in path
+        return {"status": "ahead"}
+
+    monkeypatch.setitem(_PREREQUISITE_GLOBALS, "_github_json", fake_github_json)
+    receipt = _verify_prerequisite_completion(
+        _PROTOCOLS["issue184"],
+        repository="elizaOS/asi",
+        launch_source="5" * 40,
+        root=tmp_path,
+        token="token",
+    )
+    assert receipt["protocol"] == "issue51"
+    assert receipt["issue_closed_at"] == "2026-08-16T09:00:00Z"
+    assert receipt["outcome"] == "replicated"
+
+
 def _source_provenance() -> dict[str, object]:
     return {
         "schema": "alberta.ipmnist_screening.source_provenance.v1",
@@ -857,7 +1150,13 @@ def test_runtime_rejects_equal_but_wrong_type_jax_config(
         _validate_runtime(environment)
 
 
-def _write_issue51_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def _write_protocol_bundle(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    protocol_key: str,
+    candidate_accuracy: float,
+) -> Path:
     from alberta_framework.benchmarks.ipmnist_screening import (
         ScreeningRunResult,
         merge_shards,
@@ -866,7 +1165,8 @@ def _write_issue51_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig
 
-    namespace = root / "outputs" / "ipmnist_screening" / "replication_r1"
+    protocol = _PROTOCOLS[protocol_key]
+    namespace = root / "outputs" / "ipmnist_screening" / protocol.namespace
     shards_dir = namespace / "shards"
     shards_dir.mkdir(parents=True)
     config = IPMNISTConfig(
@@ -880,8 +1180,8 @@ def _write_issue51_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     relative_paths: list[Path] = []
     for seed in (0, 1, 2):
         for arm, accuracy in (
-            ("sigma0_shiftnorm_d099", 0.5),
-            ("rls_head_resid_l1_preset005", 0.505),
+            (protocol.control, 0.5),
+            (protocol.candidate, candidate_accuracy),
         ):
             spec = screening_spec(arm)
             result = ScreeningRunResult(
@@ -912,12 +1212,21 @@ def _write_issue51_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(root)
     summary = merge_shards(
         relative_paths,
-        control_name="sigma0_shiftnorm_d099",
+        control_name=protocol.control,
         slope_window=15,
     )
-    summary_path = namespace / "summary.json"
+    summary_path = namespace / protocol.summary_filename
     summary_path.write_text(json.dumps(summary, allow_nan=False), encoding="utf-8")
     return summary_path
+
+
+def _write_issue51_bundle(root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    return _write_protocol_bundle(
+        root,
+        monkeypatch,
+        protocol_key="issue51",
+        candidate_accuracy=0.505,
+    )
 
 
 def _write_runner_receipt(root: Path) -> Path:
@@ -1003,6 +1312,29 @@ def test_result_bundle_recomputes_summary_from_exact_shards(
     )
     assert result["outcome"] == "replicated"
     assert result["mean_diff"] == pytest.approx(0.005)
+
+
+def test_issue184_result_bundle_reconstructs_exact_six_shard_protocol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_protocol_bundle(
+        tmp_path,
+        monkeypatch,
+        protocol_key="issue184",
+        candidate_accuracy=0.503,
+    )
+    runner_receipt = _write_runner_receipt(tmp_path)
+    result = _validate_result_bundle(
+        protocol_key="issue184",
+        root=tmp_path,
+        runner_receipt=runner_receipt,
+        source="1" * 40,
+        tree="2" * 40,
+        uv_lock_sha256="4" * 64,
+    )
+    assert result["outcome"] == "no_reset_win"
+    assert result["mean_diff"] == pytest.approx(0.003)
+    assert result["protocol"]["seeds"] == (0, 1, 2)
 
 
 def test_result_bundle_rejects_consistently_resigned_jax_config_drift(

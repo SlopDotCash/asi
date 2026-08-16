@@ -63,6 +63,9 @@ class Protocol:
     control: str
     candidate: str
     seeds: tuple[int, ...]
+    summary_filename: str
+    requires_amendment: bool
+    prerequisite: str | None
 
 
 PROTOCOLS: Final = {
@@ -73,6 +76,20 @@ PROTOCOLS: Final = {
         control="sigma0_shiftnorm_d099",
         candidate="rls_head_resid_l1_preset005",
         seeds=(0, 1, 2),
+        summary_filename="summary.json",
+        requires_amendment=False,
+        prerequisite=None,
+    ),
+    "issue184": Protocol(
+        key="issue184",
+        issue=184,
+        namespace="rls_preset_ablation_r1",
+        control="rls_head_resid_l1_preset005",
+        candidate="rls_head_resid_l1_noreset",
+        seeds=(0, 1, 2),
+        summary_filename="summary.json",
+        requires_amendment=True,
+        prerequisite="issue51",
     ),
     "issue188": Protocol(
         key="issue188",
@@ -81,6 +98,9 @@ PROTOCOLS: Final = {
         control="rls_head_resid_l1_preset005",
         candidate="rls_head_resid_l1_preset005_nogate",
         seeds=tuple(range(3, 13)),
+        summary_filename="summary_resid_gate_ablation_r3.json",
+        requires_amendment=True,
+        prerequisite=None,
     ),
 }
 
@@ -164,8 +184,8 @@ def registration_amendment_line(
     driver_blob_sha1: str,
     ref_name: str,
 ) -> str:
-    if protocol.key != "issue188":
-        raise ValueError("a separate registration amendment is required only for issue188")
+    if not protocol.requires_amendment:
+        raise ValueError(f"protocol {protocol.key} does not require a registration amendment")
     binding = _launch_binding(
         protocol,
         source=source,
@@ -185,12 +205,27 @@ def classify_outcome(
         raise ValueError("paired summary statistics must be finite and stderr non-negative")
     if not per_seed_diff or not all(math.isfinite(value) for value in per_seed_diff):
         raise ValueError("paired per-seed differences must be non-empty and finite")
+    protocol = protocol_for(protocol_key)
+    if len(per_seed_diff) != len(protocol.seeds):
+        raise ValueError(
+            f"paired per-seed differences must contain exactly {len(protocol.seeds)} values"
+        )
     if protocol_key == "issue51":
         if any(value <= 0.0 for value in per_seed_diff):
             return "not_replicated"
         if 0.004882 <= mean_diff <= 0.005950:
             return "replicated"
         return "directionally_replicated"
+    if protocol_key == "issue184":
+        if mean_diff > 0.002 and all(value > 0.0 for value in per_seed_diff):
+            return "no_reset_win"
+        if mean_diff < -0.002 and all(value < 0.0 for value in per_seed_diff):
+            return "reset_load_bearing"
+        if abs(mean_diff) <= 0.001 and all(
+            abs(value) <= 0.0015 for value in per_seed_diff
+        ):
+            return "practical_equivalence"
+        return "inconclusive"
     if protocol_key == "issue188":
         margin = 0.0015
         if mean_diff - 2.0 * stderr_diff > -margin:
@@ -352,6 +387,7 @@ def verify_launch_authorization(
     run_id: int,
     run_attempt: int,
     token: str,
+    root: Path | None = None,
 ) -> dict[str, Any]:
     if repository != AUTHORIZED_REPOSITORY:
         raise RuntimeError(f"repository must be exactly {AUTHORIZED_REPOSITORY}")
@@ -360,6 +396,18 @@ def verify_launch_authorization(
     if type(run_attempt) is not int or run_attempt != 1:
         raise RuntimeError("rerun attempts are forbidden; dispatch a new reviewed source instead")
     protocol = protocol_for(protocol_key)
+    source = _lower_hex(source, 40, name="source")
+    prerequisite = (
+        _verify_prerequisite_completion(
+            protocol,
+            repository=repository,
+            launch_source=source,
+            root=root,
+            token=token,
+        )
+        if protocol.prerequisite is not None
+        else None
+    )
     expected_line = authorization_line(
         protocol,
         source=source,
@@ -379,7 +427,7 @@ def verify_launch_authorization(
             driver_blob_sha1=driver_blob_sha1,
             ref_name=ref_name,
         )
-        if protocol.key == "issue188"
+        if protocol.requires_amendment
         else None
     )
     current = _github_json(f"/repos/{repository}/actions/runs/{run_id}", token=token)
@@ -453,7 +501,7 @@ def verify_launch_authorization(
         )
         if len(amendment_matches) != 1:
             raise RuntimeError(
-                "expected exactly one standalone issue188 registration amendment comment; "
+                "expected exactly one standalone registration amendment comment; "
                 f"found {len(amendment_matches)}"
             )
         amendment = amendment_matches[0]
@@ -465,14 +513,21 @@ def verify_launch_authorization(
         )
         if amendment_comment_id == authorization_comment_id:
             raise RuntimeError(
-                "issue188 registration amendment and final authorization must be distinct records"
+                "registration amendment and final authorization must be distinct records"
             )
         amendment_created_at, amendment_time = _unchanged_comment_timestamp(
             amendment, label="registration amendment"
         )
         if amendment_time >= authorization_time:
             raise RuntimeError(
-                "issue188 registration amendment must be durable before final authorization"
+                "registration amendment must be durable before final authorization"
+            )
+        if (
+            prerequisite is not None
+            and _parse_utc(prerequisite["issue_closed_at"]) >= amendment_time
+        ):
+            raise RuntimeError(
+                "prerequisite issue must be closed before the registration amendment"
             )
     return {
         "schema": "asi.ipmnist_prereg.launch_preflight.v2",
@@ -503,6 +558,7 @@ def verify_launch_authorization(
             if expected_amendment is not None
             else None
         ),
+        "prerequisite_completion": prerequisite,
     }
 
 
@@ -789,9 +845,7 @@ def validate_result_bundle(
     runner, runner_raw = _strict_json_bytes(runner_receipt)
     _validate_runner_receipt(runner, environment=environment)
 
-    summary_path = namespace / (
-        "summary.json" if protocol.key == "issue51" else "summary_resid_gate_ablation_r3.json"
-    )
+    summary_path = namespace / protocol.summary_filename
     if summary_path.is_symlink() or not summary_path.is_file():
         raise ValueError("summary must be one regular non-symlink file")
     summary, summary_raw = _strict_json_bytes(summary_path)
@@ -912,6 +966,198 @@ def validate_result_bundle(
     }
 
 
+def seal_completion_bundle(
+    *,
+    protocol_key: str,
+    root: Path,
+    launch_preflight: Path,
+    result_validation: Path,
+    runner_receipt: Path,
+) -> Path:
+    """Publish a self-contained, append-only completion record after validation."""
+
+    protocol = protocol_for(protocol_key)
+    launch = _strict_json(launch_preflight)
+    result = _strict_json(result_validation)
+    runner, runner_raw = _strict_json_bytes(runner_receipt)
+    if launch.get("schema") != "asi.ipmnist_prereg.launch_preflight.v2":
+        raise ValueError("launch preflight has the wrong schema")
+    if result.get("schema") != "asi.ipmnist_prereg.result_validation.v1":
+        raise ValueError("result validation has the wrong schema")
+    expected_protocol = asdict(protocol)
+    if (
+        _canonical_json(launch.get("protocol")) != _canonical_json(expected_protocol)
+        or _canonical_json(result.get("protocol")) != _canonical_json(expected_protocol)
+    ):
+        raise ValueError("completion inputs do not bind the selected protocol")
+    for name in ("source", "tree", "uv_lock_sha256"):
+        if launch.get(name) != result.get(name):
+            raise ValueError(f"completion inputs disagree on {name}")
+    recomputed = validate_result_bundle(
+        protocol_key=protocol_key,
+        root=root,
+        runner_receipt=runner_receipt,
+        source=cast(str, result["source"]),
+        tree=cast(str, result["tree"]),
+        uv_lock_sha256=cast(str, result["uv_lock_sha256"]),
+    )
+    if _canonical_json(result) != _canonical_json(recomputed):
+        raise ValueError("stored result validation does not match a fresh reconstruction")
+    resolved_root = root.resolve(strict=True)
+    namespace = resolved_root / "outputs" / "ipmnist_screening" / protocol.namespace
+    committed_runner = namespace / "runner.v2.json"
+    completion_path = namespace / "completion.v1.json"
+    if committed_runner.exists() or committed_runner.is_symlink():
+        raise FileExistsError(f"runner receipt already exists: {committed_runner}")
+    if completion_path.exists() or completion_path.is_symlink():
+        raise FileExistsError(f"completion record already exists: {completion_path}")
+    with committed_runner.open("xb") as stream:
+        stream.write(runner_raw)
+    completion = {
+        "schema": "asi.ipmnist_prereg.completion.v1",
+        "launch_preflight": launch,
+        "result_validation": result,
+        "runner_receipt": committed_runner.relative_to(resolved_root).as_posix(),
+        "runner_receipt_sha256": hashlib.sha256(runner_raw).hexdigest(),
+    }
+    _write_json(completion_path, completion)
+    return completion_path
+
+
+def _verify_prerequisite_completion(
+    protocol: Protocol,
+    *,
+    repository: str,
+    launch_source: str,
+    root: Path | None,
+    token: str,
+) -> dict[str, Any]:
+    """Verify a committed predecessor result before a dependent dispatch."""
+
+    if protocol.prerequisite is None:
+        raise RuntimeError("protocol has no prerequisite")
+    if root is None:
+        raise RuntimeError("repository root is required for prerequisite verification")
+    if root.is_symlink():
+        raise RuntimeError("repository root must not be a symlink")
+    prerequisite = protocol_for(protocol.prerequisite)
+    resolved_root = root.resolve(strict=True)
+    namespace = resolved_root / "outputs" / "ipmnist_screening" / prerequisite.namespace
+    completion_path = namespace / "completion.v1.json"
+    if completion_path.is_symlink() or not completion_path.is_file():
+        raise RuntimeError("prerequisite completion record is missing")
+    completion, completion_raw = _strict_json_bytes(completion_path)
+    _require_exact_keys(
+        completion,
+        {
+            "schema",
+            "launch_preflight",
+            "result_validation",
+            "runner_receipt",
+            "runner_receipt_sha256",
+        },
+        context="prerequisite completion",
+    )
+    launch = completion["launch_preflight"]
+    stored_result = completion["result_validation"]
+    runner_path_text = completion["runner_receipt"]
+    if (
+        completion["schema"] != "asi.ipmnist_prereg.completion.v1"
+        or not isinstance(launch, dict)
+        or not isinstance(stored_result, dict)
+        or not isinstance(runner_path_text, str)
+    ):
+        raise RuntimeError("prerequisite completion record is malformed")
+    expected_runner_path = (
+        Path("outputs") / "ipmnist_screening" / prerequisite.namespace / "runner.v2.json"
+    )
+    if runner_path_text != expected_runner_path.as_posix():
+        raise RuntimeError("prerequisite runner receipt path is not canonical")
+    runner_path = resolved_root / expected_runner_path
+    if runner_path.is_symlink() or not runner_path.is_file():
+        raise RuntimeError("prerequisite runner receipt is missing")
+    runner_raw = runner_path.read_bytes()
+    if completion["runner_receipt_sha256"] != hashlib.sha256(runner_raw).hexdigest():
+        raise RuntimeError("prerequisite runner receipt digest mismatch")
+    if _canonical_json(launch.get("protocol")) != _canonical_json(asdict(prerequisite)):
+        raise RuntimeError("prerequisite launch record binds the wrong protocol")
+    source = launch.get("source")
+    tree = launch.get("tree")
+    uv_lock_sha256 = launch.get("uv_lock_sha256")
+    if not all(isinstance(value, str) for value in (source, tree, uv_lock_sha256)):
+        raise RuntimeError("prerequisite launch source identity is malformed")
+    recomputed = validate_result_bundle(
+        protocol_key=prerequisite.key,
+        root=resolved_root,
+        runner_receipt=runner_path,
+        source=cast(str, source),
+        tree=cast(str, tree),
+        uv_lock_sha256=cast(str, uv_lock_sha256),
+    )
+    if _canonical_json(stored_result) != _canonical_json(recomputed):
+        raise RuntimeError("prerequisite result does not match a fresh reconstruction")
+    run_id = launch.get("run_id")
+    run_url = launch.get("run_url")
+    if type(run_id) is not int or run_id <= 0:
+        raise RuntimeError("prerequisite workflow run ID is malformed")
+    expected_run_url = f"https://github.com/{repository}/actions/runs/{run_id}"
+    if run_url != expected_run_url:
+        raise RuntimeError("prerequisite workflow run URL is not canonical")
+    run = _github_json(f"/repos/{repository}/actions/runs/{run_id}", token=token)
+    if not isinstance(run, dict) or {
+        "id": run.get("id"),
+        "event": run.get("event"),
+        "head_sha": run.get("head_sha"),
+        "path": run.get("path"),
+        "display_title": run.get("display_title"),
+        "run_attempt": run.get("run_attempt"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "html_url": run.get("html_url"),
+    } != {
+        "id": run_id,
+        "event": "workflow_dispatch",
+        "head_sha": source,
+        "path": WORKFLOW_PATH,
+        "display_title": f"ipmnist-{prerequisite.key}-{source}",
+        "run_attempt": 1,
+        "status": "completed",
+        "conclusion": "success",
+        "html_url": expected_run_url,
+    }:
+        raise RuntimeError("prerequisite workflow run is not a canonical successful run")
+    issue = _github_json(f"/repos/{repository}/issues/{prerequisite.issue}", token=token)
+    if not isinstance(issue, dict) or issue.get("state") != "closed":
+        raise RuntimeError("prerequisite issue is not closed")
+    issue_closed_at = issue.get("closed_at")
+    if not isinstance(issue_closed_at, str):
+        raise RuntimeError("prerequisite issue closure timestamp is missing")
+    _parse_utc(issue_closed_at)
+    run_updated_at = run.get("updated_at")
+    if not isinstance(run_updated_at, str) or _parse_utc(run_updated_at) >= _parse_utc(
+        issue_closed_at
+    ):
+        raise RuntimeError("prerequisite issue must close after the successful workflow run")
+    comparison = _github_json(
+        f"/repos/{repository}/compare/{source}...{launch_source}", token=token
+    )
+    if not isinstance(comparison, dict) or comparison.get("status") != "ahead":
+        raise RuntimeError("prerequisite source is not an ancestor of the launch source")
+    return {
+        "schema": "asi.ipmnist_prereg.prerequisite.v1",
+        "protocol": prerequisite.key,
+        "completion": completion_path.relative_to(resolved_root).as_posix(),
+        "completion_sha256": hashlib.sha256(completion_raw).hexdigest(),
+        "source": source,
+        "run_id": run_id,
+        "run_url": expected_run_url,
+        "issue": prerequisite.issue,
+        "issue_closed_at": issue_closed_at,
+        "outcome": recomputed["outcome"],
+        "summary_sha256": recomputed["summary_sha256"],
+    }
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as stream:
@@ -934,6 +1180,7 @@ def _preflight_command(args: argparse.Namespace) -> int:
         run_id=args.run_id,
         run_attempt=args.run_attempt,
         token=token,
+        root=args.root,
     )
     _write_json(args.output, payload)
     print(json.dumps(payload, allow_nan=False, sort_keys=True))
@@ -954,6 +1201,18 @@ def _validate_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _seal_command(args: argparse.Namespace) -> int:
+    path = seal_completion_bundle(
+        protocol_key=args.protocol,
+        root=args.root,
+        launch_preflight=args.launch_preflight,
+        result_validation=args.result_validation,
+        runner_receipt=args.runner_receipt,
+    )
+    print(path)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -968,6 +1227,7 @@ def build_parser() -> argparse.ArgumentParser:
     preflight.add_argument("--ref-name", required=True)
     preflight.add_argument("--run-id", type=int, required=True)
     preflight.add_argument("--run-attempt", type=int, required=True)
+    preflight.add_argument("--root", type=Path, required=True)
     preflight.add_argument("--output", type=Path, required=True)
     preflight.set_defaults(handler=_preflight_command)
 
@@ -980,6 +1240,13 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--uv-lock-sha256", required=True)
     validate.add_argument("--output", type=Path, required=True)
     validate.set_defaults(handler=_validate_command)
+    seal = subparsers.add_parser("seal")
+    seal.add_argument("--protocol", choices=sorted(PROTOCOLS), required=True)
+    seal.add_argument("--root", type=Path, required=True)
+    seal.add_argument("--launch-preflight", type=Path, required=True)
+    seal.add_argument("--result-validation", type=Path, required=True)
+    seal.add_argument("--runner-receipt", type=Path, required=True)
+    seal.set_defaults(handler=_seal_command)
     return parser
 
 
