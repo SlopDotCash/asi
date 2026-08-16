@@ -45,6 +45,7 @@ import numpy as np
 from jax import Array
 from numpy.typing import NDArray
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.streams.recurring_multiagent import (
     AVOID_CONTEXT,
     AVOID_CONTEXT_INDEX,
@@ -202,16 +203,39 @@ class ContinualMultiAgentConfig:
         object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
         object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
 
-        if not 0.0 < self.learning_rate <= 1.0:
-            raise ValueError("learning_rate must lie in (0, 1]")
-        if not 0.0 <= self.exploration_rate <= 1.0:
-            raise ValueError("exploration_rate must lie in [0, 1]")
-        if not 0.0 <= self.recovery_reward_threshold <= 1.0:
-            raise ValueError("recovery_reward_threshold must lie in [0, 1]")
-        if not 0.0 <= self.stability_reference_reward <= 1.0:
-            raise ValueError("stability_reference_reward must lie in [0, 1]")
-        if not 0.0 < self.confidence_level < 1.0:
-            raise ValueError("confidence_level must lie in (0, 1)")
+        object.__setattr__(
+            self,
+            "learning_rate",
+            validated_float32_scalar(
+                "learning_rate", self.learning_rate, positive=True, upper=1.0
+            ),
+        )
+        for name in (
+            "exploration_rate",
+            "recovery_reward_threshold",
+            "stability_reference_reward",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(
+                    name,
+                    getattr(self, name),
+                    lower=0.0,
+                    upper=1.0,
+                ),
+            )
+        object.__setattr__(
+            self,
+            "confidence_level",
+            validated_float32_scalar(
+                "confidence_level",
+                self.confidence_level,
+                positive=True,
+                upper=1.0,
+                upper_inclusive=False,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -260,6 +284,22 @@ class AcceptanceThresholds:
             "evidence_seed_start",
             evidence_seed_start,
         )
+        for name in (
+            "minimum_reward_uplift_over_frozen",
+            "minimum_partner_uplift",
+            "minimum_recurrent_a_probe_reward",
+            "maximum_mean_forgetting",
+            "maximum_interference_forgetting",
+            "minimum_recurrence_recovery_fraction",
+            "maximum_mean_recurrence_recovery_steps",
+            "maximum_mean_stability_gap",
+            "maximum_update_latency_ms",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name)),
+            )
 
 
 @dataclass(frozen=True)

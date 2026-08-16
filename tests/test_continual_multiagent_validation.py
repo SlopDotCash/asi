@@ -46,6 +46,24 @@ _THRESHOLD_INTEGER_VALUES = {
     "minimum_seed_count": 30,
     "evidence_seed_start": 30,
 }
+_CONFIG_FLOAT_VALUES = {
+    "learning_rate": 0.15,
+    "exploration_rate": 0.20,
+    "recovery_reward_threshold": 0.70,
+    "stability_reference_reward": 0.75,
+    "confidence_level": 0.95,
+}
+_THRESHOLD_FLOAT_FIELDS = (
+    "minimum_reward_uplift_over_frozen",
+    "minimum_partner_uplift",
+    "minimum_recurrent_a_probe_reward",
+    "maximum_mean_forgetting",
+    "maximum_interference_forgetting",
+    "minimum_recurrence_recovery_fraction",
+    "maximum_mean_recurrence_recovery_steps",
+    "maximum_mean_stability_gap",
+    "maximum_update_latency_ms",
+)
 
 
 class _HostileInt(int):
@@ -63,6 +81,14 @@ class _ClassSpoof:
     @property
     def __class__(self) -> type[int]:  # pragma: no cover - validator must ignore
         return int
+
+    def __repr__(self) -> str:  # pragma: no cover - must not run
+        raise AssertionError("untrusted repr hook executed")
+
+
+class _HostileFloat(float):
+    def as_integer_ratio(self) -> tuple[int, int]:  # pragma: no cover - normalized error
+        raise RuntimeError("hostile ratio hook")
 
     def __repr__(self) -> str:  # pragma: no cover - must not run
         raise AssertionError("untrusted repr hook executed")
@@ -125,6 +151,35 @@ def test_thresholds_reject_noncanonical_integer_scalars_without_hooks(
         AcceptanceThresholds(  # type: ignore[arg-type]
             **{field: _bad_integer_scalar(bad_kind)}
         )
+
+
+@pytest.mark.parametrize("field,value", _CONFIG_FLOAT_VALUES.items())
+def test_config_float32_sinks_canonicalize_numpy_scalars(field: str, value: float) -> None:
+    config = ContinualMultiAgentConfig(**{field: np.float64(value)})  # type: ignore[arg-type]
+    assert type(getattr(config, field)) is float
+    assert getattr(config, field) == float(np.float32(value))
+
+
+@pytest.mark.parametrize("field", tuple(_CONFIG_FLOAT_VALUES))
+@pytest.mark.parametrize("bad_kind", ("bool", "nonfinite", "hostile", "class_spoof"))
+def test_config_float32_sinks_fail_closed(field: str, bad_kind: str) -> None:
+    bad = {
+        "bool": True,
+        "nonfinite": float("inf"),
+        "hostile": _HostileFloat(0.5),
+        "class_spoof": _ClassSpoof(),
+    }[bad_kind]
+    with pytest.raises(ValueError, match=field):
+        ContinualMultiAgentConfig(**{field: bad})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", _THRESHOLD_FLOAT_FIELDS)
+def test_threshold_float32_sinks_are_finite_and_canonical(field: str) -> None:
+    thresholds = AcceptanceThresholds(**{field: np.float64(0.25)})  # type: ignore[arg-type]
+    assert type(getattr(thresholds, field)) is float
+    assert getattr(thresholds, field) == 0.25
+    with pytest.raises(ValueError, match=field):
+        AcceptanceThresholds(**{field: _HostileFloat(0.25)})  # type: ignore[arg-type]
 
 
 def test_phase_resource_boundary_is_exact_and_allocation_free() -> None:
