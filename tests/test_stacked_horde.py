@@ -399,6 +399,82 @@ class TestConfig:
         assert cfg.cumulant_indices == (0, 0, 2, 2)
         assert cfg.gammas == (0.0, 0.9, 0.0, 0.9)
 
+    @pytest.mark.parametrize("index", [-1, True, np.int64(0)])
+    def test_cumulant_indices_must_be_nonnegative_builtin_integers(
+        self, index: object
+    ) -> None:
+        with pytest.raises(ValueError, match="cumulant_indices"):
+            _simple_config(cumulant_indices=(0, index))
+
+
+class TestCumulantSourceValidation:
+    @staticmethod
+    def _indexed_horde() -> StackedLinearHorde:
+        return StackedLinearHorde(
+            StackedHordeConfig(
+                n_demons=2,
+                feature_dim=3,
+                gammas=(0.0, 0.0),
+                lamdas=(0.0, 0.0),
+                cumulant_indices=(0, 2),
+                step_size=0.5,
+            )
+        )
+
+    @pytest.mark.parametrize("compiled", [False, True], ids=("direct", "jit"))
+    def test_update_rejects_source_without_every_configured_index(
+        self, compiled: bool
+    ) -> None:
+        horde = self._indexed_horde()
+        state = horde.init()
+        update = jax.jit(horde.update) if compiled else horde.update
+
+        with pytest.raises(ValueError, match="configured cumulant index"):
+            update(
+                state,
+                jnp.array([1.0, 0.0, 0.0]),
+                jnp.zeros((3,)),
+                jnp.array([1.0, 99.0]),
+            )
+
+        chex.assert_trees_all_equal(state, horde.init())
+
+    def test_update_uses_the_requested_channel_when_source_is_wide_enough(self) -> None:
+        horde = self._indexed_horde()
+        state = horde.init()
+
+        result = horde.update(
+            state,
+            jnp.array([1.0, 0.0, 0.0]),
+            jnp.zeros((3,)),
+            jnp.array([1.0, 99.0, 4.0]),
+        )
+
+        np.testing.assert_allclose(np.asarray(result.td_errors), [1.0, 4.0])
+        np.testing.assert_allclose(
+            np.asarray(result.state.weights),
+            [[0.5, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        )
+
+    def test_update_rejects_non_vector_cumulant_source(self) -> None:
+        horde = self._indexed_horde()
+
+        with pytest.raises(ValueError, match="rank-one"):
+            horde.update(
+                horde.init(),
+                jnp.array([1.0, 0.0, 0.0]),
+                jnp.zeros((3,)),
+                jnp.array([[1.0, 99.0, 4.0]]),
+            )
+
+    def test_scan_rejects_source_without_every_configured_index(self) -> None:
+        horde = self._indexed_horde()
+        features = jnp.eye(3, dtype=jnp.float32)
+        sources = jnp.asarray([[1.0, 99.0]] * 3, dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="configured cumulant index"):
+            run_stacked_horde_scan(horde, horde.init(), features, sources)
+
 
 class TestExactSemantics:
     def test_hand_computed_two_step(self):

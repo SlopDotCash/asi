@@ -81,6 +81,31 @@ _NUMPY_STEP_SIZE_TYPES = tuple(
     )
 )
 _TRUSTED_STEP_SIZE_TYPES = (int, float, Fraction, *_NUMPY_STEP_SIZE_TYPES)
+_CUMULANT_SOURCE_RANK_ERROR = "cumulant_source must be a rank-one array"
+_CUMULANT_SOURCE_INDEX_ERROR = (
+    "cumulant_source does not contain every configured cumulant index"
+)
+
+
+def _require_cumulant_source_shape(
+    source: Array,
+    *,
+    maximum_index: int,
+    batched: bool = False,
+) -> Array:
+    """Return an array whose final axis covers every configured cumulant."""
+    concrete = jnp.asarray(source)
+    expected_rank = 2 if batched else 1
+    if concrete.ndim != expected_rank:
+        message = (
+            "cumulant_sources must be a rank-two array"
+            if batched
+            else _CUMULANT_SOURCE_RANK_ERROR
+        )
+        raise ValueError(message)
+    if concrete.shape[-1] <= maximum_index:
+        raise ValueError(_CUMULANT_SOURCE_INDEX_ERROR)
+    return concrete
 
 
 def _snapshot_exact_fraction(value: Fraction) -> Fraction:
@@ -172,6 +197,10 @@ class StackedHordeConfig:
             raise ValueError("every gamma must be in [0, 1]")
         if any(not 0.0 <= la <= 1.0 for la in self.lamdas):
             raise ValueError("every lamda must be in [0, 1]")
+        if any(type(index) is not int or index < 0 for index in self.cumulant_indices):
+            raise ValueError(
+                "every cumulant_indices entry must be a nonnegative builtin integer"
+            )
         object.__setattr__(
             self,
             "step_size",
@@ -279,6 +308,7 @@ class StackedLinearHorde:
         self._gammas = jnp.asarray(config.gammas, dtype=jnp.float32)
         self._lamdas = jnp.asarray(config.lamdas, dtype=jnp.float32)
         self._cumulant_idx = jnp.asarray(config.cumulant_indices, dtype=jnp.int32)
+        self._maximum_cumulant_index = max(config.cumulant_indices)
 
     @property
     def config(self) -> StackedHordeConfig:
@@ -336,6 +366,10 @@ class StackedLinearHorde:
             TD errors (TD errors are NaN for inactive demons).
         """
         cfg = self._config
+        cumulant_source = _require_cumulant_source_shape(
+            cumulant_source,
+            maximum_index=self._maximum_cumulant_index,
+        )
         cumulants = cumulant_source[self._cumulant_idx]  # (n_demons,)
         requested = ~jnp.isnan(cumulants)
         active = jnp.isfinite(cumulants)
@@ -464,6 +498,11 @@ def run_stacked_horde_scan(
         ``(final_state, td_errors)`` with td_errors of shape
         ``(num_steps - 1, n_demons)``.
     """
+    cumulant_sources = _require_cumulant_source_shape(
+        cumulant_sources,
+        maximum_index=max(horde.config.cumulant_indices),
+        batched=True,
+    )
     num_steps = features.shape[0]
     if rhos is None:
         rhos = jnp.ones((num_steps,), dtype=jnp.float32)
