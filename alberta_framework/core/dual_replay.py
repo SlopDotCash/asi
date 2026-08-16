@@ -36,10 +36,11 @@ import functools
 import hashlib
 import json
 import math
+import operator
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Real
-from typing import Any, Literal, cast
+from typing import Any, Literal, SupportsIndex, cast
 
 import chex
 import jax
@@ -63,6 +64,21 @@ LONG_TERM_STRATUM = 1
 
 _INT32_MAX = 2_147_483_647
 _UINT32_MAX = 4_294_967_295
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -131,6 +147,7 @@ class DualReplayConfig:
                 name,
                 _require_float32_real(name, getattr(self, name), strictly_positive=False),
             )
+        _validate_config(self)
 
     @property
     def long_term_capacity(self) -> int:
@@ -154,6 +171,7 @@ class DualReplayConfig:
     @classmethod
     def from_config(cls, payload: Mapping[str, Any]) -> DualReplayConfig:
         """Reconstruct and validate an exact configuration payload."""
+        values = _copy_mapping(payload, name="dual replay config")
         expected = {
             "schema",
             "type",
@@ -169,20 +187,20 @@ class DualReplayConfig:
                 )
             ),
         }
-        if set(payload) != expected:
+        if set(values) != expected:
             raise ValueError("dual replay config fields do not match the v1 schema")
-        if payload.get("schema") != DUAL_REPLAY_CONFIG_SCHEMA:
+        if type(values["schema"]) is not str or values["schema"] != DUAL_REPLAY_CONFIG_SCHEMA:
             raise ValueError("unexpected dual replay config schema")
-        if payload.get("type") != "DualReplayConfig":
+        if type(values["type"]) is not str or values["type"] != "DualReplayConfig":
             raise ValueError("unexpected dual replay config type")
-        if payload.get("mechanism_status") != MECHANISM_STATUS:
+        if (
+            type(values["mechanism_status"]) is not str
+            or values["mechanism_status"] != MECHANISM_STATUS
+        ):
             raise ValueError("dual replay config must remain mechanism-only")
-        values = dict(payload)
         for name in ("schema", "type", "mechanism_status"):
             values.pop(name)
-        config = cls(**values)
-        _validate_config(config)
-        return config
+        return cls(**values)
 
 
 @chex.dataclass(frozen=True)
@@ -476,12 +494,43 @@ def _require_float32_real(
     return cast(float, value) if narrowed == renarrowed else narrowed
 
 
-def _validate_positive_int(name: str, value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ValueError(f"{name} must be an integer")
-    if value < 1:
-        raise ValueError(f"{name} must be positive")
-    return value
+def _validate_positive_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int = 1,
+    maximum: int = _INT32_MAX,
+) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
+    """Copy one supported mapping while normalizing hostile hooks."""
+    if not issubclass(type(payload), Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    try:
+        return dict(cast(Mapping[str, Any], payload))
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
+
+
+def _allocation_sizes(config: DualReplayConfig) -> tuple[int, int]:
+    """Return exact slot and persistent bytes without allocating JAX arrays."""
+    slot_bytes = 4 * (2 * config.observation_dim + config.action_dim + 14) + 11
+    persistent_bytes = config.total_capacity * slot_bytes + 60
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("dual replay allocation exceeds uint32 byte accounting")
+    if (
+        config.max_persistent_bytes is not None
+        and persistent_bytes > config.max_persistent_bytes
+    ):
+        raise ValueError("dual replay allocation exceeds max_persistent_bytes")
+    return slot_bytes, persistent_bytes
 
 
 def _validate_config(config: DualReplayConfig) -> None:
@@ -493,25 +542,31 @@ def _validate_config(config: DualReplayConfig) -> None:
         "short_term_sample_size",
         "long_term_sample_size",
     ):
-        _validate_positive_int(name, getattr(config, name))
-    if config.total_capacity > _INT32_MAX:
-        raise ValueError("total_capacity exceeds int32 indexing")
+        canonical = _validate_positive_int(name, getattr(config, name))
+        object.__setattr__(config, name, canonical)
     if config.short_term_capacity >= config.total_capacity:
         raise ValueError("short_term_capacity must leave at least one long-term slot")
     if config.short_term_sample_size > config.short_term_capacity:
         raise ValueError("short_term_sample_size exceeds short-term capacity")
     if config.long_term_sample_size > config.long_term_capacity:
         raise ValueError("long_term_sample_size exceeds long-term capacity")
-    if config.long_term_policy not in {"reservoir", "calibrated"}:
+    if type(config.long_term_policy) is not str or config.long_term_policy not in {
+        "reservoir",
+        "calibrated",
+    }:
         raise ValueError("long_term_policy must be 'reservoir' or 'calibrated'")
-    if config.aleatoric_control not in {"veto", "downweight"}:
+    if type(config.aleatoric_control) is not str or config.aleatoric_control not in {
+        "veto",
+        "downweight",
+    }:
         raise ValueError("aleatoric_control must be 'veto' or 'downweight'")
-    if isinstance(config.max_representation_lag, bool) or not isinstance(
-        config.max_representation_lag, int
-    ):
-        raise ValueError("max_representation_lag must be an integer")
-    if config.max_representation_lag < 0:
-        raise ValueError("max_representation_lag must be non-negative")
+    object.__setattr__(
+        config,
+        "max_representation_lag",
+        _validate_positive_int(
+            "max_representation_lag", config.max_representation_lag, minimum=0
+        ),
+    )
 
     with np.errstate(over="ignore"):
         weight_sum = float(
@@ -525,9 +580,16 @@ def _validate_config(config: DualReplayConfig) -> None:
             "finite float32 sum"
         )
     if config.max_persistent_bytes is not None:
-        _validate_positive_int("max_persistent_bytes", config.max_persistent_bytes)
-        if config.max_persistent_bytes > _UINT32_MAX:
-            raise ValueError("max_persistent_bytes exceeds uint32 accounting")
+        object.__setattr__(
+            config,
+            "max_persistent_bytes",
+            _validate_positive_int(
+                "max_persistent_bytes",
+                config.max_persistent_bytes,
+                maximum=_UINT32_MAX,
+            ),
+        )
+    _allocation_sizes(config)
 
 
 def _require_array(
@@ -668,15 +730,10 @@ class DualReplayMemory:
     def __init__(self, config: DualReplayConfig):
         _validate_config(config)
         self._config = config
+        slot_bytes, persistent_bytes = _allocation_sizes(config)
         initial = self._make_initial_state(jnp.zeros((2,), dtype=jnp.uint32), 0)
-        persistent_bytes = _tree_nbytes(initial)
-        if persistent_bytes > _UINT32_MAX:
-            raise ValueError("dual replay allocation exceeds uint32 byte accounting")
-        if (
-            config.max_persistent_bytes is not None
-            and persistent_bytes > config.max_persistent_bytes
-        ):
-            raise ValueError("dual replay allocation exceeds max_persistent_bytes")
+        if _tree_nbytes(initial) != persistent_bytes:
+            raise RuntimeError("dual replay allocation formula disagrees with allocated state")
         short_bytes = _tree_nbytes(initial.short_term)
         long_bytes = _tree_nbytes(initial.long_term)
         short_slot_bytes = short_bytes // config.short_term_capacity
@@ -684,7 +741,9 @@ class DualReplayMemory:
         if short_slot_bytes != long_slot_bytes:
             raise RuntimeError("replay strata disagree on fixed slot bytes")
         self._persistent_bytes = persistent_bytes
-        self._slot_bytes = short_slot_bytes
+        if short_slot_bytes != slot_bytes:
+            raise RuntimeError("dual replay slot formula disagrees with allocated state")
+        self._slot_bytes = slot_bytes
 
     @property
     def config(self) -> DualReplayConfig:
@@ -713,19 +772,21 @@ class DualReplayMemory:
     @classmethod
     def from_config(cls, payload: Mapping[str, Any]) -> DualReplayMemory:
         """Reconstruct a memory from :meth:`to_config`."""
+        values = _copy_mapping(payload, name="dual replay memory config")
         expected = {"schema", "type", "mechanism_status", "config"}
-        if set(payload) != expected:
+        if set(values) != expected:
             raise ValueError("dual replay memory config fields do not match the v1 schema")
-        if payload.get("schema") != DUAL_REPLAY_CONFIG_SCHEMA:
+        if type(values["schema"]) is not str or values["schema"] != DUAL_REPLAY_CONFIG_SCHEMA:
             raise ValueError("unexpected dual replay memory schema")
-        if payload.get("type") != "DualReplayMemory":
+        if type(values["type"]) is not str or values["type"] != "DualReplayMemory":
             raise ValueError("unexpected dual replay memory type")
-        if payload.get("mechanism_status") != MECHANISM_STATUS:
+        if (
+            type(values["mechanism_status"]) is not str
+            or values["mechanism_status"] != MECHANISM_STATUS
+        ):
             raise ValueError("dual replay memory must remain mechanism-only")
-        inner = payload.get("config")
-        if not isinstance(inner, Mapping):
-            raise ValueError("dual replay memory config must be a mapping")
-        return cls(DualReplayConfig.from_config(inner))
+        inner = values["config"]
+        return cls(DualReplayConfig.from_config(cast(Mapping[str, Any], inner)))
 
     @staticmethod
     def _empty_entries(capacity: int, observation_dim: int, action_dim: int) -> ReplayEntries:

@@ -230,6 +230,60 @@ def test_fixed_total_capacity_and_resource_accounting_are_exact() -> None:
         DualReplayMemory(replace(memory.config, max_persistent_bytes=exact_bytes - 1))
 
 
+def test_config_integer_families_canonicalize_and_allocations_preflight() -> None:
+    config = _config(
+        total_capacity=np.ulonglong(7),
+        short_term_capacity=np.int8(3),
+        observation_dim=np.int16(2),
+        action_dim=np.uint16(1),
+        short_term_sample_size=np.int32(2),
+        long_term_sample_size=np.uint32(2),
+        max_representation_lag=np.longlong(0),
+        max_persistent_bytes=np.uint64(10_000),
+    )
+    for field_name in (
+        "total_capacity",
+        "short_term_capacity",
+        "observation_dim",
+        "action_dim",
+        "short_term_sample_size",
+        "long_term_sample_size",
+        "max_representation_lag",
+        "max_persistent_bytes",
+    ):
+        assert type(getattr(config, field_name)) is int
+
+    with pytest.raises(ValueError, match="uint32 byte accounting"):
+        _config(
+            total_capacity=2_147_483_647,
+            short_term_capacity=3,
+            observation_dim=2_147_483_647,
+        )
+
+
+def test_config_rejects_hostile_scalar_and_schema_spoofs_without_repr() -> None:
+    class HostileInt(int):
+        @property
+        def __class__(self) -> type:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr executed")
+
+    class SpoofedStr(str):
+        @property
+        def __class__(self) -> type:
+            return str
+
+    with pytest.raises(ValueError, match="total_capacity"):
+        _config(total_capacity=HostileInt(6))
+
+    payload = _config().to_config()
+    payload["type"] = SpoofedStr("DualReplayConfig")
+    with pytest.raises(ValueError, match="type"):
+        DualReplayConfig.from_config(payload)
+
+
 def test_record_is_prediction_before_outcome_and_fifo_eviction_is_auditable() -> None:
     memory = DualReplayMemory(_config(total_capacity=5, short_term_capacity=2))
     prediction_fields = {field.name for field in fields(ReplayPrediction)}
