@@ -489,8 +489,16 @@ class FrequencyMismatchStream:
         self._context_length = context_length
         self._omega_min = omega_min_float32
         self._omega_max = omega_max_float32
-        self._amplitude_scale = amplitude_scale
-        self._noise_std = noise_std
+        self._amplitude_scale = _require_finite_float32_multiplier(
+            amplitude_scale,
+            name="amplitude_scale",
+            nonnegative=True,
+        )
+        self._noise_std = _require_finite_float32_multiplier(
+            noise_std,
+            name="noise_std",
+            nonnegative=True,
+        )
 
     @property
     def feature_dim(self) -> int:
@@ -706,7 +714,27 @@ class CompositionalStream:
             raise ValueError("n_contexts must be positive")
         if context_length < 1:
             raise ValueError("context_length must be positive")
+        feature_std_float32 = _require_finite_float32_multiplier(
+            feature_std,
+            name="feature_std",
+            nonnegative=True,
+        )
         weight_scale_float32 = _require_compositional_weight_scale_float32(weight_scale)
+        amplitude_scale_float32 = _require_finite_float32_multiplier(
+            amplitude_scale,
+            name="amplitude_scale",
+            nonnegative=True,
+        )
+        noise_std_float32 = _require_finite_float32_multiplier(
+            noise_std,
+            name="noise_std",
+            nonnegative=True,
+        )
+        _require_safe_float32_product(
+            feature_std_float32,
+            weight_scale_float32,
+            names="feature_std and weight_scale",
+        )
 
         self._feature_dim = feature_dim
         self._n_tasks = n_tasks
@@ -714,10 +742,10 @@ class CompositionalStream:
         self._outer_components = outer_components
         self._n_contexts = n_contexts
         self._context_length = context_length
-        self._feature_std = feature_std
+        self._feature_std = feature_std_float32
         self._weight_scale = weight_scale_float32
-        self._amplitude_scale = amplitude_scale
-        self._noise_std = noise_std
+        self._amplitude_scale = amplitude_scale_float32
+        self._noise_std = noise_std_float32
 
     @property
     def feature_dim(self) -> int:

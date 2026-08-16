@@ -643,6 +643,36 @@ class TestOutOfClassPolynomialStream:
 class TestFrequencyMismatchStream:
     """Tests for the trigonometric out-of-class stream."""
 
+    @pytest.mark.parametrize("field", ["amplitude_scale", "noise_std"])
+    @pytest.mark.parametrize(
+        "value",
+        [float("nan"), float("inf"), -1.0, -Fraction(1, 2**200)],
+    )
+    def test_scale_parameters_reject_nonfinite_or_negative_exact_reals(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            FrequencyMismatchStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["amplitude_scale", "noise_std"])
+    def test_scale_parameters_reject_untrusted_real_subclasses(self, field: str) -> None:
+        with pytest.raises(ValueError, match=field):
+            FrequencyMismatchStream(  # type: ignore[arg-type]
+                **{field: _PositiveRatioFloat(-0.5)}
+            )
+
+    def test_scale_parameters_are_canonical_float32_values(self) -> None:
+        stream = FrequencyMismatchStream(
+            amplitude_scale=Fraction(1, 3),
+            noise_std=np.float64(0.2),
+        )
+        assert type(stream._amplitude_scale) is float  # noqa: SLF001
+        assert type(stream._noise_std) is float  # noqa: SLF001
+        assert stream._amplitude_scale == float(np.float32(1 / 3))  # noqa: SLF001
+        assert stream._noise_std == float(np.float32(0.2))  # noqa: SLF001
+
     @pytest.mark.parametrize(
         ("omega_min", "omega_max"),
         [(float("nan"), 3.0), (0.5, float("inf")), (float("inf"), float("inf"))],
@@ -846,6 +876,39 @@ class TestFrequencyMismatchStream:
 
 class TestCompositionalStream:
     """Tests for the 2-hidden-layer compositional out-of-class stream."""
+
+    @pytest.mark.parametrize("field", ["feature_std", "amplitude_scale", "noise_std"])
+    @pytest.mark.parametrize(
+        "value",
+        [float("nan"), float("inf"), -1.0, -Fraction(1, 2**200)],
+    )
+    def test_scale_parameters_reject_nonfinite_or_negative_exact_reals(
+        self,
+        field: str,
+        value: object,
+    ) -> None:
+        with pytest.raises(ValueError, match=field):
+            CompositionalStream(**{field: value})  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("field", ["feature_std", "amplitude_scale", "noise_std"])
+    def test_scale_parameters_reject_untrusted_real_subclasses(self, field: str) -> None:
+        with pytest.raises(ValueError, match=field):
+            CompositionalStream(**{field: _PositiveRatioFloat(-0.5)})  # type: ignore[arg-type]
+
+    def test_scale_parameters_are_canonical_float32_values(self) -> None:
+        stream = CompositionalStream(
+            feature_std=Fraction(1, 3),
+            amplitude_scale=np.float64(0.2),
+            noise_std=np.float32(0.1),
+        )
+        assert type(stream._feature_std) is float  # noqa: SLF001
+        assert type(stream._amplitude_scale) is float  # noqa: SLF001
+        assert type(stream._noise_std) is float  # noqa: SLF001
+
+    def test_feature_and_weight_scale_reject_unsafe_float32_product(self) -> None:
+        safe = float(np.sqrt(np.finfo(np.float32).max, dtype=np.float32))
+        with pytest.raises(ValueError, match="feature_std and weight_scale"):
+            CompositionalStream(feature_std=safe, weight_scale=safe)
 
     @pytest.mark.parametrize("weight_scale", [float("nan"), float("inf"), float("-inf")])
     def test_weight_scale_must_be_finite(self, weight_scale: float) -> None:
