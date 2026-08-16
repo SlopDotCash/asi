@@ -681,27 +681,44 @@ def test_sparse_ftl_config_rejects_derived_dimensions_outside_int32() -> None:
             projection_dim=46_341,
             bins=46_341,
         )
+    with pytest.raises(ValueError, match="derived state_nbytes"):
+        SparseFTLWorldModelConfig(
+            observation_dim=1,
+            action_dim=1,
+            projection_dim=11_585,
+            bins=2,
+        )
 
 
-def test_sparse_ftl_config_accepts_derived_int32_boundary() -> None:
-    int32_max = 2**31 - 1
-    widest_input = SparseFTLWorldModelConfig(
-        observation_dim=int32_max - 1,
-        action_dim=1,
-        projection_dim=1,
-        bins=int32_max,
-    )
-    widest_active_block = SparseFTLWorldModelConfig(
+def test_sparse_ftl_config_accepts_largest_state_below_int32_boundary() -> None:
+    config = SparseFTLWorldModelConfig(
         observation_dim=1,
         action_dim=1,
-        projection_dim=int32_max // 2,
+        projection_dim=11_584,
         bins=2,
     )
-    assert widest_input.input_dim == int32_max
-    assert widest_input.feature_dim == int32_max
-    assert widest_input.active_feature_count == 2
-    assert widest_active_block.feature_dim == int32_max - 1
-    assert widest_active_block.active_feature_count == int32_max - 1
+    model = SparseFTLWorldModel(config)
+    assert config.input_dim == 2
+    assert config.feature_dim == 23_168
+    assert config.active_feature_count == 23_168
+    assert model.state_nbytes == 2_147_302_920
+
+
+@pytest.mark.parametrize("field", ["ridge", "prediction_clip"])
+def test_sparse_ftl_config_normalizes_hostile_ratio_hook_errors(field: str) -> None:
+    class RatioBomb(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("hostile ratio hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    with pytest.raises(ValueError, match=field):
+        SparseFTLWorldModelConfig(
+            observation_dim=1,
+            action_dim=1,
+            **{field: RatioBomb(0.5)},
+        )
 
 
 def test_zero_error_decay_replaces_infinite_prior_ema_without_nan() -> None:

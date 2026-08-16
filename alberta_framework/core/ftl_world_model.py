@@ -90,7 +90,7 @@ def _finite_positive_normal_float32(name: str, value: object) -> float:
         raise ValueError(message)
     try:
         narrowed = round_real_to_float32(value)
-    except (TypeError, ValueError, OverflowError) as exc:
+    except Exception as exc:
         raise ValueError(message) from exc
     if not math.isfinite(narrowed) or narrowed < _FLOAT32_TINY:
         raise ValueError(message)
@@ -99,6 +99,24 @@ def _finite_positive_normal_float32(name: str, value: object) -> float:
         if round_real_to_float32(cast(Real, concrete)) == narrowed:
             return concrete
     return narrowed
+
+
+def _configured_state_nbytes(
+    *,
+    observation_dim: int,
+    input_dim: int,
+    projection_dim: int,
+    feature_dim: int,
+) -> int:
+    """Return the exact persistent-array size without allocating it."""
+    float_count = (
+        projection_dim * input_dim
+        + feature_dim * feature_dim
+        + 2 * feature_dim * observation_dim
+        + 1
+    )
+    # Every configured array is float32 except one int32 step counter.
+    return 4 * (float_count + 1)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -134,9 +152,18 @@ class SparseFTLWorldModelConfig:
         action_dim = _require_int32("action_dim", self.action_dim, minimum=1)
         projection_dim = _require_int32("projection_dim", self.projection_dim, minimum=1)
         bins = _require_int32("bins", self.bins, minimum=2)
+        input_dim = observation_dim + action_dim
+        feature_dim = projection_dim * bins
+        state_nbytes = _configured_state_nbytes(
+            observation_dim=observation_dim,
+            input_dim=input_dim,
+            projection_dim=projection_dim,
+            feature_dim=feature_dim,
+        )
         derived_dimensions = (
-            ("input_dim", observation_dim + action_dim),
-            ("feature_dim", projection_dim * bins),
+            ("input_dim", input_dim),
+            ("feature_dim", feature_dim),
+            ("state_nbytes", state_nbytes),
         )
         for name, value in derived_dimensions:
             if value > _INT32_MAX:
@@ -281,14 +308,12 @@ class SparseFTLWorldModel:
     def state_nbytes(self) -> int:
         """Configured serialized array size, independent of lifetime."""
         cfg = self._config
-        float_count = (
-            cfg.projection_dim * cfg.input_dim
-            + cfg.feature_dim * cfg.feature_dim
-            + 2 * cfg.feature_dim * cfg.observation_dim
-            + 1
+        return _configured_state_nbytes(
+            observation_dim=cfg.observation_dim,
+            input_dim=cfg.input_dim,
+            projection_dim=cfg.projection_dim,
+            feature_dim=cfg.feature_dim,
         )
-        # All configured arrays are float32; step_count is int32.
-        return 4 * (float_count + 1)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize model type and static configuration."""
