@@ -1074,6 +1074,19 @@ def test_run_step11_smoke_rejects_class_spoofed_integer_steps() -> None:
         run_step11_smoke(steps=_SpoofedInt())  # type: ignore[arg-type]
 
 
+def test_step11_checks_host_ratio_and_float32_domains() -> None:
+    class ContradictoryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    with pytest.raises(ValueError, match="option_gamma"):
+        Step11OaKConfig(option_gamma=ContradictoryFloat(-0.5))
+
+
+def test_step11_smoke_uses_full_jax_uint32_seed_contract() -> None:
+    assert run_step11_smoke(steps=1, seed=2**32 - 1).seed == 2**32 - 1
+
+
 # ---------------------------------------------------------------------------
 # Long-horizon fineness
 # ---------------------------------------------------------------------------
@@ -1159,7 +1172,7 @@ def test_step11_oak_rejects_integer_subclass_conversion_hooks() -> None:
         ({"steps": True}, "steps"),
         ({"steps": "64"}, "steps"),
         ({"seed": -1}, "seed"),
-        ({"seed": 2**31}, "seed"),
+        ({"seed": 2**32}, "seed"),
         ({"seed": True}, "seed"),
     ],
 )

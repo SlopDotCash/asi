@@ -37,6 +37,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.oak import (
     KeyboardChordLearnerConfig,
     KeyboardChordLearnerState,
@@ -471,7 +472,7 @@ def run_step11_smoke(
         :class:`Step11SmokeResult` with shape/fineness summary.
     """
     steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
-    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
 
     cfg = config
     if cfg is None:
