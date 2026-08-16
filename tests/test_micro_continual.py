@@ -227,24 +227,109 @@ class TestConfig:
     def test_n_steps(self):
         assert TINY.n_steps == 4 * 25
 
-    def test_n_steps_int32_overflow_rejected(self):
-        # stream() casts the per-step regime index to dtype=jnp.int32
-        # (``jnp.arange(n_steps, dtype=jnp.int32) // regime_length``). An
-        # n_steps beyond the signed int32 domain must be rejected at
-        # construction instead of silently wrapping every regime index past
-        # the boundary to a negative value.
-        with pytest.raises(ValueError, match="n_steps"):
-            MicroStreamConfig(
-                family="input_permutation",
-                n_regimes=60_000,
-                regime_length=60_000,
-            )
-        # The boundary itself (exactly INT32_MAX) must still be accepted.
-        MicroStreamConfig(
+    def test_stream_aggregate_byte_boundary_is_allocation_free(self, monkeypatch):
+        def forbidden(*args, **kwargs):
+            raise AssertionError("JAX allocation ran during config preflight")
+
+        monkeypatch.setattr(jnp, "arange", forbidden)
+        # For R=C=K=D=1 the conservative output+work aggregate is 9*n + 15
+        # four-byte scalars. Pin the exact last accepted signed-int32 byte edge.
+        last_legal = ((2**31 - 1) // 4 - 15) // 9
+        config = MicroStreamConfig(
             family="input_permutation",
             n_regimes=1,
-            regime_length=2**31 - 1,
+            regime_length=last_legal,
+            dim=1,
+            n_classes=1,
+            n_components=1,
+            component_sparsity=1,
         )
+        assert config.n_steps == last_legal
+        with pytest.raises(ValueError, match="outputs and generation work.*byte count"):
+            MicroStreamConfig(
+                family="input_permutation",
+                n_regimes=1,
+                regime_length=last_legal + 1,
+                dim=1,
+                n_classes=1,
+                n_components=1,
+                component_sparsity=1,
+            )
+
+    @pytest.mark.parametrize(
+        "integer_type",
+        tuple(
+            dict.fromkeys(
+                (
+                    np.int8,
+                    np.int16,
+                    np.int32,
+                    np.int64,
+                    np.uint8,
+                    np.uint16,
+                    np.uint32,
+                    np.uint64,
+                    np.longlong,
+                    np.ulonglong,
+                )
+            )
+        ),
+    )
+    def test_integer_fields_accept_and_store_numpy_integer_families(self, integer_type):
+        config = tiny(
+            "recurrence",
+            n_regimes=integer_type(4),
+            regime_length=integer_type(25),
+            dim=integer_type(6),
+            n_classes=integer_type(3),
+            n_components=integer_type(2),
+            component_sparsity=integer_type(2),
+            recurrence_pool=integer_type(2),
+        )
+        for name in (
+            "n_regimes",
+            "regime_length",
+            "dim",
+            "n_classes",
+            "n_components",
+            "component_sparsity",
+            "recurrence_pool",
+        ):
+            assert type(getattr(config, name)) is int
+            assert type(config.to_config()[name]) is int
+
+    def test_integer_gates_reject_spoofs_without_hooks_or_repr(self):
+        class HostileInt(int):
+            def __index__(self):
+                raise AssertionError("untrusted index hook executed")
+
+            def __repr__(self):
+                raise AssertionError("repr hook executed")
+
+        class Spoof:
+            @property
+            def __class__(self):
+                return int
+
+            def __index__(self):
+                raise AssertionError("untrusted index hook executed")
+
+            def __repr__(self):
+                raise AssertionError("repr hook executed")
+
+        for value in (True, 1.0, "1", HostileInt(1), Spoof()):
+            with pytest.raises(ValueError, match="n_regimes"):
+                tiny("input_permutation", n_regimes=value)
+
+    def test_public_seed_boundaries_are_exact(self):
+        for seed in (True, np.uint32(1), -1, 2**32):
+            with pytest.raises(ValueError, match="seed"):
+                generate_stream(TINY, seed=seed)
+
+    def test_bayes_sample_count_is_exact_and_bounded(self):
+        for value in (True, 1.0, "1", 0, -1, 2**31):
+            with pytest.raises(ValueError, match="n_samples"):
+                bayes_reference(TINY, seed=0, n_samples=value)
 
     def test_to_config_roundtrip(self):
         rebuilt = MicroStreamConfig(**TINY.to_config())

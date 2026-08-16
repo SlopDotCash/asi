@@ -64,6 +64,7 @@ import argparse
 import json
 import logging
 import math
+import operator
 import os
 import platform
 import tempfile
@@ -74,7 +75,7 @@ from functools import lru_cache
 from numbers import Real
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -205,6 +206,76 @@ def _require_nonempty_string(value: object, *, context: str) -> str:
 # =============================================================================
 
 _INT32_MAX: int = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_positive_int32(value: object, *, name: str, minimum: int = 1) -> int:
+    """Canonicalize one trusted positive integer in JAX's shape/index domain."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if not minimum <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    return number
+
+
+def _require_float32_resource(name: str, scalars: int) -> None:
+    """Bound one aggregate of four-byte JAX leaves before any allocation."""
+    if scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
+def _validate_stream_resources(
+    *, n_regimes: int, regime_length: int, dim: int, n_classes: int, n_components: int
+) -> None:
+    """Preflight the materialized stream and its worst-case generation work."""
+    n_steps = n_regimes * regime_length
+    class_dim = n_classes * dim
+    component_dim = n_classes * n_components * dim
+    regime_dim = n_regimes * dim
+    regime_class = n_regimes * n_classes
+
+    # Every returned GaussianMicroStream leaf is four bytes (float32/int32).
+    persistent_scalars = (
+        2 * n_steps * dim
+        + 3 * n_steps
+        + component_dim
+        + dim
+        + regime_dim
+        + regime_class
+        + 2 * n_regimes
+    )
+    _require_float32_resource("GaussianMicroStream outputs", persistent_scalars)
+
+    # Conservative simultaneous-generation allowance: base component IDs,
+    # noise, per-step gathers/scales, regime work, and all geometry workspaces.
+    work_scalars = (
+        2 * n_steps * dim
+        + 2 * n_steps
+        + n_regimes
+        + regime_dim
+        + 2 * dim
+        + 2 * class_dim
+        + 3 * component_dim
+    )
+    _require_float32_resource(
+        "GaussianMicroStream outputs and generation work",
+        persistent_scalars + work_scalars,
+    )
 
 
 @dataclass(frozen=True)
@@ -264,30 +335,22 @@ class MicroStreamConfig:
     recurrence_pool: int = 5
 
     def __post_init__(self) -> None:
-        if self.family not in FAMILIES:
-            raise ValueError(
-                f"family must be one of {FAMILIES}, got {self.family!r}"
-            )
+        if type(self.family) is not str or self.family not in FAMILIES:
+            raise ValueError(f"family must be one of {FAMILIES}")
         for name in ("n_regimes", "regime_length", "dim", "n_classes", "n_components"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
-        if self.n_regimes * self.regime_length > _INT32_MAX:
-            # stream() casts the per-step regime index to dtype=jnp.int32
-            # (``jnp.arange(n_steps, dtype=jnp.int32) // regime_length``); an
-            # uncaught n_steps beyond the signed int32 domain would silently
-            # wrap the derived regime index instead of raising, corrupting
-            # every regime assignment past the wraparound point.
-            raise ValueError(
-                "derived n_steps (n_regimes * regime_length) must fit in signed "
-                f"int32, got {self.n_regimes} * {self.regime_length} = "
-                f"{self.n_regimes * self.regime_length} > {_INT32_MAX}"
+            object.__setattr__(
+                self,
+                name,
+                _require_positive_int32(getattr(self, name), name=name),
             )
-        sparsity = self.component_sparsity
-        if not isinstance(sparsity, int) or isinstance(sparsity, bool) or sparsity <= 0:
-            raise ValueError(
-                f"component_sparsity must be a positive integer, got {sparsity!r}"
-            )
+        sparsity = _require_positive_int32(
+            self.component_sparsity, name="component_sparsity"
+        )
+        pool = _require_positive_int32(
+            self.recurrence_pool, name="recurrence_pool", minimum=2
+        )
+        object.__setattr__(self, "component_sparsity", sparsity)
+        object.__setattr__(self, "recurrence_pool", pool)
         if sparsity > self.dim:
             raise ValueError(
                 f"component_sparsity ({sparsity}) must not exceed dim ({self.dim})"
@@ -329,14 +392,18 @@ class MicroStreamConfig:
                 f"scale_shift_max, got [{self.scale_shift_min}, {self.scale_shift_max}]"
             )
         if self.family == "recurrence":
-            pool = self.recurrence_pool
-            if not isinstance(pool, int) or isinstance(pool, bool) or pool < 2:
-                raise ValueError(f"recurrence_pool must be an integer >= 2, got {pool!r}")
             if pool > self.n_regimes:
                 raise ValueError(
                     f"recurrence_pool ({pool}) must not exceed n_regimes "
                     f"({self.n_regimes})"
                 )
+        _validate_stream_resources(
+            n_regimes=self.n_regimes,
+            regime_length=self.regime_length,
+            dim=self.dim,
+            n_classes=self.n_classes,
+            n_components=self.n_components,
+        )
 
     @property
     def n_steps(self) -> int:
@@ -374,10 +441,14 @@ class MicroStreamConfig:
         Omitted fields must not be filled from dataclass defaults: a truncated
         shard would otherwise reconstruct a different stream identity.
         """
-        if not isinstance(mapping, Mapping):
+        if not _is_registered_subclass(type(mapping), Mapping):
             raise ValueError(f"{source} must be an object")
+        try:
+            payload = dict(cast(Mapping[str, Any], mapping))
+        except Exception as exc:
+            raise ValueError(f"{source} must be an object") from exc
         expected = {field.name for field in fields(cls)}
-        actual = set(mapping)
+        actual = set(payload)
         if actual != expected:
             missing = sorted(expected - actual)
             extra = sorted(actual - expected)
@@ -390,7 +461,7 @@ class MicroStreamConfig:
                 f"{source} must contain exactly the serialized key set; "
                 + "; ".join(details)
             )
-        return cls(**dict(mapping))
+        return cls(**payload)
 
 
 # =============================================================================
@@ -413,8 +484,10 @@ def dim_scale_spectrum(config: MicroStreamConfig) -> Array:
 def _stream_keys(
     config: MicroStreamConfig, seed: int
 ) -> tuple[Array, Array, Array, Array, Array]:
-    del config  # derivation depends only on the seed; config shapes the draws
-    root = jr.fold_in(jr.key(jnp.uint32(seed)), _STREAM_DOMAIN)
+    if type(config) is not MicroStreamConfig:
+        raise TypeError("config must be a MicroStreamConfig")
+    seed = require_jax_seed(seed, name="seed")
+    root = jr.fold_in(jr.key(seed), _STREAM_DOMAIN)
     key_geometry, key_labels, key_components, key_noise, key_regime = jr.split(root, 5)
     return key_geometry, key_labels, key_components, key_noise, key_regime
 
@@ -650,11 +723,15 @@ def bayes_reference(
     closed-form Bayes rule, and a binomial standard error. Applies to every
     regime of all four families (transform invariance).
     """
-    if n_samples <= 0:
-        raise ValueError(f"n_samples must be positive, got {n_samples}")
+    n_samples = _require_positive_int32(n_samples, name="n_samples")
+    seed = require_jax_seed(seed, name="seed")
     component_means, dim_sigma = class_geometry(config, seed)
-    key = jr.fold_in(jr.key(jnp.uint32(seed)), _BAYES_DOMAIN)
+    key = jr.fold_in(jr.key(seed), _BAYES_DOMAIN)
     chunk_size = 20_000
+    _require_float32_resource(
+        "Bayes-reference chunk work",
+        min(chunk_size, n_samples) * (config.dim + 3),
+    )
     n_correct = 0
     drawn = 0
     chunk_index = 0
