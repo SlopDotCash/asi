@@ -190,7 +190,7 @@ def test_production_facades_propagate_planning_budget() -> None:
 
 @pytest.mark.parametrize("invalid", [-1, 1.5, True])
 def test_planning_budget_must_be_nonnegative_static_integer(invalid: object) -> None:
-    with pytest.raises(ValueError, match="nonnegative integer"):
+    with pytest.raises(ValueError, match=r"option_planning_backups_per_step must be"):
         STOMPConfig(
             subtask_specs=(SubtaskSpec(feature_index=0),),
             option_planning_backups_per_step=invalid,  # type: ignore[arg-type]
