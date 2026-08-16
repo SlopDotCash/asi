@@ -176,33 +176,49 @@ class Step3OneStepResult:
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_gvf_probability(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    if (real != 0.0 and real < _FLOAT32_MIN_NORMAL) or (
-        narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL
+    if (
+        (numerator != 0 and numerator << 126 < denominator)
+        or (real != 0.0 and real < _FLOAT32_MIN_NORMAL)
+        or (narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL)
     ):
         raise ValueError(f"{name} must be zero or a normal float32 value in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or narrowed < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real <= 0.0 or narrowed <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
@@ -216,6 +232,12 @@ def _require_positive_int(name: str, value: object) -> int:
     if number > _INT32_MAX:
         raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a boolean, got {value!r}")
+    return value
 
 
 def _validate_horde_config(config: Step3HordeConfig) -> None:
@@ -235,12 +257,16 @@ def _validate_horde_config(config: Step3HordeConfig) -> None:
     hidden_sizes = tuple(
         _require_positive_int("hidden_sizes", size) for size in config.hidden_sizes
     )
+    use_obgd = _require_bool("use_obgd", config.use_obgd)
+    use_layer_norm = _require_bool("use_layer_norm", config.use_layer_norm)
     object.__setattr__(config, "gammas", gammas)
     object.__setattr__(config, "lamdas", lamdas)
     object.__setattr__(config, "hidden_sizes", hidden_sizes)
     object.__setattr__(config, "step_size", step_size)
     object.__setattr__(config, "sparsity", sparsity)
     object.__setattr__(config, "obgd_kappa", obgd_kappa)
+    object.__setattr__(config, "use_obgd", use_obgd)
+    object.__setattr__(config, "use_layer_norm", use_layer_norm)
 
 
 def make_step3_normalizer(

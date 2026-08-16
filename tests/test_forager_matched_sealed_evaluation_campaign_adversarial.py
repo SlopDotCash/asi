@@ -980,6 +980,11 @@ def test_completion_summary_rejects_false_authority_and_closure(tmp_path: Path) 
         with pytest.raises(ValueError, match="closure|exact v2 schema"):
             validator(context, receipt, scores, request, changed)
 
+    numeric_alias = dict(valid)
+    numeric_alias["candidate_count"] = float(numeric_alias["candidate_count"])
+    with pytest.raises(ValueError, match="exact v2 schema"):
+        validator(context, receipt, scores, request, numeric_alias)
+
 
 def test_partial_final_artifacts_fail_closed_without_repair(
     tmp_path: Path,

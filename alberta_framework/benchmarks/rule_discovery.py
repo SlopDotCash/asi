@@ -792,6 +792,8 @@ def evaluate_population(
         raise ValueError(
             f"genomes must have shape (n_genomes, {GENOME_SIZE}), got {tuple(genomes.shape)}"
         )
+    if not bool(jnp.all(jnp.isfinite(genomes))):
+        raise ValueError("genomes must contain only finite values")
     n_genomes = int(genomes.shape[0])
     total = np.zeros((n_genomes,), dtype=np.float64)
     for seed in seeds:

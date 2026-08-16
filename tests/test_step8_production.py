@@ -74,6 +74,16 @@ _INVALID_WORLD_MODEL_FIELDS: tuple[tuple[str, Any], ...] = (
     ("leaky_relu_slope", False),
     ("leaky_relu_slope", "0.01"),
     ("leaky_relu_slope", -0.01),
+    ("use_layer_norm", 1),
+    ("use_layer_norm", 0),
+    ("use_layer_norm", 1.0),
+    ("use_layer_norm", "yes"),
+    ("use_layer_norm", None),
+    ("predict_delta", 1),
+    ("predict_delta", 0),
+    ("predict_delta", 1.0),
+    ("predict_delta", "yes"),
+    ("predict_delta", None),
 )
 
 
@@ -188,6 +198,33 @@ def _config_with(**overrides: Any) -> Step8WorldModelConfig:
 def test_step8_world_model_fields_reject_invalid_inputs(field: str, value: object) -> None:
     with pytest.raises(ValueError, match=field):
         make_step8_world_model(_config_with(**{field: value}))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("field", ["use_layer_norm", "predict_delta"])
+def test_step8_bool_fields_reject_invalid_type_without_calling_repr(field: str) -> None:
+    repr_calls = 0
+
+    class ExplodingRepr:
+        def __repr__(self) -> str:
+            nonlocal repr_calls
+            repr_calls += 1
+            raise RuntimeError("untrusted repr hook executed")
+
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: ExplodingRepr()})
+
+    assert repr_calls == 0
+
+
+@pytest.mark.unit
+def test_step8_bool_fields_accept_exact_bools() -> None:
+    config = _config_with(use_layer_norm=False, predict_delta=True)
+    assert config.use_layer_norm is False
+    assert config.predict_delta is True
+    core = config.to_core_config()
+    assert core.use_layer_norm is False
+    assert core.predict_delta is True
 
 
 def test_step8_world_model_rejects_nonpositive_vector_action_dim() -> None:

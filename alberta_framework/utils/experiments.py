@@ -14,8 +14,11 @@ Two conventions matter for downstream analysis:
   :func:`aggregate_metrics`.
 """
 
-from collections.abc import Callable, Sequence
-from typing import Any, NamedTuple, cast
+import math
+from collections.abc import Callable, Iterable, Sequence
+from decimal import Decimal
+from fractions import Fraction
+from typing import Any, NamedTuple, NoReturn, cast
 
 import jax.random as jr
 import numpy as np
@@ -29,6 +32,108 @@ from alberta_framework.core.learners import (
 from alberta_framework.core.types import LearnerState
 from alberta_framework.streams.base import ScanStream
 from alberta_framework.utils.statistics import common_final_window
+
+_NUMPY_COORDINATE_TYPES = frozenset(
+    np.dtype(dtype_code).type
+    for dtype_code in (
+        "?",
+        "b",
+        "B",
+        "h",
+        "H",
+        "i",
+        "I",
+        "l",
+        "L",
+        "q",
+        "Q",
+        "e",
+        "f",
+        "d",
+        "g",
+        "F",
+        "D",
+        "G",
+        "S",
+        "U",
+    )
+)
+
+
+def _type_identity_in(
+    value_type: type[object],
+    candidates: Iterable[type[object]],
+) -> bool:
+    """Match an untrusted runtime type without metaclass equality or hashing."""
+    return any(value_type is candidate for candidate in candidates)
+
+
+class _CanonicalFractionCoordinate(tuple[int, int]):
+    """An intrinsically immutable rational key with Fraction hash semantics."""
+
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        numerator: int,
+        denominator: int,
+    ) -> "_CanonicalFractionCoordinate":
+        if type(numerator) is not int or type(denominator) is not int or denominator <= 0:
+            raise ValueError("canonical Fraction coordinates require builtin integer components")
+        normalized = Fraction(numerator, denominator)
+        return tuple.__new__(cls, (normalized.numerator, normalized.denominator))
+
+    @property
+    def numerator(self) -> int:
+        return self[0]
+
+    @property
+    def denominator(self) -> int:
+        return self[1]
+
+    def _as_fraction(self) -> Fraction:
+        return Fraction(self.numerator, self.denominator)
+
+    def __hash__(self) -> int:
+        return hash(self._as_fraction())
+
+    def __eq__(self, other: object) -> bool:
+        other_type = type(other)
+        if other_type is _CanonicalFractionCoordinate:
+            coordinate = cast(_CanonicalFractionCoordinate, other)
+            return (
+                self.numerator == coordinate.numerator
+                and self.denominator == coordinate.denominator
+            )
+        if _type_identity_in(other_type, (bool, int, float, complex, Decimal, Fraction)):
+            return bool(self._as_fraction() == other)
+        return False
+
+    def __ne__(self, other: object) -> bool:
+        return not self == other
+
+    def __repr__(self) -> str:
+        return repr(self._as_fraction())
+
+    def __str__(self) -> str:
+        return str(self._as_fraction())
+
+    def __getnewargs__(self) -> tuple[int, int]:
+        return (self.numerator, self.denominator)
+
+
+_PYTHON_NUMERIC_COORDINATE_TYPES = (
+    bool,
+    int,
+    float,
+    complex,
+    Decimal,
+    Fraction,
+    _CanonicalFractionCoordinate,
+)
+_STRING_COORDINATE_TYPES = (str, np.str_)
+_BYTES_COORDINATE_TYPES = (bytes, np.bytes_)
+_MAX_HYPERPARAMETER_COORDINATE_NESTING = 32
 
 
 class ExperimentConfig(NamedTuple):
@@ -415,28 +520,291 @@ def extract_hyperparameter_results(
     Args:
         results: Dictionary of aggregated results
         metric: Metric to evaluate
-        param_extractor: Function to extract param value from config name
+        param_extractor: Function to extract a canonical immutable coordinate
+            from a config name. Accepted scalar coordinates are exact ``None``,
+            ``bool``, ``int``, finite ``float`` or ``complex``, finite ``Decimal``,
+            ``Fraction``, ``str``, ``bytes``, and the corresponding supported exact
+            NumPy scalar types. Fraction leaves are normalized into private immutable
+            rational keys with the same Python-numeric equality, hash, representation,
+            and lookup behavior; their input object identity is not retained. Exact
+            tuples and frozensets may compose scalar coordinates to at most 32 nested
+            container levels. Across configurations, Python numeric types form one
+            coherent family, while a NumPy numeric scalar is compatible only with the
+            same exact NumPy scalar type. Coordinate pairs are certified recursively;
+            incompatible container or scalar families fail closed before dictionary
+            equality is invoked. Enums, UUIDs, datetimes, named-tuple subclasses, and
+            other user-defined or noncanonical immutable keys are not accepted.
 
     Returns:
-        Dictionary mapping param value to (mean, std) tuple
+        Dictionary mapping each canonical parameter value to its (mean, std) tuple.
+        Non-Fraction coordinates retain their original key objects; Fraction leaves
+        use immutable, numerically equivalent snapshots.
 
     Raises:
-        ValueError: If ``param_extractor`` maps more than one configuration to
-            the same value; a sensitivity curve built from a silently
-            truncated, insertion-order-dependent subset is not a measurement.
+        ValueError: If ``param_extractor`` returns a coordinate outside the
+            canonical immutable-key contract, exceeds the nesting limit, mixes
+            mutually incompatible coordinate families, or maps more than one
+            configuration to the same value; a sensitivity curve built from a
+            silently truncated, insertion-order-dependent subset is not a measurement.
     """
     performance = get_final_performance(results, metric)
 
     if param_extractor is None:
         return {k: v for k, v in performance.items()}
 
-    names_by_value: dict[Any, list[str]] = {}
+    coordinate_entries: list[tuple[str, object, int]] = []
     for name in performance:
-        names_by_value.setdefault(param_extractor(name), []).append(name)
-    collisions = {value: names for value, names in names_by_value.items() if len(names) > 1}
+        coordinate = _require_hyperparameter_coordinate(param_extractor(name), name=name)
+        coordinate_hash = _require_coordinate_hash(coordinate, name=name)
+        coordinate_entries.append((name, coordinate, coordinate_hash))
+
+    for left_index, (left_name, left, left_hash) in enumerate(coordinate_entries):
+        for right_name, right, right_hash in coordinate_entries[left_index + 1 :]:
+            if not _coordinate_pair_is_compatible(left, right):
+                raise ValueError(
+                    "param_extractor must return mutually compatible canonical coordinate "
+                    f"families; configurations {left_name!r} and {right_name!r} do not"
+                )
+            if _coordinate_values_equal(left, right) and left_hash != right_hash:
+                raise ValueError(
+                    "param_extractor returned equal coordinates with different hashes for "
+                    f"configurations {left_name!r} and {right_name!r}"
+                )
+
+    coordinate_groups: list[tuple[object, list[str]]] = []
+    for name, coordinate, _ in coordinate_entries:
+        for representative, names in coordinate_groups:
+            if _coordinate_values_equal(representative, coordinate):
+                names.append(name)
+                break
+        else:
+            coordinate_groups.append((coordinate, [name]))
+
+    collisions = [(value, names) for value, names in coordinate_groups if len(names) > 1]
     if collisions:
-        described = "; ".join(f"{value!r} <- {names}" for value, names in collisions.items())
+        described = "; ".join(f"{value!r} <- {names}" for value, names in collisions)
         raise ValueError(
             f"param_extractor maps several configurations to one value: {described}"
         )
-    return {value: performance[names[0]] for value, names in names_by_value.items()}
+    try:
+        return {value: performance[names[0]] for value, names in coordinate_groups}
+    except Exception as exc:
+        raise ValueError(
+            "param_extractor coordinates could not maintain the canonical dictionary-key contract"
+        ) from exc
+
+
+def _require_hyperparameter_coordinate(
+    value: object,
+    *,
+    name: str,
+    nesting_depth: int = 0,
+) -> Any:
+    """Require one coordinate whose finiteness and hash semantics are intrinsic.
+
+    Accepted coordinates are exact immutable Python scalar types, ``Decimal``,
+    ``Fraction``, supported exact NumPy scalar types, and exact ``tuple`` or
+    ``frozenset`` compositions of those types. User-defined subclasses and keys
+    are deliberately excluded with identity-only type matching because calling
+    their metaclass, conversion, equality, or hash hooks cannot establish a durable
+    dictionary-key contract.
+    """
+
+    def reject() -> NoReturn:
+        raise ValueError(
+            "param_extractor returned a noncanonical coordinate for "
+            f"configuration {name!r}; coordinates must use canonical immutable "
+            "scalar types or exact tuple/frozenset compositions, and floating "
+            "or complex coordinates must be finite"
+        )
+
+    value_type = type(value)
+    if _type_identity_in(value_type, (tuple, frozenset)):
+        if nesting_depth >= _MAX_HYPERPARAMETER_COORDINATE_NESTING:
+            raise ValueError(
+                "param_extractor returned an over-nested coordinate for "
+                f"configuration {name!r}; coordinates support at most "
+                f"{_MAX_HYPERPARAMETER_COORDINATE_NESTING} nested "
+                "tuple/frozenset levels"
+            )
+        components = cast(tuple[object, ...] | frozenset[object], value)
+        canonical_components = tuple(
+            _require_hyperparameter_coordinate(
+                component,
+                name=name,
+                nesting_depth=nesting_depth + 1,
+            )
+            for component in components
+        )
+        if all(
+            canonical is original
+            for canonical, original in zip(canonical_components, components, strict=True)
+        ):
+            return value
+        if value_type is tuple:
+            return canonical_components
+        canonical_set = frozenset(canonical_components)
+        if len(canonical_set) != len(components):
+            reject()
+        return canonical_set
+
+    if value_type is Fraction:
+        fraction = cast(Fraction, value)
+        try:
+            numerator = fraction.numerator
+            denominator = fraction.denominator
+        except AttributeError:
+            reject()
+        if (
+            type(numerator) is not int
+            or type(denominator) is not int
+            or denominator <= 0
+        ):
+            reject()
+        return _CanonicalFractionCoordinate(numerator, denominator)
+
+    if value is None or _type_identity_in(value_type, (bool, int, str, bytes)):
+        return value
+
+    if value_type is float:
+        if not math.isfinite(cast(float, value)):
+            reject()
+        return value
+
+    if value_type is complex:
+        number = cast(complex, value)
+        if not math.isfinite(number.real) or not math.isfinite(number.imag):
+            reject()
+        return value
+
+    if value_type is Decimal:
+        if not cast(Decimal, value).is_finite():
+            reject()
+        return value
+
+    if _type_identity_in(value_type, _NUMPY_COORDINATE_TYPES):
+        if np.dtype(value_type).kind in ("f", "c") and not bool(
+            np.isfinite(cast(Any, value))
+        ):
+            reject()
+        return value
+
+    reject()
+
+
+def _require_coordinate_hash(value: object, *, name: str) -> int:
+    """Hash a validated coordinate without allowing raw runtime errors to escape."""
+    try:
+        return hash(value)
+    except Exception as exc:
+        raise ValueError(
+            "param_extractor returned a coordinate that cannot be hashed for "
+            f"configuration {name!r}"
+        ) from exc
+
+
+def _is_python_numeric_coordinate_type(value_type: type[object]) -> bool:
+    return _type_identity_in(value_type, _PYTHON_NUMERIC_COORDINATE_TYPES)
+
+
+def _is_numpy_numeric_coordinate_type(value_type: type[object]) -> bool:
+    return _type_identity_in(value_type, _NUMPY_COORDINATE_TYPES) and np.dtype(
+        value_type
+    ).kind in (
+        "b",
+        "i",
+        "u",
+        "f",
+        "c",
+    )
+
+
+def _coordinate_pair_is_compatible(left: object, right: object) -> bool:
+    """Certify that equality between two validated coordinates cannot narrow."""
+    left_type = type(left)
+    right_type = type(right)
+
+    if left_type is tuple and right_type is tuple:
+        left_tuple = cast(tuple[object, ...], left)
+        right_tuple = cast(tuple[object, ...], right)
+        return all(
+            _coordinate_pair_is_compatible(left_item, right_item)
+            for left_item, right_item in zip(left_tuple, right_tuple, strict=False)
+        )
+
+    if left_type is frozenset and right_type is frozenset:
+        left_set = cast(frozenset[object], left)
+        right_set = cast(frozenset[object], right)
+        return all(
+            _coordinate_pair_is_compatible(left_item, right_item)
+            for left_item in left_set
+            for right_item in right_set
+        )
+
+    if _type_identity_in(left_type, (tuple, frozenset)) or _type_identity_in(
+        right_type, (tuple, frozenset)
+    ):
+        return False
+
+    if left_type is right_type:
+        return True
+    if _is_python_numeric_coordinate_type(left_type) and _is_python_numeric_coordinate_type(
+        right_type
+    ):
+        return True
+    if _is_numpy_numeric_coordinate_type(left_type) and _is_numpy_numeric_coordinate_type(
+        right_type
+    ):
+        return False
+    if (
+        _is_python_numeric_coordinate_type(left_type)
+        and _is_numpy_numeric_coordinate_type(right_type)
+    ) or (
+        _is_numpy_numeric_coordinate_type(left_type)
+        and _is_python_numeric_coordinate_type(right_type)
+    ):
+        return False
+    return True
+
+
+def _coordinate_values_equal(left: object, right: object) -> bool:
+    """Compare a pair after :func:`_coordinate_pair_is_compatible` accepts it."""
+    left_type = type(left)
+    right_type = type(right)
+
+    if left_type is tuple and right_type is tuple:
+        left_tuple = cast(tuple[object, ...], left)
+        right_tuple = cast(tuple[object, ...], right)
+        return len(left_tuple) == len(right_tuple) and all(
+            _coordinate_values_equal(left_item, right_item)
+            for left_item, right_item in zip(left_tuple, right_tuple, strict=True)
+        )
+
+    if left_type is frozenset and right_type is frozenset:
+        left_items = list(cast(frozenset[object], left))
+        unmatched_right = list(cast(frozenset[object], right))
+        if len(left_items) != len(unmatched_right):
+            return False
+        for left_item in left_items:
+            for right_index, right_item in enumerate(unmatched_right):
+                if _coordinate_values_equal(left_item, right_item):
+                    unmatched_right.pop(right_index)
+                    break
+            else:
+                return False
+        return True
+
+    if _type_identity_in(left_type, _STRING_COORDINATE_TYPES) and _type_identity_in(
+        right_type, _STRING_COORDINATE_TYPES
+    ):
+        return bool(left == right)
+    if _type_identity_in(left_type, _BYTES_COORDINATE_TYPES) and _type_identity_in(
+        right_type, _BYTES_COORDINATE_TYPES
+    ):
+        return bool(left == right)
+    if left_type is right_type or (
+        _is_python_numeric_coordinate_type(left_type)
+        and _is_python_numeric_coordinate_type(right_type)
+    ):
+        return bool(left == right)
+    return False

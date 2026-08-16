@@ -180,27 +180,41 @@ class Step9DreamingConfig:
 
 
 def _require_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
+    real, _, _, narrowed = finite_real_and_float32(name, value)
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonneg_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or narrowed < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_half_open_unit_interval(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real < 1.0 or narrowed < 0.0 or not narrowed < 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real < 1.0
+        or numerator < 0
+        or numerator >= denominator
+        or narrowed < 0.0
+        or not narrowed < 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1), got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
@@ -212,9 +226,10 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")

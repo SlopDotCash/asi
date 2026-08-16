@@ -140,33 +140,49 @@ class Step4OneStepResult:
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_gvf_probability(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    if (real != 0.0 and real < _FLOAT32_MIN_NORMAL) or (
-        narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL
+    if (
+        (numerator != 0 and numerator << 126 < denominator)
+        or (real != 0.0 and real < _FLOAT32_MIN_NORMAL)
+        or (narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL)
     ):
         raise ValueError(f"{name} must be zero or a normal float32 value in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or narrowed < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real <= 0.0 or narrowed <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
@@ -207,6 +223,10 @@ def _validate_sarsa_config(config: Step4SARSAConfig) -> None:
     meta_step_size = _require_nonnegative_real("meta_step_size", config.meta_step_size)
     bounder_kappa = _require_positive_real("bounder_kappa", config.bounder_kappa)
     sparsity = _require_unit_interval("sparsity", config.sparsity)
+    if type(config.use_layer_norm) is not bool:
+        raise ValueError(
+            f"use_layer_norm must be a boolean, got {config.use_layer_norm!r}"
+        )
     object.__setattr__(config, "n_actions", n_actions)
     object.__setattr__(config, "hidden_sizes", hidden_sizes)
     object.__setattr__(config, "gamma", gamma)

@@ -14,6 +14,7 @@ IDBD-style step-sizes diverging to NaN (see
 """
 
 import functools
+import math
 
 import chex
 import jax
@@ -22,7 +23,12 @@ import jax.random as jr
 import numpy as np
 import pytest
 
-from alberta_framework.core import SwiftTD, SwiftTDState, TDLinearLearner
+from alberta_framework.core import (
+    SwiftTD,
+    SwiftTDState,
+    TDLinearLearner,
+    optimizer_from_config,
+)
 from alberta_framework.core.optimizers import LMS
 from alberta_framework.streams.alberta_plan_step1 import XDistShiftStream
 
@@ -151,15 +157,58 @@ class TestSwiftTDInit:
         state = optimizer.init(feature_dim=3)
         chex.assert_trees_all_close(jnp.exp(state.log_step_sizes), jnp.full(4, 0.1))
 
-    def test_invalid_hyperparameters_raise(self):
-        with pytest.raises(ValueError, match="initial_step_size"):
-            SwiftTD(initial_step_size=0.0)
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("initial_step_size", 0.0),
+            ("initial_step_size", math.nan),
+            ("initial_step_size", math.inf),
+            ("initial_step_size", -math.inf),
+            ("initial_step_size", True),
+            ("eta", -1.0),
+            ("eta", math.nan),
+            ("eta", math.inf),
+            ("eta_min", math.nan),
+            ("eta_min", math.inf),
+            ("meta_step_size", -1.0),
+            ("meta_step_size", math.nan),
+            ("meta_step_size", math.inf),
+            ("step_size_decay", 0.0),
+            ("trace_decay", 1.5),
+        ],
+    )
+    def test_invalid_hyperparameters_raise(self, field: str, value: object):
+        with pytest.raises(ValueError, match=field):
+            SwiftTD(**{field: value})  # type: ignore[arg-type]
+
+    def test_rejects_float_subclasses_without_calling_numeric_or_repr_hooks(self):
+        class HostileFloat(float):
+            def __float__(self):
+                raise AssertionError("numeric hook executed")
+
+            def __repr__(self):
+                raise AssertionError("repr hook executed")
+
         with pytest.raises(ValueError, match="eta"):
-            SwiftTD(eta=-1.0)
-        with pytest.raises(ValueError, match="step_size_decay"):
-            SwiftTD(step_size_decay=0.0)
-        with pytest.raises(ValueError, match="trace_decay"):
-            SwiftTD(trace_decay=1.5)
+            SwiftTD(eta=HostileFloat(0.1))
+
+    def test_numpy_scalars_are_canonicalized_to_builtin_floats(self):
+        config = SwiftTD(
+            initial_step_size=np.float32(0.01),
+            meta_step_size=np.float64(0.001),
+            trace_decay=np.float16(0.5),
+            eta=np.int64(1),
+        ).to_config()
+
+        assert all(type(value) is float for key, value in config.items() if key != "type")
+
+    def test_zero_meta_step_size_remains_supported(self):
+        state = SwiftTD(meta_step_size=0.0).init(feature_dim=3)
+        assert state.meta_step_size == 0.0
+
+    def test_config_factory_rejects_nonfinite_swifttd_values(self):
+        with pytest.raises(ValueError, match="initial_step_size"):
+            optimizer_from_config({"type": "SwiftTD", "initial_step_size": math.nan})
 
     def test_update_returns_correct_shapes(self):
         optimizer = SwiftTD(initial_step_size=0.01)

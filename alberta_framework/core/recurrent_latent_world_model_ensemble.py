@@ -91,9 +91,10 @@ def _finite_float32(
     positive: bool = False,
     nonnegative: bool = False,
 ) -> float:
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
+    actual_type = type(value)
+    if issubclass(actual_type, bool | np.bool_) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real non-boolean scalar")
-    canonical = float(value)
+    canonical = float(cast(Real, value))
     lower_ok = canonical > 0.0 if positive else canonical >= 0.0 if nonnegative else True
     if not math.isfinite(canonical) or not lower_ok or abs(canonical) > _FLOAT32_MAX:
         qualifier = "positive " if positive else "nonnegative " if nonnegative else ""
@@ -226,15 +227,27 @@ class RecurrentLatentWorldModelEnsembleConfig:
     """Fixed architecture, optimizer, warmup, and numeric bounds.
 
     The ``max_*`` fields are fail-closed validity gates, not tuned
-    hyperparameters: an observation, reward, parameter, prediction, loss, or
-    raw gradient whose magnitude exceeds its bound causes the whole event to
-    be rejected with persistent state untouched.  Their internal consistency
-    is validated at construction: ``variance_floor < max_variance``,
-    ``gradient_clip_norm <= max_raw_gradient_norm``, and
-    ``learning_rate * gradient_clip_norm <= max_parameter_magnitude`` (so a
-    single clipped step cannot itself breach the parameter bound).  The
-    default magnitudes are coarse sanity ceilings far above any healthy
-    operating range, not derived quantities.
+    hyperparameters: an observation, reward, parameter, prediction, or loss
+    whose magnitude exceeds its bound causes the whole event to be rejected
+    with persistent state untouched.  Their internal consistency is validated
+    at construction: ``variance_floor < max_variance``, ``gradient_clip_norm
+    <= max_raw_gradient_norm``, and ``learning_rate * gradient_clip_norm <=
+    max_parameter_magnitude`` (so a single clipped step cannot itself breach
+    the parameter bound).  The default magnitudes are coarse sanity ceilings
+    far above any healthy operating range, not derived quantities.
+
+    Per-member raw NLL gradients are validated for finiteness only, not
+    against ``max_raw_gradient_norm``: the reachable raw gradient scales as
+    ``residual / variance``, so a well-trained low-noise member can legally
+    exceed any fixed ceiling on an ordinary in-bounds transition, and because
+    a rejection leaves state unchanged, a norm ceiling here creates a
+    deadlock rather than a safety gate.  ``gradient_clip_norm`` already
+    bounds the committed step magnitude, and ``candidate_parameters_valid`` /
+    ``candidate_state_valid`` independently confirm the post-clip candidate is
+    finite and in-bounds before it is committed.  ``max_raw_gradient_norm``
+    still bounds the representation gradient (a returned diagnostic signal,
+    never itself clipped) and constrains ``gradient_clip_norm`` at
+    construction.
     """
 
     observation_dim: int
@@ -1093,7 +1106,52 @@ class RecurrentLatentWorldModelEnsemble:
         self,
         state: RecurrentLatentWorldModelEnsembleState,
         diagnostics: RecurrentLatentWorldModelDiagnostics,
+        next_decision_observation: Array | None = None,
+        transition_boundary: Array | None = None,
     ) -> RecurrentLatentWorldModelUpdateResult:
+        # A rejection never mutates `state`, but the *cache* previously
+        # defaulted to the invalid zero cache unconditionally.  Since `decide`
+        # and `update` both require a valid, owned start cache, that made
+        # every rejection -- regardless of cause -- a permanent deadlock: no
+        # later event, however legal, could ever be accepted again.
+        #
+        # Re-owning the unchanged state is safe only after an authoritative,
+        # in-domain, off-boundary transition reached a *late* numerical or
+        # candidate-state rejection.  In particular, `cache_valid` says only
+        # that the caller supplied a cache whose own flags are true; ownership
+        # and exact cached-prediction checks are what bind it to this state,
+        # observation, and action.  Minting a valid cache before those checks
+        # would launder an arbitrary `next_decision_observation` through a
+        # stale or tampered decision.  A rejected boundary also cannot recover
+        # this way because the unchanged state has not committed the required
+        # recurrent reset.
+        if next_decision_observation is None or transition_boundary is None:
+            recoverable_cache = self._zero_start_cache()
+        else:
+            recoverable = (
+                diagnostics.state_valid
+                & diagnostics.cache_valid
+                & diagnostics.input_valid
+                & diagnostics.ownership_valid
+                & diagnostics.boundary_semantics_valid
+                & diagnostics.capacity_available
+                & diagnostics.cached_prediction_exact
+                & diagnostics.predictions_valid
+                & ~transition_boundary
+            )
+            recoverable_cache = cast(
+                RecurrentLatentStartCache,
+                jax.lax.cond(
+                    recoverable,
+                    lambda: RecurrentLatentStartCache(
+                        owner_event_count=state.event_count,
+                        owner_hidden_states=state.member_hidden_states,
+                        observation=next_decision_observation,
+                        valid=jnp.asarray(True, dtype=jnp.bool_),
+                    ),
+                    self._zero_start_cache,
+                ),
+            )
         return RecurrentLatentWorldModelUpdateResult(
             state=state,
             prediction=self._zero_prediction(),
@@ -1111,7 +1169,7 @@ class RecurrentLatentWorldModelEnsemble:
             member_updates_applied=jnp.zeros(
                 (self._config.ensemble_size,), dtype=jnp.bool_
             ),
-            next_start_cache=self._zero_start_cache(),
+            next_start_cache=recoverable_cache,
             diagnostics=diagnostics,
         )
 
@@ -1256,10 +1314,14 @@ class RecurrentLatentWorldModelEnsemble:
                 member_losses.append(loss)
                 member_gradients.append(gradient)
                 gradient_norms.append(gradient_norm)
+                # Finiteness only -- see the class docstring.  The raw norm is
+                # not compared against max_raw_gradient_norm: a well-trained
+                # low-noise member legally produces residual / variance
+                # gradients that dwarf any fixed ceiling on an ordinary
+                # in-bounds transition, and gradient_clip_norm (applied below)
+                # already bounds the committed step regardless of raw scale.
                 member_gradients_valid.append(
-                    _tree_all_finite(gradient)
-                    & jnp.isfinite(gradient_norm)
-                    & (gradient_norm <= cfg.max_raw_gradient_norm)
+                    _tree_all_finite(gradient) & jnp.isfinite(gradient_norm)
                 )
             losses = jnp.stack(member_losses)
             gradient_norm_array = jnp.stack(gradient_norms)
@@ -1408,7 +1470,12 @@ class RecurrentLatentWorldModelEnsemble:
                 jax.lax.cond(
                     applied,
                     lambda: result,
-                    lambda: self._rejected_result(state, diagnostics),
+                    lambda: self._rejected_result(
+                        state,
+                        diagnostics,
+                        next_decision_observation,
+                        boundary,
+                    ),
                 ),
             )
 
@@ -1417,7 +1484,12 @@ class RecurrentLatentWorldModelEnsemble:
             jax.lax.cond(
                 can_attempt,
                 accepted_branch,
-                lambda _: self._rejected_result(state, rejected_diagnostics),
+                lambda _: self._rejected_result(
+                    state,
+                    rejected_diagnostics,
+                    next_decision_observation,
+                    boundary,
+                ),
                 operand=None,
             ),
         )

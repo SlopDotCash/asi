@@ -137,22 +137,29 @@ class Step7DynaConfig:
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or narrowed < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real <= 0.0 or narrowed <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    real, narrowed = finite_real_and_float32(name, value)
-    if real < 0.0 or not real <= 1.0 or narrowed < 0.0 or not narrowed <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
     return canonical_float32_storage(real, narrowed)
 
@@ -168,6 +175,12 @@ def _require_int(name: str, value: object, *, minimum: int | None = None) -> int
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
     return number
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be a bool, got {value!r}")
+    return value
 
 
 def _validate_planning_config(config: Step7DynaConfig) -> None:
@@ -198,6 +211,10 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
     utility_step = _require_unit_interval(
         "planning_utility_step_size",
         config.planning_utility_step_size,
+    )
+    _require_bool(
+        "planning_apply_importance_correction",
+        config.planning_apply_importance_correction,
     )
     if config.planning_strategy not in (
         "random",

@@ -151,6 +151,28 @@ class TestSwitchingTwoStateDynamics:
                 SwitchingTwoStateConfig(payoffs_a=((0.0, 1.0, 2.0),) * 2)  # type: ignore[arg-type]
             )
 
+    @pytest.mark.parametrize(
+        "payoffs_a",
+        [
+            ((float("nan"), 0.0), (0.0, 1.0)),
+            ((float("inf"), 0.0), (0.0, 1.0)),
+            ((-1.0, 0.0), (0.0, float("-inf"))),
+        ],
+    )
+    def test_non_finite_payoffs_raise(self, payoffs_a):
+        """Payoff matrices must contain only finite values."""
+        with pytest.raises(ValueError, match="finite"):
+            SwitchingTwoStateMDP(SwitchingTwoStateConfig(payoffs_a=payoffs_a))
+
+    def test_non_finite_payoffs_b_raise(self):
+        """payoffs_b is validated like payoffs_a."""
+        with pytest.raises(ValueError, match="finite"):
+            SwitchingTwoStateMDP(
+                SwitchingTwoStateConfig(
+                    payoffs_b=((0.0, float("nan")), (1.0, 0.0))  # type: ignore[arg-type]
+                )
+            )
+
 
 # =============================================================================
 # Switching two-state MDP: analytic helpers

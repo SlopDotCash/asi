@@ -94,6 +94,90 @@ class TestOnPolicyEquivalence:
 
 
 # =============================================================================
+# Per-decision importance sampling
+# =============================================================================
+
+
+class TestPerDecisionImportanceSampling:
+    def test_time_varying_rho_enters_each_trace_once(self) -> None:
+        """The current ratio scales the new feature; the previous ratio is retained."""
+        learner = OffPolicyTDLinearLearner(
+            step_size=0.1,
+            trace_decay=0.8,
+            retrace_clip=float("inf"),
+        )
+        state = learner.init(2)
+
+        first = learner.update(
+            state,
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.float32(1.0),
+            jnp.zeros(2, dtype=jnp.float32),
+            jnp.float32(0.9),
+            jnp.float32(2.0),
+        )
+        second = learner.update(
+            first.state,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.float32(1.0),
+            jnp.zeros(2, dtype=jnp.float32),
+            jnp.float32(0.9),
+            jnp.float32(0.5),
+        )
+
+        # z_1 = 2 * phi_1.  On the next transition,
+        # z_2 = 0.5 * (0.9 * 0.8 * z_1 + phi_2) = [0.72, 0.5].
+        chex.assert_trees_all_close(
+            first.state.eligibility_traces,
+            jnp.array([2.0, 0.0], dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            second.state.eligibility_traces,
+            jnp.array([0.72, 0.5], dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            second.state.bias_eligibility_trace,
+            jnp.float32(1.22),
+        )
+        # delta_1 = 1 and delta_2 = 1 + 0.9*0.2 - 0.2 = 0.98.
+        chex.assert_trees_all_close(
+            second.state.weights,
+            jnp.array([0.27056, 0.049], dtype=jnp.float32),
+            atol=1e-6,
+        )
+        chex.assert_trees_all_close(second.state.bias, jnp.float32(0.31956), atol=1e-6)
+
+    def test_constant_rho_retains_prior_weight_updates(self) -> None:
+        """The canonical trace is externally equivalent to the old placement at fixed rho."""
+        learner = OffPolicyTDLinearLearner(
+            step_size=0.1,
+            trace_decay=0.8,
+            retrace_clip=float("inf"),
+        )
+        state = learner.init(2)
+
+        for observation in (
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+        ):
+            state = learner.update(
+                state,
+                observation,
+                jnp.float32(1.0),
+                jnp.zeros(2, dtype=jnp.float32),
+                jnp.float32(0.9),
+                jnp.float32(2.0),
+            ).state
+
+        chex.assert_trees_all_close(
+            state.weights,
+            jnp.array([0.48224, 0.196], dtype=jnp.float32),
+            atol=1e-6,
+        )
+        chex.assert_trees_all_close(state.bias, jnp.float32(0.67824), atol=1e-6)
+
+
+# =============================================================================
 # ETD(lambda)
 # =============================================================================
 

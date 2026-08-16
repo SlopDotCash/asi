@@ -15,7 +15,7 @@ from alberta_framework.core.off_policy_horde import (
     run_off_policy_horde_learning_loop,
 )
 from alberta_framework.core.optimizers import LMS, ObGDBounding
-from alberta_framework.core.types import DemonType, GVFSpec, HordeSpec, create_horde_spec
+from alberta_framework.core.types import DemonType, GVFSpec, HordeSpec, TraceMode, create_horde_spec
 
 
 def _spec(
@@ -583,3 +583,61 @@ def test_nonlinear_shared_gtd_zero_discount_does_not_multiply_inf_next() -> None
     chex.assert_tree_all_finite(result.state)
     chex.assert_trees_all_close(result.td_targets, jnp.array([3.0], dtype=jnp.float32))
     chex.assert_tree_all_finite(result.correction_norms)
+
+
+def test_zero_utility_decay_does_not_multiply_inf_utility() -> None:
+    """utility_decay=0 times leftover inf hidden-unit utility is NaN."""
+    learner = OffPolicyHordeLearner(
+        _spec(gammas=(0.0, 0.0)),
+        hidden_sizes=(4,),
+        optimizer=LMS(step_size=0.01),
+        utility_decay=0.0,
+        sparsity=0.0,
+    )
+    state = learner.init(3, jax.random.key(0))
+    state = state.replace(  # type: ignore[attr-defined]
+        hidden_unit_utilities=tuple(
+            jnp.full_like(utility, jnp.inf) for utility in state.hidden_unit_utilities
+        )
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    result = learner.update_with_ratios(
+        state,
+        jnp.array([0.2, -0.1, 0.4], dtype=jnp.float32),
+        jnp.array([1.0, -0.5], dtype=jnp.float32),
+        jnp.array([0.0, 0.1, 0.2], dtype=jnp.float32),
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    for utility in result.state.hidden_unit_utilities:
+        chex.assert_tree_all_finite(utility)
+
+
+def test_replacing_zero_grad_does_not_multiply_inf_trunk_trace() -> None:
+    """Replacing traces used old * 0.0 on silent coordinates, which is 0*inf."""
+    learner = OffPolicyHordeLearner(
+        _spec(gammas=(0.0, 0.0)),
+        hidden_sizes=(3,),
+        optimizer=LMS(step_size=0.01),
+        trace_mode=TraceMode.REPLACING,
+        sparsity=0.0,
+    )
+    state = learner.init(2, jax.random.key(1))
+    state = state.replace(  # type: ignore[attr-defined]
+        trunk_traces=tuple(jnp.full_like(trace, jnp.inf) for trace in state.trunk_traces)
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    result = learner.update_with_ratios(
+        state,
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    for trace in result.state.trunk_traces:
+        chex.assert_tree_all_finite(trace)

@@ -18,7 +18,7 @@ import sqlite3
 import subprocess
 import sys
 from pathlib import Path, PurePosixPath
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn, TypeGuard, cast
 
 _SOURCE_ROOT = Path("/opt/foragax-agents")
 _PROTOCOL_ROOT = Path("/protocol")
@@ -88,6 +88,37 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _is_exact_int(value: Any) -> TypeGuard[int]:
+    """True only for exact ints; bool is an int subclass and must not alias 0/1."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _validate_task_intake(protocol: dict[str, Any]) -> tuple[dict[str, Any], int, list[int]]:
+    task = protocol.get("task")
+    if not isinstance(task, dict):
+        _fail("protocol task must be an object")
+    horizon = task.get("steps_per_seed", task.get("steps"))
+    seeds = task.get("seeds")
+    if not _is_exact_int(horizon) or horizon <= 0:
+        _fail("protocol horizon is invalid")
+    if not isinstance(seeds, list) or not seeds or not all(_is_exact_int(v) for v in seeds):
+        _fail("protocol seeds are invalid")
+    return task, horizon, cast(list[int], seeds)
+
+
+def _validate_ppo_schedule(
+    rollout: Any,
+    updates: Any,
+    horizon: int,
+    relative: str,
+) -> tuple[int, int]:
+    if not _is_exact_int(rollout) or not _is_exact_int(updates):
+        _fail(f"PPO schedule is not explicit: {relative}")
+    if rollout * updates != horizon:
+        _fail(f"PPO schedule does not equal the frozen horizon: {relative}")
+    return rollout, updates
 
 
 def _relative_path(value: Any, label: str) -> str:
@@ -274,16 +305,7 @@ def _validate_configurations(
     from ml_instrumentation.metadata import attach_metadata
     from PyExpUtils.results.tools import getParamsAsDict
 
-    task = protocol.get("task")
-    if not isinstance(task, dict):
-        _fail("protocol task must be an object")
-    horizon = task.get("steps_per_seed", task.get("steps"))
-    seeds = task.get("seeds")
-    if not isinstance(horizon, int) or horizon <= 0:
-        _fail("protocol horizon is invalid")
-    if not isinstance(seeds, list) or not seeds or not all(isinstance(v, int) for v in seeds):
-        _fail("protocol seeds are invalid")
-    typed_seeds = cast(list[int], seeds)
+    task, horizon, typed_seeds = _validate_task_intake(protocol)
 
     raw_configs = protocol.get("configurations")
     if not isinstance(raw_configs, list) or not raw_configs:
@@ -333,12 +355,12 @@ def _validate_configurations(
         if not isinstance(agent, str) or not agent:
             _fail(f"configuration agent is invalid: {relative}")
         if agent.startswith("PPO"):
-            rollout = hypers.get("rollout_steps")
-            updates = hypers.get("num_updates")
-            if not isinstance(rollout, int) or not isinstance(updates, int):
-                _fail(f"PPO schedule is not explicit: {relative}")
-            if rollout * updates != horizon:
-                _fail(f"PPO schedule does not equal the frozen horizon: {relative}")
+            rollout, updates = _validate_ppo_schedule(
+                hypers.get("rollout_steps"),
+                hypers.get("num_updates"),
+                horizon,
+                relative,
+            )
             entrypoint = "src/rtu_ppo.py"
             effective = [
                 stored_seed + int(experiment.get_hypers(seed).get("seed_offset", 0))

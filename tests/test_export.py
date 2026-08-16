@@ -480,6 +480,44 @@ def test_atomic_publish_failure_preserves_destination_and_removes_temporary_file
     assert list(tmp_path.iterdir()) == [path]
 
 
+@pytest.mark.parametrize("field", ["mean", "std"])
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf])
+def test_display_tables_reject_nonfinite_summaries(field: str, value: float) -> None:
+    result = _constant_result("invalid")
+    summary = result.summary[_METRIC]._replace(**{field: value})
+    results = {"invalid": result._replace(summary={_METRIC: summary})}
+
+    for render in (generate_latex_table, generate_markdown_table):
+        with pytest.raises(ValueError, match="non-finite"):
+            render(results)
+
+
+@pytest.mark.parametrize("field", ["mean", "std"])
+def test_display_tables_render_the_same_canonical_float_they_validate(field: str) -> None:
+    class InfiniteFloatWithFiniteCoercion(float):
+        def __float__(self) -> float:
+            return 0.0
+
+    value = InfiniteFloatWithFiniteCoercion(math.inf)
+    assert float(value) == 0.0
+    assert format(value, ".4f") == "inf"
+
+    result = _constant_result("candidate", 1.0)
+    summary = result.summary[_METRIC]._replace(**{field: value})
+    results = {"candidate": result._replace(summary={_METRIC: summary})}
+
+    for render in (generate_latex_table, generate_markdown_table):
+        table = render(results)
+        assert "inf" not in table
+        assert "0.0000" in table
+
+
+def test_display_tables_reject_empty_results() -> None:
+    for render in (generate_latex_table, generate_markdown_table):
+        with pytest.raises(ValueError, match="non-empty"):
+            render({})
+
+
 def test_display_only_tables_keep_four_decimal_presentation() -> None:
     results = {"candidate": _constant_result("candidate", 0.12345678901234566)}
 

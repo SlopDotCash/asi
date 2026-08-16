@@ -205,6 +205,12 @@ def test_step4_sarsa_scalars_reject_invalid_inputs(field: str, value: object) ->
         _config_with(**{field: value})
 
 
+@pytest.mark.parametrize("value", [0, 1, "false", None])
+def test_step4_sarsa_config_requires_exact_boolean_layer_norm(value: object) -> None:
+    with pytest.raises(ValueError, match="use_layer_norm must be a boolean"):
+        _config_with(use_layer_norm=value)
+
+
 def test_step4_sarsa_scalars_preserve_legal_boundaries() -> None:
     config = Step4SARSAConfig(
         n_actions=1,

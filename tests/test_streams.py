@@ -369,6 +369,16 @@ class TestScaledStreamWrapper:
         with pytest.raises(ValueError, match="must match"):
             ScaledStreamWrapper(inner, feature_scales=scales)
 
+    def test_rejects_non_finite_scales(self):
+        """Should raise error if scales contain NaN or infinity."""
+        inner = RandomWalkStream(feature_dim=5)
+        for scales in (
+            jnp.array([1.0, float("nan"), 2.0, 3.0, 4.0]),
+            jnp.array([1.0, float("inf"), 2.0, 3.0, 4.0]),
+        ):
+            with pytest.raises(ValueError, match="finite"):
+                ScaledStreamWrapper(inner, feature_scales=scales)
+
     def test_works_with_different_streams(self, rng_key):
         """Should work with any stream implementing the protocol."""
         scales = jnp.array([0.01, 0.1, 1.0, 10.0, 100.0])

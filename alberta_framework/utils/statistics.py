@@ -4,8 +4,10 @@ Provides functions for computing confidence intervals, significance tests,
 effect sizes, and multiple comparison corrections.
 """
 
+import math
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, NamedTuple
+from numbers import Real
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -90,6 +92,30 @@ def _require_sample_vector(values: object, *, name: str) -> NDArray[np.float64]:
             "compute_timeseries_statistics"
         )
     return arr
+
+
+def _require_probability(value: object, *, name: str, strict: bool) -> float:
+    """Return one canonical finite probability, rejecting booleans and coercions."""
+    if isinstance(value, bool) or not issubclass(type(value), Real):
+        domain = "strictly between 0 and 1" if strict else "in [0, 1]"
+        raise ValueError(f"{name} must be a finite real {domain}")
+    try:
+        probability = float(cast(Real, value))
+    except (OverflowError, TypeError, ValueError):
+        probability = math.nan
+    valid = 0.0 < probability < 1.0 if strict else 0.0 <= probability <= 1.0
+    if not math.isfinite(probability) or not valid:
+        domain = "strictly between 0 and 1" if strict else "in [0, 1]"
+        raise ValueError(f"{name} must be a finite real {domain}")
+    return probability
+
+
+def _require_alpha(alpha: object) -> float:
+    return _require_probability(alpha, name="alpha", strict=True)
+
+
+def _require_p_value(value: object, *, name: str) -> float:
+    return _require_probability(value, name=name, strict=False)
 
 
 def compute_statistics(
@@ -284,11 +310,13 @@ def ttest_comparison(
         SignificanceResult with test results
 
     Raises:
-        ValueError: If ``paired`` and the samples differ in length or hold
-            fewer than 2 pairs or are identical, or if an unpaired group is
-            empty or the two unpaired groups have no positive pooled degrees
-            of freedom.
+        ValueError: If ``alpha`` is not a finite probability strictly between
+            0 and 1, scipy returns an invalid p-value, ``paired`` samples
+            differ in length or hold fewer than 2 pairs or are identical, or
+            an unpaired group is empty or has no positive pooled degrees of
+            freedom.
     """
+    alpha_value = _require_alpha(alpha)
     a = _require_sample_vector(values_a, name="values_a")
     b = _require_sample_vector(values_b, name="values_b")
     _require_finite_values(a, name="values_a")
@@ -327,7 +355,9 @@ def ttest_comparison(
             test_name = "independent t-test"
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
-        p_val = float(result[1])
+        p_val = _require_p_value(
+            result[1], name=f"p_value returned by {test_name}"
+        )
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
@@ -337,8 +367,8 @@ def ttest_comparison(
         test_name=test_name,
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha,
-        alpha=alpha,
+        significant=p_val < alpha_value,
+        alpha=alpha_value,
         effect_size=effect,
         method_a=method_a,
         method_b=method_b,
@@ -365,8 +395,11 @@ def mann_whitney_comparison(
         SignificanceResult with test results
 
     Raises:
-        ValueError: If either sample is empty.
+        ValueError: If ``alpha`` is not a finite probability strictly between
+            0 and 1, either sample is empty, or scipy returns an invalid
+            p-value.
     """
+    alpha_value = _require_alpha(alpha)
     a = _require_sample_vector(values_a, name="values_a")
     b = _require_sample_vector(values_b, name="values_b")
     _require_finite_values(a, name="values_a")
@@ -377,17 +410,26 @@ def mann_whitney_comparison(
             f"independent Mann-Whitney test requires non-empty groups (got {len(a)} and {len(b)})"
         )
 
-    try:
-        from scipy import stats
+    if np.all(a == a[0]) and np.all(b == a[0]):
+        # Every cross-group pair is a tie.  The exact permutation null puts
+        # all mass at U=n_a*n_b/2, hence p=1; scipy's asymptotic tie variance
+        # is zero and some supported versions return NaN instead.
+        stat_val = len(a) * len(b) / 2.0
+        p_val = 1.0
+    else:
+        try:
+            from scipy import stats
 
-        result = stats.mannwhitneyu(a, b, alternative="two-sided")
-        # scipy returns (statistic, pvalue) tuple
-        stat_val = float(result[0])
-        p_val = float(result[1])
-    except ImportError:
-        raise ImportError(
-            "scipy is required for Mann-Whitney test. Install with: pip install scipy"
-        )
+            result = stats.mannwhitneyu(a, b, alternative="two-sided")
+            # scipy returns (statistic, pvalue) tuple
+            stat_val = float(result[0])
+            p_val = _require_p_value(
+                result[1], name="p_value returned by Mann-Whitney U"
+            )
+        except ImportError:
+            raise ImportError(
+                "scipy is required for Mann-Whitney test. Install with: pip install scipy"
+            )
 
     # Compute rank-biserial correlation as effect size (Kerby 2014):
     # r = 2*U1/(n_a*n_b) - 1, where scipy's statistic is U1 (pairs favoring a).
@@ -400,8 +442,8 @@ def mann_whitney_comparison(
         test_name="Mann-Whitney U",
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha,
-        alpha=alpha,
+        significant=p_val < alpha_value,
+        alpha=alpha_value,
         effect_size=r,
         method_a=method_a,
         method_b=method_b,
@@ -433,10 +475,12 @@ def wilcoxon_comparison(
         SignificanceResult with test results
 
     Raises:
-        ValueError: If the paired samples differ in length, hold fewer than 2
-            pairs, or are identical, for which the Wilcoxon signed-rank
-            statistic is undefined.
+        ValueError: If ``alpha`` is not a finite probability strictly between
+            0 and 1, scipy returns an invalid p-value, or the paired samples
+            differ in length, hold fewer than 2 pairs, or are identical, for
+            which the Wilcoxon signed-rank statistic is undefined.
     """
+    alpha_value = _require_alpha(alpha)
     a = _require_sample_vector(values_a, name="values_a")
     b = _require_sample_vector(values_b, name="values_b")
     _require_finite_values(a, name="values_a")
@@ -463,7 +507,9 @@ def wilcoxon_comparison(
         result = stats.wilcoxon(a, b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
-        p_val = float(result[1])
+        p_val = _require_p_value(
+            result[1], name="p_value returned by Wilcoxon signed-rank"
+        )
     except ImportError:
         raise ImportError("scipy is required for Wilcoxon test. Install with: pip install scipy")
 
@@ -473,8 +519,8 @@ def wilcoxon_comparison(
         test_name="Wilcoxon signed-rank",
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha,
-        alpha=alpha,
+        significant=p_val < alpha_value,
+        alpha=alpha_value,
         effect_size=effect,
         method_a=method_a,
         method_b=method_b,
@@ -493,12 +539,21 @@ def bonferroni_correction(
 
     Returns:
         Tuple of (list of significant booleans, corrected alpha)
+
+    Raises:
+        ValueError: If ``alpha`` is not strictly between 0 and 1 or any
+            p-value is not finite and inside [0, 1].
     """
-    n_tests = len(p_values)
+    alpha_value = _require_alpha(alpha)
+    validated_p_values = [
+        _require_p_value(p_value, name=f"p_values[{index}]")
+        for index, p_value in enumerate(p_values)
+    ]
+    n_tests = len(validated_p_values)
     if n_tests == 0:
-        return [], alpha
-    corrected_alpha = alpha / n_tests
-    significant = [p < corrected_alpha for p in p_values]
+        return [], alpha_value
+    corrected_alpha = alpha_value / n_tests
+    significant = [p < corrected_alpha for p in validated_p_values]
     return significant, corrected_alpha
 
 
@@ -516,17 +571,26 @@ def holm_correction(
 
     Returns:
         List of significant booleans
+
+    Raises:
+        ValueError: If ``alpha`` is not strictly between 0 and 1 or any
+            p-value is not finite and inside [0, 1].
     """
-    n_tests = len(p_values)
+    alpha_value = _require_alpha(alpha)
+    validated_p_values = [
+        _require_p_value(p_value, name=f"p_values[{index}]")
+        for index, p_value in enumerate(p_values)
+    ]
+    n_tests = len(validated_p_values)
 
     # Sort p-values and track original indices
-    sorted_indices = np.argsort(p_values)
-    sorted_p = [p_values[i] for i in sorted_indices]
+    sorted_indices = np.argsort(validated_p_values)
+    sorted_p = [validated_p_values[i] for i in sorted_indices]
 
     # Apply Holm correction
     significant_sorted = []
     for i, p in enumerate(sorted_p):
-        corrected_alpha = alpha / (n_tests - i)
+        corrected_alpha = alpha_value / (n_tests - i)
         if p < corrected_alpha:
             significant_sorted.append(True)
         else:
@@ -591,14 +655,17 @@ def pairwise_comparisons(
         Dictionary mapping (method_a, method_b) to SignificanceResult
 
     Raises:
-        ValueError: If ``window`` is not positive, a metric has no steps, seed identities are
-            duplicated, seeds do not match metric rows, seeds differ between methods used
-            by a paired test, or ``window`` exceeds the shortest trace while trace lengths
-            differ between methods. Paired rows are aligned by seed identity; Mann-Whitney
-            samples remain unpaired.
+        ValueError: If ``alpha`` is not a finite probability strictly between
+            0 and 1, ``window`` is not positive, a metric has no steps, seed
+            identities are duplicated, seeds do not match metric rows, seeds
+            differ between methods used by a paired test, or ``window`` exceeds
+            the shortest trace while trace lengths differ between methods.
+            Paired rows are aligned by seed identity; Mann-Whitney samples
+            remain unpaired.
     """
     from alberta_framework.utils.experiments import AggregatedResults
 
+    alpha_value = _require_alpha(alpha)
     if window <= 0:
         raise ValueError(f"window must be positive (got {window})")
 
@@ -665,7 +732,7 @@ def pairwise_comparisons(
                     values_a,
                     values_b,
                     paired=True,
-                    alpha=alpha,
+                    alpha=alpha_value,
                     method_a=name_a,
                     method_b=name_b,
                 )
@@ -673,7 +740,7 @@ def pairwise_comparisons(
                 result = mann_whitney_comparison(
                     values_a,
                     values_b,
-                    alpha=alpha,
+                    alpha=alpha_value,
                     method_a=name_a,
                     method_b=name_b,
                 )
@@ -681,7 +748,7 @@ def pairwise_comparisons(
                 result = wilcoxon_comparison(
                     values_a,
                     values_b,
-                    alpha=alpha,
+                    alpha=alpha_value,
                     method_a=name_a,
                     method_b=name_b,
                 )
@@ -691,9 +758,9 @@ def pairwise_comparisons(
 
     # Apply multiple comparison correction
     if correction == "bonferroni":
-        significant_list, _ = bonferroni_correction(p_values, alpha)
+        significant_list, _ = bonferroni_correction(p_values, alpha_value)
     elif correction == "holm":
-        significant_list = holm_correction(p_values, alpha)
+        significant_list = holm_correction(p_values, alpha_value)
     else:
         raise ValueError(f"Unknown correction: {correction}")
 
@@ -705,7 +772,7 @@ def pairwise_comparisons(
             statistic=result.statistic,
             p_value=result.p_value,
             significant=sig,
-            alpha=alpha,
+            alpha=alpha_value,
             effect_size=result.effect_size,
             method_a=result.method_a,
             method_b=result.method_b,

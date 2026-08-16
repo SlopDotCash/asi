@@ -1908,6 +1908,55 @@ def test_probe_result_accepts_only_reward_blind_unendorsed_payload(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
+    ("section", "field", "alias"),
+    [
+        (None, "qualification_seed", 0.0),
+        ("seed_resolution", "requested_seed", False),
+        ("reward_blind_boundary", "environment_resets", True),
+        ("configuration", "round_trip_accepted", 1),
+        ("authority", "content_only", 1),
+        ("authority", "promotion_authorized", 0),
+    ],
+)
+def test_persisted_probe_rejects_wrong_type_numeric_aliases(
+    tmp_path: Path,
+    section: str | None,
+    field: str,
+    alias: object,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    config = tmp_path / "config.json"
+    config.write_bytes(b"{}")
+    probe = tmp_path / "probe.py"
+    probe.write_bytes(b"# staged probe\n")
+    invocation = qualification.ProbeInvocation(
+        candidate_id="external_dqn_plain",
+        source_key="upstream",
+        source_root=source,
+        probe_path=probe,
+        probe_sha256=hashlib.sha256(probe.read_bytes()).hexdigest(),
+        configuration=config,
+        configuration_sha256=hashlib.sha256(b"{}").hexdigest(),
+        entrypoint_path="src/continuing_main.py",
+        entrypoint_sha256=_sha("entrypoint"),
+        entrypoint_family="continuing_main",
+        implementation_kind="upstream_dqn_plain",
+        invocation_style="official_foragax_continuing_main_v4",
+        result_root="results/results/run/alberta/DQN",
+        seed_transport="top_level_seed",
+        expected_agent="DQN",
+        horizon=builder.MATCHED_CURRENT_HORIZON,
+    )
+    payload = _probe_payload(invocation)
+    target = payload if section is None else payload[section]
+    target[field] = alias
+
+    with pytest.raises(qualification.ForagerMatchedQualificationError):
+        qualification._verify_probe_payload(payload, invocation)  # noqa: SLF001
+
+
+@pytest.mark.parametrize(
     ("buffer_min_size", "expected"),
     [(32, 124_920), (50, 124_915)],
 )

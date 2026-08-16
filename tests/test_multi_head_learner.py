@@ -277,6 +277,77 @@ class TestMultiHeadUpdateAllActive:
 
 
 # =============================================================================
+# Update tests — validation
+# =============================================================================
+
+
+class TestMultiHeadConstructorValidation:
+    """``per_head_gamma_lamda`` values must be finite and in [0, 1]."""
+
+    def test_rejects_wrong_length_per_head_gamma_lamda(self):
+        """The tuple must have exactly one value per head."""
+        with pytest.raises(ValueError, match="length n_heads"):
+            MultiHeadMLPLearner(
+                n_heads=2,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.01,
+                per_head_gamma_lamda=(0.5,),
+            )
+
+    @pytest.mark.parametrize("gl", [float("nan"), float("inf"), -0.1, 1.5, True, "0.5"])
+    def test_rejects_non_finite_or_out_of_range_values(self, gl):
+        """Each per-head trace decay must be a finite real in [0, 1]."""
+        with pytest.raises(ValueError, match=r"per_head_gamma_lamda\[1\]"):
+            MultiHeadMLPLearner(
+                n_heads=2,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.01,
+                per_head_gamma_lamda=(0.5, gl),  # type: ignore[arg-type]
+            )
+
+
+class TestMultiHeadUpdateValidation:
+    """``update`` must reject targets that are not one value per head.
+
+    JAX clamps static out-of-bounds indices instead of raising, so a
+    shorter-than-``n_heads`` targets array (a scalar or length-1 array is the
+    most common accident) silently reused its single value for every head:
+    every head reported a finite squared error and trained, instead of the
+    NaN/inactive behavior the caller intended for the heads it never supplied.
+    """
+
+    @pytest.mark.parametrize("shape", [(1,), (), (4, 1), (5,)])
+    def test_update_rejects_targets_that_are_not_one_per_head(self, shape):
+        learner = MultiHeadMLPLearner(
+            n_heads=4, hidden_sizes=(8,), sparsity=0.0, step_size=0.01,
+        )
+        state = learner.init(feature_dim=3, key=jr.key(0))
+        obs = jnp.array([1.0, -0.5, 0.25])
+        with pytest.raises(ValueError, match=r"targets must have shape \(4,\)"):
+            learner.update(state, obs, jnp.full(shape, 2.0, dtype=jnp.float32))
+
+    def test_length_one_targets_previously_silently_trained_every_head(self):
+        """Regression guard: shape (1,) must not longer look like all-active.
+
+        Before the shape check, a length-1 ``targets`` array silently
+        clamped-indexed the same value onto every head, producing a finite
+        (non-NaN) error for every head instead of raising. This test would
+        have failed to reject the mismatch on the pre-fix implementation
+        (the ``update`` call would have returned a result with no NaNs
+        instead of raising).
+        """
+        learner = MultiHeadMLPLearner(
+            n_heads=4, hidden_sizes=(8,), sparsity=0.0, step_size=0.01,
+        )
+        state = learner.init(feature_dim=3, key=jr.key(0))
+        obs = jnp.array([1.0, -0.5, 0.25])
+        with pytest.raises(ValueError, match=r"targets must have shape \(4,\)"):
+            learner.update(state, obs, jnp.array([2.0], dtype=jnp.float32))
+
+
+# =============================================================================
 # Update tests — partial active
 # =============================================================================
 

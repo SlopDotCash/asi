@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.dreaming import DreamingConfig
+from alberta_framework.core.experiential_memory import ExperientialMemoryConfig
 from alberta_framework.core.intelligence_amplification import IAConfig
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
@@ -23,7 +24,10 @@ from alberta_framework.core.prototype_agent import (
     PrototypeAgentConfig,
     PrototypeAgentState,
     PrototypeArrayResult,
+    PrototypeExperientialMemoryInput,
+    PrototypeTransition,
     PrototypeUpdateResult,
+    _increment_decision_id,
     feature_to_subtask_specs,
     load_prototype_checkpoint,
     save_prototype_checkpoint,
@@ -397,6 +401,75 @@ class TestPrototypeAgentUpdateFull:
         assert int(result.state.world_model_state.step_count) == 1
 
 
+def test_experiential_memory_uses_one_accounted_policy_step() -> None:
+    """Prototype proposal and write must share one recorded pre-state query."""
+    memory_config = ExperientialMemoryConfig(
+        capacity=3,
+        observation_dim=OBS_DIM,
+        key_dim=OBS_DIM,
+        action_dim=N_PRIM,
+        outcome_dim=OBS_DIM + 1,
+        top_k=1,
+        min_neighbors=1,
+    )
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            experiential_memory=memory_config,
+        )
+    )
+    resources = agent.experiential_memory_resource_declaration
+    assert resources is not None
+    assert resources.categorical_policy_queries == 1
+    assert resources.causal_step_queries == 0
+    assert resources.total_deterministic_prestate_queries == 1
+
+    state = agent.start(agent.init(jr.key(31)), jnp.zeros(OBS_DIM, dtype=jnp.float32))
+    transition = PrototypeTransition(
+        observation=state.current_raw_observation,
+        action=state.current_action,
+        decision_id=state.current_decision_id,
+        reward=jnp.asarray(1.0, dtype=jnp.float32),
+        discount=jnp.asarray(1.0, dtype=jnp.float32),
+        terminated=jnp.asarray(False),
+        truncated=jnp.asarray(False),
+        next_observation=jnp.ones(OBS_DIM, dtype=jnp.float32),
+        next_decision_observation=jnp.ones(OBS_DIM, dtype=jnp.float32),
+    )
+    memory_input = PrototypeExperientialMemoryInput(
+        available=jnp.asarray(True),
+        current_prototype_decision_id=state.current_decision_id,
+        next_prototype_decision_id=_increment_decision_id(state.current_decision_id),
+        query_representation_version=jnp.asarray(0, dtype=jnp.int32),
+        entry_representation_version=jnp.asarray(0, dtype=jnp.int32),
+        query_uncertainty=jnp.asarray(0.0, dtype=jnp.float32),
+        query_uncertainty_available=jnp.asarray(True),
+        entry_uncertainty=jnp.asarray(0.0, dtype=jnp.float32),
+        entry_uncertainty_available=jnp.asarray(True),
+        safety_cost=jnp.asarray(0.0, dtype=jnp.float32),
+        safety_cost_available=jnp.asarray(True),
+        reliability=jnp.asarray(1.0, dtype=jnp.float32),
+        utility=jnp.asarray(1.0, dtype=jnp.float32),
+        utility_available=jnp.asarray(True),
+        provenance_id=jnp.asarray(1, dtype=jnp.int32),
+        source_id=jnp.asarray(1, dtype=jnp.int32),
+        next_action_safety_mask=jnp.ones(N_PRIM, dtype=jnp.bool_),
+    )
+
+    result = agent.update_transition(
+        state,
+        transition,
+        experiential_memory_input=memory_input,
+    )
+    diagnostics = result.experiential_memory_diagnostics
+    memory_state = agent._experiential_memory_component_state(result.state.ia_state)
+
+    assert bool(diagnostics.transaction_applied)
+    assert int(diagnostics.deterministic_prestate_query_count) == 1
+    assert int(memory_state.query_count) == 1
+    assert int(memory_state.write_count) == 1
+
+
 # ---------------------------------------------------------------------------
 # Scan
 # ---------------------------------------------------------------------------
@@ -692,6 +765,51 @@ class TestFeatureToSubtaskSpecs:
         specs = feature_to_subtask_specs(state.oak_state, n_subtasks=OBS_DIM)
         for spec in specs:
             assert 0 <= spec.feature_index < OBS_DIM
+
+    def test_ranks_by_max_across_sources_not_sum(self) -> None:
+        """Pins the documented contract (issue #412): ranking is the maximum
+        absolute Q-weight across all base and option policies, i.e.
+        ``jnp.maximum(feature_importance, opt_importance)`` per feature — not
+        the sum of the two per-source maxima. A feature that is mid-weight in
+        both sources must not outrank a feature holding the single largest
+        weight anywhere.
+
+        Reproduction values from the issue: per-feature base max
+        ``[1.0, 0.6, 0.1]``, per-feature option max ``[0.0, 0.6, 0.1]``.
+        Documented (max) ranking is ``[0, 1, 2]``; the pre-fix summed
+        ranking was ``[1, 0, 2]``.
+        """
+        obs_dim = 3
+        config = PrototypeAgentConfig(oak=_oak_cfg(obs_dim=obs_dim, n_prim=N_PRIM))
+        agent = PrototypeAgent(config)
+        state = agent.init(jr.key(0))
+        oak_state = state.oak_state
+        stomp_state = oak_state.stomp_state
+
+        base_row = jnp.array([1.0, 0.6, 0.1], dtype=jnp.float32)
+        head_params = stomp_state.base_learner_state.head_params
+        new_head_params = head_params.replace(
+            weights=tuple(base_row[None, :] for _ in head_params.weights)
+        )
+        new_base_learner_state = stomp_state.base_learner_state.replace(
+            head_params=new_head_params
+        )
+
+        opt_row = jnp.array([0.0, 0.6, 0.1], dtype=jnp.float32)
+        new_option_policies = stomp_state.option_policies.replace(
+            q_weights=jnp.broadcast_to(opt_row, stomp_state.option_policies.q_weights.shape)
+        )
+
+        patched_oak_state = oak_state.replace(
+            stomp_state=stomp_state.replace(
+                base_learner_state=new_base_learner_state,
+                option_policies=new_option_policies,
+            )
+        )
+
+        specs = feature_to_subtask_specs(patched_oak_state, n_subtasks=3)
+
+        assert [s.feature_index for s in specs] == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------

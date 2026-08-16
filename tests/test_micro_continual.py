@@ -78,6 +78,51 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 
 pytestmark = pytest.mark.unit
 
+
+class _FloatClassSpoof:
+    @property
+    def __class__(self) -> type[float]:
+        return float
+
+    def __float__(self) -> float:
+        return 0.1
+
+
+class _ExplodingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises an ordinary exception."""
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class _InterruptingConversionFloat(float):
+    """An actual float subclass whose conversion hook raises a BaseException."""
+
+    def __float__(self) -> float:
+        raise KeyboardInterrupt
+
+
+class _ExplodingRepr:
+    """An invalid hyperparameter value whose repr hook raises."""
+
+    calls = 0
+
+    def __repr__(self) -> str:
+        type(self).calls += 1
+        raise RuntimeError("untrusted __repr__ hook executed")
+
+
+class _ExplodingHashMeta(type):
+    """A metaclass whose hash hook raises inside ABC subclass checks."""
+
+    def __hash__(cls) -> int:
+        raise RuntimeError("untrusted metaclass __hash__ hook executed")
+
+
+class _ExplodingHashClassValue(metaclass=_ExplodingHashMeta):
+    """A value or mapping whose class cannot be hashed by issubclass caches."""
+
+
 TINY = MicroStreamConfig(
     family="input_permutation",
     n_regimes=4,
@@ -785,6 +830,134 @@ class TestRunner:
 class TestShards:
     def _result(self, seed=0, arm="sgd_raw"):
         return run_micro_arm(TINY, arm, seed=seed, hidden1=8, hidden2=6)
+
+    def test_payload_records_the_spec_that_actually_ran(self, tmp_path: Path):
+        """A custom spec sharing a registry name must not be serialized as the registry arm."""
+        registry = micro_arm_spec("sgd_raw")
+        custom = dataclasses.replace(
+            registry, hyperparameters={"step_size": 0.5, "weight_decay": 0.3}
+        )
+        registry_run = run_micro_arm(TINY, "sgd_raw", seed=0, hidden1=8, hidden2=6)
+        custom_run = run_micro_arm(TINY, custom, seed=0, hidden1=8, hidden2=6)
+        assert custom_run.overall_accuracy != registry_run.overall_accuracy
+        assert custom_run.mechanism == registry.mechanism
+        assert custom_run.hyperparameters == {"step_size": 0.5, "weight_decay": 0.3}
+        assert registry_run.hyperparameters == registry.hyperparameters
+
+        payload = micro_shard_payload(custom_run)
+        assert payload["hyperparameters"] == {"step_size": 0.5, "weight_decay": 0.3}
+        assert payload["mechanism"] == registry.mechanism
+        assert payload["hyperparameters"] is not custom_run.hyperparameters
+
+        path_a = micro_shard_path(tmp_path, TINY.family, "sgd_raw", 0)
+        write_micro_shard(path_a, payload)
+        path_b = micro_shard_path(tmp_path, TINY.family, "sgd_raw", 1)
+        write_micro_shard(
+            path_b,
+            micro_shard_payload(run_micro_arm(TINY, "sgd_raw", seed=1, hidden1=8, hidden2=6)),
+        )
+        with pytest.raises(ValueError, match="hyperparameters"):
+            merge_micro_shards([path_a, path_b], bayes_samples=1_000)
+
+    def test_registry_specs_cannot_be_mutated_through_lookup(self):
+        spec = micro_arm_spec("sgd_raw")
+        with pytest.raises(TypeError):
+            spec.hyperparameters["step_size"] = 123.0  # type: ignore[index]
+        assert micro_arm_spec("sgd_raw").hyperparameters["step_size"] != 123.0
+
+    def test_direct_run_result_construction_copies_and_freezes_hyperparameters(self):
+        external = {"step_size": 0.5, "weight_decay": 0.3}
+        result = dataclasses.replace(self._result(), hyperparameters=external)
+        external["step_size"] = 0.9
+
+        assert result.hyperparameters == {"step_size": 0.5, "weight_decay": 0.3}
+        with pytest.raises(TypeError):
+            result.hyperparameters["step_size"] = 0.7  # type: ignore[index]
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {1: 0.1},
+            {"": 0.1},
+            {"step_size": float("nan")},
+            {"step_size": float("inf")},
+            {"step_size": True},
+            {"step_size": [0.1]},
+            {"step_size": _FloatClassSpoof()},
+        ],
+    )
+    def test_arm_specs_reject_noncanonical_hyperparameters(
+        self, hyperparameters: object
+    ) -> None:
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {"step_size": _ExplodingConversionFloat(0.1)},
+            {"step_size": _ExplodingHashClassValue()},
+            _ExplodingHashClassValue(),
+        ],
+        ids=["conversion-hook", "metaclass-hash-value", "metaclass-hash-mapping"],
+    )
+    def test_spec_and_result_normalize_hook_failures_to_value_error(
+        self, hyperparameters: object
+    ) -> None:
+        """Ordinary hook failures surface as the documented ValueError, not the hook's type."""
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                self._result(),
+                hyperparameters=hyperparameters,  # type: ignore[arg-type]
+            )
+
+    def test_invalid_hyperparameter_rejection_never_calls_repr(self) -> None:
+        _ExplodingRepr.calls = 0
+        with pytest.raises(ValueError, match="hyperparameters"):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _ExplodingRepr()},  # type: ignore[arg-type]
+            )
+        assert _ExplodingRepr.calls == 0
+
+    def test_base_exceptions_from_conversion_hooks_still_propagate(self) -> None:
+        with pytest.raises(KeyboardInterrupt):
+            dataclasses.replace(
+                micro_arm_spec("sgd_raw"),
+                hyperparameters={"step_size": _InterruptingConversionFloat(0.1)},
+            )
+
+    def test_payload_rejects_an_unregistered_result_name(self):
+        result = dataclasses.replace(self._result(), arm_name="unregistered_candidate")
+        with pytest.raises(ValueError, match="unregistered_candidate.*registered"):
+            micro_shard_payload(result)
+
+    @pytest.mark.parametrize(
+        "hyperparameters",
+        [
+            {"step_size": "0.01"},
+            {"step_size": True},
+            {"step_size": None},
+            {"step_size": [0.01]},
+            {"": 0.01},
+        ],
+    )
+    def test_load_rejects_noncanonical_hyperparameters(
+        self, tmp_path: Path, hyperparameters: object
+    ) -> None:
+        payload = micro_shard_payload(self._result())
+        payload["hyperparameters"] = hyperparameters
+        path = self._write_payload(tmp_path, payload)
+        with pytest.raises(ValueError, match="hyperparameters"):
+            load_micro_shard(path)
 
     def test_payload_roundtrip(self, tmp_path: Path):
         result = self._result()

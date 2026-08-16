@@ -18,6 +18,7 @@ from alberta_framework.steps import (
     Step6DifferentialSARSAConfig,
     Step7DynaConfig,
     Step8WorldModelConfig,
+    Step9DreamingConfig,
     init_step6_state,
     init_step7_state,
     make_step5_td_learner,
@@ -269,6 +270,43 @@ def test_step6_smoke_rejects_non_integral_dimensions(field: str, value: Any) -> 
         run_step6_smoke(**{field: value})
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("steps", 0),
+        ("steps", 2**31),
+        ("feature_dim", 0),
+        ("feature_dim", 2**31),
+        ("seed", -1),
+        ("seed", 2**31),
+        ("seed", True),
+        ("steps", np.int64(2**31)),
+        ("feature_dim", np.int64(2**31)),
+        ("seed", np.int64(2**31)),
+        ("seed", np.int64(-1)),
+    ],
+)
+def test_step6_smoke_rejects_out_of_range_dimensions_and_seed(
+    field: str,
+    value: Any,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        run_step6_smoke(**{field: value})
+
+
+@pytest.mark.parametrize("feature_dim", [0, 2**31, True, np.int64(2**31)])
+def test_init_step6_state_rejects_invalid_feature_dim(feature_dim: Any) -> None:
+    agent = make_step6_differential_sarsa_agent()
+
+    with pytest.raises(ValueError, match="feature_dim"):
+        init_step6_state(
+            agent,
+            feature_dim=feature_dim,
+            key=jr.key(0),
+            initial_features=jnp.ones((1,), dtype=jnp.float32),
+        )
+
+
 _INVALID_STEP6_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_actions", 0),
     ("n_actions", -1),
@@ -405,6 +443,34 @@ def test_step6_fields_canonicalize_nonbuiltin_numbers() -> None:
     assert agent.config.n_actions == 3
 
 
+def test_step6_fields_canonicalize_longdouble_and_fraction_scalars() -> None:
+    config = Step6DifferentialSARSAConfig(
+        q_step_size=np.longdouble("0.05"),
+        average_reward_step_size=np.longdouble("0.01"),
+        trace_decay=Fraction(1, 3),
+        epsilon_start=Fraction(1, 10),
+        epsilon_end=np.longdouble("0.01"),
+    )
+    fields = (
+        "q_step_size",
+        "average_reward_step_size",
+        "trace_decay",
+        "epsilon_start",
+        "epsilon_end",
+    )
+    for field in fields:
+        assert type(getattr(config, field)) is float, field
+    assert config.q_step_size == float(np.float32(0.05))
+    assert config.trace_decay == float(np.float32(1.0 / 3.0))
+    assert config.epsilon_start == float(np.float32(0.1))
+    payload = config.to_dict()
+    json.dumps(payload, allow_nan=False)
+    for field in fields:
+        assert type(payload[field]) is float, field
+    restored = Step6DifferentialSARSAConfig.from_dict(payload)
+    assert restored == config
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -424,6 +490,148 @@ def test_step6_fields_enforce_exact_scientific_domains(
 ) -> None:
     with pytest.raises(ValueError, match=field):
         Step6DifferentialSARSAConfig(**{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "ratio"),
+    [
+        ("q_step_size", (-1, 2**200)),
+        ("average_reward_step_size", (-1, 2**200)),
+        ("trace_decay", (-1, 2**200)),
+        ("trace_decay", (2**200 + 1, 2**200)),
+        ("epsilon_start", (-1, 2**200)),
+        ("epsilon_start", (2**200 + 1, 2**200)),
+        ("epsilon_end", (-1, 2**200)),
+        ("epsilon_end", (2**200 + 1, 2**200)),
+    ],
+)
+def test_step6_fields_reject_hostile_exact_ratio_domains(
+    field: str,
+    ratio: tuple[int, int],
+) -> None:
+    class HostileRatioFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=field):
+        Step6DifferentialSARSAConfig(**{field: HostileRatioFloat(0.5)})
+
+
+def test_step6_exact_ratio_is_read_once() -> None:
+    class StatefulRatioFloat(float):
+        calls = 0
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            type(self).calls += 1
+            if type(self).calls == 1:
+                return (1, 2)
+            return (-1, 1)
+
+    config = Step6DifferentialSARSAConfig(q_step_size=StatefulRatioFloat(0.5))
+
+    assert StatefulRatioFloat.calls == 1
+    assert config.q_step_size == 0.5
+
+
+def test_step6_class_spoof_cannot_bypass_exact_ratio_dispatch() -> None:
+    class IntegralSpoofFloat(float):
+        calls = 0
+
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            type(self).calls += 1
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="q_step_size"):
+        Step6DifferentialSARSAConfig(q_step_size=IntegralSpoofFloat(0.5))
+    assert IntegralSpoofFloat.calls == 1
+
+
+@pytest.mark.parametrize("field", ["n_actions", "epsilon_decay_steps"])
+def test_step6_integer_fields_reject_class_spoof(field: str) -> None:
+    class IntegerSpoof:
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def __int__(self) -> int:
+            return 2
+
+    with pytest.raises(ValueError, match=field):
+        Step6DifferentialSARSAConfig(**{field: IntegerSpoof()})
+
+
+@pytest.mark.parametrize(
+    "config_type",
+    [
+        pytest.param(Step7DynaConfig, id="step7"),
+        pytest.param(Step9DreamingConfig, id="step9"),
+    ],
+)
+def test_nested_step6_payload_refuses_integral_class_spoof(
+    config_type: type[Step7DynaConfig] | type[Step9DreamingConfig],
+) -> None:
+    class IntegralSpoofFloat(float):
+        calls = 0
+
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            type(self).calls += 1
+            return (-1, 2**200)
+
+    payload = config_type().to_dict()
+    control = payload["control"]
+    assert isinstance(control, dict)
+    control["q_step_size"] = IntegralSpoofFloat(0.5)
+
+    with pytest.raises(ValueError, match="q_step_size"):
+        config_type.from_dict(payload)
+    assert IntegralSpoofFloat.calls == 1
+
+
+def test_step6_builtin_float_serialization_and_signed_zero_are_preserved() -> None:
+    config = Step6DifferentialSARSAConfig(
+        q_step_size=0.1,
+        average_reward_step_size=-0.0,
+        trace_decay=-0.0,
+        epsilon_start=-0.0,
+        epsilon_end=-0.0,
+    )
+    payload = config.to_dict()
+
+    assert type(payload["q_step_size"]) is float
+    assert payload["q_step_size"] == 0.1
+    for field in (
+        "average_reward_step_size",
+        "trace_decay",
+        "epsilon_start",
+        "epsilon_end",
+    ):
+        assert type(payload[field]) is float
+        assert np.signbit(payload[field])
+    assert Step6DifferentialSARSAConfig.from_dict(payload) == config
+
+
+@pytest.mark.parametrize(
+    "wrap",
+    [
+        pytest.param(lambda control: Step7DynaConfig(control=control), id="step7"),
+        pytest.param(lambda control: Step9DreamingConfig(control=control), id="step9"),
+    ],
+)
+def test_nested_step7_and_step9_refuse_hostile_step6_ratio(wrap: Any) -> None:
+    class HiddenNegativeFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="q_step_size"):
+        wrap(Step6DifferentialSARSAConfig(q_step_size=HiddenNegativeFloat(0.5)))
 
 
 def test_step6_float32_narrowing_avoids_longdouble_double_rounding() -> None:

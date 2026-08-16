@@ -436,6 +436,30 @@ def test_reservoir_selection_contract_and_lifetime_calculations_are_exact() -> N
     assert int(state.long_term_write_count + state.long_term_rejection_count) == 11
 
 
+def test_reservoir_policy_reports_no_aleatoric_control_rather_than_a_veto() -> None:
+    """Reservoir applies no aleatoric control, so ``available`` must be False, not a fake veto."""
+    memory = DualReplayMemory(_config(long_term_policy="reservoir", max_aleatoric_uncertainty=1.0))
+    state = memory.init(jr.key(11))
+    signals = [(0.0, True), (2.0, True), (0.0, False), (2.0, False)]
+    for provenance, (aleatoric, available) in enumerate(signals, start=1):
+        result = memory.record(
+            state,
+            _prediction(
+                provenance,
+                aleatoric=aleatoric,
+                aleatoric_available=available,
+            ),
+            _outcome(provenance),
+        )
+        assert bool(result.input_valid)
+        assert not bool(result.aleatoric_control_available)
+        assert not bool(result.aleatoric_control_passed)
+        assert not bool(result.long_term_priority_available)
+        state = result.state
+    assert int(state.accepted_transition_count) == 4
+    assert int(jnp.sum(state.long_term.valid)) > 0
+
+
 def test_calibrated_priority_uses_surprise_coverage_and_progress_exactly() -> None:
     memory = DualReplayMemory(
         _config(

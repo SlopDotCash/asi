@@ -226,6 +226,127 @@ class TestComparisonsRejectNonFiniteSamples:
                 pairwise_comparisons({"a": a, "b": b}, test="ttest", window=1)
 
 
+class _FloatClassSpoof:
+    """Plain object whose reported ``__class__`` fools ``isinstance``."""
+
+    def __repr__(self) -> str:
+        """Keep parametrized node IDs stable across xdist worker processes."""
+        return "_FloatClassSpoof()"
+
+    @property
+    def __class__(self) -> type[float]:
+        return float
+
+    def __float__(self) -> float:
+        return 0.05
+
+
+class TestProbabilityContracts:
+    """Decision thresholds and published p-values must be real probabilities."""
+
+    _A = np.asarray([1.0, 2.0, 4.0, 8.0])
+    _B = np.asarray([1.5, 2.5, 3.5, 6.0])
+
+    @pytest.mark.parametrize(
+        "alpha",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            0.0,
+            1.0,
+            -0.1,
+            1.1,
+            True,
+            "0.05",
+            None,
+            _FloatClassSpoof(),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "comparison",
+        [
+            lambda a, b, alpha: ttest_comparison(a, b, paired=False, alpha=alpha),
+            lambda a, b, alpha: ttest_comparison(a, b, paired=True, alpha=alpha),
+            lambda a, b, alpha: mann_whitney_comparison(a, b, alpha=alpha),
+            lambda a, b, alpha: wilcoxon_comparison(a, b, alpha=alpha),
+        ],
+        ids=["independent-ttest", "paired-ttest", "mann-whitney", "wilcoxon"],
+    )
+    def test_comparisons_reject_invalid_alpha(self, comparison: Any, alpha: Any) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"^alpha must be a finite real strictly between 0 and 1$",
+        ):
+            comparison(self._A, self._B, alpha)
+
+    @pytest.mark.parametrize("correction", [bonferroni_correction, holm_correction])
+    @pytest.mark.parametrize(
+        "alpha",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            0.0,
+            1.0,
+            -0.1,
+            1.1,
+            True,
+            _FloatClassSpoof(),
+        ],
+    )
+    def test_corrections_reject_invalid_alpha_even_for_an_empty_family(
+        self, correction: Any, alpha: Any
+    ) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"^alpha must be a finite real strictly between 0 and 1$",
+        ):
+            correction([], alpha=alpha)
+
+    @pytest.mark.parametrize("correction", [bonferroni_correction, holm_correction])
+    @pytest.mark.parametrize(
+        "invalid_p",
+        [
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            -0.1,
+            1.1,
+            True,
+            "0.1",
+            None,
+            _FloatClassSpoof(),
+        ],
+    )
+    def test_corrections_reject_invalid_p_values(
+        self, correction: Any, invalid_p: Any
+    ) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"^p_values\[1\] must be a finite real in \[0, 1\]$",
+        ):
+            correction([0.01, invalid_p, 0.2], alpha=0.05)
+
+    @pytest.mark.parametrize("correction", [bonferroni_correction, holm_correction])
+    def test_corrections_accept_exact_probability_boundaries(self, correction: Any) -> None:
+        result = correction([0.0, 1.0], alpha=0.05)
+        significant = result[0] if isinstance(result, tuple) else result
+        assert significant == [True, False]
+
+    def test_comparison_rejects_a_nonfinite_scipy_p_value(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            with pytest.raises(
+                ValueError,
+                match=(
+                    r"^p_value returned by independent t-test must be a finite real "
+                    r"in \[0, 1\]$"
+                ),
+            ):
+                ttest_comparison([1.0, 1.0], [1.0, 1.0], paired=False)
+
+
 class TestTimeseriesStatistics:
     def test_matches_per_column_compute_statistics(self) -> None:
         """Vectorised timeseries CI agrees with per-step scalar CI."""
@@ -606,6 +727,14 @@ class TestOneSampleRejection:
         res = mann_whitney_comparison([1.0], [2.0])
         assert res.p_value == pytest.approx(1.0)
         assert res.effect_size == pytest.approx(-1.0)
+
+    def test_mann_whitney_all_ties_have_the_exact_null_result(self) -> None:
+        """Zero asymptotic tie variance is an exact p=1 null, never p=nan."""
+        res = mann_whitney_comparison([1.0, 1.0], [1.0, 1.0, 1.0])
+        assert res.statistic == pytest.approx(3.0)
+        assert res.p_value == 1.0
+        assert res.effect_size == 0.0
+        assert not res.significant
 
 
 # ---------------------------------------------------------------------------

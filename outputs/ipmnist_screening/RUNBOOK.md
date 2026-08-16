@@ -308,3 +308,17 @@ Ops: shards via `worker.sh` (waves rls_jobs{,2,3}.txt, scratchpad);
 collapsed shards keep non-finite per-task losses and are excluded from
 merges by the validator. Merged ranking: `summary_rls_head.json`
 (control `upgd_w_control`; `summary.json` untouched).
+
+## EMA warmup contract clarification (2026-08-16)
+
+The checked-in EMA-normalized shards and the live estimator both use
+`min(decay, 1 - 1 / (accepted_count + 1))`. Issue #469 made the previously
+implicit initialization contract explicit: the zero mean and unit variance
+are one prior pseudo-sample, so the first effective decay is
+`min(decay, 1/2)` and `decay=1` is a prior-regularized cumulative estimator,
+not an ordinary sample mean or Welford estimator. The recurrence and
+historical shard values did not change. New configuration receipts use
+distinct EMA-prior semantics labels; the loader continues to accept the older
+generic labels for compatibility and canonicalizes them when re-serialized.
+As always, do not rewrite these development artifacts, and bind any later run
+to its exact source revision.

@@ -268,8 +268,8 @@ class TestRhoZeroInvariance:
         )
         chex.assert_trees_all_equal(result.state.weights, state.weights)
         chex.assert_trees_all_equal(result.state.bias, state.bias)
-        # rho = 0 also cuts the eligibility trace back to the current features.
-        chex.assert_trees_all_close(result.state.eligibility_traces, jnp.asarray(PHI[3]))
+        # The canonical per-decision trace z = rho * (...) vanishes.
+        chex.assert_trees_all_close(result.state.eligibility_traces, jnp.zeros(N_FEATURES))
 
     def test_etd_weights_invariant_and_follow_on_resets(self) -> None:
         learner = ETDLinearLearner(step_size=0.1, trace_decay=0.0)

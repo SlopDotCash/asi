@@ -1565,7 +1565,7 @@ class DualReplayMemory:
             coverage_component = jnp.asarray(0.0, dtype=jnp.float32)
             progress_component = jnp.asarray(0.0, dtype=jnp.float32)
             aleatoric_passed = jnp.asarray(False)
-            aleatoric_available = transition.aleatoric_uncertainty_available
+            aleatoric_available = jnp.asarray(False)
             next_key, draw_key = jr.split(_key_from_data(state.rng_key_data))
             selection = reservoir_selection(draw_key, candidate_number, cfg.long_term_capacity)
             wrote_long = selection.selected

@@ -3504,10 +3504,25 @@ def _parse_scorer_output(
         {"schema_version", "horizon", "seeds", "result_root", "records"},
         "qualified scorer output",
     )
+    output_horizon = _integer(
+        payload["horizon"],
+        "qualified scorer horizon",
+        minimum=1,
+        maximum=2**31 - 1,
+    )
+    output_seeds = _array(payload["seeds"], "qualified scorer seeds")
+    if len(output_seeds) != 1:
+        raise ForagerMatchedExecutorError("qualified scorer must emit exactly one seed")
+    output_seed = _integer(
+        output_seeds[0],
+        "qualified scorer seed",
+        minimum=0,
+        maximum=2**31 - 1,
+    )
     if (
         payload["schema_version"] != SCORER_OUTPUT_SCHEMA
-        or payload["horizon"] != plan.protocol.horizon
-        or payload["seeds"] != [seed]
+        or output_horizon != plan.protocol.horizon
+        or output_seed != seed
         or payload["result_root"] != candidate.result_root
     ):
         raise ForagerMatchedExecutorError("qualified scorer output contract drift")
@@ -3539,13 +3554,46 @@ def _parse_scorer_output(
     ).as_posix()
     sample_count = (plan.protocol.horizon + 99) // 100
     tail_start = int(0.9 * sample_count)
+    record_seed = _integer(
+        record["seed"],
+        "qualified scorer record seed",
+        minimum=0,
+        maximum=2**31 - 1,
+    )
+    reward_shape = _array(record["reward_shape"], "qualified scorer reward shape")
+    if len(reward_shape) != 1:
+        raise ForagerMatchedExecutorError("qualified scorer reward shape must have one dimension")
+    reward_length = _integer(
+        reward_shape[0],
+        "qualified scorer reward length",
+        minimum=1,
+        maximum=2**31 - 1,
+    )
+    ema_sample_count = _integer(
+        record["ema_sample_count"],
+        "qualified scorer EMA sample count",
+        minimum=1,
+        maximum=2**31 - 1,
+    )
+    ema_tail_start_index = _integer(
+        record["ema_tail_start_index"],
+        "qualified scorer EMA tail start index",
+        minimum=0,
+        maximum=2**31 - 1,
+    )
+    ema_tail_sample_count = _integer(
+        record["ema_tail_sample_count"],
+        "qualified scorer EMA tail sample count",
+        minimum=1,
+        maximum=2**31 - 1,
+    )
     if (
-        record["seed"] != seed
+        record_seed != seed
         or record["archive_path"] != expected_archive
-        or record["reward_shape"] != [plan.protocol.horizon]
-        or record["ema_sample_count"] != sample_count
-        or record["ema_tail_start_index"] != tail_start
-        or record["ema_tail_sample_count"] != sample_count - tail_start
+        or reward_length != plan.protocol.horizon
+        or ema_sample_count != sample_count
+        or ema_tail_start_index != tail_start
+        or ema_tail_sample_count != sample_count - tail_start
     ):
         raise ForagerMatchedExecutorError("qualified scorer seed/horizon/trace layout drift")
     _sha256(record["npz_sha256"], "qualified scorer NPZ digest")

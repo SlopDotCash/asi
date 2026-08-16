@@ -93,6 +93,12 @@ _INVALID_STEP7_FIELDS: tuple[tuple[str, Any], ...] = (
     ("planning_utility_step_size", 1.1),
     ("planning_utility_step_size", "0.2"),
     ("planning_utility_step_size", None),
+    ("planning_apply_importance_correction", 1),
+    ("planning_apply_importance_correction", 0),
+    ("planning_apply_importance_correction", 1.0),
+    ("planning_apply_importance_correction", "yes"),
+    ("planning_apply_importance_correction", ""),
+    ("planning_apply_importance_correction", None),
 )
 
 
@@ -227,6 +233,17 @@ def test_step7_planning_fields_preserve_legal_endpoints() -> None:
     smoke = run_step7_smoke(config, steps=4, seed=0)
     assert smoke.finite
     assert smoke.planning_td_errors_shape == (4, 0)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("flag", [True, False])
+def test_step7_importance_correction_accepts_exact_bool(flag: bool) -> None:
+    config = _config_with(planning_apply_importance_correction=flag)
+    assert config.planning_apply_importance_correction is flag
+    payload = config.to_dict()
+    assert type(payload["planning_apply_importance_correction"]) is bool
+    restored = Step7DynaConfig.from_dict(payload)
+    assert restored.planning_apply_importance_correction is flag
 
 
 def test_step7_planning_fields_canonicalize_nonbuiltin_numbers() -> None:

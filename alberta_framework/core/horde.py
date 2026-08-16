@@ -389,6 +389,13 @@ class HordeLearner:
             HordeUpdateResult with updated state, predictions, TD errors,
             TD targets, and per-demon metrics
         """
+        cumulants = jnp.asarray(cumulants)
+        expected_shape = (self.n_demons,)
+        if cumulants.shape != expected_shape:
+            raise ValueError(
+                f"cumulants must have shape {expected_shape}, got {cumulants.shape}"
+            )
+
         # 1. Compute V(s') for bootstrapping
         next_preds = self._learner.predict(state, next_observation)
 
@@ -466,8 +473,19 @@ class HordeLearner:
         Returns:
             HordeUpdateResult with updated state and TD metrics.
         """
-        next_preds = self._learner.predict(state, next_observation)
+        cumulants = jnp.asarray(cumulants)
         discounts = jnp.asarray(discounts, dtype=jnp.float32)
+        expected_shape = (self.n_demons,)
+        if cumulants.shape != expected_shape:
+            raise ValueError(
+                f"cumulants must have shape {expected_shape}, got {cumulants.shape}"
+            )
+        if discounts.shape != expected_shape:
+            raise ValueError(
+                f"discounts must have shape {expected_shape}, got {discounts.shape}"
+            )
+
+        next_preds = self._learner.predict(state, next_observation)
         bootstrap = jnp.where(discounts == 0.0, 0.0, discounts * next_preds)
         targets = cumulants + bootstrap
         requested = ~jnp.isnan(cumulants)

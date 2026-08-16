@@ -812,6 +812,8 @@ class ScaledStreamWrapper:
                 f"feature_scales shape ({self._feature_scales.shape}) "
                 f"must match inner stream's feature_dim ({inner_stream.feature_dim})"
             )
+        if not bool(jnp.all(jnp.isfinite(self._feature_scales))):
+            raise ValueError("feature_scales must contain only finite float32 values")
 
     @property
     def feature_dim(self) -> int:

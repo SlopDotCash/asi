@@ -21,6 +21,7 @@ import json
 import shutil
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -429,6 +430,77 @@ def test_external_screen_validator_rejects_duplicate_rank_rows() -> None:
         match="must contain every rank exactly once in order",
     ):
         universe._verify_one_screen(binding, protocol, screen_plan, aggregate)
+
+
+@pytest.mark.unit
+def test_rtu_source_validator_rejects_float_alias_for_integer_aperture() -> None:
+    binding = next(
+        item
+        for item in universe._LOCAL_CANDIDATE_GENERATION_BINDINGS
+        if item.screen_id == "rtu_schema23_screening_v1"
+    )
+    artifacts = {
+        artifact.role: json.loads((_REPOSITORY_ROOT / artifact.path).read_bytes())
+        for artifact in binding.artifacts
+    }
+    artifacts["protocol"]["task"]["aperture_size"] = 9.0
+
+    with pytest.raises(
+        universe.ForagerMatchedCandidateUniverseError,
+        match=r"task\.aperture_size must be an integer",
+    ):
+        universe._verify_rtu_candidate_generation(binding, artifacts)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("artifact_role", "path", "match"),
+    [
+        ("protocol", ("task", "steps"), r"task\.steps must be an integer"),
+        ("protocol", ("task", "seeds", 0), r"task\.seeds\[0\] must be an integer"),
+        ("matrix", ("steps",), r"matrix\.steps must be an integer"),
+        ("matrix", ("seeds", 0), r"matrix\.seeds\[0\] must be an integer"),
+        ("matrix", ("tuning_seeds", 0), r"matrix\.tuning_seeds\[0\] must be an integer"),
+        (
+            "matrix",
+            ("evaluation_seeds", 0),
+            r"matrix\.evaluation_seeds\[0\] must be an integer",
+        ),
+        (
+            "protocol",
+            ("future_evaluation", "seeds", 0),
+            r"future_evaluation\.seeds\[0\] must be an integer",
+        ),
+        (
+            "protocol",
+            ("selection_rule", "advance_count"),
+            r"selection_rule\.advance_count must be an integer",
+        ),
+    ],
+)
+def test_rtu_source_validator_rejects_float_aliases_across_full_integer_contract(
+    artifact_role: str, path: tuple[object, ...], match: str
+) -> None:
+    """Reviewer-found gap on PR #461: the exact-int policy applied to
+    aperture_size alone left every adjacent integer attestation (task/matrix
+    steps and seeds, future_evaluation seeds, selection_rule advance_count)
+    still fail-open to a numeric alias via bare equality."""
+    binding = next(
+        item
+        for item in universe._LOCAL_CANDIDATE_GENERATION_BINDINGS
+        if item.screen_id == "rtu_schema23_screening_v1"
+    )
+    artifacts = {
+        artifact.role: json.loads((_REPOSITORY_ROOT / artifact.path).read_bytes())
+        for artifact in binding.artifacts
+    }
+    target: Any = artifacts[artifact_role]
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = float(target[path[-1]])
+
+    with pytest.raises(universe.ForagerMatchedCandidateUniverseError, match=match):
+        universe._verify_rtu_candidate_generation(binding, artifacts)
 
 
 @pytest.mark.unit

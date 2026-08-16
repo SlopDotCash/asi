@@ -589,6 +589,42 @@ class TestFixedBudgetFeatureLearner:
             GENERATOR_IMPRINT,
         }
 
+    def test_age_corrected_promotion_restarts_raw_utility_ema(self) -> None:
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=1,
+            step_size_output=0.0,
+            step_size_feature=0.0,
+            utility_decay=0.5,
+            replacement_interval=1,
+            min_feature_age=0,
+            candidate_count=1,
+            candidate_min_age=0,
+            promotion_margin=1.0,
+            future_utility_mix=1.0,
+            future_utility_normalization="age",
+            use_obgd=False,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(431)).replace(
+            utilities=jnp.array([0.1], dtype=jnp.float32),
+            ages=jnp.array([5], dtype=jnp.int32),
+            candidate_utilities=jnp.array([1.0], dtype=jnp.float32),
+            candidate_ages=jnp.array([5], dtype=jnp.int32),
+        )
+
+        promoted = jax.jit(learner.update)(
+            state,
+            jnp.ones((2,), dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+        )
+
+        assert bool(promoted.update_applied)
+        assert int(promoted.promoted_candidate) == 0
+        assert int(promoted.state.ages[0]) == 0
+        assert float(promoted.state.utilities[0]) == 0.0
+        assert float(promoted.state.candidate_utilities[0]) == 0.0
+        chex.assert_tree_all_finite(promoted.metrics)
+
     def test_scan_loop_shapes(self) -> None:
         stream = NonlinearFeatureDiscoveryStream(
             feature_dim=4,

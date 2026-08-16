@@ -919,6 +919,12 @@ class AverageRewardHordeLearner:
         next_observation: Array,
     ) -> AverageRewardHordeUpdateResult:
         """Apply one shared-trunk differential Horde update."""
+        cumulants = jnp.asarray(cumulants)
+        expected_shape = (self._n_demons,)
+        if cumulants.shape != expected_shape:
+            raise ValueError(
+                f"cumulants must have shape {expected_shape}, got {cumulants.shape}"
+            )
         next_predictions = self._learner.predict(state.learner_state, next_observation)
         # NaN remains the inactive-head sentinel. Other non-finite cumulants
         # are rejected per head and reported separately from inactivity.

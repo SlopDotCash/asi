@@ -9,12 +9,12 @@ Theoretical background:
     to TD with FA). Several remedies exist:
 
     1. Per-decision importance sampling (Precup, Sutton, Singh 2000):
-       multiply each step's update by rho_t = pi(a_t|s_t) / b(a_t|s_t)
-       so that on average we are simulating the on-policy distribution.
-       Variance can be very large.
-    2. Retrace ratio clipping (Munos et al. 2016): use
-       rho_clipped = min(c, rho_t). Convergent for c <= 1; for c > 1 it
-       trades bias for variance reduction.
+       include each rho_t = pi(a_t|s_t) / b(a_t|s_t) once in the
+       eligibility-trace recursion so that on average we are simulating the
+       on-policy distribution. Variance can be very large.
+    2. Retrace-style ratio clipping (Munos et al. 2016): use
+       rho_clipped = min(c, rho_t) to trade variance for bias. Clipping is
+       not by itself a convergence guarantee for linear off-policy TD.
     3. Gradient-TD (TDC, GQ-lambda) (Sutton, Maei, et al. 2009-2010):
        gradient descent on the projected Bellman error.
     4. Emphatic TD (Sutton, Mahmood, White 2016): emphasis traces F_t
@@ -82,8 +82,8 @@ class OffPolicyTDState:
     Attributes:
         weights: Weight vector for linear value approximation
         bias: Bias term
-        eligibility_traces: Per-feature eligibility trace
-        bias_eligibility_trace: Bias eligibility trace
+        eligibility_traces: Per-feature importance-sampling trace ``z_t``
+        bias_eligibility_trace: Bias importance-sampling trace
         step_count: Number of updates applied
         birth_timestamp: Wall-clock seconds at init
         uptime_s: Cumulative wall-clock seconds spent in update calls
@@ -224,13 +224,13 @@ class OffPolicyTDLinearLearner:
         rho_t = pi(a_t|s_t) / b(a_t|s_t)               (provided externally)
         rho_clipped = min(c, rho_t)                     (Retrace clipping)
         delta_t = R_{t+1} + gamma_t * V(s_{t+1}) - V(s_t)
-        e_t = gamma_t * lambda_t * rho_clipped * e_{t-1} + phi_t
-        w_{t+1} = w_t + alpha * delta_t * rho_clipped * e_t
+        z_t = rho_clipped * (gamma_t * lambda_t * z_{t-1} + phi_t)
+        w_{t+1} = w_t + alpha * delta_t * z_t
 
     Setting ``retrace_clip = inf`` recovers naive per-decision IS.
-    Setting ``retrace_clip = 1.0`` gives the Retrace-c=1 update which is
-    convergent under standard conditions. Setting ``rho_t = 1`` always
-    recovers on-policy semi-gradient TD(lambda).
+    Setting ``retrace_clip = 1.0`` clips every ratio in the trace recursion
+    to one. Setting ``rho_t = 1`` always recovers on-policy semi-gradient
+    TD(lambda).
 
     Attributes:
         step_size: Learning rate alpha
@@ -249,9 +249,8 @@ class OffPolicyTDLinearLearner:
         Args:
             step_size: Learning rate alpha (scalar)
             trace_decay: Eligibility trace decay lambda in [0, 1]
-            retrace_clip: Maximum allowed importance ratio (default 1.0
-                is the safe Retrace-c=1 choice; pass float("inf") to
-                disable clipping).
+            retrace_clip: Maximum allowed importance ratio (default 1.0;
+                pass float("inf") to disable clipping).
         """
         if step_size <= 0:
             raise ValueError(f"step_size must be positive; got {step_size}")
@@ -335,13 +334,20 @@ class OffPolicyTDLinearLearner:
         v_next = jnp.dot(state.weights, next_observation) + state.bias
         td_error = reward_s + _skip_zero_scale(gamma_s, v_next) - v_t
 
-        # IS-weighted accumulating eligibility trace
-        decay = gamma_s * lam * rho_clipped
-        new_e = _skip_zero_scale(decay, state.eligibility_traces) + observation
-        new_e_b = _skip_zero_scale(decay, state.bias_eligibility_trace) + 1.0
+        # Canonical per-decision IS trace.  Each transition's ratio enters once:
+        # the prior ratios are already represented in the stored trace.
+        decay = gamma_s * lam
+        new_e = _skip_zero_scale(
+            rho_clipped,
+            _skip_zero_scale(decay, state.eligibility_traces) + observation
+        )
+        new_e_b = _skip_zero_scale(
+            rho_clipped,
+            _skip_zero_scale(decay, state.bias_eligibility_trace) + 1.0
+        )
 
-        # Update with rho_clipped * delta * e
-        scaled_update = alpha * rho_clipped * td_error
+        # rho_clipped is already represented in the trace.
+        scaled_update = alpha * td_error
         proposed_state = OffPolicyTDState(  # type: ignore[call-arg]
             weights=state.weights + scaled_update * new_e,
             bias=state.bias + scaled_update * new_e_b,

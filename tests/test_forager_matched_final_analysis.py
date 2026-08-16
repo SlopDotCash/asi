@@ -2484,6 +2484,7 @@ def test_source_projection_and_command_templates_are_exact(
         )
 
     malformed_plan_cases: tuple[tuple[str, Any], ...] = (
+        ("horizon", float(seal_content.sealed_protocol.horizon)),
         ("active_seeds", None),
         (
             "active_seeds",

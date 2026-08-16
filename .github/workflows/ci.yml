@@ -311,3 +311,18 @@ jobs:
             }}-shard-${{ matrix.shard }}.xml
           if-no-files-found: warn
           retention-days: 14
+
+  # Stable aggregate check for branch rulesets: the runtime matrix has
+  # dynamic job names, so merge gating requires this single context instead.
+  ci-ok:
+    if: always()
+    needs: [package, robot-floor, lint, test-plan, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify every CI job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          echo "$RESULTS" | jq -e 'all(. == "success")'

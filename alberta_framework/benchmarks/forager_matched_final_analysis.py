@@ -2198,7 +2198,7 @@ def _validate_evaluation_snapshot(
         != qualification_manifest_sha256
         or executor_manifest.get("qualification_manifest_sha256")
         != qualification_manifest_sha256
-        or plan.get("horizon") != sealed_protocol.horizon
+        or not _json_exact_equal(plan.get("horizon"), sealed_protocol.horizon)
         or type(plan_active_seeds) is not list
         or not _json_exact_equal(plan_active_seeds, list(sealed_protocol.active_seeds))
         or type(plan_candidate_order) is not list

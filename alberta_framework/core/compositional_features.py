@@ -33,6 +33,8 @@ from jax import Array
 from jaxtyping import Bool, Float, Int, PRNGKeyArray
 
 from alberta_framework.core.future_utility import (
+    bias_correct_future_utility,
+    canonical_float32_ema_decay,
     contribution_trace_output_loss_reduction,
     normalize_future_utility_signal,
     trace_output_loss_reduction,
@@ -1036,8 +1038,11 @@ class CompositionalFeatureLearner:
             raise ValueError("n_tasks must be positive")
         if candidate_count < 0:
             raise ValueError("candidate_count must be non-negative")
-        if not 0.0 <= utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
+        utility_decay_config = utility_decay
+        utility_decay = canonical_float32_ema_decay(
+            "utility_decay",
+            utility_decay,
+        )
         if replacement_interval < 0:
             raise ValueError("replacement_interval must be non-negative")
         if not 0.0 <= promotion_blend <= 1.0:
@@ -1133,8 +1138,11 @@ class CompositionalFeatureLearner:
             and candidate_selector_exploration <= 0.0
         ):
             raise ValueError("exp3 candidate_selector requires positive exploration")
-        if not 0.0 <= retention_slow_utility_decay < 1.0:
-            raise ValueError("retention_slow_utility_decay must be in [0, 1)")
+        retention_slow_utility_decay_config = retention_slow_utility_decay
+        retention_slow_utility_decay = canonical_float32_ema_decay(
+            "retention_slow_utility_decay",
+            retention_slow_utility_decay,
+        )
         if retention_tanh_min_count < 0:
             raise ValueError("retention_tanh_min_count must be non-negative")
         if retention_product_min_count < 0:
@@ -1178,6 +1186,7 @@ class CompositionalFeatureLearner:
         self._step_size_output = step_size_output
         self._step_size_theta = step_size_theta
         self._utility_decay = utility_decay
+        self._utility_decay_config = utility_decay_config
         self._replacement_interval = replacement_interval
         self._min_feature_age = min_feature_age
         self._candidate_min_age = candidate_min_age
@@ -1223,6 +1232,9 @@ class CompositionalFeatureLearner:
             )
         )
         self._retention_slow_utility_decay = retention_slow_utility_decay
+        self._retention_slow_utility_decay_config = (
+            retention_slow_utility_decay_config
+        )
         self._retention_tanh_min_count = retention_tanh_min_count
         self._retention_product_min_count = retention_product_min_count
         self._operation_prior = operation_prior
@@ -1284,7 +1296,7 @@ class CompositionalFeatureLearner:
             "candidate_count": self._candidate_count,
             "step_size_output": self._step_size_output,
             "step_size_theta": self._step_size_theta,
-            "utility_decay": self._utility_decay,
+            "utility_decay": self._utility_decay_config,
             "replacement_interval": self._replacement_interval,
             "min_feature_age": self._min_feature_age,
             "candidate_min_age": self._candidate_min_age,
@@ -1327,7 +1339,9 @@ class CompositionalFeatureLearner:
                 self._candidate_selector_learning_rate
             ),
             "candidate_selector_exploration": self._candidate_selector_exploration,
-            "retention_slow_utility_decay": self._retention_slow_utility_decay,
+            "retention_slow_utility_decay": (
+                self._retention_slow_utility_decay_config
+            ),
             "retention_tanh_min_count": self._retention_tanh_min_count,
             "retention_product_min_count": self._retention_product_min_count,
             "operation_prior": (
@@ -2032,6 +2046,16 @@ class CompositionalFeatureLearner:
         decay = jnp.asarray(self._retention_slow_utility_decay, dtype=jnp.float32)
         return decay * previous_slow_utility + (1.0 - decay) * utility_signal
 
+    def _utility_update(self, previous_utility: Array, utility_signal: Array) -> Array:
+        """Update the raw utility EMA with one float32 decay/complement pair."""
+        if self._utility_decay == 0.0:
+            return utility_signal
+        decay = jnp.asarray(self._utility_decay, dtype=jnp.float32)
+        return (
+            decay * previous_utility
+            + (jnp.asarray(1.0, dtype=jnp.float32) - decay) * utility_signal
+        )
+
     def _retention_score(
         self,
         fast_utility: Array,
@@ -2041,6 +2065,20 @@ class CompositionalFeatureLearner:
         if self._retention_slow_utility_decay == 0.0:
             return fast_utility
         return jnp.maximum(fast_utility, slow_utility)
+
+    def _ranking_utility(
+        self,
+        raw_utility: Array,
+        ages: Array,
+        decay: float,
+    ) -> Array:
+        """Return curation/report scores without changing serialized EMA state."""
+        mode = (
+            self._future_utility_normalization
+            if self._future_utility_mix > 0.0
+            else "none"
+        )
+        return bias_correct_future_utility(raw_utility, ages, decay, mode)
 
     def _energy_normalized_residual_score(
         self,
@@ -2236,6 +2274,12 @@ class CompositionalFeatureLearner:
             utilities = jnp.ones_like(existing_depth, dtype=jnp.float32)
         else:
             utilities = existing_utilities
+            if existing_ages is not None:
+                utilities = self._ranking_utility(
+                    utilities,
+                    existing_ages,
+                    self._utility_decay,
+                )
         parent_logits = self._parent_logits(
             eligible,
             utilities,
@@ -2396,9 +2440,14 @@ class CompositionalFeatureLearner:
             depth_ok = depth_c + 1 <= self._max_depth
             eligible = alive & depth_ok
             any_eligible = jnp.any(eligible)
+            ranking_utils = self._ranking_utility(
+                utils_c,
+                ages_c,
+                self._utility_decay,
+            )
             logits = self._parent_logits(
                 eligible,
-                utils_c,
+                ranking_utils,
                 feature_values=feature_values,
                 feature_credit=feature_credit,
                 depth=depth_c,
@@ -2408,7 +2457,7 @@ class CompositionalFeatureLearner:
             partner_logits = self._partner_logits(
                 eligible,
                 depth_c,
-                utils_c,
+                ranking_utils,
                 ages=ages_c,
                 parent_mode=parent_mode,
             )
@@ -2662,13 +2711,7 @@ class CompositionalFeatureLearner:
                 state.feature_score_residual_trace,
                 state.feature_score_energy_trace,
             )
-        if self._utility_decay == 0.0:
-            new_utilities = utility_signal
-        else:
-            new_utilities = (
-                self._utility_decay * state.utilities
-                + (1.0 - self._utility_decay) * utility_signal
-            )
+        new_utilities = self._utility_update(state.utilities, utility_signal)
         retention_slow_utilities = self._retention_slow_utility(
             state.retention_slow_utilities,
             utility_signal,
@@ -2785,13 +2828,10 @@ class CompositionalFeatureLearner:
                     )
                 )
                 candidate_signal = candidate_signal * novelty_gate
-            if self._utility_decay == 0.0:
-                new_candidate_utilities = candidate_signal
-            else:
-                new_candidate_utilities = (
-                    self._utility_decay * state.candidate_utilities
-                    + (1.0 - self._utility_decay) * candidate_signal
-                )
+            new_candidate_utilities = self._utility_update(
+                state.candidate_utilities,
+                candidate_signal,
+            )
         candidate_retention_slow_utilities = self._retention_slow_utility(
             state.candidate_retention_slow_utilities,
             candidate_signal if self._candidate_count > 0 else new_candidate_utilities,
@@ -2829,6 +2869,26 @@ class CompositionalFeatureLearner:
         )
         ages = state.ages + 1
         candidate_ages = state.candidate_ages + 1
+        ranking_utilities = self._ranking_utility(
+            new_utilities,
+            ages,
+            self._utility_decay,
+        )
+        ranking_retention_slow_utilities = self._ranking_utility(
+            retention_slow_utilities,
+            ages,
+            self._retention_slow_utility_decay,
+        )
+        ranking_candidate_utilities = self._ranking_utility(
+            new_candidate_utilities,
+            candidate_ages,
+            self._utility_decay,
+        )
+        ranking_candidate_retention_slow_utilities = self._ranking_utility(
+            candidate_retention_slow_utilities,
+            candidate_ages,
+            self._retention_slow_utility_decay,
+        )
         step_count = state.step_count + 1
         key, decision_key, curation_key = jr.split(state.key, 3)
         proposal_key, cascade_key = compositional_curation_keys(curation_key)
@@ -2911,8 +2971,8 @@ class CompositionalFeatureLearner:
             & (~product_quota_protected)
         )
         active_replacement_score = self._retention_score(
-            new_utilities,
-            retention_slow_utilities,
+            ranking_utilities,
+            ranking_retention_slow_utilities,
         )
         retention_bonus = (
             jnp.asarray(self._retention_depth_bonus, dtype=jnp.float32)
@@ -3014,8 +3074,8 @@ class CompositionalFeatureLearner:
                 compatible_active_by_candidate, axis=1
             )
             candidate_promotion_scores = self._retention_score(
-                new_candidate_utilities,
-                candidate_retention_slow_utilities,
+                ranking_candidate_utilities,
+                ranking_candidate_retention_slow_utilities,
             )
             candidate_selector_state = FiniteCandidateSelectorState(
                 log_weights=candidate_selector_log_weights,
@@ -3053,7 +3113,7 @@ class CompositionalFeatureLearner:
                 candidate_selector_action_counts = selector_result.state.action_counts
             has_refresh_candidate = jnp.any(eligible_candidates)
             refresh_scores = jnp.where(
-                eligible_candidates, new_candidate_utilities, jnp.inf
+                eligible_candidates, ranking_candidate_utilities, jnp.inf
             )
             worst_candidate = jnp.argmin(refresh_scores).astype(jnp.int32)
             compatible_active = compatible_active_by_candidate[best_candidate]
@@ -3143,9 +3203,18 @@ class CompositionalFeatureLearner:
                         can_promote, cand_depth_after, depth_a[promotion_slot]
                     ).astype(jnp.int32)
                 )
+                promoted_utility = (
+                    jnp.array(0.0, dtype=jnp.float32)
+                    if (
+                        self._future_utility_mix > 0.0
+                        and self._future_utility_normalization
+                        in {"age", "uncertainty_age"}
+                    )
+                    else cutil_a[best_candidate]
+                )
                 util_b = util_a.at[promotion_slot].set(
                     jnp.where(
-                        can_promote, cutil_a[best_candidate], util_a[promotion_slot]
+                        can_promote, promoted_utility, util_a[promotion_slot]
                     )
                 )
                 age_b = age_a.at[promotion_slot].set(
@@ -3663,7 +3732,11 @@ class CompositionalFeatureLearner:
                 eligible = in_range & depth_ok
                 logits = self._parent_logits(
                     eligible,
-                    util_x,
+                    self._ranking_utility(
+                        util_x,
+                        age_x,
+                        self._utility_decay,
+                    ),
                     feature_values=feature_values,
                     feature_credit=feature_credit,
                     depth=depth_x,
@@ -3673,7 +3746,11 @@ class CompositionalFeatureLearner:
                 partner_logits = self._partner_logits(
                     eligible,
                     depth_x,
-                    util_x,
+                    self._ranking_utility(
+                        util_x,
+                        age_x,
+                        self._utility_decay,
+                    ),
                     ages=age_x,
                     parent_mode=parent_mode,
                 )
@@ -3977,6 +4054,15 @@ class CompositionalFeatureLearner:
             promoted_retention_slow_utility = candidate_retention_slow_utilities[
                 safe_best_candidate
             ]
+            if (
+                self._future_utility_mix > 0.0
+                and self._future_utility_normalization
+                in {"age", "uncertainty_age"}
+            ):
+                promoted_retention_slow_utility = jnp.array(
+                    0.0,
+                    dtype=jnp.float32,
+                )
         else:
             promoted_contribution_trace = jnp.zeros(
                 (self._n_tasks,), dtype=jnp.float32
@@ -4112,12 +4198,23 @@ class CompositionalFeatureLearner:
             reset_candidate_traces, 0.0, candidate_selector_action_counts
         )
 
+        ranking_utilities = self._ranking_utility(
+            new_utilities,
+            ages,
+            self._utility_decay,
+        )
+        ranking_candidate_utilities = self._ranking_utility(
+            new_candidate_utilities,
+            candidate_ages,
+            self._utility_decay,
+        )
+
         generator_resource_state = state.generator_resource_state
         if self._learn_generator_resources:
             policy_scores, policy_finite = self._generator_policy_scores(
-                new_utilities,
+                ranking_utilities,
                 feature_generator_policy,
-                new_candidate_utilities,
+                ranking_candidate_utilities,
                 candidate_generator_policy,
             )
             if self._generator_resource_promotion_credit > 0.0:
@@ -4127,7 +4224,7 @@ class CompositionalFeatureLearner:
                         self._generator_resource_promotion_credit,
                         dtype=jnp.float32,
                     )
-                    * jnp.maximum(jnp.max(new_candidate_utilities), 0.0)
+                    * jnp.maximum(jnp.max(ranking_candidate_utilities), 0.0)
                 )
                 policy_ids = jnp.arange(
                     self._generator_resource_manager.n_policies,
@@ -4235,7 +4332,7 @@ class CompositionalFeatureLearner:
         loss = jnp.sum(errors**2) / active_count
         mean_abs_error = jnp.sum(jnp.abs(errors)) / active_count
         max_candidate_utility = (
-            jnp.max(new_candidate_utilities)
+            jnp.max(ranking_candidate_utilities)
             if self._candidate_count > 0
             else jnp.array(0.0, dtype=jnp.float32)
         )
@@ -4244,8 +4341,8 @@ class CompositionalFeatureLearner:
             [
                 loss,
                 mean_abs_error,
-                jnp.mean(new_utilities),
-                jnp.min(new_utilities),
+                jnp.mean(ranking_utilities),
+                jnp.min(ranking_utilities),
                 max_candidate_utility,
                 replacement_flag,
                 bounding_scale,

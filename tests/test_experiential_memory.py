@@ -235,6 +235,45 @@ def test_initial_allocation_and_accounting_are_exact() -> None:
     assert state.entries.outcomes.shape == (5, 1)
 
 
+def test_new_entry_recency_starts_at_zero_not_chronological_age() -> None:
+    """A freshly written exemplar has not gone ``entry.age`` steps without access."""
+    memory = ExperientialMemory(_config())
+    result = memory.write(memory.init(), _entry(17, age=500))
+
+    assert bool(result.wrote)
+    slot = int(result.slot)
+    assert int(result.state.entries.ages[slot]) == 500
+    assert int(result.state.entries.recency_ages[slot]) == 0
+
+
+def test_imported_age_does_not_override_lru_write_recency() -> None:
+    """A newly written old exemplar must not look older than prior writes."""
+    memory = ExperientialMemory(
+        _config(
+            capacity=2,
+            top_k=1,
+            eviction_utility_weight=0.0,
+            eviction_recency_weight=1.0,
+        )
+    )
+    state = _write(memory, memory.init(), _entry(10))
+    state = _write(memory, state, _entry(20))
+
+    third = memory.write(state, _entry(30, age=500))
+    assert bool(third.wrote)
+    assert int(third.evicted_provenance_id) == 10
+    fourth = memory.write(third.state, _entry(40))
+
+    assert bool(fourth.wrote)
+    assert int(fourth.evicted_provenance_id) == 20
+    retained = set(
+        np.asarray(fourth.state.entries.provenance_ids)[
+            np.asarray(fourth.state.entries.valid)
+        ].tolist()
+    )
+    assert retained == {30, 40}
+
+
 def test_empty_query_abstains_with_finite_zero_payload() -> None:
     memory = ExperientialMemory(_config())
     retrieval = memory.query(

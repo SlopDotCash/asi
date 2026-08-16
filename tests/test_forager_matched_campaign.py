@@ -946,6 +946,39 @@ def test_bound_raw_corruption_fails_before_any_oci_call(tmp_path: Path) -> None:
     assert oci_called is False
 
 
+def test_raw_binding_rejects_equal_valued_float_size_alias(tmp_path: Path) -> None:
+    context = _context(tmp_path)
+    candidate_id = context.rebuilt.candidate_ids[0]
+    seed = context.rebuilt.protocol.active_seeds[0]
+    run_cell, _completion = campaign._cell_paths(context.root, candidate_id, seed)
+    attempt = run_cell / "attempt-000001"
+    attempt.mkdir(parents=True)
+    raw_path = attempt / "raw-output.tar"
+    raw_path.write_bytes(b"opaque-raw-content")
+    raw_sha256, raw_size = campaign._stable_file_hash(
+        raw_path,
+        "test opaque raw archive",
+        maximum=1024,
+    )
+    binding = campaign._raw_binding(
+        context,
+        candidate_id,
+        seed,
+        attempt.name,
+        raw_sha256,
+        raw_size,
+    )
+    cast(dict[str, Any], binding["raw_archive"])["size_bytes"] = float(raw_size)
+    binding_bytes = campaign.canonical_json_bytes(binding)
+    (attempt / "raw-binding.json").write_bytes(binding_bytes)
+    (attempt / "raw-binding.json.sha256").write_text(
+        hashlib.sha256(binding_bytes).hexdigest() + "\n"
+    )
+
+    with pytest.raises(campaign.ForagerMatchedCampaignError, match="raw archive binding"):
+        campaign._validate_raw_binding(context, candidate_id, seed, attempt)
+
+
 def test_completed_bundle_without_pointer_repairs_only_the_pointer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

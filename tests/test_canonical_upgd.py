@@ -310,59 +310,58 @@ def test_lifetime_counter_capacity_rejects_the_complete_update(
     normalization: str,
     compiled: bool,
 ) -> None:
-    params = {"w": jnp.array([2.0], dtype=jnp.float32)}
-    gradients = {"w": jnp.array([-0.5], dtype=jnp.float32)}
-    optimizer = CanonicalUPGD(
-        CanonicalUPGDConfig(
-            step_size=0.1,
-            utility_decay=0.9,
-            noise_std=0.0,
-            profile=profile,  # type: ignore[arg-type]
-            normalization=normalization,  # type: ignore[arg-type]
+    with jax.enable_x64():
+        params = {"w": jnp.array([2.0], dtype=jnp.float64)}
+        gradients = {"w": jnp.array([-0.5], dtype=jnp.float64)}
+        optimizer = CanonicalUPGD(
+            CanonicalUPGDConfig(
+                step_size=0.1,
+                utility_decay=0.999999999,
+                noise_std=0.0,
+                profile=profile,  # type: ignore[arg-type]
+                normalization=normalization,  # type: ignore[arg-type]
+            )
         )
-    )
-    maximum = jnp.iinfo(jnp.int32).max
-    state = optimizer.init(params).replace(
-        utility_ema={"w": jnp.array([1.0], dtype=jnp.float32)},
-        utility_age={"w": jnp.array([maximum], dtype=jnp.int32)},
-        step=jnp.array(maximum, dtype=jnp.int32),
-    )
+        maximum = jnp.iinfo(jnp.int32).max
+        state = optimizer.init(params).replace(
+            utility_ema={"w": jnp.array([1.0], dtype=jnp.float64)},
+            utility_age={"w": jnp.array([maximum], dtype=jnp.int32)},
+            step=jnp.array(maximum, dtype=jnp.int32),
+        )
 
-    def apply_update(state, params, gradients, key, noise):
-        return optimizer.update(state, params, gradients, key, noise=noise)
+        def apply_update(state, params, gradients, key, noise):
+            return optimizer.update(state, params, gradients, key, noise=noise)
 
-    update = jax.jit(apply_update) if compiled else apply_update
-    result = update(
-        state,
-        params,
-        gradients,
-        jr.key(0),
-        {"w": jnp.zeros(1, dtype=jnp.float32)},
-    )
+        update = jax.jit(apply_update) if compiled else apply_update
+        result = update(
+            state,
+            params,
+            gradients,
+            jr.key(0),
+            {"w": jnp.zeros(1, dtype=jnp.float64)},
+        )
 
-    assert int(result.state.step) == maximum
-    assert int(result.state.utility_age["w"][0]) == maximum
-    chex.assert_trees_all_equal(result.params, params)
-    chex.assert_trees_all_equal(result.state, state)
-    chex.assert_trees_all_equal(result.next_key, jr.key(0))
-    chex.assert_trees_all_equal(
-        result.corrected_utility,
-        jax.tree.map(jnp.zeros_like, params),
-    )
-    chex.assert_trees_all_equal(
-        result.scaled_utility,
-        jax.tree.map(jnp.zeros_like, params),
-    )
-    assert not bool(result.metrics["update_applied"])
+        assert int(result.state.step) == maximum
+        assert int(result.state.utility_age["w"][0]) == maximum
+        chex.assert_trees_all_equal(result.params, params)
+        chex.assert_trees_all_equal(result.state, state)
+        chex.assert_trees_all_equal(result.next_key, jr.key(0))
+        chex.assert_trees_all_equal(
+            result.corrected_utility,
+            jax.tree.map(jnp.zeros_like, params),
+        )
+        chex.assert_trees_all_equal(
+            result.scaled_utility,
+            jax.tree.map(jnp.zeros_like, params),
+        )
+        assert not bool(result.metrics["update_applied"])
 
 
 @pytest.mark.parametrize("profile", ["paper_global", "safe_extended"])
 def test_final_representable_lifetime_update_is_consumed_before_capacity(
     profile: str,
 ) -> None:
-    previous_x64 = jax.config.x64_enabled
-    jax.config.update("jax_enable_x64", True)
-    try:
+    with jax.enable_x64():
         params = {"w": jnp.array([2.0], dtype=jnp.float64)}
         gradients = {"w": jnp.array([-0.5], dtype=jnp.float64)}
         decay = 0.999999999
@@ -396,8 +395,241 @@ def test_final_representable_lifetime_update_is_consumed_before_capacity(
         assert int(result.state.utility_age["w"][0]) == maximum
         assert float(result.corrected_utility["w"][0]) == pytest.approx(1.0)
         assert bool(result.metrics["update_applied"])
-    finally:
-        jax.config.update("jax_enable_x64", previous_x64)
+
+
+@pytest.mark.parametrize("profile", ["paper_global", "safe_extended"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_converged_float32_bias_clock_continues_after_counter_saturation(
+    profile: str,
+    compiled: bool,
+) -> None:
+    params = {"w": jnp.array([2.0], dtype=jnp.float32)}
+    gradients = {"w": jnp.array([-0.5], dtype=jnp.float32)}
+    optimizer = CanonicalUPGD(
+        CanonicalUPGDConfig(
+            step_size=0.1,
+            utility_decay=0.9,
+            noise_std=0.0,
+            profile=profile,  # type: ignore[arg-type]
+            normalization="global",
+        )
+    )
+    maximum = jnp.iinfo(jnp.int32).max
+    state = optimizer.init(params).replace(
+        utility_ema={"w": jnp.array([1.0], dtype=jnp.float32)},
+        utility_age={"w": jnp.array([maximum], dtype=jnp.int32)},
+        step=jnp.array(maximum, dtype=jnp.int32),
+    )
+    key = jr.key(5)
+    update = jax.jit(optimizer.update) if compiled else optimizer.update
+    result = update(
+        state,
+        params,
+        gradients,
+        key,
+        noise={"w": jnp.zeros(1, dtype=jnp.float32)},
+    )
+
+    assert bool(result.metrics["update_applied"])
+    assert int(result.state.step) == maximum
+    assert int(result.state.utility_age["w"][0]) == maximum
+    assert float(result.corrected_utility["w"][0]) == pytest.approx(1.0)
+    assert float(result.params["w"][0]) != float(params["w"][0])
+    assert not jnp.array_equal(jr.key_data(result.next_key), jr.key_data(key))
+
+
+def test_safe_profile_global_saturation_does_not_consume_inactive_clock() -> None:
+    with jax.enable_x64():
+        maximum = jnp.iinfo(jnp.int32).max
+        params = {"w": jnp.array([2.0, 3.0], dtype=jnp.float64)}
+        gradients = {"w": jnp.array([-0.25, -0.5], dtype=jnp.float64)}
+        optimizer = CanonicalUPGD(
+            CanonicalUPGDConfig(
+                step_size=0.1,
+                utility_decay=0.999999999,
+                noise_std=0.0,
+                profile="safe_extended",
+                normalization="global",
+            )
+        )
+        state = optimizer.init(params).replace(
+            utility_ema={"w": jnp.ones(2, dtype=jnp.float64)},
+            utility_age={"w": jnp.array([maximum, 0], dtype=jnp.int32)},
+            step=jnp.array(maximum, dtype=jnp.int32),
+        )
+        key = jr.key(23)
+        result = jax.jit(optimizer.update)(
+            state,
+            params,
+            gradients,
+            key,
+            mask={"w": jnp.array([False, True])},
+            noise={"w": jnp.zeros(2, dtype=jnp.float64)},
+        )
+
+        assert bool(result.metrics["update_applied"])
+        chex.assert_trees_all_equal(
+            result.state.utility_age["w"],
+            jnp.array([maximum, 1], dtype=jnp.int32),
+        )
+        assert float(result.params["w"][0]) != float(params["w"][0])
+        assert float(result.params["w"][1]) != float(params["w"][1])
+        assert not jnp.array_equal(jr.key_data(result.next_key), jr.key_data(key))
+
+
+@pytest.mark.parametrize("mode", ["protecting", "non_protecting"])
+def test_safe_profile_exhausted_active_clock_rejects_available_peer_atomically(
+    mode: str,
+) -> None:
+    with jax.enable_x64():
+        maximum = jnp.iinfo(jnp.int32).max
+        params = {
+            "available": jnp.array([2.0], dtype=jnp.float64),
+            "exhausted": jnp.array([3.0], dtype=jnp.float64),
+        }
+        gradients = {
+            "available": jnp.array([-0.25], dtype=jnp.float64),
+            "exhausted": jnp.array([-0.5], dtype=jnp.float64),
+        }
+        optimizer = CanonicalUPGD(
+            CanonicalUPGDConfig(
+                step_size=0.1,
+                utility_decay=0.999999999,
+                noise_std=0.0,
+                mode=mode,  # type: ignore[arg-type]
+                profile="safe_extended",
+                normalization="global",
+            )
+        )
+        state = optimizer.init(params).replace(
+            utility_ema=jax.tree.map(jnp.ones_like, params),
+            utility_age={
+                "available": jnp.array([maximum - 1], dtype=jnp.int32),
+                "exhausted": jnp.array([maximum], dtype=jnp.int32),
+            },
+            step=jnp.array(maximum, dtype=jnp.int32),
+        )
+        key = jr.key(29)
+        result = jax.jit(optimizer.update)(
+            state,
+            params,
+            gradients,
+            key,
+            noise=jax.tree.map(jnp.zeros_like, params),
+        )
+
+        assert not bool(result.metrics["update_applied"])
+        chex.assert_trees_all_equal(result.params, params)
+        chex.assert_trees_all_equal(result.state, state)
+        chex.assert_trees_all_equal(
+            jr.key_data(result.next_key),
+            jr.key_data(key),
+        )
+        zero_tree = jax.tree.map(jnp.zeros_like, params)
+        chex.assert_trees_all_equal(result.scaled_utility, zero_tree)
+        chex.assert_trees_all_equal(result.corrected_utility, zero_tree)
+        chex.assert_trees_all_equal(result.perturbation, zero_tree)
+
+
+@pytest.mark.parametrize("profile", ["paper_global", "safe_extended"])
+@pytest.mark.parametrize("mode", ["protecting", "non_protecting"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_lifetime_refusal_is_reverse_mode_atomic_when_proposal_is_nonfinite(
+    profile: str,
+    mode: str,
+    compiled: bool,
+) -> None:
+    with jax.enable_x64():
+        maximum = jnp.iinfo(jnp.int32).max
+        if profile == "paper_global":
+            param = jnp.array([0.0], dtype=jnp.float64)
+            gradient = jnp.array([0.0], dtype=jnp.float64)
+            utility = jnp.array([0.0], dtype=jnp.float64)
+        else:
+            param = jnp.array([2.0], dtype=jnp.float64)
+            gradient = jnp.array([-0.5], dtype=jnp.float64)
+            utility = jnp.array([jnp.finfo(jnp.float64).max], dtype=jnp.float64)
+        params = {"w": param}
+        optimizer = CanonicalUPGD(
+            CanonicalUPGDConfig(
+                step_size=0.1,
+                utility_decay=0.999999999,
+                noise_std=0.0,
+                mode=mode,  # type: ignore[arg-type]
+                profile=profile,  # type: ignore[arg-type]
+                normalization="global",
+            )
+        )
+        state = optimizer.init(params).replace(
+            utility_ema={"w": utility},
+            utility_age={"w": jnp.array([maximum], dtype=jnp.int32)},
+            step=jnp.array(maximum, dtype=jnp.int32),
+        )
+        key = jr.key(31)
+        noise = {"w": jnp.zeros(1, dtype=jnp.float64)}
+        result = optimizer.update(
+            state,
+            params,
+            {"w": gradient},
+            key,
+            noise=noise,
+        )
+
+        assert not bool(result.metrics["update_applied"])
+        chex.assert_trees_all_equal(result.params, params)
+        chex.assert_trees_all_equal(result.state, state)
+        chex.assert_trees_all_equal(result.next_key, key)
+        zero_tree = jax.tree.map(jnp.zeros_like, params)
+        chex.assert_trees_all_equal(result.scaled_utility, zero_tree)
+        chex.assert_trees_all_equal(result.corrected_utility, zero_tree)
+        chex.assert_trees_all_equal(result.perturbation, zero_tree)
+
+        def rejected_identity_loss(param_leaf, utility_leaf):
+            local_state = state.replace(utility_ema={"w": utility_leaf})
+            update = optimizer.update(
+                local_state,
+                {"w": param_leaf},
+                {"w": gradient},
+                key,
+                noise=noise,
+            )
+            return jnp.sum(update.params["w"]) + jnp.sum(update.state.utility_ema["w"])
+
+        gradient_fn = jax.grad(rejected_identity_loss, argnums=(0, 1))
+        if compiled:
+            gradient_fn = jax.jit(gradient_fn)
+        param_gradient, utility_gradient = gradient_fn(param, utility)
+        chex.assert_trees_all_equal(param_gradient, jnp.ones_like(param))
+        chex.assert_trees_all_equal(utility_gradient, jnp.ones_like(utility))
+
+
+@pytest.mark.parametrize("profile", ["paper_global", "safe_extended"])
+def test_corrupt_negative_counters_do_not_overflow_to_the_lifetime_limit(
+    profile: str,
+) -> None:
+    params = {"w": jnp.array([2.0], dtype=jnp.float32)}
+    optimizer = CanonicalUPGD(
+        CanonicalUPGDConfig(
+            utility_decay=0.9,
+            noise_std=0.0,
+            profile=profile,  # type: ignore[arg-type]
+            normalization="global",
+        )
+    )
+    state = optimizer.init(params).replace(
+        utility_age={"w": jnp.array([-1], dtype=jnp.int32)},
+        step=jnp.array(-1, dtype=jnp.int32),
+    )
+    result = jax.jit(optimizer.update)(
+        state,
+        params,
+        {"w": jnp.array([-0.5], dtype=jnp.float32)},
+        jr.key(0),
+        noise={"w": jnp.zeros(1, dtype=jnp.float32)},
+    )
+
+    assert int(result.state.step) == 0
+    assert int(result.state.utility_age["w"][0]) == 0
 
 
 @pytest.mark.parametrize(

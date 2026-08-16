@@ -177,6 +177,15 @@ def test_step3_config_validation() -> None:
         run_step3_smoke(steps=4, final_window=8)
 
 
+@pytest.mark.parametrize("field", ("use_obgd", "use_layer_norm"))
+def test_step3_config_rejects_non_boolean_algorithm_flags(field: str) -> None:
+    payload = Step3HordeConfig().to_dict()
+    payload[field] = "false"
+
+    with pytest.raises(ValueError, match=rf"{field} must be a boolean"):
+        Step3HordeConfig.from_dict(payload)
+
+
 def _config_with(**overrides: Any) -> Step3HordeConfig:
     payload: dict[str, Any] = {
         "gammas": (0.0,),

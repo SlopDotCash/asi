@@ -151,13 +151,14 @@ class ObGDBounding(Bounder):
 def _unitwise_norm(x: Array) -> Array:
     """Compute unit-wise L2 norm.
 
-    For 2D+ arrays (e.g. weight matrices ``(fan_in, fan_out)``):
-    L2 norm over all axes except the last, with keepdims for broadcasting.
+    For 2D+ arrays (weight matrices laid out ``(fan_out, fan_in)`` throughout
+    this framework, so each row is one output unit's incoming weights): L2
+    norm over all axes except the first, with keepdims for broadcasting.
     For 1D arrays (biases): absolute value per element.
     For scalars: absolute value.
     """
     if x.ndim >= 2:
-        return jnp.sqrt(jnp.sum(x**2, axis=tuple(range(x.ndim - 1)), keepdims=True))
+        return jnp.sqrt(jnp.sum(x**2, axis=tuple(range(1, x.ndim)), keepdims=True))
     return jnp.abs(x)
 
 

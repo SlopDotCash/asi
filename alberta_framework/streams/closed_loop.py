@@ -203,6 +203,8 @@ class SwitchingTwoStateMDP:
             payoff = np.asarray(getattr(config, name), dtype=np.float32)
             if payoff.shape != (_TWO_STATE_N, _TWO_STATE_ACTIONS):
                 raise ValueError(f"{name} must be 2x2 (state x action), got shape {payoff.shape}")
+            if not np.all(np.isfinite(payoff)):
+                raise ValueError(f"{name} must contain only finite values, got {payoff.tolist()}")
             phase_payoffs.append(payoff)
         payoffs = np.stack(phase_payoffs)
         self._config = config

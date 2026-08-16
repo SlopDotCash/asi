@@ -1,12 +1,18 @@
 """Tests for causal future-utility estimators."""
 
+from collections.abc import Callable
+
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
+import pytest
 
 from alberta_framework.core.compositional_features import CompositionalFeatureLearner
 from alberta_framework.core.feature_discovery import FixedBudgetFeatureLearner
 from alberta_framework.core.future_utility import (
+    bias_correct_future_utility,
     contribution_trace_output_loss_reduction,
     contribution_trace_output_loss_reduction_with_diagnostics,
     normalize_future_utility_signal,
@@ -165,6 +171,149 @@ def test_future_utility_normalization_is_finite_and_causal() -> None:
     chex.assert_tree_all_finite(normalized)
     chex.assert_tree_all_finite(second)
     assert float(second[1]) > float(second[0])
+
+
+def test_age_normalization_does_not_scale_the_ema_increment() -> None:
+    """Warm-up correction belongs after the raw EMA, not on each input."""
+    signal = jnp.ones((3,), dtype=jnp.float32)
+    normalized, _ = normalize_future_utility_signal(
+        signal,
+        ages=jnp.array([0, 10, 5_000], dtype=jnp.int32),
+        second_moment=jnp.zeros(3, dtype=jnp.float32),
+        moment_decay=0.9,
+        utility_decay=0.995,
+        mode="age",
+    )
+
+    chex.assert_trees_all_close(normalized, signal)
+
+
+def test_age_correction_reads_constant_raw_emas_on_one_scale() -> None:
+    decay = jnp.asarray(0.995, dtype=jnp.float32)
+    ages = jnp.array([1, 2, 11, 60, 301, 5_001], dtype=jnp.int32)
+    raw_emas = 1.0 - jnp.power(decay, ages.astype(jnp.float32))
+
+    correct = jax.jit(
+        lambda values: bias_correct_future_utility(
+            values,
+            ages,
+            decay,
+            "age",
+        )
+    )
+    corrected = correct(raw_emas)
+    gradients = jax.grad(lambda values: jnp.sum(correct(values)))(raw_emas)
+
+    chex.assert_trees_all_close(corrected, jnp.ones_like(corrected))
+    chex.assert_tree_all_finite(gradients)
+
+
+def test_age_zero_utility_reset_is_finite_under_jit_and_grad() -> None:
+    ages = jnp.array([0, 1], dtype=jnp.int32)
+
+    def total(values: jax.Array) -> jax.Array:
+        return jnp.sum(
+            bias_correct_future_utility(values, ages, 0.995, "uncertainty_age")
+        )
+
+    values = jnp.zeros((2,), dtype=jnp.float32)
+    corrected = jax.jit(
+        lambda value: bias_correct_future_utility(
+            value,
+            ages,
+            0.995,
+            "uncertainty_age",
+        )
+    )(values)
+    gradients = jax.jit(jax.grad(total))(values)
+
+    chex.assert_tree_all_finite(corrected)
+    chex.assert_tree_all_finite(gradients)
+
+
+def test_feature_learner_ema_and_age_correction_share_float32_decay() -> None:
+    common = dict(
+        n_features=2,
+        n_tasks=1,
+        step_size_output=0.1,
+        step_size_feature=0.0,
+        replacement_interval=0,
+        future_utility_mix=1.0,
+        future_utility_normalization="age",
+        use_obgd=False,
+    )
+    control = FixedBudgetFeatureLearner(utility_decay=0.0, **common)
+    near_one = FixedBudgetFeatureLearner(utility_decay=0.9999999, **common)
+    control_state = control.init(feature_dim=2, key=jr.key(432))
+    near_one_state = near_one.init(feature_dim=2, key=jr.key(432))
+    observation = jnp.array([0.5, -1.0], dtype=jnp.float32)
+    targets = jnp.array([1.0], dtype=jnp.float32)
+
+    control_result = jax.jit(control.update)(control_state, observation, targets)
+    near_one_result = jax.jit(near_one.update)(near_one_state, observation, targets)
+
+    chex.assert_trees_all_close(near_one_result.metrics[2:4], control_result.metrics[2:4])
+    assert near_one._utility_decay == float(np.float32(0.9999999))
+    assert near_one.to_config()["utility_decay"] == 0.9999999
+
+
+def test_compositional_ema_and_age_correction_share_float32_decay() -> None:
+    common = dict(
+        n_features=4,
+        n_tasks=1,
+        step_size_output=0.1,
+        step_size_theta=0.0,
+        replacement_interval=0,
+        future_utility_mix=1.0,
+        future_utility_normalization="age",
+        use_obgd=False,
+    )
+    control = CompositionalFeatureLearner(utility_decay=0.0, **common)
+    near_one = CompositionalFeatureLearner(utility_decay=0.9999999, **common)
+    control_state = control.init(feature_dim=2, key=jr.key(433))
+    near_one_state = near_one.init(feature_dim=2, key=jr.key(433))
+    observation = jnp.array([0.5, -1.0], dtype=jnp.float32)
+    targets = jnp.array([1.0], dtype=jnp.float32)
+
+    control_result = jax.jit(control.update)(control_state, observation, targets)
+    near_one_result = jax.jit(near_one.update)(near_one_state, observation, targets)
+
+    chex.assert_trees_all_close(near_one_result.metrics[2:4], control_result.metrics[2:4])
+    assert near_one._utility_decay == float(np.float32(0.9999999))
+    assert near_one.to_config()["utility_decay"] == 0.9999999
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: FixedBudgetFeatureLearner(
+            n_features=2,
+            n_tasks=1,
+            utility_decay=0.99999999,
+        ),
+        lambda: CompositionalFeatureLearner(
+            n_features=3,
+            n_tasks=1,
+            utility_decay=0.99999999,
+        ),
+        lambda: FixedBudgetFeatureLearner(
+            n_features=2,
+            n_tasks=1,
+            utility_decay=0.5,
+            utility_retention_decay=0.99999999,
+        ),
+        lambda: CompositionalFeatureLearner(
+            n_features=3,
+            n_tasks=1,
+            retention_slow_utility_decay=0.99999999,
+        ),
+    ],
+)
+def test_utility_ema_decay_rejects_values_narrowing_to_float32_one(
+    factory: Callable[[], object],
+) -> None:
+    with pytest.raises(ValueError, match="finite float32 in \\[0, 1\\)"):
+        factory()
 
 
 def test_feature_discovery_future_utility_config_roundtrip_extended_knobs() -> None:

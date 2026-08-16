@@ -316,6 +316,60 @@ class TestEMNISTArrayCache:
             upgd_label_emnist.load_emnist_balanced_train(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda x, y: (x, y + 100), "must be smaller than"),
+        (lambda x, y: (x, y.astype(np.float32)), "integer class labels"),
+        (lambda x, y: (x.at[0, 0].set(np.nan), y), "finite"),
+    ],
+)
+def test_run_label_emnist_rejects_out_of_domain_inputs(
+    monkeypatch: pytest.MonkeyPatch, mutate, message: str
+) -> None:
+    def unexpected_setup(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("out-of-domain data reached learner setup")
+
+    x, y = _tiny_data()
+    x, y = mutate(jnp.asarray(x), jnp.asarray(y))
+    monkeypatch.setattr(upgd_label_emnist, "resolve_hyperparameters", unexpected_setup)
+    with pytest.raises(ValueError, match=message):
+        run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda x, y: (np.full(x.shape, np.timedelta64("NaT", "s")), y),
+            "real numeric",
+        ),
+        (
+            lambda x, y: (
+                x[: TINY.task_length - 1],
+                y[: TINY.task_length - 1],
+            ),
+            "task_length",
+        ),
+    ],
+)
+def test_run_label_emnist_rejects_boundary_gaps_before_setup(
+    monkeypatch: pytest.MonkeyPatch, mutate, message: str
+) -> None:
+    """Issue #527: timedelta inputs and short datasets must fail before setup."""
+
+    def unexpected_setup(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("out-of-domain data reached learner setup")
+
+    x, y = mutate(*_tiny_data())
+    monkeypatch.setattr(upgd_label_emnist, "resolve_hyperparameters", unexpected_setup)
+    with pytest.raises(ValueError, match=message):
+        run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+
+
 @pytest.fixture(scope="class")
 def debug_run():
     """Run the shared tiny diagnostic once for this test module."""
@@ -585,3 +639,107 @@ class TestPlanShardMergeAccounting:
             assert entry["reproduction_gap_flagged"] is (
                 abs(entry["gap"]) > comparison["gap_threshold"]
             )
+
+
+@pytest.mark.unit
+class TestPlanShardFloatAliasIntake:
+    """Issue #525: int/bool aliases of float hyperparameters must be rejected.
+
+    Python's ``0 == 0.0`` and ``True == 1.0`` make ``float(v)`` coercion and
+    dict ``==`` alias-tolerant, so an aliased arm could pass the plan and shard
+    gates while the sibling ``ipmnist_screening`` lane stays strict.
+    """
+
+    def _write_plan(self, tmp_path, mutate=None):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        payload = build_plan_payload(TINY, [0, 1], DATASET_META)
+        if mutate is not None:
+            mutate(payload["plan"])
+            payload["plan_sha256"] = upgd_label_emnist.canonical_json_sha256(
+                payload["plan"]
+            )
+        path = tmp_path / "plan.json"
+        atomic_write_new_json(path, payload)
+        return path
+
+    def test_plan_rejects_int_alias_hyperparameter(self, tmp_path):
+        def mutate(body):
+            assert body["hyperparameters"]["adamw"]["beta1"] == 0.0
+            body["hyperparameters"]["adamw"]["beta1"] = 0
+
+        path = self._write_plan(tmp_path, mutate)
+        with pytest.raises(ValueError, match="finite floats"):
+            load_plan(path)
+
+    def test_plan_rejects_bool_alias_hyperparameter(self, tmp_path):
+        def mutate(body):
+            assert body["hyperparameters"]["upgd_w"]["weight_decay"] == 0.0
+            body["hyperparameters"]["upgd_w"]["weight_decay"] = False
+
+        path = self._write_plan(tmp_path, mutate)
+        with pytest.raises(ValueError, match="finite floats"):
+            load_plan(path)
+
+    def test_plan_rejects_non_numeric_hyperparameter(self, tmp_path):
+        def mutate(body):
+            body["hyperparameters"]["upgd_w"]["lr"] = "0.01"
+
+        path = self._write_plan(tmp_path, mutate)
+        with pytest.raises(ValueError, match="finite floats"):
+            load_plan(path)
+
+    def test_plan_rejects_incomplete_hyperparameter_arm(self, tmp_path):
+        def mutate(body):
+            del body["hyperparameters"]["upgd_w"]["noise_std"]
+
+        path = self._write_plan(tmp_path, mutate)
+        with pytest.raises(ValueError, match="complete"):
+            load_plan(path)
+
+    def test_plan_still_accepts_exact_float_hyperparameters(self, tmp_path):
+        path = self._write_plan(tmp_path)
+        loaded = load_plan(path)
+        for learner, hp in loaded["plan"]["hyperparameters"].items():
+            assert all(type(v) is float for v in hp.values()), learner
+
+    def test_shard_rejects_int_alias_hyperparameter(self, tmp_path):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        plan = build_plan_payload(TINY, [0, 1], DATASET_META)
+        x, y = _tiny_data()
+        result = run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+        payload = partial_payload(result, plan["plan_sha256"])
+        assert payload["hyperparameters"]["beta1"] == 0.0
+        payload["hyperparameters"] = dict(payload["hyperparameters"], beta1=0)
+        path = tmp_path / "aliased_int.json"
+        atomic_write_new_json(path, payload)
+        with pytest.raises(ValueError, match="finite floats"):
+            merge_partials(plan, [path], allow_incomplete=True)
+
+    def test_shard_rejects_bool_alias_hyperparameter(self, tmp_path):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        plan = build_plan_payload(TINY, [0, 1], DATASET_META)
+        x, y = _tiny_data()
+        result = run_label_emnist(x, y, "upgd_w", seeds=[0], config=TINY)
+        payload = partial_payload(result, plan["plan_sha256"])
+        assert payload["hyperparameters"]["weight_decay"] == 0.0
+        payload["hyperparameters"] = dict(payload["hyperparameters"], weight_decay=False)
+        path = tmp_path / "aliased_bool.json"
+        atomic_write_new_json(path, payload)
+        with pytest.raises(ValueError, match="finite floats"):
+            merge_partials(plan, [path], allow_incomplete=True)
+
+    def test_shard_rejects_unequal_float_hyperparameter(self, tmp_path):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        plan = build_plan_payload(TINY, [0, 1], DATASET_META)
+        x, y = _tiny_data()
+        result = run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+        payload = partial_payload(result, plan["plan_sha256"])
+        payload["hyperparameters"] = dict(payload["hyperparameters"], lr=2e-4)
+        path = tmp_path / "unregistered.json"
+        atomic_write_new_json(path, payload)
+        with pytest.raises(ValueError, match="differ from the plan"):
+            merge_partials(plan, [path], allow_incomplete=True)

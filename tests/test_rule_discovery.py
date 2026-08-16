@@ -396,6 +396,20 @@ def test_evaluate_population_rejects_malformed_genome_shapes_before_materializat
         evaluate_population(jnp.zeros(shape, dtype=jnp.float32), MICRO_SUITE["M1"], seeds=(0,))
 
 
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf"), float("-inf")])
+def test_evaluate_population_rejects_nonfinite_genomes_before_materialization(
+    monkeypatch: pytest.MonkeyPatch, invalid: float
+) -> None:
+    def unexpected_materialization(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("non-finite genomes reached stream materialization")
+
+    monkeypatch.setattr(rule_discovery, "_materialize_eval", unexpected_materialization)
+    genomes = jnp.zeros((2, GENOME_SIZE), dtype=jnp.float32).at[1, 0].set(invalid)
+    with pytest.raises(ValueError, match="genomes must contain only finite values"):
+        evaluate_population(genomes, MICRO_SUITE["M1"], seeds=(0,))
+
+
 @pytest.mark.parametrize("batch_size", [0, -4, True])
 def test_evaluate_population_rejects_non_positive_batch_size_before_materialization(
     monkeypatch: pytest.MonkeyPatch, batch_size: object

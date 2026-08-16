@@ -26,7 +26,9 @@ or tanh feature bank:
   compositional DAG that builds features-of-features can.
 """
 
+from fractions import Fraction
 from numbers import Real
+from typing import cast
 
 import chex
 import jax.numpy as jnp
@@ -39,8 +41,57 @@ from alberta_framework._fixed_count_selection import (
     require_positive_builtin_int,
     stable_smallest_mask,
 )
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import (
+    round_real_to_float32,
+    round_real_to_float32_with_ratio,
+)
 from alberta_framework.core.types import TimeStep
+
+_FLOAT32_MULTIPLIER_MAX = float(np.sqrt(np.finfo(np.float32).max))
+_INT32_MAX = int(np.iinfo(np.int32).max)
+_SUPPORTED_NUMPY_REAL_SCALAR_TYPES: tuple[type[object], ...] = (
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+    np.float16,
+    np.float32,
+    np.float64,
+    np.longdouble,
+)
+
+
+def _trusted_multiplier_real(value: object, message: str) -> Real:
+    """Return a hook-free concrete real for Polynomial stream multipliers."""
+    actual_type = type(value)
+    if actual_type is int or actual_type is float:
+        return cast(Real, value)
+    for supported_type in _SUPPORTED_NUMPY_REAL_SCALAR_TYPES:
+        if actual_type is supported_type:
+            return cast(Real, value)
+    if actual_type is not Fraction:
+        raise ValueError(message)
+
+    fraction = cast(Fraction, value)
+    try:
+        numerator: object = object.__getattribute__(fraction, "_numerator")
+        denominator: object = object.__getattribute__(fraction, "_denominator")
+    except Exception as error:
+        raise ValueError(message) from error
+    if type(numerator) is not int or type(denominator) is not int:
+        raise ValueError(message)
+    if denominator <= 0:
+        raise ValueError(message)
+    try:
+        return Fraction(numerator, denominator)
+    except Exception as error:
+        raise ValueError(message) from error
 
 
 def _require_positive_float32(value: object, name: str) -> float:
@@ -56,6 +107,39 @@ def _require_positive_float32(value: object, name: str) -> float:
     if not np.isfinite(converted) or converted <= np.float32(0.0):
         raise ValueError(f"{name} must be a positive finite float32 value")
     return converted
+
+
+def _require_finite_float32_multiplier(
+    value: object,
+    *,
+    name: str,
+    nonnegative: bool = False,
+) -> float:
+    """Return a canonical finite multiplier with conservative float32 headroom."""
+    message = f"{name} must be a finite real in the safe float32 multiplier range"
+    try:
+        trusted_value = _trusted_multiplier_real(value, message)
+        numerator, _, narrowed = round_real_to_float32_with_ratio(trusted_value)
+    except Exception as error:
+        raise ValueError(message) from error
+    if nonnegative and numerator < 0:
+        raise ValueError(message)
+    if not np.isfinite(narrowed) or abs(narrowed) > _FLOAT32_MULTIPLIER_MAX:
+        raise ValueError(message)
+    return narrowed
+
+
+def _require_safe_float32_product(*values: float, names: str) -> None:
+    """Reject configured multiplier products that consume float32 headroom."""
+    product = np.float32(1.0)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        for value in values:
+            product = np.float32(product * np.float32(value))
+    if not np.isfinite(product) or abs(product) > _FLOAT32_MULTIPLIER_MAX:
+        raise ValueError(
+            f"{names} must stay within the safe combined float32 multiplier range"
+        )
+
 
 # =============================================================================
 # OutOfClassPolynomialStream -- degree-3 polynomial targets
@@ -132,18 +216,52 @@ class OutOfClassPolynomialStream:
                 indices (``x_i^2 * x_j``, ``x_i^3``).  Default False, so
                 the oracle uses strict ``i < j < l`` triples only.
         """
+        feature_dim = require_positive_builtin_int(feature_dim, name="feature_dim")
         if feature_dim < 3:
             raise ValueError("feature_dim must be at least 3")
-        if n_tasks < 1:
-            raise ValueError("n_tasks must be positive")
-        if n_contexts < 1:
-            raise ValueError("n_contexts must be positive")
-        if context_length < 1:
-            raise ValueError("context_length must be positive")
+        n_tasks = require_positive_builtin_int(n_tasks, name="n_tasks")
+        n_contexts = require_positive_builtin_int(n_contexts, name="n_contexts")
+        context_length = require_positive_builtin_int(context_length, name="context_length")
         active_triples_per_context = require_positive_builtin_int(
             active_triples_per_context,
             name="active_triples_per_context",
         )
+        for name, value in (
+            ("feature_dim", feature_dim),
+            ("n_tasks", n_tasks),
+            ("n_contexts", n_contexts),
+            ("context_length", context_length),
+            ("active_triples_per_context", active_triples_per_context),
+        ):
+            if value > _INT32_MAX:
+                raise ValueError(f"{name} must be at most int32 max")
+        feature_std = _require_finite_float32_multiplier(
+            feature_std,
+            name="feature_std",
+            nonnegative=True,
+        )
+        linear_scale = _require_finite_float32_multiplier(
+            linear_scale,
+            name="linear_scale",
+        )
+        noise_std = _require_finite_float32_multiplier(
+            noise_std,
+            name="noise_std",
+            nonnegative=True,
+        )
+        _require_safe_float32_product(
+            feature_std,
+            feature_std,
+            feature_std,
+            names="feature_std cubed",
+        )
+        _require_safe_float32_product(
+            linear_scale,
+            feature_std,
+            names="linear_scale and feature_std",
+        )
+        if type(include_squares) is not bool:
+            raise ValueError("include_squares must be a built-in bool")
 
         self._feature_dim = feature_dim
         self._n_tasks = n_tasks

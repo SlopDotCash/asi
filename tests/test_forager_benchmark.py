@@ -790,6 +790,80 @@ def test_official_npz_import_matches_adjusted_ewm(tmp_path: Path) -> None:
         )
 
 
+def test_official_npz_import_rejects_nonfinite_ewm_decay(tmp_path: Path) -> None:
+    path = tmp_path / "0.npz"
+    np.savez_compressed(path, rewards=np.ones((4,), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="ewm_decay must be a finite number"):
+        import_official_foragax_npz(
+            OfficialForagaxRunSpec(agent="DQN", seed=0, path=path),
+            ewm_decay=math.nan,
+        )
+
+
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+    def __le__(self, other: float) -> bool:
+        return 0.5 <= other
+
+    def __lt__(self, other: float) -> bool:
+        return 0.5 < other
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"ewm_decay": True}, "ewm_decay must be a finite number"),
+        ({"ewm_decay": _SpoofedFloat()}, "ewm_decay must be a finite number"),
+        ({"ewm_decay": 10**10000}, "ewm_decay must be a finite number"),
+        ({"ewm_decay": 1.0}, "ewm_decay must be a finite number"),
+        ({"ewm_decay": -0.1}, "ewm_decay must be a finite number"),
+        ({"ewm_decay": "0.5"}, "ewm_decay must be a finite number"),
+        ({"record_every": True}, "record_every must be a positive integer"),
+        ({"record_every": 0}, "record_every must be a positive integer"),
+        ({"record_every": 1.5}, "record_every must be a positive integer"),
+        ({"record_every": "2"}, "record_every must be a positive integer"),
+        ({"final_window": True}, "final_window must be a positive integer"),
+        ({"final_window": 0}, "final_window must be a positive integer"),
+        ({"final_window": 1.5}, "final_window must be a positive integer"),
+        ({"final_window": "2"}, "final_window must be a positive integer"),
+    ],
+)
+def test_official_npz_import_rejects_spoofed_and_out_of_range_numeric_params(
+    tmp_path: Path, kwargs: dict[str, Any], match: str
+) -> None:
+    path = tmp_path / "0.npz"
+    np.savez_compressed(path, rewards=np.ones((4,), dtype=np.float32))
+
+    with pytest.raises(ValueError, match=match):
+        import_official_foragax_npz(
+            OfficialForagaxRunSpec(agent="DQN", seed=0, path=path),
+            **kwargs,
+        )
+
+
+def test_official_npz_import_accepts_finite_endpoint_values(tmp_path: Path) -> None:
+    path = tmp_path / "0.npz"
+    np.savez_compressed(path, rewards=np.ones((4,), dtype=np.float32))
+
+    result = import_official_foragax_npz(
+        OfficialForagaxRunSpec(agent="DQN", seed=0, path=path, expected_steps=4),
+        ewm_decay=0.0,
+        record_every=1,
+        final_window=1,
+    )
+
+    assert result.mean_reward == pytest.approx(1.0)
+
+
 def test_protocol_attestation_cannot_be_minted_by_constructing_evidence(
     tmp_path: Path,
 ) -> None:

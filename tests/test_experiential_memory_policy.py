@@ -1,5 +1,5 @@
 # mypy: disable-error-code="call-arg,type-var"
-"""Tests for the non-mutating experiential-memory policy proposal boundary."""
+"""Tests for experiential-memory policy proposal and transaction boundaries."""
 
 from __future__ import annotations
 
@@ -239,6 +239,89 @@ def test_valid_retrieval_is_categorical_mass_with_separate_diagnostics() -> None
     assert int(proposal.retrieval.neighbor_provenance_ids[0]) == 10
     assert bool(proposal.retrieval.neighbor_mask[0])
     _assert_trees_equal(state, before)
+
+
+def test_policy_step_matches_memory_step_and_records_each_access() -> None:
+    """The stateful policy path must query, account, age, and write exactly once."""
+    memory = ExperientialMemory(
+        _memory_config(
+            capacity=4,
+            top_k=2,
+            max_age=100,
+            eviction_utility_weight=0.0,
+            eviction_recency_weight=1.0,
+        )
+    )
+    policy = ExperientialMemoryPolicy(memory)
+    policy_state = memory.init()
+    direct_state = memory.init()
+    key = jnp.zeros((2,), dtype=jnp.float32)
+    version = jnp.asarray(1, dtype=jnp.int32)
+    uncertainty = jnp.asarray(0.1, dtype=jnp.float32)
+    uncertainty_available = jnp.asarray(True, dtype=jnp.bool_)
+    safety_mask = jnp.ones((3,), dtype=jnp.bool_)
+
+    probe_entry = _entry(99)
+    eager_probe = policy.propose_and_step(
+        policy_state,
+        key,
+        version,
+        uncertainty,
+        uncertainty_available,
+        safety_mask,
+        probe_entry,
+    )
+    compiled_probe = jax.jit(policy.propose_and_step)(
+        policy_state,
+        key,
+        version,
+        uncertainty,
+        uncertainty_available,
+        safety_mask,
+        probe_entry,
+    )
+    _assert_trees_equal(eager_probe, compiled_probe)
+
+    for index in range(12):
+        entry = _entry(100 + index)
+        proposal, policy_step = policy.propose_and_step(
+            policy_state,
+            key,
+            version,
+            uncertainty,
+            uncertainty_available,
+            safety_mask,
+            entry,
+        )
+        direct_step = memory.step(
+            direct_state,
+            key,
+            version,
+            uncertainty,
+            uncertainty_available,
+            entry,
+        )
+        _assert_trees_equal(proposal.retrieval, direct_step.retrieval)
+        _assert_trees_equal(policy_step, direct_step)
+        policy_state = policy_step.state
+        direct_state = direct_step.state
+
+    accounting = memory.accounting(policy_state)
+    assert int(accounting.queries) == 12
+    assert int(accounting.accepted_queries) == 11
+    assert int(accounting.writes) == 12
+    np.testing.assert_array_equal(
+        policy_state.entries.provenance_ids,
+        direct_state.entries.provenance_ids,
+    )
+    np.testing.assert_array_equal(
+        policy_state.entries.recency_ages,
+        direct_state.entries.recency_ages,
+    )
+    np.testing.assert_array_equal(
+        policy_state.entries.retrieval_counts,
+        direct_state.entries.retrieval_counts,
+    )
 
 
 def test_finite_action_mass_sum_cannot_overflow_into_false_abstention() -> None:
