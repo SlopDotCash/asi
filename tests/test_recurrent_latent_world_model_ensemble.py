@@ -433,9 +433,7 @@ def test_member_gradient_validity_is_finiteness_only_not_a_raw_norm_ceiling() ->
     state = model.init(jr.key(20))
     decision = _decision(model, state)
     far_bootstrap = jnp.asarray((900.0, -900.0), dtype=jnp.float32)
-    stopped_targets = jnp.concatenate(
-        (far_bootstrap, jnp.asarray((0.5, 0.9), dtype=jnp.float32))
-    )
+    stopped_targets = jnp.concatenate((far_bootstrap, jnp.asarray((0.5, 0.9), dtype=jnp.float32)))
     member_norms = []
     for index in range(model.config.ensemble_size):
         _, gradient = jax.value_and_grad(model._member_nll)(  # noqa: SLF001
@@ -622,9 +620,7 @@ def test_state_invalid_rejection_still_returns_a_non_recoverable_cache() -> None
     model = RecurrentLatentWorldModelEnsemble(_config())
     valid_state = model.init(jr.key(26))
     valid_decision = _decision(model, valid_state)
-    corrupt_state = cast(Any, valid_state).replace(
-        event_count=jnp.asarray(1, dtype=jnp.int32)
-    )
+    corrupt_state = cast(Any, valid_state).replace(event_count=jnp.asarray(1, dtype=jnp.int32))
     assert not bool(model.state_valid(corrupt_state))
 
     result = model.update(corrupt_state, valid_decision, _transition())
@@ -718,9 +714,7 @@ def test_dynamically_corrupt_state_is_an_atomic_noop_including_rng() -> None:
     valid_state = model.init(jr.key(61))
     valid_decision = _decision(model, valid_state)
 
-    counter_corrupt = cast(Any, valid_state).replace(
-        event_count=jnp.asarray(1, dtype=jnp.int32)
-    )
+    counter_corrupt = cast(Any, valid_state).replace(event_count=jnp.asarray(1, dtype=jnp.int32))
     nan_parameters = cast(Any, valid_state.member_parameters[0]).replace(
         mean_bias=valid_state.member_parameters[0].mean_bias.at[0].set(jnp.nan)
     )
@@ -728,9 +722,9 @@ def test_dynamically_corrupt_state_is_an_atomic_noop_including_rng() -> None:
         member_parameters=(nan_parameters, *valid_state.member_parameters[1:])
     )
     overbound_parameters = cast(Any, valid_state.member_parameters[0]).replace(
-        mean_bias=valid_state.member_parameters[0].mean_bias.at[0].set(
-            model.config.max_parameter_magnitude + 1.0
-        )
+        mean_bias=valid_state.member_parameters[0]
+        .mean_bias.at[0]
+        .set(model.config.max_parameter_magnitude + 1.0)
     )
     overbound_corrupt = cast(Any, valid_state).replace(
         member_parameters=(overbound_parameters, *valid_state.member_parameters[1:])
@@ -781,9 +775,7 @@ def test_jit_and_scan_match_sequential_cache_state_and_outputs() -> None:
     initial = model.init(jr.key(8))
     initial_cache = model.start(initial, OBSERVATION)
     rewards = jnp.asarray((0.1, -0.2, 0.3), dtype=jnp.float32)
-    next_observations = jnp.asarray(
-        ((0.1, 0.2), (0.3, -0.4), (0.5, 0.6)), dtype=jnp.float32
-    )
+    next_observations = jnp.asarray(((0.1, 0.2), (0.3, -0.4), (0.5, 0.6)), dtype=jnp.float32)
 
     def one_step(
         carry: tuple[RecurrentLatentWorldModelEnsembleState, Any],
@@ -951,8 +943,7 @@ def test_static_shape_and_dtype_contracts_fail_before_compiled_execution() -> No
 
 def test_transition_schema_contains_no_task_or_regime_channel() -> None:
     fields = {
-        field.name
-        for field in dataclasses.fields(cast(Any, RecurrentLatentTransitionRecord))
+        field.name for field in dataclasses.fields(cast(Any, RecurrentLatentTransitionRecord))
     }
     assert fields == {
         "observation",
@@ -965,3 +956,34 @@ def test_transition_schema_contains_no_task_or_regime_channel() -> None:
         "next_decision_observation",
     }
     assert not ({"task_id", "regime_id"} & fields)
+
+
+def test_recurrent_ensemble_config_rejects_booleans() -> None:
+    with pytest.raises(ValueError, match="observation_dim"):
+        RecurrentLatentWorldModelEnsembleConfig(observation_dim=True, n_actions=2)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        RecurrentLatentWorldModelEnsembleConfig(observation_dim=2, n_actions=2.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="latent_dim"):
+        RecurrentLatentWorldModelEnsembleConfig(observation_dim=2, n_actions=2, latent_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="ensemble_size"):
+        RecurrentLatentWorldModelEnsembleConfig(observation_dim=2, n_actions=2, ensemble_size=2.0)  # type: ignore[arg-type]
+
+
+def test_recurrent_ensemble_config_accepts_numpy_integers() -> None:
+    cfg = RecurrentLatentWorldModelEnsembleConfig(
+        observation_dim=np.int32(4),
+        n_actions=np.int64(2),
+        latent_dim=np.uint16(8),
+        ensemble_size=np.int32(3),
+        uncertainty_warmup_steps=np.uint8(2),
+    )
+    assert type(cfg.observation_dim) is int
+    assert type(cfg.n_actions) is int
+    assert type(cfg.latent_dim) is int
+    assert type(cfg.ensemble_size) is int
+    assert type(cfg.uncertainty_warmup_steps) is int
+    assert cfg.observation_dim == 4
+    assert cfg.n_actions == 2
+    assert cfg.latent_dim == 8
+    assert cfg.ensemble_size == 3
+    assert cfg.uncertainty_warmup_steps == 2
