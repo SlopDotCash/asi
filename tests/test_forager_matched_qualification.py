@@ -27,7 +27,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1954,6 +1954,101 @@ def test_persisted_probe_rejects_wrong_type_numeric_aliases(
 
     with pytest.raises(qualification.ForagerMatchedQualificationError):
         qualification._verify_probe_payload(payload, invocation)  # noqa: SLF001
+
+
+def _qualification_manifest_fixture() -> dict[str, Any]:
+    return {
+        "schema_version": qualification.MATCHED_CURRENT_QUALIFICATION_SCHEMA_VERSION,
+        "classification": "content_only_unendorsed_nonpromoting",
+        "status": "structurally_qualified_external_trust_resolution_required",
+        "promotion_authorized": False,
+        "performance_claim": False,
+        "external_verification_required": True,
+        "authority": {
+            "identity": qualification.MATCHED_CURRENT_AUTHORITY_IDENTITY,
+            "content_only": True,
+            "externally_endorsed": False,
+            "external_signature_created": False,
+            "trust_profile_created": False,
+        },
+        "reward_blind_boundary": {
+            "qualification_seed": qualification.PUBLIC_QUALIFICATION_SEED,
+            "qualification_seed_class": "public_nonbenchmark_seed",
+            "tuning_seeds_used": [],
+            "evaluation_seeds_used": [],
+            "environment_resets": len(builder.MATCHED_CURRENT_CANDIDATE_IDS),
+            "environment_transitions": 0,
+            "reward_arrays_read": 0,
+            "result_archives_opened": 0,
+        },
+        "runtime_qualification": asdict(qualification._runtime_qualification()),  # noqa: SLF001
+        "qualification_probe": {},
+        "resource_accounting_semantics": qualification._plain_json(  # noqa: SLF001
+            qualification._RESOURCE_ACCOUNTING_SEMANTICS  # noqa: SLF001
+        ),
+        "executor_qualification_roots": {},
+        "frozen_executor_qualification_artifacts": {},
+        "candidate_order": list(builder.MATCHED_CURRENT_CANDIDATE_IDS),
+        "sources": {},
+        "candidates": {},
+        "open_protocol_sha256": _sha("open-protocol"),
+    }
+
+
+def _write_qualification_manifest(root: Path, manifest: dict[str, Any]) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    raw = qualification._canonical_json_bytes(manifest)  # noqa: SLF001
+    (root / "manifest.json").write_bytes(raw)
+    digest = hashlib.sha256(raw).hexdigest()
+    (root / "manifest.json.sha256").write_bytes(f"{digest}\n".encode("ascii"))
+
+
+@pytest.mark.parametrize(
+    ("record", "field", "alias"),
+    [
+        ("authority", "content_only", 1),
+        ("authority", "externally_endorsed", 0),
+        ("authority", "external_signature_created", 1),
+        ("authority", "trust_profile_created", 0),
+        ("reward_blind_boundary", "environment_transitions", False),
+        ("reward_blind_boundary", "reward_arrays_read", 0.0),
+        ("reward_blind_boundary", "result_archives_opened", False),
+    ],
+)
+def test_persisted_manifest_rejects_wrong_type_numeric_aliases(
+    tmp_path: Path,
+    record: str,
+    field: str,
+    alias: object,
+) -> None:
+    manifest = _qualification_manifest_fixture()
+    manifest[record][field] = alias
+    root = tmp_path / "qualification"
+    _write_qualification_manifest(root, manifest)
+
+    with pytest.raises(
+        qualification.ForagerMatchedQualificationError,
+        match="qualification authority boundary drifted",
+    ):
+        qualification.load_matched_current_qualification_bundle(root)
+
+
+def test_persisted_manifest_with_exact_types_crosses_the_authority_gate(
+    tmp_path: Path,
+) -> None:
+    manifest = _qualification_manifest_fixture()
+    root = tmp_path / "qualification"
+    _write_qualification_manifest(root, manifest)
+
+    # The canonical manifest with exact boolean/integer types must clear the
+    # authority and reward-blind boundary gate entirely; the loader then
+    # advances to the executor-root gates, which fail only because this
+    # fixture stages no executor trees.
+    with pytest.raises(
+        qualification.ForagerMatchedQualificationError,
+        match="executor qualification root set drifted",
+    ):
+        qualification.load_matched_current_qualification_bundle(root)
 
 
 @pytest.mark.parametrize(
