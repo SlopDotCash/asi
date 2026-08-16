@@ -428,8 +428,8 @@ def test_config_rejects_hostile_integral_subclasses() -> None:
 
 def test_config_canonicalizes_supported_numpy_dimensions() -> None:
     config = _minimal_config(
-        observation_dim=np.int64(2),
-        action_dim=np.uint16(1),
+        observation_dim=np.longlong(2),
+        action_dim=np.ulonglong(1),
         reward_dim=np.int32(0),
     )
     assert type(config.observation_dim) is int
@@ -515,6 +515,22 @@ def test_config_canonicalizes_float32_scalars_and_round_trips() -> None:
 def test_config_rejects_derived_feature_dimension_above_int32() -> None:
     with pytest.raises(ValueError, match="feature_dim"):
         WorkingMemoryConfig(observation_dim=2**31 - 1)
+
+
+def test_config_accepts_exact_int32_max_derived_feature_dimension() -> None:
+    config = WorkingMemoryConfig(
+        observation_dim=2**31 - 1,
+        action_dim=0,
+        reward_dim=0,
+        observation_decay_rates=(),
+        action_decay_rates=(),
+        reward_decay_rates=(),
+        include_current_action=False,
+        include_current_reward=False,
+        include_traces=False,
+    )
+
+    assert config.feature_dim() == 2**31 - 1
 
 
 @pytest.mark.parametrize("method", ["features", "update_checked", "step"])
