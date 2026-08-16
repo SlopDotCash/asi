@@ -42,10 +42,13 @@ def test_working_memory_config_roundtrip_and_shapes() -> None:
     chex.assert_shape(state.last_gate, (3,))
 
 
-def test_working_memory_config_from_config_requires_actual_json_lists() -> None:
+def test_working_memory_config_from_config_accepts_exact_lists_or_tuples() -> None:
     class HostileList(list[float]):
         def __iter__(self) -> Iterator[float]:
             raise AssertionError("invalid list subclass must not be iterated")
+
+    class HostileTuple(tuple):
+        pass
 
     base = WorkingMemoryConfig(observation_dim=2, action_dim=1).to_config()
     keys = (
@@ -54,10 +57,10 @@ def test_working_memory_config_from_config_requires_actual_json_lists() -> None:
         "reward_decay_rates",
     )
     invalid_values: tuple[object, ...] = (
-        (0.5,),
         "0.5",
         np.asarray([0.5]),
         HostileList([0.5]),
+        HostileTuple((0.5,)),
         0.5,
     )
     for key in keys:
@@ -70,6 +73,16 @@ def test_working_memory_config_from_config_requires_actual_json_lists() -> None:
     assert type(restored.observation_decay_rates) is tuple
     assert type(restored.action_decay_rates) is tuple
     assert type(restored.reward_decay_rates) is tuple
+
+    tuple_payload = {
+        **base,
+        "observation_decay_rates": tuple(base["observation_decay_rates"]),
+        "action_decay_rates": tuple(base["action_decay_rates"]),
+        "reward_decay_rates": tuple(base["reward_decay_rates"]),
+    }
+    assert WorkingMemoryConfig.from_config(tuple_payload) == WorkingMemoryConfig.from_config(
+        base
+    )
 
 
 def test_working_memory_trace_decay_and_feature_causality() -> None:
