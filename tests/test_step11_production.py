@@ -1034,6 +1034,24 @@ def test_run_step11_smoke_rejects_non_integer_steps(steps: object) -> None:
         run_step11_smoke(steps=steps)  # type: ignore[arg-type]
 
 
+def test_run_step11_smoke_rejects_class_spoofed_integer_steps() -> None:
+    class _SpoofedInt:
+        """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+        @property
+        def __class__(self) -> type:  # type: ignore[override]
+            return int
+
+        def __int__(self) -> int:
+            return 3
+
+        def __index__(self) -> int:
+            return 3
+
+    with pytest.raises(ValueError, match="steps must be an integer"):
+        run_step11_smoke(steps=_SpoofedInt())  # type: ignore[arg-type]
+
+
 # ---------------------------------------------------------------------------
 # Long-horizon fineness
 # ---------------------------------------------------------------------------
