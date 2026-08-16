@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
+from numbers import Real
 from typing import Any, cast
 
 import chex
@@ -249,6 +251,35 @@ def _rollback_multi_head_result(
             update_applied=result.update_applied & outer_update_applied,
         ),
     )
+
+
+def _require_finite_scalar(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> None:
+    """Fail closed on non-real, non-finite, or out-of-range configuration scalars.
+
+    Bare ``<`` / ``<=`` comparisons let NaN through; a NaN scale or bound then
+    rejects every transition while the loop publishes zero errors.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    if positive and number <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    if lower is not None and number < lower:
+        raise ValueError(f"{name} must be >= {lower}")
+    if upper is not None and (number > upper or (not upper_inclusive and number == upper)):
+        bracket = "]" if upper_inclusive else ")"
+        floor = lower if lower is not None else "-inf"
+        raise ValueError(f"{name} must be in [{floor}, {upper}{bracket}")
 
 
 class LatentWorldModel:
@@ -637,6 +668,8 @@ class LatentWorldModel:
             & action_valid
             & jnp.all(jnp.isfinite(reward_arr))
             & jnp.all(jnp.isfinite(discount_arr))
+            & jnp.all(discount_arr >= 0.0)
+            & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_observation_arr))
         )
         safe_observation = jnp.where(
@@ -806,37 +839,31 @@ class LatentWorldModel:
             raise ValueError("n_actions must be positive")
         if config.latent_dim <= 0:
             raise ValueError("latent_dim must be positive")
-        if not 0.0 <= config.gamma <= 1.0:
-            raise ValueError("gamma must be in [0, 1]")
+        _require_finite_scalar("gamma", config.gamma, lower=0.0, upper=1.0)
         if config.observation_scale is not None:
             if len(config.observation_scale) != config.observation_dim:
                 raise ValueError("observation_scale length must equal observation_dim")
-            if any(scale <= 0.0 for scale in config.observation_scale):
-                raise ValueError("observation_scale values must be positive")
-        if config.reward_scale <= 0.0:
-            raise ValueError("reward_scale must be positive")
-        if config.encoder_scale <= 0.0:
-            raise ValueError("encoder_scale must be positive")
-        if config.encoder_bias_scale < 0.0:
-            raise ValueError("encoder_bias_scale must be non-negative")
+            for scale in config.observation_scale:
+                _require_finite_scalar("observation_scale values", scale, positive=True)
+        _require_finite_scalar("reward_scale", config.reward_scale, positive=True)
+        _require_finite_scalar("encoder_scale", config.encoder_scale, positive=True)
+        _require_finite_scalar("encoder_bias_scale", config.encoder_bias_scale, lower=0.0)
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        if not 0.0 <= config.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= config.surprise_decay < 1.0:
-            raise ValueError("surprise_decay must be in [0, 1)")
-        if not 0.0 <= config.collapse_decay < 1.0:
-            raise ValueError("collapse_decay must be in [0, 1)")
-        if config.min_latent_std < 0.0:
-            raise ValueError("min_latent_std must be non-negative")
-        if config.max_latent_delta <= 0.0:
-            raise ValueError("max_latent_delta must be positive")
-        if config.encoder_step_size <= 0.0:
-            raise ValueError("encoder_step_size must be positive")
-        if config.max_encoder_update <= 0.0:
-            raise ValueError("max_encoder_update must be positive")
-        if not 0.0 <= config.encoder_collapse_gate_threshold <= 1.0:
-            raise ValueError("encoder_collapse_gate_threshold must be in [0, 1]")
+        for name in ("utility_decay", "surprise_decay", "collapse_decay"):
+            _require_finite_scalar(
+                name, getattr(config, name), lower=0.0, upper=1.0, upper_inclusive=False
+            )
+        _require_finite_scalar("min_latent_std", config.min_latent_std, lower=0.0)
+        _require_finite_scalar("max_latent_delta", config.max_latent_delta, positive=True)
+        _require_finite_scalar("encoder_step_size", config.encoder_step_size, positive=True)
+        _require_finite_scalar("max_encoder_update", config.max_encoder_update, positive=True)
+        _require_finite_scalar(
+            "encoder_collapse_gate_threshold",
+            config.encoder_collapse_gate_threshold,
+            lower=0.0,
+            upper=1.0,
+        )
 
 
 def run_latent_world_model_learning_loop(

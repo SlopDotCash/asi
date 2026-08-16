@@ -123,6 +123,18 @@ def test_latent_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     )
     chex.assert_trees_all_close(defaulted.discount_errors, explicit.discount_errors)
     chex.assert_trees_all_close(defaulted.discount_predictions, explicit.discount_predictions)
+@pytest.mark.parametrize("discount", [1.5, -0.5])
+def test_latent_update_rejects_out_of_range_discounts(discount: float) -> None:
+    config = LatentWorldModelConfig(observation_dim=2, n_actions=2, latent_dim=4, hidden_sizes=(8,))
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(3))
+    obs = jnp.array([0.1, -0.2], dtype=jnp.float32)
+    result = model.update(state, obs, jnp.int32(1), 0.5, discount, jnp.array([0.2, 0.1]))
+    assert not bool(result.update_applied)
+    assert int(result.state.step_count) == int(state.step_count)
+    chex.assert_trees_all_equal(
+        result.state.learner_state.trunk_params, state.learner_state.trunk_params
+    )
 
 
 def test_latent_world_model_scan_loop_and_config_roundtrip() -> None:
@@ -445,6 +457,15 @@ def test_trainable_encoder_serialization_roundtrip() -> None:
         {"max_encoder_update": -1.0},
         {"encoder_collapse_gate_threshold": -0.1},
         {"encoder_collapse_gate_threshold": 1.5},
+        {"encoder_step_size": float("nan")},
+        {"max_encoder_update": float("nan")},
+        {"min_latent_std": float("nan")},
+        {"min_latent_std": float("inf")},
+        {"max_latent_delta": float("nan")},
+        {"encoder_scale": float("nan")},
+        {"encoder_bias_scale": float("nan")},
+        {"reward_scale": float("inf")},
+        {"observation_scale": (float("nan"), 1.0)},
     ],
 )
 def test_trainable_encoder_config_validation_fails_closed(

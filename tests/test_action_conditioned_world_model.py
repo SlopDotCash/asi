@@ -6,6 +6,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.dreaming import (
     ActionConditionedDreamWorld,
@@ -255,6 +256,45 @@ def test_default_discounts_do_not_inherit_the_reward_dtype() -> None:
             defaulted.discount_predictions, explicit.discount_predictions
         )
         assert bool(jnp.all(defaulted.updates_applied))
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"observation_clip_margin": float("nan")},
+        {"max_delta_scale": float("nan")},
+        {"max_delta_scale": float("inf")},
+        {"reward_scale": float("nan")},
+        {"reward_scale": float("inf")},
+        {"observation_scale": (float("nan"), 1.0)},
+        {"utility_decay": float("nan")},
+        {"error_decay": float("nan")},
+        {"gamma": float("nan")},
+    ],
+)
+def test_config_rejects_non_finite_scalars(overrides: dict[str, object]) -> None:
+    """A NaN scalar passes a bare `< 0` check and yields an all-rejected run scoring 0.0."""
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=(), **overrides  # type: ignore[arg-type]
+    )
+    with pytest.raises(ValueError, match="finite"):
+        ActionConditionedWorldModel(config)
+
+
+@pytest.mark.parametrize("discount", [1.5, -0.5, 5.0])
+def test_update_rejects_out_of_range_discounts(discount: float) -> None:
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=(), step_size=0.05, sparsity=0.0
+    )
+    model = ActionConditionedWorldModel(config)
+    state = model.init(jr.key(8))
+    obs = jnp.array([0.1, -0.2], dtype=jnp.float32)
+    result = model.update(state, obs, jnp.int32(1), 0.5, discount, jnp.array([0.2, 0.1]))
+    assert not bool(result.update_applied)
+    assert int(result.state.step_count) == int(state.step_count)
+    chex.assert_trees_all_equal(
+        result.state.learner_state.trunk_params, state.learner_state.trunk_params
+    )
+    accepted = model.update(state, obs, jnp.int32(1), 0.5, 0.9, jnp.array([0.2, 0.1]))
+    assert bool(accepted.update_applied)
 
 
 def test_guarded_dreamer_rejects_warmup_and_accepts_after_real_updates() -> None:

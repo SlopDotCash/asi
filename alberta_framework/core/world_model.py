@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import math
+from numbers import Real
 from typing import Any, cast
 
 import chex
@@ -242,6 +244,35 @@ def _action_world_model_state_is_valid(
         & (state.step_count >= 0)
         & (finite_bounds | empty_bounds)
     )
+
+
+def _require_finite_scalar(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> None:
+    """Fail closed on non-real, non-finite, or out-of-range configuration scalars.
+
+    Bare ``<`` / ``<=`` comparisons let NaN through; a NaN scale or bound then
+    rejects every transition while the loop publishes zero errors.
+    """
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    if positive and number <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    if lower is not None and number < lower:
+        raise ValueError(f"{name} must be >= {lower}")
+    if upper is not None and (number > upper or (not upper_inclusive and number == upper)):
+        bracket = "]" if upper_inclusive else ")"
+        floor = lower if lower is not None else "-inf"
+        raise ValueError(f"{name} must be in [{floor}, {upper}{bracket}")
 
 
 class ActionConditionedWorldModel:
@@ -557,6 +588,8 @@ class ActionConditionedWorldModel:
             & action_valid
             & jnp.all(jnp.isfinite(reward_arr))
             & jnp.all(jnp.isfinite(discount_arr))
+            & jnp.all(discount_arr >= 0.0)
+            & jnp.all(discount_arr <= 1.0)
             & jnp.all(jnp.isfinite(next_obs))
         )
         safe_obs = jnp.where(inputs_valid, obs, jnp.zeros_like(obs))
@@ -658,25 +691,25 @@ class ActionConditionedWorldModel:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
-        if not 0.0 <= config.gamma <= 1.0:
-            raise ValueError("gamma must be in [0, 1]")
+        _require_finite_scalar("gamma", config.gamma, lower=0.0, upper=1.0)
         if config.observation_scale is not None:
             if len(config.observation_scale) != config.observation_dim:
                 raise ValueError("observation_scale length must equal observation_dim")
-            if any(scale <= 0.0 for scale in config.observation_scale):
-                raise ValueError("observation_scale values must be positive")
-        if config.reward_scale <= 0.0:
-            raise ValueError("reward_scale must be positive")
+            for scale in config.observation_scale:
+                _require_finite_scalar("observation_scale values", scale, positive=True)
+        _require_finite_scalar("reward_scale", config.reward_scale, positive=True)
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        if not 0.0 <= config.utility_decay < 1.0:
-            raise ValueError("utility_decay must be in [0, 1)")
-        if not 0.0 <= config.error_decay < 1.0:
-            raise ValueError("error_decay must be in [0, 1)")
-        if config.observation_clip_margin < 0.0:
-            raise ValueError("observation_clip_margin must be non-negative")
-        if config.max_delta_scale <= 0.0:
-            raise ValueError("max_delta_scale must be positive")
+        _require_finite_scalar(
+            "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        _require_finite_scalar(
+            "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        _require_finite_scalar(
+            "observation_clip_margin", config.observation_clip_margin, lower=0.0
+        )
+        _require_finite_scalar("max_delta_scale", config.max_delta_scale, positive=True)
 
 
 def run_action_conditioned_world_model_learning_loop(
