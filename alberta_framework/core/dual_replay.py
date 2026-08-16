@@ -513,6 +513,19 @@ def _validate_positive_int(
     return canonical
 
 
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
 def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
     """Copy one supported mapping while normalizing hostile hooks."""
     if not issubclass(type(payload), Mapping):
@@ -525,8 +538,20 @@ def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
 
 def _allocation_sizes(config: DualReplayConfig) -> tuple[int, int]:
     """Return exact slot and persistent bytes without allocating JAX arrays."""
-    slot_bytes = 4 * (2 * config.observation_dim + config.action_dim + 14) + 11
+    vector = 2 * config.observation_dim + config.action_dim
+    if vector > _INT32_MAX:
+        raise ValueError("DualReplayConfig dimensions must fit signed int32")
+    _require_float32_resource(
+        "DualReplayConfig state",
+        vector_scalars=config.total_capacity * vector,
+        fixed_scalars=config.total_capacity * 14 + 15,
+    )
+    slot_bytes = 4 * (vector + 14) + 11
+    if slot_bytes > _INT32_MAX:
+        raise ValueError("DualReplayConfig state byte count must fit signed int32")
     persistent_bytes = config.total_capacity * slot_bytes + 60
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("DualReplayConfig state byte count must fit signed int32")
     if persistent_bytes > _UINT32_MAX:
         raise ValueError("dual replay allocation exceeds uint32 byte accounting")
     if (
