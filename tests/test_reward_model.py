@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -256,3 +258,59 @@ def test_rls_reward_model_config_integer_and_scalar_validation() -> None:
     assert type(cfg.ridge) is float
     assert type(cfg.error_decay) is float
     assert cfg.feature_dim == 8
+
+
+_NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_rls_reward_model_config_canonicalizes_every_numpy_integer_family(
+    integer_type: type,
+) -> None:
+    config = RLSRewardModelConfig(feature_dim=integer_type(4))
+
+    assert type(config.feature_dim) is int
+    assert config.feature_dim == 4
+
+
+def test_rls_reward_model_config_rejects_hostile_integer_types_without_repr() -> None:
+    class HostileInt(int):
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    for value in (HostileInt(4), ClassSpoof()):
+        with pytest.raises(ValueError, match="feature_dim"):
+            RLSRewardModelConfig(feature_dim=value)  # type: ignore[arg-type]
+
+
+def test_rls_reward_model_preflights_quadratic_state_before_allocation() -> None:
+    scalar_limit = (2**31 - 1) // 4
+    last_legal = (math.isqrt(1 + 4 * (scalar_limit - 2)) - 1) // 2
+
+    RLSRewardModelConfig(feature_dim=last_legal)
+    with pytest.raises(ValueError, match="state bytes"):
+        RLSRewardModelConfig(feature_dim=last_legal + 1)
+
+
+@pytest.mark.parametrize("shape", ((1,), (1, 1)))
+def test_rls_reward_model_rejects_non_scalar_rewards_eager_and_outer_jit(
+    shape: tuple[int, ...],
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2))
+    state = model.init()
+    features = jnp.ones((2,), dtype=jnp.float32)
+    reward = jnp.zeros(shape, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="reward must be a scalar"):
+        model.update(state, features, reward)
+    compiled = jax.jit(lambda value: model.update(state, features, value).state)
+    with pytest.raises(ValueError, match="reward must be a scalar"):
+        compiled(reward)

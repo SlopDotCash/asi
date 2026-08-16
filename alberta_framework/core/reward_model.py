@@ -54,6 +54,14 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _preflight_state_resources(feature_dim: int) -> None:
+    state_scalars = feature_dim * feature_dim + feature_dim + 2
+    if state_scalars > _INT32_MAX:
+        raise ValueError("reward-model state scalars must fit signed int32")
+    if 4 * state_scalars > _INT32_MAX:
+        raise ValueError("reward-model state bytes must fit signed int32")
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip ``0 * inf`` so a disabled error EMA does not poison the diagnostic."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -80,6 +88,7 @@ class RLSRewardModelConfig:
 
     def __post_init__(self) -> None:
         feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
+        _preflight_state_resources(feature_dim)
         forgetting = validated_float32_scalar(
             "forgetting", self.forgetting, positive=True, upper=1.0
         )
@@ -143,7 +152,7 @@ class RLSRewardModel:
 
     def __init__(self, config: RLSRewardModelConfig):
         """Initialize the model."""
-        if not isinstance(config, RLSRewardModelConfig):
+        if type(config) is not RLSRewardModelConfig:
             raise TypeError("config must be an RLSRewardModelConfig")
         self._config = config
 
@@ -216,7 +225,15 @@ class RLSRewardModel:
             raise ValueError(
                 f"features must have shape ({self._config.feature_dim},), got {x.shape}"
             )
-        target = jnp.asarray(reward, dtype=jnp.float32)
+        raw_target = jnp.asarray(reward)
+        if raw_target.shape != ():
+            raise ValueError("reward must be a scalar")
+        if not (
+            jnp.issubdtype(raw_target.dtype, jnp.floating)
+            or jnp.issubdtype(raw_target.dtype, jnp.integer)
+        ):
+            raise TypeError("reward must be real numeric")
+        target = raw_target.astype(jnp.float32)
         prediction = jnp.dot(state.weights, x)
         error = target - prediction
         covariance_features = state.covariance @ x
@@ -270,10 +287,6 @@ class RLSRewardModel:
             gain=jnp.where(update_applied, gain, jnp.zeros_like(gain)),
             update_applied=update_applied,
         )
-
-    def _validated_config(self, config: RLSRewardModelConfig) -> RLSRewardModelConfig:
-        return config
-
 
 __all__ = [
     "RLSRewardModel",
