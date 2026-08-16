@@ -164,7 +164,8 @@ _INVALID_STEP11_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_primitive_actions", None),
     ("n_primitive_actions", 2**31),
     ("option_planning_backups_per_step", -1),
-    ("option_planning_backups_per_step", 2**31),
+        ("option_planning_backups_per_step", 2**31),
+        ("option_planning_backups_per_step", 2**31 - 1),
     ("option_planning_backups_per_step", True),
     ("option_planning_backups_per_step", False),
     ("option_planning_backups_per_step", "0"),
@@ -1095,15 +1096,33 @@ def test_step11_config_preserves_float32_boundaries() -> None:
         option_gamma=1.0,
         option_model_decay=1.0,
         option_model_step_size=f32_max,
-        option_planning_backups_per_step=2**31 - 1,
+        option_planning_backups_per_step=2**31 - 2,
         epsilon_base=1.0,
         epsilon_option=1.0,
         utility_ema_decay=1.0,
         curation_threshold=f32_max,
     )
     assert config.observation_dim == 2**31 - 1
-    assert config.option_planning_backups_per_step == 2**31 - 1
+    assert config.option_planning_backups_per_step == 2**31 - 2
     assert config.base_step_size == f32_max
+
+
+def test_step11_oak_normalizes_conversion_hook_failures() -> None:
+    class BrokenFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("conversion hook failed")
+
+    with pytest.raises(ValueError, match="option_gamma must be finite"):
+        Step11OaKConfig(option_gamma=BrokenFloat(0.5))
+
+
+def test_step11_oak_rejects_integer_subclass_conversion_hooks() -> None:
+    class LyingInt(int):
+        def __int__(self) -> int:
+            return 1
+
+    with pytest.raises(ValueError, match="observation_dim"):
+        Step11OaKConfig(observation_dim=LyingInt(-1))
 
 
 @pytest.mark.parametrize(
