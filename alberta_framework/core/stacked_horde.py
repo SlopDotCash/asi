@@ -38,6 +38,7 @@ the NaN-masking convention of the loop-based hordes.
 
 import math
 import operator
+from collections.abc import Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from numbers import Real
@@ -131,6 +132,15 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
 
 
 _INT32_MAX = 2**31 - 1
+_CONFIG_FIELDS = {
+    "type",
+    "n_demons",
+    "feature_dim",
+    "gammas",
+    "lamdas",
+    "cumulant_indices",
+    "step_size",
+}
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -145,9 +155,6 @@ _ACTUAL_INT_TYPES = frozenset(
         np.longlong,
         np.ulonglong,
     }
-)
-_ACTUAL_FLOAT_TYPES = frozenset(
-    {float, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
 )
 
 
@@ -167,17 +174,9 @@ def _require_sequence(name: str, value: object) -> tuple[object, ...]:
 
 
 def _decode_sequence(name: str, value: object) -> tuple[object, ...]:
-    if type(value) is list:
-        return tuple(cast(list[object], value))
-    if type(value) is tuple:
-        return cast(tuple[object, ...], value)
-    raise ValueError(f"serialized {name} must be an actual list or tuple")
-
-
-def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
-    if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
-        raise ValueError(f"{name} must be a finite real scalar")
-    return validated_float32_scalar(name, value, **bounds)
+    if type(value) not in (list, tuple):
+        raise ValueError(f"{name} must be an actual list or tuple")
+    return tuple(cast(list[object] | tuple[object, ...], value))
 
 
 def _preflight_horde_resources(n_demons: int, feature_dim: int) -> None:
@@ -190,6 +189,17 @@ def _preflight_horde_resources(n_demons: int, feature_dim: int) -> None:
         raise ValueError("stacked Horde aggregate scalars must fit signed int32")
     if aggregate_nbytes > _INT32_MAX:
         raise ValueError("stacked Horde aggregate bytes must fit signed int32")
+
+
+def _require_scan_result_resources(num_updates: int, n_demons: int) -> None:
+    result_scalars = num_updates * n_demons
+    if result_scalars > _INT32_MAX or 4 * result_scalars > _INT32_MAX:
+        raise ValueError("stacked Horde scan result bytes must fit signed int32")
+
+
+def _saturating_int32_increment(value: Array) -> Array:
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    return jnp.minimum(jnp.maximum(value, 0), maximum - 1) + 1
 
 
 @dataclass(frozen=True)
@@ -232,13 +242,13 @@ class StackedHordeConfig:
                 raise ValueError(f"{name} must have length n_demons={n_demons}")
 
         gammas = tuple(
-            _validated_config_float(
+            validated_float32_scalar(
                 f"gammas[{i}]", value, lower=0.0, upper=1.0
             )
             for i, value in enumerate(raw_sequences["gammas"])
         )
         lamdas = tuple(
-            _validated_config_float(
+            validated_float32_scalar(
                 f"lamdas[{i}]", value, lower=0.0, upper=1.0
             )
             for i, value in enumerate(raw_sequences["lamdas"])
@@ -275,25 +285,16 @@ class StackedHordeConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "StackedHordeConfig":
+    def from_config(cls, config: Mapping[str, Any]) -> "StackedHordeConfig":
         """Reconstruct a config from :meth:`to_config` output."""
         if type(config) is not dict:
-            raise ValueError("config must be an exact built-in dict")
-        expected = {
-            "type",
-            "n_demons",
-            "feature_dim",
-            "gammas",
-            "lamdas",
-            "cumulant_indices",
-            "step_size",
-        }
-        if any(type(key) is not str for key in config) or set(config) != expected:
-            raise ValueError("config fields do not match the serialized schema")
-        if type(config["type"]) is not str or config["type"] != "StackedHordeConfig":
-            raise ValueError("config type differs")
+            raise ValueError("stacked Horde config must be an actual dict")
+        if not all(type(key) is str for key in config) or set(config) != _CONFIG_FIELDS:
+            raise ValueError("stacked Horde config fields do not match the schema")
         config = dict(config)
-        config.pop("type")
+        serialized_type = config.pop("type")
+        if type(serialized_type) is not str or serialized_type != "StackedHordeConfig":
+            raise ValueError("unexpected stacked Horde config type")
         for key in ("gammas", "lamdas", "cumulant_indices"):
             config[key] = _decode_sequence(key, config[key])
         return cls(**config)
@@ -328,10 +329,10 @@ def nexting_spec(
         for i, value in enumerate(raw_indices)
     )
     canonical_gammas = tuple(
-        _validated_config_float(f"gammas[{i}]", value, lower=0.0, upper=1.0)
+        validated_float32_scalar(f"gammas[{i}]", value, lower=0.0, upper=1.0)
         for i, value in enumerate(raw_gammas)
     )
-    canonical_lamda = _validated_config_float("lamda", lamda, lower=0.0, upper=1.0)
+    canonical_lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
     n_demons = len(canonical_indices) * len(canonical_gammas)
     if n_demons < 1 or n_demons > _INT32_MAX:
         raise ValueError("derived n_demons must be in the signed int32 domain")
@@ -406,17 +407,33 @@ class StackedLinearHorde:
         return {"type": "StackedLinearHorde", "config": self._config.to_config()}
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "StackedLinearHorde":
+    def from_config(cls, config: Mapping[str, Any]) -> "StackedLinearHorde":
         """Reconstruct a horde from :meth:`to_config` output."""
         if type(config) is not dict:
-            raise ValueError("config must be an exact built-in dict")
-        if any(type(key) is not str for key in config) or set(config) != {"type", "config"}:
-            raise ValueError("config fields do not match the serialized schema")
-        if type(config["type"]) is not str or config["type"] != "StackedLinearHorde":
-            raise ValueError("config type differs")
-        if type(config["config"]) is not dict:
-            raise ValueError("nested config must be an exact built-in dict")
-        return cls(StackedHordeConfig.from_config(config["config"]))
+            raise ValueError("stacked linear Horde config must be an actual dict")
+        if not all(type(key) is str for key in config) or set(config) != {"type", "config"}:
+            raise ValueError("stacked linear Horde config fields do not match the schema")
+        serialized_type = config["type"]
+        if type(serialized_type) is not str or serialized_type != "StackedLinearHorde":
+            raise ValueError("unexpected stacked linear Horde config type")
+        nested = config["config"]
+        if type(nested) is not dict:
+            raise ValueError("stacked linear Horde nested config must be an actual dict")
+        return cls(StackedHordeConfig.from_config(nested))
+
+    def _require_state_contract(self, state: StackedHordeState) -> None:
+        if type(state) is not StackedHordeState:
+            raise TypeError("state must be an actual StackedHordeState")
+        expected = (self._config.n_demons, self._config.feature_dim)
+        for name, value in (("weights", state.weights), ("traces", state.traces)):
+            if value.shape != expected:
+                raise ValueError(f"state {name} must have shape {expected}")
+            if value.dtype != jnp.dtype(jnp.float32):
+                raise TypeError(f"state {name} must have dtype float32")
+        if state.step_count.shape != ():
+            raise ValueError("state step_count must be scalar")
+        if state.step_count.dtype != jnp.dtype(jnp.int32):
+            raise TypeError("state step_count must have dtype int32")
 
     def init(self) -> StackedHordeState:
         """Initialize zero weights and traces."""
@@ -430,6 +447,11 @@ class StackedLinearHorde:
 
     def predict(self, state: StackedHordeState, features: Array) -> Array:
         """All demons' predictions for one feature vector, shape ``(n_demons,)``."""
+        self._require_state_contract(state)
+        if features.shape != (self._config.feature_dim,):
+            raise ValueError("features must match configured feature_dim")
+        if features.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("features must have dtype float32")
         return state.weights @ features
 
     def update(
@@ -460,6 +482,14 @@ class StackedLinearHorde:
             TD errors (TD errors are NaN for inactive demons).
         """
         cfg = self._config
+        self._require_state_contract(state)
+        for name, value in (("features", features), ("next_features", next_features)):
+            if value.shape != (cfg.feature_dim,):
+                raise ValueError(f"{name} must match configured feature_dim")
+            if value.dtype != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
+        if cumulant_source.dtype != jnp.dtype(jnp.float32):
+            raise TypeError("cumulant_source must have dtype float32")
         source_shape = jnp.shape(cumulant_source)
         # JAX clips out-of-range positive gather indices instead of raising,
         # so a short source would silently train demons on the wrong channel.
@@ -528,7 +558,7 @@ class StackedLinearHorde:
         proposed_state = StackedHordeState(
             weights=new_weights,
             traces=new_traces,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_increment(state.step_count),
         )
         new_state = jax.lax.cond(
             update_applied,
@@ -586,6 +616,12 @@ def run_stacked_horde_scan(
         ``(final_state, td_errors)`` with td_errors of shape
         ``(num_steps - 1, n_demons)``.
     """
+    if features.ndim != 2:
+        raise ValueError("features must be rank-two")
+    if features.dtype != jnp.dtype(jnp.float32):
+        raise TypeError("features must have dtype float32")
+    if features.shape[1] != horde.config.feature_dim:
+        raise ValueError("features must match configured feature_dim")
     sources_shape = jnp.shape(cumulant_sources)
     if len(sources_shape) != 2:
         raise ValueError(f"cumulant_sources must be rank-two, got shape {sources_shape}")
@@ -596,8 +632,15 @@ def run_stacked_horde_scan(
             f"config.cumulant_indices requires index {max_index}"
         )
     num_steps = features.shape[0]
+    if sources_shape[0] != num_steps:
+        raise ValueError("features and cumulant_sources must have the same number of rows")
+    if cumulant_sources.dtype != jnp.dtype(jnp.float32):
+        raise TypeError("cumulant_sources must have dtype float32")
+    _require_scan_result_resources(max(num_steps - 1, 0), horde.config.n_demons)
     if rhos is None:
         rhos = jnp.ones((num_steps,), dtype=jnp.float32)
+    elif rhos.shape != (num_steps,):
+        raise ValueError("rhos must have shape (num_steps,)")
 
     def step_fn(
         carry: StackedHordeState,
