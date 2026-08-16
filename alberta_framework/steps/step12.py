@@ -29,7 +29,7 @@ References:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from numbers import Integral, Real
 from typing import Any
 
@@ -97,18 +97,26 @@ class Step12IAConfig:
         """Return a JSON-serializable representation."""
         return {
             "type": "Step12IAConfig",
-            "n_demons": self.n_demons,
-            "cerebellum_step_size": self.cerebellum_step_size,
-            "subtask_specs": [asdict(s) for s in self.subtask_specs],
-            "observation_dim": self.observation_dim,
-            "n_primitive_actions": self.n_primitive_actions,
-            "base_step_size": self.base_step_size,
-            "base_avg_reward_step_size": self.base_avg_reward_step_size,
-            "option_step_size": self.option_step_size,
-            "option_gamma": self.option_gamma,
-            "option_planning_backups_per_step": self.option_planning_backups_per_step,
-            "epsilon_base": self.epsilon_base,
-            "utility_ema_decay": self.utility_ema_decay,
+            "n_demons": int(self.n_demons),
+            "cerebellum_step_size": float(self.cerebellum_step_size),
+            "subtask_specs": [
+                {
+                    "feature_index": int(s.feature_index),
+                    "threshold": float(s.threshold),
+                    "pseudo_reward_scale": float(s.pseudo_reward_scale),
+                    "max_option_steps": int(s.max_option_steps),
+                }
+                for s in self.subtask_specs
+            ],
+            "observation_dim": int(self.observation_dim),
+            "n_primitive_actions": int(self.n_primitive_actions),
+            "base_step_size": float(self.base_step_size),
+            "base_avg_reward_step_size": float(self.base_avg_reward_step_size),
+            "option_step_size": float(self.option_step_size),
+            "option_gamma": float(self.option_gamma),
+            "option_planning_backups_per_step": int(self.option_planning_backups_per_step),
+            "epsilon_base": float(self.epsilon_base),
+            "utility_ema_decay": float(self.utility_ema_decay),
         }
 
     @classmethod
@@ -148,47 +156,46 @@ class Step12IAConfig:
 _INT32_MAX = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> float:
+def _require_real(name: str, value: object) -> Any:
     """Return a concrete real scalar after direct float32 sink validation."""
     if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
+    return value
+
+
+def _narrow_float32(name: str, value: Any) -> float:
+    """Narrow exactly as downstream JAX kernels do, without intermediate double-rounding."""
     try:
         narrowed = round_real_to_float32(value)
     except (FloatingPointError, OverflowError, TypeError, ValueError) as exc:
         raise ValueError(f"{name} must be finite in float32, got {value!r}") from exc
     if not bool(np.isfinite(narrowed)):
         raise ValueError(f"{name} must be finite in float32, got {value!r}")
-    return narrowed
+    return float(narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    original: Any = value
+    original = _require_real(name, value)
     if original < 0.0 or original > 1.0:
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return _require_real(name, value)
+    return _narrow_float32(name, original)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    original: Any = value
+    original = _require_real(name, value)
     if original < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return _require_real(name, value)
+    return _narrow_float32(name, original)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
-    original: Any = value
+    original = _require_real(name, value)
     if original <= 0.0:
         raise ValueError(f"{name} must be positive, got {value!r}")
-    narrowed = _require_real(name, value)
-    if narrowed <= 0.0:
+    number = _narrow_float32(name, original)
+    if number <= 0.0:
         raise ValueError(f"{name} must remain positive in float32, got {value!r}")
-    return narrowed
+    return number
 
 
 def _require_int(
@@ -196,9 +203,9 @@ def _require_int(
     value: object,
     *,
     minimum: int | None = None,
-    exclusive_maximum: int | None = None,
+    maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
     number = int(value)
     if minimum is not None and number < minimum:
@@ -207,24 +214,30 @@ def _require_int(
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative, got {value!r}")
         raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
-    if exclusive_maximum is not None and number >= exclusive_maximum:
-        raise ValueError(f"{name} must be smaller than int32 max, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
     return number
 
 
 def _validate_ia_facade_config(config: Step12IAConfig) -> None:
-    n_demons = _require_int("n_demons", config.n_demons, minimum=1)
-    observation_dim = _require_int("observation_dim", config.observation_dim, minimum=1)
+    n_demons = _require_int("n_demons", config.n_demons, minimum=1, maximum=_INT32_MAX)
+    observation_dim = _require_int(
+        "observation_dim",
+        config.observation_dim,
+        minimum=1,
+        maximum=_INT32_MAX,
+    )
     n_primitive_actions = _require_int(
         "n_primitive_actions",
         config.n_primitive_actions,
         minimum=1,
+        maximum=_INT32_MAX,
     )
     option_planning_backups_per_step = _require_int(
         "option_planning_backups_per_step",
         config.option_planning_backups_per_step,
         minimum=0,
-        exclusive_maximum=_INT32_MAX,
+        maximum=_INT32_MAX - 1,
     )
     if not isinstance(config.subtask_specs, tuple):
         raise ValueError(
@@ -234,7 +247,12 @@ def _validate_ia_facade_config(config: Step12IAConfig) -> None:
     for spec in config.subtask_specs:
         if not isinstance(spec, SubtaskSpec):
             raise ValueError(f"subtask_specs must contain SubtaskSpec values, got {spec!r}")
-        feature_index = _require_int("feature_index", spec.feature_index, minimum=0)
+        feature_index = _require_int(
+            "feature_index",
+            spec.feature_index,
+            minimum=0,
+            maximum=_INT32_MAX,
+        )
         if feature_index >= observation_dim:
             raise ValueError(
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
@@ -244,13 +262,13 @@ def _validate_ia_facade_config(config: Step12IAConfig) -> None:
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )
+        pseudo_reward_scale = _narrow_float32("pseudo_reward_scale", pseudo_reward_scale)
         max_option_steps = _require_int(
             "max_option_steps",
             spec.max_option_steps,
             minimum=1,
+            maximum=_INT32_MAX,
         )
-        if max_option_steps > _INT32_MAX:
-            raise ValueError("max_option_steps must fit int32 telemetry")
         canonical_specs.append(
             SubtaskSpec(
                 feature_index=feature_index,
@@ -426,8 +444,8 @@ def run_step12_smoke(
     Returns:
         :class:`Step12SmokeResult` with shape/fineness summary.
     """
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step12IAConfig()
     agent = make_step12_ia_agent(cfg)

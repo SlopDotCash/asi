@@ -193,6 +193,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_demons", float("nan")),
     ("n_demons", float("inf")),
     ("n_demons", None),
+    ("n_demons", 2**31),
     ("observation_dim", 0),
     ("observation_dim", -1),
     ("observation_dim", True),
@@ -202,6 +203,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("observation_dim", float("nan")),
     ("observation_dim", float("inf")),
     ("observation_dim", None),
+    ("observation_dim", 2**31),
     ("n_primitive_actions", 0),
     ("n_primitive_actions", -1),
     ("n_primitive_actions", True),
@@ -211,6 +213,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("n_primitive_actions", float("nan")),
     ("n_primitive_actions", float("inf")),
     ("n_primitive_actions", None),
+    ("n_primitive_actions", 2**31),
     ("cerebellum_step_size", float("nan")),
     ("cerebellum_step_size", float("inf")),
     ("cerebellum_step_size", float("-inf")),
@@ -220,6 +223,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("cerebellum_step_size", -1.0),
     ("cerebellum_step_size", "0.05"),
     ("cerebellum_step_size", None),
+    ("cerebellum_step_size", 1e100),
     ("base_step_size", float("nan")),
     ("base_step_size", float("inf")),
     ("base_step_size", float("-inf")),
@@ -228,18 +232,21 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("base_step_size", -1.0),
     ("base_step_size", "0.05"),
     ("base_step_size", None),
+    ("base_step_size", 1e100),
     ("base_avg_reward_step_size", float("nan")),
     ("base_avg_reward_step_size", float("inf")),
     ("base_avg_reward_step_size", True),
     ("base_avg_reward_step_size", False),
     ("base_avg_reward_step_size", -0.01),
     ("base_avg_reward_step_size", "0.01"),
+    ("base_avg_reward_step_size", 1e100),
     ("option_step_size", float("nan")),
     ("option_step_size", float("inf")),
     ("option_step_size", True),
     ("option_step_size", False),
     ("option_step_size", -1.0),
     ("option_step_size", "0.05"),
+    ("option_step_size", 1e100),
     ("option_gamma", float("nan")),
     ("option_gamma", float("inf")),
     ("option_gamma", float("-inf")),
@@ -248,6 +255,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("option_gamma", -0.1),
     ("option_gamma", 1.1),
     ("option_gamma", "0.99"),
+    ("option_gamma", 1e100),
     ("option_planning_backups_per_step", -1),
     ("option_planning_backups_per_step", 2**31 - 1),
     ("option_planning_backups_per_step", 2**31),
@@ -265,6 +273,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("epsilon_base", -0.1),
     ("epsilon_base", 1.1),
     ("epsilon_base", "0.1"),
+    ("epsilon_base", 1e100),
     ("utility_ema_decay", float("nan")),
     ("utility_ema_decay", float("inf")),
     ("utility_ema_decay", float("-inf")),
@@ -273,6 +282,7 @@ _INVALID_STEP12_FIELDS: tuple[tuple[str, Any], ...] = (
     ("utility_ema_decay", -0.1),
     ("utility_ema_decay", 1.1),
     ("utility_ema_decay", "0.99"),
+    ("utility_ema_decay", 1e100),
 )
 
 
@@ -1073,3 +1083,49 @@ def test_step12_state_stays_finite_200_steps() -> None:
     chex.assert_tree_all_finite(result.state.cortex_state.stomp_state.base_learner_state)
     chex.assert_tree_all_finite(result.predictions)
     chex.assert_tree_all_finite(result.cortex_td_errors)
+
+
+def test_step12_config_preserves_float32_boundaries() -> None:
+    f32_max = float(np.finfo(np.float32).max)
+    spec = SubtaskSpec(
+        feature_index=2**31 - 2,
+        threshold=f32_max,
+        pseudo_reward_scale=f32_max,
+        max_option_steps=2**31 - 1,
+    )
+    config = Step12IAConfig(
+        n_demons=2**31 - 1,
+        cerebellum_step_size=f32_max,
+        subtask_specs=(spec,),
+        observation_dim=2**31 - 1,
+        n_primitive_actions=2**31 - 1,
+        base_step_size=f32_max,
+        base_avg_reward_step_size=f32_max,
+        option_step_size=f32_max,
+        option_gamma=1.0,
+        option_planning_backups_per_step=2**31 - 2,
+        epsilon_base=1.0,
+        utility_ema_decay=1.0,
+    )
+    assert config.n_demons == 2**31 - 1
+    assert config.observation_dim == 2**31 - 1
+    assert config.option_planning_backups_per_step == 2**31 - 2
+    assert config.cerebellum_step_size == f32_max
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "64"}, "steps"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step12_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step12_smoke(**kwargs)
