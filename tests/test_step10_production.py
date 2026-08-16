@@ -332,6 +332,34 @@ def test_step10_stomp_feature_index_stays_within_int32() -> None:
     spec = SubtaskSpec(feature_index=2**31 - 2)
     cfg = Step10STOMPConfig(subtask_specs=(spec,), observation_dim=2**31 - 1)
     assert cfg.subtask_specs[0].feature_index == 2**31 - 2
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["observation_dim", "n_primitive_actions", "option_planning_backups_per_step"],
+)
+def test_step10_stomp_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: _SpoofedInt()})
+
+
+# Note: SubtaskSpec.feature_index/max_option_steps also route through this
+# module's _require_int, but SubtaskSpec.__post_init__ (core/options.py) runs
+# its own unguarded `< 0`/`< 1` comparison first and raises a raw TypeError
+# on a spoofed object before this module's helper is ever reached. That is a
+# separate, out-of-scope gap in a different file/function - not fixed here.
 
 
 def test_step10_stomp_rejects_non_tuple_subtask_specs() -> None:
