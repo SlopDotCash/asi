@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework.core.associative_memory import AssociativeMemoryConfig
+from alberta_framework.core.associative_memory import (
+    AssociativeMemoryConfig,
+    AssociativeMemoryLearner,
+    _require_resource,
+    run_associative_memory_arrays,
+)
 
 _INT32_MAX = 2**31 - 1
 
@@ -218,3 +224,117 @@ def test_associative_float_validators_accept_valid_values() -> None:
     )
     assert cfg.write_lr == 1.0
     assert cfg.retention == 0.9
+
+
+def test_associative_static_pair_indices_preflight_before_python_lists() -> None:
+    with pytest.raises(ValueError, match="static indices.*scalar count"):
+        _base_cfg(block_size=50_000, suffix_length=50_000, max_features=1)
+
+
+def test_associative_lookup_and_gather_products_are_preflighted() -> None:
+    with pytest.raises(ValueError, match="lookup workspace.*scalar count"):
+        _base_cfg(block_size=1_000, suffix_length=2, max_features=400_000)
+    with pytest.raises(ValueError, match="gathered rows.*byte count"):
+        _base_cfg(
+            vocab_size=1_000_000,
+            block_size=1_000,
+            suffix_length=2,
+            max_features=1,
+        )
+
+
+def test_associative_adaptive_window_product_is_conditional() -> None:
+    # Other exact products fit; the pair-by-window matrix alone exceeds the bound.
+    _base_cfg(block_size=1_050, suffix_length=1_050, max_features=1)
+    with pytest.raises(ValueError, match="adaptive-window workspace.*byte count"):
+        _base_cfg(
+            block_size=1_050,
+            suffix_length=1_050,
+            max_features=1,
+            adaptive_window=True,
+        )
+
+
+def test_associative_resource_endpoint_is_exact_and_allocation_free() -> None:
+    _require_resource("endpoint", float32_scalars=_INT32_MAX // 4)
+    with pytest.raises(ValueError, match="byte count"):
+        _require_resource("endpoint", float32_scalars=_INT32_MAX // 4 + 1)
+    with pytest.raises(ValueError, match="scalar count"):
+        _require_resource("endpoint", bool_scalars=_INT32_MAX + 1)
+
+
+def test_associative_serialized_schema_is_exact() -> None:
+    learner = AssociativeMemoryLearner(_base_cfg())
+    config_payload = learner.config.to_config()
+    learner_payload = learner.to_config()
+    assert AssociativeMemoryConfig.from_config(config_payload) == learner.config
+    assert AssociativeMemoryLearner.from_config(learner_payload).config == learner.config
+
+    for payload in (
+        {**config_payload, "extra": 1},
+        {key: value for key, value in config_payload.items() if key != "vocab_size"},
+        {**config_payload, "type": "Wrong"},
+        {**config_payload, "vocab_size": np.int32(4)},
+    ):
+        with pytest.raises(ValueError):
+            AssociativeMemoryConfig.from_config(payload)
+    with pytest.raises(ValueError):
+        AssociativeMemoryLearner.from_config({**learner_payload, "extra": 1})
+
+
+def test_associative_public_shapes_and_dtypes_fail_before_tracing() -> None:
+    learner = AssociativeMemoryLearner(_base_cfg())
+    state = learner.init()
+    with pytest.raises(ValueError, match="context must have shape"):
+        learner.predict(state, jnp.zeros((7,), dtype=jnp.int32))
+    with pytest.raises(TypeError, match="context must have dtype int32"):
+        learner.predict(state, jnp.zeros((8,), dtype=jnp.float32))
+    with pytest.raises(ValueError, match="state.values must have shape"):
+        learner.predict(
+            state.replace(values=jnp.zeros((4, 3), dtype=jnp.float32)),
+            jnp.zeros((8,), dtype=jnp.int32),
+        )
+    with pytest.raises(ValueError, match="labels must have shape"):
+        run_associative_memory_arrays(
+            learner,
+            state,
+            jnp.zeros((2, 8), dtype=jnp.int32),
+            jnp.zeros((1,), dtype=jnp.int32),
+        )
+
+
+def test_associative_counters_saturate_without_wrapping() -> None:
+    learner = AssociativeMemoryLearner(
+        _base_cfg(
+            block_size=2,
+            suffix_length=2,
+            max_features=1,
+            feature_family="position_token",
+        )
+    )
+    state = learner.init().replace(
+        allocations=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+        replacements=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+        step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+    )
+    result = learner.update(
+        state,
+        jnp.asarray([0, 1], dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.allocations) == _INT32_MAX
+    assert int(result.state.replacements) == _INT32_MAX
+    assert int(result.state.step_count) == _INT32_MAX
+
+
+def test_associative_invalid_adopted_counter_rolls_back_transaction() -> None:
+    learner = AssociativeMemoryLearner(_base_cfg())
+    state = learner.init().replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+    result = learner.update(
+        state,
+        jnp.zeros((8,), dtype=jnp.int32),
+        jnp.asarray(1, dtype=jnp.int32),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.step_count) == -1
