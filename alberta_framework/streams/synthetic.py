@@ -19,6 +19,7 @@ from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
 from alberta_framework._float32 import round_real_to_float32
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -73,17 +74,7 @@ def _require_normal_float32_scale(name: str, value: object) -> float:
 
 def _require_finite_nonnegative_float32(name: str, value: object) -> float:
     """Require a finite non-negative float32 execution value."""
-    message = f"{name} must be a finite non-negative float32 value"
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(message)
-    try:
-        narrowed = float(np.float32(cast(Real, value)))
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(message) from exc
-    if not math.isfinite(narrowed) or narrowed < 0.0:
-        raise ValueError(message)
-    return narrowed
+    return validated_float32_scalar(name, value, lower=0.0)
 
 
 def _require_finite_float32_log_scale(name: str, value: object) -> float:

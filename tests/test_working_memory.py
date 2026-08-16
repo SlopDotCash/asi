@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from alberta_framework.core.working_memory import (
@@ -391,6 +394,84 @@ def _minimal_config(**overrides: object) -> WorkingMemoryConfig:
     }
     payload.update(overrides)
     return WorkingMemoryConfig(**payload)  # type: ignore[arg-type]
+
+
+class _ScalarSpoof:
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("must not convert")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"observation_dim": True},
+        {"observation_dim": 1.5},
+        {"observation_dim": 2**31},
+        {"observation_decay_rates": [0.5]},
+        {"observation_decay_rates": (_ScalarSpoof(),)},
+        {"observation_decay_rates": (1.0 - 1e-10,)},
+        {"gate_threshold": _ScalarSpoof()},
+        {"gate_threshold": 1e100},
+        {"gate_temperature": Fraction(1, 10**50)},
+        {"include_traces": np.bool_(True)},
+    ],
+)
+def test_working_memory_rejects_untrusted_or_sink_invalid_config(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _minimal_config(**overrides)
+
+
+def test_working_memory_canonicalizes_numpy_config_scalars() -> None:
+    config = _minimal_config(
+        observation_dim=np.longlong(2),
+        action_dim=np.int32(0),
+        observation_decay_rates=(np.float32(0.5),),
+        gate_threshold=np.float64(0.25),
+        gate_temperature=Fraction(1, 2),
+    )
+
+    assert type(config.observation_dim) is int
+    assert type(config.action_dim) is int
+    assert type(config.observation_decay_rates[0]) is float
+    assert type(config.gate_threshold) is float
+    assert type(config.gate_temperature) is float
+
+
+@pytest.mark.parametrize("shape", [(), (2, 1), (1, 2), (1,)])
+def test_working_memory_rejects_wrong_vector_shapes(shape: tuple[int, ...]) -> None:
+    memory = WorkingMemoryFeaturizer(_minimal_config())
+    with pytest.raises(ValueError, match=r"shape \(2,\)"):
+        memory.features(
+            memory.init(),
+            jnp.ones(shape, dtype=jnp.float32),
+            memory.zero_action(),
+            memory.zero_reward(),
+        )
+
+
+def test_working_memory_array_transform_rejects_misaligned_shapes() -> None:
+    memory = WorkingMemoryFeaturizer(_minimal_config())
+    observations = jnp.ones((3, 2), dtype=jnp.float32)
+    actions = jnp.empty((3, 0), dtype=jnp.float32)
+    rewards = jnp.empty((3, 0), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="observations"):
+        transform_working_memory_arrays(memory, jnp.ones((3, 1)), actions, rewards)
+    with pytest.raises(ValueError, match="leading dims"):
+        transform_working_memory_arrays(memory, observations, actions[:2], rewards)
+    with pytest.raises(ValueError, match="external_gates"):
+        transform_working_memory_arrays(
+            memory,
+            observations,
+            actions,
+            rewards,
+            external_gates=jnp.ones((3, 1)),
+        )
 
 
 @pytest.mark.parametrize("field", [
