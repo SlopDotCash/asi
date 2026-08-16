@@ -17,16 +17,17 @@ contracts are exercised in ``tests/test_prototype_memory.py`` and
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
 from typing import Any, Literal, cast
 
 import jax.numpy as jnp
 import jax.random as jr
-import numpy as np
 from jax import Array
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.associative_memory import (
     AssociativeFeatureFamily,
     AssociativeMemoryConfig,
@@ -102,7 +103,7 @@ _STEP2_MEMORY_CONFIG_KEYS = frozenset(
         "bandwidth",
     }
 )
-_INT32_MAX = int(np.iinfo(np.int32).max)
+_INT32_MAX = 2**31 - 1
 
 
 def _require_exact_keys(
@@ -116,49 +117,77 @@ def _require_exact_keys(
         )
 
 
-def _require_real(name: str, value: object) -> Any:
-    if isinstance(value, bool) or not isinstance(value, Real):
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
-    return value
-
-
-def _narrow_float32(name: str, value: Any) -> float:
-    """Narrow exactly as the downstream JAX kernels do."""
+    real = cast(Real, value)
     try:
-        narrowed = round_real_to_float32(value)
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
     except (FloatingPointError, OverflowError, TypeError, ValueError):
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
-    if not bool(np.isfinite(narrowed)):
+    if not math.isfinite(narrowed):
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
-    if type(value) in (int, float) and (bool(narrowed != 0.0) or value == 0):
-        return float(value)
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: object, narrowed: float) -> float:
+    actual_type = type(value)
+    if (actual_type is int or actual_type is float) and (
+        bool(narrowed != 0.0) or value == 0
+    ):
+        return float(cast(int | float, value))
     return float(narrowed)
 
 
+def _require_real(name: str, value: object) -> float:
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed)
+
+
 def _require_unit_interval(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if not 0.0 <= original <= 1.0:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
         raise ValueError(f"{name} must be in [0, 1], got {value!r}")
-    return _narrow_float32(name, original)
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real <= 0.0
+        or not real <= 1.0
+        or numerator <= 0
+        or numerator > denominator
+        or narrowed <= 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original < 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
         raise ValueError(f"{name} must be non-negative, got {value!r}")
-    return _narrow_float32(name, original)
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if original <= 0.0:
-        raise ValueError(f"{name} must be positive, got {value!r}")
-    number = _narrow_float32(name, original)
-    if number <= 0.0:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
         raise ValueError(
             f"{name} must be positive in float32 execution sink, got {value!r}"
         )
-    return number
+    return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
@@ -168,10 +197,11 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
     try:
-        number = int(value)
+        number = int(cast(Integral, value))
     except (OverflowError, TypeError, ValueError):
         raise ValueError(f"{name} must be an integer, got {value!r}") from None
     if minimum is not None and number < minimum:
@@ -261,18 +291,6 @@ def _validate_step2_strict_digit_config(config: Step2StrictDigitReadoutConfig) -
     object.__setattr__(config, "n_heads", n_heads)
     object.__setattr__(config, "hidden_sizes", tuple(canonical_hidden))
     object.__setattr__(config, "step_size", step_size)
-
-
-def _require_half_open_unit_interval(name: str, value: object) -> float:
-    original = _require_real(name, value)
-    if not 0.0 < original <= 1.0:
-        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
-    number = _narrow_float32(name, original)
-    if number <= 0.0:
-        raise ValueError(
-            f"{name} must remain positive in float32 execution sink, got {value!r}"
-        )
-    return number
 
 
 def _validate_step2_memory_config(config: Step2MemoryConfig) -> None:
@@ -802,8 +820,7 @@ def collect_step2_arrays(
     experiments use their dedicated runners so they can capture full metadata,
     baselines, and paired seed statistics.
     """
-    if steps < 1:
-        raise ValueError(f"steps must be positive, got {steps}")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
     state = stream.init(key)
     observations = []
     targets = []
@@ -827,10 +844,9 @@ def run_step2_smoke(
     utility/perturbation metrics, and config serialization.  It is not a
     canonical MLP comparison.
     """
-    if final_window < 1 or final_window > steps:
-        raise ValueError(
-            f"final_window must be in [1, steps], got {final_window}"
-        )
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
+    final_window = _require_int("final_window", final_window, minimum=1, maximum=steps)
     cfg = config or Step2KernelConfig()
     learner = make_step2_learner(cfg)
     stream = make_step2_stream(cfg)
@@ -867,10 +883,9 @@ def run_step2_associative_smoke(
     associative table should lower NLL over time.
     """
     cfg = config or Step2AssociativeConfig()
-    if steps < 2:
-        raise ValueError(f"steps must be at least 2, got {steps}")
-    if window < 1 or window > steps // 2:
-        raise ValueError(f"window must be in [1, steps//2], got {window}")
+    steps = _require_int("steps", steps, minimum=2, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
+    window = _require_int("window", window, minimum=1, maximum=steps // 2)
     pattern_count = min(8, max(2, steps // 8))
     key = jr.key(seed)
     patterns = jr.randint(

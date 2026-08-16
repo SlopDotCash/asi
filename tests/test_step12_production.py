@@ -362,7 +362,7 @@ def test_step12_ia_fields_preserve_legal_endpoints() -> None:
             SubtaskSpec(
                 feature_index=0,
                 threshold=1e-12,
-                pseudo_reward_scale=0.0,
+                pseudo_reward_scale=1e-12,
                 max_option_steps=1,
             ),
         ),
@@ -393,7 +393,7 @@ def test_step12_ia_fields_preserve_legal_endpoints() -> None:
     assert restored.utility_ema_decay == 0.0
     assert restored.subtask_specs[0].feature_index == 0
     assert restored.subtask_specs[0].threshold == float(np.float32(1e-12))
-    assert restored.subtask_specs[0].pseudo_reward_scale == 0.0
+    assert restored.subtask_specs[0].pseudo_reward_scale == float(np.float32(1e-12))
     assert restored.subtask_specs[0].max_option_steps == 1
     assert agent.config.cortex.stomp.option_gamma == 0.0
 
@@ -483,26 +483,34 @@ def test_step12_rejects_values_that_overflow_float32(field: str) -> None:
 
 @pytest.mark.parametrize("value", [1.0e100, -1.0e100])
 def test_step12_rejects_pseudo_reward_scale_that_overflows_float32(value: float) -> None:
-    spec = SubtaskSpec(feature_index=0, pseudo_reward_scale=value)
     with pytest.raises(ValueError, match="pseudo_reward_scale"):
-        _config_with(subtask_specs=(spec,))
+        _config_with(
+            subtask_specs=(SubtaskSpec(feature_index=0, pseudo_reward_scale=value),),
+        )
 
 
 @pytest.mark.parametrize(
-    ("field", "value"),
+    ("field", "value", "expected"),
     [
-        ("cerebellum_step_size", 1.0e-50),
+        ("cerebellum_step_size", 1.0e-50, "cerebellum_step_size"),
         (
             "subtask_specs",
             (SubtaskSpec(feature_index=0, threshold=1.0e-50),),
+            "threshold",
+        ),
+        (
+            "subtask_specs",
+            (SubtaskSpec(feature_index=0, pseudo_reward_scale=1.0e-50),),
+            "pseudo_reward_scale",
         ),
     ],
+    ids=("cerebellum_step_size", "threshold", "pseudo_reward_scale"),
 )
 def test_step12_strict_positive_fields_reject_float32_zero_collapse(
     field: str,
     value: object,
+    expected: str,
 ) -> None:
-    expected = "threshold" if field == "subtask_specs" else field
     with pytest.raises(ValueError, match=expected):
         _config_with(**{field: value})
 
@@ -511,7 +519,7 @@ def test_step12_float32_underflow_and_finite_boundaries_are_canonical() -> None:
     spec = SubtaskSpec(
         feature_index=0,
         threshold=_FLOAT32_MIN_SUBNORMAL,
-        pseudo_reward_scale=-1.0e-50,
+        pseudo_reward_scale=_FLOAT32_MIN_SUBNORMAL,
     )
     config = _config_with(
         subtask_specs=(spec,),
@@ -525,14 +533,14 @@ def test_step12_float32_underflow_and_finite_boundaries_are_canonical() -> None:
     assert config.base_avg_reward_step_size == 0.0
     assert config.option_step_size == 0.0
     assert config.subtask_specs[0].threshold == _FLOAT32_MIN_SUBNORMAL
-    assert config.subtask_specs[0].pseudo_reward_scale == 0.0
+    assert config.subtask_specs[0].pseudo_reward_scale == _FLOAT32_MIN_SUBNORMAL
 
     maximum = _config_with(
         subtask_specs=(
             SubtaskSpec(
                 feature_index=0,
                 threshold=_FLOAT32_MAX,
-                pseudo_reward_scale=-_FLOAT32_MAX,
+                pseudo_reward_scale=_FLOAT32_MAX,
             ),
         ),
         cerebellum_step_size=_FLOAT32_MAX,
@@ -543,7 +551,7 @@ def test_step12_float32_underflow_and_finite_boundaries_are_canonical() -> None:
     assert maximum.cerebellum_step_size == _FLOAT32_MAX
     assert maximum.base_step_size == _FLOAT32_MAX
     assert maximum.subtask_specs[0].threshold == _FLOAT32_MAX
-    assert maximum.subtask_specs[0].pseudo_reward_scale == -_FLOAT32_MAX
+    assert maximum.subtask_specs[0].pseudo_reward_scale == _FLOAT32_MAX
 
 
 def test_step12_int32_counter_boundaries_match_core_sinks() -> None:

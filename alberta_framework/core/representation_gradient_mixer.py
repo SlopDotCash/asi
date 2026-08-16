@@ -44,9 +44,10 @@ def _strict_float32_scalar(
 ) -> float:
     """Validate a finite nonnegative scalar with a stable float32 encoding."""
 
-    if not isinstance(value, Real) or isinstance(value, bool):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(f"{label} must be a real scalar")
-    normalized = float(value)
+    normalized = float(cast(Real, value))
     if not math.isfinite(normalized) or normalized < 0.0:
         raise ValueError(f"{label} must be finite and non-negative")
     if not allow_zero and normalized == 0.0:

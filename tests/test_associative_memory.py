@@ -87,6 +87,96 @@ def test_config_rejects_invalid_adaptive_scalars(
             AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
 
 
+class _SpoofedFloat:
+    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        return 0.5
+
+
+class _RaisingSpoofedFloat:
+    """Mimics ``float`` via ``__class__`` but raises when actually converted."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return float
+
+    def __float__(self) -> float:
+        raise RuntimeError("untrusted __float__ hook executed")
+
+
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 1
+
+
+class _RaisingSpoofedInt:
+    """Mimics ``int`` via ``__class__`` but raises when actually converted."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        raise RuntimeError("untrusted __int__ hook executed")
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["scope_lr", "budget_lr", "initial_budget_fraction", "scope_logit_clip"],
+)
+def test_config_rejects_class_spoofed_real_fields(field: str) -> None:
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload[field] = _SpoofedFloat()
+
+    with pytest.raises(ValueError, match=field):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["scope_lr", "budget_lr", "initial_budget_fraction", "scope_logit_clip"],
+)
+def test_config_raising_spoofed_real_field_stays_a_value_error(field: str) -> None:
+    """A spoofed real whose ``__float__`` raises must not leak a raw exception."""
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload[field] = _RaisingSpoofedFloat()
+
+    with pytest.raises(ValueError, match=field):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+def test_config_rejects_class_spoofed_min_effective_budget() -> None:
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload["min_effective_budget"] = _SpoofedInt()
+
+    with pytest.raises(ValueError, match="min_effective_budget"):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
+def test_config_raising_spoofed_min_effective_budget_stays_a_value_error() -> None:
+    """A spoofed int whose ``__int__`` raises must not leak a raw exception."""
+    base = AssociativeMemoryConfig(vocab_size=4, block_size=3, suffix_length=2)
+    payload = base.to_config()
+    payload["min_effective_budget"] = _RaisingSpoofedInt()
+
+    with pytest.raises(ValueError, match="min_effective_budget"):
+        AssociativeMemoryLearner(AssociativeMemoryConfig.from_config(payload))
+
+
 def test_silent_feature_does_not_turn_inf_value_into_nan() -> None:
     """Weight 0 times an inf stored row is 0*inf = NaN in the evidence sum."""
     learner = AssociativeMemoryLearner(
@@ -563,3 +653,206 @@ def test_step2_associative_facade_smoke_and_roundtrip() -> None:
     assert result.finite
     assert result.metrics_shape == (64, 8)
     assert result.final_window_nll < result.initial_window_nll
+
+
+_INVALID_ASSOCIATIVE_CONFIGS: tuple[dict[str, object], ...] = (
+    {"vocab_size": 1, "block_size": 8},
+    {"vocab_size": 0, "block_size": 8},
+    {"vocab_size": -1, "block_size": 8},
+    {"vocab_size": 2**31, "block_size": 8},
+    {"vocab_size": True, "block_size": 8},
+    {"vocab_size": "4", "block_size": 8},
+    {"vocab_size": 4, "block_size": 0},
+    {"vocab_size": 4, "block_size": -1},
+    {"vocab_size": 4, "block_size": 2**31},
+    {"vocab_size": 4, "block_size": True},
+    {"vocab_size": 4, "block_size": 8, "suffix_length": 1},
+    {"vocab_size": 4, "block_size": 8, "suffix_length": 9},
+    {"vocab_size": 4, "block_size": 8, "suffix_length": 2**31},
+    {"vocab_size": 4, "block_size": 8, "suffix_length": True},
+    {"vocab_size": 4, "block_size": 8, "feature_family": "unknown_family"},
+    {"vocab_size": 4, "block_size": 8, "max_features": 0},
+    {"vocab_size": 4, "block_size": 8, "max_features": -1},
+    {"vocab_size": 4, "block_size": 8, "max_features": 2**31},
+    {"vocab_size": 4, "block_size": 8, "max_features": True},
+    {"vocab_size": 4, "block_size": 8, "write_lr": 0.0},
+    {"vocab_size": 4, "block_size": 8, "write_lr": -0.1},
+    {"vocab_size": 4, "block_size": 8, "write_lr": 1e100},
+    {"vocab_size": 4, "block_size": 8, "write_lr": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "write_lr": True},
+    {"vocab_size": 4, "block_size": 8, "retention": -0.1},
+    {"vocab_size": 4, "block_size": 8, "retention": 1.1},
+    {"vocab_size": 4, "block_size": 8, "retention": 1e100},
+    {"vocab_size": 4, "block_size": 8, "retention": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "retention": True},
+    {"vocab_size": 4, "block_size": 8, "utility_lr": -0.1},
+    {"vocab_size": 4, "block_size": 8, "utility_lr": 1e100},
+    {"vocab_size": 4, "block_size": 8, "utility_lr": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "utility_lr": True},
+    {"vocab_size": 4, "block_size": 8, "utility_decay": -0.1},
+    {"vocab_size": 4, "block_size": 8, "utility_decay": 1.1},
+    {"vocab_size": 4, "block_size": 8, "utility_decay": 1e100},
+    {"vocab_size": 4, "block_size": 8, "utility_decay": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "utility_decay": True},
+    {"vocab_size": 4, "block_size": 8, "min_weight": 0.0},
+    {"vocab_size": 4, "block_size": 8, "min_weight": -0.1},
+    {"vocab_size": 4, "block_size": 8, "min_weight": 1e100},
+    {"vocab_size": 4, "block_size": 8, "min_weight": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "min_weight": True},
+    {"vocab_size": 4, "block_size": 8, "max_weight": 0.0},
+    {"vocab_size": 4, "block_size": 8, "max_weight": -0.1},
+    {"vocab_size": 4, "block_size": 8, "max_weight": 1e100},
+    {"vocab_size": 4, "block_size": 8, "max_weight": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "max_weight": True},
+    {"vocab_size": 4, "block_size": 8, "min_weight": 1.0, "max_weight": 0.5},
+    {"vocab_size": 4, "block_size": 8, "logit_scale": 0.0},
+    {"vocab_size": 4, "block_size": 8, "logit_scale": -0.1},
+    {"vocab_size": 4, "block_size": 8, "logit_scale": 1e100},
+    {"vocab_size": 4, "block_size": 8, "logit_scale": float("nan")},
+    {"vocab_size": 4, "block_size": 8, "logit_scale": True},
+    {"vocab_size": 4, "block_size": 8, "normalize_by_weight": 1},
+    {"vocab_size": 4, "block_size": 8, "min_effective_budget": 0},
+    {"vocab_size": 4, "block_size": 8, "min_effective_budget": 2**31},
+    {"vocab_size": 4, "block_size": 8, "min_effective_budget": 4097},
+    {"vocab_size": 4, "block_size": 8, "min_effective_budget": True},
+)
+
+
+@pytest.mark.parametrize("kwargs", _INVALID_ASSOCIATIVE_CONFIGS)
+def test_associative_memory_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        AssociativeMemoryConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_associative_memory_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"retention must be in \[0, 1\]"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            retention=HiddenBoundaryFloat(0.5),
+        )
+
+
+def test_associative_memory_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            write_lr=value,  # type: ignore[arg-type]
+        )
+
+
+def test_associative_memory_rejects_equality_spoofed_feature_family() -> None:
+    class SpoofedFamily:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            return hash("token_suffix_pair")
+
+    with pytest.raises(ValueError, match="feature_family"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            feature_family=SpoofedFamily(),  # type: ignore[arg-type]
+        )
+
+
+def test_associative_memory_rejects_spoofed_bool_flags() -> None:
+    class SpoofedBool:
+        @property
+        def __class__(self) -> type[bool]:
+            return bool
+
+        def __bool__(self) -> bool:
+            return True
+
+    with pytest.raises(ValueError, match="normalize_by_weight"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            normalize_by_weight=SpoofedBool(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="adaptive_feature_family"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            adaptive_feature_family=SpoofedBool(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="adaptive_window"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            adaptive_window=SpoofedBool(),  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match="adaptive_budget"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            adaptive_budget=SpoofedBool(),  # type: ignore[arg-type]
+        )
+
+
+def test_associative_memory_rejects_spoofed_int_class_and_negative_ratios() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="write_lr"):
+        AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=8,
+            write_lr=SpoofedIntFloat(0.5),
+        )
+
+
+def test_associative_memory_json_roundtrip() -> None:
+    import json
+
+    config = AssociativeMemoryConfig(
+        vocab_size=8,
+        block_size=16,
+        suffix_length=4,
+        feature_family="token_suffix_pair",
+        max_features=256,
+        write_lr=0.5,
+        retention=0.9,
+    )
+    serialized = config.to_config()
+    json_str = json.dumps(serialized)
+    deserialized = json.loads(json_str)
+    restored = AssociativeMemoryConfig.from_config(deserialized)
+
+    assert restored == config
+    assert restored.feature_family == "token_suffix_pair"

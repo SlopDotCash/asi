@@ -205,6 +205,31 @@ def test_step4_sarsa_scalars_reject_invalid_inputs(field: str, value: object) ->
         _config_with(**{field: value})
 
 
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize("field", ["n_actions", "epsilon_decay_steps"])
+def test_step4_sarsa_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _config_with(**{field: _SpoofedInt()})
+
+
+def test_step4_sarsa_hidden_sizes_rejects_class_spoofed_integers() -> None:
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        _config_with(hidden_sizes=(_SpoofedInt(),))
+
+
 @pytest.mark.parametrize("value", [0, 1, "false", None])
 def test_step4_sarsa_config_requires_exact_boolean_layer_norm(value: object) -> None:
     with pytest.raises(ValueError, match="use_layer_norm must be a boolean"):

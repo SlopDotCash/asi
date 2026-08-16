@@ -241,7 +241,8 @@ class Normalizer[
         Args:
             epsilon: Small constant added to std for numerical stability
         """
-        if isinstance(epsilon, bool) or not isinstance(epsilon, Real):
+        epsilon_type = type(epsilon)
+        if issubclass(epsilon_type, bool) or not issubclass(epsilon_type, Real):
             raise TypeError("epsilon must be a finite real number")
         if not math.isfinite(epsilon) or epsilon <= 0.0:
             raise ValueError("epsilon must be finite and positive")
@@ -441,7 +442,8 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
                 prior-regularized moments with no exponential forgetting.
         """
         super().__init__(epsilon=epsilon)
-        if isinstance(decay, bool) or not isinstance(decay, Real):
+        decay_type = type(decay)
+        if issubclass(decay_type, bool) or not issubclass(decay_type, Real):
             raise TypeError("decay must be a finite real number")
         if not math.isfinite(decay):
             raise ValueError("decay must be finite")
@@ -730,7 +732,8 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
     def __init__(self, epsilon: float = 1e-5, momentum: float = 0.99):
         """Initialize the streaming BatchNorm-style normalizer."""
         super().__init__(epsilon=epsilon)
-        if isinstance(momentum, bool) or not isinstance(momentum, Real):
+        momentum_type = type(momentum)
+        if issubclass(momentum_type, bool) or not issubclass(momentum_type, Real):
             raise TypeError("momentum must be a finite real number")
         if not math.isfinite(momentum):
             raise ValueError("momentum must be finite")

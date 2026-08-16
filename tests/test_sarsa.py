@@ -214,6 +214,44 @@ class TestSARSAUpdate:
         chex.assert_shape(result.td_error, ())
         assert result.reward == 1.0
 
+    def test_update_before_select_action_trains_no_head(self):
+        """last_action == -1 must not wrap to the last control head."""
+        agent = _make_agent(n_actions=4, epsilon_start=0.0)
+        state = agent.init(feature_dim=4, key=jr.key(3))
+        next_obs = jnp.ones(4, dtype=jnp.float32) * 2.0
+
+        # No select_action was called, so last_action == -1.
+        assert int(state.last_action) == -1
+        result = agent.update(
+            state,
+            reward=jnp.array(1.0),
+            observation=next_obs,
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        assert float(result.td_error) == 0.0
+        chex.assert_trees_all_close(
+            result.state.learner_state.trunk_params.weights,
+            state.learner_state.trunk_params.weights,
+            atol=0.0,
+        )
+        chex.assert_trees_all_close(
+            result.state.learner_state.trunk_params.biases,
+            state.learner_state.trunk_params.biases,
+            atol=0.0,
+        )
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.weights,
+            state.learner_state.head_params.weights,
+            atol=0.0,
+        )
+        chex.assert_trees_all_close(
+            result.state.learner_state.head_params.biases,
+            state.learner_state.head_params.biases,
+            atol=0.0,
+        )
+
     def test_terminated_no_bootstrap(self):
         """At terminal state, target = r (no bootstrapping)."""
         agent = _make_agent(n_actions=2, gamma=0.99, epsilon_start=0.0)

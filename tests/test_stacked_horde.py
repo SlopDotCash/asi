@@ -400,6 +400,99 @@ class TestConfig:
         assert cfg.gammas == (0.0, 0.9, 0.0, 0.9)
 
 
+@pytest.mark.unit
+class TestCumulantSourceDomain:
+    """Out-of-range cumulant reads must fail closed, never clip (issue #579)."""
+
+    @staticmethod
+    def _two_channel_horde() -> StackedLinearHorde:
+        return StackedLinearHorde(
+            StackedHordeConfig(
+                n_demons=2,
+                feature_dim=3,
+                gammas=(0.0, 0.0),
+                lamdas=(0.0, 0.0),
+                cumulant_indices=(0, 2),
+                step_size=0.5,
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "bad_index",
+        [-1, True, False, np.int32(1), 1.0, "1"],
+        ids=("negative", "true", "false", "numpy-int", "float", "str"),
+    )
+    def test_config_rejects_non_builtin_or_negative_indices(self, bad_index: object) -> None:
+        with pytest.raises(ValueError, match="cumulant_indices"):
+            _simple_config(n_demons=1, gammas=(0.9,), lamdas=(0.5,), cumulant_indices=(bad_index,))
+
+    def test_from_config_rejects_invalid_serialized_indices(self) -> None:
+        payload = _simple_config().to_config()
+        payload["cumulant_indices"] = [0, -1]
+        with pytest.raises(ValueError, match="cumulant_indices"):
+            StackedHordeConfig.from_config(payload)
+
+    def test_update_rejects_source_missing_the_maximum_index(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        with pytest.raises(ValueError, match="cumulant_source"):
+            horde.update(state, x, jnp.zeros(3), jnp.array([1.0, 99.0]))
+        # Nothing may have moved: the horde state is untouched by the rejection.
+        np.testing.assert_array_equal(np.asarray(state.weights), np.zeros((2, 3)))
+        assert int(state.step_count) == 0
+
+    def test_jit_update_rejects_short_source_at_trace_time(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        jitted = jax.jit(horde.update)
+        with pytest.raises(ValueError, match="cumulant_source"):
+            jitted(state, x, jnp.zeros(3), jnp.array([1.0, 99.0]))
+
+    @pytest.mark.parametrize("rank", [0, 2], ids=("rank-zero", "rank-two"))
+    def test_update_rejects_non_rank_one_sources(self, rank: int) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        source = jnp.ones((3,) * rank, dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_source"):
+            horde.update(state, x, jnp.zeros(3), source)
+
+    def test_scan_rejects_non_rank_two_sources(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        features = jnp.zeros((3, 3), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_sources"):
+            run_stacked_horde_scan(horde, state, features, jnp.ones((3,), dtype=jnp.float32))
+
+    def test_scan_rejects_sources_missing_the_maximum_index(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        features = jnp.zeros((3, 3), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="cumulant_sources"):
+            run_stacked_horde_scan(horde, state, features, jnp.ones((3, 2), dtype=jnp.float32))
+
+    def test_valid_direct_jit_and_scan_updates_are_unchanged(self) -> None:
+        horde = self._two_channel_horde()
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0])
+        source = jnp.array([1.0, 99.0, 4.0])
+
+        direct = horde.update(state, x, jnp.zeros(3), source)
+        np.testing.assert_allclose(np.asarray(direct.td_errors), [1.0, 4.0], rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(direct.state.weights[:, 0]), [0.5, 2.0], rtol=1e-6)
+
+        jitted = jax.jit(horde.update)(state, x, jnp.zeros(3), source)
+        np.testing.assert_allclose(np.asarray(jitted.td_errors), [1.0, 4.0], rtol=1e-6)
+
+        features = jnp.stack([x, jnp.zeros(3)])
+        sources = jnp.stack([source, source])
+        final_state, td_errors = run_stacked_horde_scan(horde, state, features, sources)
+        np.testing.assert_allclose(np.asarray(td_errors), [[1.0, 4.0]], rtol=1e-6)
+        np.testing.assert_allclose(np.asarray(final_state.weights[:, 0]), [0.5, 2.0], rtol=1e-6)
+
+
 class TestExactSemantics:
     def test_hand_computed_two_step(self):
         """Exact TD(lambda) values for one demon over two transitions."""

@@ -399,23 +399,46 @@ def init_mlp_params(key: Array, config: IPMNISTConfig) -> dict[str, Array]:
     return params
 
 
+_REAL_NUMERIC_DTYPE_KINDS = frozenset({"i", "u", "f"})
+"""Concrete dtype kinds admitted as ``data_x``: signed/unsigned integers and floats.
+
+An allowlist is load-bearing here: ``np.issubdtype(np.timedelta64, np.number)``
+is true, and a ``NaT`` timedelta casts to a *finite* float32 sentinel, so a
+``number``-based check would let non-finite-in-spirit data through the finite
+gate.  Kind codes exclude bool (``b``), complex (``c``), timedelta (``m``),
+datetime (``M``), and every non-numeric kind.
+"""
+
+
 def validated_ipmnist_data(
     data_x: np.ndarray | Array,
     data_y: np.ndarray | Array,
     *,
     input_dim: int | None,
     n_classes: int | None,
+    min_length: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(data_x, data_y)`` as finite float32 / int32 arrays inside the protocol domain.
 
     JAX gathers clamp out-of-range indices instead of raising, so a label at
     or above ``n_classes`` would silently be scored and trained as the last
     class, and a non-finite input would still yield an in-range accuracy.
-    Every runner that indexes the softmax by label must go through here.
+    Every runner that indexes the softmax by label must go through here
+    before touching any hyperparameter resolver or learner factory.
+
+    Args:
+        data_x: Candidate ``(n_train, input_dim)`` example matrix.
+        data_y: Candidate ``(n_train,)`` integer label vector.
+        input_dim: Required example width (``None`` = any).
+        n_classes: Exclusive label upper bound (``None`` = any).
+        min_length: Required minimum row count -- pass ``config.task_length``
+            so per-task sampling without replacement is feasible
+            (``None`` = any).
 
     Raises:
         ValueError: If ``data_x`` is not a finite ``(n_train, input_dim)``
-            matrix or ``data_y`` is not an aligned vector of integer labels in
+            matrix of a real numeric dtype kind with at least ``min_length``
+            rows, or ``data_y`` is not an aligned vector of integer labels in
             ``[0, n_classes)``.
     """
     raw_x = np.asarray(jax.device_get(data_x))
@@ -426,11 +449,11 @@ def validated_ipmnist_data(
         raise ValueError(f"data_x must have shape (n_train, {input_dim})")
     if raw_y.shape != (raw_x.shape[0],):
         raise ValueError("data_y must be (n_train,) aligned with data_x")
-    if (
-        np.issubdtype(raw_x.dtype, np.bool_)
-        or np.issubdtype(raw_x.dtype, np.complexfloating)
-        or not np.issubdtype(raw_x.dtype, np.number)
-    ):
+    if min_length is not None and raw_x.shape[0] < min_length:
+        raise ValueError(
+            "dataset smaller than task_length; cannot sample without replacement"
+        )
+    if raw_x.dtype.kind not in _REAL_NUMERIC_DTYPE_KINDS:
         raise ValueError("data_x must use a real numeric, non-boolean dtype")
     if raw_y.dtype.kind not in {"i", "u"}:
         raise ValueError("data_y must contain integer class labels")
@@ -781,7 +804,11 @@ def run_ipmnist(
     if noise_mode == "pool" and noise_pool_steps < 2:
         raise ValueError(f"noise_pool_steps must be >= 2, got {noise_pool_steps}")
     resolved_x, resolved_y = validated_ipmnist_data(
-        data_x, data_y, input_dim=config.input_dim, n_classes=config.n_classes
+        data_x,
+        data_y,
+        input_dim=config.input_dim,
+        n_classes=config.n_classes,
+        min_length=config.task_length,
     )
     hp = resolve_hyperparameters(learner, hyperparameters)
     init_fn, step_fn = _LEARNER_FACTORIES[learner](hp)
@@ -791,8 +818,6 @@ def run_ipmnist(
     data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
     data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
     n_train = int(data_x.shape[0])
-    if n_train < config.task_length:
-        raise ValueError("dataset smaller than task_length; cannot sample without replacement")
 
     seeds_array = jnp.asarray(seed_tuple, dtype=jnp.uint32)
 

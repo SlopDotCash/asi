@@ -24,12 +24,111 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
     safe_discrete_action,
     select_transaction,
 )
+
+_INT32_MAX: int = 2**31 - 1
+
+
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+    """Return the original real, exact ratio, and finite binary32 rounding."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    real = cast(Real, value)
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except (FloatingPointError, OverflowError, TypeError, ValueError):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+    return real, numerator, denominator, narrowed
+
+
+def canonical_float32_storage(value: Real, narrowed: float) -> float:
+    if not isinstance(value, (int, float, np.floating)):
+        return narrowed
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return narrowed
+    if not math.isfinite(number):
+        raise ValueError("scalar must be finite")
+    with np.errstate(invalid="ignore", over="ignore", under="ignore"):
+        renarrowed = np.asarray(number, dtype=np.float32)
+    if not bool(np.array_equal(narrowed, renarrowed)):
+        number = float(narrowed)
+    return number
+
+
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real <= 0.0
+        or not real <= 1.0
+        or numerator <= 0
+        or numerator > denominator
+        or narrowed <= 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(Integral, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
+
 
 AssociativeFeatureFamily = Literal[
     "position_token",
@@ -98,6 +197,10 @@ class AssociativeMemoryConfig:
     initial_budget_fraction: float = 0.5
     min_effective_budget: int = 1
     scope_logit_clip: float = 8.0
+
+    def __post_init__(self) -> None:
+        """Validate and canonicalize configuration."""
+        _validate_config(self)
 
     def to_config(self) -> dict[str, object]:
         """Serialize to a plain config dictionary."""
@@ -171,78 +274,86 @@ class AssociativeMemoryLearningResult:
     updates_applied: Bool[Array, " steps"]
 
 
-def _finite_real(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a real number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite")
-    return number
-
-
 def _validate_config(config: AssociativeMemoryConfig) -> None:
-    if config.vocab_size < 2:
-        raise ValueError("vocab_size must be at least 2")
-    if config.block_size < 1:
-        raise ValueError("block_size must be positive")
-    if config.suffix_length < 2:
-        raise ValueError("suffix_length must be at least 2")
-    if config.suffix_length > config.block_size:
-        raise ValueError("suffix_length must be <= block_size")
-    if config.feature_family not in {
+    vocab_size = _require_int(
+        "vocab_size", config.vocab_size, minimum=2, maximum=_INT32_MAX
+    )
+    block_size = _require_int(
+        "block_size", config.block_size, minimum=1, maximum=_INT32_MAX
+    )
+    suffix_length = _require_int(
+        "suffix_length", config.suffix_length, minimum=2, maximum=block_size
+    )
+    feature_family = config.feature_family
+    if type(feature_family) is not str:
+        raise ValueError(
+            f"feature_family must be an actual string, got {feature_family!r}"
+        )
+    if feature_family not in {
         "position_token",
         "suffix_pair",
         "token_suffix_pair",
     }:
-        raise ValueError("unknown feature_family")
-    if config.max_features < 1:
-        raise ValueError("max_features must be positive")
-    if not math.isfinite(config.write_lr) or config.write_lr <= 0.0:
-        raise ValueError("write_lr must be positive")
-    if not math.isfinite(config.retention) or not 0.0 <= config.retention <= 1.0:
-        raise ValueError("retention must be in [0, 1]")
-    if not math.isfinite(config.utility_lr) or config.utility_lr < 0.0:
-        raise ValueError("utility_lr must be non-negative")
-    if not math.isfinite(config.utility_decay) or not 0.0 <= config.utility_decay <= 1.0:
-        raise ValueError("utility_decay must be in [0, 1]")
-    if not math.isfinite(config.min_weight) or config.min_weight <= 0.0:
-        raise ValueError("min_weight must be positive")
-    if not math.isfinite(config.max_weight) or config.max_weight < config.min_weight:
+        raise ValueError(f"unknown feature_family: {feature_family!r}")
+    canonical_feature_family = str(feature_family)
+    max_features = _require_int(
+        "max_features", config.max_features, minimum=1, maximum=_INT32_MAX
+    )
+    write_lr = _require_positive_real("write_lr", config.write_lr)
+    retention = _require_unit_interval("retention", config.retention)
+    utility_lr = _require_nonnegative_real("utility_lr", config.utility_lr)
+    utility_decay = _require_unit_interval("utility_decay", config.utility_decay)
+    min_weight = _require_positive_real("min_weight", config.min_weight)
+    max_weight = _require_positive_real("max_weight", config.max_weight)
+    if max_weight < min_weight:
         raise ValueError("max_weight must be >= min_weight")
-    if not math.isfinite(config.logit_scale) or config.logit_scale <= 0.0:
-        raise ValueError("logit_scale must be positive")
+    logit_scale = _require_positive_real("logit_scale", config.logit_scale)
+    if type(config.normalize_by_weight) is not bool:
+        raise ValueError(
+            f"normalize_by_weight must be a bool, got {config.normalize_by_weight!r}"
+        )
     for name in (
         "adaptive_feature_family",
         "adaptive_window",
         "adaptive_budget",
     ):
-        if not isinstance(getattr(config, name), bool):
-            raise ValueError(f"{name} must be a boolean")
-    scope_lr = _finite_real("scope_lr", config.scope_lr)
-    if scope_lr < 0.0:
-        raise ValueError("scope_lr must be non-negative")
-    budget_lr = _finite_real("budget_lr", config.budget_lr)
-    if budget_lr < 0.0:
-        raise ValueError("budget_lr must be non-negative")
-    initial_budget_fraction = _finite_real(
-        "initial_budget_fraction",
-        config.initial_budget_fraction,
+        val = getattr(config, name)
+        if type(val) is not bool:
+            raise ValueError(f"{name} must be a boolean, got {val!r}")
+        object.__setattr__(config, name, bool(val))
+    scope_lr = _require_nonnegative_real("scope_lr", config.scope_lr)
+    budget_lr = _require_nonnegative_real("budget_lr", config.budget_lr)
+    initial_budget_fraction = _require_half_open_unit_interval(
+        "initial_budget_fraction", config.initial_budget_fraction
     )
-    if not 0.0 < initial_budget_fraction <= 1.0:
-        raise ValueError("initial_budget_fraction must be in (0, 1]")
-    if isinstance(config.min_effective_budget, bool) or not isinstance(
+    min_effective_budget = _require_int(
+        "min_effective_budget",
         config.min_effective_budget,
-        Integral,
-    ):
-        raise ValueError("min_effective_budget must be an integer")
-    min_effective_budget = int(config.min_effective_budget)
-    if min_effective_budget < 1:
-        raise ValueError("min_effective_budget must be positive")
-    if min_effective_budget > config.max_features:
-        raise ValueError("min_effective_budget must be <= max_features")
-    scope_logit_clip = _finite_real("scope_logit_clip", config.scope_logit_clip)
-    if scope_logit_clip <= 0.0:
-        raise ValueError("scope_logit_clip must be positive")
+        minimum=1,
+        maximum=max_features,
+    )
+    scope_logit_clip = _require_positive_real(
+        "scope_logit_clip", config.scope_logit_clip
+    )
+
+    object.__setattr__(config, "vocab_size", vocab_size)
+    object.__setattr__(config, "block_size", block_size)
+    object.__setattr__(config, "suffix_length", suffix_length)
+    object.__setattr__(config, "feature_family", canonical_feature_family)
+    object.__setattr__(config, "max_features", max_features)
+    object.__setattr__(config, "write_lr", write_lr)
+    object.__setattr__(config, "retention", retention)
+    object.__setattr__(config, "utility_lr", utility_lr)
+    object.__setattr__(config, "utility_decay", utility_decay)
+    object.__setattr__(config, "min_weight", min_weight)
+    object.__setattr__(config, "max_weight", max_weight)
+    object.__setattr__(config, "logit_scale", logit_scale)
+    object.__setattr__(config, "normalize_by_weight", bool(config.normalize_by_weight))
+    object.__setattr__(config, "scope_lr", scope_lr)
+    object.__setattr__(config, "budget_lr", budget_lr)
+    object.__setattr__(config, "initial_budget_fraction", initial_budget_fraction)
+    object.__setattr__(config, "min_effective_budget", min_effective_budget)
+    object.__setattr__(config, "scope_logit_clip", scope_logit_clip)
 
 
 def _softmax(logits: Array) -> Array:

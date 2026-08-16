@@ -283,12 +283,14 @@ class AdaGain(Optimizer[Any]):
         gain_correlation = gradient * state.gradient_trace
         bias_correlation = bias_gradient * state.bias_gradient_trace
 
-        new_step_sizes = state.step_sizes * jnp.exp(
-            state.meta_step_size * gain_correlation
+        meta_delta = _skip_zero_scale(
+            self._meta_step_size, state.meta_step_size, gain_correlation
         )
-        new_bias_step_size = state.bias_step_size * jnp.exp(
-            state.meta_step_size * bias_correlation
+        bias_meta_delta = _skip_zero_scale(
+            self._meta_step_size, state.meta_step_size, bias_correlation
         )
+        new_step_sizes = state.step_sizes * jnp.exp(meta_delta)
+        new_bias_step_size = state.bias_step_size * jnp.exp(bias_meta_delta)
         new_step_sizes = jnp.clip(new_step_sizes, 1e-8, 1.0)
         new_bias_step_size = jnp.clip(new_bias_step_size, 1e-8, 1.0)
 
@@ -296,13 +298,13 @@ class AdaGain(Optimizer[Any]):
         bias_delta = new_bias_step_size * bias_gradient
 
         trace_mix = state.forgetting_rate
-        new_gradient_trace = (
-            (1.0 - trace_mix) * state.gradient_trace + trace_mix * gradient
-        )
-        new_bias_gradient_trace = (
-            (1.0 - trace_mix) * state.bias_gradient_trace
-            + trace_mix * bias_gradient
-        )
+        retained_scale = 1.0 - trace_mix
+        new_gradient_trace = _skip_zero_scale(
+            1.0 - self._forgetting_rate, retained_scale, state.gradient_trace
+        ) + _skip_zero_scale(self._forgetting_rate, trace_mix, gradient)
+        new_bias_gradient_trace = _skip_zero_scale(
+            1.0 - self._forgetting_rate, retained_scale, state.bias_gradient_trace
+        ) + _skip_zero_scale(self._forgetting_rate, trace_mix, bias_gradient)
 
         candidate_state = AdaGainState(
             step_sizes=new_step_sizes,
@@ -317,8 +319,14 @@ class AdaGain(Optimizer[Any]):
             "min_step_size": jnp.min(new_step_sizes),
             "max_step_size": jnp.max(new_step_sizes),
         }
+        previous_checked = state
+        if self._forgetting_rate == 1.0 and self._meta_step_size == 0.0:
+            previous_checked = state.replace(  # type: ignore[attr-defined]
+                gradient_trace=jnp.zeros_like(state.gradient_trace),
+                bias_gradient_trace=jnp.zeros_like(state.bias_gradient_trace),
+            )
         update_applied = (
-            floating_tree_is_finite(state)
+            floating_tree_is_finite(previous_checked)
             & jnp.isfinite(error_scalar)
             & jnp.all(jnp.isfinite(observation))
             & jnp.all(jnp.isfinite(weight_delta))

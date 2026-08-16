@@ -257,6 +257,42 @@ class TestZeroGammaBootstrap:
         for w in result.state.demon_states[0].params.weights:  # type: ignore[attr-defined]
             assert bool(jnp.all(jnp.isfinite(w)))
 
+    def test_zero_gamma_does_not_multiply_inf_traces(self) -> None:
+        """gamma*lamda=0 drops leftover traces; 0 * inf must not freeze."""
+        spec = create_horde_spec(
+            [
+                GVFSpec(
+                    name="d0",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.0,
+                    lamda=0.9,
+                    cumulant_index=0,
+                )
+            ]
+        )
+        horde = IndependentDemonHorde(
+            horde_spec=spec,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+        state = horde.init(2, jr.key(0))
+        ds = state.demon_states[0]
+        ds = ds.replace(traces=tuple(jnp.full_like(trace, jnp.inf) for trace in ds.traces))
+        state = state.replace(demon_states=(ds,))
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+        assert not bool(jnp.isfinite(raw))
+
+        result = horde.update(
+            state,
+            jnp.asarray([0.5, -0.25], dtype=jnp.float32),
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray([0.0, 0.0], dtype=jnp.float32),
+        )
+        assert bool(result.update_applied)
+        chex.assert_trees_all_equal(result.head_updates_applied, jnp.array([True]))
+        for trace in result.state.demon_states[0].traces:  # type: ignore[attr-defined]
+            assert bool(jnp.all(jnp.isfinite(trace)))
+
 
 # =============================================================================
 # gamma*lamda > 0 with hidden layers must NOT raise (the point of this class)

@@ -172,11 +172,6 @@ class Step10STOMPConfig:
 _INT32_MAX = 2**31 - 1
 
 
-def _require_real(name: str, value: object) -> float:
-    real, _, _, narrowed = finite_real_and_float32(name, value)
-    return canonical_float32_storage(real, narrowed)
-
-
 def _require_unit_interval(name: str, value: object) -> float:
     real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
     if (
@@ -213,9 +208,10 @@ def _require_int(
     maximum: int | None = None,
     exclusive_maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
@@ -264,7 +260,7 @@ def _validate_stomp_facade_config(config: Step10STOMPConfig) -> None:
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
             )
         threshold = _require_positive_real("threshold", spec.threshold)
-        pseudo_reward_scale = _require_real(
+        pseudo_reward_scale = _require_positive_real(
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )

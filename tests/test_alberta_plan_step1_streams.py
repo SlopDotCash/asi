@@ -7,21 +7,23 @@ eta_t`` with non-stationarity in either the target functions or the input
 distribution.
 """
 
+from typing import Any
+
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.alberta_plan_step1 import (
+    _INT32_MAX,
     AlbertaPlanStep1State,
     AlbertaPlanStep1Stream,
     XDistShiftState,
     XDistShiftStream,
 )
-
-pytestmark = pytest.mark.slow
 
 # -----------------------------------------------------------------------------
 # AlbertaPlanStep1Stream
@@ -40,6 +42,7 @@ def _collect_step1_targets(
     return jnp.stack(targets)
 
 
+@pytest.mark.slow
 class TestAlbertaPlanStep1Stream:
     """Tests for :class:`AlbertaPlanStep1Stream`."""
 
@@ -176,6 +179,7 @@ class TestAlbertaPlanStep1Stream:
 # -----------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestXDistShiftStream:
     """Tests for :class:`XDistShiftStream`."""
 
@@ -320,3 +324,181 @@ class TestXDistShiftStream:
         stream = XDistShiftStream(feature_dim=8, num_relevant=2)
         state = stream.init(jr.key(0))
         assert isinstance(state, XDistShiftState)
+
+
+class TestStep1StreamsValidation:
+    """Comprehensive validation tests for Step 1 streams."""
+
+    def test_alberta_plan_step1_stream_properties_and_boundaries(self) -> None:
+        stream = AlbertaPlanStep1Stream(
+            feature_dim=_INT32_MAX,
+            num_relevant=_INT32_MAX,
+            drift_rate_w=0.005,
+            drift_rate_b=0.002,
+            noise_std=0.5,
+            feature_std=2.0,
+        )
+        assert stream.feature_dim == _INT32_MAX
+        assert stream.num_relevant == _INT32_MAX
+        assert stream.drift_rate_w == 0.005
+        assert stream.drift_rate_b == 0.002
+        assert stream.noise_std == 0.5
+        assert stream.feature_std == 2.0
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"feature_dim": 0}, "feature_dim"),
+            ({"feature_dim": -1}, "feature_dim"),
+            ({"feature_dim": _INT32_MAX + 1}, "feature_dim"),
+            ({"feature_dim": True}, "feature_dim"),
+            ({"feature_dim": "20"}, "feature_dim"),
+            ({"num_relevant": 0}, "num_relevant"),
+            ({"num_relevant": -1}, "num_relevant"),
+            ({"num_relevant": _INT32_MAX + 1}, "num_relevant"),
+            ({"num_relevant": True}, "num_relevant"),
+            ({"drift_rate_w": -0.01}, "drift_rate_w"),
+            ({"drift_rate_b": -0.01}, "drift_rate_b"),
+            ({"noise_std": -0.01}, "noise_std"),
+            ({"feature_std": 0.0}, "feature_std"),
+            ({"feature_std": -1.0}, "feature_std"),
+            ({"feature_std": "1.0"}, "feature_std"),
+        ],
+    )
+    def test_alberta_plan_step1_stream_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
+        with pytest.raises(ValueError, match=match):
+            AlbertaPlanStep1Stream(**kwargs)
+
+    @pytest.mark.parametrize(
+        "ratio",
+        [
+            pytest.param((-1, 1), id="negative-ratio"),
+            pytest.param((-1, 2**200), id="negative-subnormal-ratio"),
+        ],
+    )
+    def test_alberta_plan_step1_rejects_adversarial_ratio_drift(
+        self, ratio: tuple[int, int]
+    ) -> None:
+        class HiddenBoundaryFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return ratio
+
+        with pytest.raises(ValueError, match="drift_rate_w must be non-negative"):
+            AlbertaPlanStep1Stream(drift_rate_w=HiddenBoundaryFloat(0.5))
+
+    def test_alberta_plan_step1_rejects_spoofed_int_class(self) -> None:
+        class SpoofedIntFloat(float):
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        with pytest.raises(ValueError, match="drift_rate_w must be non-negative"):
+            AlbertaPlanStep1Stream(drift_rate_w=SpoofedIntFloat(0.5))
+
+    def test_alberta_plan_step1_rejects_spoofed_ratio_components(self) -> None:
+        class SpoofedComponent:
+            @property
+            def __class__(self) -> type[int]:
+                return int
+
+            def __int__(self) -> int:
+                return 1
+
+        class BadRatioFloat(float):
+            def as_integer_ratio(self) -> tuple[Any, Any]:
+                return (SpoofedComponent(), 2)
+
+        with pytest.raises(ValueError, match="must narrow to a finite float32"):
+            AlbertaPlanStep1Stream(drift_rate_w=BadRatioFloat(0.5))
+
+    def test_xdist_shift_stream_properties_and_boundaries(self) -> None:
+        stream = XDistShiftStream(
+            feature_dim=10,
+            num_relevant=4,
+            noise_std=0.2,
+            scale_change_interval=1000,
+            scale_min=0.5,
+            scale_max=5.0,
+            noise_in_target=False,
+        )
+        assert stream.feature_dim == 10
+        assert stream.num_relevant == 4
+        assert stream.noise_std == 0.2
+        assert stream.scale_change_interval == 1000
+        assert stream.scale_min == 0.5
+        assert stream.scale_max == 5.0
+        assert not stream.noise_in_target
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"feature_dim": 0}, "feature_dim"),
+            ({"num_relevant": 0}, "num_relevant"),
+            ({"num_relevant": 15}, "num_relevant"),
+            ({"scale_change_interval": 0}, "scale_change_interval"),
+            ({"scale_change_interval": -5}, "scale_change_interval"),
+            ({"scale_change_interval": _INT32_MAX + 1}, "scale_change_interval"),
+            ({"scale_min": 0.0}, "scale_min"),
+            ({"scale_min": -1.0}, "scale_min"),
+            ({"scale_max": 0.0}, "scale_max"),
+            ({"scale_min": 5.0, "scale_max": 2.0}, "scale_min"),
+            ({"noise_std": -0.1}, "noise_std"),
+        ],
+    )
+    def test_xdist_shift_stream_rejects_malformed_inputs(
+        self, kwargs: dict[str, Any], match: str
+    ) -> None:
+        base: dict[str, Any] = {"feature_dim": 10, "num_relevant": 3}
+        base.update(kwargs)
+        with pytest.raises(ValueError, match=match):
+            XDistShiftStream(**base)
+
+    def test_xdist_shift_stream_rejects_non_bool_noise_in_target(self) -> None:
+        with pytest.raises(TypeError, match="noise_in_target must be a boolean"):
+            XDistShiftStream(feature_dim=10, num_relevant=3, noise_in_target=1)  # type: ignore[arg-type]
+
+    def test_xdist_shift_rejects_spoofed_bool_noise_in_target(self) -> None:
+        class SpoofedBool:
+            @property
+            def __class__(self) -> type[bool]:
+                return bool
+
+            def __bool__(self) -> bool:
+                return True
+
+        with pytest.raises(TypeError, match="noise_in_target must be a boolean"):
+            XDistShiftStream(
+                feature_dim=10,
+                num_relevant=3,
+                noise_in_target=SpoofedBool(),  # type: ignore[arg-type]
+            )
+
+    def test_xdist_shift_accepts_numpy_bool_noise_in_target(self) -> None:
+        stream = XDistShiftStream(
+            feature_dim=10,
+            num_relevant=3,
+            noise_in_target=np.False_,  # type: ignore[arg-type]
+        )
+        assert stream.noise_in_target is False
+
+    def test_xdist_shift_rejects_scale_interval_collapsing_under_float32(self) -> None:
+        with pytest.raises(ValueError, match="float32 narrowing"):
+            XDistShiftStream(
+                feature_dim=10,
+                num_relevant=3,
+                scale_min=1.00000001,
+                scale_max=1.00000002,
+            )
+
+    def test_xdist_shift_rejects_adversarial_ratio(self) -> None:
+        class HiddenBoundaryFloat(float):
+            def as_integer_ratio(self) -> tuple[int, int]:
+                return (-1, 2**200)
+
+        with pytest.raises(ValueError, match="noise_std must be non-negative"):
+            XDistShiftStream(feature_dim=10, num_relevant=3, noise_std=HiddenBoundaryFloat(0.5))

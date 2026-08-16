@@ -189,11 +189,6 @@ def _require_positive_real(name: str, value: object) -> float:
     return float(narrowed)
 
 
-def _require_real_scalar(name: str, value: object) -> float:
-    _, _, _, narrowed = finite_real_and_float32(name, value)
-    return float(narrowed)
-
-
 def _require_int(
     name: str,
     value: object,
@@ -259,7 +254,7 @@ def _validate_ia_facade_config(config: Step12IAConfig) -> None:
                 f"feature_index must be < observation_dim, got {spec.feature_index!r}"
             )
         threshold = _require_positive_real("threshold", spec.threshold)
-        pseudo_reward_scale = _require_real_scalar(
+        pseudo_reward_scale = _require_positive_real(
             "pseudo_reward_scale",
             spec.pseudo_reward_scale,
         )

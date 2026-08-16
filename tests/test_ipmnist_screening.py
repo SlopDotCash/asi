@@ -368,6 +368,49 @@ class TestControlParity:
         )
 
 
+@pytest.mark.unit
+class TestScreeningInputDomain:
+    """Issue #527: run_screening_config must refuse out-of-domain data before the factory."""
+
+    @staticmethod
+    def _boom_factory(hyperparameters):
+        del hyperparameters
+        raise AssertionError("out-of-domain data reached the learner factory")
+
+    @pytest.mark.parametrize("noise_mode", ["step", "pool"])
+    @pytest.mark.parametrize(
+        ("mutate", "message"),
+        [
+            (lambda x, y: (x, y + 100), "must be smaller than"),
+            (lambda x, y: (x, y - 1), "non-negative"),
+            (lambda x, y: (x, y.astype(np.float32) + 0.9), "integer class labels"),
+            (lambda x, y: (x.at[0, 0].set(np.inf), y), "finite"),
+            (lambda x, y: (x.at[3, 1].set(np.nan), y), "finite"),
+            (
+                lambda x, y: (np.full(np.shape(x), np.timedelta64("NaT", "s")), y),
+                "real numeric",
+            ),
+            (
+                lambda x, y: (
+                    x[: SMALL.task_length - 1],
+                    y[: SMALL.task_length - 1],
+                ),
+                "task_length",
+            ),
+        ],
+    )
+    def test_rejects_before_learner_factory(
+        self, small_data, noise_mode: str, mutate, message: str
+    ) -> None:
+        x, y = small_data
+        x, y = mutate(jnp.asarray(x), jnp.asarray(y))
+        spec = replace(screening_spec("upgd_w_control"), factory=self._boom_factory)
+        with pytest.raises(ValueError, match=message):
+            run_screening_config(
+                x, y, spec, seed=0, config=SMALL, noise_mode=noise_mode
+            )
+
+
 class TestIDBDCombo:
     def test_meta_zero_reduces_to_lean_upgd(self):
         """With meta=0 and initial alpha = published lr, IDBD == lean UPGD-W."""

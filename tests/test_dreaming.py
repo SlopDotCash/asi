@@ -11,8 +11,10 @@ import pytest
 
 from alberta_framework.core.dreaming import (
     DreamBehaviorModelPrediction,
+    DreamingConfig,
     DreamRolloutConfig,
     DreamWorldModelPrediction,
+    GuardedDreamer,
     dream_one_step,
     dream_rollout,
     imagined_rollout_to_gvf_items,
@@ -403,3 +405,119 @@ def test_rollout_to_sarsa_items_shift_actions_and_mask_last_without_bootstrap() 
         jnp.array(1, dtype=jnp.int32),
     )
     chex.assert_trees_all_close(bootstrapped.weights, rollout.transitions.valid.astype(jnp.float32))
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    [
+        "max_model_error_ema",
+        "max_uncertainty",
+        "min_discount",
+        "max_discount",
+        "confidence_threshold",
+        "max_model_error",
+        "discount_floor",
+    ],
+)
+def test_dreaming_config_rejects_nonfinite_float_fields(field: str) -> None:
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match=field):
+            DreamingConfig(**{field: bad})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_model_error_ema", -0.5),
+        ("max_uncertainty", -0.5),
+        ("min_discount", -0.5),
+        ("max_discount", -0.5),
+        ("confidence_threshold", -0.5),
+        ("max_model_error", -0.5),
+        ("discount_floor", -0.5),
+    ],
+)
+def test_dreaming_config_rejects_negative_float_fields(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match=field):
+        DreamingConfig(**{field: value})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [0, -1, True, False, 1.0, 2.5, float("nan")])
+def test_dreaming_config_rejects_invalid_rollout_horizon(bad: object) -> None:
+    with pytest.raises(ValueError, match="rollout_horizon"):
+        DreamingConfig(rollout_horizon=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [-1, True, False, 0.0, 1.5, float("nan")])
+def test_dreaming_config_rejects_invalid_warmup_steps(bad: object) -> None:
+    with pytest.raises(ValueError, match="warmup_steps"):
+        DreamingConfig(warmup_steps=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [0, 1, "yes", None, 1.0])
+def test_dreaming_config_rejects_non_bool_stop_on_terminal(bad: object) -> None:
+    with pytest.raises(ValueError, match="stop_on_terminal"):
+        DreamingConfig(stop_on_terminal=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+def test_dreaming_config_accepts_valid_boundaries() -> None:
+    config = DreamingConfig(
+        warmup_steps=0,
+        max_model_error_ema=0.0,
+        max_uncertainty=0.0,
+        min_discount=0.0,
+        max_discount=0.0,
+        rollout_horizon=1,
+        confidence_threshold=0.0,
+        max_model_error=0.0,
+        discount_floor=0.0,
+        stop_on_terminal=False,
+    )
+    assert config.rollout_horizon == 1
+    assert config.max_discount == 0.0
+    assert DreamingConfig(max_discount=None).max_discount is None
+
+
+@pytest.mark.unit
+def test_guarded_dreamer_rejects_nan_confidence_threshold_config() -> None:
+    with pytest.raises(ValueError, match="confidence_threshold"):
+        GuardedDreamer(DreamingConfig(confidence_threshold=float("nan")))
+
+
+@pytest.mark.unit
+def test_dreaming_config_from_config_revalidates() -> None:
+    payload = DreamingConfig().to_config()
+    payload["confidence_threshold"] = float("nan")
+    with pytest.raises(ValueError, match="confidence_threshold"):
+        DreamingConfig.from_config(payload)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    ["confidence_threshold", "max_model_error", "discount_floor"],
+)
+def test_dream_rollout_config_rejects_nonfinite_float_fields(field: str) -> None:
+    for bad in (float("nan"), float("inf"), float("-inf")):
+        with pytest.raises(ValueError, match=field):
+            DreamRolloutConfig(**{field: bad})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [0, -1, True, False, 1.0, 2.5, float("nan")])
+def test_dream_rollout_config_rejects_invalid_rollout_horizon(bad: object) -> None:
+    with pytest.raises(ValueError, match="rollout_horizon"):
+        DreamRolloutConfig(rollout_horizon=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [0, 1, "yes", None, 1.0])
+def test_dream_rollout_config_rejects_non_bool_stop_on_terminal(bad: object) -> None:
+    with pytest.raises(ValueError, match="stop_on_terminal"):
+        DreamRolloutConfig(stop_on_terminal=bad)  # type: ignore[arg-type]

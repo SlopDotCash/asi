@@ -7,6 +7,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from alberta_framework.core.temporal_context import (
     TemporalContextConfig,
@@ -169,3 +170,120 @@ def test_finite_temporal_context_path_is_bitwise_unchanged() -> None:
         expected_ema
     ).tobytes()
     assert int(next_state.step_count) == 18
+
+
+_INVALID_TEMPORAL_CONTEXT_CONFIGS: tuple[dict[str, object], ...] = (
+    {"input_dim": 0},
+    {"input_dim": -1},
+    {"input_dim": 2**31},
+    {"input_dim": True},
+    {"input_dim": "4"},
+    {"input_dim": 4, "include_raw": 1},
+    {"input_dim": 4, "include_ema": 1},
+    {"input_dim": 4, "include_delta": 1},
+    {"input_dim": 4, "include_phase_products": 1},
+    {"input_dim": 4, "include_raw": False, "include_ema": False, "include_delta": False},
+    {"input_dim": 4, "ema_decay": -0.1},
+    {"input_dim": 4, "ema_decay": 1.0},
+    {"input_dim": 4, "ema_decay": 1.1},
+    {"input_dim": 4, "ema_decay": 1e100},
+    {"input_dim": 4, "ema_decay": float("nan")},
+    {"input_dim": 4, "ema_decay": True},
+    {"input_dim": 4, "periods": (0.0,)},
+    {"input_dim": 4, "periods": (-1.0,)},
+    {"input_dim": 4, "periods": (1e100,)},
+    {"input_dim": 4, "periods": (float("nan"),)},
+    {"input_dim": 4, "periods": (True,)},
+)
+
+
+@pytest.mark.parametrize("kwargs", _INVALID_TEMPORAL_CONTEXT_CONFIGS)
+def test_temporal_context_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        TemporalContextConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "ratio",
+    [
+        pytest.param((-1, 1), id="negative-ratio"),
+        pytest.param((1, 1), id="one-ratio"),
+        pytest.param((2, 1), id="above-unit-ratio"),
+        pytest.param((-1, 2**200), id="negative-rounds-to-negative-zero"),
+        pytest.param((2**200 + 1, 2**200), id="above-one-rounds-to-one"),
+    ],
+)
+def test_temporal_context_rejects_adversarial_ratio_floats(
+    ratio: tuple[int, int]
+) -> None:
+    class HiddenBoundaryFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return ratio
+
+    with pytest.raises(ValueError, match=r"ema_decay must be in \[0, 1\)"):
+        TemporalContextConfig(
+            input_dim=4,
+            ema_decay=HiddenBoundaryFloat(0.5),
+        )
+
+
+def test_temporal_context_rejects_class_property_spoofing_float() -> None:
+    class ClassSpoof:
+        @property
+        def __class__(self) -> type[float]:
+            return float
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (1, 2)
+
+    value = ClassSpoof()
+    with pytest.raises(ValueError, match="must be a real number"):
+        TemporalContextConfig(
+            input_dim=4,
+            ema_decay=value,  # type: ignore[arg-type]
+        )
+
+
+def test_temporal_context_rejects_spoofed_bool_flags() -> None:
+    class SpoofedBool:
+        @property
+        def __class__(self) -> type[bool]:
+            return bool
+
+        def __bool__(self) -> bool:
+            return True
+
+    with pytest.raises(ValueError, match="include_raw"):
+        TemporalContextConfig(input_dim=4, include_raw=SpoofedBool())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="include_ema"):
+        TemporalContextConfig(input_dim=4, include_ema=SpoofedBool())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="include_delta"):
+        TemporalContextConfig(input_dim=4, include_delta=SpoofedBool())  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="include_phase_products"):
+        TemporalContextConfig(input_dim=4, include_phase_products=SpoofedBool())  # type: ignore[arg-type]
+
+
+def test_temporal_context_rejects_spoofed_periods_container() -> None:
+    class SpoofedTuple(list):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    with pytest.raises(ValueError, match="periods"):
+        TemporalContextConfig(input_dim=4, periods=SpoofedTuple([50.0]))  # type: ignore[arg-type]
+
+
+def test_temporal_context_rejects_spoofed_int_class_and_negative_ratios() -> None:
+    class SpoofedIntFloat(float):
+        @property
+        def __class__(self) -> type[int]:
+            return int
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            return (-1, 2**200)
+
+    with pytest.raises(ValueError, match="ema_decay"):
+        TemporalContextConfig(input_dim=4, ema_decay=SpoofedIntFloat(0.5))

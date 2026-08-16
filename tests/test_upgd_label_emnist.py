@@ -338,6 +338,38 @@ def test_run_label_emnist_rejects_out_of_domain_inputs(
         run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda x, y: (np.full(x.shape, np.timedelta64("NaT", "s")), y),
+            "real numeric",
+        ),
+        (
+            lambda x, y: (
+                x[: TINY.task_length - 1],
+                y[: TINY.task_length - 1],
+            ),
+            "task_length",
+        ),
+    ],
+)
+def test_run_label_emnist_rejects_boundary_gaps_before_setup(
+    monkeypatch: pytest.MonkeyPatch, mutate, message: str
+) -> None:
+    """Issue #527: timedelta inputs and short datasets must fail before setup."""
+
+    def unexpected_setup(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("out-of-domain data reached learner setup")
+
+    x, y = mutate(*_tiny_data())
+    monkeypatch.setattr(upgd_label_emnist, "resolve_hyperparameters", unexpected_setup)
+    with pytest.raises(ValueError, match=message):
+        run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+
+
 @pytest.fixture(scope="class")
 def debug_run():
     """Run the shared tiny diagnostic once for this test module."""

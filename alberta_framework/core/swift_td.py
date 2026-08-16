@@ -42,10 +42,11 @@ A Fast and Robust Algorithm for Temporal Difference Learning." RLJ/RLC 2024.
 """
 
 import math
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
@@ -63,6 +64,52 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
 
 # Paper default for the step-size floor: eta_min = e^-15.
 _DEFAULT_ETA_MIN = math.exp(-15.0)
+
+_SUPPORTED_CONFIG_REAL_TYPES: tuple[type[object], ...] = (
+    int,
+    float,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+    np.float16,
+    np.float32,
+    np.float64,
+    np.longdouble,
+)
+
+
+def _require_finite_config_float(
+    value: object,
+    name: str,
+    *,
+    minimum: float,
+    minimum_inclusive: bool,
+    maximum: float | None = None,
+) -> float:
+    """Return one trusted finite configuration scalar inside its host domain."""
+    message = f"{name} must be a finite real scalar in its documented range"
+    actual_type = type(value)
+    if not any(actual_type is supported_type for supported_type in _SUPPORTED_CONFIG_REAL_TYPES):
+        raise ValueError(message)
+    try:
+        concrete = float(cast(Any, value))
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError(message) from error
+    minimum_valid = concrete >= minimum if minimum_inclusive else concrete > minimum
+    if (
+        not math.isfinite(concrete)
+        or not minimum_valid
+        or (maximum is not None and concrete > maximum)
+    ):
+        raise ValueError(message)
+    return concrete
 
 
 @chex.dataclass(frozen=True)
@@ -172,22 +219,44 @@ class SwiftTD:
         Raises:
             ValueError: If a hyperparameter is outside its valid range
         """
-        if initial_step_size <= 0.0:
-            raise ValueError(f"initial_step_size must be positive, got {initial_step_size}")
-        if eta <= 0.0:
-            raise ValueError(f"eta must be positive, got {eta}")
-        if eta_min <= 0.0:
-            raise ValueError(f"eta_min must be positive, got {eta_min}")
-        if not 0.0 < step_size_decay <= 1.0:
-            raise ValueError(f"step_size_decay must be in (0, 1], got {step_size_decay}")
-        if not 0.0 <= trace_decay <= 1.0:
-            raise ValueError(f"trace_decay must be in [0, 1], got {trace_decay}")
-        self._initial_step_size = initial_step_size
-        self._meta_step_size = meta_step_size
-        self._trace_decay = trace_decay
-        self._eta = eta
-        self._step_size_decay = step_size_decay
-        self._eta_min = eta_min
+        self._initial_step_size = _require_finite_config_float(
+            initial_step_size,
+            "initial_step_size",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        self._meta_step_size = _require_finite_config_float(
+            meta_step_size,
+            "meta_step_size",
+            minimum=0.0,
+            minimum_inclusive=True,
+        )
+        self._trace_decay = _require_finite_config_float(
+            trace_decay,
+            "trace_decay",
+            minimum=0.0,
+            minimum_inclusive=True,
+            maximum=1.0,
+        )
+        self._eta = _require_finite_config_float(
+            eta,
+            "eta",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
+        self._step_size_decay = _require_finite_config_float(
+            step_size_decay,
+            "step_size_decay",
+            minimum=0.0,
+            minimum_inclusive=False,
+            maximum=1.0,
+        )
+        self._eta_min = _require_finite_config_float(
+            eta_min,
+            "eta_min",
+            minimum=0.0,
+            minimum_inclusive=False,
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""

@@ -225,6 +225,24 @@ def test_step8_bool_fields_accept_exact_bools() -> None:
     core = config.to_core_config()
     assert core.use_layer_norm is False
     assert core.predict_delta is True
+class _SpoofedInt:
+    """Mimics ``int`` via ``__class__`` to defeat ``isinstance`` checks."""
+
+    @property
+    def __class__(self) -> type:  # type: ignore[override]
+        return int
+
+    def __int__(self) -> int:
+        return 3
+
+    def __index__(self) -> int:
+        return 3
+
+
+@pytest.mark.parametrize("field", ["observation_dim", "n_actions", "action_dim"])
+def test_step8_world_model_fields_reject_class_spoofed_integers(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        make_step8_world_model(_config_with(**{field: _SpoofedInt()}))
 
 
 def test_step8_world_model_rejects_nonpositive_vector_action_dim() -> None:

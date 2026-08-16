@@ -482,7 +482,11 @@ def run_label_emnist(
     if config is None:
         config = LabelEMNISTConfig()
     resolved_x, resolved_y = validated_ipmnist_data(
-        data_x, data_y, input_dim=config.input_dim, n_classes=config.n_classes
+        data_x,
+        data_y,
+        input_dim=config.input_dim,
+        n_classes=config.n_classes,
+        min_length=config.task_length,
     )
     hp = resolve_hyperparameters(learner, hyperparameters)
     init_fn, step_fn = _FULL_STEP_FACTORIES[learner](hp)
@@ -490,8 +494,6 @@ def run_label_emnist(
     data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
     data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
     n_train = int(data_x.shape[0])
-    if n_train < config.task_length:
-        raise ValueError("dataset smaller than task_length; cannot sample without replacement")
 
     seeds_array = jnp.asarray(seed_tuple, dtype=jnp.uint32)
     initialization_config = IPMNISTConfig(**config.to_config())

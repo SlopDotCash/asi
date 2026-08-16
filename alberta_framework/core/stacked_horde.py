@@ -172,6 +172,10 @@ class StackedHordeConfig:
             raise ValueError("every gamma must be in [0, 1]")
         if any(not 0.0 <= la <= 1.0 for la in self.lamdas):
             raise ValueError("every lamda must be in [0, 1]")
+        # Identity-only check: bools and numpy integers are refused so a JAX
+        # gather can never wrap (negative) or reinterpret the channel.
+        if any(type(idx) is not int or idx < 0 for idx in self.cumulant_indices):
+            raise ValueError("cumulant_indices entries must be nonnegative builtin ints")
         object.__setattr__(
             self,
             "step_size",
@@ -279,6 +283,7 @@ class StackedLinearHorde:
         self._gammas = jnp.asarray(config.gammas, dtype=jnp.float32)
         self._lamdas = jnp.asarray(config.lamdas, dtype=jnp.float32)
         self._cumulant_idx = jnp.asarray(config.cumulant_indices, dtype=jnp.int32)
+        self._max_cumulant_index = max(config.cumulant_indices)
 
     @property
     def config(self) -> StackedHordeConfig:
@@ -336,6 +341,19 @@ class StackedLinearHorde:
             TD errors (TD errors are NaN for inactive demons).
         """
         cfg = self._config
+        source_shape = jnp.shape(cumulant_source)
+        # JAX clips out-of-range positive gather indices instead of raising,
+        # so a short source would silently train demons on the wrong channel.
+        # Shapes are static, so these checks also fire at jit/scan trace time.
+        if len(source_shape) != 1:
+            raise ValueError(
+                f"cumulant_source must be rank-one, got shape {source_shape}"
+            )
+        if source_shape[0] <= self._max_cumulant_index:
+            raise ValueError(
+                f"cumulant_source has {source_shape[0]} channels but "
+                f"config.cumulant_indices requires index {self._max_cumulant_index}"
+            )
         cumulants = cumulant_source[self._cumulant_idx]  # (n_demons,)
         requested = ~jnp.isnan(cumulants)
         active = jnp.isfinite(cumulants)
@@ -464,6 +482,17 @@ def run_stacked_horde_scan(
         ``(final_state, td_errors)`` with td_errors of shape
         ``(num_steps - 1, n_demons)``.
     """
+    sources_shape = jnp.shape(cumulant_sources)
+    if len(sources_shape) != 2:
+        raise ValueError(
+            f"cumulant_sources must be rank-two, got shape {sources_shape}"
+        )
+    max_index = max(horde.config.cumulant_indices)
+    if sources_shape[-1] <= max_index:
+        raise ValueError(
+            f"cumulant_sources has {sources_shape[-1]} channels but "
+            f"config.cumulant_indices requires index {max_index}"
+        )
     num_steps = features.shape[0]
     if rhos is None:
         rhos = jnp.ones((num_steps,), dtype=jnp.float32)

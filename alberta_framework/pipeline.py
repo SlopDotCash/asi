@@ -32,6 +32,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
 from alberta_framework.core.associative_memory import (
@@ -55,6 +56,10 @@ from alberta_framework.core.temporal_context import (
     TemporalContextState,
 )
 from alberta_framework.core.upgd import UPGDLearner, UPGDState
+from alberta_framework.steps._float32_validation import (
+    canonical_float32_storage,
+    finite_real_and_float32,
+)
 from alberta_framework.steps.step3 import (
     Step3HordeConfig,
     init_step3_state,
@@ -87,6 +92,116 @@ CumulantFn = Callable[[Array, Array, Array], Array]
 Signature: ``(observation, reward, terminated) -> Array(n_demons,)``.
 """
 
+_INT32_MAX: int = 2**31 - 1
+
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+)
+
+
+def _require_bool(name: str, value: object) -> bool:
+    """Require an actual builtin bool (``__class__`` spoofing is ignored)."""
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a bool, got {value!r}")
+    return value
+
+
+def _require_str_choice(name: str, value: object, choices: tuple[str, ...]) -> str:
+    """Require an actual builtin str drawn from ``choices``."""
+    if type(value) is not str or value not in choices:
+        raise ValueError(f"unknown {name} {value!r}")
+    return value
+
+
+def _require_real(name: str, value: object) -> float:
+    real, _, _, narrowed = finite_real_and_float32(name, value)
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real <= 1.0
+        or numerator < 0
+        or numerator > denominator
+        or narrowed < 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real <= 0.0
+        or not real <= 1.0
+        or numerator <= 0
+        or numerator > denominator
+        or narrowed <= 0.0
+        or not narrowed <= 1.0
+    ):
+        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_half_open_zero_one_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+    if (
+        real < 0.0
+        or not real < 1.0
+        or numerator < 0
+        or numerator >= denominator
+        or narrowed < 0.0
+        or not narrowed < 1.0
+    ):
+        raise ValueError(f"{name} must be in [0, 1), got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real < 0.0 or numerator < 0 or narrowed < 0.0:
+        raise ValueError(f"{name} must be non-negative, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+    if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
+        raise ValueError(f"{name} must be positive, got {value!r}")
+    return canonical_float32_storage(real, narrowed)
+
+
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    number = int(cast(int, value))
+    if minimum is not None and number < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive, got {value!r}")
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+    return number
+
 
 @dataclass(frozen=True)
 class Step2FeatureConfig:
@@ -107,18 +222,23 @@ class Step2FeatureConfig:
 
     def __post_init__(self) -> None:
         """Validate observation and feature settings."""
-        if self.observation_dim < 1:
-            msg = f"observation_dim must be positive, got {self.observation_dim}"
-            raise ValueError(msg)
-        if not (self.include_raw or self.include_ema or self.include_delta):
+        observation_dim = _require_int(
+            "observation_dim", self.observation_dim, minimum=1, maximum=_INT32_MAX
+        )
+        include_raw = _require_bool("include_raw", self.include_raw)
+        include_ema = _require_bool("include_ema", self.include_ema)
+        include_delta = _require_bool("include_delta", self.include_delta)
+        _require_bool("include_phase_products", self.include_phase_products)
+        if not (include_raw or include_ema or include_delta):
             msg = "at least one of include_raw/include_ema/include_delta is required"
             raise ValueError(msg)
-        if not 0.0 <= self.ema_decay < 1.0:
-            msg = f"ema_decay must be in [0, 1), got {self.ema_decay}"
-            raise ValueError(msg)
-        if any(period <= 0.0 for period in self.periods):
-            msg = "all periods must be positive"
-            raise ValueError(msg)
+        ema_decay = _require_half_open_zero_one_interval("ema_decay", self.ema_decay)
+        canonical_periods = tuple(
+            _require_positive_real("period", p) for p in self.periods
+        )
+        object.__setattr__(self, "observation_dim", observation_dim)
+        object.__setattr__(self, "ema_decay", ema_decay)
+        object.__setattr__(self, "periods", canonical_periods)
 
     @classmethod
     def identity(cls, observation_dim: int) -> Step2FeatureConfig:
@@ -187,44 +307,48 @@ class Step2UPGDConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if self.observation_dim < 1:
-            msg = f"observation_dim must be positive, got {self.observation_dim}"
-            raise ValueError(msg)
-        if self.n_heads < 1:
-            msg = f"n_heads must be positive, got {self.n_heads}"
-            raise ValueError(msg)
-        if not self.hidden_sizes or any(size < 1 for size in self.hidden_sizes):
+        observation_dim = _require_int(
+            "observation_dim", self.observation_dim, minimum=1, maximum=_INT32_MAX
+        )
+        n_heads = _require_int("n_heads", self.n_heads, minimum=1, maximum=_INT32_MAX)
+        if type(self.hidden_sizes) is not tuple or not self.hidden_sizes:
             msg = (
                 "hidden_sizes must contain at least one positive size, "
                 f"got {self.hidden_sizes!r}"
             )
             raise ValueError(msg)
-        if self.step_size < 0.0:
-            msg = f"step_size must be non-negative, got {self.step_size}"
-            raise ValueError(msg)
-        if not 0.0 <= self.sparsity <= 1.0:
-            msg = f"sparsity must be in [0, 1], got {self.sparsity}"
-            raise ValueError(msg)
-        if self.learner_preset not in ("default", "strict_digit_readout"):
-            msg = f"unknown learner_preset {self.learner_preset!r}"
-            raise ValueError(msg)
-        if self.loss_normalization not in ("target_structure", "target_density"):
-            msg = f"unknown loss_normalization {self.loss_normalization!r}"
-            raise ValueError(msg)
-        valid_readouts = (
-            "linear_mse",
-            "softmax_ce",
-            "adaptive_simplex",
-            "factorized_simplex",
-            "adaptive_factorized_simplex",
-            "two_timescale_simplex",
+        canonical_hidden = tuple(
+            _require_int("hidden_sizes element", size, minimum=1, maximum=_INT32_MAX)
+            for size in self.hidden_sizes
         )
-        if self.readout_mode not in valid_readouts:
-            msg = f"unknown readout_mode {self.readout_mode!r}"
-            raise ValueError(msg)
-        if self.learner_preset == "strict_digit_readout" and (
-            self.loss_normalization != "target_structure"
-            or self.readout_mode != "two_timescale_simplex"
+        step_size = _require_nonnegative_real("step_size", self.step_size)
+        sparsity = _require_unit_interval("sparsity", self.sparsity)
+        use_layer_norm = _require_bool("use_layer_norm", self.use_layer_norm)
+        learner_preset = _require_str_choice(
+            "learner_preset",
+            self.learner_preset,
+            ("default", "strict_digit_readout"),
+        )
+        loss_normalization = _require_str_choice(
+            "loss_normalization",
+            self.loss_normalization,
+            ("target_structure", "target_density"),
+        )
+        readout_mode = _require_str_choice(
+            "readout_mode",
+            self.readout_mode,
+            (
+                "linear_mse",
+                "softmax_ce",
+                "adaptive_simplex",
+                "factorized_simplex",
+                "adaptive_factorized_simplex",
+                "two_timescale_simplex",
+            ),
+        )
+        if learner_preset == "strict_digit_readout" and (
+            loss_normalization != "target_structure"
+            or readout_mode != "two_timescale_simplex"
         ):
             msg = (
                 "strict_digit_readout preset requires "
@@ -232,14 +356,22 @@ class Step2UPGDConfig:
                 "readout_mode='two_timescale_simplex'"
             )
             raise ValueError(msg)
-        if self.learner_preset == "strict_digit_readout" and (
-            self.sparsity != 0.5 or not self.use_layer_norm
+        if learner_preset == "strict_digit_readout" and (
+            sparsity != 0.5 or not use_layer_norm
         ):
             msg = (
                 "strict_digit_readout preset owns sparsity/use_layer_norm; "
                 "use sparsity=0.5 and use_layer_norm=True"
             )
             raise ValueError(msg)
+        object.__setattr__(self, "observation_dim", observation_dim)
+        object.__setattr__(self, "n_heads", n_heads)
+        object.__setattr__(self, "hidden_sizes", canonical_hidden)
+        object.__setattr__(self, "step_size", step_size)
+        object.__setattr__(self, "sparsity", sparsity)
+        object.__setattr__(self, "learner_preset", learner_preset)
+        object.__setattr__(self, "loss_normalization", loss_normalization)
+        object.__setattr__(self, "readout_mode", readout_mode)
 
     @classmethod
     def strict_digit_readout(
@@ -306,26 +438,56 @@ class Step2AssociativePipelineConfig:
 
     def __post_init__(self) -> None:
         """Validate integer context settings."""
-        if self.vocab_size < 2:
-            raise ValueError("vocab_size must be at least 2")
-        if self.block_size < 1:
-            raise ValueError("block_size must be positive")
-        if self.suffix_length < 2 or self.suffix_length > self.block_size:
-            raise ValueError("suffix_length must be in [2, block_size]")
-        if self.max_features < 1:
-            raise ValueError("max_features must be positive")
-        if self.scope_lr < 0.0:
-            raise ValueError("scope_lr must be non-negative")
-        if self.budget_lr < 0.0:
-            raise ValueError("budget_lr must be non-negative")
-        if not 0.0 < self.initial_budget_fraction <= 1.0:
-            raise ValueError("initial_budget_fraction must be in (0, 1]")
-        if self.min_effective_budget < 1:
-            raise ValueError("min_effective_budget must be positive")
-        if self.min_effective_budget > self.max_features:
-            raise ValueError("min_effective_budget must be <= max_features")
-        if self.scope_logit_clip <= 0.0:
-            raise ValueError("scope_logit_clip must be positive")
+        vocab_size = _require_int("vocab_size", self.vocab_size, minimum=2, maximum=_INT32_MAX)
+        block_size = _require_int("block_size", self.block_size, minimum=1, maximum=_INT32_MAX)
+        suffix_length = _require_int(
+            "suffix_length", self.suffix_length, minimum=2, maximum=block_size
+        )
+        max_features = _require_int(
+            "max_features", self.max_features, minimum=1, maximum=_INT32_MAX
+        )
+        write_lr = _require_nonnegative_real("write_lr", self.write_lr)
+        retention = _require_unit_interval("retention", self.retention)
+        utility_lr = _require_nonnegative_real("utility_lr", self.utility_lr)
+        utility_decay = _require_unit_interval("utility_decay", self.utility_decay)
+        min_weight = _require_nonnegative_real("min_weight", self.min_weight)
+        max_weight = _require_positive_real("max_weight", self.max_weight)
+        logit_scale = _require_positive_real("logit_scale", self.logit_scale)
+        feature_family = _require_str_choice(
+            "feature_family",
+            self.feature_family,
+            ("position_token", "suffix_pair", "token_suffix_pair"),
+        )
+        _require_bool("normalize_by_weight", self.normalize_by_weight)
+        _require_bool("adaptive_feature_family", self.adaptive_feature_family)
+        _require_bool("adaptive_window", self.adaptive_window)
+        _require_bool("adaptive_budget", self.adaptive_budget)
+        scope_lr = _require_nonnegative_real("scope_lr", self.scope_lr)
+        budget_lr = _require_nonnegative_real("budget_lr", self.budget_lr)
+        initial_budget_fraction = _require_half_open_unit_interval(
+            "initial_budget_fraction", self.initial_budget_fraction
+        )
+        min_effective_budget = _require_int(
+            "min_effective_budget", self.min_effective_budget, minimum=1, maximum=max_features
+        )
+        scope_logit_clip = _require_positive_real("scope_logit_clip", self.scope_logit_clip)
+        object.__setattr__(self, "vocab_size", vocab_size)
+        object.__setattr__(self, "block_size", block_size)
+        object.__setattr__(self, "suffix_length", suffix_length)
+        object.__setattr__(self, "max_features", max_features)
+        object.__setattr__(self, "write_lr", write_lr)
+        object.__setattr__(self, "retention", retention)
+        object.__setattr__(self, "utility_lr", utility_lr)
+        object.__setattr__(self, "utility_decay", utility_decay)
+        object.__setattr__(self, "min_weight", min_weight)
+        object.__setattr__(self, "max_weight", max_weight)
+        object.__setattr__(self, "logit_scale", logit_scale)
+        object.__setattr__(self, "feature_family", feature_family)
+        object.__setattr__(self, "scope_lr", scope_lr)
+        object.__setattr__(self, "budget_lr", budget_lr)
+        object.__setattr__(self, "initial_budget_fraction", initial_budget_fraction)
+        object.__setattr__(self, "min_effective_budget", min_effective_budget)
+        object.__setattr__(self, "scope_logit_clip", scope_logit_clip)
 
     def output_dim(self) -> int:
         """Return the associative probability-vector dimensionality."""
@@ -383,24 +545,24 @@ class HordeActorCriticPipelineConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if self.n_actions < 1:
-            msg = f"n_actions must be positive, got {self.n_actions}"
-            raise ValueError(msg)
-        if self.actor_step_size < 0.0:
-            msg = f"actor_step_size must be non-negative, got {self.actor_step_size}"
-            raise ValueError(msg)
-        if not 0.0 <= self.actor_lamda <= 1.0:
-            msg = f"actor_lamda must be in [0, 1], got {self.actor_lamda}"
-            raise ValueError(msg)
-        if self.temperature <= 0.0:
-            msg = f"temperature must be positive, got {self.temperature}"
-            raise ValueError(msg)
-        if self.value_head_index < 0:
-            msg = (
-                "value_head_index must be non-negative, "
-                f"got {self.value_head_index}"
-            )
-            raise ValueError(msg)
+        n_actions = _require_int("n_actions", self.n_actions, minimum=1, maximum=_INT32_MAX)
+        actor_step_size = _require_nonnegative_real("actor_step_size", self.actor_step_size)
+        actor_lamda = _require_unit_interval("actor_lamda", self.actor_lamda)
+        temperature = _require_positive_real("temperature", self.temperature)
+        value_head_index = _require_int(
+            "value_head_index", self.value_head_index, minimum=0, maximum=_INT32_MAX
+        )
+        actor_obgd_kappa = (
+            _require_positive_real("actor_obgd_kappa", self.actor_obgd_kappa)
+            if self.actor_obgd_kappa is not None
+            else None
+        )
+        object.__setattr__(self, "n_actions", n_actions)
+        object.__setattr__(self, "actor_step_size", actor_step_size)
+        object.__setattr__(self, "actor_lamda", actor_lamda)
+        object.__setattr__(self, "temperature", temperature)
+        object.__setattr__(self, "value_head_index", value_head_index)
+        object.__setattr__(self, "actor_obgd_kappa", actor_obgd_kappa)
 
     def to_horde_actor_critic_config(self) -> HordeActorCriticConfig:
         """Return the core actor-critic config."""
@@ -444,12 +606,12 @@ class AlbertaPipelineConfig:
 
     def __post_init__(self) -> None:
         """Validate combinations of step2/control and required sub-configs."""
-        if self.step2 not in ("temporal_context", "upgd", "associative", "identity"):
-            msg = f"unknown step2 mode {self.step2!r}"
-            raise ValueError(msg)
-        if self.control_mode not in ("sarsa", "horde_ac"):
-            msg = f"unknown control_mode {self.control_mode!r}"
-            raise ValueError(msg)
+        _require_str_choice(
+            "step2 mode",
+            self.step2,
+            ("temporal_context", "upgd", "associative", "identity"),
+        )
+        _require_str_choice("control_mode", self.control_mode, ("sarsa", "horde_ac"))
         if self.step2 == "upgd" and self.upgd is None:
             msg = "upgd config is required when step2='upgd'"
             raise ValueError(msg)
@@ -1175,9 +1337,8 @@ def run_pipeline_smoke(
     seed: int = 0,
 ) -> AlbertaPipelineSmokeResult:
     """Run a deterministic Step 1-4 pipeline smoke probe."""
-    if steps < 1:
-        msg = f"steps must be positive, got {steps}"
-        raise ValueError(msg)
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
     cfg = config or AlbertaPipelineConfig()
     pipeline = make_alberta_pipeline(cfg)
 
