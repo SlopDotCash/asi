@@ -28,7 +28,6 @@ from __future__ import annotations
 import dataclasses
 import functools
 import operator
-from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import jax
@@ -57,6 +56,22 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     canonical = operator.index(cast(SupportsIndex, value))
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_derived_int32(name: str, value: int, *, minimum: int = 0) -> int:
+    if not minimum <= value <= _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}]")
+    return value
+
+
+def _require_host_count(name: str, value: object, *, minimum: int = 0) -> int:
+    """Canonicalize one exact host-only accounting integer without narrowing it."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if canonical < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
     return canonical
 
 
@@ -89,13 +104,22 @@ class FeatureBankRouterConfig:
             "active_slots",
             active_slots,
         )
-        if self.base_dim + self.active_slots > _INT32_MAX:
-            raise ValueError("total_feature_dim must be an integer in [3, 2147483647]")
-        router_state_scalars = 2 * self.active_slots + 2
-        if router_state_scalars > _INT32_MAX:
-            raise ValueError("router_state_scalars must not exceed 2147483647")
-        if 4 * router_state_scalars > _INT32_MAX:
-            raise ValueError("router_state_nbytes must not exceed 2147483647")
+        _require_derived_int32("total_feature_dim", self.total_feature_dim, minimum=3)
+        descriptor_scalars = _require_derived_int32(
+            "descriptor_int32_scalars",
+            2 * self.active_slots,
+            minimum=2,
+        )
+        router_state_scalars = _require_derived_int32(
+            "router_state_scalars",
+            descriptor_scalars + 2,
+            minimum=4,
+        )
+        _require_derived_int32(
+            "router_state_nbytes",
+            4 * router_state_scalars,
+            minimum=16,
+        )
 
     @property
     def total_feature_dim(self) -> int:
@@ -116,27 +140,30 @@ class FeatureBankRouterConfig:
     @classmethod
     def from_config(
         cls,
-        config: Mapping[str, object],
+        config: dict[str, object],
     ) -> FeatureBankRouterConfig:
         """Reconstruct only the exact versioned configuration schema."""
 
+        if type(config) is not dict:
+            raise TypeError("feature-bank router config must be an exact dict")
+        payload = dict(config)
         expected_keys = {
             "type",
             "schema_version",
             "base_dim",
             "active_slots",
         }
-        if set(config) != expected_keys:
+        if set(payload) != expected_keys:
             raise ValueError("feature-bank router config keys do not match the v1 schema")
-        config_type = config.get("type")
+        config_type = payload["type"]
         if type(config_type) is not str or config_type != "FeatureBankRouter":
             raise ValueError("feature-bank router config type is invalid")
-        schema_version = config.get("schema_version")
+        schema_version = payload["schema_version"]
         if type(schema_version) is not str or schema_version != CONFIG_SCHEMA_VERSION:
             raise ValueError("feature-bank router config schema version is unsupported")
         return cls(
-            base_dim=config["base_dim"],  # type: ignore[arg-type]
-            active_slots=config["active_slots"],  # type: ignore[arg-type]
+            base_dim=payload["base_dim"],  # type: ignore[arg-type]
+            active_slots=payload["active_slots"],  # type: ignore[arg-type]
         )
 
 
@@ -268,6 +295,58 @@ class FeatureBankRouterResourceBudget:
     consumer_state_nbytes: int
     total_managed_nbytes: int
 
+    def __post_init__(self) -> None:
+        """Validate exact formulas while leaving host-only consumer totals unbounded."""
+        int32_fields = {
+            "base_feature_slots": 2,
+            "dynamic_feature_slots": 1,
+            "total_feature_slots": 3,
+            "descriptor_int32_scalars": 2,
+            "counter_int32_scalars": 2,
+            "router_state_scalars": 4,
+            "router_state_nbytes": 16,
+        }
+        for name, minimum in int32_fields.items():
+            object.__setattr__(
+                self,
+                name,
+                _require_int32(name, getattr(self, name), minimum=minimum),
+            )
+        host_fields = {
+            "consumer_leaf_count": 1,
+            "consumer_feature_groups": 0,
+            "consumer_stable_prefix_scalars": 0,
+            "consumer_dynamic_tail_scalars": 0,
+            "consumer_total_scalars": 0,
+            "consumer_state_nbytes": 0,
+            "total_managed_nbytes": 0,
+        }
+        for name, minimum in host_fields.items():
+            object.__setattr__(
+                self,
+                name,
+                _require_host_count(name, getattr(self, name), minimum=minimum),
+            )
+
+        expected = {
+            "total_feature_slots": self.base_feature_slots + self.dynamic_feature_slots,
+            "descriptor_int32_scalars": 2 * self.dynamic_feature_slots,
+            "counter_int32_scalars": 2,
+            "router_state_scalars": self.descriptor_int32_scalars
+            + self.counter_int32_scalars,
+            "router_state_nbytes": 4 * self.router_state_scalars,
+            "consumer_stable_prefix_scalars": self.consumer_feature_groups
+            * self.base_feature_slots,
+            "consumer_dynamic_tail_scalars": self.consumer_feature_groups
+            * self.dynamic_feature_slots,
+            "consumer_total_scalars": self.consumer_stable_prefix_scalars
+            + self.consumer_dynamic_tail_scalars,
+            "total_managed_nbytes": self.router_state_nbytes + self.consumer_state_nbytes,
+        }
+        for name, required in expected.items():
+            if getattr(self, name) != required:
+                raise ValueError(f"{name} does not match the derived resource contract")
+
     def to_dict(self) -> dict[str, int]:
         """Return a JSON-compatible exact accounting record."""
 
@@ -342,7 +421,7 @@ class FeatureBankRouter:
     @classmethod
     def from_config(
         cls,
-        config: Mapping[str, object],
+        config: dict[str, object],
     ) -> FeatureBankRouter:
         """Construct a router from the strict versioned configuration."""
 

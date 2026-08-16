@@ -16,6 +16,7 @@ from alberta_framework.core.feature_bank_router import (
     CONFIG_SCHEMA_VERSION,
     FeatureBankRouter,
     FeatureBankRouterConfig,
+    FeatureBankRouterResourceBudget,
     FeatureBankRouterState,
 )
 
@@ -582,6 +583,8 @@ def test_router_config_rejects_derived_feature_width_outside_signed_int32() -> N
 
 @pytest.mark.unit
 def test_router_config_preflights_derived_state_counts_before_allocation() -> None:
+    with pytest.raises(ValueError, match="descriptor_int32_scalars"):
+        FeatureBankRouterConfig(base_dim=2, active_slots=1_073_741_824)
     with pytest.raises(ValueError, match="router_state_scalars"):
         FeatureBankRouterConfig(base_dim=2, active_slots=1_073_741_823)
     with pytest.raises(ValueError, match="router_state_nbytes"):
@@ -624,3 +627,78 @@ def test_router_config_rejects_string_spoofs_without_invoking_hooks(
     serialized[field] = hostile
     with pytest.raises(ValueError, match=message):
         FeatureBankRouterConfig.from_config(serialized)
+
+
+@pytest.mark.unit
+def test_router_from_config_requires_an_exact_dict_and_exact_schema() -> None:
+    payload = FeatureBankRouterConfig(base_dim=4, active_slots=3).to_config()
+
+    class HostileDict(dict[str, object]):
+        def __iter__(self) -> Any:
+            raise AssertionError("mapping hooks must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    for loader in (FeatureBankRouterConfig.from_config, FeatureBankRouter.from_config):
+        with pytest.raises(TypeError, match="exact dict"):
+            loader(HostileDict(payload))  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="keys"):
+            loader({key: value for key, value in payload.items() if key != "active_slots"})
+        with pytest.raises(ValueError, match="keys"):
+            loader({**payload, "unexpected": 1})
+        with pytest.raises(ValueError, match="base_dim"):
+            loader({**payload, "base_dim": 4.5})
+        with pytest.raises(ValueError, match="active_slots"):
+            loader({**payload, "active_slots": True})
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "field",
+    [
+        "total_feature_slots",
+        "descriptor_int32_scalars",
+        "counter_int32_scalars",
+        "router_state_scalars",
+        "router_state_nbytes",
+        "consumer_stable_prefix_scalars",
+        "consumer_dynamic_tail_scalars",
+        "consumer_total_scalars",
+        "total_managed_nbytes",
+    ],
+)
+def test_router_resource_budget_rejects_each_inconsistent_derived_count(field: str) -> None:
+    router = _router()
+    budget = router.resource_budget(
+        router.init(_OLD),
+        _consumers(),
+        feature_axes=_feature_axes(),
+    )
+    with pytest.raises(ValueError, match=field):
+        dataclasses.replace(budget, **{field: getattr(budget, field) + 1})
+
+
+@pytest.mark.unit
+def test_router_resource_budget_keeps_host_only_consumer_counts_unbounded() -> None:
+    groups = 10**30
+    consumer_nbytes = 10**40
+    budget = FeatureBankRouterResourceBudget(
+        base_feature_slots=np.int32(2),
+        dynamic_feature_slots=np.uint8(1),
+        total_feature_slots=np.int64(3),
+        descriptor_int32_scalars=np.int16(2),
+        counter_int32_scalars=np.uint16(2),
+        router_state_scalars=np.int32(4),
+        router_state_nbytes=np.int64(16),
+        consumer_leaf_count=np.uint8(1),
+        consumer_feature_groups=groups,
+        consumer_stable_prefix_scalars=2 * groups,
+        consumer_dynamic_tail_scalars=groups,
+        consumer_total_scalars=3 * groups,
+        consumer_state_nbytes=consumer_nbytes,
+        total_managed_nbytes=consumer_nbytes + 16,
+    )
+    assert budget.consumer_total_scalars > 2**31
+    assert budget.consumer_state_nbytes > 2**31
+    assert all(type(value) is int for value in budget.to_dict().values())
