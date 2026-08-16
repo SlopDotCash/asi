@@ -22,6 +22,7 @@ import dataclasses
 import functools
 import operator
 import time
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -51,6 +52,9 @@ from alberta_framework.core.types import (
     TraceMode,
     create_horde_spec,
 )
+from alberta_framework.core.update_safety import (
+    floating_tree_is_finite as _floating_tree_is_finite,
+)
 
 # =============================================================================
 # Types
@@ -58,6 +62,30 @@ from alberta_framework.core.types import (
 
 
 _INT32_MAX = 2**31 - 1
+_SARSA_CONFIG_FIELDS = {
+    "n_actions",
+    "gamma",
+    "epsilon_start",
+    "epsilon_end",
+    "epsilon_decay_steps",
+}
+_SARSA_AGENT_CONFIG_FIELDS = {
+    "type",
+    "state_schema",
+    "sarsa_config",
+    "hidden_sizes",
+    "optimizer",
+    "bounder",
+    "normalizer",
+    "head_optimizer",
+    "sparsity",
+    "leaky_relu_slope",
+    "use_layer_norm",
+    "lamda",
+    "prediction_demons",
+    "trace_mode",
+    "utility_decay",
+}
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -73,9 +101,6 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
-_ACTUAL_FLOAT_TYPES = frozenset(
-    {float, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
-)
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -87,20 +112,29 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
-def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
-    if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
-        raise ValueError(f"{name} must be a finite real scalar")
-    return validated_float32_scalar(name, value, **bounds)
-
-
-def _preflight_sarsa_resources(n_actions: int, feature_dim: object) -> None:
-    width = _require_int32("feature_dim", feature_dim, minimum=1)
-    # The wrapper retains one observation and scalar lifecycle leaves while
-    # exposing one float32 policy/Q vector. The nested Horde owns its budget.
-    logical_scalars = n_actions + width + 5
-    state_nbytes = 4 * (width + 5)
-    if logical_scalars > _INT32_MAX or state_nbytes > _INT32_MAX:
-        raise ValueError("derived SARSA wrapper resources must fit signed int32")
+def _preflight_sarsa_direct_state(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> None:
+    """Bound the Horde arrays plus SARSA-owned state before JAX allocation."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameters = n_heads * (final_width + 1)
+    horde_direct_scalars = 2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+    # last_observation, last_action, epsilon, step_count, and the two-word
+    # Threefry key are all four-byte public-state leaves.
+    aggregate_scalars = horde_direct_scalars + feature_dim + 5
+    for name, value in (
+        ("aggregate_direct_state_scalars", aggregate_scalars),
+        ("aggregate_direct_state_bytes", 4 * aggregate_scalars),
+    ):
+        if not 1 <= value <= _INT32_MAX:
+            raise ValueError(f"derived SARSA {name} must be at most {_INT32_MAX}")
 
 
 @chex.dataclass(frozen=True)
@@ -128,11 +162,11 @@ class SARSAConfig:
         epsilon_decay_steps = _require_int32(
             "epsilon_decay_steps", self.epsilon_decay_steps, minimum=0
         )
-        gamma = _validated_config_float("gamma", self.gamma, lower=0.0, upper=1.0)
-        epsilon_start = _validated_config_float(
+        gamma = validated_float32_scalar("gamma", self.gamma, lower=0.0, upper=1.0)
+        epsilon_start = validated_float32_scalar(
             "epsilon_start", self.epsilon_start, lower=0.0, upper=1.0
         )
-        epsilon_end = _validated_config_float(
+        epsilon_end = validated_float32_scalar(
             "epsilon_end", self.epsilon_end, lower=0.0, upper=1.0
         )
         if epsilon_decay_steps > 0 and epsilon_end > epsilon_start:
@@ -142,7 +176,6 @@ class SARSAConfig:
         object.__setattr__(self, "gamma", gamma)
         object.__setattr__(self, "epsilon_start", epsilon_start)
         object.__setattr__(self, "epsilon_end", epsilon_end)
-        _preflight_sarsa_resources(n_actions, 1)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to dict."""
@@ -155,13 +188,12 @@ class SARSAConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "SARSAConfig":
+    def from_config(cls, config: Mapping[str, Any]) -> "SARSAConfig":
         """Reconstruct from config dict."""
         if type(config) is not dict:
-            raise ValueError("config must be an exact built-in dict")
-        expected = {"n_actions", "gamma", "epsilon_start", "epsilon_end", "epsilon_decay_steps"}
-        if any(type(key) is not str for key in config) or set(config) != expected:
-            raise ValueError("config fields do not match the serialized schema")
+            raise ValueError("SARSA config must be an actual dict")
+        if not all(type(key) is str for key in config) or set(config) != _SARSA_CONFIG_FIELDS:
+            raise ValueError("SARSA config fields do not match the compatibility schema")
         return cls(**config)
 
 
@@ -369,14 +401,30 @@ class SARSAAgent:
             utility_decay: EMA decay for hidden-unit utility diagnostics.
         """
         if type(sarsa_config) is not SARSAConfig:
-            raise ValueError("sarsa_config must be an exact SARSAConfig")
-        if prediction_demons is not None:
-            if type(prediction_demons) is not list:
-                raise ValueError("prediction_demons must be an exact list or None")
-            if any(type(demon) is not GVFSpec for demon in prediction_demons):
-                raise ValueError("prediction_demons entries must be exact GVFSpec values")
+            raise ValueError("sarsa_config must be an actual SARSAConfig")
+        lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
+        if prediction_demons is not None and type(prediction_demons) is not list:
+            raise ValueError("prediction_demons must be an actual list or None")
+        n_predictions = len(prediction_demons) if prediction_demons is not None else 0
+        total_heads = _require_int32(
+            "total control and prediction demons",
+            sarsa_config.n_actions + n_predictions,
+            minimum=1,
+        )
+        # MultiHeadMLPLearner canonicalizes the tuple and its elements. This
+        # minimum-dimension preflight happens before constructing one Python
+        # GVF object per action, so an impossible state cannot first exhaust
+        # host memory in `_make_control_demons`.
+        if type(hidden_sizes) is not tuple:
+            raise ValueError("hidden_sizes must be an actual tuple")
+        canonical_hidden = tuple(
+            _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
+            for index, width in enumerate(hidden_sizes)
+        )
+        _preflight_sarsa_direct_state(total_heads, canonical_hidden, 1)
+
         self._sarsa_config = sarsa_config
-        self._hidden_sizes = hidden_sizes
+        self._hidden_sizes = canonical_hidden
         self._lamda = lamda
 
         # Build HordeSpec: control demons first, then prediction demons
@@ -386,13 +434,13 @@ class SARSAAgent:
         all_demons: list[GVFSpec] = list(control_demons)
         if prediction_demons is not None:
             all_demons.extend(prediction_demons)
-        self._n_prediction_demons = len(prediction_demons) if prediction_demons else 0
+        self._n_prediction_demons = n_predictions
 
         horde_spec = create_horde_spec(all_demons)
 
         self._horde = HordeLearner(
             horde_spec=horde_spec,
-            hidden_sizes=hidden_sizes,
+            hidden_sizes=canonical_hidden,
             optimizer=optimizer,
             step_size=step_size,
             bounder=bounder,
@@ -451,42 +499,25 @@ class SARSAAgent:
         )
 
         if type(config) is not dict:
-            raise ValueError("serialized SARSA agent must be an exact built-in dict")
-        expected = {
-            "type",
-            "sarsa_config",
-            "lamda",
-            "prediction_demons",
-            "state_schema",
-            "hidden_sizes",
-            "optimizer",
-            "bounder",
-            "normalizer",
-            "head_optimizer",
-            "sparsity",
-            "leaky_relu_slope",
-            "use_layer_norm",
-            "trace_mode",
-            "utility_decay",
-        }
-        if any(type(key) is not str for key in config) or set(config) != expected:
-            raise ValueError("serialized SARSA agent fields do not match the schema")
-        if type(config["type"]) is not str or config["type"] != "SARSAAgent":
-            raise ValueError("unsupported SARSA agent type")
-        state_schema = config["state_schema"]
+            raise ValueError("SARSA agent config must be an actual dict")
+        if not all(type(key) is str for key in config) or set(config) != _SARSA_AGENT_CONFIG_FIELDS:
+            raise ValueError("SARSA agent config fields do not match the schema")
+        config = dict(config)
+        if config.pop("type") != "SARSAAgent":
+            raise ValueError("unexpected SARSA agent config type")
+        state_schema = config.pop("state_schema")
         if type(state_schema) is not str or state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
             raise ValueError("unsupported SARSA Horde state schema")
-        if type(config["sarsa_config"]) is not dict:
-            raise ValueError("serialized sarsa_config must be an exact built-in dict")
-        if type(config["hidden_sizes"]) is not list:
-            raise ValueError("serialized hidden_sizes must be an exact list")
-        raw_prediction_demons = config["prediction_demons"]
-        if raw_prediction_demons is not None and type(raw_prediction_demons) is not list:
-            raise ValueError("serialized prediction_demons must be an exact list or None")
 
-        config = dict(config)
-        config.pop("type")
-        config.pop("state_schema")
+        if type(config["sarsa_config"]) is not dict:
+            raise ValueError("serialized sarsa_config must be an actual dict")
+        if type(config["hidden_sizes"]) is not list:
+            raise ValueError("serialized hidden_sizes must be an actual list")
+        if (
+            config["prediction_demons"] is not None
+            and type(config["prediction_demons"]) is not list
+        ):
+            raise ValueError("serialized prediction_demons must be an actual list or None")
 
         sarsa_config = SARSAConfig.from_config(config.pop("sarsa_config"))
         optimizer = optimizer_from_config(config.pop("optimizer"))
@@ -496,17 +527,15 @@ class SARSAAgent:
         normalizer = normalizer_from_config(normalizer_cfg) if normalizer_cfg is not None else None
         head_opt_cfg = config.pop("head_optimizer", None)
         head_optimizer = optimizer_from_config(head_opt_cfg) if head_opt_cfg is not None else None
-        pred_demons_cfg = config.pop("prediction_demons")
+        pred_demons_cfg = config.pop("prediction_demons", None)
         prediction_demons = None
         if pred_demons_cfg is not None:
-            if any(type(demon) is not dict for demon in pred_demons_cfg):
-                raise ValueError("serialized prediction demon must be an exact built-in dict")
             prediction_demons = [GVFSpec.from_config(d) for d in pred_demons_cfg]
 
-        trace_mode_str = config.pop("trace_mode")
-        if type(trace_mode_str) is not str:
-            raise ValueError("serialized trace_mode must be an exact string")
-        trace_mode = TraceMode(trace_mode_str)
+        trace_mode_str = config.pop("trace_mode", None)
+        trace_mode = (
+            TraceMode(trace_mode_str) if trace_mode_str is not None else TraceMode.ACCUMULATING
+        )
 
         return cls(
             sarsa_config=sarsa_config,
@@ -530,7 +559,12 @@ class SARSAAgent:
         Returns:
             Initial SARSAState with zeroed last_action/observation
         """
-        _preflight_sarsa_resources(self.n_actions, feature_dim)
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        _preflight_sarsa_direct_state(
+            self._horde.n_demons,
+            self._hidden_sizes,
+            feature_dim,
+        )
         key, subkey = jr.split(key)
         learner_state = self._horde.init(feature_dim, subkey)
 
@@ -698,7 +732,7 @@ class SARSAAgent:
 
         # Epsilon decay
         cfg = self._sarsa_config
-        new_step_count = state.step_count + 1
+        new_step_count = jnp.minimum(state.step_count, _INT32_MAX - 1) + 1
         new_epsilon = jax.lax.cond(
             cfg.epsilon_decay_steps > 0,
             lambda: jnp.maximum(
