@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -61,16 +63,12 @@ def test_sigreg_rejects_integer_spoofs_without_hooks_or_repr() -> None:
         sample_sigreg_directions(jr.key(0), HostileInt(2))
 
 
-def test_sigreg_config_schema_is_exact() -> None:
+def test_sigreg_config_preserves_mapping_and_partial_compatibility() -> None:
     config = SIGRegConfig(n_projections=np.int32(3))
     payload = config.to_config()
-    assert SIGRegConfig.from_config(payload) == config
-    with pytest.raises(ValueError, match="actual dict"):
-        SIGRegConfig.from_config(type("DictSubclass", (dict,), {})(payload))
-    with pytest.raises(ValueError, match="schema"):
-        SIGRegConfig.from_config({**payload, "unknown": 1})
-    with pytest.raises(ValueError, match="type"):
-        SIGRegConfig.from_config({**payload, "type": "wrong"})
+    assert SIGRegConfig.from_config(MappingProxyType(payload)) == config
+    assert SIGRegConfig.from_config({"n_projections": 3}) == SIGRegConfig(n_projections=3)
+    assert SIGRegConfig.from_config({**payload, "type": "historical-marker"}) == config
 
 
 def test_sigreg_config_float_hooks_fail_closed_once() -> None:

@@ -27,6 +27,7 @@ import dataclasses
 import math
 import numbers
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -128,16 +129,15 @@ class SIGRegConfig:
         return payload
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> SIGRegConfig:
+    def from_config(cls, config: Mapping[str, Any]) -> SIGRegConfig:
         """Reconstruct from :meth:`to_config` output."""
-        if type(config) is not dict:
-            raise ValueError("SIGRegConfig must be an actual dict")
-        payload = dict(config)
-        if set(payload) != {"type", "n_projections", "kernel_width", "eps"}:
-            raise ValueError("SIGRegConfig fields do not match its schema")
-        type_name = payload.pop("type")
-        if type(type_name) is not str or type_name != "SIGRegConfig":
-            raise ValueError("type must be SIGRegConfig")
+        if not isinstance(config, Mapping):
+            raise ValueError("SIGRegConfig must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("SIGRegConfig mapping could not be read") from error
+        payload.pop("type", None)
         return cls(**payload)
 
 
