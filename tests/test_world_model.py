@@ -6,12 +6,76 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework.core.world_model import (
     OneStepWorldModel,
     WorldModelConfig,
     run_world_model_learning_loop,
 )
+
+
+@pytest.mark.parametrize(
+    "malformed_observation",
+    [
+        pytest.param(jnp.zeros((2, 1), dtype=jnp.float32), id="column"),
+        pytest.param(jnp.zeros((1, 2), dtype=jnp.float32), id="row"),
+        pytest.param(jnp.zeros((1,), dtype=jnp.float32), id="short"),
+    ],
+)
+def test_world_model_rejects_malformed_observation_vectors(
+    malformed_observation: jax.Array,
+) -> None:
+    """Wrong-rank vectors must not be silently flattened through jitted APIs."""
+    model = OneStepWorldModel(
+        WorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    state = model.init(jr.key(10))
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    action = jnp.array(0, dtype=jnp.int32)
+    reward = jnp.array(0.0, dtype=jnp.float32)
+
+    calls = (
+        lambda: model.input_features(malformed_observation, action),
+        lambda: model.targets(malformed_observation, reward, observation),
+        lambda: model.targets(observation, reward, malformed_observation),
+        lambda: model.predict(state, malformed_observation, action),
+        lambda: model.update(state, malformed_observation, action, reward, observation),
+        lambda: model.update(state, observation, action, reward, malformed_observation),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            call()
+
+
+def test_world_model_rejects_malformed_continuous_actions() -> None:
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=None,
+            action_dim=2,
+            hidden_sizes=(),
+        )
+    )
+    state = model.init(jr.key(11))
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    malformed_action = jnp.zeros((1, 2), dtype=jnp.float32)
+
+    calls = (
+        lambda: model.encode_action(malformed_action),
+        lambda: model.input_features(observation, malformed_action),
+        lambda: model.predict(state, observation, malformed_action),
+        lambda: model.update(
+            state,
+            observation,
+            malformed_action,
+            jnp.array(0.0, dtype=jnp.float32),
+            observation,
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match=r"action must have shape \(2,\)"):
+            call()
 
 
 def test_world_model_update_is_finite_and_shape_stable() -> None:

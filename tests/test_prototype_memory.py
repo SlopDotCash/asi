@@ -4,6 +4,7 @@
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from alberta_framework.core.prototype_memory import (
@@ -228,6 +229,44 @@ _INVALID_PROTOTYPE_CONFIGS: tuple[dict[str, object], ...] = (
 def test_prototype_memory_config_rejects_invalid_inputs(kwargs: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         PrototypeMemoryConfig(**kwargs)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("numpy_type", [np.longlong, np.ulonglong])
+@pytest.mark.parametrize("field", ["feature_dim", "n_classes", "slots_per_class"])
+def test_prototype_memory_config_accepts_extended_numpy_integers(
+    field: str,
+    numpy_type: type[np.generic],
+) -> None:
+    kwargs: dict[str, object] = {"feature_dim": 4, "n_classes": 2}
+    kwargs[field] = numpy_type(4)
+
+    config = PrototypeMemoryConfig(**kwargs)
+
+    assert getattr(config, field) == 4
+    assert type(getattr(config, field)) is int
+    assert PrototypeMemoryConfig.from_config(config.to_config()) == config
+
+
+@pytest.mark.parametrize("numpy_type", [np.longlong, np.ulonglong])
+@pytest.mark.parametrize("field", ["feature_dim", "n_classes", "slots_per_class"])
+def test_prototype_memory_config_bounds_extended_numpy_integers(
+    field: str,
+    numpy_type: type[np.generic],
+) -> None:
+    kwargs: dict[str, object] = {"feature_dim": 4, "n_classes": 2}
+    kwargs[field] = numpy_type(2**31)
+
+    with pytest.raises(ValueError, match=field):
+        PrototypeMemoryConfig(**kwargs)
+
+
+@pytest.mark.parametrize("field", ["feature_dim", "n_classes", "slots_per_class"])
+def test_prototype_memory_config_rejects_negative_numpy_longlong(field: str) -> None:
+    kwargs: dict[str, object] = {"feature_dim": 4, "n_classes": 2}
+    kwargs[field] = np.longlong(-1)
+
+    with pytest.raises(ValueError, match=field):
+        PrototypeMemoryConfig(**kwargs)
 
 
 @pytest.mark.parametrize(

@@ -33,6 +33,57 @@ from alberta_framework.core.world_model import (
 )
 
 
+@pytest.mark.parametrize(
+    "malformed_observation",
+    [
+        pytest.param(jnp.zeros((2, 1), dtype=jnp.float32), id="column"),
+        pytest.param(jnp.zeros((1, 2), dtype=jnp.float32), id="row"),
+        pytest.param(jnp.zeros((1,), dtype=jnp.float32), id="short"),
+    ],
+)
+def test_action_conditioned_world_model_rejects_malformed_observation_vectors(
+    malformed_observation: jax.Array,
+) -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+        )
+    )
+    state = model.init(jr.key(10))
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    action = jnp.array(0, dtype=jnp.int32)
+    reward = jnp.array(0.0, dtype=jnp.float32)
+    discount = jnp.array(0.9, dtype=jnp.float32)
+
+    calls = (
+        lambda: model.input_features(malformed_observation, action),
+        lambda: model.targets(malformed_observation, reward, discount, observation),
+        lambda: model.targets(observation, reward, discount, malformed_observation),
+        lambda: model.predict(state, malformed_observation, action),
+        lambda: model.update(
+            state,
+            malformed_observation,
+            action,
+            reward,
+            discount,
+            observation,
+        ),
+        lambda: model.update(
+            state,
+            observation,
+            action,
+            reward,
+            discount,
+            malformed_observation,
+        ),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            call()
+
+
 def test_action_conditioned_world_model_update_and_prediction_shapes() -> None:
     config = ActionConditionedWorldModelConfig(
         observation_dim=2,
