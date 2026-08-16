@@ -37,6 +37,7 @@ for Learning Knowledge from Unsupervised Sensorimotor Interaction"
 import functools
 import operator
 import time
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -46,6 +47,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.horde import HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import (
@@ -75,19 +77,10 @@ from alberta_framework.core.update_safety import (
 
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
+    {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
+)
+_ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
+    {float, *(np.dtype(code).type for code in "efdg")}
 )
 
 
@@ -98,6 +91,78 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_float32(
+    name: str,
+    value: object,
+    *,
+    lower: float | None = None,
+    upper: float | None = None,
+) -> float:
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+    return validated_float32_scalar(name, value, lower=lower, upper=upper)
+
+
+def _read_mapping(name: str, value: object) -> dict[str, Any]:
+    if not issubclass(type(value), Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    try:
+        return dict(cast(Mapping[str, Any], value))
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
+
+
+def _decode_tuple(name: str, value: object) -> tuple[Any, ...]:
+    if type(value) not in {list, tuple}:
+        raise ValueError(f"{name} must be an exact list or tuple")
+    return tuple(cast(list[Any] | tuple[Any, ...], value))
+
+
+def _require_direct_state_resources(
+    n_demons: int, hidden_sizes: tuple[int, ...], feature_dim: int
+) -> None:
+    """Bound arrays directly owned by the independent networks before allocation."""
+    layer_sizes = (feature_dim, *hidden_sizes, 1)
+    per_demon_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    n_layers = len(layer_sizes) - 1
+    direct_state_scalars = n_demons * (2 * per_demon_parameters + 2 * n_layers + 1) + 1
+    for name, value in (
+        ("per_demon_parameter_count", per_demon_parameters),
+        ("direct_state_scalars", direct_state_scalars),
+        ("direct_state_bytes", 4 * direct_state_scalars),
+    ):
+        if not 1 <= value <= _INT32_MAX:
+            raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
+
+
+def _require_loop_output_resources(num_steps: int, n_demons: int, n_seeds: int = 1) -> None:
+    logical_scalars = n_seeds * num_steps * (5 * n_demons + 1)
+    output_bytes = n_seeds * num_steps * (17 * n_demons + 1)
+    if logical_scalars > _INT32_MAX or output_bytes > _INT32_MAX:
+        raise ValueError("derived learning-loop outputs exceed the signed-int32 budget")
+
+
+def _require_learning_arrays(
+    observations: object,
+    cumulants: object,
+    next_observations: object,
+    n_demons: int,
+) -> tuple[Array, Array, Array, int, int]:
+    obs = jnp.asarray(observations, dtype=jnp.float32)
+    cums = jnp.asarray(cumulants, dtype=jnp.float32)
+    next_obs = jnp.asarray(next_observations, dtype=jnp.float32)
+    if obs.ndim != 2 or obs.shape[0] < 1 or obs.shape[1] < 1:
+        raise ValueError("observations must have shape (num_steps, feature_dim)")
+    if next_obs.shape != obs.shape:
+        raise ValueError("next_observations must match observations shape")
+    if cums.shape != (obs.shape[0], n_demons):
+        raise ValueError("cumulants must have shape (num_steps, n_demons)")
+    return obs, cums, next_obs, obs.shape[0], obs.shape[1]
 
 
 @chex.dataclass(frozen=True)
@@ -267,13 +332,21 @@ class IndependentDemonHorde:
                 ``REPLACING``). Applies independently inside every
                 demon's network.
         """
+        if type(horde_spec) is not HordeSpec or not horde_spec.demons:
+            raise ValueError("horde_spec must be a nonempty HordeSpec")
         if type(hidden_sizes) is not tuple:
-            raise ValueError(
-                f"hidden_sizes must be an actual tuple, got {type(hidden_sizes).__name__}"
-            )
+            raise ValueError("hidden_sizes must be an exact tuple")
         hidden_sizes = tuple(
             _require_int32(f"hidden_sizes[{i}]", v, minimum=1) for i, v in enumerate(hidden_sizes)
         )
+        sparsity = _require_float32("sparsity", sparsity, lower=0.0, upper=1.0)
+        leaky_relu_slope = _require_float32(
+            "leaky_relu_slope", leaky_relu_slope, lower=0.0
+        )
+        if type(use_layer_norm) is not bool:
+            raise ValueError("use_layer_norm must be an exact bool")
+        if type(trace_mode) is not TraceMode:
+            raise ValueError("trace_mode must be a TraceMode")
         self._horde_spec = horde_spec
         self._hidden_sizes = hidden_sizes
         self._optimizer: AnyOptimizer = optimizer or LMS(step_size=step_size)
@@ -324,7 +397,7 @@ class IndependentDemonHorde:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "IndependentDemonHorde":
+    def from_config(cls, config: Mapping[str, Any]) -> "IndependentDemonHorde":
         """Reconstruct learner from a config dict.
 
         Args:
@@ -339,7 +412,7 @@ class IndependentDemonHorde:
             optimizer_from_config,
         )
 
-        config = dict(config)
+        config = _read_mapping("config", config)
         config.pop("type", None)
 
         horde_spec = HordeSpec.from_config(config.pop("horde_spec"))
@@ -352,13 +425,20 @@ class IndependentDemonHorde:
         head_optimizer = optimizer_from_config(head_opt_cfg) if head_opt_cfg is not None else None
 
         trace_mode_str = config.pop("trace_mode", None)
-        trace_mode = (
-            TraceMode(trace_mode_str) if trace_mode_str is not None else TraceMode.ACCUMULATING
-        )
+        if trace_mode_str is not None and type(trace_mode_str) is not str:
+            raise ValueError("trace_mode must be an exact string")
+        try:
+            trace_mode = (
+                TraceMode(trace_mode_str)
+                if trace_mode_str is not None
+                else TraceMode.ACCUMULATING
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError("trace_mode must name a supported mode") from error
 
         return cls(
             horde_spec=horde_spec,
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=_decode_tuple("hidden_sizes", config.pop("hidden_sizes")),
             optimizer=optimizer,
             bounder=bounder,
             normalizer=normalizer,
@@ -377,7 +457,6 @@ class IndependentDemonHorde:
         Equivalent to the body of ``MLPLearner.init`` so that the same
         sparse-init / shape conventions apply.
         """
-        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         layer_sizes = [feature_dim, *self._hidden_sizes, 1]
 
         weights_list: list[Array] = []
@@ -435,6 +514,8 @@ class IndependentDemonHorde:
         Returns:
             Initial state with one ``MLPLearnerState`` per demon.
         """
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        _require_direct_state_resources(self.n_demons, self._hidden_sizes, feature_dim)
         keys = jax.random.split(key, self.n_demons)
         demon_states = tuple(self._init_single_demon(feature_dim, k) for k in keys)
         return IndependentDemonHordeState(
@@ -443,6 +524,65 @@ class IndependentDemonHorde:
             birth_timestamp=time.time(),
             uptime_s=0.0,
         )
+
+    def _feature_dim_from_state(self, state: IndependentDemonHordeState) -> int:
+        """Validate the static learner-owned state contract and return its input width."""
+        if type(state) is not IndependentDemonHordeState:
+            raise ValueError("state must be an IndependentDemonHordeState")
+        if type(state.demon_states) is not tuple or len(state.demon_states) != self.n_demons:
+            raise ValueError("state.demon_states must match the configured demons")
+        if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
+            raise ValueError("state.step_count must be a scalar int32")
+        feature_dim: int | None = None
+        for demon_state in state.demon_states:
+            if (
+                type(demon_state) is not MLPLearnerState
+                or type(demon_state.params) is not MLPParams
+            ):
+                raise ValueError("every demon state must be an MLPLearnerState")
+            weights = demon_state.params.weights
+            biases = demon_state.params.biases
+            expected_layers = len(self._hidden_sizes) + 1
+            if (
+                type(weights) is not tuple
+                or type(biases) is not tuple
+                or len(weights) != expected_layers
+                or len(biases) != expected_layers
+            ):
+                raise ValueError("demon parameter topology must match hidden_sizes")
+            current_feature_dim = weights[0].shape[1] if weights[0].ndim == 2 else -1
+            if feature_dim is None:
+                feature_dim = current_feature_dim
+            if current_feature_dim != feature_dim:
+                raise ValueError("all demon states must share one feature dimension")
+            layer_sizes = (current_feature_dim, *self._hidden_sizes, 1)
+            parameter_shapes: list[tuple[int, ...]] = []
+            for index, (fan_in, fan_out) in enumerate(
+                zip(layer_sizes, layer_sizes[1:], strict=False)
+            ):
+                if weights[index].shape != (fan_out, fan_in) or weights[index].dtype != jnp.float32:
+                    raise ValueError("demon weight shapes and dtypes must match the configuration")
+                if biases[index].shape != (fan_out,) or biases[index].dtype != jnp.float32:
+                    raise ValueError("demon bias shapes and dtypes must match the configuration")
+                parameter_shapes.extend(((fan_out, fan_in), (fan_out,)))
+            if type(demon_state.traces) is not tuple or tuple(
+                trace.shape for trace in demon_state.traces
+            ) != tuple(parameter_shapes):
+                raise ValueError("demon traces must match every parameter shape")
+            if any(trace.dtype != jnp.float32 for trace in demon_state.traces):
+                raise ValueError("demon traces must use float32")
+            if demon_state.step_count.shape != () or demon_state.step_count.dtype != jnp.int32:
+                raise ValueError("demon step_count must be a scalar int32")
+        if feature_dim is None or feature_dim < 1:
+            raise ValueError("state feature dimension must be positive")
+        return feature_dim
+
+    @staticmethod
+    def _operand(name: str, value: object, shape: tuple[int, ...]) -> Array:
+        array = jnp.asarray(value, dtype=jnp.float32)
+        if array.shape != shape:
+            raise ValueError(f"{name} must have shape {shape}")
+        return array
 
     # -------------------------------------------------------------------------
     # Per-demon predict / update (pure functions)
@@ -670,7 +810,11 @@ class IndependentDemonHorde:
             optimizer_states=masked_opt_states,
             traces=masked_traces,
             normalizer_state=masked_normalizer_state,
-            step_count=demon_state.step_count + jnp.where(commit, 1, 0),
+            step_count=jnp.where(
+                commit,
+                jnp.minimum(demon_state.step_count, _INT32_MAX - 1) + 1,
+                demon_state.step_count,
+            ),
             birth_timestamp=demon_state.birth_timestamp,
             uptime_s=demon_state.uptime_s,
         )
@@ -710,6 +854,8 @@ class IndependentDemonHorde:
         Returns:
             Array of shape ``(n_demons,)`` with one prediction per demon.
         """
+        feature_dim = self._feature_dim_from_state(state)
+        observation = self._operand("observation", observation, (feature_dim,))
         preds = [
             self._predict_single(state.demon_states[i], observation) for i in range(self.n_demons)
         ]
@@ -744,7 +890,13 @@ class IndependentDemonHorde:
             :class:`HordeLearner`) but with ``state`` set to the new
             ``IndependentDemonHordeState``.
         """
+        feature_dim = self._feature_dim_from_state(state)
         n_demons = self.n_demons
+        observation = self._operand("observation", observation, (feature_dim,))
+        cumulants = self._operand("cumulants", cumulants, (n_demons,))
+        next_observation = self._operand(
+            "next_observation", next_observation, (feature_dim,)
+        )
         gammas = self._horde_spec.gammas
         lamdas = self._horde_spec.lamdas
 
@@ -775,6 +927,10 @@ class IndependentDemonHorde:
         global_inputs_valid = (
             jnp.all(jnp.isfinite(observation))
             & jnp.all(jnp.isfinite(next_observation))
+            & (state.step_count >= 0)
+            & jnp.all(
+                jnp.stack([demon_state.step_count >= 0 for demon_state in state.demon_states])
+            )
             & _floating_tree_is_finite(
                 state.replace(  # type: ignore[attr-defined]
                     demon_states=checked_demon_states
@@ -829,7 +985,7 @@ class IndependentDemonHorde:
         )
         proposed_state = IndependentDemonHordeState(
             demon_states=tuple(new_demon_states),
-            step_count=state.step_count + 1,
+            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -911,6 +1067,13 @@ def run_independent_horde_learning_loop(
         per-demon metrics, and TD errors over time.
     """
 
+    observations, cumulants, next_observations, num_steps, feature_dim = (
+        _require_learning_arrays(observations, cumulants, next_observations, horde.n_demons)
+    )
+    if horde._feature_dim_from_state(state) != feature_dim:
+        raise ValueError("state feature dimension must match observations")
+    _require_loop_output_resources(num_steps, horde.n_demons)
+
     def step_fn(
         carry: IndependentDemonHordeState,
         inputs: tuple[Array, Array, Array],
@@ -971,7 +1134,18 @@ def run_independent_horde_learning_loop_batched(
         ``BatchedIndependentDemonHordeResult`` with batched states,
         per-demon metrics, and TD errors.
     """
-    feature_dim = observations.shape[1]
+    observations, cumulants, next_observations, num_steps, feature_dim = (
+        _require_learning_arrays(observations, cumulants, next_observations, horde.n_demons)
+    )
+    keys = jnp.asarray(keys)
+    if (
+        keys.ndim not in {1, 2}
+        or keys.shape[0] < 1
+        or (keys.ndim == 2 and keys.shape[1] != 2)
+    ):
+        raise ValueError("keys must contain at least one JAX key")
+    n_seeds = keys.shape[0]
+    _require_loop_output_resources(num_steps, horde.n_demons, n_seeds)
 
     def single_run(
         key: Array,

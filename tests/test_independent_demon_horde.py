@@ -20,6 +20,8 @@ These tests verify that:
 - The scan-based learning loop returns correctly shaped arrays.
 """
 
+from types import MappingProxyType
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -39,6 +41,8 @@ from alberta_framework.core.independent_demon_horde import (
     IndependentDemonHorde,
     IndependentDemonHordeLearningResult,
     IndependentDemonHordeState,
+    _require_direct_state_resources,
+    _require_loop_output_resources,
     run_independent_horde_learning_loop,
     run_independent_horde_learning_loop_batched,
 )
@@ -632,3 +636,125 @@ def test_independent_demon_horde_integer_validation() -> None:
 
     state = horde.init(feature_dim=np.int32(4), key=key)
     assert len(state.demon_states) == 1
+
+
+class _HostileFloat(float):
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("hostile hook executed")
+
+
+class _SequenceSpoof:
+    @property
+    def __class__(self) -> type[list[object]]:
+        return list
+
+    def __iter__(self) -> object:
+        raise RuntimeError("hostile iterator executed")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sparsity", True),
+        ("sparsity", _HostileFloat(0.5)),
+        ("sparsity", np.float64(1.0 + 1e-10)),
+        ("leaky_relu_slope", 1e100),
+        ("leaky_relu_slope", -1.0),
+        ("use_layer_norm", np.bool_(True)),
+    ],
+)
+def test_independent_horde_rejects_invalid_static_config(field: str, value: object) -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    with pytest.raises(ValueError, match=field):
+        IndependentDemonHorde(horde_spec=spec, **{field: value})  # type: ignore[arg-type]
+
+
+def test_independent_horde_config_accepts_mapping_and_exact_list_or_tuple() -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(
+        horde_spec=spec,
+        hidden_sizes=(np.int32(4),),
+        sparsity=np.float64(0.5),
+        leaky_relu_slope=np.float32(0.125),
+    )
+    config = horde.to_config()
+    clone = IndependentDemonHorde.from_config(MappingProxyType(config))
+    assert clone.to_config() == config
+    assert type(clone._sparsity) is float
+    assert type(clone._leaky_relu_slope) is float
+    config["hidden_sizes"] = _SequenceSpoof()
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        IndependentDemonHorde.from_config(config)
+
+
+def test_independent_horde_preflights_direct_state_before_allocation() -> None:
+    _require_direct_state_resources(1, (), 268_435_452)
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        _require_direct_state_resources(1, (), 268_435_453)
+
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=())
+    with pytest.raises(ValueError, match="direct_state_bytes"):
+        horde.init(268_435_453, jr.key(0))
+
+
+@pytest.mark.parametrize("shape", [(), (1,), (1, 3), (3, 1), (4,)])
+def test_independent_horde_rejects_wrong_observation_shapes(shape: tuple[int, ...]) -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=())
+    state = horde.init(3, jr.key(0))
+    malformed = jnp.zeros(shape, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="observation"):
+        horde.predict(state, malformed)
+    with pytest.raises(ValueError, match="observation"):
+        horde.update(state, malformed, jnp.zeros((1,)), jnp.zeros((3,)))
+
+
+def test_independent_horde_state_contract_and_counters_saturate() -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=())
+    state = horde.init(3, jr.key(0))
+    demon = state.demon_states[0]
+    malformed = state.replace(
+        demon_states=(
+            demon.replace(
+                params=demon.params.replace(
+                    weights=(jnp.zeros((1, 2), dtype=jnp.float32),)
+                )
+            ),
+        )
+    )
+    with pytest.raises(ValueError, match="demon traces"):
+        horde.predict(malformed, jnp.zeros((3,), dtype=jnp.float32))
+
+    saturated_demon = demon.replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
+    saturated = state.replace(
+        demon_states=(saturated_demon,),
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+    )
+    result = horde.update(
+        saturated,
+        jnp.zeros((3,), dtype=jnp.float32),
+        jnp.ones((1,), dtype=jnp.float32),
+        jnp.zeros((3,), dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1
+    assert int(result.state.demon_states[0].step_count) == 2**31 - 1
+
+
+def test_independent_horde_loop_preflights_shapes_and_output_budget() -> None:
+    spec = create_horde_spec(_make_all_gamma0_spec(1))
+    horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=())
+    state = horde.init(3, jr.key(0))
+    with pytest.raises(ValueError, match="observations"):
+        run_independent_horde_learning_loop(
+            horde,
+            state,
+            jnp.zeros((3,), dtype=jnp.float32),
+            jnp.zeros((1, 1), dtype=jnp.float32),
+            jnp.zeros((1, 3), dtype=jnp.float32),
+        )
+    _require_loop_output_resources(119_304_647, 1)
+    with pytest.raises(ValueError, match="learning-loop outputs"):
+        _require_loop_output_resources(119_304_648, 1)
