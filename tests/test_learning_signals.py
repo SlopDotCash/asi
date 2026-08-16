@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from fractions import Fraction
 
 import chex
 import jax
@@ -22,10 +23,7 @@ from alberta_framework.core.learning_signals import (
 
 def test_learning_signal_producer_is_publicly_exported() -> None:
     assert alberta.LearningSignalEstimator is core.LearningSignalEstimator
-    assert (
-        alberta.LearningSignalEstimatorConfig
-        is core.LearningSignalEstimatorConfig
-    )
+    assert alberta.LearningSignalEstimatorConfig is core.LearningSignalEstimatorConfig
     assert alberta.TypedLearningSignals is core.TypedLearningSignals
 
 
@@ -496,3 +494,110 @@ def test_learning_signals_config_accepts_and_canonicalizes_numpy_integers() -> N
     assert config.target_dim == 2
     assert config.progress_warmup_steps == 3
     assert config.change_calibration_steps == 8
+
+
+_POSITIVE_FLOAT32_FIELDS = (
+    "variance_floor",
+    "change_z_threshold",
+    "change_temperature",
+    "calibration_scale_floor",
+    "max_normalized_residual",
+    "max_input_magnitude",
+    "max_predicted_variance",
+    "max_observed_loss",
+)
+
+
+@pytest.mark.parametrize("field", _POSITIVE_FLOAT32_FIELDS)
+@pytest.mark.parametrize(
+    "value",
+    [True, np.bool_(True), float("nan"), float("inf"), Fraction(1, 10**400)],
+)
+def test_all_positive_config_scalars_reject_non_real_or_float32_unsafe_values(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            **{field: value},
+        )
+
+
+@pytest.mark.parametrize("field", _POSITIVE_FLOAT32_FIELDS)
+def test_all_positive_config_scalars_canonicalize_nonbuiltin_reals(field: str) -> None:
+    config = LearningSignalEstimatorConfig(
+        ensemble_size=2,
+        target_dim=1,
+        **{field: Fraction(1, 2)},
+    )
+    assert type(getattr(config, field)) is float
+    assert getattr(config, field) == 0.5
+    assert LearningSignalEstimatorConfig.from_config(config.to_config()) == config
+
+
+def test_cross_scalar_relationships_hold_in_exact_and_float32_domains() -> None:
+    below = Fraction(1, 2) - Fraction(1, 2**80)
+    above = Fraction(1, 2) + Fraction(1, 2**80)
+    with pytest.raises(ValueError, match="fast_loss_decay"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            fast_loss_decay=below,
+            slow_loss_decay=above,
+        )
+    with pytest.raises(ValueError, match="variance_floor"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            variance_floor=above,
+            max_predicted_variance=Fraction(1, 2),
+        )
+
+
+def test_float32_conversion_hooks_fail_closed_without_repr_or_repeat_reads() -> None:
+    class HostileFloat(float):
+        calls = 0
+
+        def as_integer_ratio(self):
+            type(self).calls += 1
+            raise RuntimeError("hostile ratio hook")
+
+        def __repr__(self):
+            raise AssertionError("must not interpolate an untrusted repr")
+
+    with pytest.raises(ValueError, match="change_temperature"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            change_temperature=HostileFloat(0.5),
+        )
+    assert HostileFloat.calls == 1
+
+
+def test_max_input_magnitude_is_safe_at_boundary_and_rejects_adjacent_float32() -> None:
+    maximum = np.float32(float.fromhex("0x1.fffffep+62"))
+    adjacent = np.nextafter(maximum, np.float32(np.inf))
+    config = LearningSignalEstimatorConfig(
+        ensemble_size=2,
+        target_dim=1,
+        max_input_magnitude=maximum,
+    )
+    doubled = jnp.asarray(config.max_input_magnitude, dtype=jnp.float32) * 2.0
+    assert bool(jnp.isfinite(jnp.square(doubled)))
+    with pytest.raises(ValueError, match="max_input_magnitude"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            max_input_magnitude=adjacent,
+        )
+
+
+def test_input_and_variance_bounds_cannot_overflow_total_variance() -> None:
+    with pytest.raises(ValueError, match="squared plus max_predicted_variance"):
+        LearningSignalEstimatorConfig(
+            ensemble_size=2,
+            target_dim=1,
+            max_input_magnitude=float.fromhex("0x1.fffffep+62"),
+            max_predicted_variance=np.finfo(np.float32).max,
+        )

@@ -43,6 +43,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import operator
+from numbers import Real
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -52,9 +53,14 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 
 _INT32_MAX = 2_147_483_647
+_FLOAT32_MAX = float.fromhex("0x1.fffffep+127")
+# The largest binary32 M for which the worst-case bounded residual
+# ``(+M) - (-M)`` and its square remain finite in binary32.
+_MAX_OPERATION_SAFE_INPUT_MAGNITUDE = float.fromhex("0x1.fffffep+62")
+_MAX_OPERATION_SAFE_NONNEGATIVE_SQUARE = float.fromhex("0x1.fffffep+63")
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -81,6 +87,62 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _validated_float32_with_ratio(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> tuple[float, int, int]:
+    """Validate one exact host scalar and its binary32 sink in one hook read."""
+
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    try:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(cast(Real, value))
+    except Exception as error:
+        raise ValueError(f"{name} must be a finite real number") from error
+    if not math.isfinite(narrowed):
+        raise ValueError(f"{name} must remain finite once narrowed to float32")
+
+    def compare_to(bound: float) -> int:
+        bound_numerator, bound_denominator = bound.as_integer_ratio()
+        left = numerator * bound_denominator
+        right = bound_numerator * denominator
+        return (left > right) - (left < right)
+
+    exact_valid = not positive or numerator > 0
+    narrowed_valid = not positive or narrowed > 0.0
+    if lower is not None:
+        exact_valid = exact_valid and compare_to(lower) >= 0
+        narrowed_valid = narrowed_valid and narrowed >= lower
+    if upper is not None:
+        exact_comparison = compare_to(upper)
+        exact_valid = exact_valid and (
+            exact_comparison <= 0 if upper_inclusive else exact_comparison < 0
+        )
+        narrowed_valid = narrowed_valid and (
+            narrowed <= upper if upper_inclusive else narrowed < upper
+        )
+    if not exact_valid:
+        raise ValueError(f"{name} is outside its exact host domain")
+    if not narrowed_valid:
+        raise ValueError(f"{name} is outside its float32 execution domain")
+    stored = cast(float, value) if type(cast(Any, value)) is float else narrowed
+    return stored, numerator, denominator
+
+
+def _ratio_less(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] * right[1] < right[0] * left[1]
+
+
+def _ratio_less_equal(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] * right[1] <= right[0] * left[1]
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip ``0 * inf`` so a disabled EMA decay does not poison the next value."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -96,21 +158,6 @@ def _saturating_counter_sum(left: Array, right: Array) -> Array:
     """Add non-negative int32 counters without overflowing."""
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     return left + jnp.minimum(right, maximum - left)
-
-
-def _positive_finite(name: str, value: float) -> None:
-    if not math.isfinite(value) or value <= 0.0:
-        raise ValueError(f"{name} must be positive and finite")
-
-
-def _unit_interval(name: str, value: float) -> None:
-    if not math.isfinite(value) or not 0.0 <= value < 1.0:
-        raise ValueError(f"{name} must be finite and in [0, 1)")
-
-
-def _positive_integer(name: str, value: int, *, minimum: int = 1) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -177,42 +224,93 @@ class LearningSignalEstimatorConfig:
         )
         if self.change_calibration_steps >= _INT32_MAX:
             raise ValueError("change_calibration_steps must fit in int32")
-        _positive_finite("variance_floor", self.variance_floor)
-        fast_loss_decay = validated_float32_scalar(
+        variance_floor, variance_floor_n, variance_floor_d = _validated_float32_with_ratio(
+            "variance_floor", self.variance_floor, positive=True
+        )
+        fast_loss_decay, fast_n, fast_d = _validated_float32_with_ratio(
             "fast_loss_decay",
             self.fast_loss_decay,
             lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
-        slow_loss_decay = validated_float32_scalar(
+        slow_loss_decay, slow_n, slow_d = _validated_float32_with_ratio(
             "slow_loss_decay",
             self.slow_loss_decay,
             lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
-        if fast_loss_decay >= slow_loss_decay:
+        if not _ratio_less((fast_n, fast_d), (slow_n, slow_d)) or not (
+            fast_loss_decay < slow_loss_decay
+        ):
             raise ValueError("fast_loss_decay must be smaller than slow_loss_decay")
-        change_decay = validated_float32_scalar(
+        change_decay, _, _ = _validated_float32_with_ratio(
             "change_decay",
             self.change_decay,
             lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
+        positive_values: dict[str, tuple[float, int, int]] = {
+            "change_z_threshold": _validated_float32_with_ratio(
+                "change_z_threshold", self.change_z_threshold, positive=True
+            ),
+            "change_temperature": _validated_float32_with_ratio(
+                "change_temperature", self.change_temperature, positive=True
+            ),
+            "calibration_scale_floor": _validated_float32_with_ratio(
+                "calibration_scale_floor",
+                self.calibration_scale_floor,
+                positive=True,
+                upper=_MAX_OPERATION_SAFE_NONNEGATIVE_SQUARE,
+            ),
+            "max_normalized_residual": _validated_float32_with_ratio(
+                "max_normalized_residual",
+                self.max_normalized_residual,
+                positive=True,
+                upper=_MAX_OPERATION_SAFE_NONNEGATIVE_SQUARE,
+            ),
+            "max_input_magnitude": _validated_float32_with_ratio(
+                "max_input_magnitude",
+                self.max_input_magnitude,
+                positive=True,
+                upper=_MAX_OPERATION_SAFE_INPUT_MAGNITUDE,
+            ),
+            "max_predicted_variance": _validated_float32_with_ratio(
+                "max_predicted_variance", self.max_predicted_variance, positive=True
+            ),
+            "max_observed_loss": _validated_float32_with_ratio(
+                "max_observed_loss", self.max_observed_loss, positive=True
+            ),
+        }
+        max_variance, max_variance_n, max_variance_d = positive_values["max_predicted_variance"]
+        if (
+            not _ratio_less_equal(
+                (variance_floor_n, variance_floor_d),
+                (max_variance_n, max_variance_d),
+            )
+            or variance_floor > max_variance
+        ):
+            raise ValueError("variance_floor must not exceed max_predicted_variance")
+        max_input, max_input_n, max_input_d = positive_values["max_input_magnitude"]
+        float32_max_n, float32_max_d = _FLOAT32_MAX.as_integer_ratio()
+        exact_total_left = (
+            max_input_n * max_input_n * max_variance_d + max_variance_n * max_input_d * max_input_d
+        ) * float32_max_d
+        exact_total_right = float32_max_n * max_input_d * max_input_d * max_variance_d
+        if exact_total_left > exact_total_right or (
+            max_input * max_input + max_variance > _FLOAT32_MAX
+        ):
+            raise ValueError(
+                "max_input_magnitude squared plus max_predicted_variance must fit float32"
+            )
+        object.__setattr__(self, "variance_floor", variance_floor)
         object.__setattr__(self, "fast_loss_decay", fast_loss_decay)
         object.__setattr__(self, "slow_loss_decay", slow_loss_decay)
         object.__setattr__(self, "change_decay", change_decay)
-        _positive_finite("change_z_threshold", self.change_z_threshold)
-        _positive_finite("change_temperature", self.change_temperature)
-        _positive_finite("calibration_scale_floor", self.calibration_scale_floor)
-        _positive_finite("max_normalized_residual", self.max_normalized_residual)
-        _positive_finite("max_input_magnitude", self.max_input_magnitude)
-        _positive_finite("max_predicted_variance", self.max_predicted_variance)
-        _positive_finite("max_observed_loss", self.max_observed_loss)
-        if self.variance_floor > self.max_predicted_variance:
-            raise ValueError("variance_floor must not exceed max_predicted_variance")
+        for name, (stored, _, _) in positive_values.items():
+            object.__setattr__(self, name, stored)
 
     def to_config(self) -> dict[str, Any]:
         """Return a JSON-compatible configuration."""
