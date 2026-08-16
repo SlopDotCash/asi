@@ -38,6 +38,22 @@ _NEW = jnp.asarray(
 )
 
 
+class _StringSubclass(str):
+    pass
+
+
+class _RaisingStringSpoof:
+    @property
+    def __class__(self) -> type[str]:
+        return str
+
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("__eq__ must not be called")
+
+    def __repr__(self) -> str:
+        raise AssertionError("__repr__ must not be called")
+
+
 def _router() -> FeatureBankRouter:
     return FeatureBankRouter(
         FeatureBankRouterConfig(
@@ -563,3 +579,36 @@ def test_router_config_roundtrip_preserves_canonical_int32_dimensions() -> None:
     assert type(payload["base_dim"]) is int
     assert type(payload["active_slots"]) is int
     assert FeatureBankRouterConfig.from_config(payload) == config
+
+
+@pytest.mark.unit
+def test_router_config_preflights_derived_state_counts_before_allocation() -> None:
+    with pytest.raises(ValueError, match="router_state_scalars"):
+        FeatureBankRouterConfig(base_dim=2, active_slots=1_073_741_823)
+    with pytest.raises(ValueError, match="router_state_nbytes"):
+        FeatureBankRouterConfig(base_dim=2, active_slots=268_435_455)
+
+    boundary = FeatureBankRouterConfig(base_dim=2, active_slots=268_435_454)
+    assert 4 * (2 * boundary.active_slots + 2) == 2_147_483_640
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "hostile", "message"),
+    [
+        ("type", _StringSubclass("FeatureBankRouter"), "type is invalid"),
+        ("type", _RaisingStringSpoof(), "type is invalid"),
+        ("schema_version", _StringSubclass(CONFIG_SCHEMA_VERSION), "schema version"),
+        ("schema_version", _RaisingStringSpoof(), "schema version"),
+    ],
+    ids=["type-str-subclass", "type-class-spoof", "schema-str-subclass", "schema-class-spoof"],
+)
+def test_router_config_rejects_string_spoofs_without_invoking_hooks(
+    field: str,
+    hostile: object,
+    message: str,
+) -> None:
+    serialized = FeatureBankRouterConfig(base_dim=4, active_slots=4).to_config()
+    serialized[field] = hostile
+    with pytest.raises(ValueError, match=message):
+        FeatureBankRouterConfig.from_config(serialized)
