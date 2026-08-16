@@ -502,6 +502,28 @@ def test_step6_smoke_health_gate_reports_any_refused_update(
     assert not result.finite
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"steps": 0}, "steps"),
+        ({"steps": -1}, "steps"),
+        ({"steps": 2**31}, "steps"),
+        ({"steps": True}, "steps"),
+        ({"steps": "32"}, "steps"),
+        ({"feature_dim": 0}, "feature_dim"),
+        ({"feature_dim": -1}, "feature_dim"),
+        ({"feature_dim": 2**31}, "feature_dim"),
+        ({"feature_dim": False}, "feature_dim"),
+        ({"seed": -1}, "seed"),
+        ({"seed": 2**31}, "seed"),
+        ({"seed": True}, "seed"),
+    ],
+)
+def test_step6_smoke_rejects_invalid_inputs(kwargs: dict[str, Any], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        run_step6_smoke(**kwargs)
+
+
 def test_step7_dyna_facade_roundtrip_one_step_and_smoke() -> None:
     config = Step7DynaConfig(
         control=Step6DifferentialSARSAConfig(

@@ -41,7 +41,7 @@ _INT32_MAX = 2**31 - 1
 
 
 def _require_real(name: str, value: object) -> Any:
-    if isinstance(value, bool) or not isinstance(value, Real):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Real):
         raise ValueError(f"{name} must be a real number, got {value!r}")
     return value
 
@@ -54,9 +54,9 @@ def _narrow_float32(name: str, value: Any) -> float:
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
     if not bool(np.isfinite(narrowed)):
         raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
-    if type(value) in (int, float) and (bool(narrowed != 0.0) or value == 0):
+    if (type(value) is int or type(value) is float) and (bool(narrowed != 0.0) or value == 0):
         return float(value)
-    return narrowed
+    return float(narrowed)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
@@ -80,7 +80,7 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
     number = int(value)
     if minimum is not None and number < minimum:
@@ -142,7 +142,15 @@ class Step6DifferentialSARSAConfig:
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
-        return asdict(self)
+        return {
+            "n_actions": int(self.n_actions),
+            "q_step_size": float(self.q_step_size),
+            "average_reward_step_size": float(self.average_reward_step_size),
+            "trace_decay": float(self.trace_decay),
+            "epsilon_start": float(self.epsilon_start),
+            "epsilon_end": float(self.epsilon_end),
+            "epsilon_decay_steps": int(self.epsilon_decay_steps),
+        }
 
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> Step6DifferentialSARSAConfig:
@@ -203,6 +211,7 @@ def init_step6_state(
     initial_features: Array,
 ) -> DifferentialSARSAState:
     """Initialize and prime a differential SARSA state."""
+    feature_dim = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
     state = agent.init(feature_dim, key)
     state, _action = agent.start(state, initial_features)
     return cast(DifferentialSARSAState, state)
@@ -236,10 +245,9 @@ def run_step6_smoke(
     seed: int = 0,
 ) -> Step6SmokeResult:
     """Run a tiny deterministic Step 6 integration probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
-    if feature_dim < 1:
-        raise ValueError("feature_dim must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    feature_dim = _require_int("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
 
     cfg = config or Step6DifferentialSARSAConfig()
     agent = make_step6_differential_sarsa_agent(cfg)
