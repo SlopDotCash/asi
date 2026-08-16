@@ -41,7 +41,6 @@ calibration on an external environment or a scientific-result claim.
 from __future__ import annotations
 
 import dataclasses
-import math
 import operator
 from typing import Any, SupportsIndex, cast
 
@@ -96,21 +95,6 @@ def _saturating_counter_sum(left: Array, right: Array) -> Array:
     """Add non-negative int32 counters without overflowing."""
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     return left + jnp.minimum(right, maximum - left)
-
-
-def _positive_finite(name: str, value: float) -> None:
-    if not math.isfinite(value) or value <= 0.0:
-        raise ValueError(f"{name} must be positive and finite")
-
-
-def _unit_interval(name: str, value: float) -> None:
-    if not math.isfinite(value) or not 0.0 <= value < 1.0:
-        raise ValueError(f"{name} must be finite and in [0, 1)")
-
-
-def _positive_integer(name: str, value: int, *, minimum: int = 1) -> None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,11 +157,29 @@ class LearningSignalEstimatorConfig:
                 "change_calibration_steps",
                 self.change_calibration_steps,
                 minimum=2,
+                maximum=_INT32_MAX - 1,
             ),
         )
-        if self.change_calibration_steps >= _INT32_MAX:
-            raise ValueError("change_calibration_steps must fit in int32")
-        _positive_finite("variance_floor", self.variance_floor)
+        positive_fields = (
+            "variance_floor",
+            "change_z_threshold",
+            "change_temperature",
+            "calibration_scale_floor",
+            "max_normalized_residual",
+            "max_input_magnitude",
+            "max_predicted_variance",
+            "max_observed_loss",
+        )
+        for field_name in positive_fields:
+            object.__setattr__(
+                self,
+                field_name,
+                validated_float32_scalar(
+                    field_name,
+                    getattr(self, field_name),
+                    positive=True,
+                ),
+            )
         fast_loss_decay = validated_float32_scalar(
             "fast_loss_decay",
             self.fast_loss_decay,
@@ -204,13 +206,6 @@ class LearningSignalEstimatorConfig:
         object.__setattr__(self, "fast_loss_decay", fast_loss_decay)
         object.__setattr__(self, "slow_loss_decay", slow_loss_decay)
         object.__setattr__(self, "change_decay", change_decay)
-        _positive_finite("change_z_threshold", self.change_z_threshold)
-        _positive_finite("change_temperature", self.change_temperature)
-        _positive_finite("calibration_scale_floor", self.calibration_scale_floor)
-        _positive_finite("max_normalized_residual", self.max_normalized_residual)
-        _positive_finite("max_input_magnitude", self.max_input_magnitude)
-        _positive_finite("max_predicted_variance", self.max_predicted_variance)
-        _positive_finite("max_observed_loss", self.max_observed_loss)
         if self.variance_floor > self.max_predicted_variance:
             raise ValueError("variance_floor must not exceed max_predicted_variance")
 
@@ -228,9 +223,11 @@ class LearningSignalEstimatorConfig:
         config: dict[str, Any],
     ) -> LearningSignalEstimatorConfig:
         """Reconstruct a configuration and reject a mismatched type marker."""
+        if type(config) is not dict:
+            raise ValueError("config must be an actual dict")
         payload = dict(config)
         type_name = payload.pop("type", "LearningSignalEstimatorConfig")
-        if type_name != "LearningSignalEstimatorConfig":
+        if type(type_name) is not str or type_name != "LearningSignalEstimatorConfig":
             raise ValueError("type must be LearningSignalEstimatorConfig")
         development_only = payload.pop("development_only", True)
         if development_only is not True:
