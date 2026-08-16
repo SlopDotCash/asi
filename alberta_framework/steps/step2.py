@@ -24,6 +24,7 @@ from typing import Any, Literal, cast
 
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
@@ -104,6 +105,17 @@ _STEP2_MEMORY_CONFIG_KEYS = frozenset(
     }
 )
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+)
 
 
 def _require_exact_keys(
@@ -197,8 +209,7 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+    if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(f"{name} must be an integer, got {value!r}")
     try:
         number = int(cast(Integral, value))
@@ -222,7 +233,7 @@ def _validate_step2_kernel_config(config: Step2KernelConfig) -> None:
     n_heads = _require_int(
         "n_heads", config.n_heads, minimum=1, maximum=_INT32_MAX
     )
-    if not isinstance(config.hidden_sizes, tuple):
+    if type(config.hidden_sizes) is not tuple:
         raise ValueError(
             f"hidden_sizes must be a tuple of integers, got {config.hidden_sizes!r}"
         )
@@ -233,7 +244,7 @@ def _validate_step2_kernel_config(config: Step2KernelConfig) -> None:
                 "hidden_sizes element", h, minimum=1, maximum=_INT32_MAX
             )
         )
-    if not isinstance(config.stream, str) or config.stream not in _VALID_STEP2_STREAMS:
+    if type(config.stream) is not str or config.stream not in _VALID_STEP2_STREAMS:
         raise ValueError(
             f"unknown Step 2 stream field {config.stream!r}; "
             f"expected one of {sorted(_VALID_STEP2_STREAMS)}"
@@ -241,7 +252,7 @@ def _validate_step2_kernel_config(config: Step2KernelConfig) -> None:
     if config.stream == "polynomial" and feature_dim < 3:
         raise ValueError("feature_dim must be at least 3 for the polynomial stream")
     if (
-        not isinstance(config.readout_mode, str)
+        type(config.readout_mode) is not str
         or config.readout_mode not in _VALID_STEP2_READOUT_MODES
     ):
         raise ValueError(
@@ -249,7 +260,7 @@ def _validate_step2_kernel_config(config: Step2KernelConfig) -> None:
             f"expected one of {sorted(_VALID_STEP2_READOUT_MODES)}"
         )
     if (
-        not isinstance(config.loss_normalization, str)
+        type(config.loss_normalization) is not str
         or config.loss_normalization not in _VALID_STEP2_LOSS_NORMALIZATIONS
     ):
         raise ValueError(
@@ -276,7 +287,7 @@ def _validate_step2_strict_digit_config(config: Step2StrictDigitReadoutConfig) -
     n_heads = _require_int(
         "n_heads", config.n_heads, minimum=1, maximum=_INT32_MAX
     )
-    if not isinstance(config.hidden_sizes, tuple):
+    if type(config.hidden_sizes) is not tuple:
         raise ValueError(
             f"hidden_sizes must be a tuple of integers, got {config.hidden_sizes!r}"
         )

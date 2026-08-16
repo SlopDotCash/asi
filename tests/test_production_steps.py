@@ -1061,6 +1061,53 @@ def test_step2_strict_digit_config_canonical_json_roundtrip() -> None:
     assert restored == config
 
 
+def test_step2_configs_reject_hostile_integral_subclasses() -> None:
+    class LieInt(int):
+        def __int__(self) -> int:
+            return 4
+
+    for config_type, field in (
+        (Step2KernelConfig, "feature_dim"),
+        (Step2KernelConfig, "n_heads"),
+        (Step2KernelConfig, "context_length"),
+        (Step2StrictDigitReadoutConfig, "n_heads"),
+        (Step2MemoryConfig, "feature_dim"),
+        (Step2MemoryConfig, "n_classes"),
+        (Step2MemoryConfig, "slots_per_class"),
+    ):
+        with pytest.raises(ValueError, match=field):
+            config_type(**{field: LieInt(-1)})
+
+
+def test_step2_configs_require_actual_tuple_containers() -> None:
+    class TupleSpoof(list[int]):
+        @property
+        def __class__(self) -> type[tuple]:
+            return tuple
+
+    for config_type in (Step2KernelConfig, Step2StrictDigitReadoutConfig):
+        with pytest.raises(ValueError, match="hidden_sizes"):
+            config_type(hidden_sizes=TupleSpoof([8]))
+
+
+@pytest.mark.parametrize("field", ["stream", "readout_mode", "loss_normalization"])
+def test_step2_kernel_requires_actual_string_discriminators(field: str) -> None:
+    class StringStandIn:
+        def __eq__(self, other: object) -> bool:
+            return True
+
+        def __hash__(self) -> int:
+            values = {
+                "stream": "polynomial",
+                "readout_mode": "linear_mse",
+                "loss_normalization": "target_structure",
+            }
+            return hash(values[field])
+
+    with pytest.raises(ValueError, match=field):
+        Step2KernelConfig(**{field: StringStandIn()})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
