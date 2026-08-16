@@ -30,9 +30,10 @@ completion of the Alberta Plan.
 
 from __future__ import annotations
 
+import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -64,6 +65,31 @@ CONDITION_NAMES = (
 # their outcomes.
 DEVELOPMENT_SEEDS = tuple(range(30))
 EVIDENCE_SEEDS = tuple(range(30, 60))
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 @dataclass(frozen=True)
@@ -111,22 +137,32 @@ class DecisionFidelityConfig:
     bootstrap_seed: int = 2_026_073_001
 
     def __post_init__(self) -> None:
-        if self.phase_steps < 16:
-            raise ValueError("phase_steps must be at least 16")
-        if self.horizon < 3:
-            raise ValueError("horizon must be at least 3")
-        if self.probes_per_domain < 2:
-            raise ValueError("probes_per_domain must be at least 2")
+        phase_steps = _require_int32("phase_steps", self.phase_steps, minimum=16)
+        horizon = _require_int32("horizon", self.horizon, minimum=3)
+        probes_per_domain = _require_int32("probes_per_domain", self.probes_per_domain, minimum=2)
+        projection_dim = _require_int32("projection_dim", self.projection_dim, minimum=1)
+        bins = _require_int32("bins", self.bins, minimum=2)
+        bootstrap_resamples = _require_int32(
+            "bootstrap_resamples", self.bootstrap_resamples, minimum=1000
+        )
+        bootstrap_seed = _require_int32(
+            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=2**32 - 1
+        )
+
+        object.__setattr__(self, "phase_steps", phase_steps)
+        object.__setattr__(self, "horizon", horizon)
+        object.__setattr__(self, "probes_per_domain", probes_per_domain)
+        object.__setattr__(self, "projection_dim", projection_dim)
+        object.__setattr__(self, "bins", bins)
+        object.__setattr__(self, "bootstrap_resamples", bootstrap_resamples)
+        object.__setattr__(self, "bootstrap_seed", bootstrap_seed)
+
         if len(self.menu_amplitudes) < 3:
             raise ValueError("menu_amplitudes must contain at least three choices")
         if len(set(self.menu_amplitudes)) != len(self.menu_amplitudes):
             raise ValueError("menu_amplitudes must be unique")
         if not all(np.isfinite(self.menu_amplitudes)):
             raise ValueError("menu_amplitudes must be finite")
-        if self.projection_dim <= 0:
-            raise ValueError("projection_dim must be positive")
-        if self.bins < 2:
-            raise ValueError("bins must be at least 2")
         if self.ridge <= 0.0:
             raise ValueError("ridge must be positive")
         if self.prediction_clip <= 0.0:
@@ -135,12 +171,8 @@ class DecisionFidelityConfig:
             raise ValueError("state_bound must be positive")
         if self.action_cost < 0.0:
             raise ValueError("action_cost must be non-negative")
-        if self.bootstrap_resamples < 1_000:
-            raise ValueError("bootstrap_resamples must be at least 1000")
         if not 0.0 < self.confidence_level < 1.0:
             raise ValueError("confidence_level must lie in (0, 1)")
-        if not 0 <= self.bootstrap_seed < 2**32:
-            raise ValueError("bootstrap_seed must lie in [0, 2**32)")
 
 
 @dataclass(frozen=True)

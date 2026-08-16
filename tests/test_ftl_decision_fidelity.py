@@ -219,3 +219,35 @@ def test_invalid_decision_configuration_is_rejected(
 def test_invalid_seed_schedules_are_rejected(seeds: tuple[int, ...]) -> None:
     with pytest.raises(ValueError):
         run_ftl_decision_fidelity_evaluation(seeds=seeds)
+
+
+def test_decision_fidelity_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="phase_steps"):
+        DecisionFidelityConfig(phase_steps=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="phase_steps"):
+        DecisionFidelityConfig(phase_steps=180.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="horizon"):
+        DecisionFidelityConfig(horizon=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="projection_dim"):
+        DecisionFidelityConfig(projection_dim=12.5)  # type: ignore[arg-type]
+
+
+def test_decision_fidelity_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    cfg = DecisionFidelityConfig(
+        phase_steps=np.int32(180),
+        horizon=np.int64(6),
+        probes_per_domain=np.uint16(12),
+        projection_dim=np.int32(12),
+        bins=np.uint8(7),
+        bootstrap_resamples=np.int64(5_000),
+        bootstrap_seed=np.uint32(2_026_073_001),
+    )
+    assert type(cfg.phase_steps) is int
+    assert type(cfg.horizon) is int
+    assert type(cfg.probes_per_domain) is int
+    assert type(cfg.projection_dim) is int
+    assert type(cfg.bins) is int
+    assert type(cfg.bootstrap_resamples) is int
+    assert type(cfg.bootstrap_seed) is int
+    assert cfg.phase_steps == 180
+    assert cfg.horizon == 6
