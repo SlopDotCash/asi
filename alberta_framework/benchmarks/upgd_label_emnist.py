@@ -446,6 +446,13 @@ def resolve_hyperparameters(
         unknown = set(overrides) - set(merged)
         if unknown:
             raise ValueError(f"unknown hyperparameters for {learner}: {sorted(unknown)}")
+        for name, value in overrides.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int | float)
+                or not math.isfinite(value)
+            ):
+                raise ValueError(f"hyperparameter {name!r} must be finite (got {value!r})")
         merged.update({name: float(value) for name, value in overrides.items()})
     return merged
 
