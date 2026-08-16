@@ -270,6 +270,32 @@ REPRODUCTION_GAP_THRESHOLD = 0.02
 
 _PLASTICITY_LOSS_FLOOR = 1e-8
 
+_INT32_MAX: int = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int = 1) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer, got {value!r}")
+    from typing import cast
+
+    number = int(cast(int, value))
+    if number < minimum or number > _INT32_MAX:
+        raise ValueError(f"{name} must be in [{minimum}, {_INT32_MAX}], got {value!r}")
+    return number
+
 
 @dataclass(frozen=True)
 class IPMNISTConfig:
@@ -296,9 +322,8 @@ class IPMNISTConfig:
 
     def __post_init__(self) -> None:
         for name in ("n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes"):
-            value = getattr(self, name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+            value = _require_int32(name, getattr(self, name), minimum=1)
+            object.__setattr__(self, name, value)
 
     @property
     def n_steps(self) -> int:
@@ -988,7 +1013,7 @@ def load_mnist_train(data_home: Path | None = None) -> tuple[np.ndarray, np.ndar
     matches ``ToTensor`` + ``Normalize((0.5,), (0.5,))``.
     """
     try:
-        from sklearn.datasets import fetch_openml  # type: ignore[import-untyped]
+        from sklearn.datasets import fetch_openml
     except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("scikit-learn is required to load OpenML MNIST") from exc
 
