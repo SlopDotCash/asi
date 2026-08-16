@@ -65,7 +65,7 @@ from __future__ import annotations
 
 import functools
 import time
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax
@@ -103,6 +103,31 @@ _NUMPY_INTEGER_SCALAR_TYPES = frozenset(
         np.ulonglong,
     )
 )
+
+_INT32_MAX: int = 2**31 - 1
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+)
+
+
+def _require_hidden_width(name: str, value: object) -> int:
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or actual_type not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [1, {_INT32_MAX}]")
+    number = int(cast(int, value))
+    if not 1 <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [1, {_INT32_MAX}], got {value!r}")
+    return number
 
 # =============================================================================
 # Config / state
@@ -772,6 +797,13 @@ class CBPMultiHeadMLPLearner:
                 hidden-unit utility diagnostics.
         """
         self._n_heads = n_heads
+        if type(hidden_sizes) is not tuple:
+            raise ValueError(
+                f"hidden_sizes must be an actual tuple, got {type(hidden_sizes).__name__}"
+            )
+        hidden_sizes = tuple(
+            _require_hidden_width(f"hidden_sizes[{i}]", v) for i, v in enumerate(hidden_sizes)
+        )
         self._hidden_sizes = hidden_sizes
         self._cbp_config = cbp_config or ContinualBackpropConfig()
         self._sparsity = sparsity
@@ -859,7 +891,16 @@ class CBPMultiHeadMLPLearner:
 
         per_head_gl = config.pop("per_head_gamma_lamda", None)
         if per_head_gl is not None:
-            per_head_gl = tuple(per_head_gl)
+            if type(per_head_gl) is not list:
+                raise ValueError(
+                    f"per_head_gamma_lamda must be a list, got {type(per_head_gl).__name__}"
+                )
+            per_head_gl = tuple(
+                validated_float32_scalar(
+                    f"per_head_gamma_lamda[{i}]", v, lower=0.0, upper=1.0
+                )
+                for i, v in enumerate(per_head_gl)
+            )
 
         trace_mode_str = config.pop("trace_mode", None)
         trace_mode = (
@@ -868,9 +909,16 @@ class CBPMultiHeadMLPLearner:
             else TraceMode.ACCUMULATING
         )
 
+        raw_hidden = config.pop("hidden_sizes")
+        if type(raw_hidden) is not list:
+            raise ValueError(f"hidden_sizes must be a list, got {type(raw_hidden).__name__}")
+        hidden_sizes = tuple(
+            _require_hidden_width(f"hidden_sizes[{i}]", v) for i, v in enumerate(raw_hidden)
+        )
+
         return cls(
             n_heads=config.pop("n_heads"),
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=hidden_sizes,
             cbp_config=cbp_config,
             optimizer=optimizer,
             bounder=bounder,
