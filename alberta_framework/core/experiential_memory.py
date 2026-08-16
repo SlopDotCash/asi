@@ -650,13 +650,28 @@ class ExperientialMemory:
 
     def _canonical_entry(self, entry: ExperientialMemoryEntry) -> ExperientialMemoryEntry:
         cfg = self._config
+        observation = jnp.asarray(entry.observation, dtype=jnp.float32)
+        if observation.shape != (cfg.observation_dim,):
+            raise ValueError(
+                f"observation must have shape ({cfg.observation_dim},) "
+                f"got {observation.shape}"
+            )
+        key = jnp.asarray(entry.key, dtype=jnp.float32)
+        if key.shape != (cfg.key_dim,):
+            raise ValueError(f"key must have shape ({cfg.key_dim},) got {key.shape}")
+        action = jnp.asarray(entry.action, dtype=jnp.float32)
+        if action.shape != (cfg.action_dim,):
+            raise ValueError(f"action must have shape ({cfg.action_dim},) got {action.shape}")
+        outcome = jnp.asarray(entry.outcome, dtype=jnp.float32)
+        if outcome.shape != (cfg.outcome_dim,):
+            raise ValueError(
+                f"outcome must have shape ({cfg.outcome_dim},) got {outcome.shape}"
+            )
         return ExperientialMemoryEntry(
-            observation=jnp.asarray(entry.observation, dtype=jnp.float32).reshape(
-                (cfg.observation_dim,)
-            ),
-            key=jnp.asarray(entry.key, dtype=jnp.float32).reshape((cfg.key_dim,)),
-            action=jnp.asarray(entry.action, dtype=jnp.float32).reshape((cfg.action_dim,)),
-            outcome=jnp.asarray(entry.outcome, dtype=jnp.float32).reshape((cfg.outcome_dim,)),
+            observation=observation,
+            key=key,
+            action=action,
+            outcome=outcome,
             reward=jnp.asarray(entry.reward, dtype=jnp.float32).reshape(()),
             uncertainty=jnp.asarray(entry.uncertainty, dtype=jnp.float32).reshape(()),
             uncertainty_available=jnp.asarray(
