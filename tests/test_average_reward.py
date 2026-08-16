@@ -803,3 +803,104 @@ def test_differential_sarsa_config_scalar_validation() -> None:
     assert type(cfg.epsilon_decay_steps) is int
     assert cfg.n_actions == 3
     assert cfg.epsilon_decay_steps == 100
+
+
+_NUMPY_INTEGER_TYPES = tuple(dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP"))
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_average_reward_configs_canonicalize_all_numpy_integer_families(
+    integer_type: type[np.integer],
+) -> None:
+    actor = AverageRewardHordeActorCriticConfig(
+        n_actions=integer_type(2),
+        hidden_sizes=(integer_type(3),),
+    )
+    sarsa = DifferentialSARSAConfig(
+        n_actions=integer_type(2),
+        epsilon_decay_steps=integer_type(3),
+    )
+
+    assert type(actor.n_actions) is int
+    assert type(actor.hidden_sizes[0]) is int
+    assert type(sarsa.n_actions) is int
+    assert type(sarsa.epsilon_decay_steps) is int
+
+
+def test_average_reward_configs_reject_hostile_integer_and_container_types() -> None:
+    class HostileInt(int):
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    class TupleSubclass(tuple):
+        pass
+
+    with pytest.raises(ValueError, match="n_actions"):
+        AverageRewardHordeActorCriticConfig(n_actions=HostileInt(2))
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        AverageRewardHordeActorCriticConfig(n_actions=2, hidden_sizes=TupleSubclass((3,)))
+    payload = AverageRewardHordeActorCriticConfig(n_actions=2).to_config()
+    payload["hidden_sizes"] = "16"
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        AverageRewardHordeActorCriticConfig.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    ("config_type", "field", "value"),
+    (
+        (AverageRewardHordeActorCriticConfig, "temperature", 0.0),
+        (AverageRewardHordeActorCriticConfig, "epsilon", 1.0 + 1.0e-10),
+        (AverageRewardHordeActorCriticConfig, "critic_step_size", 1.0e100),
+        (DifferentialSARSAConfig, "q_step_size", -1.0),
+        (DifferentialSARSAConfig, "trace_decay", 1.0 + 1.0e-10),
+        (DifferentialSARSAConfig, "epsilon_start", 1.0e100),
+        (DifferentialSARSAConfig, "use_bias", np.bool_(True)),
+    ),
+)
+def test_average_reward_configs_reject_invalid_float32_sink_values(
+    config_type: type,
+    field: str,
+    value: object,
+) -> None:
+    kwargs = {"n_actions": 2, field: value}
+    with pytest.raises(ValueError, match=field):
+        config_type(**kwargs)
+
+
+def test_average_reward_configs_canonicalize_float32_sink_values() -> None:
+    actor = AverageRewardHordeActorCriticConfig(
+        n_actions=2,
+        critic_step_size=np.float64(0.2),
+    )
+    sarsa = DifferentialSARSAConfig(
+        n_actions=2,
+        epsilon_start=np.float64(0.2),
+    )
+
+    assert type(actor.critic_step_size) is float
+    assert actor.critic_step_size == float(np.float32(0.2))
+    assert type(sarsa.epsilon_start) is float
+    assert sarsa.epsilon_start == float(np.float32(0.2))
+
+
+def test_average_reward_actor_preflights_state_before_allocation() -> None:
+    last_legal_n_actions = (2**29 - 1 - 14) // 10
+    AverageRewardHordeActorCriticConfig(
+        n_actions=last_legal_n_actions,
+        hidden_sizes=(1,),
+    )
+    with pytest.raises(ValueError, match="state bytes"):
+        AverageRewardHordeActorCriticConfig(
+            n_actions=last_legal_n_actions + 1,
+            hidden_sizes=(1,),
+        )
+
+
+def test_differential_sarsa_preflights_state_before_allocation() -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=1))
+    last_legal_feature_dim = (2**29 - 1 - 10) // 3
+
+    with pytest.raises(ValueError, match="state bytes"):
+        agent.init(last_legal_feature_dim + 1, jr.key(0))
+    with pytest.raises(ValueError, match="feature_dim"):
+        agent.init(True, jr.key(0))  # type: ignore[arg-type]

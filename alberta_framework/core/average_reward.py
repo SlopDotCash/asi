@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
 import operator
 import time
 from collections.abc import Mapping
@@ -38,6 +37,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
 from alberta_framework.core.optimizers import Autostep, AutostepParamState, optimizer_from_config
@@ -77,6 +77,43 @@ def _validate_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
     if type(hidden_sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
     return tuple(_require_int32("hidden_sizes element", size, minimum=1) for size in hidden_sizes)
+
+
+def _decode_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
+    if type(hidden_sizes) not in (list, tuple):
+        raise ValueError("hidden_sizes must be an actual list or tuple")
+    sequence = cast(list[object] | tuple[object, ...], hidden_sizes)
+    return _validate_hidden_sizes(tuple(sequence))
+
+
+def _require_state_resources(name: str, *, scalars: int, nbytes: int) -> None:
+    if scalars > _INT32_MAX:
+        raise ValueError(f"{name} state scalars must fit signed int32")
+    if nbytes > _INT32_MAX:
+        raise ValueError(f"{name} state bytes must fit signed int32")
+
+
+def _preflight_actor_state(n_actions: int, observation_dim: int, actor_dim: int) -> None:
+    actor_parameters = n_actions * actor_dim
+    float32_scalars = 4 * actor_parameters + 6 * n_actions + observation_dim + 8
+    scalar_count = float32_scalars + 5
+    _require_state_resources(
+        "average-reward actor-critic",
+        scalars=scalar_count,
+        nbytes=4 * scalar_count,
+    )
+
+
+def _preflight_differential_sarsa_state(n_actions: int, feature_dim: int) -> None:
+    parameters = n_actions * feature_dim
+    float32_scalars = 2 * parameters + 2 * n_actions + feature_dim + 2
+    # Two int32 leaves, a two-word RNG key, and a two-word lifetime counter.
+    scalar_count = float32_scalars + 6
+    _require_state_resources(
+        "differential SARSA",
+        scalars=scalar_count,
+        nbytes=4 * scalar_count,
+    )
 
 
 DIFFERENTIAL_SARSA_STATE_SCHEMA = "alberta.differential-sarsa-state.v2"
@@ -379,18 +416,25 @@ class AverageRewardHordeActorCriticConfig:
             "hidden_sizes",
             _validate_hidden_sizes(self.hidden_sizes),
         )
-        if self.critic_step_size < 0.0:
-            raise ValueError("critic_step_size must be non-negative")
-        if self.average_reward_step_size < 0.0:
-            raise ValueError("average_reward_step_size must be non-negative")
-        if self.temperature <= 0.0:
-            raise ValueError("temperature must be positive")
-        if not 0.0 <= self.epsilon <= 1.0:
-            raise ValueError("epsilon must be in [0, 1]")
-        if self.actor_update_clip <= 0.0:
-            raise ValueError("actor_update_clip must be positive")
-        if self.logit_clip <= 0.0:
-            raise ValueError("logit_clip must be positive")
+        for name in ("critic_step_size", "average_reward_step_size"):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name), lower=0.0),
+            )
+        for name in ("temperature", "actor_update_clip", "logit_clip"):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name), positive=True),
+            )
+        object.__setattr__(
+            self,
+            "epsilon",
+            validated_float32_scalar("epsilon", self.epsilon, lower=0.0, upper=1.0),
+        )
+        if self.hidden_sizes:
+            _preflight_actor_state(self.n_actions, 1, self.hidden_sizes[-1])
 
     def to_config(self) -> dict[str, Any]:
         """Serialize this config to a dictionary."""
@@ -414,7 +458,7 @@ class AverageRewardHordeActorCriticConfig:
         """Reconstruct a config from :meth:`to_config` output."""
         config = dict(config)
         config.pop("type", None)
-        config["hidden_sizes"] = tuple(config["hidden_sizes"])
+        config["hidden_sizes"] = _decode_hidden_sizes(config["hidden_sizes"])
         return cls(**config)
 
 
@@ -573,11 +617,11 @@ class AverageRewardHordeActorCriticAgent:
 
     def init(self, observation_dim: int, key: Array) -> AverageRewardHordeActorCriticState:
         """Initialize critic and actor state."""
-        if observation_dim < 1:
-            raise ValueError("observation_dim must be positive")
+        observation_dim = _require_int32("observation_dim", observation_dim, minimum=1)
+        actor_dim = self._config.hidden_sizes[-1] if self._config.hidden_sizes else observation_dim
+        _preflight_actor_state(self._config.n_actions, observation_dim, actor_dim)
         key, critic_key = jr.split(key)
         critic_state = self._critic.init(observation_dim, critic_key)
-        actor_dim = self._config.hidden_sizes[-1] if self._config.hidden_sizes else observation_dim
         actor_opt_w = self._actor_optimizer.init_for_shape((self._config.n_actions, actor_dim))
         actor_opt_b = self._actor_optimizer.init_for_shape((self._config.n_actions,))
         initial_policy = jnp.full(
@@ -1622,18 +1666,26 @@ class DifferentialSARSAConfig:
             "epsilon_decay_steps",
             _require_int32("epsilon_decay_steps", self.epsilon_decay_steps, minimum=0),
         )
-        if not math.isfinite(self.q_step_size) or self.q_step_size < 0.0:
-            raise ValueError("q_step_size must be finite and non-negative")
-        if not math.isfinite(self.average_reward_step_size) or self.average_reward_step_size < 0.0:
-            raise ValueError("average_reward_step_size must be finite and non-negative")
-        if not math.isfinite(self.trace_decay) or not 0.0 <= self.trace_decay <= 1.0:
-            raise ValueError("trace_decay must be finite and lie in [0, 1]")
-        if not math.isfinite(self.epsilon_start) or not 0.0 <= self.epsilon_start <= 1.0:
-            raise ValueError("epsilon_start must be finite and lie in [0, 1]")
-        if not math.isfinite(self.epsilon_end) or not 0.0 <= self.epsilon_end <= 1.0:
-            raise ValueError("epsilon_end must be finite and lie in [0, 1]")
-        if not isinstance(self.use_bias, bool):
+        for name in ("q_step_size", "average_reward_step_size"):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name), lower=0.0),
+            )
+        for name in ("trace_decay", "epsilon_start", "epsilon_end"):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(
+                    name,
+                    getattr(self, name),
+                    lower=0.0,
+                    upper=1.0,
+                ),
+            )
+        if type(self.use_bias) is not bool:
             raise ValueError("use_bias must be boolean")
+        object.__setattr__(self, "use_bias", bool(self.use_bias))
 
     def to_config(self) -> dict[str, Any]:
         """Serialize this config to a dictionary."""
@@ -1764,8 +1816,9 @@ class DifferentialSARSAAgent:
         average_reward: float = 0.0,
     ) -> DifferentialSARSAState:
         """Initialize Q weights, traces, reward-rate estimate, and RNG."""
-        if feature_dim < 1:
-            raise ValueError("feature_dim must be positive")
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        _preflight_differential_sarsa_state(self._config.n_actions, feature_dim)
+        average_reward = validated_float32_scalar("average_reward", average_reward)
         cfg = self._config
         zeros_q = jnp.zeros((cfg.n_actions, feature_dim), dtype=jnp.float32)
         zeros_bias = jnp.zeros((cfg.n_actions,), dtype=jnp.float32)
