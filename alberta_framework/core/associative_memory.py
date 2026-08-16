@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import functools
 import math
+import operator
 from dataclasses import asdict, dataclass
-from numbers import Integral, Real
-from typing import Any, Literal, cast
+from numbers import Real
+from typing import Any, Literal, SupportsIndex, cast
 
 import chex
 import jax
@@ -33,20 +34,47 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX: int = 2**31 - 1
+_UINT32_MAX: int = 4294967295
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
+
+
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
 
 
 def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
     """Return the original real, exact ratio, and finite binary32 rounding."""
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
+        raise ValueError(f"{name} must be a real number")
     real = cast(Real, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
-    except (FloatingPointError, OverflowError, TypeError, ValueError):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}") from None
+    except Exception:
+        raise ValueError(f"{name} must narrow to a finite float32") from None
     if not math.isfinite(narrowed):
-        raise ValueError(f"{name} must narrow to a finite float32, got {value!r}")
+        raise ValueError(f"{name} must narrow to a finite float32")
     return real, numerator, denominator, narrowed
 
 
@@ -76,7 +104,7 @@ def _require_unit_interval(name: str, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+        raise ValueError(f"{name} must be in [0, 1], got invalid value")
     return canonical_float32_storage(real, narrowed)
 
 
@@ -90,21 +118,21 @@ def _require_half_open_unit_interval(name: str, value: object) -> float:
         or narrowed <= 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{name} must be in (0, 1], got {value!r}")
+        raise ValueError(f"{name} must be in (0, 1], got invalid value")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
     real, numerator, _, narrowed = finite_real_and_float32(name, value)
     if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{name} must be non-negative, got invalid value")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_positive_real(name: str, value: object) -> float:
     real, numerator, _, narrowed = finite_real_and_float32(name, value)
     if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
-        raise ValueError(f"{name} must be positive, got {value!r}")
+        raise ValueError(f"{name} must be positive, got invalid value")
     return canonical_float32_storage(real, narrowed)
 
 
@@ -115,18 +143,17 @@ def _require_int(
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(cast(Integral, value))
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{name} must be positive, got {value!r}")
+            raise ValueError(f"{name} must be positive, got invalid value")
         if minimum == 0:
-            raise ValueError(f"{name} must be non-negative, got {value!r}")
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+            raise ValueError(f"{name} must be non-negative, got invalid value")
+        raise ValueError(f"{name} must be >= {minimum}, got invalid value")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}, got invalid value")
     return number
 
 
@@ -286,15 +313,13 @@ def _validate_config(config: AssociativeMemoryConfig) -> None:
     )
     feature_family = config.feature_family
     if type(feature_family) is not str:
-        raise ValueError(
-            f"feature_family must be an actual string, got {feature_family!r}"
-        )
+        raise ValueError("feature_family must be an actual string")
     if feature_family not in {
         "position_token",
         "suffix_pair",
         "token_suffix_pair",
     }:
-        raise ValueError(f"unknown feature_family: {feature_family!r}")
+        raise ValueError("unknown feature_family")
     canonical_feature_family = str(feature_family)
     max_features = _require_int(
         "max_features", config.max_features, minimum=1, maximum=_INT32_MAX
@@ -310,7 +335,7 @@ def _validate_config(config: AssociativeMemoryConfig) -> None:
     logit_scale = _require_positive_real("logit_scale", config.logit_scale)
     if type(config.normalize_by_weight) is not bool:
         raise ValueError(
-            f"normalize_by_weight must be a bool, got {config.normalize_by_weight!r}"
+            "normalize_by_weight must be a bool"
         )
     for name in (
         "adaptive_feature_family",
@@ -319,7 +344,7 @@ def _validate_config(config: AssociativeMemoryConfig) -> None:
     ):
         val = getattr(config, name)
         if type(val) is not bool:
-            raise ValueError(f"{name} must be a boolean, got {val!r}")
+            raise ValueError(f"{name} must be a boolean")
         object.__setattr__(config, name, bool(val))
     scope_lr = _require_nonnegative_real("scope_lr", config.scope_lr)
     budget_lr = _require_nonnegative_real("budget_lr", config.budget_lr)
@@ -354,6 +379,24 @@ def _validate_config(config: AssociativeMemoryConfig) -> None:
     object.__setattr__(config, "initial_budget_fraction", initial_budget_fraction)
     object.__setattr__(config, "min_effective_budget", min_effective_budget)
     object.__setattr__(config, "scope_logit_clip", scope_logit_clip)
+    if max_features * vocab_size > _INT32_MAX:
+        raise ValueError("AssociativeMemoryConfig dimensions must fit signed int32")
+    if max_features * block_size > _INT32_MAX:
+        raise ValueError("AssociativeMemoryConfig dimensions must fit signed int32")
+    total_values_scalars = max_features * vocab_size
+    fixed_state_scalars = (
+        8 * max_features + vocab_size + suffix_length + 5
+    )
+    _require_float32_resource(
+        "AssociativeMemoryConfig state",
+        vector_scalars=total_values_scalars,
+        fixed_scalars=fixed_state_scalars,
+    )
+    persistent_bytes = 4 * (total_values_scalars + fixed_state_scalars)
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("AssociativeMemoryConfig state byte count must fit signed int32")
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("associative memory allocation exceeds uint32 byte accounting")
 
 
 def _softmax(logits: Array) -> Array:
