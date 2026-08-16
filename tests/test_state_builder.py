@@ -1428,3 +1428,23 @@ def test_derived_preflights_do_not_bound_host_only_budget_values() -> None:
         "state_scalars": 2**33,
         "state_bytes": 2**35,
     }
+
+
+def test_online_builder_init_rejects_nonfinite_generated_parameters() -> None:
+    config = OnlineGatedStateBuilderConfig(
+        observation_dim=2,
+        initialization_scale=np.finfo(np.float32).max,
+    )
+    builder = OnlineGatedStateBuilder(config)
+
+    with pytest.raises(ValueError, match="initialization_scale"):
+        builder.init(jr.key(0))
+
+
+def test_online_builder_init_returns_a_valid_state_at_normal_scale() -> None:
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(observation_dim=2, initialization_scale=0.2)
+    )
+    state = builder.init(jr.key(0))
+
+    assert bool(builder.state_valid(state))

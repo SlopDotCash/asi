@@ -1469,6 +1469,10 @@ class OnlineGatedStateBuilder:
                 candidate_bias,
             ]
         )
+        if not bool(jnp.all(jnp.isfinite(parameters))):
+            raise ValueError(
+                "initialization_scale produced non-finite parameters for the supplied key"
+            )
         return OnlineGatedStateBuilderState(
             parameters=parameters,
             hidden=jnp.zeros((hidden_dim,), dtype=jnp.float32),
