@@ -391,18 +391,6 @@ class OffPolicyTDLinearLearner:
             [squared_td, td_error, rho_clipped, alpha, mean_e],
             dtype=jnp.float32,
         )
-        new_state = jax.lax.cond(
-            update_applied,
-            lambda: proposed_state,
-            lambda: state,
-        )
-
-        squared_td = td_error**2
-        mean_e = jnp.mean(jnp.abs(new_state.eligibility_traces))
-        metrics = jnp.array(
-            [squared_td, td_error, rho_clipped, alpha, mean_e],
-            dtype=jnp.float32,
-        )
 
         return OffPolicyTDUpdateResult(  # type: ignore[call-arg]
             state=new_state,
