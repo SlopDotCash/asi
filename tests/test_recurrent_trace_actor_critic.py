@@ -2294,3 +2294,50 @@ def test_rtac_config_accepts_and_canonicalizes_numpy_integers() -> None:
     assert cfg.hidden_size == 64
     assert cfg.encoder_width == 32
     assert cfg.output_width == 32
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("gamma", "actor_lamda", "critic_lamda", "sparsity", "beta2"),
+)
+def test_float32_endpoints_check_exact_numpy_value(field: str) -> None:
+    above_one = np.nextafter(np.longdouble(1.0), np.longdouble(2.0))
+    with pytest.raises(ValueError, match=field):
+        RecurrentTraceActorCriticConfig(n_actions=2, **{field: above_one})
+
+
+@pytest.mark.parametrize("code", ("e", "f", "d", "g"))
+def test_config_canonicalizes_supported_numpy_float_families(code: str) -> None:
+    value = np.dtype(code).type(0.5)
+    config = RecurrentTraceActorCriticConfig(n_actions=2, gamma=value)
+    assert type(config.gamma) is float
+    assert config.gamma == 0.5
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("n_actions", np.int64(2)),
+        ("gamma", np.float32(0.5)),
+        ("normalize_rewards", np.bool_(True)),
+        ("gamma", 1),
+        ("n_actions", 2.0),
+    ),
+)
+def test_from_config_requires_exact_json_scalar_types(field: str, value: object) -> None:
+    payload = RecurrentTraceActorCriticConfig(n_actions=2).to_config()
+    payload[field] = value
+    with pytest.raises(ValueError, match="exact JSON scalar types"):
+        RecurrentTraceActorCriticConfig.from_config(payload)
+
+
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_init_accepts_supported_numpy_integer_feature_dimensions(code: str) -> None:
+    config = RecurrentTraceActorCriticConfig(
+        n_actions=2,
+        hidden_size=2,
+        encoder_width=2,
+        output_width=2,
+    )
+    state = RecurrentTraceActorCriticAgent(config).init(np.dtype(code).type(3), jr.key(1))
+    assert state.last_observation.shape == (3,)

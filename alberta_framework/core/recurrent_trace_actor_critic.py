@@ -267,12 +267,22 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
-def _validated_config_float(name: str, value: object) -> float:
+def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) is bool or type(value) is np.bool_:
         raise ValueError(f"{name} must be numeric, not bool")
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
-    normalized = validated_float32_scalar(name, value)
+    host_value = float(cast(Any, value))
+    magnitude = abs(host_value)
+    if (
+        not math.isfinite(host_value)
+        or magnitude > _FLOAT32_MAX
+        or (magnitude != 0.0 and magnitude < _FLOAT32_TINY)
+    ):
+        raise ValueError(
+            f"{name} must be exactly zero or representable as a finite normal float32"
+        )
+    normalized = validated_float32_scalar(name, value, **bounds)
     _validate_normal_float32_config_value(name, normalized)
     return normalized
 
@@ -426,32 +436,32 @@ class RecurrentTraceActorCriticConfig:
         object.__setattr__(self, "encoder_width", encoder_width)
         object.__setattr__(self, "output_width", output_width)
 
-        numeric_values = (
-            ("gamma", self.gamma),
-            ("actor_lamda", self.actor_lamda),
-            ("critic_lamda", self.critic_lamda),
-            ("actor_alpha", self.actor_alpha),
-            ("critic_alpha", self.critic_alpha),
-            ("actor_kappa", self.actor_kappa),
-            ("critic_kappa", self.critic_kappa),
-            ("entropy_coefficient", self.entropy_coefficient),
-            ("temperature", self.temperature),
-            ("sparsity", self.sparsity),
-            ("r_min", self.r_min),
-            ("r_max", self.r_max),
-            ("max_phase", self.max_phase),
-            ("rtu_epsilon", self.rtu_epsilon),
-            ("layer_norm_epsilon", self.layer_norm_epsilon),
-            ("leaky_relu_slope", self.leaky_relu_slope),
-            ("normalization_epsilon", self.normalization_epsilon),
-            ("beta2", self.beta2),
-            ("epsilon", self.epsilon),
-        )
-        for numeric_name, numeric_value in numeric_values:
+        float_domains: dict[str, dict[str, Any]] = {
+            "gamma": {"lower": 0.0, "upper": 1.0},
+            "actor_lamda": {"lower": 0.0, "upper": 1.0},
+            "critic_lamda": {"lower": 0.0, "upper": 1.0},
+            "actor_alpha": {"lower": 0.0},
+            "critic_alpha": {"lower": 0.0},
+            "actor_kappa": {"positive": True},
+            "critic_kappa": {"positive": True},
+            "entropy_coefficient": {"lower": 0.0},
+            "temperature": {"positive": True},
+            "sparsity": {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            "r_min": {"lower": 0.0, "upper": 1.0},
+            "r_max": {"positive": True, "upper": 1.0},
+            "max_phase": {"positive": True, "upper": 2.0 * math.pi},
+            "rtu_epsilon": {"positive": True, "upper": 1.0, "upper_inclusive": False},
+            "layer_norm_epsilon": {"positive": True},
+            "leaky_relu_slope": {"lower": 0.0},
+            "normalization_epsilon": {"positive": True},
+            "beta2": {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            "epsilon": {"positive": True},
+        }
+        for name, bounds in float_domains.items():
             object.__setattr__(
                 self,
-                numeric_name,
-                _validated_config_float(numeric_name, numeric_value),
+                name,
+                _validated_config_float(name, getattr(self, name), **bounds),
             )
 
         for interval_name, interval_value in (
@@ -521,7 +531,7 @@ class RecurrentTraceActorCriticConfig:
             ("adaptive_obgd", self.adaptive_obgd),
         ):
             if type(value) is not bool:
-                raise ValueError(f"{name} must be an exact bool")
+                raise ValueError(f"{name} must be a bool")
         _preflight_state_resources(self, 1)
 
     def state_resource_budget(self, feature_dim: object) -> dict[str, int]:
@@ -563,6 +573,19 @@ class RecurrentTraceActorCriticConfig:
             or not set(config) <= required | optional
         ):
             raise ValueError("config fields do not match the serialized schema")
+        integer_fields = {"n_actions", "hidden_size", "encoder_width", "output_width"}
+        bool_fields = {
+            "normalize_observations",
+            "normalize_rewards",
+            "rtrl_taylor_correction",
+            "adaptive_obgd",
+        }
+        for name, value in config.items():
+            expected_type = (
+                int if name in integer_fields else bool if name in bool_fields else float
+            )
+            if type(value) is not expected_type:
+                raise ValueError("serialized config values must use exact JSON scalar types")
         return cls(**dict(config))
 
 
@@ -1834,6 +1857,7 @@ class RecurrentTraceActorCriticAgent:
 
     def init(self, feature_dim: int, key: Array) -> RecurrentTraceActorCriticState:
         """Initialize independent actor/critic parameters and streaming state."""
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         self._config.state_resource_budget(feature_dim)
         actor_key, critic_key, policy_key = jr.split(key, 3)
         actor_params = initialize_rtu_network_parameters(
