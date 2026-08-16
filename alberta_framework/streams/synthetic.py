@@ -76,6 +76,7 @@ def _require_finite_nonnegative_float32(name: str, value: object) -> float:
         raise ValueError(message) from exc
     if not math.isfinite(narrowed) or narrowed < 0.0:
         raise ValueError(message)
+    return narrowed
 
 
 def _require_finite_float32_log_scale(name: str, value: object) -> float:
