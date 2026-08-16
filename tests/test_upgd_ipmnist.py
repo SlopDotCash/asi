@@ -88,6 +88,27 @@ class TestProtocolConstants:
         with pytest.raises(ValueError, match="unknown learner"):
             resolve_hyperparameters("sgd", None)
 
+    @pytest.mark.parametrize("value", [True, float("nan"), float("inf"), "0.1"])
+    def test_resolve_hyperparameters_rejects_nonfinite_or_non_json_numbers(
+        self, value: object
+    ) -> None:
+        with pytest.raises(ValueError, match="finite JSON number"):
+            resolve_hyperparameters("upgd_w", {"step_size": value})  # type: ignore[dict-item]
+
+    def test_resolve_hyperparameters_rejects_class_spoofed_number(self) -> None:
+        class SpoofedNumber:
+            @property
+            def __class__(self) -> type[float]:
+                return float
+
+            def __float__(self) -> float:
+                return 0.1
+
+        with pytest.raises(ValueError, match="finite JSON number"):
+            resolve_hyperparameters(  # type: ignore[dict-item]
+                "upgd_w", {"step_size": SpoofedNumber()}
+            )
+
 
 class TestSchedule:
     def test_task_index_changes_exactly_at_multiples_of_task_length(self):
