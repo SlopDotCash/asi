@@ -20,9 +20,8 @@ Reference: Sutton & Barto 2018, Section 10.1 (Episodic Semi-gradient SARSA)
 
 import dataclasses
 import functools
-import math
 import time
-from numbers import Integral, Real
+from numbers import Integral
 from typing import Any
 
 import chex
@@ -32,7 +31,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Float, Int
 
-from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.horde import HordeLearner
 from alberta_framework.core.multi_head_learner import (
     MULTI_HEAD_MLP_STATE_SCHEMA,
@@ -77,7 +76,7 @@ class SARSAConfig:
     epsilon_decay_steps: int = 0
 
     def __post_init__(self) -> None:
-        """Reject invalid host configuration before it reaches JAX indexing."""
+        """Validate and canonicalize host configuration before JAX use."""
         actual_actions_type = type(self.n_actions)
         if (
             issubclass(actual_actions_type, bool)
@@ -92,26 +91,18 @@ class SARSAConfig:
             or self.epsilon_decay_steps < 0
         ):
             raise ValueError("epsilon_decay_steps must be a non-negative integer")
-        for name, value in (
-            ("gamma", self.gamma),
-            ("epsilon_start", self.epsilon_start),
-            ("epsilon_end", self.epsilon_end),
-        ):
-            actual_type = type(value)
-            if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-                raise ValueError(f"{name} must be a finite real in [0, 1]")
-            try:
-                numerator, denominator, narrowed = round_real_to_float32_with_ratio(value)
-            except (FloatingPointError, OverflowError, TypeError, ValueError) as exc:
-                raise ValueError(f"{name} must be a finite real in [0, 1]") from exc
-            if (
-                not math.isfinite(narrowed)
-                or numerator < 0
-                or numerator > denominator
-                or narrowed < 0.0
-                or narrowed > 1.0
-            ):
-                raise ValueError(f"{name} must be a finite real in [0, 1]")
+        gamma = validated_float32_scalar("gamma", self.gamma, lower=0.0, upper=1.0)
+        epsilon_start = validated_float32_scalar(
+            "epsilon_start", self.epsilon_start, lower=0.0, upper=1.0
+        )
+        epsilon_end = validated_float32_scalar(
+            "epsilon_end", self.epsilon_end, lower=0.0, upper=1.0
+        )
+        if self.epsilon_decay_steps > 0 and epsilon_end > epsilon_start:
+            raise ValueError("epsilon_end must not exceed epsilon_start when decaying")
+        object.__setattr__(self, "gamma", gamma)
+        object.__setattr__(self, "epsilon_start", epsilon_start)
+        object.__setattr__(self, "epsilon_end", epsilon_end)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to dict."""
@@ -643,6 +634,7 @@ class SARSAAgent:
             rng_key=state.rng_key,
             step_count=new_step_count,
         )
+        new_state = jax.lax.cond(action_valid, lambda: new_state, lambda: state)
 
         return SARSAUpdateResult(  # type: ignore[call-arg]
             state=new_state,

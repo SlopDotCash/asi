@@ -6,6 +6,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework import (
@@ -306,6 +307,36 @@ class TestMultiHeadConstructorValidation:
                 step_size=0.01,
                 per_head_gamma_lamda=(0.5, gl),  # type: ignore[arg-type]
             )
+
+    def test_rejects_class_spoof_without_invoking_float_hook(self):
+        class Spoof:
+            @property
+            def __class__(self) -> type[float]:  # type: ignore[override]
+                return float
+
+            def __float__(self) -> float:
+                raise RuntimeError("must not run")
+
+        with pytest.raises(ValueError, match=r"per_head_gamma_lamda\[1\]"):
+            MultiHeadMLPLearner(
+                n_heads=2,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.01,
+                per_head_gamma_lamda=(0.5, Spoof()),  # type: ignore[arg-type]
+            )
+
+    def test_canonicalizes_numpy_per_head_values(self):
+        learner = MultiHeadMLPLearner(
+            n_heads=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+            step_size=0.01,
+            per_head_gamma_lamda=(np.float32(0.25), np.float64(0.5)),
+        )
+
+        values = learner.to_config()["per_head_gamma_lamda"]
+        assert all(type(value) is float for value in values)
 
 
 class TestMultiHeadUpdateValidation:

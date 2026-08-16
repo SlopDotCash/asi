@@ -20,7 +20,6 @@ import functools
 import math
 import time
 from collections.abc import Mapping
-from numbers import Real
 from typing import Any
 
 import chex
@@ -29,6 +28,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float, UInt
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
 from alberta_framework.core.normalizers import (
@@ -406,17 +406,15 @@ class MultiHeadMLPLearner:
                     f"per_head_gamma_lamda must have length n_heads ({self._n_heads}), "
                     f"got {len(per_head_gamma_lamda)}"
                 )
-            for head_index, gl in enumerate(per_head_gamma_lamda):
-                if not isinstance(gl, Real) or isinstance(gl, bool):
-                    raise ValueError(
-                        f"per_head_gamma_lamda[{head_index}] must be a real number, "
-                        f"got {gl!r}"
-                    )
-                if not math.isfinite(float(gl)) or not 0.0 <= float(gl) <= 1.0:
-                    raise ValueError(
-                        f"per_head_gamma_lamda[{head_index}] must be finite and in "
-                        f"[0, 1], got {gl}"
-                    )
+            self._per_head_gl = tuple(
+                validated_float32_scalar(
+                    f"per_head_gamma_lamda[{head_index}]",
+                    gl,
+                    lower=0.0,
+                    upper=1.0,
+                )
+                for head_index, gl in enumerate(per_head_gamma_lamda)
+            )
 
     @property
     def n_heads(self) -> int:

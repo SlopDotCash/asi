@@ -14,10 +14,8 @@ trustworthy — the "selective" part of selective model-based updates.
 from __future__ import annotations
 
 import functools
-import math
-from dataclasses import dataclass
-from numbers import Real
-from typing import Any, cast
+from dataclasses import dataclass, replace
+from typing import Any
 
 import chex
 import jax
@@ -25,16 +23,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
-
-def _finite_real(name: str, value: object) -> float:
-    """Return a finite real configuration value without accepting booleans."""
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{name} must be a real number")
-    concrete = float(cast(Real, value))
-    if not math.isfinite(concrete):
-        raise ValueError(f"{name} must be finite")
-    return concrete
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -111,8 +100,7 @@ class RLSRewardModel:
 
     def __init__(self, config: RLSRewardModelConfig):
         """Initialize the model."""
-        self._validate_config(config)
-        self._config = config
+        self._config = self._validated_config(config)
 
     @property
     def config(self) -> RLSRewardModelConfig:
@@ -235,18 +223,22 @@ class RLSRewardModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: RLSRewardModelConfig) -> None:
+    def _validated_config(self, config: RLSRewardModelConfig) -> RLSRewardModelConfig:
         if type(config.feature_dim) is not int or config.feature_dim <= 0:
             raise ValueError("feature_dim must be a positive builtin integer")
-        forgetting = _finite_real("forgetting", config.forgetting)
-        if not 0.0 < forgetting <= 1.0:
-            raise ValueError("forgetting must be in (0, 1]")
-        ridge = _finite_real("ridge", config.ridge)
-        if ridge <= 0.0:
-            raise ValueError("ridge must be positive")
-        error_decay = _finite_real("error_decay", config.error_decay)
-        if not 0.0 <= error_decay < 1.0:
-            raise ValueError("error_decay must be in [0, 1)")
+        forgetting = validated_float32_scalar(
+            "forgetting", config.forgetting, positive=True, upper=1.0
+        )
+        ridge = validated_float32_scalar("ridge", config.ridge, positive=True)
+        error_decay = validated_float32_scalar(
+            "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        return replace(
+            config,
+            forgetting=forgetting,
+            ridge=ridge,
+            error_decay=error_decay,
+        )
 
 
 __all__ = [

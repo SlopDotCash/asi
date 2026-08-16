@@ -127,6 +127,42 @@ def test_rls_reward_model_rejects_non_real_or_non_finite_scalars(
         RLSRewardModel(RLSRewardModelConfig.from_config(payload))
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("forgetting", 1e-50),
+        ("ridge", 1e-50),
+        ("ridge", 1e50),
+        ("error_decay", 1.0 - 1e-10),
+    ],
+)
+def test_rls_reward_model_rejects_values_invalid_after_float32_narrowing(
+    field: str,
+    value: float,
+) -> None:
+    payload = RLSRewardModelConfig(feature_dim=1).to_config()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match=field):
+        RLSRewardModel(RLSRewardModelConfig.from_config(payload))
+
+
+def test_rls_reward_model_canonicalizes_numpy_scalars() -> None:
+    model = RLSRewardModel(
+        RLSRewardModelConfig(
+            feature_dim=1,
+            forgetting=np.float32(0.75),
+            ridge=np.float32(0.5),
+            error_decay=np.float32(0.25),
+        )
+    )
+
+    assert type(model.config.forgetting) is float
+    assert type(model.config.ridge) is float
+    assert type(model.config.error_decay) is float
+    assert RLSRewardModel.from_config(model.to_config()).to_config() == model.to_config()
+
+
 def test_rls_infinite_reward_on_zero_feature_does_not_poison_weights() -> None:
     """Inf reward * a silent feature's zero gain is 0*inf = NaN."""
     model = RLSRewardModel(

@@ -100,6 +100,28 @@ class TestSARSAConfigValidation:
         with pytest.raises(ValueError, match="gamma"):
             SARSAConfig(n_actions=2, gamma=SpoofedFloat())  # type: ignore[arg-type]
 
+    def test_accepts_gamma_one_and_canonicalizes_numpy_scalars(self) -> None:
+        config = SARSAConfig(
+            n_actions=2,
+            gamma=np.float32(1.0),
+            epsilon_start=np.float32(0.25),
+            epsilon_end=np.float64(0.1),
+        )
+
+        assert config.gamma == 1.0
+        assert type(config.gamma) is float
+        assert type(config.epsilon_start) is float
+        assert type(config.epsilon_end) is float
+
+    def test_rejects_inverted_decay_schedule(self) -> None:
+        with pytest.raises(ValueError, match="epsilon_end"):
+            SARSAConfig(
+                n_actions=2,
+                epsilon_start=0.3,
+                epsilon_end=0.5,
+                epsilon_decay_steps=10,
+            )
+
 
 class TestSARSAInit:
     """Tests for SARSAAgent initialization."""
@@ -303,6 +325,40 @@ class TestSARSAUpdate:
             state.learner_state.head_params.biases,
             atol=0.0,
         )
+
+    def test_update_before_select_action_is_exact_noop_with_nonzero_traces(self):
+        agent = _make_agent(
+            n_actions=2,
+            hidden_sizes=(),
+            gamma=0.9,
+            epsilon_start=0.2,
+            epsilon_decay_steps=10,
+            lamda=0.8,
+        )
+        state = agent.init(feature_dim=3, key=jr.key(9))
+        learner_state = state.learner_state.replace(
+            head_traces=jax.tree.map(jnp.ones_like, state.learner_state.head_traces)
+        )
+        state = state.replace(learner_state=learner_state)
+
+        result = agent.update(
+            state,
+            reward=jnp.array(1.0),
+            observation=jnp.ones(3),
+            terminated=jnp.array(0.0),
+            next_action=jnp.array(0, dtype=jnp.int32),
+        )
+
+        # birth_timestamp is host-only static PyTree metadata and is not a
+        # meaningful transaction field inside a jitted comparison.
+        actual = result.state.replace(
+            learner_state=result.state.learner_state.replace(birth_timestamp=0.0)
+        )
+        expected = state.replace(
+            learner_state=state.learner_state.replace(birth_timestamp=0.0)
+        )
+        chex.assert_trees_all_equal(actual, expected)
+        assert float(result.td_error) == 0.0
 
     def test_terminated_no_bootstrap(self):
         """At terminal state, target = r (no bootstrapping)."""
