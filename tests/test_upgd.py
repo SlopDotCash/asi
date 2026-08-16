@@ -331,6 +331,21 @@ class TestInitShapes:
 class TestValidation:
     """Invalid deployment configurations should fail before JIT compilation."""
 
+    @pytest.mark.parametrize(
+        "step_size",
+        [float("nan"), float("inf"), float("-inf"), True, 1e40],
+    )
+    def test_rejects_non_finite_or_boolean_step_size(self, step_size):
+        with pytest.raises(ValueError, match="step_size"):
+            UPGDLearner(n_heads=1, step_size=step_size)
+
+    def test_from_config_rejects_non_finite_step_size(self):
+        config = UPGDLearner(n_heads=1).to_config()
+        config["step_size"] = float("nan")
+
+        with pytest.raises(ValueError, match="step_size"):
+            UPGDLearner.from_config(config)
+
     @pytest.mark.parametrize("shape", [(1,), (), (4, 1), (5,)])
     def test_update_rejects_targets_that_are_not_one_per_head(self, shape):
         """A broadcastable target must not train every head while n_active counts 1."""

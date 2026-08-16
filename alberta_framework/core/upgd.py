@@ -45,6 +45,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
@@ -531,9 +532,7 @@ class UPGDLearner:
         if any(size < 1 for size in hidden_sizes):
             msg = f"hidden_sizes must contain only positive sizes, got {hidden_sizes!r}"
             raise ValueError(msg)
-        if step_size < 0.0:
-            msg = f"step_size must be non-negative, got {step_size}"
-            raise ValueError(msg)
+        validated_step_size = validated_float32_scalar("step_size", step_size, lower=0.0)
         if perturbation_sigma < 0.0:
             msg = f"perturbation_sigma must be non-negative, got {perturbation_sigma}"
             raise ValueError(msg)
@@ -1033,7 +1032,7 @@ class UPGDLearner:
 
         self._n_heads = n_heads
         self._hidden_sizes = hidden_sizes
-        self._step_size = float(step_size)
+        self._step_size = validated_step_size
         self._bounder = bounder
         self._utility_decay = float(utility_decay)
         self._perturbation_sigma = float(perturbation_sigma)
