@@ -18,7 +18,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
@@ -48,26 +48,26 @@ def _require_positive_int(name: str, value: object) -> int:
     return value
 
 
-def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[Real, float]:
-    """Return an actual real together with its single exact binary32 rounding."""
+def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[int, int, float]:
+    """Return one trusted exact ratio together with its binary32 rounding."""
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
         raise ValueError(message)
     real = cast(Real, value)
     try:
-        narrowed = round_real_to_float32(real)
-    except (FloatingPointError, OverflowError, TypeError, ValueError) as exc:
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
+    except Exception as exc:
         raise ValueError(message) from exc
     if not math.isfinite(narrowed):
         raise ValueError(message)
-    return real, narrowed
+    return numerator, denominator, narrowed
 
 
 def _require_normal_float32_scale(name: str, value: object) -> float:
     """Return a positive bound with stable JAX float32 logarithm semantics."""
     message = f"{name} must be finite, positive, and representable as a normal float32 value"
-    real, narrowed = _narrow_real_to_float32(name, value, message)
-    if real <= 0 or narrowed < _FLOAT32_TINY or narrowed > _FLOAT32_MAX:
+    numerator, _, narrowed = _narrow_real_to_float32(name, value, message)
+    if numerator <= 0 or narrowed < _FLOAT32_TINY or narrowed > _FLOAT32_MAX:
         raise ValueError(message)
     return narrowed
 
@@ -83,7 +83,7 @@ def _require_finite_float32_log_scale(name: str, value: object) -> float:
         f"{name} must be finite and remain in the float32 exp-safe interval "
         f"[{_FLOAT32_EXP_SAFE_LOG_MIN}, {_FLOAT32_EXP_SAFE_LOG_MAX}]"
     )
-    _, narrowed = _narrow_real_to_float32(name, value, message)
+    _, _, narrowed = _narrow_real_to_float32(name, value, message)
     if narrowed < _FLOAT32_EXP_SAFE_LOG_MIN or narrowed > _FLOAT32_EXP_SAFE_LOG_MAX:
         raise ValueError(message)
     return narrowed
