@@ -1043,6 +1043,29 @@ def test_run_step12_smoke_rejects_non_integer_steps(steps: object) -> None:
         run_step12_smoke(steps=steps)  # type: ignore[arg-type]
 
 
+def test_run_step12_smoke_rejects_class_spoofed_integer_steps() -> None:
+    """A reviewer-found adversarial input: an object whose ``__class__``
+    property reports ``int`` (fooling ``isinstance``) while its real,
+    non-spoofable ``type()`` is not ``int``. The facade must dispatch on the
+    actual runtime type, not the object's self-reported class."""
+
+    class SpoofedInt:
+        @property
+        def __class__(self) -> type:  # noqa: A003
+            return int
+
+        def __int__(self) -> int:
+            return 3
+
+        def __index__(self) -> int:
+            return 3
+
+    spoofed = SpoofedInt()
+    assert isinstance(spoofed, int)  # confirms the spoof actually fools isinstance
+    with pytest.raises(ValueError, match="steps"):
+        run_step12_smoke(steps=spoofed)  # type: ignore[arg-type]
+
+
 def test_run_step12_smoke_cerebellum_errors_shape() -> None:
     result = run_step12_smoke(steps=16)
     assert result.cerebellum_errors_shape == (16, 4)

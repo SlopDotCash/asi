@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from numbers import Integral, Real
-from typing import Any
+from typing import Any, cast
 
 import jax.numpy as jnp
 import jax.random as jr
@@ -198,9 +198,10 @@ def _require_int(
     minimum: int | None = None,
     exclusive_maximum: int | None = None,
 ) -> int:
-    if isinstance(value, bool) or not isinstance(value, Integral):
+    actual_type = type(value)
+    if actual_type is bool or not issubclass(actual_type, Integral):
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(value)
+    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")
