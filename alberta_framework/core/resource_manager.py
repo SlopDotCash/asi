@@ -30,7 +30,7 @@ from __future__ import annotations
 import functools
 import math
 import operator
-import struct
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -41,6 +41,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -50,19 +51,10 @@ from alberta_framework.core.update_safety import (
 
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
+    {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
+)
+_ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
+    {float, *(np.dtype(code).type for code in "efdg")}
 )
 
 
@@ -73,6 +65,69 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _validated_float32(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+    preserve_nonzero: bool = False,
+) -> float:
+    """Validate one trusted concrete scalar in both host and float32 domains."""
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        positive=positive,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
+    narrowed = float(np.float32(numerator / denominator))
+    if preserve_nonzero and numerator != 0 and narrowed == 0.0:
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
+
+
+def _require_exact_tuple(name: str, value: object) -> tuple[Any, ...]:
+    if type(value) is not tuple:
+        raise ValueError(f"{name} must be an exact tuple")
+    return value
+
+
+def _decode_sequence(name: str, value: object) -> tuple[Any, ...]:
+    if type(value) not in {list, tuple}:
+        raise ValueError(f"{name} must be an exact list or tuple")
+    return tuple(cast(list[Any] | tuple[Any, ...], value))
+
+
+def _read_mapping(name: str, value: object) -> dict[str, Any]:
+    if not issubclass(type(value), Mapping):
+        raise ValueError(f"{name} must be a mapping")
+    try:
+        return dict(cast(Mapping[str, Any], value))
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
+
+
+def _require_manager_state_budget(name: str, n_contexts: int, n_choices: int) -> None:
+    """Preflight the three float32 matrices plus the int32 step counter."""
+    state_scalars = 3 * n_contexts * n_choices + 1
+    state_bytes = 4 * state_scalars
+    if state_scalars > _INT32_MAX or state_bytes > _INT32_MAX:
+        raise ValueError(f"{name} state exceeds the signed-int32 scalar/byte budget")
+
+
+def _require_vector(name: str, value: object, length: int, *, dtype: Any) -> Array:
+    array = jnp.asarray(value, dtype=dtype)
+    if array.shape != (length,):
+        raise ValueError(f"{name} must have shape ({length},)")
+    return array
 
 
 def _skip_zero_scale(scale: float, value: Array) -> Array:
@@ -104,16 +159,7 @@ def _mask_unused_history(
 
 def _validated_cost_weight(value: float) -> float:
     """Return a non-negative weight that stays finite and nonzero in float32."""
-    numeric = float(value)
-    if not math.isfinite(numeric) or numeric < 0.0:
-        raise ValueError("cost_weight must be finite and non-negative")
-    try:
-        float32_value = struct.unpack("!f", struct.pack("!f", numeric))[0]
-    except OverflowError as error:
-        raise ValueError("cost_weight must be float32-representable") from error
-    if not math.isfinite(float32_value) or (numeric > 0.0 and float32_value <= 0.0):
-        raise ValueError("cost_weight must be float32-representable")
-    return numeric
+    return _validated_float32("cost_weight", value, lower=0.0, preserve_nonzero=True)
 
 
 def _weighted_cost_terms(costs: Array, cost_weight: float) -> tuple[Array, Array]:
@@ -272,26 +318,40 @@ class LearnedResourceManager:
         """
         n_actions = _require_int32("n_actions", n_actions, minimum=1)
         n_contexts = _require_int32("n_contexts", n_contexts, minimum=1)
-        if learning_rate < 0.0:
-            raise ValueError("learning_rate must be non-negative")
-        if not 0.0 <= discount <= 1.0:
-            raise ValueError("discount must be in [0, 1]")
-        if not 0.0 <= exploration < 1.0:
-            raise ValueError("exploration must be in [0, 1)")
-        if not 0.0 <= loss_decay < 1.0:
-            raise ValueError("loss_decay must be in [0, 1)")
+        _require_manager_state_budget("LearnedResourceManager", n_contexts, n_actions)
+        learning_rate = _validated_float32(
+            "learning_rate", learning_rate, lower=0.0, preserve_nonzero=True
+        )
+        discount = _validated_float32(
+            "discount", discount, lower=0.0, upper=1.0, preserve_nonzero=True
+        )
+        exploration = _validated_float32(
+            "exploration",
+            exploration,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+            preserve_nonzero=True,
+        )
+        loss_decay = _validated_float32(
+            "loss_decay",
+            loss_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+            preserve_nonzero=True,
+        )
         validated_cost_weight = _validated_cost_weight(cost_weight)
-        if advantage_clip <= 0.0:
-            raise ValueError("advantage_clip must be positive")
+        advantage_clip = _validated_float32("advantage_clip", advantage_clip, positive=True)
 
         self._n_actions = int(n_actions)
         self._n_contexts = int(n_contexts)
-        self._learning_rate = float(learning_rate)
-        self._discount = float(discount)
-        self._exploration = float(exploration)
-        self._loss_decay = float(loss_decay)
+        self._learning_rate = learning_rate
+        self._discount = discount
+        self._exploration = exploration
+        self._loss_decay = loss_decay
         self._cost_weight = validated_cost_weight
-        self._advantage_clip = float(advantage_clip)
+        self._advantage_clip = advantage_clip
 
     @property
     def n_actions(self) -> int:
@@ -338,9 +398,9 @@ class LearnedResourceManager:
         )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> LearnedResourceManager:
+    def from_config(cls, config: Mapping[str, Any]) -> LearnedResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
-        config = dict(config)
+        config = _read_mapping("config", config)
         config.pop("type", None)
         return cls(**config)
 
@@ -354,6 +414,17 @@ class LearnedResourceManager:
             step_count=jnp.array(0, dtype=jnp.int32),
         )
 
+    def _require_state_contract(self, state: LearnedResourceManagerState) -> None:
+        if type(state) is not LearnedResourceManagerState:
+            raise ValueError("state must be a LearnedResourceManagerState")
+        shape = (self._n_contexts, self._n_actions)
+        for name in ("log_weights", "loss_ema", "action_counts"):
+            leaf = getattr(state, name)
+            if leaf.shape != shape or leaf.dtype != jnp.float32:
+                raise ValueError(f"state.{name} must have shape {shape} and dtype float32")
+        if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
+            raise ValueError("state.step_count must be a scalar int32")
+
     @functools.partial(jax.jit, static_argnums=(0,))
     def weights(
         self,
@@ -361,6 +432,7 @@ class LearnedResourceManager:
         context_id: Array | int = 0,
     ) -> Float[Array, " n_actions"]:
         """Return the current allocation for ``context_id``."""
+        self._require_state_contract(state)
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -396,17 +468,20 @@ class LearnedResourceManager:
         Returns:
             :class:`LearnedResourceManagerUpdateResult`.
         """
+        self._require_state_contract(state)
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
         )
-        losses = jnp.asarray(losses, dtype=jnp.float32)
+        losses = _require_vector("losses", losses, self._n_actions, dtype=jnp.float32)
         finite_losses = jnp.isfinite(losses)
         safe_losses = jnp.where(finite_losses, losses, 0.0)
         costs = (
             jnp.zeros_like(safe_losses)
             if resource_costs is None
-            else jnp.asarray(resource_costs, dtype=jnp.float32)
+            else _require_vector(
+                "resource_costs", resource_costs, self._n_actions, dtype=jnp.float32
+            )
         )
         cost_terms, costs_valid = _weighted_cost_terms(costs, self._cost_weight)
         valid_actions = finite_losses & costs_valid
@@ -444,7 +519,7 @@ class LearnedResourceManager:
             log_weights=new_log_weights,
             loss_ema=new_loss_ema,
             action_counts=new_counts,
-            step_count=state.step_count + 1,
+            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
         )
         checked_log_weights = _mask_unused_history(
             state.log_weights,
@@ -464,6 +539,7 @@ class LearnedResourceManager:
         )
         update_applied = (
             context_valid
+            & (state.step_count >= 0)
             & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(weights))
@@ -579,6 +655,21 @@ class GeneratorMetaResourceManager:
                 estimator; Auer et al. 2002).
             initial_preferences: Optional additive initial log-preferences.
         """
+        policy_names = _require_exact_tuple("policy_names", policy_names)
+        op_ids = _require_exact_tuple("op_ids", op_ids)
+        parent_modes = _require_exact_tuple("parent_modes", parent_modes)
+        replacement_multipliers = _require_exact_tuple(
+            "replacement_multipliers", replacement_multipliers
+        )
+        promotion_margin_multipliers = _require_exact_tuple(
+            "promotion_margin_multipliers", promotion_margin_multipliers
+        )
+        candidate_min_age_multipliers = _require_exact_tuple(
+            "candidate_min_age_multipliers", candidate_min_age_multipliers
+        )
+        imprint_scales = _require_exact_tuple("imprint_scales", imprint_scales)
+        if initial_preferences is not None:
+            initial_preferences = _require_exact_tuple("initial_preferences", initial_preferences)
         n_policies = len(policy_names)
         if n_policies < 1:
             raise ValueError("at least one generator policy is required")
@@ -593,55 +684,86 @@ class GeneratorMetaResourceManager:
         if lengths != {n_policies}:
             raise ValueError("all generator policy tuples must have the same length")
         n_contexts = _require_int32("n_contexts", n_contexts, minimum=1)
+        _require_manager_state_budget("GeneratorMetaResourceManager", n_contexts, n_policies)
+        if any(type(name) is not str for name in policy_names):
+            raise ValueError("policy_names elements must be exact strings")
         op_ids = tuple(_require_int32("op_ids element", op_id, minimum=0) for op_id in op_ids)
         parent_modes = tuple(
             _require_int32("parent_modes element", mode, minimum=0) for mode in parent_modes
         )
-        if learning_rate < 0.0:
-            raise ValueError("learning_rate must be non-negative")
-        if not 0.0 <= discount <= 1.0:
-            raise ValueError("discount must be in [0, 1]")
-        if not 0.0 <= exploration < 1.0:
-            raise ValueError("exploration must be in [0, 1)")
-        if not 0.0 <= reward_decay < 1.0:
-            raise ValueError("reward_decay must be in [0, 1)")
+        learning_rate = _validated_float32(
+            "learning_rate", learning_rate, lower=0.0, preserve_nonzero=True
+        )
+        discount = _validated_float32(
+            "discount", discount, lower=0.0, upper=1.0, preserve_nonzero=True
+        )
+        exploration = _validated_float32(
+            "exploration",
+            exploration,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+            preserve_nonzero=True,
+        )
+        reward_decay = _validated_float32(
+            "reward_decay",
+            reward_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+            preserve_nonzero=True,
+        )
         validated_cost_weight = _validated_cost_weight(cost_weight)
-        if advantage_clip <= 0.0:
-            raise ValueError("advantage_clip must be positive")
-        if update_rule not in {"hedge", "exp3"}:
+        advantage_clip = _validated_float32("advantage_clip", advantage_clip, positive=True)
+        if type(update_rule) is not str or update_rule not in {"hedge", "exp3"}:
             raise ValueError("update_rule must be 'hedge' or 'exp3'")
         if initial_preferences is not None and len(initial_preferences) != n_policies:
             raise ValueError("initial_preferences must match policy_names length")
-        if any(value <= 0.0 for value in replacement_multipliers):
-            raise ValueError("replacement_multipliers must be positive")
-        if any(value <= 0.0 for value in promotion_margin_multipliers):
-            raise ValueError("promotion_margin_multipliers must be positive")
-        if any(value <= 0.0 for value in candidate_min_age_multipliers):
-            raise ValueError("candidate_min_age_multipliers must be positive")
-        if any(value < 0.0 for value in imprint_scales):
-            raise ValueError("imprint_scales must be non-negative")
+        replacement_multipliers = tuple(
+            _validated_float32("replacement_multipliers element", value, positive=True)
+            for value in replacement_multipliers
+        )
+        promotion_margin_multipliers = tuple(
+            _validated_float32("promotion_margin_multipliers element", value, positive=True)
+            for value in promotion_margin_multipliers
+        )
+        candidate_min_age_multipliers = tuple(
+            _validated_float32("candidate_min_age_multipliers element", value, positive=True)
+            for value in candidate_min_age_multipliers
+        )
+        imprint_scales = tuple(
+            _validated_float32(
+                "imprint_scales element", value, lower=0.0, preserve_nonzero=True
+            )
+            for value in imprint_scales
+        )
+        if initial_preferences is not None:
+            initial_preferences = tuple(
+                _validated_float32("initial_preferences element", value)
+                for value in initial_preferences
+            )
+            if max(initial_preferences) - min(initial_preferences) > float(
+                np.finfo(np.float32).max
+            ):
+                raise ValueError("initial_preferences span must remain finite in float32")
 
-        self._policy_names = tuple(policy_names)
+        self._policy_names = policy_names
         self._op_ids = tuple(int(value) for value in op_ids)
         self._parent_modes = tuple(int(value) for value in parent_modes)
-        self._replacement_multipliers = tuple(float(value) for value in replacement_multipliers)
-        self._promotion_margin_multipliers = tuple(
-            float(value) for value in promotion_margin_multipliers
-        )
-        self._candidate_min_age_multipliers = tuple(
-            float(value) for value in candidate_min_age_multipliers
-        )
-        self._imprint_scales = tuple(float(value) for value in imprint_scales)
+        self._replacement_multipliers = replacement_multipliers
+        self._promotion_margin_multipliers = promotion_margin_multipliers
+        self._candidate_min_age_multipliers = candidate_min_age_multipliers
+        self._imprint_scales = imprint_scales
         self._n_contexts = int(n_contexts)
-        self._learning_rate = float(learning_rate)
-        self._discount = float(discount)
-        self._exploration = float(exploration)
-        self._reward_decay = float(reward_decay)
+        self._learning_rate = learning_rate
+        self._discount = discount
+        self._exploration = exploration
+        self._reward_decay = reward_decay
         self._cost_weight = validated_cost_weight
-        self._advantage_clip = float(advantage_clip)
+        self._advantage_clip = advantage_clip
         self._update_rule = update_rule
         self._initial_preferences = (
-            tuple(float(value) for value in initial_preferences)
+            initial_preferences
             if initial_preferences is not None
             else tuple(0.0 for _ in range(n_policies))
         )
@@ -679,21 +801,29 @@ class GeneratorMetaResourceManager:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> GeneratorMetaResourceManager:
+    def from_config(cls, config: Mapping[str, Any]) -> GeneratorMetaResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
-        config = dict(config)
+        config = _read_mapping("config", config)
         config.pop("type", None)
         initial_preferences = config.pop("initial_preferences", None)
         return cls(
-            policy_names=tuple(config.pop("policy_names")),
-            op_ids=tuple(config.pop("op_ids")),
-            parent_modes=tuple(config.pop("parent_modes")),
-            replacement_multipliers=tuple(config.pop("replacement_multipliers")),
-            promotion_margin_multipliers=tuple(config.pop("promotion_margin_multipliers")),
-            candidate_min_age_multipliers=tuple(config.pop("candidate_min_age_multipliers")),
-            imprint_scales=tuple(config.pop("imprint_scales")),
+            policy_names=_decode_sequence("policy_names", config.pop("policy_names")),
+            op_ids=_decode_sequence("op_ids", config.pop("op_ids")),
+            parent_modes=_decode_sequence("parent_modes", config.pop("parent_modes")),
+            replacement_multipliers=_decode_sequence(
+                "replacement_multipliers", config.pop("replacement_multipliers")
+            ),
+            promotion_margin_multipliers=_decode_sequence(
+                "promotion_margin_multipliers", config.pop("promotion_margin_multipliers")
+            ),
+            candidate_min_age_multipliers=_decode_sequence(
+                "candidate_min_age_multipliers", config.pop("candidate_min_age_multipliers")
+            ),
+            imprint_scales=_decode_sequence("imprint_scales", config.pop("imprint_scales")),
             initial_preferences=(
-                None if initial_preferences is None else tuple(initial_preferences)
+                None
+                if initial_preferences is None
+                else _decode_sequence("initial_preferences", initial_preferences)
             ),
             **config,
         )
@@ -702,7 +832,9 @@ class GeneratorMetaResourceManager:
         """Create an initial uniform-allocation state."""
         shape = (self._n_contexts, self.n_policies)
         initial = jnp.asarray(self._initial_preferences, dtype=jnp.float32)
-        initial = initial - jnp.mean(initial)
+        # Softmax is shift invariant; subtracting the maximum avoids an
+        # overflowing reduction when every legal preference is near FLT_MAX.
+        initial = initial - jnp.max(initial)
         log_weights = jnp.broadcast_to(initial, shape)
         return GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
             log_weights=log_weights,
@@ -711,6 +843,17 @@ class GeneratorMetaResourceManager:
             step_count=jnp.array(0, dtype=jnp.int32),
         )
 
+    def _require_state_contract(self, state: GeneratorMetaResourceManagerState) -> None:
+        if type(state) is not GeneratorMetaResourceManagerState:
+            raise ValueError("state must be a GeneratorMetaResourceManagerState")
+        shape = (self._n_contexts, self.n_policies)
+        for name in ("log_weights", "reward_ema", "action_counts"):
+            leaf = getattr(state, name)
+            if leaf.shape != shape or leaf.dtype != jnp.float32:
+                raise ValueError(f"state.{name} must have shape {shape} and dtype float32")
+        if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
+            raise ValueError("state.step_count must be a scalar int32")
+
     @functools.partial(jax.jit, static_argnums=(0,))
     def weights(
         self,
@@ -718,6 +861,7 @@ class GeneratorMetaResourceManager:
         context_id: Array | int = 0,
     ) -> Float[Array, " n_policies"]:
         """Return the current policy allocation for ``context_id``."""
+        self._require_state_contract(state)
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -742,6 +886,7 @@ class GeneratorMetaResourceManager:
         context_id: Array | int = 0,
     ) -> GeneratorMetaResourceDecision:
         """Sample one policy and return the generator knobs it controls."""
+        self._require_state_contract(state)
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -814,19 +959,24 @@ class GeneratorMetaResourceManager:
         importance-weighted update.  This is useful when provenance rewards are
         sparse and the experiment wants explicit exploration credit.
         """
+        self._require_state_contract(state)
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
         )
-        rewards = jnp.asarray(rewards, dtype=jnp.float32)
+        rewards = _require_vector("rewards", rewards, self.n_policies, dtype=jnp.float32)
         finite = jnp.isfinite(rewards)
         if finite_mask is not None:
-            finite = finite & jnp.asarray(finite_mask, dtype=jnp.bool_)
+            finite = finite & _require_vector(
+                "finite_mask", finite_mask, self.n_policies, dtype=jnp.bool_
+            )
         safe_rewards = jnp.where(finite, rewards, 0.0)
         costs = (
             jnp.zeros_like(safe_rewards)
             if resource_costs is None
-            else jnp.asarray(resource_costs, dtype=jnp.float32)
+            else _require_vector(
+                "resource_costs", resource_costs, self.n_policies, dtype=jnp.float32
+            )
         )
         cost_terms, costs_valid = _weighted_cost_terms(costs, self._cost_weight)
         finite = finite & costs_valid
@@ -849,6 +999,8 @@ class GeneratorMetaResourceManager:
                 if selected_probability is None
                 else jnp.asarray(selected_probability, dtype=jnp.float32)
             )
+            if raw_probability.shape != ():
+                raise ValueError("selected_probability must be scalar")
             probability_valid = (
                 jnp.all(jnp.isfinite(raw_probability))
                 & jnp.all(raw_probability > 0.0)
@@ -893,7 +1045,7 @@ class GeneratorMetaResourceManager:
             log_weights=new_log_weights,
             reward_ema=new_reward_ema,
             action_counts=new_counts,
-            step_count=state.step_count + 1,
+            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
         )
         checked_log_weights = _mask_unused_history(
             state.log_weights,
@@ -914,6 +1066,7 @@ class GeneratorMetaResourceManager:
         update_applied = (
             context_valid
             & selection_input_valid
+            & (state.step_count >= 0)
             & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(weights))
