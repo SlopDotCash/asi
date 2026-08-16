@@ -1079,6 +1079,24 @@ def test_step2_configs_reject_hostile_integral_subclasses() -> None:
             config_type(**{field: LieInt(-1)})
 
 
+def test_step2_kernel_accepts_all_standard_numpy_integer_families() -> None:
+    config = Step2KernelConfig(
+        feature_dim=np.longlong(4),
+        n_heads=np.ulonglong(3),
+        hidden_sizes=(np.longlong(8),),
+        context_length=np.ulonglong(64),
+    )
+
+    assert config.feature_dim == 4
+    assert config.n_heads == 3
+    assert config.hidden_sizes == (8,)
+    assert config.context_length == 64
+    assert type(config.feature_dim) is int
+    assert type(config.n_heads) is int
+    assert type(config.hidden_sizes[0]) is int
+    assert type(config.context_length) is int
+
+
 def test_step2_configs_require_actual_tuple_containers() -> None:
     class TupleSpoof(list[int]):
         @property
