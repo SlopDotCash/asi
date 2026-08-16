@@ -14,16 +14,44 @@ trustworthy — the "selective" part of selective model-based updates.
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass, replace
-from typing import Any
+import operator
+from dataclasses import dataclass
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -49,6 +77,21 @@ class RLSRewardModelConfig:
     forgetting: float = 0.995
     ridge: float = 10.0
     error_decay: float = 0.99
+
+    def __post_init__(self) -> None:
+        feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
+        forgetting = validated_float32_scalar(
+            "forgetting", self.forgetting, positive=True, upper=1.0
+        )
+        ridge = validated_float32_scalar("ridge", self.ridge, positive=True)
+        error_decay = validated_float32_scalar(
+            "error_decay", self.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+
+        object.__setattr__(self, "feature_dim", feature_dim)
+        object.__setattr__(self, "forgetting", forgetting)
+        object.__setattr__(self, "ridge", ridge)
+        object.__setattr__(self, "error_decay", error_decay)
 
     def to_config(self) -> dict[str, Any]:
         """Return a JSON-compatible representation."""
@@ -100,7 +143,9 @@ class RLSRewardModel:
 
     def __init__(self, config: RLSRewardModelConfig):
         """Initialize the model."""
-        self._config = self._validated_config(config)
+        if not isinstance(config, RLSRewardModelConfig):
+            raise TypeError("config must be an RLSRewardModelConfig")
+        self._config = config
 
     @property
     def config(self) -> RLSRewardModelConfig:
@@ -127,9 +172,7 @@ class RLSRewardModel:
         feature_dim = self._config.feature_dim
         return RLSRewardModelState(
             weights=jnp.zeros((feature_dim,), dtype=jnp.float32),
-            covariance=(
-                jnp.eye(feature_dim, dtype=jnp.float32) / self._config.ridge
-            ),
+            covariance=(jnp.eye(feature_dim, dtype=jnp.float32) / self._config.ridge),
             abs_error_ema=jnp.array(0.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
         )
@@ -181,17 +224,14 @@ class RLSRewardModel:
         denominator = forgetting + jnp.dot(x, covariance_features)
         gain = covariance_features / denominator
         next_weights = state.weights + gain * error
-        next_covariance = (
-            state.covariance - jnp.outer(gain, covariance_features)
-        ) / forgetting
+        next_covariance = (state.covariance - jnp.outer(gain, covariance_features)) / forgetting
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)
         abs_error = jnp.abs(error)
         next_abs_error_ema = jnp.where(
             state.step_count == 0,
             abs_error,
-            _skip_zero_scale(error_decay, state.abs_error_ema)
-            + (1.0 - error_decay) * abs_error,
+            _skip_zero_scale(error_decay, state.abs_error_ema) + (1.0 - error_decay) * abs_error,
         )
         next_state = RLSRewardModelState(
             weights=next_weights,
@@ -232,21 +272,7 @@ class RLSRewardModel:
         )
 
     def _validated_config(self, config: RLSRewardModelConfig) -> RLSRewardModelConfig:
-        if type(config.feature_dim) is not int or config.feature_dim <= 0:
-            raise ValueError("feature_dim must be a positive builtin integer")
-        forgetting = validated_float32_scalar(
-            "forgetting", config.forgetting, positive=True, upper=1.0
-        )
-        ridge = validated_float32_scalar("ridge", config.ridge, positive=True)
-        error_decay = validated_float32_scalar(
-            "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
-        )
-        return replace(
-            config,
-            forgetting=forgetting,
-            ridge=ridge,
-            error_decay=error_decay,
-        )
+        return config
 
 
 __all__ = [

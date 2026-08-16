@@ -33,11 +33,13 @@ def test_rls_reward_model_feature_shape_guard_is_jit_stable() -> None:
     state = model.init()
     predict = jax.jit(lambda features: model.predict(state, features))
     update = jax.jit(
-        lambda features: model.update(
-            state,
-            features,
-            jnp.array(0.0, dtype=jnp.float32),
-        ).state.weights
+        lambda features: (
+            model.update(
+                state,
+                features,
+                jnp.array(0.0, dtype=jnp.float32),
+            ).state.weights
+        )
     )
 
     chex.assert_shape(predict(jnp.ones((4,), dtype=jnp.float32)), ())
@@ -63,9 +65,7 @@ def test_rls_reward_model_config_roundtrip() -> None:
 
 def test_rls_reward_model_learns_linear_reward() -> None:
     """RLS should quickly fit a deterministic linear reward surface."""
-    model = RLSRewardModel(
-        RLSRewardModelConfig(feature_dim=3, forgetting=1.0, ridge=0.1)
-    )
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=3, forgetting=1.0, ridge=0.1))
     state = model.init()
     true_weights = jnp.array([0.25, -0.5, 0.75], dtype=jnp.float32)
     features = jnp.array(
@@ -94,23 +94,19 @@ def test_rls_reward_model_learns_linear_reward() -> None:
 
 def test_rls_reward_model_rejects_invalid_config() -> None:
     """Invalid numerical settings should fail early."""
-    for config in (
-        RLSRewardModelConfig(feature_dim=0),
-        RLSRewardModelConfig(feature_dim=1, forgetting=0.0),
-        RLSRewardModelConfig(feature_dim=1, ridge=0.0),
-        RLSRewardModelConfig(feature_dim=1, error_decay=1.0),
+    for kwargs in (
+        {"feature_dim": 0},
+        {"feature_dim": 1, "forgetting": 0.0},
+        {"feature_dim": 1, "ridge": 0.0},
+        {"feature_dim": 1, "error_decay": 1.0},
     ):
-        try:
-            RLSRewardModel(config)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError(f"expected ValueError for {config}")
+        with pytest.raises(ValueError):
+            RLSRewardModelConfig(**kwargs)  # type: ignore[arg-type]
 
 
-@pytest.mark.parametrize("value", [True, 1.0, "1", np.int64(1)])
+@pytest.mark.parametrize("value", [True, 1.0, "1", [1]])
 def test_rls_reward_model_rejects_non_builtin_feature_dim(value: object) -> None:
-    """Dimensions must not accept bool or integer-like aliases."""
+    """Dimensions must not accept bool or non-integer aliases."""
     payload = RLSRewardModelConfig(feature_dim=1).to_config()
     payload["feature_dim"] = value
 
@@ -202,9 +198,7 @@ def test_rls_reward_model_canonicalizes_numpy_scalars() -> None:
 
 def test_rls_infinite_reward_on_zero_feature_does_not_poison_weights() -> None:
     """Inf reward * a silent feature's zero gain is 0*inf = NaN."""
-    model = RLSRewardModel(
-        RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0)
-    )
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
     state = model.init()
     features = jnp.array([0.0, 1.0], dtype=jnp.float32)
 
@@ -217,9 +211,7 @@ def test_rls_infinite_reward_on_zero_feature_does_not_poison_weights() -> None:
     assert float(poisoned.error) == 0.0
     chex.assert_trees_all_close(poisoned.gain, jnp.zeros_like(poisoned.gain))
 
-    recovered = model.update(
-        poisoned.state, features, jnp.array(1.0, dtype=jnp.float32)
-    )
+    recovered = model.update(poisoned.state, features, jnp.array(1.0, dtype=jnp.float32))
     chex.assert_tree_all_finite(recovered.state.weights)
     chex.assert_tree_all_finite(recovered.state.covariance)
     assert bool(recovered.update_applied)
@@ -231,9 +223,7 @@ def test_zero_error_decay_does_not_multiply_inf_ema() -> None:
         RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0, error_decay=0.0)
     )
     features = jnp.array([0.0, 1.0], dtype=jnp.float32)
-    state = model.update(
-        model.init(), features, jnp.array(1.0, dtype=jnp.float32)
-    ).state
+    state = model.update(model.init(), features, jnp.array(1.0, dtype=jnp.float32)).state
     state = state.replace(abs_error_ema=jnp.asarray(jnp.inf, dtype=jnp.float32))
     raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
     assert not bool(jnp.isfinite(raw))
@@ -241,3 +231,28 @@ def test_zero_error_decay_does_not_multiply_inf_ema() -> None:
     result = model.update(state, features, jnp.array(0.5, dtype=jnp.float32))
     assert bool(result.update_applied)
     assert bool(jnp.isfinite(result.state.abs_error_ema))
+
+
+def test_rls_reward_model_config_integer_and_scalar_validation() -> None:
+    with pytest.raises(ValueError, match="feature_dim"):
+        RLSRewardModelConfig(feature_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="feature_dim"):
+        RLSRewardModelConfig(feature_dim=4.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="feature_dim"):
+        RLSRewardModelConfig(feature_dim=0)
+    with pytest.raises(ValueError, match="forgetting"):
+        RLSRewardModelConfig(feature_dim=2, forgetting=float("nan"))
+    with pytest.raises(ValueError, match="ridge"):
+        RLSRewardModelConfig(feature_dim=2, ridge=0.0)
+
+    cfg = RLSRewardModelConfig(
+        feature_dim=np.int32(8),
+        forgetting=np.float32(0.95),
+        ridge=np.float32(5.0),
+        error_decay=np.float32(0.8),
+    )
+    assert type(cfg.feature_dim) is int
+    assert type(cfg.forgetting) is float
+    assert type(cfg.ridge) is float
+    assert type(cfg.error_decay) is float
+    assert cfg.feature_dim == 8
