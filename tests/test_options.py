@@ -479,7 +479,7 @@ def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
 
 
 @pytest.mark.unit
-def test_stomp_from_config_preserves_mapping_api_without_relaxing_schema() -> None:
+def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibility() -> None:
     class MappingSpoof:
         @property
         def __class__(self) -> type:  # type: ignore[override]
@@ -506,34 +506,43 @@ def test_stomp_from_config_preserves_mapping_api_without_relaxing_schema() -> No
         observation_dim=2,
     )
     payload = config.to_config()
+    payload["subtask_specs"] = tuple(payload["subtask_specs"])
+    payload["base_hidden_sizes"] = tuple(payload["base_hidden_sizes"])
+    payload["type"] = "historical-marker"
     assert STOMPConfig.from_config(MappingProxyType(payload)) == config
+
+    partial = STOMPConfig.from_config(
+        {
+            "subtask_specs": ({"feature_index": np.int32(0)},),
+            "observation_dim": np.int32(2),
+            "base_step_size": np.float32(0.05),
+        }
+    )
+    assert partial.subtask_specs == (SubtaskSpec(feature_index=0),)
+    assert type(partial.observation_dim) is int
+    assert type(partial.base_step_size) is float
+    assert partial.option_planning_backups_per_step == 0
 
     with pytest.raises(ValueError, match="mapping"):
         STOMPConfig.from_config(MappingSpoof())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="mapping could not be read"):
         STOMPConfig.from_config(HostileMapping())
 
-    with pytest.raises(ValueError, match="STOMPConfig"):
+    with pytest.raises(ValueError, match="invalid"):
         STOMPConfig.from_config({"unexpected_field": 1})
 
-    for mutation, match in (
-        ({"type": "historical-marker"}, "type"),
-        ({"base_step_size": np.float32(0.01)}, "base_step_size"),
-        ({"observation_dim": np.int32(2)}, "observation_dim"),
-        ({"base_hidden_sizes": tuple(payload["base_hidden_sizes"])}, "base_hidden_sizes"),
-        ({"subtask_specs": tuple(payload["subtask_specs"])}, "subtask_specs"),
+    for field, value in (
+        ("subtask_specs", "not-a-sequence"),
+        ("base_hidden_sizes", "not-a-sequence"),
     ):
         invalid = config.to_config()
-        invalid.update(mutation)
-        with pytest.raises(ValueError, match=match):
+        invalid[field] = value
+        with pytest.raises(ValueError, match=field):
             STOMPConfig.from_config(invalid)
 
-    missing = config.to_config()
-    missing.pop("base_step_size")
-    with pytest.raises(ValueError, match="fields"):
-        STOMPConfig.from_config(missing)
-
-    invalid_spec = config.to_config()
-    invalid_spec["subtask_specs"] = [{"feature_index": 0}]
-    with pytest.raises(ValueError, match="SubtaskSpec fields"):
-        STOMPConfig.from_config(invalid_spec)
+    for bad_spec, match in (
+        ({"feature_index": True}, "feature_index"),
+        ({"feature_index": 0, "threshold": "invalid"}, "threshold"),
+    ):
+        with pytest.raises(ValueError, match=match):
+            STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
