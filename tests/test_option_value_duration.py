@@ -57,6 +57,38 @@ def test_config_roundtrip_validation_and_fixed_parameter_count() -> None:
 
 
 @pytest.mark.parametrize(
+    "invalid",
+    (True, np.bool_(True), 1.5, np.float64(2.0), "2", None, -1, 2_147_483_648),
+)
+def test_learner_rejects_noncanonical_option_counts(invalid: object) -> None:
+    with pytest.raises(ValueError, match="n_options"):
+        OptionValueDurationLearner(invalid)  # type: ignore[arg-type]
+
+    payload = OptionValueDurationLearner(2).to_config()
+    payload["n_options"] = invalid
+    with pytest.raises(ValueError, match="n_options"):
+        OptionValueDurationLearner.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    (True, np.bool_(True), 1.5, np.float64(2.0), "2", None, -1),
+)
+def test_learner_rejects_noncanonical_feature_dimensions(invalid: object) -> None:
+    learner = OptionValueDurationLearner(2)
+    with pytest.raises(ValueError, match="feature_dim"):
+        learner.trainable_parameter_count(invalid)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="feature_dim"):
+        learner.init(invalid)  # type: ignore[arg-type]
+
+
+def test_learner_rejects_feature_dimensions_above_int32() -> None:
+    learner = OptionValueDurationLearner(2)
+    with pytest.raises(ValueError, match="feature_dim"):
+        learner.trainable_parameter_count(2_147_483_648)
+
+
+@pytest.mark.parametrize(
     "field",
     ("reward_step_size", "duration_step_size", "duration_floor"),
 )

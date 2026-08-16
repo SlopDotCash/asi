@@ -27,9 +27,10 @@ from __future__ import annotations
 
 import dataclasses
 import functools
+import operator
 import time
 from numbers import Real
-from typing import Any
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
@@ -44,6 +45,31 @@ REWARD_HEAD = 0
 DURATION_HEAD = 1
 N_HEADS = 2
 _INT32_MAX = 2_147_483_647
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int = 1) -> int:
+    """Validate one actual host integer in the signed-int32 domain."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    return canonical
 
 
 def _require_float32_real(
@@ -227,9 +253,7 @@ class OptionValueDurationLearner:
         config: OptionValueDurationConfig | None = None,
     ):
         """Create a fixed-capacity option predictor."""
-        if n_options < 1:
-            raise ValueError("n_options must be positive")
-        self._n_options = n_options
+        self._n_options = _require_int32("n_options", n_options)
         self._config = config or OptionValueDurationConfig()
 
     @property
@@ -256,23 +280,21 @@ class OptionValueDurationLearner:
         payload = dict(config)
         payload.pop("type", None)
         return cls(
-            n_options=int(payload["n_options"]),
+            n_options=payload["n_options"],
             config=OptionValueDurationConfig.from_config(payload["config"]),
         )
 
     def trainable_parameter_count(self, feature_dim: int) -> int:
         """Return the exact history-independent trainable parameter count."""
-        if feature_dim < 1:
-            raise ValueError("feature_dim must be positive")
-        return self._n_options * N_HEADS * feature_dim
+        validated_feature_dim = _require_int32("feature_dim", feature_dim)
+        return self._n_options * N_HEADS * validated_feature_dim
 
     def init(self, feature_dim: int) -> OptionValueDurationState:
         """Initialize all heads to zero."""
-        if feature_dim < 1:
-            raise ValueError("feature_dim must be positive")
+        validated_feature_dim = _require_int32("feature_dim", feature_dim)
         return OptionValueDurationState(
             weights=jnp.zeros(
-                (self._n_options, N_HEADS, feature_dim),
+                (self._n_options, N_HEADS, validated_feature_dim),
                 dtype=jnp.float32,
             ),
             option_update_counts=jnp.zeros((self._n_options,), dtype=jnp.int32),
