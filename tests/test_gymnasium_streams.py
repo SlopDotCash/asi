@@ -573,3 +573,71 @@ class TestCollectTrajectoryValueMode:
         )
 
         assert jnp.allclose(plain, with_estimator)
+
+
+class TestGammaEpsilonScalarContracts:
+    """gamma and epsilon are documented discount/probability scalars in [0, 1].
+
+    Before this hardening pass, none of the call sites below validated
+    ``gamma`` or ``epsilon`` at all: a NaN, out-of-range, or class-spoofed
+    value silently propagated into the TD bootstrap (producing NaN or
+    reward-scale-breaking targets) or into the exploration policy, instead
+    of failing closed with a clean ``ValueError``.
+    """
+
+    @pytest.mark.parametrize("bad_gamma", [float("nan"), 50.0, -3.0, "0.5", True])
+    def test_collect_trajectory_rejects_bad_gamma(self, bad_gamma):
+        env = gymnasium.make("CartPole-v1")
+        with pytest.raises(ValueError, match="gamma"):
+            collect_trajectory(
+                env,
+                None,
+                num_steps=1,
+                mode=PredictionMode.VALUE,
+                value_estimator=lambda _obs: 1.0,
+                gamma=bad_gamma,
+            )
+
+    @pytest.mark.parametrize("bad_gamma", [float("nan"), 50.0, -3.0, "0.5", True])
+    def test_gymnasium_stream_rejects_bad_gamma(self, bad_gamma):
+        env = gymnasium.make("CartPole-v1")
+        with pytest.raises(ValueError, match="gamma"):
+            GymnasiumStream(env, mode=PredictionMode.VALUE, gamma=bad_gamma)
+
+    @pytest.mark.parametrize("bad_gamma", [float("nan"), 50.0, -3.0, "0.5", True])
+    def test_td_stream_rejects_bad_gamma(self, bad_gamma):
+        env = gymnasium.make("CartPole-v1")
+        with pytest.raises(ValueError, match="gamma"):
+            TDStream(env, gamma=bad_gamma)
+
+    @pytest.mark.parametrize("bad_gamma", [float("nan"), 50.0, -3.0])
+    def test_make_gymnasium_stream_rejects_bad_gamma(self, bad_gamma):
+        with pytest.raises(ValueError, match="gamma"):
+            make_gymnasium_stream("CartPole-v1", mode=PredictionMode.VALUE, gamma=bad_gamma)
+
+    @pytest.mark.parametrize("bad_epsilon", [float("nan"), 5.0, -0.1, "0.1"])
+    def test_make_epsilon_greedy_policy_rejects_bad_epsilon(self, bad_epsilon):
+        env = gymnasium.make("CartPole-v1")
+        base_policy = make_random_policy(env, seed=0)
+        with pytest.raises(ValueError, match="epsilon"):
+            make_epsilon_greedy_policy(base_policy, env, epsilon=bad_epsilon)
+
+    @pytest.mark.parametrize("gamma", [0.0, 1.0, 0.99])
+    def test_boundary_gammas_are_accepted(self, gamma):
+        env = gymnasium.make("CartPole-v1")
+        stream = GymnasiumStream(env, mode=PredictionMode.VALUE, gamma=gamma)
+        assert stream._gamma == gamma
+
+    def test_valid_gamma_computes_expected_td_target(self):
+        """gamma=0.5 with a fixed estimator produces reward + 0.5 * 10.0 = 6.0."""
+        env = gymnasium.make("CartPole-v1")
+        _, targets = collect_trajectory(
+            env,
+            lambda _obs: 0,
+            num_steps=1,
+            mode=PredictionMode.VALUE,
+            value_estimator=lambda _obs: 10.0,
+            gamma=0.5,
+        )
+        # CartPole gives reward=1.0 per non-terminal step.
+        assert jnp.allclose(targets, jnp.array([[6.0]]))

@@ -31,6 +31,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jax import Array
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.learners import LinearLearner
 from alberta_framework.core.types import LearnerState, TimeStep
 
@@ -182,7 +183,11 @@ def make_epsilon_greedy_policy(
 
     Returns:
         Epsilon-greedy policy
+
+    Raises:
+        ValueError: If ``epsilon`` is not a finite real number in [0, 1].
     """
+    epsilon = validated_float32_scalar("epsilon", epsilon, lower=0.0, upper=1.0)
     random_policy = make_random_policy(env, seed + 1)
     rng = jr.key(seed)
 
@@ -232,7 +237,11 @@ def collect_trajectory(
     Returns:
         Tuple of (observations, targets) as JAX arrays with shape
         (num_steps, feature_dim) and (num_steps, target_dim)
+
+    Raises:
+        ValueError: If ``gamma`` is not a finite real number in [0, 1].
     """
+    gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
     if policy is None:
         policy = make_random_policy(env, seed)
 
@@ -388,7 +397,11 @@ class GymnasiumStream:
             include_action_in_features: If True, features = concat(obs, action).
                 If False, features = obs only
             seed: Random seed for environment resets and random policy
+
+        Raises:
+            ValueError: If ``gamma`` is not a finite real number in [0, 1].
         """
+        gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
         self._env = env
         self._mode = mode
         self._gamma = gamma
@@ -551,7 +564,11 @@ class TDStream:
             gamma: Discount factor
             include_action_in_features: If True, learn Q(s,a). If False, learn V(s)
             seed: Random seed
+
+        Raises:
+            ValueError: If ``gamma`` is not a finite real number in [0, 1].
         """
+        gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
         self._env = env
         self._gamma = gamma
         self._include_action_in_features = include_action_in_features
@@ -673,6 +690,10 @@ def make_gymnasium_stream(
 
     Returns:
         GymnasiumStream wrapping the environment
+
+    Raises:
+        ValueError: If ``gamma`` is not a finite real number in [0, 1]
+            (validated by :class:`GymnasiumStream`).
     """
     import gymnasium
 
