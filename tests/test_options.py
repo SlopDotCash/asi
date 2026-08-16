@@ -2,6 +2,7 @@
 
 import json
 from fractions import Fraction
+from types import MappingProxyType
 from typing import Any
 
 import chex
@@ -511,23 +512,28 @@ def test_stomp_resource_preflight_matches_state_and_rejects_before_allocation() 
 
 
 @pytest.mark.unit
-def test_stomp_from_config_requires_exact_json_containers_and_schema() -> None:
+def test_stomp_from_config_preserves_mapping_partial_and_tuple_compatibility() -> None:
     config = STOMPConfig(
         subtask_specs=(SubtaskSpec(feature_index=0),),
         observation_dim=2,
     )
     payload = config.to_config()
-    for mutation, message in (
-        ({**payload, "type": "wrong"}, "type"),
-        ({**payload, "subtask_specs": tuple(payload["subtask_specs"])}, "subtask_specs"),
-        ({**payload, "base_hidden_sizes": tuple(payload["base_hidden_sizes"])}, "hidden"),
-        ({**payload, "observation_dim": np.int32(2)}, "observation_dim"),
-        ({**payload, "base_step_size": np.float32(0.05)}, "base_step_size"),
-        ({**payload, "extra": 1}, "fields"),
-    ):
-        with pytest.raises(ValueError, match=message):
-            STOMPConfig.from_config(mutation)
+    payload["subtask_specs"] = tuple(payload["subtask_specs"])
+    payload["base_hidden_sizes"] = tuple(payload["base_hidden_sizes"])
+    payload["type"] = "historical-marker"
+    assert STOMPConfig.from_config(MappingProxyType(payload)) == config
 
-    legacy = payload.copy()
-    legacy.pop("option_planning_backups_per_step")
-    assert STOMPConfig.from_config(legacy).option_planning_backups_per_step == 0
+    partial = STOMPConfig.from_config(
+        {"subtask_specs": ({"feature_index": 0},), "observation_dim": 2}
+    )
+    assert partial.subtask_specs == (SubtaskSpec(feature_index=0),)
+    assert partial.option_planning_backups_per_step == 0
+
+    for field, value in (
+        ("subtask_specs", "not-a-sequence"),
+        ("base_hidden_sizes", "not-a-sequence"),
+    ):
+        invalid = config.to_config()
+        invalid[field] = value
+        with pytest.raises(ValueError, match=field):
+            STOMPConfig.from_config(invalid)
