@@ -68,6 +68,11 @@ _ACTUAL_INT_TYPES = frozenset(
 )
 
 
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Skip ``0 * inf`` so a disabled error EMA replaces stale diagnostics."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
@@ -125,25 +130,36 @@ class SparseFTLWorldModelConfig:
 
     def __post_init__(self) -> None:
         """Validate all static dimensions and numerical parameters."""
+        observation_dim = _require_int32("observation_dim", self.observation_dim, minimum=1)
+        action_dim = _require_int32("action_dim", self.action_dim, minimum=1)
+        projection_dim = _require_int32("projection_dim", self.projection_dim, minimum=1)
+        bins = _require_int32("bins", self.bins, minimum=2)
+        derived_dimensions = (
+            ("input_dim", observation_dim + action_dim),
+            ("feature_dim", projection_dim * bins),
+        )
+        for name, value in derived_dimensions:
+            if value > _INT32_MAX:
+                raise ValueError(f"derived {name} must be at most {_INT32_MAX}, got {value}")
         object.__setattr__(
             self,
             "observation_dim",
-            _require_int32("observation_dim", self.observation_dim, minimum=1),
+            observation_dim,
         )
         object.__setattr__(
             self,
             "action_dim",
-            _require_int32("action_dim", self.action_dim, minimum=1),
+            action_dim,
         )
         object.__setattr__(
             self,
             "projection_dim",
-            _require_int32("projection_dim", self.projection_dim, minimum=1),
+            projection_dim,
         )
         object.__setattr__(
             self,
             "bins",
-            _require_int32("bins", self.bins, minimum=2),
+            bins,
         )
         ridge = _finite_positive_normal_float32("ridge", self.ridge)
         statistics_decay = validated_float32_scalar(
@@ -409,7 +425,11 @@ class SparseFTLWorldModel:
         error_ema = jnp.where(
             first,
             squared_error,
-            cfg.error_decay * state.prediction_error_ema + (1.0 - cfg.error_decay) * squared_error,
+            _skip_zero_scale(
+                jnp.asarray(cfg.error_decay, dtype=jnp.float32),
+                state.prediction_error_ema,
+            )
+            + (1.0 - cfg.error_decay) * squared_error,
         )
         max_step_count = jnp.array(2_147_483_647, dtype=jnp.int32)
         next_step_count = jnp.minimum(
