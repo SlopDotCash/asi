@@ -51,6 +51,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -66,6 +67,7 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
 
 # Paper default for the step-size floor: eta_min = e^-15.
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -90,6 +92,13 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
+    if float32_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * float32_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
 
 
 _DEFAULT_ETA_MIN = math.exp(-15.0)
@@ -128,17 +137,27 @@ def _require_finite_config_float(
     if not any(actual_type is supported_type for supported_type in _SUPPORTED_CONFIG_REAL_TYPES):
         raise ValueError(message)
     try:
-        concrete = float(cast(Any, value))
-    except (OverflowError, TypeError, ValueError) as error:
+        concrete = validated_float32_scalar(
+            name,
+            value,
+            positive=not minimum_inclusive and minimum == 0.0,
+            lower=minimum if minimum_inclusive else None,
+            upper=maximum,
+        )
+    except Exception as error:
         raise ValueError(message) from error
-    minimum_valid = concrete >= minimum if minimum_inclusive else concrete > minimum
-    if (
-        not math.isfinite(concrete)
-        or not minimum_valid
-        or (maximum is not None and concrete > maximum)
-    ):
-        raise ValueError(message)
     return concrete
+
+
+def _require_positive_normal_config_float(
+    value: object, name: str, *, maximum: float | None = None
+) -> float:
+    if type(value) not in _SUPPORTED_CONFIG_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real scalar in its documented range")
+    try:
+        return validated_float32_scalar(name, value, lower=_FLOAT32_MIN_NORMAL, upper=maximum)
+    except Exception as error:
+        raise ValueError(f"{name} must be a finite real scalar in its documented range") from error
 
 
 @chex.dataclass(frozen=True)
@@ -248,11 +267,8 @@ class SwiftTD:
         Raises:
             ValueError: If a hyperparameter is outside its valid range
         """
-        self._initial_step_size = _require_finite_config_float(
-            initial_step_size,
-            "initial_step_size",
-            minimum=0.0,
-            minimum_inclusive=False,
+        self._initial_step_size = _require_positive_normal_config_float(
+            initial_step_size, "initial_step_size"
         )
         self._meta_step_size = _require_finite_config_float(
             meta_step_size,
@@ -267,25 +283,13 @@ class SwiftTD:
             minimum_inclusive=True,
             maximum=1.0,
         )
-        self._eta = _require_finite_config_float(
-            eta,
-            "eta",
-            minimum=0.0,
-            minimum_inclusive=False,
+        self._eta = _require_positive_normal_config_float(eta, "eta")
+        self._step_size_decay = _require_positive_normal_config_float(
+            step_size_decay, "step_size_decay", maximum=1.0
         )
-        self._step_size_decay = _require_finite_config_float(
-            step_size_decay,
-            "step_size_decay",
-            minimum=0.0,
-            minimum_inclusive=False,
-            maximum=1.0,
-        )
-        self._eta_min = _require_finite_config_float(
-            eta_min,
-            "eta_min",
-            minimum=0.0,
-            minimum_inclusive=False,
-        )
+        self._eta_min = _require_positive_normal_config_float(eta_min, "eta_min")
+        if self._eta_min > self._eta:
+            raise ValueError("eta_min must be <= eta")
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -309,8 +313,12 @@ class SwiftTD:
         Returns:
             SwiftTD state with per-feature log step-sizes and zeroed traces
         """
-        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX - 1)
         aug_dim = feature_dim + 1
+        _require_float32_resource(
+            "SwiftTD state",
+            float32_scalars=8 * aug_dim + 5,
+        )
         # The dense reference implementation clips beta into
         # [ln(eta_min), ln(eta)] on every pass, including the (otherwise
         # trivial) very first one -- so step-sizes are capped BEFORE the
@@ -334,6 +342,66 @@ class SwiftTD:
             eta=jnp.array(self._eta, dtype=jnp.float32),
             eta_min=jnp.array(self._eta_min, dtype=jnp.float32),
             step_size_decay=jnp.array(self._step_size_decay, dtype=jnp.float32),
+        )
+
+    @staticmethod
+    def _validate_state_static_contract(state: SwiftTDState) -> int:
+        """Return feature_dim after rejecting malformed adopted state metadata."""
+        if type(state) is not SwiftTDState:
+            raise TypeError("state must be a SwiftTDState")
+        vectors = (
+            ("state.log_step_sizes", state.log_step_sizes),
+            ("state.eligibility_traces", state.eligibility_traces),
+            ("state.z_bar_traces", state.z_bar_traces),
+            ("state.p_traces", state.p_traces),
+            ("state.h_traces", state.h_traces),
+            ("state.h_old_traces", state.h_old_traces),
+            ("state.h_temp_traces", state.h_temp_traces),
+            ("state.prev_weight_update", state.prev_weight_update),
+        )
+        try:
+            augmented_dim = int(state.log_step_sizes.shape[0])
+        except Exception as error:
+            raise TypeError("state.log_step_sizes must expose array metadata") from error
+        if augmented_dim < 2:
+            raise ValueError("state vector length must include a positive feature dimension")
+        _require_float32_resource("SwiftTD adopted state", float32_scalars=8 * augmented_dim + 5)
+        for name, value in vectors:
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != (augmented_dim,):
+                raise ValueError(f"{name} must have shape ({augmented_dim},)")
+            if jnp.dtype(value.dtype) != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
+        for name, value in (
+            ("state.meta_step_size", state.meta_step_size),
+            ("state.trace_decay", state.trace_decay),
+            ("state.eta", state.eta),
+            ("state.eta_min", state.eta_min),
+            ("state.step_size_decay", state.step_size_decay),
+        ):
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != ():
+                raise ValueError(f"{name} must have scalar shape")
+            if jnp.dtype(value.dtype) != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
+        return augmented_dim - 1
+
+    @staticmethod
+    def _state_is_valid(state: SwiftTDState) -> Bool[Array, ""]:
+        return (
+            floating_tree_is_finite(state)
+            & (state.meta_step_size >= 0.0)
+            & (state.trace_decay >= 0.0)
+            & (state.trace_decay <= 1.0)
+            & (state.eta > 0.0)
+            & (state.eta_min > 0.0)
+            & (state.eta_min <= state.eta)
+            & (state.step_size_decay > 0.0)
+            & (state.step_size_decay <= 1.0)
+            & jnp.all(state.log_step_sizes >= jnp.log(state.eta_min))
+            & jnp.all(state.log_step_sizes <= jnp.log(state.eta))
         )
 
     def update(
@@ -369,6 +437,19 @@ class SwiftTD:
         Returns:
             SwiftTDUpdate with weight deltas and updated state
         """
+        feature_dim = self._validate_state_static_contract(state)
+        for name, value, shape in (
+            ("td_error", td_error, ()),
+            ("observation", observation, (feature_dim,)),
+            ("next_observation", next_observation, (feature_dim,)),
+            ("gamma", gamma, ()),
+        ):
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != shape:
+                raise ValueError(f"{name} must have shape {shape}")
+            if jnp.dtype(value.dtype) != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
         # V(s') is already folded into td_error, but the public transition is
         # accepted only when every supplied component is finite.
         next_observation_finite = jnp.all(jnp.isfinite(next_observation))
@@ -391,7 +472,9 @@ class SwiftTD:
         trace_dot = jnp.dot(state.eligibility_traces, phi)
         z_ext = state.eligibility_traces + z_delta * (1.0 - trace_dot)
         p_ext = state.p_traces + state.h_old_traces * phi
-        z_bar_ext = state.z_bar_traces + z_delta * (1.0 - trace_dot - state.z_bar_traces * phi)
+        z_bar_ext = state.z_bar_traces + z_delta * (
+            1.0 - trace_dot - state.z_bar_traces * phi
+        )
         h_temp_ext = (
             state.h_traces
             - state.h_old_traces * phi * (z_ext - z_delta)
@@ -479,7 +562,7 @@ class SwiftTD:
             & jnp.isfinite(gamma_scalar)
         )
         update_applied = (
-            floating_tree_is_finite(state)
+            self._state_is_valid(state)
             & inputs_valid
             & jnp.all(jnp.isfinite(meta_delta))
             & jnp.all(jnp.isfinite(delta_w))
