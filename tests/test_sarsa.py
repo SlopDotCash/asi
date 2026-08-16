@@ -1272,6 +1272,60 @@ def test_sarsa_config_rejects_hostile_integer_hook_without_calling_it() -> None:
         SARSAConfig(n_actions=HostileIndex())  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("float_type", [np.dtype(code).type for code in ("e", "f", "d", "g")])
+def test_sarsa_config_accepts_full_numpy_float_family(float_type) -> None:
+    config = SARSAConfig(
+        n_actions=2,
+        gamma=float_type(0.5),
+        epsilon_start=float_type(0.25),
+        epsilon_end=float_type(0.125),
+    )
+    assert type(config.gamma) is float
+    assert type(config.epsilon_start) is float
+    assert type(config.epsilon_end) is float
+
+
+@pytest.mark.parametrize("field", ["gamma", "epsilon_start", "epsilon_end"])
+def test_sarsa_config_rejects_float_subclasses_without_calling_hooks(field: str) -> None:
+    class HostileFloat(float):
+        def __float__(self) -> float:
+            raise AssertionError("untrusted __float__ must not run")
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise AssertionError("untrusted as_integer_ratio must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted __repr__ must not run")
+
+    with pytest.raises(ValueError, match=field):
+        SARSAConfig(n_actions=2, **{field: HostileFloat(0.25)})
+
+
+@pytest.mark.parametrize("field", ("gamma", "epsilon_start", "epsilon_end"))
+def test_sarsa_config_rejects_exact_nonzero_longdouble_underflow(field: str) -> None:
+    nonzero = np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
+    with pytest.raises(ValueError, match=rf"{field}.*exact nonzero"):
+        SARSAConfig(n_actions=2, **{field: nonzero})
+
+
+def test_sarsa_decay_relationship_uses_exact_host_values() -> None:
+    start = np.nextafter(np.longdouble(0.5), np.longdouble(0.0))
+    with pytest.raises(ValueError, match="epsilon_end must not exceed"):
+        SARSAConfig(
+            n_actions=2,
+            epsilon_start=start,
+            epsilon_end=np.longdouble(0.5),
+            epsilon_decay_steps=1,
+        )
+
+
+def test_sarsa_config_preserves_exact_builtin_zero_compatibility() -> None:
+    positive = SARSAConfig(n_actions=2, gamma=0.0, epsilon_start=0.0, epsilon_end=0.0)
+    negative = SARSAConfig(n_actions=2, gamma=-0.0, epsilon_start=-0.0, epsilon_end=-0.0)
+    assert not np.signbit(positive.gamma)
+    assert np.signbit(negative.gamma)
+
+
 def test_sarsa_config_from_config_requires_exact_compatibility_schema() -> None:
     class DictSubclass(dict):
         pass
@@ -1296,6 +1350,37 @@ def test_sarsa_agent_rejects_hostile_lambda_before_horde_construction() -> None:
         SARSAAgent(SARSAConfig(n_actions=2), lamda=HostileFloat())  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "field", ["lamda", "step_size", "sparsity", "leaky_relu_slope", "utility_decay"]
+)
+def test_sarsa_agent_rejects_float_subclasses_without_calling_hooks(field: str) -> None:
+    class HostileFloat(float):
+        def __float__(self) -> float:
+            raise AssertionError("untrusted __float__ must not run")
+
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise AssertionError("untrusted as_integer_ratio must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted __repr__ must not run")
+
+    with pytest.raises(ValueError, match=field):
+        SARSAAgent(SARSAConfig(n_actions=2), **{field: HostileFloat(0.25)})
+
+
+@pytest.mark.parametrize(
+    "field", ("lamda", "step_size", "sparsity", "leaky_relu_slope", "utility_decay")
+)
+def test_sarsa_agent_rejects_exact_nonzero_longdouble_underflow(field: str) -> None:
+    nonzero = np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
+    with pytest.raises(ValueError, match=rf"{field}.*exact nonzero"):
+        SARSAAgent(
+            SARSAConfig(n_actions=2),
+            hidden_sizes=(),
+            **{field: nonzero},
+        )
+
+
 def test_sarsa_agent_roundtrip_and_exact_schema() -> None:
     class DictSubclass(dict):
         pass
@@ -1308,6 +1393,59 @@ def test_sarsa_agent_roundtrip_and_exact_schema() -> None:
         SARSAAgent.from_config({**payload, "extra": None})
     with pytest.raises(ValueError, match="actual dict"):
         SARSAAgent.from_config(DictSubclass(payload))
+
+
+def test_sarsa_agent_from_config_rejects_prediction_demon_dict_subclasses() -> None:
+    class DictSubclass(dict):
+        pass
+
+    demon = GVFSpec(
+        name="prediction",
+        demon_type=DemonType.PREDICTION,
+        gamma=0.0,
+        lamda=0.0,
+        cumulant_index=0,
+    )
+    payload = SARSAAgent(
+        SARSAConfig(n_actions=2), hidden_sizes=(), prediction_demons=[demon]
+    ).to_config()
+    payload["prediction_demons"][0] = DictSubclass(payload["prediction_demons"][0])
+    with pytest.raises(ValueError, match="prediction_demons entries"):
+        SARSAAgent.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("n_actions", np.int64(2)),
+        ("epsilon_decay_steps", np.int32(0)),
+        ("gamma", np.float32(0.5)),
+        ("epsilon_start", 0),
+    ),
+)
+def test_sarsa_config_loader_requires_exact_json_scalars(field: str, value: object) -> None:
+    payload = SARSAConfig(n_actions=2).to_config()
+    payload[field] = value
+    with pytest.raises(ValueError, match="exact JSON scalar types"):
+        SARSAConfig.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("hidden_sizes", [np.int64(2)]),
+        ("sparsity", np.float32(0.5)),
+        ("leaky_relu_slope", 0),
+        ("lamda", np.float64(0.5)),
+        ("utility_decay", 1),
+        ("use_layer_norm", np.bool_(True)),
+    ),
+)
+def test_sarsa_agent_loader_requires_exact_json_scalars(field: str, value: object) -> None:
+    payload = SARSAAgent(SARSAConfig(n_actions=2), hidden_sizes=()).to_config()
+    payload[field] = value
+    with pytest.raises(ValueError, match="serialized"):
+        SARSAAgent.from_config(payload)
 
 
 def test_sarsa_init_rejects_aggregate_state_overflow_before_jax_allocation() -> None:

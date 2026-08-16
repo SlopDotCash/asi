@@ -33,7 +33,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.horde import HordeLearner
 from alberta_framework.core.multi_head_learner import (
     MULTI_HEAD_MLP_STATE_SCHEMA,
@@ -101,6 +101,7 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
+_ACTUAL_FLOAT_TYPES = frozenset({float, *(np.dtype(code).type for code in ("e", "f", "d", "g"))})
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -110,6 +111,24 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _validated_config_float_with_ratio(
+    name: str, value: object, **bounds: Any
+) -> tuple[float, int, int]:
+    """Validate only concrete built-in/NumPy host scalars before conversion."""
+    if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
+        raise ValueError(f"{name} must be a finite real scalar")
+    normalized, numerator, denominator = validated_float32_scalar_with_ratio(
+        name, value, **bounds
+    )
+    if numerator != 0 and normalized == 0.0:
+        raise ValueError(f"{name} must not narrow from an exact nonzero value to float32 zero")
+    return normalized, numerator, denominator
+
+
+def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
+    return _validated_config_float_with_ratio(name, value, **bounds)[0]
 
 
 def _preflight_sarsa_direct_state(
@@ -162,14 +181,17 @@ class SARSAConfig:
         epsilon_decay_steps = _require_int32(
             "epsilon_decay_steps", self.epsilon_decay_steps, minimum=0
         )
-        gamma = validated_float32_scalar("gamma", self.gamma, lower=0.0, upper=1.0)
-        epsilon_start = validated_float32_scalar(
+        gamma = _validated_config_float("gamma", self.gamma, lower=0.0, upper=1.0)
+        epsilon_start, start_numerator, start_denominator = _validated_config_float_with_ratio(
             "epsilon_start", self.epsilon_start, lower=0.0, upper=1.0
         )
-        epsilon_end = validated_float32_scalar(
+        epsilon_end, end_numerator, end_denominator = _validated_config_float_with_ratio(
             "epsilon_end", self.epsilon_end, lower=0.0, upper=1.0
         )
-        if epsilon_decay_steps > 0 and epsilon_end > epsilon_start:
+        if (
+            epsilon_decay_steps > 0
+            and end_numerator * start_denominator > start_numerator * end_denominator
+        ):
             raise ValueError("epsilon_end must not exceed epsilon_start when decaying")
         object.__setattr__(self, "n_actions", n_actions)
         object.__setattr__(self, "epsilon_decay_steps", epsilon_decay_steps)
@@ -194,6 +216,10 @@ class SARSAConfig:
             raise ValueError("SARSA config must be an actual dict")
         if not all(type(key) is str for key in config) or set(config) != _SARSA_CONFIG_FIELDS:
             raise ValueError("SARSA config fields do not match the compatibility schema")
+        for name, value in config.items():
+            expected_type = int if name in {"n_actions", "epsilon_decay_steps"} else float
+            if type(value) is not expected_type:
+                raise ValueError("serialized SARSA config values must use exact JSON scalar types")
         return cls(**config)
 
 
@@ -402,11 +428,11 @@ class SARSAAgent:
         """
         if type(sarsa_config) is not SARSAConfig:
             raise ValueError("sarsa_config must be an actual SARSAConfig")
-        lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
-        step_size = validated_float32_scalar("step_size", step_size, lower=0.0)
-        sparsity = validated_float32_scalar("sparsity", sparsity, lower=0.0, upper=1.0)
-        leaky_relu_slope = validated_float32_scalar("leaky_relu_slope", leaky_relu_slope, lower=0.0)
-        utility_decay = validated_float32_scalar(
+        lamda = _validated_config_float("lamda", lamda, lower=0.0, upper=1.0)
+        step_size = _validated_config_float("step_size", step_size, lower=0.0)
+        sparsity = _validated_config_float("sparsity", sparsity, lower=0.0, upper=1.0)
+        leaky_relu_slope = _validated_config_float("leaky_relu_slope", leaky_relu_slope, lower=0.0)
+        utility_decay = _validated_config_float(
             "utility_decay",
             utility_decay,
             lower=0.0,
@@ -539,6 +565,13 @@ class SARSAAgent:
             raise ValueError("serialized prediction_demons must be an actual list or None")
         if type(config["trace_mode"]) is not str:
             raise ValueError("serialized trace_mode must be an actual string")
+        if any(type(width) is not int for width in config["hidden_sizes"]):
+            raise ValueError("serialized hidden_sizes entries must be actual integers")
+        for name in ("sparsity", "leaky_relu_slope", "lamda", "utility_decay"):
+            if type(config[name]) is not float:
+                raise ValueError("serialized SARSA float fields must be actual floats")
+        if type(config["use_layer_norm"]) is not bool:
+            raise ValueError("serialized use_layer_norm must be an actual bool")
 
         sarsa_config = SARSAConfig.from_config(config.pop("sarsa_config"))
         optimizer = optimizer_from_config(config.pop("optimizer"))
@@ -551,6 +584,8 @@ class SARSAAgent:
         pred_demons_cfg = config.pop("prediction_demons", None)
         prediction_demons = None
         if pred_demons_cfg is not None:
+            if any(type(demon) is not dict for demon in pred_demons_cfg):
+                raise ValueError("serialized prediction_demons entries must be actual dicts")
             prediction_demons = [GVFSpec.from_config(d) for d in pred_demons_cfg]
 
         trace_mode_str = config.pop("trace_mode", None)
