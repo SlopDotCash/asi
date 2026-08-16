@@ -113,6 +113,18 @@ def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
     )
 
 
+def _require_int32_product(name: str, left: int, right: int) -> int:
+    if left > _INT32_MAX // right:
+        raise ValueError(f"derived {name} must fit in signed int32")
+    return left * right
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a bool")
+    return value
+
+
 @dataclasses.dataclass(frozen=True)
 class LatentWorldModelConfig:
     """Configuration for :class:`LatentWorldModel`.
@@ -153,7 +165,7 @@ class LatentWorldModelConfig:
     encoder_collapse_gate_threshold: float = 0.0
 
     def __post_init__(self) -> None:
-        """Validate structural dimensions and canonicalize integer types."""
+        """Validate and canonicalize the complete static construction."""
         object.__setattr__(
             self,
             "observation_dim",
@@ -174,6 +186,77 @@ class LatentWorldModelConfig:
             "hidden_sizes",
             _validate_hidden_sizes(self.hidden_sizes),
         )
+        for name in (
+            "predict_delta",
+            "use_layer_norm",
+            "include_action_interactions",
+            "encoder_learning",
+        ):
+            object.__setattr__(self, name, _require_bool(name, getattr(self, name)))
+        if type(self.trace_mode) is not TraceMode:
+            raise ValueError("trace_mode must be a TraceMode")
+
+        observation_scale = self.observation_scale
+        if observation_scale is not None:
+            if type(observation_scale) is not tuple:
+                raise ValueError("observation_scale must be an actual tuple or None")
+            if len(observation_scale) != self.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar(
+                    f"observation_scale[{index}]", scale, positive=True
+                )
+                for index, scale in enumerate(observation_scale)
+            )
+            object.__setattr__(self, "observation_scale", observation_scale)
+
+        scalar_specs: tuple[tuple[str, dict[str, Any]], ...] = (
+            ("gamma", {"lower": 0.0, "upper": 1.0}),
+            ("reward_scale", {"positive": True}),
+            ("encoder_scale", {"positive": True}),
+            ("encoder_bias_scale", {"lower": 0.0}),
+            ("step_size", {"positive": True}),
+            ("sparsity", {"lower": 0.0, "upper": 1.0}),
+            ("leaky_relu_slope", {"lower": 0.0, "upper": 1.0}),
+            ("utility_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
+            ("surprise_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
+            ("collapse_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
+            ("min_latent_std", {"lower": 0.0}),
+            ("max_latent_delta", {"positive": True}),
+            ("encoder_step_size", {"positive": True}),
+            ("max_encoder_update", {"positive": True}),
+            ("encoder_collapse_gate_threshold", {"lower": 0.0, "upper": 1.0}),
+        )
+        for name, bounds in scalar_specs:
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name), **bounds),
+            )
+
+        _require_int32_product(
+            "encoder_matrix_scalars", self.observation_dim, self.latent_dim
+        )
+        if self.latent_dim > _INT32_MAX - 2:
+            raise ValueError("derived n_heads must fit in signed int32")
+        n_heads = self.latent_dim + 2
+        if self.latent_dim > _INT32_MAX - self.n_actions:
+            raise ValueError("derived input_dim must fit in signed int32")
+        input_dim = self.latent_dim + self.n_actions
+        if self.include_action_interactions:
+            interactions = _require_int32_product(
+                "action_interaction_scalars", self.latent_dim, self.n_actions
+            )
+            if input_dim > _INT32_MAX - interactions:
+                raise ValueError("derived input_dim must fit in signed int32")
+            input_dim += interactions
+        layer_sizes = (input_dim, *self.hidden_sizes)
+        for index, (fan_in, fan_out) in enumerate(
+            zip(layer_sizes, layer_sizes[1:], strict=False)
+        ):
+            _require_int32_product(f"hidden_layer[{index}]_scalars", fan_in, fan_out)
+        head_input = self.hidden_sizes[-1] if self.hidden_sizes else input_dim
+        _require_int32_product("head_weight_scalars", n_heads, head_input)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
@@ -188,13 +271,26 @@ class LatentWorldModelConfig:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> LatentWorldModelConfig:
         """Reconstruct from :meth:`to_config` output."""
+        if type(config) is not dict:
+            raise ValueError("config must be an actual dict")
         payload = dict(config)
-        payload.pop("type", None)
+        config_type = payload.pop("type", None)
+        if config_type is not None and config_type != "LatentWorldModelConfig":
+            raise ValueError("unexpected latent world model config type")
+        expected_fields = {field.name for field in dataclasses.fields(cls)}
+        if not set(payload) <= expected_fields:
+            raise ValueError("config contains unknown fields")
         if "hidden_sizes" in payload:
+            if type(payload["hidden_sizes"]) is not list:
+                raise ValueError("hidden_sizes must be a list in serialized config")
             payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
         if "observation_scale" in payload and payload["observation_scale"] is not None:
+            if type(payload["observation_scale"]) is not list:
+                raise ValueError("observation_scale must be a list in serialized config")
             payload["observation_scale"] = tuple(payload["observation_scale"])
         if "trace_mode" in payload:
+            if type(payload["trace_mode"]) is not str:
+                raise ValueError("trace_mode must be a string in serialized config")
             payload["trace_mode"] = TraceMode(payload["trace_mode"])
         return cls(**payload)
 
@@ -389,8 +485,16 @@ class LatentWorldModel:
             optimizer_from_config,
         )
 
+        if type(config) is not dict:
+            raise ValueError("model config must be an actual dict")
+        if set(config) != {"type", "config", "learner"}:
+            raise ValueError("model config fields do not match the serialized schema")
+        if config.get("type") != "LatentWorldModel":
+            raise ValueError("unexpected latent world model type")
         payload = dict(config)
-        payload.pop("type", None)
+        payload.pop("type")
+        if type(payload["config"]) is not dict or type(payload["learner"]) is not dict:
+            raise ValueError("nested model configs must be actual dicts")
         model_config = LatentWorldModelConfig.from_config(payload["config"])
         learner_cfg = dict(payload["learner"])
         optimizer = optimizer_from_config(learner_cfg["optimizer"])
@@ -426,6 +530,11 @@ class LatentWorldModel:
             if self._config.encoder_bias_scale > 0.0
             else jnp.zeros((latent_dim,), dtype=jnp.float32)
         )
+        if not bool(
+            jnp.all(jnp.isfinite(encoder_matrix))
+            & jnp.all(jnp.isfinite(encoder_bias))
+        ):
+            raise ValueError("encoder initialization produced non-finite parameters")
         return LatentWorldModelState(
             encoder_matrix=encoder_matrix,
             encoder_bias=encoder_bias,
@@ -846,60 +955,10 @@ class LatentWorldModel:
         )
 
     def _validate_config(self, config: LatentWorldModelConfig) -> LatentWorldModelConfig:
-        """Fail closed on malformed configuration and return its canonical float32 form."""
-        _require_int32("observation_dim", config.observation_dim, minimum=1)
-        _require_int32("n_actions", config.n_actions, minimum=1)
-        _require_int32("latent_dim", config.latent_dim, minimum=1)
-        _validate_hidden_sizes(config.hidden_sizes)
-        observation_scale = config.observation_scale
-        if observation_scale is not None:
-            if len(observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            observation_scale = tuple(
-                validated_float32_scalar("observation_scale values", scale, positive=True)
-                for scale in observation_scale
-            )
-        return dataclasses.replace(
-            config,
-            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
-            observation_scale=observation_scale,
-            reward_scale=validated_float32_scalar(
-                "reward_scale", config.reward_scale, positive=True
-            ),
-            encoder_scale=validated_float32_scalar(
-                "encoder_scale", config.encoder_scale, positive=True
-            ),
-            encoder_bias_scale=validated_float32_scalar(
-                "encoder_bias_scale", config.encoder_bias_scale, lower=0.0
-            ),
-            min_latent_std=validated_float32_scalar(
-                "min_latent_std", config.min_latent_std, lower=0.0
-            ),
-            max_latent_delta=validated_float32_scalar(
-                "max_latent_delta", config.max_latent_delta, positive=True
-            ),
-            encoder_step_size=validated_float32_scalar(
-                "encoder_step_size", config.encoder_step_size, positive=True
-            ),
-            max_encoder_update=validated_float32_scalar(
-                "max_encoder_update", config.max_encoder_update, positive=True
-            ),
-            encoder_collapse_gate_threshold=validated_float32_scalar(
-                "encoder_collapse_gate_threshold",
-                config.encoder_collapse_gate_threshold,
-                lower=0.0,
-                upper=1.0,
-            ),
-            utility_decay=validated_float32_scalar(
-                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
-            ),
-            surprise_decay=validated_float32_scalar(
-                "surprise_decay", config.surprise_decay, lower=0.0, upper=1.0, upper_inclusive=False
-            ),
-            collapse_decay=validated_float32_scalar(
-                "collapse_decay", config.collapse_decay, lower=0.0, upper=1.0, upper_inclusive=False
-            ),
-        )
+        """Return the fail-closed canonical dataclass construction."""
+        if type(config) is not LatentWorldModelConfig:
+            raise ValueError("config must be a LatentWorldModelConfig")
+        return config
 
 
 def run_latent_world_model_learning_loop(

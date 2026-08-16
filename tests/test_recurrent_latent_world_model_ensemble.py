@@ -987,3 +987,76 @@ def test_recurrent_ensemble_config_accepts_numpy_integers() -> None:
     assert cfg.latent_dim == 8
     assert cfg.ensemble_size == 3
     assert cfg.uncertainty_warmup_steps == 2
+
+
+@pytest.mark.parametrize(
+    "integer_type",
+    (
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    ),
+)
+def test_recurrent_ensemble_config_canonicalizes_every_integer_field(
+    integer_type,
+) -> None:
+    cfg = RecurrentLatentWorldModelEnsembleConfig(
+        observation_dim=integer_type(4),
+        n_actions=integer_type(2),
+        latent_dim=integer_type(8),
+        ensemble_size=integer_type(3),
+        max_updates=integer_type(4),
+        uncertainty_warmup_steps=integer_type(2),
+    )
+
+    assert all(
+        type(getattr(cfg, field)) is int
+        for field in (
+            "observation_dim",
+            "n_actions",
+            "latent_dim",
+            "ensemble_size",
+            "max_updates",
+            "uncertainty_warmup_steps",
+        )
+    )
+    assert RecurrentLatentWorldModelEnsembleConfig.from_config(cfg.to_config()) == cfg
+
+
+@pytest.mark.parametrize("value", [True, np.bool_(True), 1.0, "1", 0, -1, 2**31])
+def test_recurrent_ensemble_config_rejects_invalid_integer_domains(value: object) -> None:
+    with pytest.raises(ValueError, match="observation_dim"):
+        _config(observation_dim=value)
+
+
+@pytest.mark.parametrize("value", [True, np.bool_(True), 1.0, "1", -1, 5, 2**31])
+def test_recurrent_ensemble_config_rejects_invalid_warmup_domains(value: object) -> None:
+    with pytest.raises(ValueError, match="uncertainty_warmup_steps"):
+        _config(max_updates=4, uncertainty_warmup_steps=value)
+
+
+def test_recurrent_ensemble_config_rejects_non_dict_schema_containers() -> None:
+    config = _config()
+    payload = config.to_config()
+    with pytest.raises(ValueError, match="actual dict"):
+        RecurrentLatentWorldModelEnsembleConfig.from_config(
+            type("ConfigDict", (dict,), {})(payload)
+        )
+
+    model_payload = RecurrentLatentWorldModelEnsemble(config).to_config()
+    with pytest.raises(ValueError, match="actual dict"):
+        RecurrentLatentWorldModelEnsemble.from_config(
+            type("ModelDict", (dict,), {})(model_payload)
+        )
+
+
+def test_recurrent_ensemble_config_rejects_derived_resource_overflow() -> None:
+    with pytest.raises(ValueError, match="persistent state"):
+        _config(observation_dim=3_000_000)

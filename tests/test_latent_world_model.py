@@ -170,13 +170,16 @@ class _FloatSpoof:
 def test_latent_config_rejects_scalars_that_leave_the_float32_domain(
     overrides: dict[str, object], message: str
 ) -> None:
-    config = LatentWorldModelConfig(
-        observation_dim=2, n_actions=2, latent_dim=4, hidden_sizes=(8,), **overrides  # type: ignore[arg-type]
-    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         with pytest.raises(ValueError, match=message):
-            LatentWorldModel(config)
+            LatentWorldModelConfig(
+                observation_dim=2,
+                n_actions=2,
+                latent_dim=4,
+                hidden_sizes=(8,),
+                **overrides,  # type: ignore[arg-type]
+            )
 
 
 def test_latent_config_canonicalizes_real_scalars() -> None:
@@ -547,14 +550,13 @@ def test_trainable_encoder_serialization_roundtrip() -> None:
 def test_trainable_encoder_config_validation_fails_closed(
     overrides: dict[str, float],
 ) -> None:
-    config = LatentWorldModelConfig(
-        observation_dim=2,
-        n_actions=2,
-        encoder_learning=True,
-        **overrides,  # type: ignore[arg-type]
-    )
     with pytest.raises(ValueError):
-        LatentWorldModel(config)
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            encoder_learning=True,
+            **overrides,  # type: ignore[arg-type]
+        )
 
 
 def test_latent_world_model_config_rejects_booleans_and_non_integers() -> None:
@@ -584,3 +586,108 @@ def test_latent_world_model_config_accepts_and_canonicalizes_numpy_integers() ->
     assert cfg.n_actions == 2
     assert cfg.latent_dim == 8
     assert cfg.hidden_sizes == (32, 16)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("predict_delta", "use_layer_norm", "include_action_interactions", "encoder_learning"),
+)
+def test_latent_world_model_config_requires_exact_booleans(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            **{field: 1},  # type: ignore[arg-type]
+        )
+
+
+def test_latent_world_model_config_requires_exact_containers_and_schema() -> None:
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=[8],  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="observation_scale"):
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            observation_scale=[1.0, 1.0],  # type: ignore[arg-type]
+        )
+
+    payload = LatentWorldModelConfig(observation_dim=2, n_actions=2).to_config()
+    with pytest.raises(ValueError, match="actual dict"):
+        LatentWorldModelConfig.from_config(type("ConfigDict", (dict,), {})(payload))
+    malformed = dict(payload)
+    malformed["hidden_sizes"] = (64,)
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        LatentWorldModelConfig.from_config(malformed)
+    malformed = dict(payload)
+    malformed["task_id"] = 3
+    with pytest.raises(ValueError, match="unknown fields"):
+        LatentWorldModelConfig.from_config(malformed)
+
+    model_payload = LatentWorldModel(
+        LatentWorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    ).to_config()
+    with pytest.raises(ValueError, match="actual dict"):
+        LatentWorldModel.from_config(type("ModelDict", (dict,), {})(model_payload))
+    malformed_model = dict(model_payload)
+    malformed_model["task_id"] = 3
+    with pytest.raises(ValueError, match="fields"):
+        LatentWorldModel.from_config(malformed_model)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"observation_dim": 50_000, "latent_dim": 50_000}, "encoder_matrix"),
+        ({"observation_dim": 1, "latent_dim": 2**31 - 2}, "n_heads"),
+        (
+            {"observation_dim": 1, "latent_dim": 2**31 - 3, "n_actions": 3},
+            "input_dim",
+        ),
+        (
+            {
+                "observation_dim": 1,
+                "latent_dim": 50_000,
+                "n_actions": 50_000,
+                "include_action_interactions": True,
+            },
+            "action_interaction",
+        ),
+        ({"observation_dim": 1, "n_actions": 1, "hidden_sizes": (2**31 - 1,)}, "hidden_layer"),
+        ({"observation_dim": 1, "n_actions": 1, "hidden_sizes": (50_000, 50_000)}, "hidden_layer"),
+        (
+            {
+                "observation_dim": 1,
+                "n_actions": 1,
+                "latent_dim": 50_000,
+                "hidden_sizes": (1, 50_000),
+            },
+            "head_weight",
+        ),
+    ],
+)
+def test_latent_world_model_config_rejects_derived_allocation_overflow(
+    overrides: dict[str, object], message: str
+) -> None:
+    base: dict[str, object] = {"observation_dim": 2, "n_actions": 2}
+    base.update(overrides)
+    with pytest.raises(ValueError, match=message):
+        LatentWorldModelConfig(**base)  # type: ignore[arg-type]
+
+
+def test_latent_world_model_init_rejects_nonfinite_encoder_draw() -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=2,
+            hidden_sizes=(),
+            encoder_scale=np.finfo(np.float32).max,
+        )
+    )
+
+    with pytest.raises(ValueError, match="encoder initialization"):
+        model.init(jr.key(0))

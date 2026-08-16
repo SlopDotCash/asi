@@ -103,6 +103,15 @@ def _positive_int(value: object, *, name: str, maximum: int = _INT32_MAX) -> int
     return canonical
 
 
+def _nonnegative_int(value: object, *, name: str, maximum: int) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in 0..{maximum}")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not 0 <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in 0..{maximum}")
+    return canonical
+
+
 def _finite_float32(
     value: object,
     *,
@@ -313,17 +322,14 @@ class RecurrentLatentWorldModelEnsembleConfig:
             "max_updates",
             _positive_int(self.max_updates, name="max_updates"),
         )
-        if (
-            type(self.uncertainty_warmup_steps) not in _ACTUAL_INT_TYPES
-            or not 0
-            <= operator.index(cast(SupportsIndex, self.uncertainty_warmup_steps))
-            <= self.max_updates
-        ):
-            raise ValueError("uncertainty_warmup_steps must be in 0..max_updates")
         object.__setattr__(
             self,
             "uncertainty_warmup_steps",
-            operator.index(cast(SupportsIndex, self.uncertainty_warmup_steps)),
+            _nonnegative_int(
+                self.uncertainty_warmup_steps,
+                name="uncertainty_warmup_steps",
+                maximum=self.max_updates,
+            ),
         )
 
         positive_fields = (
@@ -432,13 +438,15 @@ class RecurrentLatentWorldModelEnsembleConfig:
         config: Mapping[str, object],
     ) -> RecurrentLatentWorldModelEnsembleConfig:
         """Strictly reconstruct :meth:`to_config` output."""
+        if type(config) is not dict:
+            raise ValueError("config must be an actual dict")
         expected = {field.name for field in dataclasses.fields(cls)} | {"type"}
         if set(config) != expected:
             raise ValueError("config fields do not match the serialized schema")
         if config.get("type") != cls.__name__:
             raise ValueError("unexpected recurrent latent ensemble config type")
         kwargs = {field.name: config[field.name] for field in dataclasses.fields(cls)}
-        restored = cls(**cast(dict[str, Any], kwargs))
+        restored = cls(**kwargs)
         if not _strict_json_equal(dict(config), restored.to_config()):
             raise ValueError("config is not the canonical serialized construction")
         return restored
@@ -696,6 +704,8 @@ class RecurrentLatentWorldModelEnsemble:
         config: Mapping[str, object],
     ) -> RecurrentLatentWorldModelEnsemble:
         """Strictly reconstruct :meth:`to_config` output."""
+        if type(config) is not dict:
+            raise ValueError("model config must be an actual dict")
         if set(config) != {"type", "config"}:
             raise ValueError("model config fields do not match the serialized schema")
         if config.get("type") != cls.__name__:
