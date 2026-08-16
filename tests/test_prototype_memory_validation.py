@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+import dataclasses
+from types import MappingProxyType
+
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework.core.prototype_memory import PrototypeMemoryConfig
+from alberta_framework.core.prototype_memory import (
+    PrototypeMemoryConfig,
+    PrototypeMemoryLearner,
+    run_prototype_memory_arrays,
+)
 
 _INT32_MAX = 2**31 - 1
 
@@ -220,3 +229,208 @@ def test_prototype_state_preflight_feature_dim_boundary() -> None:
     PrototypeMemoryConfig(feature_dim=last_legal, n_classes=2, slots_per_class=1)
     with pytest.raises(ValueError, match="byte count"):
         PrototypeMemoryConfig(feature_dim=last_legal + 1, n_classes=2, slots_per_class=1)
+
+
+def test_prototype_bandwidth_must_remain_normal_at_float32_sink() -> None:
+    minimum_normal = float.fromhex("0x1.0p-126")
+    config = PrototypeMemoryConfig(feature_dim=2, n_classes=2, bandwidth=minimum_normal)
+    assert config.bandwidth == minimum_normal
+    with pytest.raises(ValueError, match="bandwidth"):
+        PrototypeMemoryConfig(
+            feature_dim=2,
+            n_classes=2,
+            bandwidth=float.fromhex("0x1.0p-149"),
+        )
+
+
+def test_prototype_config_mapping_compatibility_rejects_spoofs_before_hooks() -> None:
+    class MappingSpoof:
+        @property  # type: ignore[misc]
+        def __class__(self) -> type:
+            return dict
+
+        def __iter__(self) -> object:
+            raise AssertionError("iteration hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook executed")
+
+    config = PrototypeMemoryConfig(feature_dim=2, n_classes=2)
+    assert PrototypeMemoryConfig.from_config(MappingProxyType(config.to_config())) == config
+    learner = PrototypeMemoryLearner(config)
+    restored = PrototypeMemoryLearner.from_config(MappingProxyType(learner.to_config()))
+    assert restored.config == config
+    with pytest.raises(ValueError, match="mapping"):
+        PrototypeMemoryConfig.from_config(MappingSpoof())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="mapping"):
+        PrototypeMemoryLearner.from_config(MappingSpoof())  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "message"),
+    [
+        ("means", jnp.zeros((2, 2, 2), dtype=jnp.float32), "state.means"),
+        ("counts", jnp.zeros((2, 2), dtype=jnp.float16), "state.counts"),
+        ("last_update", jnp.zeros((2, 2), dtype=jnp.float32), "state.last_update"),
+        ("step_count", jnp.zeros((1,), dtype=jnp.int32), "state.step_count"),
+    ],
+)
+def test_prototype_public_methods_reject_malformed_state_before_tracing(
+    field: str,
+    replacement: jax.Array,
+    message: str,
+) -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=3, n_classes=2, slots_per_class=2)
+    )
+    state = dataclasses.replace(learner.init(), **{field: replacement})
+    observation = jnp.zeros((3,), dtype=jnp.float32)
+    target = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    for call in (
+        lambda: learner.predict(state, observation),
+        lambda: learner.update(state, observation, target),
+        lambda: jax.jit(lambda s: learner.predict(s, observation))(state),
+        lambda: jax.jit(lambda s: learner.update(s, observation, target))(state),
+    ):
+        with pytest.raises((TypeError, ValueError), match=message):
+            call()
+
+
+@pytest.mark.parametrize(
+    ("operand", "shape", "message"),
+    [
+        ("observation", (), "observation"),
+        ("observation", (1, 3), "observation"),
+        ("target", (), "target"),
+        ("target", (1, 2), "target"),
+        ("threshold", (1,), "novelty_threshold"),
+    ],
+)
+def test_prototype_update_rejects_scalar_and_vector_shape_aliases(
+    operand: str,
+    shape: tuple[int, ...],
+    message: str,
+) -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=3, n_classes=2, slots_per_class=2)
+    )
+    state = learner.init()
+    observation = jnp.zeros((3,), dtype=jnp.float32)
+    target = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    threshold = jnp.asarray(0.1, dtype=jnp.float32)
+    malformed = jnp.zeros(shape, dtype=jnp.float32)
+    if operand == "observation":
+        observation = malformed
+    elif operand == "target":
+        target = malformed
+    else:
+        threshold = malformed
+    for call in (
+        lambda: learner.update_with_novelty_threshold(
+            state, observation, target, threshold
+        ),
+        lambda: jax.jit(
+            lambda s, x, y, value: learner.update_with_novelty_threshold(
+                s, x, y, value
+            )
+        )(state, observation, target, threshold),
+    ):
+        with pytest.raises(ValueError, match=message):
+            call()
+
+
+def test_prototype_invalid_state_and_threshold_are_atomic_noops() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=2)
+    )
+    state = learner.init()
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    target = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    invalid_states = (
+        dataclasses.replace(state, counts=state.counts.at[0, 0].set(-1.0)),
+        dataclasses.replace(state, last_update=state.last_update.at[0, 0].set(-1)),
+        dataclasses.replace(state, last_update=state.last_update.at[0, 0].set(1)),
+        dataclasses.replace(state, step_count=jnp.asarray(-1, dtype=jnp.int32)),
+    )
+    for invalid_state in invalid_states:
+        result = learner.update(invalid_state, observation, target)
+        assert not bool(result.update_applied)
+        assert all(
+            bool(equal)
+            for equal in jax.tree.leaves(
+                jax.tree.map(
+                    lambda left, right: jnp.array_equal(left, right),
+                    result.state,
+                    invalid_state,
+                )
+            )
+        )
+    negative_threshold = learner.update_with_novelty_threshold(
+        state,
+        observation,
+        target,
+        jnp.asarray(-0.1, dtype=jnp.float32),
+    )
+    assert not bool(negative_threshold.update_applied)
+    assert all(
+        bool(equal)
+        for equal in jax.tree.leaves(
+            jax.tree.map(
+                lambda left, right: jnp.array_equal(left, right),
+                negative_threshold.state,
+                state,
+            )
+        )
+    )
+
+
+def test_prototype_step_counter_saturates_without_invalidating_state() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=2)
+    )
+    state = dataclasses.replace(
+        learner.init(),
+        step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+    )
+    result = learner.update(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == _INT32_MAX
+    assert int(result.state.last_update[0, 0]) == _INT32_MAX
+
+
+def test_prototype_array_runner_preflights_shapes_and_output_resources() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=2)
+    )
+    with pytest.raises(ValueError, match="observations"):
+        run_prototype_memory_arrays(
+            learner,
+            jnp.zeros((3, 1, 2), dtype=jnp.float32),
+            jnp.zeros((3, 2), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="targets"):
+        run_prototype_memory_arrays(
+            learner,
+            jnp.zeros((3, 2), dtype=jnp.float32),
+            jnp.zeros((3, 1, 2), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="same step count"):
+        run_prototype_memory_arrays(
+            learner,
+            jnp.zeros((3, 2), dtype=jnp.float32),
+            jnp.zeros((2, 2), dtype=jnp.float32),
+        )
+
+    first_overflow = _INT32_MAX // (4 * (learner.config.n_classes + 6) + 1) + 1
+    observations = jax.ShapeDtypeStruct((first_overflow, 2), jnp.float32)
+    targets = jax.ShapeDtypeStruct((first_overflow, 2), jnp.float32)
+    with pytest.raises(ValueError, match="byte count"):
+        jax.eval_shape(
+            lambda x, y: run_prototype_memory_arrays(learner, x, y),
+            observations,
+            targets,
+        )
