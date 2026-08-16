@@ -613,12 +613,6 @@ class PrototypeAgentConfig:
                     f"got {self.world_model.n_actions} and "
                     f"{self.oak.n_primitive_actions}"
                 )
-            if self.world_model.gamma <= 0.0:
-                raise ValueError(
-                    "world_model.gamma must be positive: the legacy update synthesizes "
-                    "transitions with discount=gamma and terminated=False, which the "
-                    "boundary contract rejects when gamma is zero"
-                )
         if self.world_model_ensemble is not None:
             ensemble_model = self.world_model_ensemble.model
             if ensemble_model.observation_dim != self.oak.observation_dim:
@@ -5271,7 +5265,9 @@ class PrototypeAgent:
         explicit discount.  This wrapper preserves the former behavior:
         primitive control bootstraps with one, option returns use
         ``STOMPConfig.option_gamma``, and the world model (when enabled)
-        receives its configured gamma as the target discount.
+        receives its configured gamma as the target discount. Because this
+        surface has no terminal flag, a configured zero model discount requires
+        the explicit :meth:`update_transition` API.
         """
         if self._state_builder is not None:
             raise ValueError(
@@ -5291,6 +5287,11 @@ class PrototypeAgent:
                 )
             )
         )
+        if legacy_model_discount == 0.0:
+            raise ValueError(
+                "legacy update is unavailable when the configured world-model gamma "
+                "is zero; use update_transition with an explicit terminal transition"
+            )
         current_oak_state = self._oak_component_state(state.oak_state)
         feature_consumer_binding = (
             self._feature_consumer_binding(state.oak_state)

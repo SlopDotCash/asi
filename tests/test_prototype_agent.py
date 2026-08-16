@@ -259,10 +259,38 @@ class TestPrototypeAgentConfigValidation:
         state = agent.start(agent.init(jr.key(0)), jnp.zeros(OBS_DIM))
         assert int(agent.update(state, 0.1, jnp.ones(OBS_DIM)).state.step_count) == 1
 
-    def test_legacy_world_model_gamma_zero_is_rejected(self) -> None:
-        """gamma == 0 makes the legacy update synthesize discount=0, terminated=False forever."""
-        with pytest.raises(ValueError, match="world_model.gamma must be positive"):
-            PrototypeAgentConfig(oak=_oak_cfg(), world_model=_wm_cfg(gamma=0.0))
+    def test_world_model_gamma_zero_requires_explicit_transition_api(self) -> None:
+        """A zero model horizon is valid, but the legacy API has no terminal input."""
+        config = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            world_model=_wm_cfg(gamma=0.0),
+        )
+        restored = PrototypeAgentConfig.from_config(config.to_config())
+        assert restored.world_model is not None
+        assert restored.world_model.gamma == 0.0
+
+        agent = PrototypeAgent(config)
+        state = agent.start(agent.init(jr.key(41)), jnp.zeros(OBS_DIM))
+        next_observation = jnp.ones(OBS_DIM, dtype=jnp.float32)
+        with pytest.raises(ValueError, match="use update_transition"):
+            agent.update(state, jnp.asarray(1.0), next_observation)
+
+        result = agent.update_transition(
+            state,
+            PrototypeTransition(
+                observation=state.current_raw_observation,
+                action=state.current_action,
+                decision_id=state.current_decision_id,
+                reward=jnp.asarray(1.0, dtype=jnp.float32),
+                discount=jnp.asarray(0.0, dtype=jnp.float32),
+                terminated=jnp.asarray(True),
+                truncated=jnp.asarray(False),
+                next_observation=next_observation,
+                next_decision_observation=next_observation,
+            ),
+        )
+        assert bool(result.transition_diagnostics.valid)
+        assert int(result.state.step_count) == 1
 
 
 # ---------------------------------------------------------------------------
