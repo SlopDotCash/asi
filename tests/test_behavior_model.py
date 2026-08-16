@@ -9,6 +9,7 @@ from typing import Any
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 try:
@@ -454,3 +455,28 @@ def test_importance_ratio_and_epsilon_greedy_helpers() -> None:
         jnp.array([0.1, 0.9], dtype=jnp.float32),
     )
     assert float(ratio) == 1.25
+
+
+def test_behavior_model_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="n_actions"):
+        BehaviorModelConfig(n_actions=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="n_actions"):
+        BehaviorModelConfig(n_actions=2.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="step_size"):
+        BehaviorModelConfig(n_actions=2, step_size=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="diagnostic_decay"):
+        BehaviorModelConfig(n_actions=2, diagnostic_decay=1.0 - 1e-10)
+
+
+def test_behavior_model_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    config = BehaviorModelConfig(n_actions=np.int32(3))
+    assert type(config.n_actions) is int
+    assert config.n_actions == 3
+
+    model = BehaviorModel(config)
+    state = model.init(feature_dim=np.int64(4), key=jax.random.key(0))
+    assert state.weights.shape == (3, 4)
+
+    budget = model.resource_budget(np.uint16(4))
+    assert budget.feature_dim == 4
+    assert type(budget.feature_dim) is int
