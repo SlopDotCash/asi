@@ -456,3 +456,43 @@ def test_zero_ema_decay_does_not_multiply_inf_trackers() -> None:
     )
     next_calibrated, _ = _observe_scalar(estimator, calibrated)
     assert bool(jnp.isfinite(next_calibrated.sustained_change_probability))
+
+
+def test_learning_signals_config_rejects_booleans_and_non_integers() -> None:
+    with pytest.raises(ValueError, match="ensemble_size"):
+        LearningSignalEstimatorConfig(ensemble_size=True, target_dim=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_dim"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="progress_warmup_steps"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1, progress_warmup_steps=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="change_calibration_steps"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1, change_calibration_steps=True)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="ensemble_size"):
+        LearningSignalEstimatorConfig(ensemble_size=2.5, target_dim=1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="target_dim"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1.5)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="fast_loss_decay"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1, fast_loss_decay=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="fast_loss_decay"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1, fast_loss_decay=1.0 - 1e-10)
+    with pytest.raises(ValueError, match="change_decay"):
+        LearningSignalEstimatorConfig(ensemble_size=2, target_dim=1, change_decay=True)  # type: ignore[arg-type]
+
+
+def test_learning_signals_config_accepts_and_canonicalizes_numpy_integers() -> None:
+    config = LearningSignalEstimatorConfig(
+        ensemble_size=np.int32(4),
+        target_dim=np.int64(2),
+        progress_warmup_steps=np.uint16(3),
+        change_calibration_steps=np.int8(8),
+    )
+    assert type(config.ensemble_size) is int
+    assert type(config.target_dim) is int
+    assert type(config.progress_warmup_steps) is int
+    assert type(config.change_calibration_steps) is int
+    assert config.ensemble_size == 4
+    assert config.target_dim == 2
+    assert config.progress_warmup_steps == 3
+    assert config.change_calibration_steps == 8
