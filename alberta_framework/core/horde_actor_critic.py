@@ -33,15 +33,18 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.horde import HordeLearner, HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
@@ -56,6 +59,85 @@ from alberta_framework.core.types import AutostepParamState, DemonType, MLPParam
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
 )
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int) -> int:
+    """Admit only trusted Python/NumPy integers and return a canonical int."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if not minimum <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    return number
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be an actual bool")
+    return value
+
+
+def _require_choice(name: str, value: object, choices: tuple[str, ...]) -> str:
+    if type(value) is not str or value not in choices:
+        joined = " or ".join(repr(choice) for choice in choices)
+        raise ValueError(f"{name} must be {joined}")
+    return value
+
+
+def _validate_hidden_sizes(value: object) -> tuple[int, ...]:
+    if type(value) is not tuple:
+        raise ValueError("hidden_sizes must be an actual tuple")
+    return tuple(
+        _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
+        for index, width in enumerate(cast(tuple[object, ...], value))
+    )
+
+
+def _decode_hidden_sizes(value: object) -> tuple[object, ...]:
+    """Accept only the historical Python tuple and JSON list representations."""
+    if type(value) not in (list, tuple):
+        raise ValueError("hidden_sizes must be an actual list or tuple")
+    return tuple(cast(list[object] | tuple[object, ...], value))
+
+
+def _require_derived_int32(name: str, value: int) -> None:
+    if not 1 <= value <= _INT32_MAX:
+        raise ValueError(f"derived {name} must be in [1, {_INT32_MAX}]")
+
+
+def _validate_actor_resources(
+    n_actions: int,
+    feature_dim: object,
+    hidden_sizes: tuple[int, ...],
+    *,
+    nonlinear: bool,
+) -> int:
+    """Preflight exact directly allocated actor state without allocating it."""
+    canonical_feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+    widths = (canonical_feature_dim, *hidden_sizes, n_actions)
+    parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(widths, widths[1:], strict=False)
+    )
+    if nonlinear:
+        parameter_array_count = 2 * (len(hidden_sizes) + 1)
+        state_scalars = (
+            5 * parameter_count
+            + 2 * parameter_array_count
+            + canonical_feature_dim
+            + 5
+        )
+    else:
+        state_scalars = 2 * parameter_count + canonical_feature_dim + 4
+    _require_derived_int32("actor_parameter_count", parameter_count)
+    _require_derived_int32("actor_state_scalars", state_scalars)
+    _require_derived_int32("actor_state_bytes", 4 * state_scalars)
+    return canonical_feature_dim
 
 
 def _commit_scan_safe_actor_state(
@@ -152,6 +234,33 @@ class HordeActorCriticConfig:
     value_head_index: int = 0
     actor_td_error_clip: float | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "n_actions", _require_int32("n_actions", self.n_actions, minimum=1)
+        )
+        object.__setattr__(
+            self,
+            "value_head_index",
+            _require_int32("value_head_index", self.value_head_index, minimum=0),
+        )
+        _validate_actor_resources(self.n_actions, 1, (), nonlinear=False)
+        for name, bounds in (
+            ("actor_step_size", {"positive": True}),
+            ("actor_lamda", {"lower": 0.0, "upper": 1.0}),
+            ("temperature", {"positive": True}),
+        ):
+            object.__setattr__(
+                self, name, validated_float32_scalar(name, getattr(self, name), **bounds)
+            )
+        if self.actor_td_error_clip is not None:
+            object.__setattr__(
+                self,
+                "actor_td_error_clip",
+                validated_float32_scalar(
+                    "actor_td_error_clip", self.actor_td_error_clip, positive=True
+                ),
+            )
+
     def to_config(self) -> dict[str, Any]:
         """Serialize this configuration to a dictionary."""
         return dataclasses.asdict(self)
@@ -235,6 +344,43 @@ class QHordeActorCriticConfig:
     actor_td_error_clip: float | None = None
     critic_target: str = "expected_sarsa"
     actor_update: str = "td_error"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "n_actions", _require_int32("n_actions", self.n_actions, minimum=1)
+        )
+        _validate_actor_resources(self.n_actions, 1, (), nonlinear=False)
+        for name, bounds in (
+            ("gamma", {"lower": 0.0, "upper": 1.0}),
+            ("actor_step_size", {"positive": True}),
+            ("actor_lamda", {"lower": 0.0, "upper": 1.0}),
+            ("temperature", {"positive": True}),
+        ):
+            object.__setattr__(
+                self, name, validated_float32_scalar(name, getattr(self, name), **bounds)
+            )
+        if self.actor_td_error_clip is not None:
+            object.__setattr__(
+                self,
+                "actor_td_error_clip",
+                validated_float32_scalar(
+                    "actor_td_error_clip", self.actor_td_error_clip, positive=True
+                ),
+            )
+        object.__setattr__(
+            self,
+            "critic_target",
+            _require_choice(
+                "critic_target", self.critic_target, ("expected_sarsa", "sampled_sarsa")
+            ),
+        )
+        object.__setattr__(
+            self,
+            "actor_update",
+            _require_choice(
+                "actor_update", self.actor_update, ("td_error", "expected_advantage")
+            ),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize this configuration to a dictionary."""
@@ -365,6 +511,9 @@ class QHordeActorCriticAgent:
 
     def init(self, feature_dim: int, key: Array) -> QHordeActorCriticState:
         """Initialize actor and Horde critic state."""
+        feature_dim = _validate_actor_resources(
+            self._config.n_actions, feature_dim, (), nonlinear=False
+        )
         actor_key, critic_key = jr.split(key)
         zeros_actor = jnp.zeros((self._config.n_actions, feature_dim), dtype=jnp.float32)
         zeros_bias = jnp.zeros((self._config.n_actions,), dtype=jnp.float32)
@@ -665,6 +814,9 @@ class HordeActorCriticAgent:
 
     def init(self, feature_dim: int, key: Array) -> HordeActorCriticState:
         """Initialize actor and Horde critic state."""
+        feature_dim = _validate_actor_resources(
+            self._config.n_actions, feature_dim, (), nonlinear=False
+        )
         actor_key, critic_key = jr.split(key)
         zeros_actor = jnp.zeros((self._config.n_actions, feature_dim), dtype=jnp.float32)
         zeros_bias = jnp.zeros((self._config.n_actions,), dtype=jnp.float32)
@@ -1141,6 +1293,50 @@ class NonlinearHordeActorCriticConfig:
     actor_td_error_clip: float | None = None
     actor_gradient_clip_norm: float | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "n_actions", _require_int32("n_actions", self.n_actions, minimum=1)
+        )
+        object.__setattr__(
+            self,
+            "value_head_index",
+            _require_int32("value_head_index", self.value_head_index, minimum=0),
+        )
+        hidden_sizes = _validate_hidden_sizes(self.hidden_sizes)
+        object.__setattr__(self, "hidden_sizes", hidden_sizes)
+        _validate_actor_resources(self.n_actions, 1, hidden_sizes, nonlinear=True)
+        for name, bounds in (
+            ("actor_lamda", {"lower": 0.0, "upper": 1.0}),
+            ("temperature", {"positive": True}),
+            ("actor_sparsity", {"lower": 0.0, "upper": 1.0}),
+            ("leaky_relu_slope", {"lower": 0.0}),
+            (
+                "actor_epsilon",
+                {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            ),
+        ):
+            object.__setattr__(
+                self, name, validated_float32_scalar(name, getattr(self, name), **bounds)
+            )
+        for name, value, bounds in (
+            (
+                "actor_td_error_normalizer_decay",
+                self.actor_td_error_normalizer_decay,
+                {"lower": 0.0, "upper": 1.0, "upper_inclusive": False},
+            ),
+            ("actor_td_error_clip", self.actor_td_error_clip, {"positive": True}),
+            (
+                "actor_gradient_clip_norm",
+                self.actor_gradient_clip_norm,
+                {"positive": True},
+            ),
+        ):
+            if value is not None:
+                object.__setattr__(self, name, validated_float32_scalar(name, value, **bounds))
+        object.__setattr__(
+            self, "use_layer_norm", _require_bool("use_layer_norm", self.use_layer_norm)
+        )
+
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
         d = dataclasses.asdict(self)
@@ -1151,7 +1347,7 @@ class NonlinearHordeActorCriticConfig:
     def from_config(cls, cfg: dict[str, Any]) -> NonlinearHordeActorCriticConfig:
         """Reconstruct from :meth:`to_config` output."""
         c = dict(cfg)
-        c["hidden_sizes"] = tuple(c["hidden_sizes"])
+        c["hidden_sizes"] = _decode_hidden_sizes(c["hidden_sizes"])
         return cls(**c)
 
 
@@ -1348,6 +1544,12 @@ class NonlinearHordeActorCriticAgent:
         Returns:
             Zeroed initial state with sparse-initialized actor weights.
         """
+        feature_dim = _validate_actor_resources(
+            self._config.n_actions,
+            feature_dim,
+            self._config.hidden_sizes,
+            nonlinear=True,
+        )
         actor_key, critic_key = jr.split(key)
         cfg = self._config
         trunk_weights: list[Array] = []
@@ -1845,6 +2047,49 @@ class NonlinearQHordeActorCriticConfig:
     critic_target: str = "expected_sarsa"
     actor_update: str = "td_error"
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "n_actions", _require_int32("n_actions", self.n_actions, minimum=1)
+        )
+        hidden_sizes = _validate_hidden_sizes(self.hidden_sizes)
+        object.__setattr__(self, "hidden_sizes", hidden_sizes)
+        _validate_actor_resources(self.n_actions, 1, hidden_sizes, nonlinear=True)
+        for name, bounds in (
+            ("gamma", {"lower": 0.0, "upper": 1.0}),
+            ("actor_lamda", {"lower": 0.0, "upper": 1.0}),
+            ("temperature", {"positive": True}),
+            ("actor_sparsity", {"lower": 0.0, "upper": 1.0}),
+            ("leaky_relu_slope", {"lower": 0.0}),
+        ):
+            object.__setattr__(
+                self, name, validated_float32_scalar(name, getattr(self, name), **bounds)
+            )
+        for name, value in (
+            ("actor_td_error_clip", self.actor_td_error_clip),
+            ("actor_gradient_clip_norm", self.actor_gradient_clip_norm),
+        ):
+            if value is not None:
+                object.__setattr__(
+                    self, name, validated_float32_scalar(name, value, positive=True)
+                )
+        object.__setattr__(
+            self, "use_layer_norm", _require_bool("use_layer_norm", self.use_layer_norm)
+        )
+        object.__setattr__(
+            self,
+            "critic_target",
+            _require_choice(
+                "critic_target", self.critic_target, ("expected_sarsa", "sampled_sarsa")
+            ),
+        )
+        object.__setattr__(
+            self,
+            "actor_update",
+            _require_choice(
+                "actor_update", self.actor_update, ("td_error", "expected_advantage")
+            ),
+        )
+
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
         config = dataclasses.asdict(self)
@@ -1855,7 +2100,7 @@ class NonlinearQHordeActorCriticConfig:
     def from_config(cls, config: dict[str, Any]) -> NonlinearQHordeActorCriticConfig:
         """Reconstruct from :meth:`to_config` output."""
         payload = dict(config)
-        payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
+        payload["hidden_sizes"] = _decode_hidden_sizes(payload["hidden_sizes"])
         return cls(**payload)
 
 
@@ -1980,6 +2225,12 @@ class NonlinearQHordeActorCriticAgent:
 
     def init(self, feature_dim: int, key: Array) -> NonlinearHordeActorCriticState:
         """Initialize MLP actor and action-value Horde critic state."""
+        feature_dim = _validate_actor_resources(
+            self._config.n_actions,
+            feature_dim,
+            self._config.hidden_sizes,
+            nonlinear=True,
+        )
         actor_key, critic_key = jr.split(key)
         cfg = self._config
         trunk_weights: list[Array] = []

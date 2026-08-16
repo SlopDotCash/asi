@@ -4,6 +4,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework import HordeActorCriticAgent as TopLevelHordeActorCriticAgent
@@ -1476,3 +1477,146 @@ class TestNonlinearQHordeActorCritic:
 
         assert after[1] > before[1]
         assert after[0] < before[0]
+
+
+@pytest.mark.parametrize(
+    "integer_type",
+    [np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")],
+)
+def test_actor_critic_configs_accept_all_supported_numpy_integer_families(
+    integer_type: type[np.integer],
+) -> None:
+    width = integer_type(2)
+    assert HordeActorCriticConfig(n_actions=width).n_actions == 2
+    assert QHordeActorCriticConfig(n_actions=width).n_actions == 2
+    assert NonlinearHordeActorCriticConfig(
+        n_actions=width, hidden_sizes=(width,)
+    ).hidden_sizes == (2,)
+    assert NonlinearQHordeActorCriticConfig(
+        n_actions=width, hidden_sizes=(width,)
+    ).hidden_sizes == (2,)
+
+
+@pytest.mark.parametrize(
+    "config_type",
+    [
+        HordeActorCriticConfig,
+        QHordeActorCriticConfig,
+        NonlinearHordeActorCriticConfig,
+        NonlinearQHordeActorCriticConfig,
+    ],
+)
+def test_actor_critic_configs_reject_bool_and_preflight_minimum_state(
+    config_type: type,
+) -> None:
+    with pytest.raises(ValueError, match="n_actions"):
+        config_type(n_actions=True)
+    with pytest.raises(ValueError, match="actor_"):
+        config_type(n_actions=2**31 - 1)
+
+
+def test_nonlinear_config_decode_preserves_list_and_tuple_compatibility() -> None:
+    for hidden_sizes in ([4, 3], (4, 3)):
+        payload = NonlinearHordeActorCriticConfig(n_actions=2).to_config()
+        payload["hidden_sizes"] = hidden_sizes
+        assert NonlinearHordeActorCriticConfig.from_config(payload).hidden_sizes == (4, 3)
+
+    class HostileIterable:
+        def __iter__(self):
+            raise AssertionError("untrusted iterator executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr executed")
+
+    payload = NonlinearQHordeActorCriticConfig(n_actions=2).to_config()
+    payload["hidden_sizes"] = HostileIterable()
+    with pytest.raises(ValueError, match="hidden_sizes"):
+        NonlinearQHordeActorCriticConfig.from_config(payload)
+
+
+def test_nonlinear_configs_reject_hostile_bool_and_choice_without_hooks() -> None:
+    class Hostile:
+        def __hash__(self) -> int:
+            raise AssertionError("untrusted hash executed")
+
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("untrusted equality executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr executed")
+
+    with pytest.raises(ValueError, match="use_layer_norm"):
+        NonlinearHordeActorCriticConfig(n_actions=2, use_layer_norm=Hostile())
+    with pytest.raises(ValueError, match="critic_target"):
+        QHordeActorCriticConfig(n_actions=2, critic_target=Hostile())
+
+
+def test_actor_config_scalars_canonicalize_and_normalize_hostile_hooks() -> None:
+    value = np.float64("0.9")
+    config = NonlinearHordeActorCriticConfig(
+        n_actions=2,
+        actor_lamda=value,
+        actor_sparsity=np.float32(1.0),
+        leaky_relu_slope=np.int32(0),
+        actor_epsilon=np.float64(0.0),
+        actor_td_error_normalizer_decay=np.float64(0.0),
+    )
+    assert type(config.actor_lamda) is float
+    assert config.actor_lamda == float(np.float32(value))
+    assert config.actor_sparsity == 1.0
+    assert config.leaky_relu_slope == 0.0
+
+    class HostileFloat(float):
+        def as_integer_ratio(self) -> tuple[int, int]:
+            raise RuntimeError("untrusted ratio hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("untrusted repr hook")
+
+    with pytest.raises(ValueError, match="gamma"):
+        QHordeActorCriticConfig(n_actions=2, gamma=HostileFloat(0.5))
+
+
+def test_actor_config_scalar_contract_endpoints() -> None:
+    assert QHordeActorCriticConfig(n_actions=2, gamma=0.0, actor_lamda=1.0).gamma == 0.0
+    nonlinear = NonlinearHordeActorCriticConfig(
+        n_actions=2,
+        actor_lamda=0.0,
+        actor_sparsity=1.0,
+        leaky_relu_slope=0.0,
+        actor_epsilon=0.0,
+        actor_td_error_normalizer_decay=0.0,
+        hidden_sizes=(),
+    )
+    assert nonlinear.hidden_sizes == ()
+    with pytest.raises(ValueError, match="actor_epsilon"):
+        NonlinearHordeActorCriticConfig(n_actions=2, actor_epsilon=1.0)
+    with pytest.raises(ValueError, match="actor_td_error_normalizer_decay"):
+        NonlinearHordeActorCriticConfig(
+            n_actions=2, actor_td_error_normalizer_decay=1.0
+        )
+
+
+def test_actor_init_rejects_derived_resource_overflow_before_jax_allocation() -> None:
+    linear = _make_agent()
+    nonlinear = _make_nlhac_agent(hidden_sizes=())
+    with pytest.raises(ValueError, match="actor_"):
+        linear.init(np.int64(2**30), jr.key(0))
+    with pytest.raises(ValueError, match="actor_"):
+        nonlinear.init(np.int64(2**28), jr.key(0))
+
+
+def test_validated_actor_configs_run_jitted_valid_paths() -> None:
+    linear = _make_agent()
+    linear_state = linear.init(np.uint16(2), jr.key(0))
+    linear_policy = jax.jit(linear.policy)(
+        linear_state, jnp.ones((2,), dtype=jnp.float32)
+    )
+    assert linear_policy.shape == (linear.config.n_actions,)
+
+    nonlinear = _make_nlhac_agent(hidden_sizes=())
+    nonlinear_state = nonlinear.init(np.int32(2), jr.key(1))
+    nonlinear_policy = jax.jit(nonlinear.policy)(
+        nonlinear_state, jnp.ones((2,), dtype=jnp.float32)
+    )
+    assert nonlinear_policy.shape == (nonlinear.config.n_actions,)
