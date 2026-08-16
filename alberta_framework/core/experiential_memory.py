@@ -25,18 +25,35 @@ from __future__ import annotations
 
 import functools
 import math
+import operator
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
+
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 _INT32_MAX = 2_147_483_647
 _UINT32_MAX = 4_294_967_295
 
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
+)
 
 @dataclass(frozen=True)
 class ExperientialMemoryConfig:
@@ -89,6 +106,9 @@ class ExperientialMemoryConfig:
     eviction_recency_weight: float = 1.0
     recency_scale: float = 100.0
 
+    def __post_init__(self) -> None:
+        _validate_config(self)
+
     def to_config(self) -> dict[str, object]:
         """Return a JSON-serializable configuration."""
         payload = asdict(self)
@@ -105,7 +125,6 @@ class ExperientialMemoryConfig:
         result = cls(**payload)
         _validate_config(result)
         return result
-
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryEntry:
@@ -128,7 +147,6 @@ class ExperientialMemoryEntry:
     age: Int[Array, ""]
     provenance_id: Int[Array, ""]
     source_id: Int[Array, ""]
-
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryEntries:
@@ -159,7 +177,6 @@ class ExperientialMemoryEntries:
     source_ids: Int[Array, " capacity"]
     retrieval_counts: Int[Array, " capacity"]
 
-
 @chex.dataclass(frozen=True)
 class ExperientialMemoryState:
     """Complete fixed-shape persistent memory state."""
@@ -173,7 +190,6 @@ class ExperientialMemoryState:
     rejected_write_count: Int[Array, ""]
     eviction_count: Int[Array, ""]
     persistent_bytes: Array
-
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryRetrieval:
@@ -208,7 +224,6 @@ class ExperientialMemoryRetrieval:
     safety_ok: Bool[Array, ""]
     has_neighbors: Bool[Array, ""]
 
-
 @chex.dataclass(frozen=True)
 class ExperientialMemoryWriteResult:
     """State and accounting returned by one bounded write."""
@@ -218,7 +233,6 @@ class ExperientialMemoryWriteResult:
     slot: Int[Array, ""]
     evicted: Bool[Array, ""]
     evicted_provenance_id: Int[Array, ""]
-
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryStepResult:
@@ -230,7 +244,6 @@ class ExperientialMemoryStepResult:
     slot: Int[Array, ""]
     evicted: Bool[Array, ""]
     evicted_provenance_id: Int[Array, ""]
-
 
 @chex.dataclass(frozen=True)
 class ExperientialMemoryAccounting:
@@ -246,13 +259,40 @@ class ExperientialMemoryAccounting:
     rejected_writes: Int[Array, ""]
     evictions: Int[Array, ""]
 
+def _require_positive_int(name: str, value: object) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be a positive integer in [1, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if number < 1 or number > _INT32_MAX:
+        raise ValueError(f"{name} must be a positive integer in [1, {_INT32_MAX}]")
+    return number
+
+def _require_nonnegative_int(name: str, value: object) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [0, {_INT32_MAX}]")
+    number = operator.index(cast(SupportsIndex, value))
+    if number < 0 or number > _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [0, {_INT32_MAX}]")
+    return number
+
+def _require_float32_resource(
+    name: str,
+    *,
+    vector_scalars: int,
+    fixed_scalars: int = 0,
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
 
 def _validate_finite(name: str, value: float) -> None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a real number")
     if not math.isfinite(value):
         raise ValueError(f"{name} must be finite")
-
 
 def _validate_config(config: ExperientialMemoryConfig) -> None:
     for name in (
@@ -264,70 +304,96 @@ def _validate_config(config: ExperientialMemoryConfig) -> None:
         "top_k",
         "min_neighbors",
     ):
-        value = getattr(config, name)
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{name} must be an integer")
-        if value < 1:
-            raise ValueError(f"{name} must be positive")
+        canonical = _require_positive_int(name, getattr(config, name))
+        object.__setattr__(config, name, canonical)
     if config.top_k > config.capacity:
         raise ValueError("top_k must be <= capacity")
     if config.min_neighbors > config.top_k:
         raise ValueError("min_neighbors must be <= top_k")
-    if isinstance(config.max_age, bool) or not isinstance(config.max_age, int):
-        raise ValueError("max_age must be an integer")
-    if config.max_age < 0:
-        raise ValueError("max_age must be non-negative")
-    if config.max_age > _INT32_MAX:
-        raise ValueError(
-            "max_age must be <= int32 max; ages saturate there, so larger values cannot be met"
-        )
+    canonical_max_age = _require_nonnegative_int("max_age", config.max_age)
+    object.__setattr__(config, "max_age", canonical_max_age)
 
-    for name in (
+    vector_values = (
+        config.observation_dim + config.key_dim + config.action_dim + config.outcome_dim
+    )
+    if vector_values > _INT32_MAX:
+        raise ValueError("ExperientialMemoryConfig dimensions must fit signed int32")
+    _require_float32_resource(
+        "ExperientialMemoryConfig state",
+        vector_scalars=config.capacity * vector_values,
+        fixed_scalars=config.capacity * 11 + 8,
+    )
+    persistent_bytes = config.capacity * (4 * (vector_values + 11) + 4) + 32
+    if persistent_bytes > _INT32_MAX:
+        raise ValueError("ExperientialMemoryConfig state byte count must fit signed int32")
+    if persistent_bytes > _UINT32_MAX:
+        raise ValueError("persistent memory allocation exceeds uint32 byte accounting")
+
+    object.__setattr__(
+        config,
         "distance_scale",
+        validated_float32_scalar("distance_scale", config.distance_scale, positive=True),
+    )
+    object.__setattr__(
+        config,
         "min_similarity",
+        validated_float32_scalar("min_similarity", config.min_similarity, lower=0, upper=1),
+    )
+    object.__setattr__(
+        config,
         "min_effective_reliability",
+        validated_float32_scalar(
+            "min_effective_reliability", config.min_effective_reliability, positive=True, upper=1
+        ),
+    )
+    object.__setattr__(
+        config,
         "max_uncertainty",
+        validated_float32_scalar("max_uncertainty", config.max_uncertainty, lower=0),
+    )
+    object.__setattr__(
+        config,
         "max_safety_cost",
+        validated_float32_scalar("max_safety_cost", config.max_safety_cost, lower=0),
+    )
+    object.__setattr__(
+        config,
         "staleness_scale",
+        validated_float32_scalar("staleness_scale", config.staleness_scale, positive=True),
+    )
+    object.__setattr__(
+        config,
         "utility_decay",
+        validated_float32_scalar("utility_decay", config.utility_decay, lower=0, upper=1),
+    )
+    object.__setattr__(
+        config,
         "eviction_utility_weight",
+        validated_float32_scalar(
+            "eviction_utility_weight", config.eviction_utility_weight, lower=0
+        ),
+    )
+    object.__setattr__(
+        config,
         "eviction_recency_weight",
-        "recency_scale",
-    ):
-        _validate_finite(name, cast(float, getattr(config, name)))
-
-    if config.distance_scale <= 0.0:
-        raise ValueError("distance_scale must be positive")
-    if not 0.0 <= config.min_similarity <= 1.0:
-        raise ValueError("min_similarity must be in [0, 1]")
-    if not 0.0 < config.min_effective_reliability <= 1.0:
-        raise ValueError("min_effective_reliability must be in (0, 1]")
-    if config.max_uncertainty < 0.0:
-        raise ValueError("max_uncertainty must be non-negative")
-    if config.max_safety_cost < 0.0:
-        raise ValueError("max_safety_cost must be non-negative")
-    if config.staleness_scale <= 0.0:
-        raise ValueError("staleness_scale must be positive")
-    if not 0.0 <= config.utility_decay <= 1.0:
-        raise ValueError("utility_decay must be in [0, 1]")
-    if config.eviction_utility_weight < 0.0:
-        raise ValueError("eviction_utility_weight must be non-negative")
-    if config.eviction_recency_weight < 0.0:
-        raise ValueError("eviction_recency_weight must be non-negative")
+        validated_float32_scalar(
+            "eviction_recency_weight", config.eviction_recency_weight, lower=0
+        ),
+    )
     if config.eviction_utility_weight + config.eviction_recency_weight <= 0.0:
         raise ValueError("at least one eviction retention weight must be positive")
-    if config.recency_scale <= 0.0:
-        raise ValueError("recency_scale must be positive")
-
+    object.__setattr__(
+        config,
+        "recency_scale",
+        validated_float32_scalar("recency_scale", config.recency_scale, positive=True),
+    )
 
 def _saturating_increment(value: Array) -> Array:
     maximum_minus_one = jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)
     return jnp.minimum(value, maximum_minus_one) + jnp.asarray(1, dtype=jnp.int32)
 
-
 def _tree_nbytes(tree: Any) -> int:
     return sum(int(leaf.size) * int(leaf.dtype.itemsize) for leaf in jax.tree.leaves(tree))
-
 
 def _configured_nbytes(config: ExperientialMemoryConfig) -> tuple[int, int]:
     vector_values = config.observation_dim + config.key_dim + config.action_dim + config.outcome_dim
@@ -336,7 +402,6 @@ def _configured_nbytes(config: ExperientialMemoryConfig) -> tuple[int, int]:
     # Seven int32 counters and the uint32 byte-count scalar live beside slots.
     persistent_bytes = config.capacity * slot_bytes + 8 * 4
     return persistent_bytes, slot_bytes
-
 
 def _require_array(
     value: Any,
@@ -354,7 +419,6 @@ def _require_array(
     actual_dtype = jnp.dtype(value.dtype)
     if actual_dtype != expected_dtype:
         raise TypeError(f"{name} must have dtype {expected_dtype}; got {actual_dtype}")
-
 
 class ExperientialMemory:
     """Fixed-capacity episodic memory with conservative retrieval.
@@ -1329,7 +1393,6 @@ class ExperientialMemory:
             rejected_writes=state.rejected_write_count,
             evictions=state.eviction_count,
         )
-
 
 __all__ = [
     "ExperientialMemory",

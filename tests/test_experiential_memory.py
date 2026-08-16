@@ -205,7 +205,7 @@ def test_config_rejects_inconsistent_neighbor_and_eviction_settings() -> None:
 
 
 def test_config_rejects_allocation_larger_than_exact_byte_counter() -> None:
-    with pytest.raises(ValueError, match="uint32"):
+    with pytest.raises(ValueError, match="uint32|int32"):
         ExperientialMemory(_config(capacity=100_000_000, top_k=1))
 
 
