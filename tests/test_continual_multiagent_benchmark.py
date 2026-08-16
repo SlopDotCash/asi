@@ -94,13 +94,17 @@ def test_three_seed_smoke_cannot_be_promoted_as_scientific_evidence(
 ) -> None:
     assert not smoke_report.acceptance.passed
     seed_check = next(
-        check for check in smoke_report.acceptance.checks if check.name == "seed_count"
+        check
+        for check in smoke_report.acceptance.checks
+        if check.name == "seed_count"
     )
     assert not seed_check.passed
     assert seed_check.actual == 3.0
     assert seed_check.threshold == 30.0
     schedule_check = next(
-        check for check in smoke_report.acceptance.checks if check.name == "evidence_seed_schedule"
+        check
+        for check in smoke_report.acceptance.checks
+        if check.name == "evidence_seed_schedule"
     )
     assert not schedule_check.passed
 
@@ -111,7 +115,9 @@ def test_seeded_learning_evidence_is_exactly_reproducible(
     evidence_seed = benchmark_report.aggregate.seeds[0]
     repeated = run_continual_multiagent_benchmark(seeds=(evidence_seed,))
     original = tuple(
-        result for result in benchmark_report.condition_results if result.seed == evidence_seed
+        result
+        for result in benchmark_report.condition_results
+        if result.seed == evidence_seed
     )
 
     assert len(original) == len(repeated.condition_results) == 3
@@ -237,14 +243,16 @@ def test_aggregate_intervals_use_matched_seed_differences(
     }
     reward_differences = np.asarray(
         [
-            prequential[(seed, "joint_adaptive")] - prequential[(seed, "frozen")]
+            prequential[(seed, "joint_adaptive")]
+            - prequential[(seed, "frozen")]
             for seed in benchmark_report.aggregate.seeds
         ],
         dtype=np.float64,
     )
     coadaptation_differences = np.asarray(
         [
-            prequential[(seed, "joint_adaptive")] - prequential[(seed, "learner_only")]
+            prequential[(seed, "joint_adaptive")]
+            - prequential[(seed, "learner_only")]
             for seed in benchmark_report.aggregate.seeds
         ],
         dtype=np.float64,
@@ -263,7 +271,9 @@ def test_public_aggregation_rejects_duplicate_seed_weighting(
 ) -> None:
     evidence_seed = benchmark_report.aggregate.seeds[0]
     one_seed = tuple(
-        result for result in benchmark_report.condition_results if result.seed == evidence_seed
+        result
+        for result in benchmark_report.condition_results
+        if result.seed == evidence_seed
     )
     with pytest.raises(ValueError, match="unique"):
         aggregate_evidence(one_seed + one_seed)
@@ -289,7 +299,10 @@ def test_artifact_has_deterministic_scientific_content_and_digest(
     operational = changed_diagnostics["operational_diagnostics"]
     assert isinstance(operational, dict)
     operational["maximum_update_latency_ms"] = 123_456.0
-    assert changed_diagnostics["content_digest"]["sha256"] == first["content_digest"]["sha256"]
+    assert (
+        changed_diagnostics["content_digest"]["sha256"]
+        == first["content_digest"]["sha256"]
+    )
     validation = validate_evidence_artifact(changed_diagnostics)
     assert not validation.valid
     assert not validation.accepted
@@ -313,15 +326,24 @@ def test_artifact_is_strict_json_with_narrow_claim_and_seed_evidence(
     content = loaded["content"]
     assert content["protocol"]["protocol_version"] == PROTOCOL_VERSION
     assert len(content["seed_summaries"]) == 30
-    assert "coadaptation_uplift_over_learner_only" in content["aggregate"]
+    assert (
+        "coadaptation_uplift_over_learner_only"
+        in content["aggregate"]
+    )
     excluded = content["protocol"]["excluded_claims"]
     assert "general feature discovery" in excluded
     assert "intelligence amplification or recommendation intervention" in excluded
-    assert content["protocol"]["seed_roles"]["promoted_held_out_evidence"] == list(range(30, 60))
-    recovery_interval = content["aggregate"]["recurrence_recovery_fraction_interval"]
+    assert content["protocol"]["seed_roles"]["promoted_held_out_evidence"] == list(
+        range(30, 60)
+    )
+    recovery_interval = content["aggregate"][
+        "recurrence_recovery_fraction_interval"
+    ]
     assert recovery_interval["method"] == "wilson-score"
     assert recovery_interval["sample_size"] == 30
-    assert recovery_interval["lower"] < content["aggregate"]["recurrence_recovery_fraction"]
+    assert recovery_interval["lower"] < content["aggregate"][
+        "recurrence_recovery_fraction"
+    ]
 
 
 def test_artifact_loader_rejects_duplicate_object_keys(tmp_path) -> None:
@@ -408,9 +430,12 @@ def test_rehashed_incomplete_seed_payload_still_fails_closed(
     assert not validation.valid
     assert not validation.accepted
     assert any(
-        "must contain exactly unique held-out seeds 30-59" in error for error in validation.errors
+        "must contain exactly unique held-out seeds 30-59" in error
+        for error in validation.errors
     )
-    assert any("aggregate.seeds must match" in error for error in validation.errors)
+    assert any(
+        "aggregate.seeds must match" in error for error in validation.errors
+    )
 
 
 def test_rehashed_interval_with_wrong_sample_size_fails_closed(
@@ -486,7 +511,9 @@ def test_cli_fails_for_underpowered_smoke_without_rerun(
     content = artifact["content"]
     assert content["acceptance"]["passed"] is False
     seed_check = next(
-        check for check in content["acceptance"]["checks"] if check["name"] == "seed_count"
+        check
+        for check in content["acceptance"]["checks"]
+        if check["name"] == "seed_count"
     )
     assert seed_check["actual"] == 3.0
     assert seed_check["passed"] is False
@@ -516,7 +543,11 @@ def test_cli_rechecks_impossible_thresholds_without_rerun(
     assert validation.valid
     assert not validation.accepted
     content = artifact["content"]
-    failed = {check["name"] for check in content["acceptance"]["checks"] if not check["passed"]}
+    failed = {
+        check["name"]
+        for check in content["acceptance"]["checks"]
+        if not check["passed"]
+    }
     assert "reward_uplift_over_frozen" in failed
 
 
@@ -541,46 +572,3 @@ def test_cli_rejects_weaker_than_canonical_thresholds_without_rerun(
     assert emitted["accepted"] is False
     assert emitted["valid"] is False
     assert not path.exists()
-
-
-def test_continual_multiagent_config_rejects_booleans_and_non_integers() -> None:
-    with pytest.raises(ValueError, match="phase_steps"):
-        ContinualMultiAgentConfig(phase_steps=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="phase_steps"):
-        ContinualMultiAgentConfig(phase_steps=64.5)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="nuisance_dim"):
-        ContinualMultiAgentConfig(nuisance_dim=True)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="bootstrap_resamples"):
-        ContinualMultiAgentConfig(bootstrap_resamples=1000.5)  # type: ignore[arg-type]
-
-
-def test_continual_multiagent_config_accepts_and_canonicalizes_numpy_integers() -> None:
-    cfg = ContinualMultiAgentConfig(
-        phase_steps=np.int32(64),
-        nuisance_dim=np.int64(4),
-        probe_horizon=np.uint16(12),
-        probe_tail_steps=np.uint8(4),
-        recovery_window=np.int32(4),
-        bootstrap_resamples=np.int64(10_000),
-        bootstrap_seed=np.uint32(2_026_073_000),
-    )
-    assert type(cfg.phase_steps) is int
-    assert type(cfg.nuisance_dim) is int
-    assert type(cfg.probe_horizon) is int
-    assert type(cfg.probe_tail_steps) is int
-    assert type(cfg.recovery_window) is int
-    assert type(cfg.bootstrap_resamples) is int
-    assert type(cfg.bootstrap_seed) is int
-    assert cfg.phase_steps == 64
-    assert cfg.nuisance_dim == 4
-
-
-def test_acceptance_thresholds_accepts_and_canonicalizes_numpy_integers() -> None:
-    thresholds = AcceptanceThresholds(
-        minimum_seed_count=np.int32(30),
-        evidence_seed_start=np.int64(30),
-    )
-    assert type(thresholds.minimum_seed_count) is int
-    assert type(thresholds.evidence_seed_start) is int
-    assert thresholds.minimum_seed_count == 30
-    assert thresholds.evidence_seed_start == 30

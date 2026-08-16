@@ -73,6 +73,8 @@ CONDITION_MASKS: tuple[tuple[ConditionName, tuple[bool, bool]], ...] = (
     ("joint_adaptive", (True, True)),
 )
 _INT32_MAX = 2**31 - 1
+_UINT32_MAX = 2**32 - 1
+_MAX_CONFIGURED_ARRAY_NBYTES = 256 * 1024 * 1024
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -97,6 +99,54 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_uint32(name: str, value: object) -> int:
+    return _require_int32(name, value, minimum=0, maximum=_UINT32_MAX)
+
+
+def _require_seed(value: object) -> int:
+    try:
+        return _require_int32("seed", value, minimum=0)
+    except ValueError as error:
+        raise ValueError("seeds must lie in [0, 2**31)") from error
+
+
+def _condition_working_nbytes(phase_steps: int) -> int:
+    """Exact bytes in the two phase-length float64 work vectors."""
+    return 2 * (3 * phase_steps) * np.dtype(np.float64).itemsize
+
+
+def _condition_result_array_nbytes(phase_steps: int) -> int:
+    """Exact retained NumPy payload for one completed condition."""
+    float64_nbytes = np.dtype(np.float64).itemsize
+    int64_nbytes = np.dtype(np.int64).itemsize
+    return (
+        3 * phase_steps * float64_nbytes
+        + 3 * float64_nbytes
+        + 3 * 2 * float64_nbytes
+        + 2 * int64_nbytes
+    )
+
+
+def _world_array_nbytes(nuisance_dim: int) -> tuple[int, int]:
+    """Exact persistent-state and one-observation array bytes for the world."""
+    state_nbytes = 36 + 2 * nuisance_dim * np.dtype(np.float32).itemsize
+    observation_nbytes = 2 * (6 + nuisance_dim) * np.dtype(np.float32).itemsize
+    return state_nbytes, observation_nbytes
+
+
+def _bootstrap_working_nbytes(resamples: int, sample_size: int) -> int:
+    """Peak owned NumPy payload for indices, sampled values, and means."""
+    itemsize = np.dtype(np.float64).itemsize
+    return 2 * resamples * sample_size * itemsize + resamples * itemsize
+
+
+def _require_resource_limit(name: str, nbytes: int) -> None:
+    if nbytes > _MAX_CONFIGURED_ARRAY_NBYTES:
+        raise ValueError(
+            f"{name} requires {nbytes} bytes; limit is {_MAX_CONFIGURED_ARRAY_NBYTES}"
+        )
 
 
 @dataclass(frozen=True)
@@ -129,11 +179,20 @@ class ContinualMultiAgentConfig:
             "recovery_window", self.recovery_window, minimum=1, maximum=phase_steps
         )
         bootstrap_resamples = _require_int32(
-            "bootstrap_resamples", self.bootstrap_resamples, minimum=1000
+            "bootstrap_resamples",
+            self.bootstrap_resamples,
+            minimum=1000,
+            maximum=_MAX_CONFIGURED_ARRAY_NBYTES // (3 * np.dtype(np.float64).itemsize),
         )
-        bootstrap_seed = _require_int32(
-            "bootstrap_seed", self.bootstrap_seed, minimum=0, maximum=2**32 - 1
+        bootstrap_seed = _require_uint32("bootstrap_seed", self.bootstrap_seed)
+
+        _require_resource_limit(
+            "per-condition phase work arrays",
+            _condition_working_nbytes(phase_steps),
         )
+        world_state_nbytes, observation_nbytes = _world_array_nbytes(nuisance_dim)
+        _require_resource_limit("recurring world state", world_state_nbytes)
+        _require_resource_limit("recurring world observation", observation_nbytes)
 
         object.__setattr__(self, "phase_steps", phase_steps)
         object.__setattr__(self, "nuisance_dim", nuisance_dim)
@@ -181,15 +240,25 @@ class AcceptanceThresholds:
     maximum_update_latency_ms: float = 5.0
 
     def __post_init__(self) -> None:
+        minimum_seed_count = _require_int32(
+            "minimum_seed_count", self.minimum_seed_count, minimum=1
+        )
+        evidence_seed_start = _require_int32(
+            "evidence_seed_start", self.evidence_seed_start, minimum=0
+        )
+        if evidence_seed_start + minimum_seed_count > _INT32_MAX + 1:
+            raise ValueError(
+                "evidence_seed_start + minimum_seed_count must not exceed 2147483648"
+            )
         object.__setattr__(
             self,
             "minimum_seed_count",
-            _require_int32("minimum_seed_count", self.minimum_seed_count, minimum=1),
+            minimum_seed_count,
         )
         object.__setattr__(
             self,
             "evidence_seed_start",
-            _require_int32("evidence_seed_start", self.evidence_seed_start, minimum=0),
+            evidence_seed_start,
         )
 
 
@@ -569,10 +638,17 @@ def paired_bootstrap_mean_interval(
         raise ValueError("paired_differences must contain only finite values")
     if not 0.0 < confidence_level < 1.0:
         raise ValueError("confidence_level must lie in (0, 1)")
-    if resamples < 1:
-        raise ValueError("resamples must be positive")
-    if not 0 <= seed < 2**32:
-        raise ValueError("seed must lie in [0, 2**32)")
+    resamples = _require_int32(
+        "resamples",
+        resamples,
+        minimum=1,
+        maximum=_MAX_CONFIGURED_ARRAY_NBYTES // (3 * np.dtype(np.float64).itemsize),
+    )
+    seed = _require_uint32("seed", seed)
+    _require_resource_limit(
+        "paired bootstrap working arrays",
+        _bootstrap_working_nbytes(resamples, int(values.size)),
+    )
 
     generator = np.random.default_rng(seed)
     indices = generator.integers(
@@ -769,11 +845,9 @@ def evaluate_acceptance(
     """
 
     limits = AcceptanceThresholds() if thresholds is None else thresholds
-    expected_evidence_seeds = tuple(
-        range(
-            limits.evidence_seed_start,
-            limits.evidence_seed_start + limits.minimum_seed_count,
-        )
+    seed_schedule_matches = len(aggregate.seeds) == limits.minimum_seed_count and all(
+        seed == limits.evidence_seed_start + offset
+        for offset, seed in enumerate(aggregate.seeds)
     )
     checks = (
         _minimum_check(
@@ -784,7 +858,7 @@ def evaluate_acceptance(
         ),
         _minimum_check(
             "evidence_seed_schedule",
-            float(aggregate.seeds == expected_evidence_seeds),
+            float(seed_schedule_matches),
             1.0,
             "Promoted evidence must use the frozen held-out consecutive seed schedule.",
         ),
@@ -873,13 +947,20 @@ def run_continual_multiagent_benchmark(
 
     benchmark_config = ContinualMultiAgentConfig() if config is None else config
     acceptance_thresholds = AcceptanceThresholds() if thresholds is None else thresholds
-    seed_tuple = tuple(int(seed) for seed in seeds)
-    if not seed_tuple:
+    if type(seeds) not in (list, tuple, range):
+        raise ValueError("seeds must be an actual list, tuple, or range")
+    seed_count = len(seeds)
+    if seed_count == 0:
         raise ValueError("seeds must be non-empty")
+    _require_resource_limit(
+        "retained condition-result arrays",
+        seed_count
+        * len(CONDITION_MASKS)
+        * _condition_result_array_nbytes(benchmark_config.phase_steps),
+    )
+    seed_tuple = tuple(_require_seed(seed) for seed in seeds)
     if len(set(seed_tuple)) != len(seed_tuple):
         raise ValueError("seeds must be unique")
-    if any(seed < 0 or seed >= 2**31 for seed in seed_tuple):
-        raise ValueError("seeds must lie in [0, 2**31)")
 
     # Immediate dynamics make the causal effect of each bounded action visible
     # while preserving an uninterrupted physical state across phase switches.
