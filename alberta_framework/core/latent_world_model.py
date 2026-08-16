@@ -48,8 +48,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
-from numbers import Real
 from typing import Any, cast
 
 import chex
@@ -59,6 +57,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -253,35 +252,6 @@ def _rollback_multi_head_result(
     )
 
 
-def _require_finite_scalar(
-    name: str,
-    value: object,
-    *,
-    positive: bool = False,
-    lower: float | None = None,
-    upper: float | None = None,
-    upper_inclusive: bool = True,
-) -> None:
-    """Fail closed on non-real, non-finite, or out-of-range configuration scalars.
-
-    Bare ``<`` / ``<=`` comparisons let NaN through; a NaN scale or bound then
-    rejects every transition while the loop publishes zero errors.
-    """
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a finite real number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real number")
-    if positive and number <= 0.0:
-        raise ValueError(f"{name} must be positive")
-    if lower is not None and number < lower:
-        raise ValueError(f"{name} must be >= {lower}")
-    if upper is not None and (number > upper or (not upper_inclusive and number == upper)):
-        bracket = "]" if upper_inclusive else ")"
-        floor = lower if lower is not None else "-inf"
-        raise ValueError(f"{name} must be in [{floor}, {upper}{bracket}")
-
-
 class LatentWorldModel:
     """Latent model for ``(z_t, a_t) -> (z_{t+1}, r, gamma)``.
 
@@ -298,7 +268,7 @@ class LatentWorldModel:
         head_optimizer: AnyOptimizer | None = None,
     ):
         """Initialize the latent world model."""
-        self._validate_config(config)
+        config = self._validate_config(config)
         self._config = config
         self._observation_scale = (
             tuple(1.0 for _ in range(config.observation_dim))
@@ -832,37 +802,64 @@ class LatentWorldModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: LatentWorldModelConfig) -> None:
+    def _validate_config(self, config: LatentWorldModelConfig) -> LatentWorldModelConfig:
+        """Fail closed on malformed configuration and return its canonical float32 form."""
         if config.observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
         if config.latent_dim <= 0:
             raise ValueError("latent_dim must be positive")
-        _require_finite_scalar("gamma", config.gamma, lower=0.0, upper=1.0)
-        if config.observation_scale is not None:
-            if len(config.observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            for scale in config.observation_scale:
-                _require_finite_scalar("observation_scale values", scale, positive=True)
-        _require_finite_scalar("reward_scale", config.reward_scale, positive=True)
-        _require_finite_scalar("encoder_scale", config.encoder_scale, positive=True)
-        _require_finite_scalar("encoder_bias_scale", config.encoder_bias_scale, lower=0.0)
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        for name in ("utility_decay", "surprise_decay", "collapse_decay"):
-            _require_finite_scalar(
-                name, getattr(config, name), lower=0.0, upper=1.0, upper_inclusive=False
+        observation_scale = config.observation_scale
+        if observation_scale is not None:
+            if len(observation_scale) != config.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar("observation_scale values", scale, positive=True)
+                for scale in observation_scale
             )
-        _require_finite_scalar("min_latent_std", config.min_latent_std, lower=0.0)
-        _require_finite_scalar("max_latent_delta", config.max_latent_delta, positive=True)
-        _require_finite_scalar("encoder_step_size", config.encoder_step_size, positive=True)
-        _require_finite_scalar("max_encoder_update", config.max_encoder_update, positive=True)
-        _require_finite_scalar(
-            "encoder_collapse_gate_threshold",
-            config.encoder_collapse_gate_threshold,
-            lower=0.0,
-            upper=1.0,
+        return dataclasses.replace(
+            config,
+            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
+            observation_scale=observation_scale,
+            reward_scale=validated_float32_scalar(
+                "reward_scale", config.reward_scale, positive=True
+            ),
+            encoder_scale=validated_float32_scalar(
+                "encoder_scale", config.encoder_scale, positive=True
+            ),
+            encoder_bias_scale=validated_float32_scalar(
+                "encoder_bias_scale", config.encoder_bias_scale, lower=0.0
+            ),
+            min_latent_std=validated_float32_scalar(
+                "min_latent_std", config.min_latent_std, lower=0.0
+            ),
+            max_latent_delta=validated_float32_scalar(
+                "max_latent_delta", config.max_latent_delta, positive=True
+            ),
+            encoder_step_size=validated_float32_scalar(
+                "encoder_step_size", config.encoder_step_size, positive=True
+            ),
+            max_encoder_update=validated_float32_scalar(
+                "max_encoder_update", config.max_encoder_update, positive=True
+            ),
+            encoder_collapse_gate_threshold=validated_float32_scalar(
+                "encoder_collapse_gate_threshold",
+                config.encoder_collapse_gate_threshold,
+                lower=0.0,
+                upper=1.0,
+            ),
+            utility_decay=validated_float32_scalar(
+                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            surprise_decay=validated_float32_scalar(
+                "surprise_decay", config.surprise_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            collapse_decay=validated_float32_scalar(
+                "collapse_decay", config.collapse_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
         )
 
 

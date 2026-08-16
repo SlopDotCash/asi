@@ -16,8 +16,6 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import math
-from numbers import Real
 from typing import Any, cast
 
 import chex
@@ -26,6 +24,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -246,35 +245,6 @@ def _action_world_model_state_is_valid(
     )
 
 
-def _require_finite_scalar(
-    name: str,
-    value: object,
-    *,
-    positive: bool = False,
-    lower: float | None = None,
-    upper: float | None = None,
-    upper_inclusive: bool = True,
-) -> None:
-    """Fail closed on non-real, non-finite, or out-of-range configuration scalars.
-
-    Bare ``<`` / ``<=`` comparisons let NaN through; a NaN scale or bound then
-    rejects every transition while the loop publishes zero errors.
-    """
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise ValueError(f"{name} must be a finite real number")
-    number = float(value)
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real number")
-    if positive and number <= 0.0:
-        raise ValueError(f"{name} must be positive")
-    if lower is not None and number < lower:
-        raise ValueError(f"{name} must be >= {lower}")
-    if upper is not None and (number > upper or (not upper_inclusive and number == upper)):
-        bracket = "]" if upper_inclusive else ")"
-        floor = lower if lower is not None else "-inf"
-        raise ValueError(f"{name} must be in [{floor}, {upper}{bracket}")
-
-
 class ActionConditionedWorldModel:
     """One-step model for ``(observation, action) -> (next_obs, reward, discount)``.
 
@@ -294,7 +264,7 @@ class ActionConditionedWorldModel:
         head_optimizer: AnyOptimizer | None = None,
     ):
         """Initialize the world model."""
-        self._validate_config(config)
+        config = self._validate_config(config)
         self._config = config
         self._observation_scale = (
             tuple(1.0 for _ in range(config.observation_dim))
@@ -686,30 +656,44 @@ class ActionConditionedWorldModel:
             update_applied=update_applied,
         )
 
-    def _validate_config(self, config: ActionConditionedWorldModelConfig) -> None:
+    def _validate_config(
+        self, config: ActionConditionedWorldModelConfig
+    ) -> ActionConditionedWorldModelConfig:
+        """Fail closed on malformed configuration and return its canonical float32 form."""
         if config.observation_dim <= 0:
             raise ValueError("observation_dim must be positive")
         if config.n_actions <= 0:
             raise ValueError("n_actions must be positive")
-        _require_finite_scalar("gamma", config.gamma, lower=0.0, upper=1.0)
-        if config.observation_scale is not None:
-            if len(config.observation_scale) != config.observation_dim:
-                raise ValueError("observation_scale length must equal observation_dim")
-            for scale in config.observation_scale:
-                _require_finite_scalar("observation_scale values", scale, positive=True)
-        _require_finite_scalar("reward_scale", config.reward_scale, positive=True)
         if any(size <= 0 for size in config.hidden_sizes):
             raise ValueError("hidden_sizes must contain only positive widths")
-        _require_finite_scalar(
-            "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        observation_scale = config.observation_scale
+        if observation_scale is not None:
+            if len(observation_scale) != config.observation_dim:
+                raise ValueError("observation_scale length must equal observation_dim")
+            observation_scale = tuple(
+                validated_float32_scalar("observation_scale values", scale, positive=True)
+                for scale in observation_scale
+            )
+        return dataclasses.replace(
+            config,
+            gamma=validated_float32_scalar("gamma", config.gamma, lower=0.0, upper=1.0),
+            observation_scale=observation_scale,
+            reward_scale=validated_float32_scalar(
+                "reward_scale", config.reward_scale, positive=True
+            ),
+            utility_decay=validated_float32_scalar(
+                "utility_decay", config.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            error_decay=validated_float32_scalar(
+                "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
+            ),
+            observation_clip_margin=validated_float32_scalar(
+                "observation_clip_margin", config.observation_clip_margin, lower=0.0
+            ),
+            max_delta_scale=validated_float32_scalar(
+                "max_delta_scale", config.max_delta_scale, positive=True
+            ),
         )
-        _require_finite_scalar(
-            "error_decay", config.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
-        )
-        _require_finite_scalar(
-            "observation_clip_margin", config.observation_clip_margin, lower=0.0
-        )
-        _require_finite_scalar("max_delta_scale", config.max_delta_scale, positive=True)
 
 
 def run_action_conditioned_world_model_learning_loop(

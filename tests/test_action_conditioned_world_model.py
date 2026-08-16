@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.core.dreaming import (
@@ -277,6 +281,82 @@ def test_config_rejects_non_finite_scalars(overrides: dict[str, object]) -> None
     )
     with pytest.raises(ValueError, match="finite"):
         ActionConditionedWorldModel(config)
+
+
+class _FloatSpoof:
+    """Not a Real: reports float through __class__ and never compares as out of range."""
+
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 2)
+
+    def __float__(self) -> float:
+        return 0.5
+
+    def __le__(self, other: object) -> bool:
+        return True
+
+    def __lt__(self, other: object) -> bool:
+        return True
+
+    def __ge__(self, other: object) -> bool:
+        return True
+
+    def __gt__(self, other: object) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"reward_scale": _FloatSpoof()}, "reward_scale must be a finite real number"),
+        ({"observation_clip_margin": _FloatSpoof()}, "must be a finite real number"),
+        ({"reward_scale": 1e100}, "reward_scale must remain finite once narrowed"),
+        ({"max_delta_scale": 1e100}, "max_delta_scale must remain finite once narrowed"),
+        ({"reward_scale": 1e-100}, "reward_scale must remain positive once narrowed"),
+        ({"max_delta_scale": 1e-100}, "max_delta_scale must remain positive once narrowed"),
+        ({"observation_scale": (1e-100, 1.0)}, "must remain positive once narrowed"),
+        (
+            {"utility_decay": 1.0 - 1e-10},
+            r"utility_decay must remain in \[0.0, 1.0\) once narrowed",
+        ),
+        ({"error_decay": 1.0 - 1e-10}, r"error_decay must remain in \[0.0, 1.0\) once narrowed"),
+        ({"gamma": Fraction(1, 1) + Fraction(1, 2**60)}, r"gamma must be in \[0.0, 1.0\]"),
+    ],
+)
+def test_config_rejects_scalars_that_leave_the_float32_domain(
+    overrides: dict[str, object], message: str
+) -> None:
+    """Host-finite values must also stay finite and in range once narrowed to float32."""
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=(), **overrides  # type: ignore[arg-type]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=message):
+            ActionConditionedWorldModel(config)
+
+
+def test_config_canonicalizes_real_scalars_and_preserves_builtin_floats() -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            reward_scale=Fraction(1, 4),
+            observation_scale=(np.float64(2.0), 1),
+            utility_decay=0.99,
+        )
+    )
+    assert type(model.config.reward_scale) is float and model.config.reward_scale == 0.25
+    assert model.config.observation_scale == (2.0, 1.0)
+    assert all(type(value) is float for value in model.config.observation_scale)
+    assert model.config.utility_decay == 0.99
+    restored = ActionConditionedWorldModel.from_config(model.to_config())
+    assert restored.config == model.config
 
 
 @pytest.mark.parametrize("discount", [1.5, -0.5, 5.0])

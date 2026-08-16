@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 from jax import Array
 
@@ -123,6 +125,80 @@ def test_latent_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     )
     chex.assert_trees_all_close(defaulted.discount_errors, explicit.discount_errors)
     chex.assert_trees_all_close(defaulted.discount_predictions, explicit.discount_predictions)
+class _FloatSpoof:
+    @property
+    def __class__(self) -> type[float]:  # type: ignore[override]
+        return float
+
+    def as_integer_ratio(self) -> tuple[int, int]:
+        return (1, 2)
+
+    def __float__(self) -> float:
+        return 0.5
+
+    def __le__(self, other: object) -> bool:
+        return True
+
+    def __lt__(self, other: object) -> bool:
+        return True
+
+    def __ge__(self, other: object) -> bool:
+        return True
+
+    def __gt__(self, other: object) -> bool:
+        return True
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"encoder_scale": _FloatSpoof()}, "encoder_scale must be a finite real number"),
+        ({"reward_scale": 1e100}, "reward_scale must remain finite once narrowed"),
+        ({"encoder_scale": 1e-100}, "encoder_scale must remain positive once narrowed"),
+        ({"max_latent_delta": 1e-100}, "max_latent_delta must remain positive once narrowed"),
+        (
+            {"surprise_decay": 1.0 - 1e-10},
+            r"surprise_decay must remain in \[0.0, 1.0\) once narrowed",
+        ),
+        (
+            {"collapse_decay": 1.0 - 1e-10},
+            r"collapse_decay must remain in \[0.0, 1.0\) once narrowed",
+        ),
+        ({"encoder_step_size": 1e100}, "encoder_step_size must remain finite once narrowed"),
+    ],
+)
+def test_latent_config_rejects_scalars_that_leave_the_float32_domain(
+    overrides: dict[str, object], message: str
+) -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=2, n_actions=2, latent_dim=4, hidden_sizes=(8,), **overrides  # type: ignore[arg-type]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match=message):
+            LatentWorldModel(config)
+
+
+def test_latent_config_canonicalizes_real_scalars() -> None:
+    from fractions import Fraction
+
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=4,
+            hidden_sizes=(8,),
+            encoder_scale=Fraction(1, 2),
+            min_latent_std=np.float64(0.05),
+        )
+    )
+    assert type(model.config.encoder_scale) is float and model.config.encoder_scale == 0.5
+    assert type(model.config.min_latent_std) is float
+    assert model.config.min_latent_std == float(np.float32(0.05))
+    restored = LatentWorldModel.from_config(model.to_config())
+    assert restored.config == model.config
+
+
 @pytest.mark.parametrize("discount", [1.5, -0.5])
 def test_latent_update_rejects_out_of_range_discounts(discount: float) -> None:
     config = LatentWorldModelConfig(observation_dim=2, n_actions=2, latent_dim=4, hidden_sizes=(8,))
