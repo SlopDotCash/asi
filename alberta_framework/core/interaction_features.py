@@ -19,17 +19,19 @@ References:
 import dataclasses
 import functools
 import math
+import operator
 import struct
 import time
 from collections.abc import Mapping
 from numbers import Real
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, PRNGKeyArray, UInt
 
@@ -47,6 +49,73 @@ from alberta_framework.core.future_utility import one_step_output_loss_reduction
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
+
+def _require_int32(
+    name: str,
+    value: object,
+    *,
+    minimum: int,
+    maximum: int = _INT32_MAX,
+) -> int:
+    """Return one exact built-in/NumPy integer inside the JAX int32 domain."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_resource(name: str, *, scalars: int, nbytes: int) -> None:
+    """Reject derived device resources before a JAX allocation is attempted."""
+    if scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if nbytes > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
+def _require_state_resources(
+    *,
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    scale_robust: bool,
+) -> None:
+    """Preflight the exact persistent state constructed by ``init``."""
+    normalizer = int(scale_robust)
+    scalars = (
+        2 * n_tasks * n_features
+        + n_tasks * candidate_count
+        + (10 + normalizer) * n_features
+        + (9 + normalizer) * candidate_count
+        + (3 + normalizer) * n_tasks
+        + 7
+    )
+    nbytes = (
+        8 * n_tasks * n_features
+        + 4 * n_tasks * candidate_count
+        + (37 + 4 * normalizer) * n_features
+        + (33 + 4 * normalizer) * candidate_count
+        + (12 + 4 * normalizer) * n_tasks
+        + 32
+    )
+    _require_resource("interaction-feature state", scalars=scalars, nbytes=nbytes)
 
 CURATION_ACTIVE_INELIGIBLE_RANK = float.fromhex("0x1.fffffep+127")
 CURATION_CANDIDATE_INELIGIBLE_RANK = -CURATION_ACTIVE_INELIGIBLE_RANK
@@ -406,22 +475,69 @@ class FixedBudgetInteractionLearner:
         scale_normalizer_epsilon: float = 1e-6,
         task_utility_weights: tuple[float, ...] | None = None,
     ):
-        if n_features < 1:
-            raise ValueError("n_features must be positive")
-        if n_tasks < 1:
-            raise ValueError("n_tasks must be positive")
-        if candidate_count < 0:
-            raise ValueError("candidate_count must be non-negative")
+        n_features = _require_int32("n_features", n_features, minimum=1)
+        n_tasks = _require_int32("n_tasks", n_tasks, minimum=1)
+        candidate_count = _require_int32("candidate_count", candidate_count, minimum=0)
+        replacement_interval = _require_int32(
+            "replacement_interval", replacement_interval, minimum=0
+        )
+        min_feature_age = _require_int32("min_feature_age", min_feature_age, minimum=0)
+        candidate_min_age = _require_int32("candidate_min_age", candidate_min_age, minimum=0)
+        utility_top_k = _require_int32("utility_top_k", utility_top_k, minimum=1)
+        if utility_retention_grace_steps is not None:
+            utility_retention_grace_steps = _require_int32(
+                "utility_retention_grace_steps",
+                utility_retention_grace_steps,
+                minimum=0,
+                maximum=_INT32_MAX - 1,
+            )
+        utility_evidence_confirmation_steps = _require_int32(
+            "utility_evidence_confirmation_steps",
+            utility_evidence_confirmation_steps,
+            minimum=0,
+            maximum=_INT32_MAX - 1,
+        )
+        if stale_retirement_interval is not None:
+            try:
+                stale_retirement_interval = _require_int32(
+                    "stale_retirement_interval", stale_retirement_interval, minimum=1
+                )
+            except ValueError as error:
+                raise ValueError(
+                    "stale_retirement_interval must be None or a positive int32-safe integer"
+                ) from error
+        candidate_promotion_confirmation_steps = _require_int32(
+            "candidate_promotion_confirmation_steps",
+            candidate_promotion_confirmation_steps,
+            minimum=1,
+            maximum=_INT32_MAX - 1,
+        )
+        candidate_reacquisition_confirmation_steps = _require_int32(
+            "candidate_reacquisition_confirmation_steps",
+            candidate_reacquisition_confirmation_steps,
+            minimum=1,
+            maximum=_INT32_MAX - 1,
+        )
+        for name, value in (
+            ("evidence_gated_active_output_memory", evidence_gated_active_output_memory),
+            ("independent_relevance_probe", independent_relevance_probe),
+            ("retire_stale_features", retire_stale_features),
+            ("refresh_candidates", refresh_candidates),
+            ("refresh_promoted_candidate", refresh_promoted_candidate),
+            ("include_squares", include_squares),
+            ("use_obgd", use_obgd),
+            ("scale_robust", scale_robust),
+        ):
+            if type(value) is not bool:
+                raise ValueError(f"{name} must be boolean")
+        _require_state_resources(
+            n_features=n_features,
+            n_tasks=n_tasks,
+            candidate_count=candidate_count,
+            scale_robust=scale_robust,
+        )
         if not 0.0 <= utility_decay < 1.0:
             raise ValueError("utility_decay must be in [0, 1)")
-        if (
-            isinstance(replacement_interval, bool)
-            or not isinstance(replacement_interval, int)
-            or not 0 <= replacement_interval <= _INT32_MAX
-        ):
-            raise ValueError(
-                "replacement_interval must be an int32-safe non-negative integer"
-            )
         if (
             isinstance(promotion_margin, bool)
             or not isinstance(cast(object, promotion_margin), Real)
@@ -435,8 +551,6 @@ class FixedBudgetInteractionLearner:
             raise ValueError("candidate_strategy must be 'random' or 'all_pairs'")
         if utility_aggregation not in {"mean", "max", "topk"}:
             raise ValueError("utility_aggregation must be 'mean', 'max', or 'topk'")
-        if utility_top_k < 1:
-            raise ValueError("utility_top_k must be positive")
         if utility_task_balancing not in {"none", "active", "active_inverse_frequency"}:
             raise ValueError(
                 "utility_task_balancing must be 'none', 'active', or 'active_inverse_frequency'"
@@ -1111,8 +1225,17 @@ class FixedBudgetInteractionLearner:
 
     def init(self, feature_dim: int, key: Array) -> InteractionFeatureState:
         """Initialize active and candidate pair banks."""
+        feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         if feature_dim < 2 and not self._include_squares:
             raise ValueError("feature_dim must be at least 2 when squares are disabled")
+        if self._candidate_strategy == "all_pairs" and self._candidate_count > 0:
+            diagonal = 1 if self._include_squares else -1
+            pair_count = feature_dim * (feature_dim + diagonal) // 2
+            _require_resource(
+                "all-pairs candidate construction",
+                scalars=2 * pair_count,
+                nbytes=8 * pair_count,
+            )
 
         key, k_active, k_candidate = jr.split(key, 3)
         feature_left, feature_right = self._random_pairs(k_active, self._n_features, feature_dim)
