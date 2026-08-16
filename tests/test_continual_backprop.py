@@ -810,3 +810,36 @@ class TestConfigRoundtrip:
         rebuilt = CBPMultiHeadMLPLearner.from_config(cfg)
         cfg2 = rebuilt.to_config()
         assert cfg2 == cfg
+
+    def test_wrapper_reuses_shared_integer_and_sequence_contracts(self) -> None:
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=np.uint16(2),
+            hidden_sizes=(np.int32(4),),
+            per_head_gamma_lamda=(0.25, 0.5),
+        )
+        assert learner.n_heads == 2
+        assert learner.hidden_sizes == (4,)
+        assert type(learner.n_heads) is int
+        assert type(learner.hidden_sizes[0]) is int
+
+        payload = learner.to_config()
+        for sequence_type in (list, tuple):
+            candidate = dict(payload)
+            candidate["hidden_sizes"] = sequence_type(payload["hidden_sizes"])
+            candidate["per_head_gamma_lamda"] = sequence_type(
+                payload["per_head_gamma_lamda"]
+            )
+            assert CBPMultiHeadMLPLearner.from_config(candidate).to_config() == payload
+
+        class SequenceSpoof:
+            def __iter__(self):
+                raise AssertionError("iteration hook must not run")
+
+            def __repr__(self) -> str:
+                raise AssertionError("repr hook must not run")
+
+        for field in ("hidden_sizes", "per_head_gamma_lamda"):
+            candidate = dict(payload)
+            candidate[field] = SequenceSpoof()
+            with pytest.raises(ValueError, match=field):
+                CBPMultiHeadMLPLearner.from_config(candidate)

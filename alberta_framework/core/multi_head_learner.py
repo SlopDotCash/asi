@@ -102,6 +102,45 @@ def _require_int(
     return number
 
 
+def _require_config_sequence(
+    name: str,
+    value: object,
+) -> list[object] | tuple[object, ...]:
+    """Accept only the two historical JSON/Python sequence representations."""
+    if type(value) not in (list, tuple):
+        raise ValueError(f"{name} must be an actual list or tuple")
+    return cast(list[object] | tuple[object, ...], value)
+
+
+def _require_derived_int32(name: str, value: int) -> int:
+    """Validate one exact derived JAX allocation/resource count."""
+    if not 1 <= value <= _INT32_MAX:
+        raise ValueError(f"{name} must be in [1, {_INT32_MAX}]")
+    return value
+
+
+def _validate_direct_state_resources(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> None:
+    """Preflight arrays allocated directly by :meth:`init` without allocating them."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameter_count = n_heads * (final_width + 1)
+    parameter_count = trunk_parameter_count + head_parameter_count
+    # Parameters and traces have the same shapes; utilities carry one scalar
+    # per hidden unit; the lifetime counters carry three 32-bit words.
+    state_scalars = 2 * parameter_count + sum(hidden_sizes) + 3
+    _require_derived_int32("parameter_count", parameter_count)
+    _require_derived_int32("state_scalars", state_scalars)
+    _require_derived_int32("state_bytes", 4 * state_scalars)
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so IEEE ``0 * inf`` does not become NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -397,20 +436,15 @@ class MultiHeadMLPLearner:
         """
         n_heads = _require_int("n_heads", n_heads, minimum=1, maximum=_INT32_MAX)
         if type(hidden_sizes) is not tuple:
-            raise ValueError(
-                f"hidden_sizes must be an actual tuple, got {type(hidden_sizes).__name__}"
-            )
+            raise ValueError("hidden_sizes must be an actual tuple")
         hidden_sizes = tuple(
             _require_int(f"hidden_sizes[{i}]", v, minimum=1, maximum=_INT32_MAX)
             for i, v in enumerate(hidden_sizes)
         )
-        for i in range(len(hidden_sizes) - 1):
-            if hidden_sizes[i] * hidden_sizes[i + 1] > _INT32_MAX:
-                raise ValueError(
-                    f"hidden_sizes[{i}] * hidden_sizes[{i+1}] must be <= {_INT32_MAX}"
-                )
-        if hidden_sizes and n_heads * hidden_sizes[-1] > _INT32_MAX:
-            raise ValueError(f"n_heads * hidden_sizes[-1] must be <= {_INT32_MAX}")
+        # A feature width of one is the smallest legal init. This constructor
+        # preflight therefore rejects configurations whose direct state cannot
+        # fit the allocation contract for any legal input width.
+        _validate_direct_state_resources(n_heads, hidden_sizes, feature_dim=1)
         if not 0.0 <= utility_decay < 1.0:
             raise ValueError("utility_decay must be in [0, 1)")
 
@@ -454,6 +488,8 @@ class MultiHeadMLPLearner:
             )
             raise ValueError(msg)
         if per_head_gamma_lamda is not None:
+            if type(per_head_gamma_lamda) is not tuple:
+                raise ValueError("per_head_gamma_lamda must be an actual tuple")
             if len(per_head_gamma_lamda) != self._n_heads:
                 raise ValueError(
                     f"per_head_gamma_lamda must have length n_heads ({self._n_heads}), "
@@ -473,6 +509,11 @@ class MultiHeadMLPLearner:
     def n_heads(self) -> int:
         """Number of prediction heads."""
         return self._n_heads
+
+    @property
+    def hidden_sizes(self) -> tuple[int, ...]:
+        """Canonical shared-trunk widths."""
+        return self._hidden_sizes
 
     @property
     def normalizer(self) -> Normalizer[Any] | None:
@@ -533,7 +574,7 @@ class MultiHeadMLPLearner:
         config = dict(config)
         config.pop("type", None)
         state_schema = config.pop("state_schema", MULTI_HEAD_MLP_STATE_SCHEMA)
-        if state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
+        if type(state_schema) is not str or state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
             raise ValueError("Unsupported MultiHeadMLP state schema")
 
         optimizer = optimizer_from_config(config.pop("optimizer"))
@@ -550,15 +591,14 @@ class MultiHeadMLPLearner:
 
         per_head_gl = config.pop("per_head_gamma_lamda", None)
         if per_head_gl is not None:
-            if type(per_head_gl) is not list:
-                raise ValueError(
-                    f"per_head_gamma_lamda must be a list, got {type(per_head_gl).__name__}"
-                )
+            raw_per_head_gl = _require_config_sequence(
+                "per_head_gamma_lamda", per_head_gl
+            )
             per_head_gl = tuple(
                 validated_float32_scalar(
                     f"per_head_gamma_lamda[{i}]", v, lower=0.0, upper=1.0
                 )
-                for i, v in enumerate(per_head_gl)
+                for i, v in enumerate(raw_per_head_gl)
             )
 
         trace_mode_str = config.pop("trace_mode", None)
@@ -566,11 +606,9 @@ class MultiHeadMLPLearner:
             TraceMode(trace_mode_str) if trace_mode_str is not None else TraceMode.ACCUMULATING
         )
 
-        raw_hidden = config.pop("hidden_sizes")
-        if type(raw_hidden) is not list:
-            raise ValueError(
-                f"hidden_sizes must be a list, got {type(raw_hidden).__name__}"
-            )
+        raw_hidden = _require_config_sequence(
+            "hidden_sizes", config.pop("hidden_sizes")
+        )
 
         return cls(
             n_heads=config.pop("n_heads"),
@@ -598,13 +636,7 @@ class MultiHeadMLPLearner:
         feature_dim = _require_int(
             "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
         )
-        if self._hidden_sizes:
-            if feature_dim * self._hidden_sizes[0] > _INT32_MAX:
-                raise ValueError(
-                    f"feature_dim * hidden_sizes[0] must be <= {_INT32_MAX}"
-                )
-        elif feature_dim * self._n_heads > _INT32_MAX:
-            raise ValueError(f"feature_dim * n_heads must be <= {_INT32_MAX}")
+        _validate_direct_state_resources(self._n_heads, self._hidden_sizes, feature_dim)
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
 

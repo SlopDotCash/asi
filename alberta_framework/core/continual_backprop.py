@@ -83,6 +83,7 @@ from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPLearner,
     MultiHeadMLPState,
     MultiHeadMLPUpdateResult,
+    _require_config_sequence,
 )
 from alberta_framework.core.normalizers import Normalizer
 from alberta_framework.core.optimizers import Bounder
@@ -771,8 +772,6 @@ class CBPMultiHeadMLPLearner:
             utility_decay: EMA decay for the underlying MLP's native
                 hidden-unit utility diagnostics.
         """
-        self._n_heads = n_heads
-        self._hidden_sizes = hidden_sizes
         self._cbp_config = cbp_config or ContinualBackpropConfig()
         self._sparsity = sparsity
         self._leaky_relu_slope = leaky_relu_slope
@@ -795,6 +794,8 @@ class CBPMultiHeadMLPLearner:
             trace_mode=trace_mode,
             utility_decay=utility_decay,
         )
+        self._n_heads = self._learner.n_heads
+        self._hidden_sizes = self._learner.hidden_sizes
 
     @property
     def learner(self) -> MultiHeadMLPLearner:
@@ -838,10 +839,8 @@ class CBPMultiHeadMLPLearner:
         config = dict(config)
         config.pop("type", None)
         state_schema = config.pop("state_schema", MULTI_HEAD_MLP_STATE_SCHEMA)
-        if state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
-            raise ValueError(
-                f"Unsupported MultiHeadMLP state schema: {state_schema!r}"
-            )
+        if type(state_schema) is not str or state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
+            raise ValueError("Unsupported MultiHeadMLP state schema")
         cbp_cfg_dict = config.pop("cbp_config")
         cbp_config = ContinualBackpropConfig.from_config(cbp_cfg_dict)
 
@@ -859,7 +858,9 @@ class CBPMultiHeadMLPLearner:
 
         per_head_gl = config.pop("per_head_gamma_lamda", None)
         if per_head_gl is not None:
-            per_head_gl = tuple(per_head_gl)
+            per_head_gl = tuple(
+                _require_config_sequence("per_head_gamma_lamda", per_head_gl)
+            )
 
         trace_mode_str = config.pop("trace_mode", None)
         trace_mode = (
@@ -868,9 +869,13 @@ class CBPMultiHeadMLPLearner:
             else TraceMode.ACCUMULATING
         )
 
+        hidden_sizes = tuple(
+            _require_config_sequence("hidden_sizes", config.pop("hidden_sizes"))
+        )
+
         return cls(
             n_heads=config.pop("n_heads"),
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=hidden_sizes,  # type: ignore[arg-type]
             cbp_config=cbp_config,
             optimizer=optimizer,
             bounder=bounder,
