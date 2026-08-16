@@ -969,21 +969,79 @@ def test_recurrent_ensemble_config_rejects_booleans() -> None:
         RecurrentLatentWorldModelEnsembleConfig(observation_dim=2, n_actions=2, ensemble_size=2.0)  # type: ignore[arg-type]
 
 
-def test_recurrent_ensemble_config_accepts_numpy_integers() -> None:
+_NUMPY_INTEGER_TYPES = tuple(
+    dict.fromkeys(np.dtype(code).type for code in "bhilqBHILQpP")
+)
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+@pytest.mark.parametrize(
+    "field",
+    (
+        "observation_dim",
+        "n_actions",
+        "latent_dim",
+        "ensemble_size",
+        "max_updates",
+        "uncertainty_warmup_steps",
+    ),
+)
+def test_recurrent_ensemble_config_canonicalizes_every_numpy_integer_family(
+    integer_type: type[np.integer[Any]],
+    field: str,
+) -> None:
+    cfg = _config(**{field: integer_type(3)})
+
+    assert type(getattr(cfg, field)) is int
+    assert getattr(cfg, field) == 3
+
+
+def test_recurrent_ensemble_config_rejects_hostile_integer_subclasses_without_repr() -> None:
+    class HostileInt(int):
+        def __repr__(self) -> str:
+            raise AssertionError("invalid integer repr must not run")
+
+    class IntSpoof:
+        @property
+        def __class__(self) -> type:
+            return int
+
+        def __repr__(self) -> str:
+            raise AssertionError("invalid integer repr must not run")
+
+    for value in (HostileInt(2), IntSpoof()):
+        with pytest.raises(ValueError, match="observation_dim"):
+            _config(observation_dim=value)
+
+
+@pytest.mark.parametrize("field", ("max_updates", "uncertainty_warmup_steps"))
+def test_recurrent_ensemble_config_rejects_counters_above_int32(
+    field: str,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        _config(**{field: np.uint64(2**31)})
+
+
+def test_recurrent_ensemble_numpy_integer_config_round_trip_is_canonical_json() -> None:
     cfg = RecurrentLatentWorldModelEnsembleConfig(
-        observation_dim=np.int32(4),
-        n_actions=np.int64(2),
-        latent_dim=np.uint16(8),
-        ensemble_size=np.int32(3),
-        uncertainty_warmup_steps=np.uint8(2),
+        observation_dim=np.longlong(4),
+        n_actions=np.ulonglong(2),
+        latent_dim=np.int16(8),
+        ensemble_size=np.uint8(3),
+        max_updates=np.uint32(9),
+        uncertainty_warmup_steps=np.int8(2),
     )
-    assert type(cfg.observation_dim) is int
-    assert type(cfg.n_actions) is int
-    assert type(cfg.latent_dim) is int
-    assert type(cfg.ensemble_size) is int
-    assert type(cfg.uncertainty_warmup_steps) is int
-    assert cfg.observation_dim == 4
-    assert cfg.n_actions == 2
-    assert cfg.latent_dim == 8
-    assert cfg.ensemble_size == 3
-    assert cfg.uncertainty_warmup_steps == 2
+    payload = json.loads(json.dumps(cfg.to_config(), allow_nan=False))
+
+    assert RecurrentLatentWorldModelEnsembleConfig.from_config(payload) == cfg
+    assert all(
+        type(getattr(cfg, field)) is int
+        for field in (
+            "observation_dim",
+            "n_actions",
+            "latent_dim",
+            "ensemble_size",
+            "max_updates",
+            "uncertainty_warmup_steps",
+        )
+    )
