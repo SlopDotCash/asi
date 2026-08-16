@@ -323,7 +323,18 @@ class IPMNISTConfig:
             raise ValueError("derived run horizon must fit in signed int32")
         if self.n_tasks * self.input_dim > _INT32_MAX:
             raise ValueError("derived permutation schedule must fit in signed int32")
-        parameter_count = (
+        if self.parameter_count > _INT32_MAX:
+            raise ValueError("derived total parameter allocation must fit in signed int32")
+
+    @property
+    def n_steps(self) -> int:
+        """Total online steps (examples) in a run."""
+        return self.n_tasks * self.task_length
+
+    @property
+    def parameter_count(self) -> int:
+        """Total flattened MLP parameter count used by perturbation draws."""
+        return (
             self.input_dim * self.hidden1
             + self.hidden1 * self.hidden2
             + self.hidden2 * self.n_classes
@@ -331,13 +342,6 @@ class IPMNISTConfig:
             + self.hidden2
             + self.n_classes
         )
-        if parameter_count > _INT32_MAX:
-            raise ValueError("derived total parameter allocation must fit in signed int32")
-
-    @property
-    def n_steps(self) -> int:
-        """Total online steps (examples) in a run."""
-        return self.n_tasks * self.task_length
 
     @property
     def matches_selected_publication_configuration(self) -> bool:
@@ -853,8 +857,10 @@ def run_ipmnist(
         config = IPMNISTConfig()
     if noise_mode not in ("step", "pool"):
         raise ValueError(f"noise_mode must be 'step' or 'pool', got {noise_mode!r}")
-    if noise_mode == "pool" and noise_pool_steps < 2:
-        raise ValueError(f"noise_pool_steps must be >= 2, got {noise_pool_steps}")
+    if noise_mode == "pool":
+        noise_pool_steps = _require_int32(
+            "noise_pool_steps", noise_pool_steps, minimum=2
+        )
     resolved_x, resolved_y = validated_ipmnist_data(
         data_x,
         data_y,
@@ -865,7 +871,7 @@ def run_ipmnist(
     hp = resolve_hyperparameters(learner, hyperparameters)
     init_fn, step_fn = _LEARNER_FACTORIES[learner](hp)
     shapes = _sorted_param_shapes(config)
-    n_flat = int(sum(np.prod(shape) for shape in shapes.values()))
+    n_flat = config.parameter_count
 
     data_x = jnp.asarray(resolved_x, dtype=jnp.float32)
     data_y = jnp.asarray(resolved_y, dtype=jnp.int32)
@@ -875,6 +881,10 @@ def run_ipmnist(
 
     use_pool = noise_mode == "pool" and learner in _STOCHASTIC_LEARNERS
     pool_len = int(noise_pool_steps) * n_flat if use_pool else 0
+    if pool_len > _INT32_MAX:
+        raise ValueError(
+            "derived noise_pool_steps * parameter_count must fit in signed int32"
+        )
     pool_noise_std = float(hp["noise_std"]) if use_pool else 0.0
 
     def init_seed(seed: Array) -> tuple[dict[str, Array], Any, IPMNISTSchedule, Array]:

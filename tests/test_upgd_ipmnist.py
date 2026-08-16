@@ -164,6 +164,7 @@ class TestProtocolConstants:
             + boundary.n_classes
             == 2**31 - 1
         )
+        assert boundary.parameter_count == 2**31 - 1
         with pytest.raises(ValueError, match="parameter allocation"):
             IPMNISTConfig(
                 n_tasks=1,
@@ -914,6 +915,32 @@ class TestNoisePoolMode:
             run_ipmnist(
                 data_x, data_y, "upgd_w", seeds=(0,), config=TINY,
                 noise_mode="pool", noise_pool_steps=1,
+            )
+
+    def test_pool_mode_rejects_noninteger_pool_size_before_allocation(self):
+        data_x, data_y = _synthetic_dataset(3, N_TRAIN, TINY.input_dim, TINY.n_classes)
+        with pytest.raises(ValueError, match="noise_pool_steps"):
+            run_ipmnist(
+                data_x,
+                data_y,
+                "upgd_w",
+                seeds=(0,),
+                config=TINY,
+                noise_mode="pool",
+                noise_pool_steps=2.5,  # type: ignore[arg-type]
+            )
+
+    def test_pool_mode_rejects_derived_length_overflow_before_allocation(self):
+        data_x, data_y = _synthetic_dataset(3, N_TRAIN, TINY.input_dim, TINY.n_classes)
+        with pytest.raises(ValueError, match=r"noise_pool_steps \* parameter_count"):
+            run_ipmnist(
+                data_x,
+                data_y,
+                "upgd_w",
+                seeds=(0,),
+                config=TINY,
+                noise_mode="pool",
+                noise_pool_steps=2**31 - 1,
             )
 
     def test_pool_mode_shard_serialization_fails_closed(self):
