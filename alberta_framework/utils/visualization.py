@@ -49,7 +49,7 @@ def _require_exact_bool(name: str, value: object) -> bool:
 def _require_finite_positive(name: str, value: object) -> float:
     if type(value) not in _ACTUAL_REAL_TYPES:
         raise ValueError(f"{name} must be a real number")
-    number = float(value)
+    number = float(cast(Any, value))
     if not math.isfinite(number) or number <= 0.0:
         raise ValueError(f"{name} must be a finite positive number")
     return number
@@ -80,7 +80,7 @@ def set_publication_style(
         figure_height: Default figure height (auto if None)
         style: Matplotlib style to use
     """
-    font_size = _require_finite_positive("font_size", font_size)
+    font_size_value = _require_finite_positive("font_size", font_size)
     use_latex = _require_exact_bool("use_latex", use_latex)
     figure_width = _require_finite_positive("figure_width", figure_width)
     if figure_height is not None:
@@ -92,7 +92,7 @@ def set_publication_style(
         raise ImportError("matplotlib is required. Install with: pip install matplotlib")
 
     # Update current style
-    _current_style["font_size"] = font_size
+    _current_style["font_size"] = font_size_value
     _current_style["figure_width"] = figure_width
     _current_style["use_latex"] = use_latex
     if figure_height is not None:
@@ -110,12 +110,12 @@ def set_publication_style(
     # Configure matplotlib
     plt.rcParams.update(
         {
-            "font.size": font_size,
-            "axes.labelsize": font_size,
-            "axes.titlesize": font_size + 1,
-            "xtick.labelsize": font_size - 1,
-            "ytick.labelsize": font_size - 1,
-            "legend.fontsize": font_size - 1,
+            "font.size": font_size_value,
+            "axes.labelsize": font_size_value,
+            "axes.titlesize": font_size_value + 1,
+            "xtick.labelsize": font_size_value - 1,
+            "ytick.labelsize": font_size_value - 1,
+            "legend.fontsize": font_size_value - 1,
             "figure.figsize": (_current_style["figure_width"], _current_style["figure_height"]),
             "figure.dpi": _current_style["dpi"],
             "savefig.dpi": _current_style["dpi"],
