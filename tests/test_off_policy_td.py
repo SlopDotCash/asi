@@ -47,6 +47,32 @@ class TestInit:
             ETDLinearLearner(trace_decay=-0.1)
 
 
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+@pytest.mark.parametrize("gamma", [-0.25, 1.25])
+def test_update_rejects_discount_outside_unit_interval(learner, gamma: float) -> None:
+    state = learner.init(1)
+
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(gamma, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(result.update_applied)
+    assert float(result.td_error) == 0.0
+
+
 # =============================================================================
 # rho=1 reduces to on-policy TD
 # =============================================================================
