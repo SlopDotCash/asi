@@ -493,6 +493,12 @@ class _NonfiniteFloatThatConvertsFinite(float):
         return 0j
 
 
+def _platform_longdouble_1e4000() -> np.longdouble:
+    """Parse the cross-platform boundary without leaking an expected warning."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        return np.longdouble("1e4000")
+
+
 @pytest.mark.parametrize(
     "coordinate",
     [
@@ -502,7 +508,7 @@ class _NonfiniteFloatThatConvertsFinite(float):
         # and stays a finite extended value where it is wider (x86-64): the
         # validator must classify by the platform's actual value, not the
         # literal, so this case is finite-or-rejected but never a crash.
-        np.longdouble("1e4000"),
+        _platform_longdouble_1e4000(),
     ],
 )
 def test_extract_hyperparameter_results_classifies_longdouble_by_platform_value(
