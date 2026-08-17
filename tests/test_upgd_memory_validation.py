@@ -43,18 +43,44 @@ class _RaisingRepr:
 
 
 class _RaisingMetadata:
+    shape_calls = 0
+    dtype_calls = 0
+
     @property
     def shape(self):  # type: ignore[no-untyped-def]
+        type(self).shape_calls += 1
         raise RuntimeError("shape hook must not escape")
 
     @property
     def dtype(self):  # type: ignore[no-untyped-def]
+        type(self).dtype_calls += 1
         raise RuntimeError("dtype hook must not escape")
 
 
 class _RaisingEquality:
     def __eq__(self, other: object) -> bool:  # pragma: no cover
         raise RuntimeError("equality hook must not run")
+
+
+class _SpoofedJaxArray:
+    class_calls = 0
+    shape_calls = 0
+    dtype_calls = 0
+
+    @property
+    def __class__(self):  # type: ignore[no-untyped-def]
+        type(self).class_calls += 1
+        return jax.Array
+
+    @property
+    def shape(self):  # type: ignore[no-untyped-def]
+        type(self).shape_calls += 1
+        raise RuntimeError("shape hook must not run")
+
+    @property
+    def dtype(self):  # type: ignore[no-untyped-def]
+        type(self).dtype_calls += 1
+        raise RuntimeError("dtype hook must not run")
 
 
 def _base_cfg(**overrides: object) -> UPGDMemoryConfig:
@@ -189,7 +215,22 @@ def test_upgd_memory_float_validators_reject_nonfinite_and_hostile() -> None:
             _base_cfg(**{field: bad})  # type: ignore[arg-type]
 
 
-def test_upgd_memory_float_validators_reject_hostile_ratio() -> None:
+@pytest.mark.parametrize(
+    "field",
+    [
+        "initial_memory_logit",
+        "target_allocation_rate",
+        "memory_update_rate",
+        "reliability_decay",
+        "novelty_adaptation_rate",
+        "upgd_step_size",
+        "memory_bandwidth",
+        "initial_novelty_threshold",
+    ],
+)
+def test_upgd_memory_float_validators_reject_hostile_ratio_without_hook(
+    field: str,
+) -> None:
     class HostileFloat(float):
         calls = 0
 
@@ -197,9 +238,10 @@ def test_upgd_memory_float_validators_reject_hostile_ratio() -> None:
             type(self).calls += 1
             raise RuntimeError("ratio hook")
 
-    with pytest.raises(ValueError, match="upgd_step_size"):
-        _base_cfg(upgd_step_size=HostileFloat(1.0))  # type: ignore[arg-type]
-    assert HostileFloat.calls == 1
+    HostileFloat.calls = 0
+    with pytest.raises(ValueError, match=field):
+        _base_cfg(**{field: HostileFloat(1.0)})
+    assert HostileFloat.calls == 0
 
 
 def test_upgd_memory_dimensions_preflight_without_allocation() -> None:
@@ -338,6 +380,27 @@ def test_upgd_memory_requires_exact_threefry_key_resource_contract(
             jnp.ones((4,), dtype=jnp.float32),
         )
 
+    class HostileKey:
+        calls = 0
+
+        @property
+        def shape(self):  # type: ignore[no-untyped-def]
+            type(self).calls += 1
+            raise RuntimeError("key metadata hook")
+
+    with pytest.raises(TypeError, match="threefry2x32"):
+        learner.init(HostileKey())  # type: ignore[arg-type]
+    assert HostileKey.calls == 0
+
+    _SpoofedJaxArray.class_calls = 0
+    _SpoofedJaxArray.shape_calls = 0
+    _SpoofedJaxArray.dtype_calls = 0
+    with pytest.raises(TypeError, match="threefry2x32"):
+        learner.init(_SpoofedJaxArray())  # type: ignore[arg-type]
+    assert _SpoofedJaxArray.class_calls == 0
+    assert _SpoofedJaxArray.shape_calls == 0
+    assert _SpoofedJaxArray.dtype_calls == 0
+
 
 def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
     learner = UPGDMemoryLearner(_base_cfg())
@@ -353,11 +416,15 @@ def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
     )
     with pytest.raises(ValueError, match=r"utilities\[0\].*shape"):
         learner.predict(state.replace(upgd_state=malformed_upgd), observation)
-    with pytest.raises(TypeError, match="valid array shape and dtype metadata"):
+    _RaisingMetadata.shape_calls = 0
+    _RaisingMetadata.dtype_calls = 0
+    with pytest.raises(TypeError, match="NumPy or JAX array"):
         learner.predict(
             state.replace(memory_logit=_RaisingMetadata()),  # type: ignore[arg-type]
             observation,
         )
+    assert _RaisingMetadata.shape_calls == 0
+    assert _RaisingMetadata.dtype_calls == 0
 
 
 def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
@@ -380,17 +447,50 @@ def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
             jnp.ones((2, 4), dtype=jnp.float32),
             jnp.ones((1, 2), dtype=jnp.float32),
         )
-    with pytest.raises(TypeError, match="observations must expose valid array metadata"):
+    _RaisingMetadata.shape_calls = 0
+    _RaisingMetadata.dtype_calls = 0
+    with pytest.raises(TypeError, match="observations must expose trusted array metadata"):
         run_upgd_memory_arrays(
             learner,
             state,
             _RaisingMetadata(),  # type: ignore[arg-type]
             jnp.ones((1, 2), dtype=jnp.float32),
         )
+    assert _RaisingMetadata.shape_calls == 0
+    assert _RaisingMetadata.dtype_calls == 0
+
+    _SpoofedJaxArray.class_calls = 0
+    _SpoofedJaxArray.shape_calls = 0
+    _SpoofedJaxArray.dtype_calls = 0
+    with pytest.raises(TypeError, match="observation must be a NumPy or JAX array"):
+        learner.predict(
+            state,
+            _SpoofedJaxArray(),  # type: ignore[arg-type]
+        )
+    assert _SpoofedJaxArray.class_calls == 0
+    assert _SpoofedJaxArray.shape_calls == 0
+    assert _SpoofedJaxArray.dtype_calls == 0
+
+    _SpoofedJaxArray.class_calls = 0
+    _SpoofedJaxArray.shape_calls = 0
+    _SpoofedJaxArray.dtype_calls = 0
+    with pytest.raises(TypeError, match="observations must expose trusted array metadata"):
+        run_upgd_memory_arrays(
+            learner,
+            state,
+            _SpoofedJaxArray(),  # type: ignore[arg-type]
+            jnp.ones((1, 2), dtype=jnp.float32),
+        )
+    assert _SpoofedJaxArray.class_calls == 0
+    assert _SpoofedJaxArray.shape_calls == 0
+    assert _SpoofedJaxArray.dtype_calls == 0
 
     class HostileLeaf:
+        calls = 0
+
         @property
         def shape(self):  # type: ignore[no-untyped-def]
+            type(self).calls += 1
             raise RuntimeError("shape hook")
 
         def __jax_array__(self):  # type: ignore[no-untyped-def]
@@ -402,6 +502,7 @@ def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
     malformed = state.replace(memory_logit=HostileLeaf())
     with pytest.raises(TypeError, match="state.memory_logit"):
         learner.predict(malformed, jnp.ones((4,), dtype=jnp.float32))
+    assert HostileLeaf.calls == 0
 
 
 def test_upgd_memory_log_and_division_positive_endpoints() -> None:
@@ -427,44 +528,30 @@ def test_upgd_memory_batch_aggregate_preflight_precedes_jax_conversion() -> None
     learner = UPGDMemoryLearner(_base_cfg())
     state = learner.init()
 
-    class OversizedBatch:
-        dtype = np.dtype(np.float32)
-
-        def __init__(self, shape: tuple[int, ...]) -> None:
-            self.shape = shape
-
-        def __jax_array__(self):  # type: ignore[no-untyped-def]
-            raise AssertionError("JAX conversion must not run")
-
     steps = 100_000_000
+    observations = np.broadcast_to(
+        np.zeros((1, 1), dtype=np.float32), (steps, learner.config.feature_dim)
+    )
+    targets = np.broadcast_to(
+        np.zeros((1, 1), dtype=np.float32), (steps, learner.config.n_heads)
+    )
     with pytest.raises(ValueError, match="batch aggregate"):
-        run_upgd_memory_arrays(
-            learner,
-            state,
-            OversizedBatch((steps, 4)),  # type: ignore[arg-type]
-            OversizedBatch((steps, 2)),  # type: ignore[arg-type]
-        )
+        run_upgd_memory_arrays(learner, state, observations, targets)
 
 
 def test_upgd_memory_scan_preflights_aggregate_working_set_without_allocation() -> None:
     learner = UPGDMemoryLearner(_base_cfg())
     state = learner.init(jax.random.key(0))
-
-    class HugeObservations:
-        shape = (10_000_000, 4)
-        dtype = jnp.float32
-
-    class HugeTargets:
-        shape = (10_000_000, 2)
-        dtype = jnp.float32
+    steps = 10_000_000
+    observations = np.broadcast_to(
+        np.zeros((1, 1), dtype=np.float32), (steps, learner.config.feature_dim)
+    )
+    targets = np.broadcast_to(
+        np.zeros((1, 1), dtype=np.float32), (steps, learner.config.n_heads)
+    )
 
     with pytest.raises(ValueError, match="working set"):
-        run_upgd_memory_arrays(
-            learner,
-            state,
-            HugeObservations(),  # type: ignore[arg-type]
-            HugeTargets(),  # type: ignore[arg-type]
-        )
+        run_upgd_memory_arrays(learner, state, observations, targets)
 
 
 def test_upgd_memory_all_lifetime_counters_saturate() -> None:

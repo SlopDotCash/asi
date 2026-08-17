@@ -17,6 +17,7 @@ import functools
 import operator
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
+from fractions import Fraction
 from typing import Any, Literal, SupportsIndex, cast
 
 import chex
@@ -58,7 +59,23 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.longlong,
     np.ulonglong,
 )
+_ACTUAL_REAL_TYPES: frozenset[type] = frozenset(
+    (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble, Fraction)
+)
 _MIN_LOG_ROUNDTRIP_FLOAT32 = 2.0 * float(np.finfo(np.float32).tiny)
+
+
+def _is_trusted_jax_value(value: object) -> bool:
+    """Return whether the actual runtime type is a JAX array or tracer."""
+    actual_type = type(value)
+    return issubclass(actual_type, jax.Array) or issubclass(
+        actual_type, jax.core.Tracer
+    )
+
+
+def _is_trusted_array(value: object) -> bool:
+    """Return whether ``value`` has an actual trusted JAX/NumPy runtime type."""
+    return type(value) is np.ndarray or _is_trusted_jax_value(value)
 
 
 def _require_resource(
@@ -115,9 +132,12 @@ def _combined_state_resource_counts(
 def _require_array(
     name: str, value: object, shape: tuple[int, ...], dtype: Any
 ) -> None:
+    if not _is_trusted_array(value):
+        raise TypeError(f"{name} must be a NumPy or JAX array")
+    trusted = cast(Any, value)
     try:
-        actual_shape = tuple(getattr(value, "shape"))
-        actual_dtype = jnp.dtype(getattr(value, "dtype"))
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = jnp.dtype(trusted.dtype)
         expected_dtype = jnp.dtype(dtype)
     except Exception as error:
         raise TypeError(f"{name} must expose valid array shape and dtype metadata") from error
@@ -127,12 +147,23 @@ def _require_array(
         raise TypeError(f"{name} must have dtype {expected_dtype}")
 
 
+def _trusted_array_metadata(name: str, value: object) -> tuple[tuple[int, ...], np.dtype[Any]]:
+    """Read metadata only from a concrete NumPy or JAX array."""
+    if not _is_trusted_array(value):
+        raise TypeError(f"{name} must expose trusted array metadata")
+    trusted = cast(Any, value)
+    return tuple(trusted.shape), np.dtype(trusted.dtype)
+
+
 def _require_typed_key(name: str, value: object) -> Array:
     """Require one scalar typed Threefry key without accepting legacy words."""
+    if not _is_trusted_jax_value(value):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    trusted = cast(Any, value)
     try:
-        implementation = str(jr.key_impl(value))  # type: ignore[arg-type]
-        words = jr.key_data(value)  # type: ignore[arg-type]
-        shape = tuple(getattr(value, "shape"))
+        implementation = str(jr.key_impl(trusted))
+        words = jr.key_data(trusted)
+        shape = tuple(trusted.shape)
     except Exception as error:
         raise TypeError(f"{name} must be a typed scalar threefry2x32 key") from error
     if (
@@ -145,15 +176,23 @@ def _require_typed_key(name: str, value: object) -> Array:
     return cast(Array, value)
 
 
+def _trusted_real(name: str, value: object) -> None:
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+
+
 def _require_real(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(name, value)
 
 
 def _require_unit_interval(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(name, value, lower=0.0, upper=1.0)
 
 
 def _require_half_open_unit_interval(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(
         name,
         value,
@@ -163,6 +202,7 @@ def _require_half_open_unit_interval(name: str, value: object) -> float:
 
 
 def _require_half_open_zero_one_interval(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(
         name,
         value,
@@ -173,18 +213,22 @@ def _require_half_open_zero_one_interval(name: str, value: object) -> float:
 
 
 def _require_nonnegative_real(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(name, value, lower=0.0)
 
 
 def _require_positive_real(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(name, value, positive=True)
 
 
 def _require_positive_normal_real(name: str, value: object) -> float:
+    _trusted_real(name, value)
     return validated_float32_scalar(name, value, lower=_FLOAT32_MIN_NORMAL)
 
 
 def _require_positive_log_real(name: str, value: object) -> float:
+    _trusted_real(name, value)
     canonical = validated_float32_scalar(name, value, positive=True)
     if canonical < _MIN_LOG_ROUNDTRIP_FLOAT32:
         raise ValueError(
@@ -1145,16 +1189,10 @@ def run_upgd_memory_arrays(
     if type(learner) is not UPGDMemoryLearner:
         raise TypeError("learner must be a UPGDMemoryLearner")
     learner._validate_state_static_contract(state)  # noqa: SLF001
-    try:
-        observation_shape = tuple(getattr(observations, "shape"))
-        observation_dtype = jnp.dtype(getattr(observations, "dtype"))
-    except Exception as error:
-        raise TypeError("observations must expose valid array metadata") from error
-    try:
-        target_shape = tuple(getattr(targets, "shape"))
-        target_dtype = jnp.dtype(getattr(targets, "dtype"))
-    except Exception as error:
-        raise TypeError("targets must expose valid array metadata") from error
+    observation_shape, observation_dtype = _trusted_array_metadata(
+        "observations", observations
+    )
+    target_shape, target_dtype = _trusted_array_metadata("targets", targets)
     if len(observation_shape) != 2 or observation_shape[1:] != (
         learner.config.feature_dim,
     ):
