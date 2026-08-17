@@ -66,7 +66,7 @@ def _require_exact_str(name: str, value: object) -> str:
 
 
 def _require_finite_real(name: str, value: object) -> float:
-    if isinstance(value, (bool, np.bool_)):
+    if type(value) in (bool, np.bool_):
         raise ValueError(f"{name} must be a finite real number, not a boolean")
     if type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be a finite real number")
@@ -222,25 +222,33 @@ class Timer:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop the timer and report completion or failure, never both."""
-        self._validate_static_contract()
-        if not self._active:
-            raise RuntimeError("Timer cannot exit before it is entered")
         try:
+            self._validate_static_contract()
+            if not self._active:
+                raise RuntimeError("Timer cannot exit before it is entered")
             end_time = self._record_sample()
             duration = end_time - self.start_time
             if not math.isfinite(duration) or not 0.0 <= duration <= _MAX_DURATION_SECONDS:
                 raise ValueError("timer duration is outside the finite telemetry bound")
             self.end_time = end_time
             self.duration = duration
+        except BaseException:
+            if exc_type is None:
+                raise
+            return
         finally:
             self._active = False
 
         if self.verbose:
-            formatted = format_duration(self.duration)
-            if exc_type is None:
-                self.print_fn(f"{self.name} completed in {formatted}")
-            else:
-                self.print_fn(f"{self.name} failed after {formatted}")
+            try:
+                formatted = format_duration(self.duration)
+                if exc_type is None:
+                    self.print_fn(f"{self.name} completed in {formatted}")
+                else:
+                    self.print_fn(f"{self.name} failed after {formatted}")
+            except BaseException:
+                if exc_type is None:
+                    raise
 
     def elapsed(self) -> float:
         """Get elapsed time since timer started (can be called during execution).

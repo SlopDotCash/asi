@@ -129,6 +129,16 @@ def test_format_rejects_hostile_int() -> None:
         format_duration(HostileInt(1))
 
 
+def test_format_rejects_hostile_class_spoof_without_hook() -> None:
+    class HostileClass:
+        @property
+        def __class__(self) -> type:
+            raise AssertionError("class hook executed")
+
+    with pytest.raises(ValueError, match="finite real number"):
+        format_duration(HostileClass())
+
+
 def test_timer_rejects_nonfinite_and_hostile_clock_samples_without_hooks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -155,6 +165,51 @@ def test_timer_rejects_decreasing_clock_and_closes_transaction(
         timer.__exit__(None, None, None)
     with pytest.raises(RuntimeError, match="active"):
         timer.elapsed()
+
+
+def test_timer_invalid_exit_sample_preserves_block_exception_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = iter([10.0, 9.0])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(samples))
+    timer = Timer(verbose=False)
+    with pytest.raises(KeyError, match="authoritative"):
+        with timer:
+            raise KeyError("authoritative")
+    assert timer._active is False
+
+
+def test_timer_static_validation_failure_cleans_up_and_preserves_block_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: 10.0)
+    timer = Timer(verbose=False)
+    with pytest.raises(KeyError, match="authoritative"):
+        with timer:
+            timer.name = _StringSubclass("mutated")  # type: ignore[assignment]
+            raise KeyError("authoritative")
+    assert timer._active is False
+
+    timer = Timer(verbose=False)
+    with pytest.raises(ValueError, match="exact string"):
+        with timer:
+            timer.name = _StringSubclass("mutated")  # type: ignore[assignment]
+    assert timer._active is False
+
+
+def test_timer_reporting_failure_does_not_mask_block_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = iter([1.0, 2.0])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(samples))
+
+    def broken_reporter(message: str) -> None:
+        del message
+        raise RuntimeError("report failed")
+
+    with pytest.raises(KeyError, match="authoritative"):
+        with Timer(print_fn=broken_reporter):
+            raise KeyError("authoritative")
 
 
 def test_timer_rejects_reentry_and_sample_counter_overflow(
