@@ -33,6 +33,18 @@ class _HostileFloat(float):
         raise AssertionError("HostileFloat hook must not leak via !r")
 
 
+class _HostileInt(int):
+    calls = 0
+
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__repr__ must not be called")
+
+
 def test_rejects_string_subclass_for_feature_dim() -> None:
     with pytest.raises(ValueError, match="must be an integer"):
         NonlinearFeatureDiscoveryStream(feature_dim=_StringSubclass("4"))  # type: ignore[arg-type]
@@ -50,6 +62,10 @@ def test_rejects_bool_and_hostile_int_for_feature_dim() -> None:
         NonlinearFeatureDiscoveryStream(feature_dim=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="must be an integer"):
         NonlinearFeatureDiscoveryStream(feature_dim=np.bool_(True))  # type: ignore[arg-type]
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="must be an integer"):
+        NonlinearFeatureDiscoveryStream(feature_dim=_HostileInt(4))
+    assert _HostileInt.calls == 0
 
 
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
@@ -58,16 +74,6 @@ def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
         NonlinearFeatureDiscoveryStream(feature_dim=4, feature_std=_HostileFloat(1.0))  # type: ignore[arg-type]
     assert _HostileFloat.calls == 0
     assert "HostileFloat" not in str(exc.value)
-
-
-def test_does_not_invoke_hostile_value_when_name_is_evil() -> None:
-    evil = _EvilStr("x")
-    _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be an exact string"):
-        from alberta_framework.streams.feature_discovery import _finite_real_and_float32
-
-        _finite_real_and_float32(evil, _HostileFloat(1.0))  # type: ignore[arg-type]
-    assert _HostileFloat.calls == 0
 
 
 def test_rejects_plain_string_for_feature_std() -> None:
