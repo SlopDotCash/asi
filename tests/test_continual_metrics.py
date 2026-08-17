@@ -258,3 +258,70 @@ def test_tracking_error_shorter_than_window_has_no_computable_values() -> None:
 def test_running_mean_rejects_invalid_window_size(window_size: object) -> None:
     with pytest.raises(ValueError, match="window_size"):
         compute_running_mean([1.0, 2.0, 3.0], window_size=window_size)  # type: ignore[arg-type]
+
+
+def test_first_exposure_true_is_not_checkpoint_row_one() -> None:
+    """Boolean True is a subclass of int, so asarray(..., int64) stored row 1.
+
+    On a one-task matrix that hides 0.05 forgetting when the legal first
+    exposure is row 0. The exposure index is the task-identity axis for
+    forgetting and backward transfer.
+    """
+
+    performance = np.array([[0.80], [0.60], [0.75]])
+
+    with pytest.raises(ValueError, match="first_exposure"):
+        compute_per_task_forgetting(performance, [True])
+
+    np.testing.assert_allclose(compute_per_task_forgetting(performance, [0]), [0.05])
+    np.testing.assert_allclose(compute_per_task_forgetting(performance, [1]), [0.0])
+
+
+@pytest.mark.parametrize("window_size", [True, False, np.int64(2), 2.0, 0, -1])
+def test_recovery_rejects_non_canonical_window_size(window_size: object) -> None:
+    with pytest.raises(ValueError, match="window_size"):
+        compute_recovery_lengths(
+            [0.9, 0.2, 0.8, 0.9],
+            change_points=[1],
+            threshold=0.8,
+            window_size=window_size,  # type: ignore[arg-type]
+        )
+
+
+def test_recovery_rejects_boolean_change_point() -> None:
+    """change_points=[True] used to start at index 1 instead of failing."""
+
+    online = [0.1, 0.9, 0.9]
+    with pytest.raises(ValueError, match="change_points"):
+        compute_recovery_lengths(online, change_points=[True], threshold=0.8, window_size=1)
+
+    np.testing.assert_array_equal(
+        compute_recovery_lengths(online, change_points=[0], threshold=0.8, window_size=1),
+        [2],
+    )
+    np.testing.assert_array_equal(
+        compute_recovery_lengths(online, change_points=[1], threshold=0.8, window_size=1),
+        [1],
+    )
+
+
+@pytest.mark.parametrize("threshold", [True, False, float("nan"), float("inf")])
+def test_recovery_rejects_boolean_or_nonfinite_threshold(threshold: object) -> None:
+    with pytest.raises(ValueError, match="threshold"):
+        compute_recovery_lengths(
+            [0.0, 1.0, 1.0],
+            change_points=[0],
+            threshold=threshold,  # type: ignore[arg-type]
+            window_size=1,
+        )
+
+
+def test_stability_and_prequential_reject_boolean_identities() -> None:
+    with pytest.raises(ValueError, match="reference_performance"):
+        compute_stability_gap([0.0, 1.0, 0.5], True)
+    with pytest.raises(ValueError, match="online_performance"):
+        compute_prequential_performance([True, False])
+
+    gap = compute_stability_gap([0.0, 1.0, 0.5], 1.0)
+    np.testing.assert_allclose(gap.per_step, [1.0, 0.0, 0.5])
+    assert compute_prequential_performance([0.0, 1.0]) == pytest.approx(0.5)

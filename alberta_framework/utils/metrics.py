@@ -15,10 +15,64 @@ References:
         Lifelong Learning: Identifying the Stability Gap."
 """
 
+import math
 from dataclasses import dataclass
+from numbers import Real
 
 import numpy as np
 from numpy.typing import NDArray
+
+
+def _is_bool(value: object) -> bool:
+    return type(value) is bool or type(value) is np.bool_
+
+
+def _is_index_int(value: object) -> bool:
+    return (type(value) is int or isinstance(value, np.integer)) and not _is_bool(value)
+
+
+def _require_positive_builtin_int(name: str, value: object) -> int:
+    if type(value) is not int or value < 1:
+        raise ValueError(f"{name} must be a positive built-in integer")
+    return value
+
+
+def _require_finite_real(name: str, value: object) -> float:
+    if _is_bool(value) or not isinstance(value, Real):
+        raise ValueError(f"{name} must be a finite real number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    return number
+
+
+def _reject_boolean_numeric_trace(values: object, *, name: str) -> None:
+    if _is_bool(values):
+        raise ValueError(f"{name} must not be a boolean")
+    if isinstance(values, (list, tuple)):
+        for index, item in enumerate(values):
+            if _is_bool(item):
+                raise ValueError(f"{name}[{index}] must not be a boolean")
+            if isinstance(item, (list, tuple)):
+                for inner_index, inner in enumerate(item):
+                    if _is_bool(inner):
+                        raise ValueError(f"{name}[{index}][{inner_index}] must not be a boolean")
+    elif isinstance(values, np.ndarray) and values.dtype == np.bool_:
+        raise ValueError(f"{name} must not be a boolean array")
+
+
+def _require_index_vector(values: object, *, name: str) -> NDArray[np.int64]:
+    if _is_bool(values):
+        raise ValueError(f"{name} must be integer indices, not a boolean")
+    if isinstance(values, (list, tuple)):
+        for index, item in enumerate(values):
+            if not _is_index_int(item):
+                raise ValueError(f"{name}[{index}] must be an integer index, not a boolean")
+    else:
+        array = np.asarray(values)
+        if array.dtype == np.bool_ or array.dtype.kind == "b":
+            raise ValueError(f"{name} must be integer indices, not booleans")
+    return np.asarray(values, dtype=np.int64)
 
 
 @dataclass(frozen=True)
@@ -55,6 +109,7 @@ class ContinualLearningSummary:
 def _performance_matrix(
     performance_matrix: NDArray[np.floating] | list[list[float]],
 ) -> NDArray[np.float64]:
+    _reject_boolean_numeric_trace(performance_matrix, name="performance_matrix")
     matrix = np.asarray(performance_matrix, dtype=np.float64)
     if matrix.ndim != 2:
         raise ValueError("performance_matrix must have shape (checkpoints, tasks)")
@@ -69,7 +124,7 @@ def _first_exposure_rows(
     n_checkpoints: int,
     n_tasks: int,
 ) -> NDArray[np.int64]:
-    rows = np.asarray(first_exposure, dtype=np.int64)
+    rows = _require_index_vector(first_exposure, name="first_exposure")
     if rows.shape != (n_tasks,):
         raise ValueError("first_exposure must contain one row index per task")
     if np.any(rows < 0) or np.any(rows >= n_checkpoints):
@@ -201,6 +256,7 @@ def compute_prequential_performance(
 ) -> float:
     """Return mean predict-before-update performance over an online trace."""
 
+    _reject_boolean_numeric_trace(online_performance, name="online_performance")
     values = np.asarray(online_performance, dtype=np.float64)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("online_performance must be a non-empty one-dimensional trace")
@@ -226,6 +282,10 @@ def compute_stability_gap(
     clipped at zero, so exceeding the reference is not treated as instability.
     """
 
+    _reject_boolean_numeric_trace(online_performance, name="online_performance")
+    _reject_boolean_numeric_trace(reference_performance, name="reference_performance")
+    if not isinstance(reference_performance, (list, tuple, np.ndarray)):
+        _require_finite_real("reference_performance", reference_performance)
     values = np.asarray(online_performance, dtype=np.float64)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("online_performance must be a non-empty one-dimensional trace")
@@ -266,8 +326,11 @@ def compute_recovery_lengths(
     recovered before the next change point (or the end of the stream).
     """
 
+    _reject_boolean_numeric_trace(online_performance, name="online_performance")
     values = np.asarray(online_performance, dtype=np.float64)
-    points = np.asarray(change_points, dtype=np.int64)
+    points = _require_index_vector(change_points, name="change_points")
+    window_size = _require_positive_builtin_int("window_size", window_size)
+    _require_finite_real("threshold", threshold)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("online_performance must be a non-empty one-dimensional trace")
     if points.ndim != 1 or points.size == 0:
@@ -276,8 +339,6 @@ def compute_recovery_lengths(
         raise ValueError("change_points must index online_performance")
     if np.any(np.diff(points) <= 0):
         raise ValueError("change_points must be strictly increasing")
-    if window_size < 1:
-        raise ValueError("window_size must be positive")
 
     recoveries = np.full(points.shape, -1, dtype=np.int64)
     for point_index, start in enumerate(points):
