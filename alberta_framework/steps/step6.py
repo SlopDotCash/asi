@@ -40,27 +40,19 @@ from alberta_framework.steps._float32_validation import finite_real_and_float32
 from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 _INT32_MAX = 2**31 - 1
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
+_ACTUAL_INT_TYPES = (
+    int,
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.longlong,
+    np.ulonglong,
 )
-
-
-def _require_exact_str(name: str, value: object) -> str:
-    if type(value) is not str:
-        raise ValueError(f"{name} must be an exact string")
-    return value
 
 
 def _compatible_float32_storage(value: object, narrowed: float) -> float:
@@ -72,9 +64,8 @@ def _compatible_float32_storage(value: object, narrowed: float) -> float:
     return narrowed
 
 
-def _require_unit_interval(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
     if (
         real < 0.0
         or not real <= 1.0
@@ -83,45 +74,42 @@ def _require_unit_interval(name: object, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{host_name} must be in [0, 1]")
+        raise ValueError(f"{name} must be in [0, 1]")
     return _compatible_float32_storage(real, narrowed)
 
 
-def _require_nonnegative_real(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
     if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{host_name} must be non-negative")
+        raise ValueError(f"{name} must be non-negative")
     return _compatible_float32_storage(real, narrowed)
 
 
 def _require_int(
-    name: object,
+    name: str,
     value: object,
     *,
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    host_name = _require_exact_str("name", name)
     actual_type = type(value)
-    if actual_type not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{host_name} must be an integer")
+    if all(actual_type is not allowed for allowed in _ACTUAL_INT_TYPES):
+        raise ValueError(f"{name} must be an integer")
     number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{host_name} must be positive")
+            raise ValueError(f"{name} must be positive")
         if minimum == 0:
-            raise ValueError(f"{host_name} must be non-negative")
-        raise ValueError(f"{host_name} must be >= {minimum}")
+            raise ValueError(f"{name} must be non-negative")
+        raise ValueError(f"{name} must be >= {minimum}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{host_name} must be at most int32 max")
+        raise ValueError(f"{name} must be at most int32 max")
     return number
 
 
-def _require_bool(name: object, value: object) -> bool:
-    host_name = _require_exact_str("name", name)
+def _require_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
-        raise ValueError(f"{host_name} must be a built-in bool")
+        raise ValueError(f"{name} must be a built-in bool")
     return value
 
 
@@ -300,7 +288,7 @@ def run_step6_smoke(
     feature_dim = _require_int(
         "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
     )
-    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
+    seed = require_jax_seed(seed, name="seed")
 
     cfg = config or Step6DifferentialSARSAConfig()
     agent = make_step6_differential_sarsa_agent(cfg)

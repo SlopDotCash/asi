@@ -308,11 +308,11 @@ def test_step6_smoke_rejects_non_integral_dimensions(field: str, value: Any) -> 
         ("feature_dim", 0),
         ("feature_dim", 2**31),
         ("seed", -1),
-        ("seed", 2**31),
+        ("seed", 2**32),
         ("seed", True),
         ("steps", np.int64(2**31)),
         ("feature_dim", np.int64(2**31)),
-        ("seed", np.int64(2**31)),
+        ("seed", np.uint64(2**32)),
         ("seed", np.int64(-1)),
     ],
 )

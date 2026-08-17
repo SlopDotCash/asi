@@ -28,6 +28,10 @@ class _HostileInt(int):
         type(self).calls += 1
         raise AssertionError("HostileInt.__index__ must not be called")
 
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
     def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("HostileInt.__repr__ must not be called")
@@ -72,6 +76,29 @@ def test_rejects_bool_and_hostile_int() -> None:
     assert "HostileInt" not in str(exc.value)
 
 
+def test_rejects_hostile_integer_metaclass_without_hash_hook() -> None:
+    class HostileMeta(type):
+        calls = 0
+
+        def __hash__(cls) -> int:
+            HostileMeta.calls += 1
+            raise AssertionError("HostileMeta.__hash__ must not be called")
+
+    class HostileMetaInt(int, metaclass=HostileMeta):
+        pass
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        Step6DifferentialSARSAConfig(n_actions=HostileMetaInt(2))  # type: ignore[arg-type]
+    assert HostileMeta.calls == 0
+
+
+def test_smoke_accepts_full_uint32_seed_contract() -> None:
+    from alberta_framework.steps.step6 import run_step6_smoke
+
+    result = run_step6_smoke(steps=1, feature_dim=1, seed=2**32 - 1)
+    assert result.seed == 2**32 - 1
+
+
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be finite") as exc:
@@ -79,16 +106,6 @@ def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     assert _HostileFloat.calls == 0
     assert "HostileFloat" not in str(exc.value)
     assert "!r" not in str(exc.value)
-
-
-def test_does_not_invoke_hostile_value_when_name_is_evil_via_sink() -> None:
-    from alberta_framework.steps._float32_validation import finite_real_and_float32
-
-    evil = _EvilStr("x")
-    _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be an exact string"):
-        finite_real_and_float32(evil, _HostileFloat(1.0))  # type: ignore[arg-type]
-    assert _HostileFloat.calls == 0
 
 
 def test_rejects_plain_string_for_q_step_size() -> None:
@@ -117,9 +134,6 @@ def test_rejects_negative_q_step_size_without_repr() -> None:
 def test_rejects_bool_gate_without_repr() -> None:
     from alberta_framework.steps.step6 import _require_bool
 
-    with pytest.raises(ValueError, match="must be an exact string") as exc:
-        _require_bool(_EvilStr("finite"), True)  # type: ignore[arg-type]
-    assert "EvilStr" not in str(exc.value)
     with pytest.raises(ValueError, match="must be a built-in bool") as exc2:
         _require_bool("finite", _StringSubclass("true"))  # type: ignore[arg-type]
     assert "StringSubclass" not in str(exc2.value)
