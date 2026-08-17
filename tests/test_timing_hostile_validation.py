@@ -7,6 +7,7 @@ from fractions import Fraction
 import numpy as np
 import pytest
 
+import alberta_framework.utils.timing as timing
 from alberta_framework.utils.timing import Timer, format_duration
 
 
@@ -55,6 +56,10 @@ def test_format_rejects_nonfinite() -> None:
 def test_format_rejects_negative() -> None:
     with pytest.raises(ValueError, match="finite real number"):
         format_duration(-1.0)
+    with pytest.raises(ValueError, match="formatting bound"):
+        format_duration(1.0e13)
+    with pytest.raises(ValueError, match="finite real number"):
+        format_duration(Fraction(10**10_000, 1))
 
 
 def test_format_valid_cases() -> None:
@@ -122,3 +127,68 @@ def test_format_rejects_hostile_int() -> None:
 
     with pytest.raises(ValueError, match="finite real number"):
         format_duration(HostileInt(1))
+
+
+def test_timer_rejects_nonfinite_and_hostile_clock_samples_without_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: float("nan"))
+    with pytest.raises(ValueError, match="perf_counter"):
+        Timer(verbose=False).__enter__()
+
+    _HostileFloat.calls = 0
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: _HostileFloat(1.0))
+    with pytest.raises(ValueError, match="perf_counter"):
+        Timer(verbose=False).__enter__()
+    assert _HostileFloat.calls == 0
+
+
+def test_timer_rejects_decreasing_clock_and_closes_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    samples = iter([10.0, 11.0, 10.5])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(samples))
+    timer = Timer(verbose=False)
+    timer.__enter__()
+    assert timer.elapsed() == 1.0
+    with pytest.raises(ValueError, match="monotonic"):
+        timer.__exit__(None, None, None)
+    with pytest.raises(RuntimeError, match="active"):
+        timer.elapsed()
+
+
+def test_timer_rejects_reentry_and_sample_counter_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: 1.0)
+    timer = Timer(verbose=False)
+    timer.__enter__()
+    with pytest.raises(RuntimeError, match="already active"):
+        timer.__enter__()
+    timer._sample_count = 2_147_483_647
+    with pytest.raises(ValueError, match="sample count"):
+        timer.elapsed()
+
+
+def test_timer_does_not_probe_falsey_callback_truthiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    messages: list[str] = []
+
+    class Callback:
+        def __bool__(self) -> bool:
+            raise AssertionError("truthiness hook executed")
+
+        def __call__(self, message: str) -> None:
+            messages.append(message)
+
+    samples = iter([1.0, 2.0])
+    monkeypatch.setattr(timing.time, "perf_counter", lambda: next(samples))
+    with Timer("op", print_fn=Callback()):
+        pass
+    assert messages == ["op completed in 1.00s"]
+
+
+def test_timer_declares_telemetry_only_semantics() -> None:
+    assert "telemetry-only" in (Timer.__doc__ or "")
+    assert "scientific evidence" in (Timer.__doc__ or "")

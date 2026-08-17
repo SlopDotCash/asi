@@ -55,6 +55,8 @@ _ACTUAL_FLOAT_TYPES = frozenset(
     }
 )
 _ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+_MAX_DURATION_SECONDS = 1.0e12
+_MAX_TIMER_SAMPLES = 2_147_483_647
 
 
 def _require_exact_str(name: str, value: object) -> str:
@@ -70,11 +72,18 @@ def _require_finite_real(name: str, value: object) -> float:
         raise ValueError(f"{name} must be a finite real number")
     try:
         number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{name} must be a finite real number") from exc
     if not math.isfinite(number):
         raise ValueError(f"{name} must be a finite real number")
     return number
+
+
+def _read_perf_counter() -> float:
+    sample = time.perf_counter()
+    if type(sample) is not float or not math.isfinite(sample) or sample < 0.0:
+        raise ValueError("perf_counter must return a non-negative finite built-in float")
+    return sample
 
 
 def format_duration(seconds: object) -> str:
@@ -97,6 +106,8 @@ def format_duration(seconds: object) -> str:
     sec = _require_finite_real("seconds", seconds)
     if sec < 0:
         raise ValueError("seconds must be a finite real number")
+    if sec > _MAX_DURATION_SECONDS:
+        raise ValueError("seconds exceeds the telemetry formatting bound")
     rounded_seconds = round(sec, 2)
     if rounded_seconds < 60:
         return f"{rounded_seconds:.2f}s"
@@ -115,8 +126,9 @@ def format_duration(seconds: object) -> str:
 class Timer:
     """Context manager for timing code execution.
 
-    Measures wall-clock time for a block of code and optionally prints
-    the duration when the block completes.
+    Measures monotonic process-local telemetry for a block and optionally
+    prints it. Timing is telemetry-only: this utility does not qualify timing
+    protocols or create performance/scientific evidence.
 
     Attributes:
         name: Description of what is being timed
@@ -158,21 +170,49 @@ class Timer:
             verbose: Whether to print the duration when done
             print_fn: Custom print function (defaults to built-in print)
         """
-        _require_exact_str("name", name)
+        validated_name = _require_exact_str("name", name)
         if type(verbose) is not bool:
             raise ValueError("verbose must be a built-in bool")
         if print_fn is not None and not callable(print_fn):
             raise ValueError("print_fn must be callable")
-        self.name = name
-        self.verbose = verbose
-        self.print_fn = print_fn or print
+        self.name: str = validated_name
+        self.verbose: bool = verbose
+        self.print_fn = print if print_fn is None else print_fn
         self.start_time: float = 0.0
         self.end_time: float = 0.0
         self.duration: float = 0.0
+        self._last_sample: float = 0.0
+        self._sample_count: int = 0
+        self._active: bool = False
+
+    def _validate_static_contract(self) -> None:
+        _require_exact_str("name", self.name)
+        if type(self.verbose) is not bool:
+            raise ValueError("verbose must be a built-in bool")
+        if not callable(self.print_fn):
+            raise ValueError("print_fn must be callable")
+
+    def _record_sample(self) -> float:
+        if type(self._sample_count) is not int or not 0 <= self._sample_count < _MAX_TIMER_SAMPLES:
+            raise ValueError("timer sample count is outside the signed-int32 bound")
+        sample = _read_perf_counter()
+        if sample < self._last_sample:
+            raise ValueError("perf_counter samples must be monotonic")
+        self._last_sample = sample
+        self._sample_count += 1
+        return sample
 
     def __enter__(self) -> "Timer":
         """Start the timer."""
-        self.start_time = time.perf_counter()
+        self._validate_static_contract()
+        if self._active:
+            raise RuntimeError("Timer cannot be entered while already active")
+        self._last_sample = 0.0
+        self._sample_count = 0
+        self.start_time = self._record_sample()
+        self.end_time = 0.0
+        self.duration = 0.0
+        self._active = True
         return self
 
     def __exit__(
@@ -182,8 +222,18 @@ class Timer:
         exc_tb: TracebackType | None,
     ) -> None:
         """Stop the timer and report completion or failure, never both."""
-        self.end_time = time.perf_counter()
-        self.duration = self.end_time - self.start_time
+        self._validate_static_contract()
+        if not self._active:
+            raise RuntimeError("Timer cannot exit before it is entered")
+        try:
+            end_time = self._record_sample()
+            duration = end_time - self.start_time
+            if not math.isfinite(duration) or not 0.0 <= duration <= _MAX_DURATION_SECONDS:
+                raise ValueError("timer duration is outside the finite telemetry bound")
+            self.end_time = end_time
+            self.duration = duration
+        finally:
+            self._active = False
 
         if self.verbose:
             formatted = format_duration(self.duration)
@@ -198,10 +248,23 @@ class Timer:
         Returns:
             Elapsed time in seconds
         """
-        return time.perf_counter() - self.start_time
+        self._validate_static_contract()
+        if not self._active:
+            raise RuntimeError("elapsed requires an active Timer")
+        start_time = _require_finite_real("start_time", self.start_time)
+        if start_time < 0.0:
+            raise ValueError("start_time must be non-negative")
+        elapsed = self._record_sample() - start_time
+        if not 0.0 <= elapsed <= _MAX_DURATION_SECONDS:
+            raise ValueError("elapsed timing is outside the finite telemetry bound")
+        return elapsed
 
     def __repr__(self) -> str:
         """Return string representation."""
-        if self.duration > 0:
-            return f"Timer(name={self.name}, duration={self.duration:.2f}s)"
-        return f"Timer(name={self.name})"
+        self._validate_static_contract()
+        duration = _require_finite_real("duration", self.duration)
+        if not 0.0 <= duration <= _MAX_DURATION_SECONDS:
+            raise ValueError("duration is outside the finite telemetry bound")
+        if duration > 0:
+            return f"Timer(name={self.name!r}, duration={duration:.2f}s)"
+        return f"Timer(name={self.name!r})"
