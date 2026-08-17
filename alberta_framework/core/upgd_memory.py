@@ -114,12 +114,16 @@ def _combined_state_resource_counts(
 def _require_array(
     name: str, value: object, shape: tuple[int, ...], dtype: Any
 ) -> None:
-    if not hasattr(value, "shape") or not hasattr(value, "dtype"):
-        raise TypeError(f"{name} must expose array shape and dtype metadata")
-    if tuple(value.shape) != shape:
+    try:
+        actual_shape = tuple(getattr(value, "shape"))
+        actual_dtype = jnp.dtype(getattr(value, "dtype"))
+        expected_dtype = jnp.dtype(dtype)
+    except Exception as error:
+        raise TypeError(f"{name} must expose valid array shape and dtype metadata") from error
+    if actual_shape != shape:
         raise ValueError(f"{name} must have shape {shape}")
-    if jnp.dtype(value.dtype) != jnp.dtype(dtype):
-        raise TypeError(f"{name} must have dtype {jnp.dtype(dtype)}")
+    if actual_dtype != expected_dtype:
+        raise TypeError(f"{name} must have dtype {expected_dtype}")
 
 
 def _require_typed_key(name: str, value: object) -> Array:
@@ -337,7 +341,9 @@ class UPGDMemoryConfig:
             payload = dict(data)
         except Exception as error:
             raise ValueError("UPGDMemoryConfig mapping could not be read") from error
-        payload.pop("type", None)
+        marker = payload.pop("type", None)
+        if marker is not None and type(marker) is not str:
+            raise ValueError("UPGDMemoryConfig type marker must be an actual string")
         if "hidden_sizes" in payload:
             hidden = payload["hidden_sizes"]
             if type(hidden) not in {list, tuple}:
@@ -701,6 +707,9 @@ class UPGDMemoryLearner:
             payload = dict(config)
         except Exception as error:
             raise ValueError("UPGDMemoryLearner mapping could not be read") from error
+        marker = payload.get("type")
+        if marker is not None and type(marker) is not str:
+            raise ValueError("UPGDMemoryLearner type marker must be an actual string")
         inner = payload.get("config")
         if not issubclass(type(inner), Mapping):
             raise ValueError("UPGDMemoryLearner config must be a mapping")
@@ -921,7 +930,6 @@ class UPGDMemoryLearner:
             prediction = _normalize_simplex(prediction)
         return prediction, gate
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def predict(
         self,
         state: UPGDMemoryState,
@@ -930,6 +938,14 @@ class UPGDMemoryLearner:
         """Predict with the current learned UPGD-memory blend."""
         self._validate_state_static_contract(state)
         _require_array("observation", observation, (self._config.feature_dim,), jnp.float32)
+        return cast(Array, self._predict_jitted(state, observation))
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _predict_jitted(
+        self,
+        state: UPGDMemoryState,
+        observation: Float[Array, " feature_dim"],
+    ) -> Float[Array, " n_heads"]:
         upgd_prediction = self._upgd.predict(state.upgd_state, observation)
         memory_prediction = self._memory.predict(state.memory_state, observation)
         prediction, _gate = self._blend_predictions(
@@ -940,7 +956,6 @@ class UPGDMemoryLearner:
         )
         return prediction
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: UPGDMemoryState,
@@ -951,6 +966,15 @@ class UPGDMemoryLearner:
         self._validate_state_static_contract(state)
         _require_array("observation", observation, (self._config.feature_dim,), jnp.float32)
         _require_array("target", target, (self._config.n_heads,), jnp.float32)
+        return cast(UPGDMemoryUpdateResult, self._update_jitted(state, observation, target))
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jitted(
+        self,
+        state: UPGDMemoryState,
+        observation: Float[Array, " feature_dim"],
+        target: Float[Array, " n_heads"],
+    ) -> UPGDMemoryUpdateResult:
         observation_arr = jnp.asarray(observation)
         target_arr = jnp.asarray(target)
         observation_valid = jnp.all(jnp.isfinite(observation_arr))
@@ -1111,24 +1135,30 @@ def run_upgd_memory_arrays(
     if type(learner) is not UPGDMemoryLearner:
         raise TypeError("learner must be a UPGDMemoryLearner")
     learner._validate_state_static_contract(state)  # noqa: SLF001
-    if not hasattr(observations, "shape") or not hasattr(observations, "dtype"):
-        raise TypeError("observations must expose array shape and dtype metadata")
-    if not hasattr(targets, "shape") or not hasattr(targets, "dtype"):
-        raise TypeError("targets must expose array shape and dtype metadata")
-    if len(observations.shape) != 2 or tuple(observations.shape[1:]) != (
+    try:
+        observation_shape = tuple(getattr(observations, "shape"))
+        observation_dtype = jnp.dtype(getattr(observations, "dtype"))
+    except Exception as error:
+        raise TypeError("observations must expose valid array metadata") from error
+    try:
+        target_shape = tuple(getattr(targets, "shape"))
+        target_dtype = jnp.dtype(getattr(targets, "dtype"))
+    except Exception as error:
+        raise TypeError("targets must expose valid array metadata") from error
+    if len(observation_shape) != 2 or observation_shape[1:] != (
         learner.config.feature_dim,
     ):
         raise ValueError(
             f"observations must have shape (steps, {learner.config.feature_dim})"
         )
-    steps = observations.shape[0]
+    steps = observation_shape[0]
     if type(steps) is not int or steps < 0:
         raise ValueError("UPGD memory step count must be a non-negative integer")
-    if tuple(targets.shape) != (steps, learner.config.n_heads):
+    if target_shape != (steps, learner.config.n_heads):
         raise ValueError(f"targets must have shape ({steps}, {learner.config.n_heads})")
-    if jnp.dtype(observations.dtype) != jnp.dtype(jnp.float32):
+    if observation_dtype != jnp.dtype(jnp.float32):
         raise TypeError("observations must have dtype float32")
-    if jnp.dtype(targets.dtype) != jnp.dtype(jnp.float32):
+    if target_dtype != jnp.dtype(jnp.float32):
         raise TypeError("targets must have dtype float32")
     _require_resource(
         "UPGD memory batch outputs",

@@ -42,6 +42,21 @@ class _RaisingRepr:
         raise RuntimeError("repr hook must not run")
 
 
+class _RaisingMetadata:
+    @property
+    def shape(self):  # type: ignore[no-untyped-def]
+        raise RuntimeError("shape hook must not escape")
+
+    @property
+    def dtype(self):  # type: ignore[no-untyped-def]
+        raise RuntimeError("dtype hook must not escape")
+
+
+class _RaisingEquality:
+    def __eq__(self, other: object) -> bool:  # pragma: no cover
+        raise RuntimeError("equality hook must not run")
+
+
 def _base_cfg(**overrides: object) -> UPGDMemoryConfig:
     base: dict[str, object] = {
         "feature_dim": 4,
@@ -290,6 +305,32 @@ def test_upgd_memory_historical_mapping_envelopes_are_safe_and_compatible() -> N
         UPGDMemoryConfig.from_config(
             {"feature_dim": 4, "n_heads": 2, "hidden_sizes": "4"}
         )
+    with pytest.raises(ValueError, match="type marker"):
+        UPGDMemoryConfig.from_config(
+            {"type": _RaisingEquality(), "feature_dim": 4, "n_heads": 2}
+        )
+    with pytest.raises(ValueError, match="type marker"):
+        UPGDMemoryLearner.from_config(
+            {"type": _RaisingEquality(), "config": config_payload}
+        )
+
+
+@pytest.mark.parametrize("implementation", ["rbg", "unsafe_rbg"])
+def test_upgd_memory_requires_exact_threefry_key_resource_contract(
+    implementation: str,
+) -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    incompatible = jax.random.key(0, impl=implementation)
+    with pytest.raises(TypeError, match="threefry2x32"):
+        learner.init(incompatible)
+    state = learner.init(jax.random.key(0))
+    with pytest.raises(TypeError, match="threefry2x32"):
+        learner.predict(
+            state.replace(
+                upgd_state=state.upgd_state.replace(key=incompatible)  # type: ignore[attr-defined]
+            ),
+            jnp.ones((4,), dtype=jnp.float32),
+        )
 
 
 def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
@@ -306,6 +347,11 @@ def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
     )
     with pytest.raises(ValueError, match=r"utilities\[0\].*shape"):
         learner.predict(state.replace(upgd_state=malformed_upgd), observation)
+    with pytest.raises(TypeError, match="valid array shape and dtype metadata"):
+        learner.predict(
+            state.replace(memory_logit=_RaisingMetadata()),  # type: ignore[arg-type]
+            observation,
+        )
 
 
 def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
@@ -326,6 +372,13 @@ def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
             learner,
             state,
             jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((1, 2), dtype=jnp.float32),
+        )
+    with pytest.raises(TypeError, match="observations must expose valid array metadata"):
+        run_upgd_memory_arrays(
+            learner,
+            state,
+            _RaisingMetadata(),  # type: ignore[arg-type]
             jnp.ones((1, 2), dtype=jnp.float32),
         )
 
