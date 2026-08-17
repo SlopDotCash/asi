@@ -1181,9 +1181,21 @@ def _require_exact_bool(value: Any, path: str) -> bool:
     return value
 
 
-def _require_exact_identity(value: Any, path: str, expected: str) -> str:
-    if type(value) is not str or value != expected:
-        raise ValueError(f"{path} must equal the canonical identity {expected!r}")
+def _require_exact_str_strict(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def _require_exact_identity(value: Any, path: object, expected: str) -> str:
+    host_path = _require_exact_str_strict("path", path)
+    host_expected = _require_exact_str_strict("expected", expected)
+    host_value = _require_exact_str_strict("value", value)
+    if host_value != host_expected:
+        raise ValueError(f"{host_path} must equal the canonical identity '{host_expected}'")
+    return host_value
     return value
 
 
