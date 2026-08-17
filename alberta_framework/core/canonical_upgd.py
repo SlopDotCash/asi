@@ -52,8 +52,10 @@ Reference:
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import chex
 import jax
@@ -123,6 +125,83 @@ def _require_float32_resource(
         raise ValueError(f"{name} scalar count must fit signed int32")
     if 4 * total_scalars > _INT32_MAX:
         raise ValueError(f"{name} byte count must fit signed int32")
+
+
+def _read_exact_config(
+    name: str,
+    config: object,
+    expected: set[str],
+) -> dict[str, object]:
+    if not issubclass(type(config), Mapping):
+        raise ValueError(f"{name} config must be a mapping")
+    try:
+        payload = dict(cast(Mapping[str, object], config))
+    except Exception as error:
+        raise ValueError(f"{name} config must be a readable mapping") from error
+    if set(payload) != expected:
+        raise ValueError(f"config fields do not match the {name} schema")
+    return payload
+
+
+def _host_float_tree_contract(
+    name: str,
+    tree: Any,
+    *,
+    persistent_copies: int,
+    working_copies: int,
+) -> tuple[list[Array], jax.tree_util.PyTreeDef]:
+    """Validate array metadata and aggregate resources before JAX materialization."""
+    leaves, structure = _flatten_with_none(tree)
+    if not leaves or any(value is None for value in leaves):
+        raise ValueError(f"{name} must contain at least one array leaf")
+    arrays: list[Array] = []
+    scalar_count = 0
+    input_bytes = 0
+    for value in leaves:
+        try:
+            shape = tuple(value.shape)
+            dtype = np.dtype(value.dtype)
+        except Exception as error:
+            raise ValueError(f"every {name} leaf must expose array metadata") from error
+        if not np.issubdtype(dtype, np.floating):
+            raise ValueError(f"{name} leaves must have floating-point dtype")
+        if any(type(dimension) is not int or dimension < 0 for dimension in shape):
+            raise ValueError(f"every {name} leaf must have a valid concrete shape")
+        leaf_scalars = math.prod(shape)
+        if leaf_scalars > _INT32_MAX:
+            raise ValueError(f"{name} leaf scalar count must fit signed int32")
+        scalar_count += leaf_scalars
+        input_bytes += leaf_scalars * dtype.itemsize
+        arrays.append(cast(Array, value))
+    aggregate_scalars = (persistent_copies + working_copies) * scalar_count + 32
+    aggregate_bytes = (
+        input_bytes
+        + persistent_copies * input_bytes
+        + working_copies * input_bytes
+        + 4 * scalar_count
+        + 128
+    )
+    if aggregate_scalars > _INT32_MAX or aggregate_bytes > _INT32_MAX:
+        raise ValueError(f"{name} aggregate state/update resources exceed signed-int32 bounds")
+    return arrays, structure
+
+
+def _matching_array_leaf(
+    name: str,
+    value: object,
+    parameter: Array,
+    *,
+    dtype: Any | None = None,
+) -> Array:
+    try:
+        shape = tuple(value.shape)  # type: ignore[attr-defined]
+        actual_dtype = np.dtype(value.dtype)  # type: ignore[attr-defined]
+    except Exception as error:
+        raise ValueError(f"{name} must expose array shape and dtype metadata") from error
+    expected_dtype = np.dtype(parameter.dtype if dtype is None else dtype)
+    if shape != tuple(parameter.shape) or actual_dtype != expected_dtype:
+        raise ValueError(f"{name} must match its parameter shape and dtype")
+    return cast(Array, value)
 
 
 def _static_zero_scale(scale: float, value: Array) -> Array:
@@ -263,10 +342,9 @@ class CanonicalUPGDConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> CanonicalUPGDConfig:
+    def from_config(cls, config: Mapping[str, object]) -> CanonicalUPGDConfig:
         """Strictly reconstruct from the complete serialized schema."""
 
-        payload = dict(config)
         expected = {
             "type",
             "step_size",
@@ -278,12 +356,16 @@ class CanonicalUPGDConfig:
             "normalization",
             "epsilon",
         }
-        if set(payload) != expected:
-            raise ValueError("config fields do not match the CanonicalUPGD schema")
+        payload = _read_exact_config("CanonicalUPGD", config, expected)
         type_name = payload.pop("type")
         if type_name != "CanonicalUPGD":
             raise ValueError("expected CanonicalUPGD config, got invalid value")
-        return cls(**payload)  # type: ignore[arg-type]
+        try:
+            return cls(**payload)  # type: ignore[arg-type]
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized CanonicalUPGD config is invalid") from error
 
 
 @chex.dataclass(frozen=True)
@@ -366,7 +448,7 @@ class CanonicalUPGD:
         return self._config.to_config()
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> CanonicalUPGD:
+    def from_config(cls, config: Mapping[str, object]) -> CanonicalUPGD:
         """Reconstruct an optimizer from serialized configuration."""
 
         return cls(CanonicalUPGDConfig.from_config(config))
@@ -374,13 +456,9 @@ class CanonicalUPGD:
     def init(self, params: Any) -> CanonicalUPGDState:
         """Initialize signed-utility traces matching ``params``."""
 
-        leaves = jax.tree_util.tree_leaves(params)
-        if not leaves:
-            raise ValueError("params must contain at least one array leaf")
-        for value in leaves:
-            array = jnp.asarray(value)
-            if not jnp.issubdtype(array.dtype, jnp.floating):
-                raise ValueError("UPGD parameters must have floating-point dtype")
+        _host_float_tree_contract(
+            "params", params, persistent_copies=2, working_copies=20
+        )
 
         return CanonicalUPGDState(  # type: ignore[call-arg]
             utility_ema=jax.tree.map(jnp.zeros_like, params),
@@ -424,13 +502,37 @@ class CanonicalUPGD:
         branch excludes the numerical proposal from reverse-mode
         differentiation, preserving the same identity boundary there.
         """
-
-        param_leaves, structure = _flatten_with_none(params)
+        if type(state) is not CanonicalUPGDState:
+            raise ValueError("state must be a CanonicalUPGDState")
+        param_leaves, structure = _host_float_tree_contract(
+            "params", params, persistent_copies=2, working_copies=20
+        )
         grad_leaves, grad_structure = _flatten_with_none(gradients)
         utility_leaves, utility_structure = _flatten_with_none(state.utility_ema)
         age_leaves, age_structure = _flatten_with_none(state.utility_age)
         if not (structure == grad_structure == utility_structure == age_structure):
             raise ValueError("params, gradients, and UPGD state must share a PyTree structure")
+        for param, utility, age in zip(
+            param_leaves, utility_leaves, age_leaves, strict=True
+        ):
+            try:
+                utility_shape = tuple(utility.shape)
+                utility_dtype = np.dtype(utility.dtype)
+                age_shape = tuple(age.shape)
+                age_dtype = np.dtype(age.dtype)
+            except Exception as error:
+                raise ValueError("UPGD state leaves must expose array metadata") from error
+            if utility_shape != param.shape or utility_dtype != np.dtype(param.dtype):
+                raise ValueError("utility state leaves must match parameter shape and dtype")
+            if age_shape != param.shape or age_dtype != np.dtype(np.int32):
+                raise ValueError("utility ages must match parameter shape and use int32")
+        try:
+            step_shape = tuple(state.step.shape)
+            step_dtype = np.dtype(state.step.dtype)
+        except Exception as error:
+            raise ValueError("state.step must expose array metadata") from error
+        if step_shape != () or step_dtype != np.dtype(np.int32):
+            raise ValueError("state.step must be one scalar int32 array")
 
         if self._config.is_source_profile and mask is not None:
             raise ValueError("source profiles do not accept masks")
@@ -845,12 +947,9 @@ class AlbertaAdaUPGDConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> AlbertaAdaUPGDConfig:
+    def from_config(cls, config: Mapping[str, object]) -> AlbertaAdaUPGDConfig:
         """Strictly reconstruct the adaptive extension configuration."""
 
-        if type(config) is not dict:
-            raise TypeError("AlbertaAdaUPGD config must be an exact dict")
-        payload = dict(config)
         expected = {
             "type",
             "profile",
@@ -863,12 +962,16 @@ class AlbertaAdaUPGDConfig:
             "normalization",
             "epsilon",
         }
-        if set(payload) != expected:
-            raise ValueError("config fields do not match the AlbertaAdaUPGD schema")
+        payload = _read_exact_config("AlbertaAdaUPGD", config, expected)
         type_name = payload.pop("type")
         if type_name != "AlbertaAdaUPGD":
             raise ValueError("expected AlbertaAdaUPGD config, got invalid value")
-        return cls(**payload)  # type: ignore[arg-type]
+        try:
+            return cls(**payload)  # type: ignore[arg-type]
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized AlbertaAdaUPGD config is invalid") from error
 
 
 @chex.dataclass(frozen=True)
@@ -986,23 +1089,16 @@ class AlbertaAdaUPGD:
         return self._config.to_config()
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> AlbertaAdaUPGD:
+    def from_config(cls, config: Mapping[str, object]) -> AlbertaAdaUPGD:
         """Reconstruct the optimizer from its strict configuration."""
 
         return cls(AlbertaAdaUPGDConfig.from_config(config))
 
     @staticmethod
     def _parameter_contract(params: Any) -> tuple[list[Array], jax.tree_util.PyTreeDef]:
-        leaves, structure = _flatten_with_none(params)
-        if not leaves or any(value is None for value in leaves):
-            raise ValueError("params must contain at least one array leaf")
-        arrays: list[Array] = []
-        for value in leaves:
-            array = jnp.asarray(value)
-            if not jnp.issubdtype(array.dtype, jnp.floating):
-                raise ValueError("AlbertaAdaUPGD parameters must have floating-point dtype")
-            arrays.append(array)
-        return arrays, structure
+        return _host_float_tree_contract(
+            "AlbertaAdaUPGD params", params, persistent_copies=3, working_copies=30
+        )
 
     @staticmethod
     def _state_contract(
@@ -1015,8 +1111,8 @@ class AlbertaAdaUPGD:
         list[Array],
         jax.tree_util.PyTreeDef,
     ]:
-        if not isinstance(state, AlbertaAdaUPGDState):
-            raise TypeError("state must be an AlbertaAdaUPGDState")
+        if type(state) is not AlbertaAdaUPGDState:
+            raise ValueError("state must be an AlbertaAdaUPGDState")
         param_leaves, structure = AlbertaAdaUPGD._parameter_contract(params)
         utility_leaves, utility_structure = _flatten_with_none(state.utility_ema)
         age_leaves, age_structure = _flatten_with_none(state.utility_age)
@@ -1037,23 +1133,21 @@ class AlbertaAdaUPGD:
             moment_leaves,
             strict=True,
         ):
-            utility_array = jnp.asarray(utility)
-            age_array = jnp.asarray(age)
-            moment_array = jnp.asarray(moment)
-            if utility_array.shape != param.shape or moment_array.shape != param.shape:
-                raise ValueError("every adaptive state leaf must match its parameter shape")
-            if age_array.shape != param.shape:
-                raise ValueError("every utility-age leaf must match its parameter shape")
-            if utility_array.dtype != param.dtype or moment_array.dtype != param.dtype:
-                raise TypeError("utility and second-moment dtypes must match parameters")
-            if age_array.dtype != jnp.int32:
-                raise TypeError("utility-age leaves must have int32 dtype")
+            utility_array = _matching_array_leaf("utility state leaf", utility, param)
+            age_array = _matching_array_leaf(
+                "utility-age state leaf", age, param, dtype=np.int32
+            )
+            moment_array = _matching_array_leaf("second-moment state leaf", moment, param)
             utilities.append(utility_array)
             ages.append(age_array)
             moments.append(moment_array)
-        step = jnp.asarray(state.step)
-        if step.shape != () or step.dtype != jnp.int32:
-            raise TypeError("state.step must be one scalar int32 array")
+        try:
+            step_shape = tuple(state.step.shape)
+            step_dtype = np.dtype(state.step.dtype)
+        except Exception as error:
+            raise ValueError("state.step must expose array metadata") from error
+        if step_shape != () or step_dtype != np.dtype(np.int32):
+            raise ValueError("state.step must be one scalar int32 array")
         return param_leaves, utilities, ages, moments, structure
 
     def init(self, params: Any) -> AlbertaAdaUPGDState:
@@ -1603,12 +1697,9 @@ class OfficialAdaUPGDConfig:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> OfficialAdaUPGDConfig:
+    def from_config(cls, config: Mapping[str, object]) -> OfficialAdaUPGDConfig:
         """Strictly reconstruct the pinned official profile."""
 
-        if type(config) is not dict:
-            raise TypeError("OfficialAdaUPGD config must be an exact dict")
-        payload = dict(config)
         expected = {
             "type",
             "profile",
@@ -1622,12 +1713,16 @@ class OfficialAdaUPGDConfig:
             "beta2",
             "epsilon",
         }
-        if set(payload) != expected:
-            raise ValueError("config fields do not match the OfficialAdaUPGD schema")
+        payload = _read_exact_config("OfficialAdaUPGD", config, expected)
         type_name = payload.pop("type")
         if type_name != "OfficialAdaUPGD":
             raise ValueError("expected OfficialAdaUPGD config, got invalid value")
-        return cls(**payload)  # type: ignore[arg-type]
+        try:
+            return cls(**payload)  # type: ignore[arg-type]
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized OfficialAdaUPGD config is invalid") from error
 
 
 @chex.dataclass(frozen=True)
@@ -1712,23 +1807,16 @@ class OfficialAdaUPGD:
         return self._config.to_config()
 
     @classmethod
-    def from_config(cls, config: dict[str, object]) -> OfficialAdaUPGD:
+    def from_config(cls, config: Mapping[str, object]) -> OfficialAdaUPGD:
         """Reconstruct the transform from a strict source-bound config."""
 
         return cls(OfficialAdaUPGDConfig.from_config(config))
 
     @staticmethod
     def _parameter_contract(params: Any) -> tuple[list[Array], jax.tree_util.PyTreeDef]:
-        leaves, structure = _flatten_with_none(params)
-        if not leaves or any(value is None for value in leaves):
-            raise ValueError("params must contain at least one array leaf")
-        arrays: list[Array] = []
-        for value in leaves:
-            array = jnp.asarray(value)
-            if not jnp.issubdtype(array.dtype, jnp.floating):
-                raise ValueError("OfficialAdaUPGD parameters must have floating-point dtype")
-            arrays.append(array)
-        return arrays, structure
+        return _host_float_tree_contract(
+            "OfficialAdaUPGD params", params, persistent_copies=3, working_copies=30
+        )
 
     @staticmethod
     def _state_contract(
@@ -1741,8 +1829,8 @@ class OfficialAdaUPGD:
         list[Array],
         jax.tree_util.PyTreeDef,
     ]:
-        if not isinstance(state, OfficialAdaUPGDState):
-            raise TypeError("state must be an OfficialAdaUPGDState")
+        if type(state) is not OfficialAdaUPGDState:
+            raise ValueError("state must be an OfficialAdaUPGDState")
         param_leaves, structure = OfficialAdaUPGD._parameter_contract(params)
         utility_leaves, utility_structure = _flatten_with_none(state.utility_ema)
         first_leaves, first_structure = _flatten_with_none(state.first_moment)
@@ -1761,27 +1849,19 @@ class OfficialAdaUPGD:
             second_leaves,
             strict=True,
         ):
-            utility_array = jnp.asarray(utility)
-            first_array = jnp.asarray(first)
-            second_array = jnp.asarray(second)
-            if (
-                utility_array.shape != param.shape
-                or first_array.shape != param.shape
-                or second_array.shape != param.shape
-            ):
-                raise ValueError("every official AdaUPGD state leaf must match its parameter shape")
-            if (
-                utility_array.dtype != param.dtype
-                or first_array.dtype != param.dtype
-                or second_array.dtype != param.dtype
-            ):
-                raise TypeError("official AdaUPGD state dtypes must match parameters")
+            utility_array = _matching_array_leaf("utility state leaf", utility, param)
+            first_array = _matching_array_leaf("first-moment state leaf", first, param)
+            second_array = _matching_array_leaf("second-moment state leaf", second, param)
             utilities.append(utility_array)
             first_moments.append(first_array)
             second_moments.append(second_array)
-        step = jnp.asarray(state.step)
-        if step.shape != () or step.dtype != jnp.int32:
-            raise TypeError("state.step must be one scalar int32 array")
+        try:
+            step_shape = tuple(state.step.shape)
+            step_dtype = np.dtype(state.step.dtype)
+        except Exception as error:
+            raise ValueError("state.step must expose array metadata") from error
+        if step_shape != () or step_dtype != np.dtype(np.int32):
+            raise ValueError("state.step must be one scalar int32 array")
         return param_leaves, utilities, first_moments, second_moments, structure
 
     def init(self, params: Any) -> OfficialAdaUPGDState:

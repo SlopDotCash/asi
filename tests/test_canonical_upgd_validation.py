@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from typing import Any
 
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 
 from alberta_framework.core.canonical_upgd import (
+    AlbertaAdaUPGD,
     AlbertaAdaUPGDConfig,
+    CanonicalUPGD,
     CanonicalUPGDConfig,
+    OfficialAdaUPGD,
     OfficialAdaUPGDConfig,
     _require_float32_resource,
 )
@@ -356,3 +362,55 @@ def test_resource_helper_allocation_free_boundaries() -> None:
     _require_float32_resource("test", vector_scalars=legal_scalars - 5, fixed_scalars=5)
     with pytest.raises(ValueError, match="byte count"):
         _require_float32_resource("test", vector_scalars=legal_scalars, fixed_scalars=1)
+
+
+def test_parameter_resources_are_preflighted_by_all_production_initializers() -> None:
+    class OversizedLeaf:
+        shape = (30_000_000,)
+        dtype = np.dtype(np.float32)
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("JAX conversion must not run")
+
+    params = {"w": OversizedLeaf()}
+    for optimizer in (CanonicalUPGD(), AlbertaAdaUPGD(), OfficialAdaUPGD()):
+        with pytest.raises(ValueError, match="aggregate state/update resources"):
+            optimizer.init(params)
+
+
+def test_state_metadata_is_checked_without_conversion_or_hostile_repr() -> None:
+    class HostileLeaf:
+        @property
+        def shape(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("shape hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    params = {"w": jnp.ones(2, dtype=jnp.float32)}
+    gradients = {"w": jnp.ones(2, dtype=jnp.float32)}
+    optimizer = AlbertaAdaUPGD()
+    state = optimizer.init(params).replace(utility_ema={"w": HostileLeaf()})
+    with pytest.raises(ValueError, match="utility state leaf"):
+        optimizer.update(state, params, gradients, jr.key(0))
+
+
+def test_config_loaders_accept_mapping_and_normalize_unreadable_hooks() -> None:
+    config = CanonicalUPGDConfig().to_config()
+    assert CanonicalUPGDConfig.from_config(MappingProxyType(config)).to_config() == config
+
+    class HostileMapping(Mapping[str, object]):
+        def __iter__(self) -> Iterator[str]:
+            raise RuntimeError("mapping hook")
+
+        def __len__(self) -> int:
+            return len(config)
+
+        def __getitem__(self, key: str) -> object:
+            return config[key]
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    with pytest.raises(ValueError, match="readable mapping"):
+        CanonicalUPGDConfig.from_config(HostileMapping())
