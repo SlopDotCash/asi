@@ -283,6 +283,49 @@ class RepresentationGradientMixerResourceBudget:
     output_scalars: int
     output_nbytes: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "representation_dim",
+            _require_int32("representation_dim", self.representation_dim, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_scalars",
+            _require_int32(
+                "persistent_state_scalars", self.persistent_state_scalars, minimum=0
+            ),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_bytes",
+            _require_int32(
+                "persistent_state_bytes", self.persistent_state_bytes, minimum=0
+            ),
+        )
+        object.__setattr__(
+            self,
+            "output_float32_scalars",
+            _require_int32(
+                "output_float32_scalars", self.output_float32_scalars, minimum=0
+            ),
+        )
+        object.__setattr__(
+            self,
+            "output_bool_scalars",
+            _require_int32("output_bool_scalars", self.output_bool_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "output_scalars",
+            _require_int32("output_scalars", self.output_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "output_nbytes",
+            _require_int32("output_nbytes", self.output_nbytes, minimum=0),
+        )
+
     def to_dict(self) -> dict[str, int]:
         """Return a JSON-compatible resource record."""
 
