@@ -49,6 +49,7 @@ from alberta_framework.core.horde import HordeLearner, HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import (
     Autostep,
     Bounder,
@@ -705,7 +706,7 @@ class QHordeActorCriticAgent:
                 carry_traces, actor_trace_bias, jnp.zeros_like(actor_trace_bias)
             ),
             critic_state=critic_result.state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         next_action, key, policy = (
             (sampled_next_action, sampled_key, sampled_policy)
@@ -1024,7 +1025,7 @@ class HordeActorCriticAgent:
                 carry_traces, actor_trace_bias, jnp.zeros_like(actor_trace_bias)
             ),
             critic_state=critic_result.state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         next_action, key, next_policy = self.select_action(updated, observation)
         proposed_state = updated.replace(
@@ -1917,7 +1918,7 @@ class NonlinearHordeActorCriticAgent:
             actor_head_opt_b=new_head_opt_b,
             actor_td_error_normalizer=actor_td_error_normalizer,
             critic_state=critic_result.state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         next_action, key, next_policy = self.select_action(updated, observation)
         proposed_state = updated.replace(
@@ -2566,7 +2567,7 @@ class NonlinearQHordeActorCriticAgent:
             actor_head_opt_w=new_head_opt_w,
             actor_head_opt_b=new_head_opt_b,
             critic_state=critic_result.state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         next_action, key, policy = (
             (sampled_next_action, sampled_key, sampled_policy)

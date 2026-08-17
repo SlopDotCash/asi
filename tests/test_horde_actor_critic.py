@@ -128,6 +128,21 @@ def test_horde_actor_critic_value_head_updates_actor_and_critic() -> None:
     assert int(result.state.step_count) == 1
     chex.assert_trees_all_close(result.td_error, result.critic_result.td_errors[0])
     assert not jnp.allclose(result.state.actor_weights, state.actor_weights)
+
+
+def test_horde_actor_critic_step_count_saturates_at_int32_max() -> None:
+    agent = _make_agent()
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(0, dtype=jnp.int32),
+        step_count=jnp.array(2**31 - 1, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+    )
+    assert int(result.state.step_count) == 2**31 - 1
     assert not jnp.allclose(
         agent.critic.predict(result.state.critic_state, state.last_observation)[0],
         agent.critic.predict(state.critic_state, state.last_observation)[0],
