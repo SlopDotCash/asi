@@ -41,6 +41,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.optimizers import (
     Optimizer,
     OptimizerUpdate,
@@ -242,10 +243,22 @@ class AdaGain(Optimizer[Any]):
             initial_step_size: Initial per-feature gain
             meta_step_size: Multiplicative meta-update rate
             forgetting_rate: Interpolation rate for the gradient trace
+
+        Raises:
+            ValueError: If a scalar is not a finite non-bool real in the
+                declared domain (``initial_step_size`` positive;
+                ``meta_step_size`` nonnegative; ``forgetting_rate`` in
+                ``[0, 1]``).
         """
-        self._initial_step_size = initial_step_size
-        self._meta_step_size = meta_step_size
-        self._forgetting_rate = forgetting_rate
+        self._initial_step_size = validated_float32_scalar(
+            "initial_step_size", initial_step_size, positive=True
+        )
+        self._meta_step_size = validated_float32_scalar(
+            "meta_step_size", meta_step_size, lower=0.0
+        )
+        self._forgetting_rate = validated_float32_scalar(
+            "forgetting_rate", forgetting_rate, lower=0.0, upper=1.0
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -405,12 +418,24 @@ class Adam(Optimizer[Any]):
             eps: Small constant added to the denominator
             weight_decay: Decoupled weight-decay coefficient (MLP path
                 only; requires passing ``param`` when nonzero)
+
+        Raises:
+            ValueError: If a scalar is not a finite non-bool real in the
+                declared domain (``step_size`` and ``eps`` positive;
+                ``beta1`` / ``beta2`` in ``[0, 1)``; ``weight_decay``
+                nonnegative).
         """
-        self._step_size = step_size
-        self._beta1 = beta1
-        self._beta2 = beta2
-        self._eps = eps
-        self._weight_decay = weight_decay
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._beta1 = validated_float32_scalar(
+            "beta1", beta1, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        self._beta2 = validated_float32_scalar(
+            "beta2", beta2, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        self._eps = validated_float32_scalar("eps", eps, positive=True)
+        self._weight_decay = validated_float32_scalar(
+            "weight_decay", weight_decay, lower=0.0
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -706,10 +731,15 @@ class RMSprop(Optimizer[Any]):
             step_size: Base learning rate alpha
             decay: Decay rate for the squared-gradient EMA
             eps: Small constant added to the denominator
+
+        Raises:
+            ValueError: If a scalar is not a finite non-bool real in the
+                declared domain (``step_size`` and ``eps`` positive;
+                ``decay`` in ``[0, 1]``).
         """
-        self._step_size = step_size
-        self._decay = decay
-        self._eps = eps
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._decay = validated_float32_scalar("decay", decay, lower=0.0, upper=1.0)
+        self._eps = validated_float32_scalar("eps", eps, positive=True)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -928,10 +958,15 @@ class NADALINE(Optimizer[Any]):
             step_size: Base learning rate alpha
             decay: EMA decay rate for the per-feature second moment
             eps: Floor on the denominator to avoid division by zero
+
+        Raises:
+            ValueError: If a scalar is not a finite non-bool real in the
+                declared domain (``step_size`` and ``eps`` positive;
+                ``decay`` in ``[0, 1]``).
         """
-        self._step_size = step_size
-        self._decay = decay
-        self._eps = eps
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._decay = validated_float32_scalar("decay", decay, lower=0.0, upper=1.0)
+        self._eps = validated_float32_scalar("eps", eps, positive=True)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
