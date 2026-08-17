@@ -4969,7 +4969,9 @@ def _classify_official_foragax_agent_access(
         and isinstance(channel_priorities, dict)
         and all(isinstance(key, str) for key in channel_priorities)
         and all(
-            isinstance(priority, (int, float)) and not isinstance(priority, bool)
+            isinstance(priority, (int, float))
+            and not isinstance(priority, bool)
+            and math.isfinite(priority)
             for priority in channel_priorities.values()
         )
     )
