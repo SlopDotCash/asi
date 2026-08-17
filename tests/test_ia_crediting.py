@@ -8,6 +8,8 @@ epsilon-greedy selection happened to pick.
 
 from __future__ import annotations
 
+import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -20,6 +22,7 @@ from alberta_framework.core.intelligence_amplification import (
     IAConfig,
     IAState,
     RecommendationProtocolConfig,
+    _checked_partner_action,
     init_recommendation_protocol_state,
     update_recommendation_protocol,
 )
@@ -334,3 +337,59 @@ def test_ia_agent_scan_rejects_non_integer_partner_actions() -> None:
         partner_actions=jnp.array([1, 0, 1, 0], dtype=jnp.int32),
     )
     assert result.state is not None
+
+
+def test_ia_scan_action_contract_is_jittable_and_invalid_values_are_atomic() -> None:
+    agent = IAAgent(_make_ia_config())
+    state = agent.start(agent.init(jr.key(2)), _OBS0)
+    obs = jnp.tile(_OBS0, (1, 1))
+    rewards = jnp.ones((1,), dtype=jnp.float32)
+
+    compiled = jax.jit(
+        lambda initial_state, executed_actions: agent.scan(
+            initial_state,
+            obs,
+            rewards,
+            obs,
+            partner_actions=executed_actions,
+        )
+    )
+    valid = compiled(state, jnp.asarray([1], dtype=jnp.int32))
+    assert bool(valid.updates_applied[0])
+
+    invalid = compiled(state, jnp.asarray([_N_PRIM], dtype=jnp.int32))
+    # JIT canonicalizes legacy Python-float lifecycle metadata to a device
+    # scalar; compare with that no-op boundary rather than the host object.
+    compiled_input_state = jax.jit(lambda value: value)(state)
+    chex.assert_trees_all_equal(invalid.state, compiled_input_state)
+    assert not bool(jnp.any(invalid.updates_applied))
+
+    for bad_actions in (
+        jnp.asarray([0.5], dtype=jnp.float32),
+        jnp.asarray([True], dtype=jnp.bool_),
+        jnp.asarray([[0]], dtype=jnp.int32),
+    ):
+        with pytest.raises(ValueError):
+            compiled(state, bad_actions)
+
+
+def test_ia_scan_preserves_wide_action_values_until_range_validation() -> None:
+    agent = IAAgent(_make_ia_config())
+    state = agent.start(agent.init(jr.key(2)), _OBS0)
+    obs = jnp.tile(_OBS0, (1, 1))
+    rewards = jnp.ones((1,), dtype=jnp.float32)
+
+    with jax.enable_x64():
+        wide = jnp.asarray([2**32], dtype=jnp.uint64)
+        with pytest.raises(ValueError, match="partner_actions must lie"):
+            agent.scan(state, obs, rewards, obs, partner_actions=wide)
+
+        checked = jax.jit(
+            lambda action: _checked_partner_action(
+                action,
+                n_primitive_actions=_N_PRIM,
+            )
+        )
+        safe_action, action_valid = checked(wide[0])
+        assert int(safe_action) == 0
+        assert not bool(action_valid)

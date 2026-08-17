@@ -38,6 +38,9 @@ from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.optimizers import Bounder, bounder_from_config
 from alberta_framework.core.update_safety import (
+    checked_integer_action_array,
+)
+from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
 )
 
@@ -902,25 +905,23 @@ def run_actor_critic_from_arrays(
         discounts = jnp.where(terminated, 0.0, agent.config.gamma).astype(jnp.float32)
     if actions is None:
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
+        actions_valid = jnp.ones((num_steps,), dtype=jnp.bool_)
         use_fixed_actions = False
     else:
-        try:
-            actions_dtype = np.dtype(actions.dtype)
-        except (AttributeError, TypeError) as error:
-            raise ValueError("actions must expose an integer dtype") from error
-        if not np.issubdtype(actions_dtype, np.integer):
-            raise ValueError("actions must have an integer dtype")
-        action_values = np.asarray(actions)
-        if not bool(np.all((action_values >= 0) & (action_values < agent.config.n_actions))):
-            raise ValueError("actions must lie in [0, n_actions)")
-        actions = jnp.asarray(actions, dtype=jnp.int32)
+        actions, actions_valid = checked_integer_action_array(
+            actions,
+            agent.config.n_actions,
+            name="actions",
+            expected_shape=(num_steps,),
+            range_message="actions must lie in [0, n_actions)",
+        )
         use_fixed_actions = True
 
     def _scan_fn(
         carry: ActorCriticState,
-        inputs: tuple[Array, Array, Array, Array, Array],
+        inputs: tuple[Array, Array, Array, Array, Array, Array],
     ) -> tuple[ActorCriticState, tuple[Array, Array, Array, Array, Array]]:
-        obs, reward, term_discount, next_obs, fixed_action = inputs
+        obs, reward, term_discount, next_obs, fixed_action, fixed_action_valid = inputs
         if use_fixed_actions:
             started_state = carry.replace(  # type: ignore[attr-defined]
                 last_observation=obs,
@@ -936,27 +937,28 @@ def run_actor_critic_from_arrays(
             next_obs,
             discount=term_discount,
         )
+        update_applied = result.update_applied & fixed_action_valid
         next_carry = jax.lax.cond(
-            result.update_applied,
+            update_applied,
             lambda: result.state,
             lambda: carry,
         )
         return next_carry, (
             jnp.where(
-                result.update_applied,
+                update_applied,
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
-            result.value,
-            result.td_error,
-            result.update_applied,
+            jnp.where(update_applied, current_policy, jnp.zeros_like(current_policy)),
+            jnp.where(update_applied, result.value, 0.0),
+            jnp.where(update_applied, result.td_error, 0.0),
+            update_applied,
         )
 
     final_state, (actions, policies, values, td_errors, updates_applied) = jax.lax.scan(
         _scan_fn,
         state,
-        (observations, rewards, discounts, next_observations, actions),
+        (observations, rewards, discounts, next_observations, actions, actions_valid),
     )
     return ActorCriticArrayResult(  # type: ignore[call-arg]
         state=final_state,

@@ -2,6 +2,7 @@
 
 from typing import Any
 
+import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -287,6 +288,48 @@ def test_discrete_scan_rejects_actions_that_cannot_name_policy_entries(
             jnp.asarray([[0.0, 1.0]], dtype=jnp.float32),
             actions=actions,
         )
+
+
+def test_discrete_scan_action_contract_is_jittable_and_invalid_values_are_atomic() -> None:
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(2, jr.key(0))
+    observations = jnp.asarray([[1.0, 0.0]], dtype=jnp.float32)
+    rewards = jnp.asarray([1.0], dtype=jnp.float32)
+    terminated = jnp.asarray([False])
+    next_observations = jnp.asarray([[0.0, 1.0]], dtype=jnp.float32)
+
+    compiled = jax.jit(
+        lambda initial_state, fixed_actions: run_actor_critic_from_arrays(
+            agent,
+            initial_state,
+            observations,
+            rewards,
+            terminated,
+            next_observations,
+            actions=fixed_actions,
+        )
+    )
+    valid = compiled(state, jnp.asarray([1], dtype=jnp.int32))
+    assert bool(valid.updates_applied[0])
+
+    invalid = compiled(state, jnp.asarray([2], dtype=jnp.int32))
+    chex.assert_trees_all_equal(
+        invalid.state.replace(rng_key=jr.key_data(invalid.state.rng_key)),
+        state.replace(rng_key=jr.key_data(state.rng_key)),
+    )
+    assert not bool(jnp.any(invalid.updates_applied))
+    assert not bool(jnp.any(invalid.actions))
+    assert not bool(jnp.any(invalid.policies))
+    assert not bool(jnp.any(invalid.values))
+    assert not bool(jnp.any(invalid.td_errors))
+
+    for bad_actions in (
+        jnp.asarray([0.5], dtype=jnp.float32),
+        jnp.asarray([True], dtype=jnp.bool_),
+        jnp.asarray([[0]], dtype=jnp.int32),
+    ):
+        with pytest.raises(ValueError):
+            compiled(state, bad_actions)
 
 
 @pytest.mark.parametrize("continuous", [False, True])

@@ -1706,3 +1706,40 @@ def test_run_horde_actor_critic_from_arrays_rejects_non_integer_actions() -> Non
         agent, state, obs, rewards, next_obs, actions=jnp.array([1, 0], dtype=jnp.int32)
     )
     assert result.actions.shape == (2,)
+
+
+def test_horde_array_action_contract_is_jittable_and_invalid_values_are_atomic() -> None:
+    agent = _make_agent()
+    state = agent.init(feature_dim=4, key=jr.key(0))
+    obs = jnp.zeros((1, 4), dtype=jnp.float32)
+    rewards = jnp.ones(1, dtype=jnp.float32)
+
+    compiled = jax.jit(
+        lambda initial_state, fixed_actions: run_horde_actor_critic_from_arrays(
+            agent,
+            initial_state,
+            obs,
+            rewards,
+            obs,
+            actions=fixed_actions,
+        )
+    )
+    valid = compiled(state, jnp.asarray([1], dtype=jnp.int32))
+    assert bool(valid.updates_applied[0])
+
+    invalid = compiled(state, jnp.asarray([2], dtype=jnp.int32))
+    _assert_state_unchanged(invalid.state, state)
+    assert not bool(jnp.any(invalid.updates_applied))
+    assert not bool(jnp.any(invalid.actions))
+    assert not bool(jnp.any(invalid.policies))
+    assert not bool(jnp.any(invalid.values))
+    assert not bool(jnp.any(invalid.td_errors))
+    assert not bool(jnp.any(invalid.critic_td_errors))
+
+    for bad_actions in (
+        jnp.asarray([0.5], dtype=jnp.float32),
+        jnp.asarray([True], dtype=jnp.bool_),
+        jnp.asarray([[0]], dtype=jnp.int32),
+    ):
+        with pytest.raises(ValueError):
+            compiled(state, bad_actions)

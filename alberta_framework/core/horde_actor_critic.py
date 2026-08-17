@@ -57,6 +57,9 @@ from alberta_framework.core.optimizers import (
 )
 from alberta_framework.core.types import AutostepParamState, DemonType, MLPParams
 from alberta_framework.core.update_safety import (
+    checked_integer_action_array,
+)
+from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
 )
 
@@ -1088,20 +1091,22 @@ def run_horde_actor_critic_from_arrays(
     fixed per-head ``gamma`` values; variable per-transition discounts remain a
     future extension to ``HordeLearner.update`` itself.
     """
+    rewards_shape = tuple(rewards.shape)
+    if len(rewards_shape) != 1 or rewards_shape[0] < 1:
+        raise ValueError("rewards must have shape (num_steps,)")
+    num_steps = rewards_shape[0]
     if actions is None:
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
+        actions_valid = jnp.ones((num_steps,), dtype=jnp.bool_)
         use_fixed_actions = False
     else:
-        try:
-            actions_dtype = np.dtype(actions.dtype)
-        except (AttributeError, TypeError) as error:
-            raise ValueError("actions must expose an integer dtype") from error
-        if not np.issubdtype(actions_dtype, np.integer):
-            raise ValueError("actions must have an integer dtype")
-        action_values = np.asarray(actions)
-        if not bool(np.all((action_values >= 0) & (action_values < agent.config.n_actions))):
-            raise ValueError("actions must lie in [0, n_actions)")
-        actions = jnp.asarray(actions, dtype=jnp.int32)
+        actions, actions_valid = checked_integer_action_array(
+            actions,
+            agent.config.n_actions,
+            name="actions",
+            expected_shape=(num_steps,),
+            range_message="actions must lie in [0, n_actions)",
+        )
         use_fixed_actions = True
     if auxiliary_cumulants is None:
         auxiliary_cumulants = jnp.zeros(
@@ -1117,12 +1122,20 @@ def run_horde_actor_critic_from_arrays(
 
     def _scan_fn(
         carry: HordeActorCriticState,
-        inputs: tuple[Array, Array, Array, Array, Array, Array],
+        inputs: tuple[Array, Array, Array, Array, Array, Array, Array],
     ) -> tuple[
         HordeActorCriticState,
         tuple[Array, Array, Array, Array, Array, Array],
     ]:
-        obs, reward, next_obs, fixed_action, aux, transition_discount = inputs
+        (
+            obs,
+            reward,
+            next_obs,
+            fixed_action,
+            fixed_action_valid,
+            aux,
+            transition_discount,
+        ) = inputs
         if use_fixed_actions:
             started_state = carry.replace(  # type: ignore[attr-defined]
                 last_observation=obs,
@@ -1138,22 +1151,27 @@ def run_horde_actor_critic_from_arrays(
             aux,
             transition_discount,
         )
+        update_applied = result.update_applied & fixed_action_valid
         committed_state = jax.lax.cond(
-            result.update_applied,
+            update_applied,
             lambda: result.state,
             lambda: carry,
         )
         return committed_state, (
             jnp.where(
-                result.update_applied,
+                update_applied,
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            result.policy,
-            result.value,
-            result.td_error,
-            result.critic_result.td_errors,
-            result.update_applied,
+            jnp.where(update_applied, result.policy, jnp.zeros_like(result.policy)),
+            jnp.where(update_applied, result.value, 0.0),
+            jnp.where(update_applied, result.td_error, 0.0),
+            jnp.where(
+                update_applied,
+                result.critic_result.td_errors,
+                jnp.zeros_like(result.critic_result.td_errors),
+            ),
+            update_applied,
         )
 
     (
@@ -1174,6 +1192,7 @@ def run_horde_actor_critic_from_arrays(
             rewards,
             next_observations,
             actions,
+            actions_valid,
             auxiliary_cumulants,
             discounts,
         ),

@@ -69,6 +69,7 @@ from alberta_framework.core.oak import (
     migrate_legacy_oak_state,
     oak_total_lifetime_counter_nbytes,
 )
+from alberta_framework.core.update_safety import checked_integer_action_array
 
 EXO_CEREBELLUM_STATE_SCHEMA = "alberta.exo-cerebellum-state.v2"
 IA_STATE_SCHEMA = "alberta.intelligence-amplification-state.v2"
@@ -402,12 +403,12 @@ def _checked_partner_action(
         raise ValueError("partner_action must be scalar")
     if not jnp.issubdtype(raw.dtype, jnp.integer):
         raise ValueError("partner_action must have an integer dtype")
-    executed = jnp.asarray(raw, dtype=jnp.int32)
-    valid = (executed >= 0) & (executed < n_primitive_actions)
+    valid = (raw >= 0) & (raw < n_primitive_actions)
     if not isinstance(valid, jax.core.Tracer) and not bool(valid):
         raise ValueError(f"partner_action must be in [0, {n_primitive_actions})")
+    executed = jnp.where(valid, raw, 0).astype(jnp.int32)
     return (
-        jnp.where(valid, executed, jnp.array(0, dtype=jnp.int32)),
+        executed,
         valid,
     )
 
@@ -1349,15 +1350,22 @@ class IAAgent:
                 result.update_applied,
             )
 
-        num_steps = jnp.asarray(partner_rewards).shape[0]
+        partner_rewards_shape = tuple(partner_rewards.shape)
+        if len(partner_rewards_shape) != 1 or partner_rewards_shape[0] < 1:
+            raise ValueError("partner_rewards must have shape (num_steps,)")
+        num_steps = partner_rewards_shape[0]
         if partner_actions is not None:
-            try:
-                partner_actions_dtype = np.dtype(partner_actions.dtype)
-            except (AttributeError, TypeError) as error:
-                raise ValueError("partner_actions must expose an integer dtype") from error
-            if not np.issubdtype(partner_actions_dtype, np.integer):
-                raise ValueError("partner_actions must have an integer dtype")
-            scan_actions = jnp.asarray(partner_actions, dtype=jnp.int32)
+            _, _ = checked_integer_action_array(
+                partner_actions,
+                self._config.cortex.n_primitive_actions,
+                name="partner_actions",
+                expected_shape=(num_steps,),
+                range_message="partner_actions must lie in the primitive action range",
+            )
+            # Preserve the original integer dtype until each scalar reaches
+            # ``_checked_partner_action``; narrowing here would erase wide
+            # invalid values such as uint64(2**32).
+            scan_actions = jnp.asarray(partner_actions)
         else:
             scan_actions = jnp.zeros((num_steps,), dtype=jnp.int32)
         scan_discounts = (

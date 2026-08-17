@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jaxtyping import Bool
+from jaxtyping import Bool, Int
 
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -77,6 +77,48 @@ def safe_discrete_action(
     fallback = -1 if allow_unset else 0
     safe = jnp.where(valid, raw, jnp.asarray(fallback, dtype=jnp.float32))
     return safe.astype(jnp.int32), valid
+
+
+def checked_integer_action_array(
+    actions: object,
+    n_actions: int,
+    *,
+    name: str,
+    expected_shape: tuple[int, ...],
+    range_message: str,
+) -> tuple[Int[Array, " *shape"], Bool[Array, " *shape"]]:
+    """Validate an integer action array without narrowing away invalid values.
+
+    Shape and dtype are static contracts, so they fail identically in eager
+    and staged/JIT calls. Concrete out-of-domain values raise before work is
+    staged. Traced values cannot synchronously raise from ordinary ``jax.jit``;
+    they instead produce a safe index plus a validity mask that callers must
+    include in their transaction commit predicate.
+    """
+
+    n_actions = _require_non_negative_int("n_actions", n_actions)
+    try:
+        shape = tuple(actions.shape)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError) as error:
+        raise ValueError(f"{name} must expose an exact shape") from error
+    if shape != expected_shape:
+        raise ValueError(f"{name} must have shape {expected_shape}")
+    try:
+        dtype = np.dtype(actions.dtype)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError) as error:
+        raise ValueError(f"{name} must expose an integer dtype") from error
+    if not np.issubdtype(dtype, np.integer):
+        raise ValueError(f"{name} must have an integer dtype")
+
+    if not isinstance(actions, jax.core.Tracer):
+        host_actions = np.asarray(actions)
+        if not bool(np.all((host_actions >= 0) & (host_actions < n_actions))):
+            raise ValueError(range_message)
+
+    raw = jnp.asarray(actions)
+    valid = (raw >= 0) & (raw < n_actions)
+    safe = jnp.where(valid, raw, 0).astype(jnp.int32)
+    return safe, valid
 
 
 def floating_tree_is_finite(tree: object) -> Bool[Array, ""]:
