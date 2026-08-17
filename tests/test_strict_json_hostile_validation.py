@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from alberta_framework._strict_json import _reject_duplicate_object_keys, load_strict_json_object
+import alberta_framework._strict_json as strict_json
+from alberta_framework._strict_json import (
+    _reject_duplicate_object_keys,
+    _validate_exact_json_tree,
+    load_strict_json_object,
+)
 
 
 class _StringSubclass(str):
@@ -66,15 +71,17 @@ def test_reject_duplicate_does_not_invoke_repr() -> None:
         def __repr__(self) -> str:  # pragma: no cover
             raise RuntimeError("repr hook")
 
+        def __hash__(self) -> int:  # pragma: no cover
+            raise RuntimeError("hash hook")
+
     evil = EvilStr("dup")
-    with pytest.raises(ValueError, match="duplicate JSON object key"):
+    with pytest.raises(ValueError, match="exact strings"):
         _reject_duplicate_object_keys([(evil, 1), (evil, 2)])
 
 
 def test_reject_duplicate_rejects_string_subclass_key() -> None:
     key = _StringSubclass("dup")
-    # JSON loads produces plain str, direct call with subclass still duplicate
-    with pytest.raises(ValueError, match="duplicate JSON object key"):
+    with pytest.raises(ValueError, match="exact strings"):
         _reject_duplicate_object_keys([(key, 1), (key, 2)])
 
 
@@ -107,3 +114,41 @@ def test_hostile_path_not_invoke_fspath_on_error() -> None:
 def test_load_rejects_bytes_path() -> None:
     with pytest.raises(ValueError, match="exact str or Path"):
         load_strict_json_object(b"/tmp/x.json")  # type: ignore[arg-type]
+
+
+def test_load_rejects_excessive_depth_before_parser_recursion(tmp_path: Path) -> None:
+    path = tmp_path / "deep.json"
+    path.write_text('{"x":' * 65 + "0" + "}" * 65, encoding="utf-8")
+    with pytest.raises(ValueError, match="nesting-depth"):
+        load_strict_json_object(path)
+
+
+def test_load_rejects_oversized_payload_with_bounded_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(strict_json, "_MAX_JSON_BYTES", 16)
+    path = tmp_path / "large.json"
+    path.write_bytes(b'{"value":"' + b"x" * 32 + b'"}')
+    with pytest.raises(ValueError, match="byte limit"):
+        load_strict_json_object(path)
+
+
+def test_exact_tree_validator_rejects_non_json_containers_and_values() -> None:
+    with pytest.raises(ValueError, match="non-JSON value"):
+        _validate_exact_json_tree({"value": (1, 2)})
+    with pytest.raises(ValueError, match="exact strings"):
+        _validate_exact_json_tree({_StringSubclass("key"): 1})
+    with pytest.raises(ValueError, match="non-finite"):
+        _validate_exact_json_tree({"value": float("inf")})
+
+
+def test_duplicate_hook_rejects_non_string_key_before_hostile_hooks() -> None:
+    class HostileKey:
+        def __hash__(self) -> int:
+            raise AssertionError("hash hook executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook executed")
+
+    with pytest.raises(ValueError, match="exact strings"):
+        _reject_duplicate_object_keys([(HostileKey(), 1)])  # type: ignore[list-item]
