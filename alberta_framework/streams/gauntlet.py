@@ -83,6 +83,20 @@ LIFETIME_GAUNTLET_CLOCK_NBYTES = 12
 LIFETIME_GAUNTLET_CLOCK_DELTA_NBYTES = 8
 
 
+def _require_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int = 0,
+    maximum: int = _INT32_MAX,
+) -> int:
+    if type(value) is bool or not isinstance(value, int):
+        raise ValueError(f"{name} must be an integer")
+    if value < minimum or value > maximum:
+        raise ValueError(f"{name} must lie in [{minimum}, {maximum}]")
+    return value
+
+
 def _require_array(
     value: Any,
     *,
@@ -558,6 +572,29 @@ class LifetimeGauntletResourceBudget:
     exact_clock_delta_nbytes: int
     trainable_scalars: int = 0
     replay_capacity: int = 0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "state_nbytes", _require_int("state_nbytes", self.state_nbytes))
+        object.__setattr__(
+            self,
+            "exact_clock_nbytes",
+            _require_int("exact_clock_nbytes", self.exact_clock_nbytes),
+        )
+        object.__setattr__(
+            self,
+            "exact_clock_delta_nbytes",
+            _require_int("exact_clock_delta_nbytes", self.exact_clock_delta_nbytes),
+        )
+        object.__setattr__(
+            self,
+            "trainable_scalars",
+            _require_int("trainable_scalars", self.trainable_scalars),
+        )
+        object.__setattr__(
+            self,
+            "replay_capacity",
+            _require_int("replay_capacity", self.replay_capacity),
+        )
 
     def to_dict(self) -> dict[str, int | str]:
         return {
