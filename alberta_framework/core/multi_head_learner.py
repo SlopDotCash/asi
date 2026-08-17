@@ -30,7 +30,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, UInt
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
 from alberta_framework.core.normalizers import (
@@ -65,6 +65,7 @@ MULTI_HEAD_LIFETIME_COUNTER_NBYTES = 12
 MULTI_HEAD_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
 _INT32_MAX = 2**31 - 1
+_FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _CONFIG_FIELDS = frozenset(
     {
         "type",
@@ -99,6 +100,29 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.longlong,
     np.ulonglong,
 )
+
+
+def _validated_nonnegative_float32_scalar(
+    name: str,
+    value: object,
+    *,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> float:
+    """Validate a nonnegative float32 sink without erasing a nonzero."""
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        lower=0.0,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
+    if (
+        numerator != 0
+        and numerator * _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR <= denominator
+    ):
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
 
 
 def _require_int(
@@ -471,20 +495,21 @@ class MultiHeadMLPLearner:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
             )
-        sparsity = validated_float32_scalar("sparsity", sparsity, lower=0.0, upper=1.0)
-        leaky_relu_slope = validated_float32_scalar(
-            "leaky_relu_slope", leaky_relu_slope, lower=0.0
+        sparsity = _validated_nonnegative_float32_scalar(
+            "sparsity", sparsity, upper=1.0
         )
-        gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
-        lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
+        leaky_relu_slope = _validated_nonnegative_float32_scalar(
+            "leaky_relu_slope", leaky_relu_slope
+        )
+        gamma = _validated_nonnegative_float32_scalar("gamma", gamma, upper=1.0)
+        lamda = _validated_nonnegative_float32_scalar("lamda", lamda, upper=1.0)
         if type(use_layer_norm) is not bool:
             raise ValueError("use_layer_norm must be an exact bool")
         if type(trace_mode) is not TraceMode:
             raise ValueError("trace_mode must be a TraceMode")
-        utility_decay = validated_float32_scalar(
+        utility_decay = _validated_nonnegative_float32_scalar(
             "utility_decay",
             utility_decay,
-            lower=0.0,
             upper=1.0,
             upper_inclusive=False,
         )
@@ -528,6 +553,12 @@ class MultiHeadMLPLearner:
                 f"trace decay with a shared trunk."
             )
             raise ValueError(msg)
+        if gamma != 0.0 and lamda != 0.0:
+            _validated_nonnegative_float32_scalar(
+                "gamma * lamda",
+                gamma * lamda,
+                upper=1.0,
+            )
         if per_head_gamma_lamda is not None:
             if len(per_head_gamma_lamda) != self._n_heads:
                 raise ValueError(
@@ -535,10 +566,9 @@ class MultiHeadMLPLearner:
                     f"got {len(per_head_gamma_lamda)}"
                 )
             self._per_head_gl = tuple(
-                validated_float32_scalar(
+                _validated_nonnegative_float32_scalar(
                     f"per_head_gamma_lamda[{head_index}]",
                     gl,
-                    lower=0.0,
                     upper=1.0,
                 )
                 for head_index, gl in enumerate(per_head_gamma_lamda)

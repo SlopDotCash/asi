@@ -616,6 +616,49 @@ class TestMultiHeadConstructorValidation:
                 sparsity=Spoof(),  # type: ignore[arg-type]
             )
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"sparsity": 2.0**-150},
+            {"leaky_relu_slope": 5e-324},
+            {"gamma": 2.0**-150},
+            {"lamda": 2.0**-150},
+            {"utility_decay": 5e-324},
+            {"per_head_gamma_lamda": (2.0**-150,)},
+        ],
+    )
+    def test_rejects_nonzero_float32_underflow(self, kwargs):
+        with pytest.raises(ValueError, match="must remain nonzero"):
+            MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), **kwargs)
+
+    def test_rejects_trace_product_that_underflows_float32(self):
+        with pytest.raises(ValueError, match=r"gamma \* lamda must remain nonzero"):
+            MultiHeadMLPLearner(
+                n_heads=1,
+                hidden_sizes=(),
+                gamma=2.0**-100,
+                lamda=2.0**-100,
+            )
+
+    def test_nonnegative_float32_sinks_preserve_zero_and_minsubnormal(self):
+        smallest_float32 = 2.0**-149
+        learner = MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(),
+            sparsity=smallest_float32,
+            leaky_relu_slope=0.0,
+            gamma=0.0,
+            lamda=smallest_float32,
+            utility_decay=0.0,
+            per_head_gamma_lamda=(smallest_float32,),
+        )
+        config = learner.to_config()
+        assert config["sparsity"] == smallest_float32
+        assert config["leaky_relu_slope"] == 0.0
+        assert config["lamda"] == smallest_float32
+        assert config["utility_decay"] == 0.0
+        assert config["per_head_gamma_lamda"] == [smallest_float32]
+
 
 class TestMultiHeadUpdateValidation:
     """``update`` must reject targets that are not one value per head.
