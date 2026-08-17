@@ -21,12 +21,63 @@ print(f"Took {t.duration:.2f} seconds")
 ```
 """
 
+import math
 import time
 from collections.abc import Callable
+from fractions import Fraction
 from types import TracebackType
 
+import numpy as np
 
-def format_duration(seconds: float) -> str:
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+_ACTUAL_FLOAT_TYPES = frozenset(
+    {
+        float,
+        Fraction,
+        np.dtype("e").type,
+        np.dtype("f").type,
+        np.dtype("d").type,
+        np.dtype("g").type,
+    }
+)
+_ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+
+
+def _require_exact_str(name: str, value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def _require_finite_real(name: str, value: object) -> float:
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be a finite real number, not a boolean")
+    if type(value) not in _ALLOWED_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite real number") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    return number
+
+
+def format_duration(seconds: object) -> str:
     """Format a duration in seconds as a human-readable string.
 
     Args:
@@ -43,7 +94,10 @@ def format_duration(seconds: float) -> str:
     format_duration(3665)  # Returns: '1h 1m 5.00s'
     ```
     """
-    rounded_seconds = round(seconds, 2)
+    sec = _require_finite_real("seconds", seconds)
+    if sec < 0:
+        raise ValueError("seconds must be a finite real number")
+    rounded_seconds = round(sec, 2)
     if rounded_seconds < 60:
         return f"{rounded_seconds:.2f}s"
     elif rounded_seconds < 3600:
@@ -93,8 +147,8 @@ class Timer:
 
     def __init__(
         self,
-        name: str = "Operation",
-        verbose: bool = True,
+        name: object = "Operation",
+        verbose: object = True,
         print_fn: Callable[[str], None] | None = None,
     ):
         """Initialize the timer.
@@ -104,6 +158,11 @@ class Timer:
             verbose: Whether to print the duration when done
             print_fn: Custom print function (defaults to built-in print)
         """
+        _require_exact_str("name", name)
+        if type(verbose) is not bool:
+            raise ValueError("verbose must be a built-in bool")
+        if print_fn is not None and not callable(print_fn):
+            raise ValueError("print_fn must be callable")
         self.name = name
         self.verbose = verbose
         self.print_fn = print_fn or print
@@ -144,5 +203,5 @@ class Timer:
     def __repr__(self) -> str:
         """Return string representation."""
         if self.duration > 0:
-            return f"Timer(name={self.name!r}, duration={self.duration:.2f}s)"
-        return f"Timer(name={self.name!r})"
+            return f"Timer(name={self.name}, duration={self.duration:.2f}s)"
+        return f"Timer(name={self.name})"
