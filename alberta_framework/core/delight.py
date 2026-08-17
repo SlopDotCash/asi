@@ -277,7 +277,7 @@ class GradientJoyConfig:
         """Reconstruct from :meth:`to_config` output."""
         payload = _copy_mapping(config, name="GradientJoyConfig")
         type_value = payload.pop("type", None)
-        if type_value is not None and type_value != "GradientJoyConfig":
+        if type(type_value) is not str or type_value != "GradientJoyConfig":
             raise ValueError("GradientJoyConfig type is unsupported")
         allowed = {
             "candidate_semantics",
@@ -1915,7 +1915,7 @@ class DelightfulPolicyGradientConfig:
         """Reconstruct from :meth:`to_config` output."""
         payload = _copy_mapping(config, name="DelightfulPolicyGradientConfig")
         type_value = payload.pop("type", None)
-        if type_value is not None and type_value != "DelightfulPolicyGradientConfig":
+        if type(type_value) is not str or type_value != "DelightfulPolicyGradientConfig":
             raise ValueError("DelightfulPolicyGradientConfig type is unsupported")
         allowed = {
             "mode",

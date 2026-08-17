@@ -162,10 +162,7 @@ def load_checkpoint(
         ) from e
 
     raw_metadata = loaded.metadata
-    if isinstance(raw_metadata, Mapping):
-        user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
-    else:
-        user_metadata = dict(cast(dict[str, Any], raw_metadata))
+    user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
     user_metadata.pop(_VERSION_KEY, None)
     _require_json_safe_metadata(user_metadata)
     return loaded.state, user_metadata
@@ -200,10 +197,7 @@ def load_checkpoint_metadata(path: str | Path) -> dict[str, Any]:
         )
 
     raw_metadata = loaded.metadata
-    if isinstance(raw_metadata, Mapping):
-        user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
-    else:
-        user_metadata = dict(cast(dict[str, Any], raw_metadata))
+    user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
     user_metadata.pop(_VERSION_KEY, None)
     _require_json_safe_metadata(user_metadata)
     return user_metadata

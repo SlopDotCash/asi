@@ -619,7 +619,9 @@ class LearnedResourceManager:
             old_ema,
         )
         new_loss_ema = state.loss_ema.at[context].set(new_ema)
-        new_counts = state.action_counts.at[context].add(valid_actions.astype(jnp.int32))
+        old_counts = state.action_counts[context]
+        count_increments = valid_actions & (old_counts < _INT32_MAX)
+        new_counts = state.action_counts.at[context].add(count_increments.astype(jnp.int32))
 
         candidate_state = LearnedResourceManagerState(  # type: ignore[call-arg]
             log_weights=new_log_weights,
@@ -646,6 +648,7 @@ class LearnedResourceManager:
         update_applied = (
             context_valid
             & (state.step_count >= 0)
+            & jnp.all(state.action_counts >= 0)
             & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(weights))
@@ -1244,7 +1247,9 @@ class GeneratorMetaResourceManager:
             old_ema,
         )
         new_reward_ema = state.reward_ema.at[context].set(new_ema)
-        new_counts = state.action_counts.at[context].add(finite.astype(jnp.int32))
+        old_counts = state.action_counts[context]
+        count_increments = finite & (old_counts < _INT32_MAX)
+        new_counts = state.action_counts.at[context].add(count_increments.astype(jnp.int32))
 
         candidate_state = GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
             log_weights=new_log_weights,
@@ -1272,6 +1277,7 @@ class GeneratorMetaResourceManager:
             context_valid
             & selection_input_valid
             & (state.step_count >= 0)
+            & jnp.all(state.action_counts >= 0)
             & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(weights))

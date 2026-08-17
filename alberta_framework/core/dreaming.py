@@ -1049,8 +1049,9 @@ def action_features(action: Array, n_actions: int | None = None) -> Array:
     action_array = jnp.asarray(action)
     if action_array.shape != () or not jnp.issubdtype(action_array.dtype, jnp.integer):
         raise ValueError("discrete action must be a scalar integer array")
-    action_index = action_array.astype(jnp.int32)
-    return jax.nn.one_hot(action_index, n_actions, dtype=jnp.float32)
+    valid = (action_array >= 0) & (action_array < n_actions)
+    action_index = jnp.where(valid, action_array, 0).astype(jnp.int32)
+    return jax.nn.one_hot(action_index, n_actions, dtype=jnp.float32) * valid
 
 
 def _neutralize_invalid(value: Array, valid: Array) -> Array:

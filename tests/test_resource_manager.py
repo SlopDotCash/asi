@@ -753,15 +753,36 @@ def test_resource_manager_state_contract_and_counter_saturation() -> None:
     with pytest.raises(ValueError, match="state.log_weights"):
         learned.weights(malformed)
 
-    saturated = state.replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
+    saturated = state.replace(
+        action_counts=jnp.full_like(state.action_counts, 2**31 - 1),
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+    )
     result = learned.update(saturated, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 2**31 - 1
+    assert bool(jnp.all(result.state.action_counts == 2**31 - 1))
 
     invalid = state.replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
     result = learned.update(invalid, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
     assert not bool(result.update_applied)
     chex.assert_trees_all_equal(result.state, invalid)
+
+    invalid_counts = state.replace(action_counts=-jnp.ones_like(state.action_counts))
+    result = learned.update(invalid_counts, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, invalid_counts)
+
+    generator = _minimal_generator_manager()
+    generator_state = generator.init()
+    generator_saturated = generator_state.replace(
+        action_counts=jnp.full_like(generator_state.action_counts, 2**31 - 1),
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+    )
+    generator_result = generator.update(
+        generator_saturated, jnp.asarray([1.0, 0.5], dtype=jnp.float32)
+    )
+    assert bool(generator_result.update_applied)
+    assert bool(jnp.all(generator_result.state.action_counts == 2**31 - 1))
 
 
 def test_resource_manager_host_preflight_and_hostile_state_metadata() -> None:

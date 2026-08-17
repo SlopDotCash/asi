@@ -261,6 +261,10 @@ def test_delight_mapping_loaders_preserve_markers_and_exact_keys() -> None:
     assert restored == config
     with pytest.raises(ValueError, match="type"):
         GradientJoyConfig.from_config({**payload, "type": "wrong"})
+    without_type = dict(payload)
+    without_type.pop("type")
+    with pytest.raises(ValueError, match="type"):
+        GradientJoyConfig.from_config(without_type)
     with pytest.raises(ValueError, match="unsupported fields"):
         GradientJoyConfig.from_config({**payload, "unknown": 1})
     # Delightful
@@ -270,6 +274,10 @@ def test_delight_mapping_loaders_preserve_markers_and_exact_keys() -> None:
     assert drestored == dconfig
     with pytest.raises(ValueError, match="type"):
         DelightfulPolicyGradientConfig.from_config({**dpayload, "type": "wrong"})
+    without_type = dict(dpayload)
+    without_type.pop("type")
+    with pytest.raises(ValueError, match="type"):
+        DelightfulPolicyGradientConfig.from_config(without_type)
     with pytest.raises(ValueError, match="unsupported fields"):
         DelightfulPolicyGradientConfig.from_config({**dpayload, "unknown": 1})
 
@@ -281,6 +289,14 @@ def test_delight_mapping_loaders_preserve_markers_and_exact_keys() -> None:
     with pytest.raises(ValueError, match="exact strings"):
         DelightfulPolicyGradientConfig.from_config(
             {StringSubclass("type"): "DelightfulPolicyGradientConfig", **dpayload}
+        )
+    class HostileStringValue(str):
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("hostile equality hook executed")
+
+    with pytest.raises(ValueError, match="type"):
+        GradientJoyConfig.from_config(
+            {**payload, "type": HostileStringValue("GradientJoyConfig")}
         )
 
     class HostileMapping(dict):  # type: ignore[type-arg]
@@ -317,5 +333,3 @@ def test_delight_min_objective_decrease_nonnegative() -> None:
     with pytest.raises(ValueError, match="must be nonnegative"):
         _grad_cfg(min_objective_decrease=-1e-8)
     _grad_cfg(min_objective_decrease=0.0)
-
-

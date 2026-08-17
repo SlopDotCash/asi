@@ -618,3 +618,12 @@ def test_action_features_accepts_numpy_ints_and_omitted_width() -> None:
 def test_action_features_rejects_fractional_discrete_action() -> None:
     with pytest.raises(ValueError, match="scalar integer array"):
         action_features(jnp.asarray(1.75, dtype=jnp.float32), 3)
+
+
+@pytest.mark.unit
+def test_action_features_rejects_wide_action_before_narrowing_eager_and_jit() -> None:
+    with jax.enable_x64():
+        wide = jnp.asarray(2**32, dtype=jnp.uint64)
+        expected = jnp.zeros((3,), dtype=jnp.float32)
+        chex.assert_trees_all_equal(action_features(wide, 3), expected)
+        chex.assert_trees_all_equal(jax.jit(lambda x: action_features(x, 3))(wide), expected)
