@@ -138,3 +138,17 @@ def test_valid_bounds_and_domain_pass() -> None:
     with pytest.raises(ValueError, match="must be"):
         validated_float32_scalar("x", 0.0, positive=True)
     assert validated_float32_scalar("x", 0.1, positive=True) == pytest.approx(0.1)
+
+
+def test_exact_fraction_bound_cannot_be_lost_through_binary64_conversion() -> None:
+    just_above_one = Fraction(2**54 + 1, 2**54)
+    with pytest.raises(ValueError, match="must remain"):
+        validated_float32_scalar(
+            "x",
+            just_above_one,
+            lower=just_above_one,
+        )
+
+
+def test_finite_wide_upper_bound_does_not_require_binary64_conversion() -> None:
+    assert validated_float32_scalar("x", 1.0, upper=10**1000) == 1.0

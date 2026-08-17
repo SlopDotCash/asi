@@ -63,17 +63,27 @@ def _require_bool(name: str, value: object) -> bool:
 def _require_optional_finite_real(
     bound_name: str,
     value: object,
-) -> float | None:
+) -> tuple[int, int] | None:
     if value is None:
         return None
     if isinstance(value, (bool, np.bool_)):
         raise ValueError(f"{bound_name} must be a finite real number")
-    if type(value) not in _ALLOWED_REAL_TYPES:
+    actual_type = type(value)
+    if actual_type not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{bound_name} must be a finite real number")
-    number = float(cast(float, value))
-    if not math.isfinite(number):
+    if (
+        actual_type in _ACTUAL_FLOAT_TYPES
+        and actual_type is not Fraction
+        and not bool(np.isfinite(cast(Any, value)))
+    ):
         raise ValueError(f"{bound_name} must be a finite real number")
-    return number
+    if actual_type in _ACTUAL_INT_TYPES:
+        return int(cast(int, value)), 1
+    # Every remaining type is an exact, trusted Fraction or NumPy/built-in
+    # floating scalar.  Their concrete implementations return an integer pair;
+    # subclasses were rejected above before any method lookup.
+    numerator, denominator = cast(Any, value).as_integer_ratio()
+    return int(numerator), int(denominator)
 
 
 def validated_float32_scalar(
@@ -123,8 +133,8 @@ def validated_float32_scalar_with_ratio(
         raise ValueError(f"{host_name} must be a finite real number")
     if type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{host_name} must be a finite real number")
-    _require_optional_finite_real(f"{host_name} lower", lower)
-    _require_optional_finite_real(f"{host_name} upper", upper)
+    lower_ratio = _require_optional_finite_real(f"{host_name} lower", lower)
+    upper_ratio = _require_optional_finite_real(f"{host_name} upper", upper)
     real = cast(Any, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
@@ -134,39 +144,47 @@ def validated_float32_scalar_with_ratio(
         raise ValueError(f"{host_name} must remain finite once narrowed to float32")
 
     def narrowed_in_domain(candidate: float) -> bool:
+        candidate_numerator, candidate_denominator = candidate.as_integer_ratio()
         if pos and candidate <= 0.0:
             return False
-        if lower is not None and candidate < float(cast(float, lower)):
+        if lower_ratio is not None and ratio_compares(
+            candidate_numerator,
+            candidate_denominator,
+            lower_ratio,
+        ) < 0:
             return False
-        if upper is not None:
-            ub = float(cast(float, upper))
+        if upper_ratio is not None:
+            comparison = ratio_compares(
+                candidate_numerator,
+                candidate_denominator,
+                upper_ratio,
+            )
             if upper_inc:
-                return bool(candidate <= ub)
-            return bool(candidate < ub)
+                return comparison <= 0
+            return comparison < 0
         return True
 
-    def ratio_compares_to(bound: object) -> int:
-        # bound is validated finite real above, so as_integer_ratio is safe.
-        assert bound is not None
-        raw = cast(Any, bound)
-        method = getattr(raw, "as_integer_ratio", None)
-        # Fallback for actual ints that expose no method on some numpy scalars.
-        if not callable(method):
-            b_num, b_den = int(raw), 1
-        else:
-            pair = method()
-            b_num, b_den = int(pair[0]), int(pair[1])
-        left = numerator * b_den
-        right = b_num * denominator
+    def ratio_compares(
+        left_numerator: int,
+        left_denominator: int,
+        right_ratio: tuple[int, int],
+    ) -> int:
+        right_numerator, right_denominator = right_ratio
+        left = left_numerator * right_denominator
+        right = right_numerator * left_denominator
         return (left > right) - (left < right)
 
     def exact_in_domain() -> bool:
         if pos and numerator <= 0:
             return False
-        if lower is not None and ratio_compares_to(lower) < 0:
+        if lower_ratio is not None and ratio_compares(
+            numerator,
+            denominator,
+            lower_ratio,
+        ) < 0:
             return False
-        if upper is not None:
-            comparison = ratio_compares_to(upper)
+        if upper_ratio is not None:
+            comparison = ratio_compares(numerator, denominator, upper_ratio)
             if comparison > 0 or (comparison == 0 and not upper_inc):
                 return False
         return True
