@@ -441,6 +441,112 @@ class WorldModelEnsembleResourceBudget:
                 name,
                 _require_int(name, getattr(self, name), minimum=0, maximum=_INT32_MAX),
             )
+        if self.ensemble_size < 2:
+            raise ValueError("ensemble_size must be at least two")
+        if self.observation_dim < 1:
+            raise ValueError("observation_dim must be positive")
+        if self.member_state_scalars_per_member <= 4 or self.member_trainable_scalars < 1:
+            raise ValueError("member state and trainable scalar counts must be positive")
+        if self.member_trainable_scalars > self.member_state_scalars_per_member - 4:
+            raise ValueError("member_trainable_scalars cannot exceed member state scalars")
+        expected = {
+            "target_dim": self.observation_dim + 2,
+            "member_state_bytes_per_member": 4 * self.member_state_scalars_per_member,
+            "total_trainable_scalars": self.ensemble_size * self.member_trainable_scalars,
+            "persistent_float32_scalars": (
+                self.ensemble_size * (self.member_state_scalars_per_member - 4)
+                + self.ensemble_size * self.target_dim
+                + 5
+            ),
+            "persistent_float64_scalars": 0,
+            "persistent_int32_scalars": 4 * self.ensemble_size + 6,
+            "persistent_int64_scalars": 0,
+            "persistent_uint32_scalars": 2 * self.ensemble_size + 4,
+            "persistent_bool_scalars": 2 * self.ensemble_size,
+            "persistent_state_scalars": (
+                self.ensemble_size * self.member_state_scalars_per_member
+                + self.ensemble_size * self.target_dim
+                + 4 * self.ensemble_size
+                + 15
+            ),
+            "persistent_state_bytes": (
+                self.ensemble_size * self.member_state_bytes_per_member
+                + 4 * self.ensemble_size * self.target_dim
+                + 10 * self.ensemble_size
+                + 60
+            ),
+            "bootstrap_prng_keys": 2,
+            "bootstrap_prng_uint32_scalars": 4,
+            "bootstrap_prng_bytes": 16,
+            "member_update_candidates_per_valid_event": self.ensemble_size,
+            "max_member_updates_per_event": self.ensemble_size,
+            "replay_member_update_candidates_per_available_sample": self.ensemble_size,
+            "max_replay_member_updates_per_available_sample": self.ensemble_size,
+            "max_event_count": _INT32_MAX,
+            "max_member_update_count": _INT32_MAX,
+            "max_replay_event_count": _INT32_MAX,
+            "max_replay_member_update_count": _INT32_MAX,
+            "replay_capacity": 0,
+        }
+        prediction_float_scalars = (
+            2 * self.ensemble_size * self.target_dim
+            + self.ensemble_size * self.observation_dim
+            + 2 * self.target_dim
+            + self.observation_dim
+            + 2 * self.ensemble_size
+            + 3
+        )
+        expected["prediction_output_logical_scalars"] = prediction_float_scalars + 2
+        expected["prediction_output_logical_bytes"] = 4 * prediction_float_scalars + 2
+        update_float_scalars = (
+            prediction_float_scalars
+            + self.target_dim
+            + self.ensemble_size
+            + self.observation_dim
+            + 10
+        )
+        update_bool_scalars = 2 * self.ensemble_size + 20
+        expected["update_result_output_logical_scalars"] = (
+            self.persistent_state_scalars + update_float_scalars + update_bool_scalars
+        )
+        expected["update_result_output_logical_bytes"] = (
+            self.persistent_state_bytes + 4 * update_float_scalars + update_bool_scalars
+        )
+        replay_float_scalars = (
+            prediction_float_scalars + self.target_dim + self.ensemble_size + 1
+        )
+        replay_bool_scalars = 2 * self.ensemble_size + 12
+        expected["replay_update_result_output_logical_scalars"] = (
+            self.persistent_state_scalars + replay_float_scalars + replay_bool_scalars
+        )
+        expected["replay_update_result_output_logical_bytes"] = (
+            self.persistent_state_bytes + 4 * replay_float_scalars + replay_bool_scalars
+        )
+        dtype_scalars = (
+            self.persistent_float32_scalars
+            + self.persistent_float64_scalars
+            + self.persistent_int32_scalars
+            + self.persistent_int64_scalars
+            + self.persistent_uint32_scalars
+            + self.persistent_bool_scalars
+        )
+        if dtype_scalars != self.persistent_state_scalars:
+            raise ValueError(
+                "persistent dtype scalar counts do not sum to persistent_state_scalars"
+            )
+        dtype_bytes = (
+            4 * self.persistent_float32_scalars
+            + 8 * self.persistent_float64_scalars
+            + 4 * self.persistent_int32_scalars
+            + 8 * self.persistent_int64_scalars
+            + 4 * self.persistent_uint32_scalars
+            + self.persistent_bool_scalars
+        )
+        if dtype_bytes != self.persistent_state_bytes:
+            raise ValueError("persistent dtype byte counts do not sum to persistent_state_bytes")
+        for name, value in expected.items():
+            if getattr(self, name) != value:
+                raise ValueError(f"{name} does not match the world-model ensemble implementation")
 
     def to_config(self) -> dict[str, int]:
         """Return a JSON-compatible exact accounting record."""
