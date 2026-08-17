@@ -68,6 +68,14 @@ class MatchedAlbertaWorkerError(RuntimeError):
     """The matched Alberta workload input or output contract was violated."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise MatchedAlbertaWorkerError("name must be a string")
+    if type(value) is not str:
+        raise MatchedAlbertaWorkerError(f"{name} must be a string")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class MatchedAlbertaWorkerConfiguration:
     """One explicitly typed Alberta-family configuration envelope."""
@@ -86,24 +94,23 @@ class MatchedAlbertaWorkerConfiguration:
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
-        if key in result:
-            raise MatchedAlbertaWorkerError(f"duplicate configuration key {key!r}")
-        result[key] = value
+        host_key = _require_exact_str("key", key)
+        if host_key in result:
+            raise MatchedAlbertaWorkerError("duplicate configuration key")
+        result[host_key] = value
     return result
 
 
-def _reject_nonfinite(token: str) -> Any:
-    raise MatchedAlbertaWorkerError(
-        f"non-finite configuration number {token!r} is forbidden"
-    )
+def _reject_nonfinite(token: object) -> Any:
+    _require_exact_str("token", token)
+    raise MatchedAlbertaWorkerError("non-finite configuration number is forbidden")
 
 
-def _parse_finite_json_float(token: str) -> float:
-    parsed = float(token)
+def _parse_finite_json_float(token: object) -> float:
+    host_token = _require_exact_str("token", token)
+    parsed = float(host_token)
     if not math.isfinite(parsed):
-        raise MatchedAlbertaWorkerError(
-            f"non-finite configuration number {token!r} is forbidden"
-        )
+        raise MatchedAlbertaWorkerError("non-finite configuration number is forbidden")
     return parsed
 
 
@@ -127,9 +134,10 @@ def _feature_configuration(value: Any) -> ForagerFeatureConfig:
 
 
 def _parse_agent_configuration(
-    implementation_kind: str,
+    implementation_kind: object,
     value: Any,
 ) -> MatchedAlbertaAgentConfig:
+    _require_exact_str("implementation_kind", implementation_kind)
     if not isinstance(value, Mapping):
         raise MatchedAlbertaWorkerError("agent configuration must be an object")
     payload = dict(value)
@@ -155,9 +163,8 @@ def _parse_agent_configuration(
             payload["features"] = _feature_configuration(payload.get("features"))
             result = RTURTRLForagerConfig(**payload)
         else:
-            raise MatchedAlbertaWorkerError(
-                f"unsupported Alberta implementation kind {implementation_kind!r}"
-            )
+            _require_exact_str("implementation_kind", implementation_kind)
+            raise MatchedAlbertaWorkerError("unsupported Alberta implementation kind")
     except MatchedAlbertaWorkerError:
         raise
     except (TypeError, ValueError, OverflowError) as exc:
