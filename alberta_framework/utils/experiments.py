@@ -61,6 +61,14 @@ _NUMPY_COORDINATE_TYPES = frozenset(
 )
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _type_identity_in(
     value_type: type[object],
     candidates: Iterable[type[object]],
@@ -235,9 +243,10 @@ def run_single_experiment(
     )
 
 
-def _require_finite_metric_array(arr: NDArray[np.float64], metric: str) -> None:
+def _require_finite_metric_array(arr: NDArray[np.float64], metric: object) -> None:
+    host_metric = _require_exact_str("metric", metric)
     if arr.size == 0 or not np.all(np.isfinite(arr)):
-        raise ValueError(f"metric {metric!r} contains non-finite samples")
+        raise ValueError(f"metric '{host_metric}' contains non-finite samples")
 
 
 def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
@@ -350,7 +359,11 @@ def run_multi_seed_experiment(
             seen_names.add(config.name)
 
     if duplicate_names:
-        formatted_names = ", ".join(repr(name) for name in sorted(duplicate_names))
+        safe_names: list[str] = []
+        for dup_name in sorted(duplicate_names):
+            host_dup = _require_exact_str("name", dup_name)
+            safe_names.append(f"'{host_dup}'")
+        formatted_names = ", ".join(safe_names)
         raise ValueError(
             f"Experiment configuration names must be unique; duplicates: {formatted_names}"
         )
@@ -512,11 +525,13 @@ def get_final_performance(
 
     metric_arrays: dict[str, NDArray[np.float64]] = {}
     for name, agg in results.items():
+        host_name = _require_exact_str("name", name)
+        host_metric_inner = _require_exact_str("metric", metric)
         arr = agg.metric_arrays[metric]
         if arr.shape[1] == 0:
             raise ValueError(
-                f"AggregatedResults {name!r} must contain at least one metric step "
-                f"for {metric!r}"
+                f"AggregatedResults '{host_name}' must contain at least one metric step "
+                f"for '{host_metric_inner}'"
             )
         _require_finite_metric_array(arr, metric)
         metric_arrays[name] = arr
@@ -586,15 +601,17 @@ def extract_hyperparameter_results(
 
     for left_index, (left_name, left, left_hash) in enumerate(coordinate_entries):
         for right_name, right, right_hash in coordinate_entries[left_index + 1 :]:
+            host_left = _require_exact_str("left_name", left_name)
+            host_right = _require_exact_str("right_name", right_name)
             if not _coordinate_pair_is_compatible(left, right):
                 raise ValueError(
                     "param_extractor must return mutually compatible canonical coordinate "
-                    f"families; configurations {left_name!r} and {right_name!r} do not"
+                    f"families; configurations '{host_left}' and '{host_right}' do not"
                 )
             if _coordinate_values_equal(left, right) and left_hash != right_hash:
                 raise ValueError(
                     "param_extractor returned equal coordinates with different hashes for "
-                    f"configurations {left_name!r} and {right_name!r}"
+                    f"configurations '{host_left}' and '{host_right}'"
                 )
 
     coordinate_groups: list[tuple[object, list[str]]] = []
@@ -608,7 +625,13 @@ def extract_hyperparameter_results(
 
     collisions = [(value, names) for value, names in coordinate_groups if len(names) > 1]
     if collisions:
-        described = "; ".join(f"{value!r} <- {names}" for value, names in collisions)
+        parts: list[str] = []
+        for coll_value, coll_names in collisions:
+            safe_coll_names = ", ".join(
+                f"'{_require_exact_str('name', n)}'" for n in coll_names
+            )
+            parts.append(f"{coll_value} <- [{safe_coll_names}]")
+        described = "; ".join(parts)
         raise ValueError(
             f"param_extractor maps several configurations to one value: {described}"
         )
@@ -623,7 +646,7 @@ def extract_hyperparameter_results(
 def _require_hyperparameter_coordinate(
     value: object,
     *,
-    name: str,
+    name: object,
     nesting_depth: int = 0,
 ) -> Any:
     """Require one coordinate whose finiteness and hash semantics are intrinsic.
@@ -635,11 +658,12 @@ def _require_hyperparameter_coordinate(
     their metaclass, conversion, equality, or hash hooks cannot establish a durable
     dictionary-key contract.
     """
+    host_name = _require_exact_str("name", name)
 
     def reject() -> NoReturn:
         raise ValueError(
             "param_extractor returned a noncanonical coordinate for "
-            f"configuration {name!r}; coordinates must use canonical immutable "
+            f"configuration '{host_name}'; coordinates must use canonical immutable "
             "scalar types or exact tuple/frozenset compositions, and floating "
             "or complex coordinates must be finite"
         )
@@ -649,7 +673,7 @@ def _require_hyperparameter_coordinate(
         if nesting_depth >= _MAX_HYPERPARAMETER_COORDINATE_NESTING:
             raise ValueError(
                 "param_extractor returned an over-nested coordinate for "
-                f"configuration {name!r}; coordinates support at most "
+                f"configuration '{host_name}'; coordinates support at most "
                 f"{_MAX_HYPERPARAMETER_COORDINATE_NESTING} nested "
                 "tuple/frozenset levels"
             )
@@ -718,14 +742,15 @@ def _require_hyperparameter_coordinate(
     reject()
 
 
-def _require_coordinate_hash(value: object, *, name: str) -> int:
+def _require_coordinate_hash(value: object, *, name: object) -> int:
     """Hash a validated coordinate without allowing raw runtime errors to escape."""
+    host_name = _require_exact_str("name", name)
     try:
         return hash(value)
     except Exception as exc:
         raise ValueError(
             "param_extractor returned a coordinate that cannot be hashed for "
-            f"configuration {name!r}"
+            f"configuration '{host_name}'"
         ) from exc
 
 
