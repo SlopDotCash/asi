@@ -122,6 +122,11 @@ class ExperientialMemoryPolicyResourceDeclaration:
     argmax_candidates_per_proposal: int
 
     def __post_init__(self) -> None:
+        if type(self) is not ExperientialMemoryPolicyResourceDeclaration:
+            raise ValueError(
+                "resource declaration must be an exact "
+                "ExperientialMemoryPolicyResourceDeclaration"
+            )
         for name in (
             "n_actions",
             "owned_trainable_float32_scalars",
@@ -138,6 +143,22 @@ class ExperientialMemoryPolicyResourceDeclaration:
                 name,
                 _require_int(name, getattr(self, name), minimum=0),
             )
+        if self.n_actions < 1:
+            raise ValueError("n_actions must be positive")
+        if self.external_memory_persistent_state_bytes < 1:
+            raise ValueError("external_memory_persistent_state_bytes must be positive")
+        exact = {
+            "owned_trainable_float32_scalars": 0,
+            "owned_persistent_state_bytes": 0,
+            "memory_queries_per_proposal": 1,
+            "random_draws_per_proposal": 0,
+            "score_mass_values_interpreted_per_proposal": self.n_actions,
+            "hard_safety_values_interpreted_per_proposal": self.n_actions,
+            "argmax_candidates_per_proposal": self.n_actions,
+        }
+        for name, expected in exact.items():
+            if getattr(self, name) != expected:
+                raise ValueError(f"{name} must equal {expected}")
 
     def to_config(self) -> dict[str, int]:
         """Return the exact JSON-compatible resource declaration."""
