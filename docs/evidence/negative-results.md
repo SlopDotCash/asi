@@ -88,6 +88,35 @@ postmortem.
     [`summary_naive_bayes.json`](../../outputs/ipmnist_screening/summary_naive_bayes.json),
     and [`V1_assignment.md`](../../outputs/new_directions/V1_assignment.md).
 
+13. **Second-order permutation fingerprints cost more samples than they save.**
+    Pairwise pixel-pixel correlation reduced to per-pixel descriptors (row-sum,
+    sorted top-16 profile, leading-8 spectral embedding) missed the same
+    500-sample gate V1 missed, and by a wider margin: best 0.081 relevant-pixel
+    accuracy at N=500 against V1's own class-conditional 0.785. The measured
+    sample floor `N*` is `> 2000` for every reduction and both solvers, so the
+    family does not beat the ~2,000-sample information floor V1 established.
+    All three recover 1.000 from exact full-dataset statistics, so the
+    reductions are sound and the constraint is the estimator: a 784x784
+    correlation matrix has rank <= N at these budgets. Second-order structure
+    is unusable at this budget, not in principle. V2 remains gated out. Record:
+    [`V4_fingerprints.md`](../../outputs/new_directions/V4_fingerprints.md).
+
+14. **A shared network cannot fingerprint where a pixel used to live.** The
+    model-side arm of the same pre-registration (input-hidden correlation and
+    gradient coupling) failed its oracle gate at 0.002/0.000 against 0.95 while
+    scoring 1.000 on the no-shift control — it recovers the identity map
+    perfectly and the true permutation not at all. Because
+    `a_h = relu(sum_k x_k w1[k,h])`, the coupling of input position `j` is
+    dominated by the weight *at* `j`, so both sides' descriptors reduce to rows
+    of `w1` and matching returns `j -> j`. This is recorded as a confounded
+    construction, **not** as evidence against model-side probes: the arm was
+    void, so no claim about that family is licensed. A corrected probe must
+    score post-shift content against reference-side weights rather than
+    correlating both sides through one forward pass. Supporting diagnostic:
+    first-layer activation covariance has participation-ratio effective rank
+    6.55-6.82, so the nominal 300 dimensions were under 7. Record:
+    [`V4_fingerprints.md`](../../outputs/new_directions/V4_fingerprints.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
