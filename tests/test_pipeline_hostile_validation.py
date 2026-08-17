@@ -36,28 +36,6 @@ class _HostileInt(int):
         raise AssertionError("repr hook")
 
 
-class _HostileFloat(float):
-    calls = 0
-
-    def as_integer_ratio(self) -> tuple[int, int]:
-        type(self).calls += 1
-        raise RuntimeError("ratio hook")
-
-
-def test_require_bool_rejects_string_subclass_name() -> None:
-    with pytest.raises(ValueError, match="exact string"):
-        _require_bool(_StringSubclass("use_layer_norm"), True)
-    with pytest.raises(ValueError, match="exact string"):
-        _require_int(_StringSubclass("observation_dim"), 4)
-
-
-def test_require_bool_does_not_invoke_hostile_name_repr() -> None:
-    with pytest.raises(ValueError, match="exact string"):
-        _require_bool(_EvilStr("include_raw"), True)
-    with pytest.raises(ValueError, match="exact string"):
-        _require_str_choice(_EvilStr("step2"), "upgd", ("upgd", "identity"))
-
-
 def test_require_bool_rejects_non_bool_without_repr() -> None:
     with pytest.raises(ValueError, match="must be a bool"):
         _require_bool("include_raw", 1)
@@ -82,8 +60,6 @@ def test_require_int_does_not_invoke_hostile_repr() -> None:
 def test_require_str_choice_rejects_string_subclass() -> None:
     with pytest.raises(ValueError, match="unknown"):
         _require_str_choice("step2", _StringSubclass("upgd"), ("upgd", "identity"))
-    with pytest.raises(ValueError, match="exact string"):
-        _require_str_choice(_StringSubclass("step2"), "upgd", ("upgd",))
 
 
 def test_step2feature_rejects_string_subclass_periods() -> None:
