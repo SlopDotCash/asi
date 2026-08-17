@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import FrozenInstanceError
 
 import chex
@@ -21,6 +22,7 @@ from alberta_framework.streams import (
     RecurringTwoAgentTransition,
     RecurringTwoAgentWorld,
 )
+from alberta_framework.streams.recurring_multiagent import RecurringTwoAgentResourceBudget
 
 
 def _with_step_count(
@@ -553,3 +555,48 @@ def test_recurring_two_agent_world_initial_positions_reject_booleans() -> None:
     # Valid initial positions
     world = RecurringTwoAgentWorld(initial_positions=(-0.5, 0.5))
     assert world.to_config()["initial_positions"] == [-0.5, 0.5]
+
+
+def test_recurring_resource_budget_rejects_leftover_identities() -> None:
+    """Public resource-budget records must not keep leftover bool/int identities."""
+
+    with pytest.raises(ValueError, match="state_nbytes"):
+        RecurringTwoAgentResourceBudget(
+            state_nbytes=True,
+            exact_clock_nbytes=12,
+            exact_clock_delta_nbytes=8,
+        )
+    with pytest.raises(ValueError, match="trainable_scalars"):
+        RecurringTwoAgentResourceBudget(
+            state_nbytes=1,
+            exact_clock_nbytes=12,
+            exact_clock_delta_nbytes=8,
+            trainable_scalars=True,
+        )
+    with pytest.raises(ValueError, match="replay_capacity"):
+        RecurringTwoAgentResourceBudget(
+            state_nbytes=1,
+            exact_clock_nbytes=12,
+            exact_clock_delta_nbytes=8,
+            replay_capacity=True,
+        )
+    with pytest.raises(ValueError, match="state_nbytes"):
+        RecurringTwoAgentResourceBudget(
+            state_nbytes=float("nan"),
+            exact_clock_nbytes=12,
+            exact_clock_delta_nbytes=8,
+        )
+
+    legal = RecurringTwoAgentResourceBudget(
+        state_nbytes=1,
+        exact_clock_nbytes=12,
+        exact_clock_delta_nbytes=8,
+    )
+    dumped = json.dumps(legal.to_dict(), allow_nan=False)
+    assert '"state_nbytes": 1' in dumped
+    assert '"exact_clock_nbytes": 12' in dumped
+    assert '"trainable_scalars": 0' in dumped
+    assert '"replay_capacity": 0' in dumped
+    assert '"state_nbytes": true' not in dumped
+    assert '"trainable_scalars": true' not in dumped
+    assert '"replay_capacity": true' not in dumped
