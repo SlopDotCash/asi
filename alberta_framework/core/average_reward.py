@@ -37,7 +37,10 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
 from alberta_framework.core.optimizers import Autostep, AutostepParamState, optimizer_from_config
@@ -47,6 +50,7 @@ from alberta_framework.core.update_safety import (
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
+_FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -91,6 +95,32 @@ def _require_state_resources(name: str, *, scalars: int, nbytes: int) -> None:
         raise ValueError(f"{name} state scalars must fit signed int32")
     if nbytes > _INT32_MAX:
         raise ValueError(f"{name} state bytes must fit signed int32")
+
+
+def _validated_nonnegative_float32_scalar(
+    name: str,
+    value: object,
+    *,
+    upper: float | None = None,
+) -> float:
+    """Validate a nonnegative float32 sink without losing a nonzero value.
+
+    Exact zero is a supported way to disable these updates. A positive host
+    value that rounds to binary32 zero is not: accepting it would silently
+    turn an enabled learning rate or trace into the disabled configuration.
+    """
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        lower=0.0,
+        upper=upper,
+    )
+    if (
+        numerator != 0
+        and numerator * _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR <= denominator
+    ):
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
 
 
 def _preflight_actor_state(
@@ -212,15 +242,14 @@ class DifferentialTDConfig:
             object.__setattr__(
                 self,
                 name,
-                validated_float32_scalar(name, getattr(self, name), lower=0.0),
+                _validated_nonnegative_float32_scalar(name, getattr(self, name)),
             )
         object.__setattr__(
             self,
             "trace_decay",
-            validated_float32_scalar(
+            _validated_nonnegative_float32_scalar(
                 "trace_decay",
                 self.trace_decay,
-                lower=0.0,
                 upper=1.0,
             ),
         )
@@ -320,15 +349,14 @@ class DifferentialGTDConfig:
             object.__setattr__(
                 self,
                 name,
-                validated_float32_scalar(name, getattr(self, name), lower=0.0),
+                _validated_nonnegative_float32_scalar(name, getattr(self, name)),
             )
         object.__setattr__(
             self,
             "trace_decay",
-            validated_float32_scalar(
+            _validated_nonnegative_float32_scalar(
                 "trace_decay",
                 self.trace_decay,
-                lower=0.0,
                 upper=1.0,
             ),
         )
@@ -973,15 +1001,13 @@ class AverageRewardHordeLearner:
         """Initialize the average-reward Horde."""
         if n_demons < 1:
             raise ValueError("n_demons must be positive")
-        average_reward_step_size = validated_float32_scalar(
+        average_reward_step_size = _validated_nonnegative_float32_scalar(
             "average_reward_step_size",
             average_reward_step_size,
-            lower=0.0,
         )
-        trace_decay = validated_float32_scalar(
+        trace_decay = _validated_nonnegative_float32_scalar(
             "trace_decay",
             trace_decay,
-            lower=0.0,
             upper=1.0,
         )
         self._n_demons = n_demons

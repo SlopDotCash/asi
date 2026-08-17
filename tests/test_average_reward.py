@@ -937,6 +937,63 @@ def test_average_reward_horde_rejects_nonfinite_reward_rate_scalars() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("config_type", "field"),
+    [
+        (DifferentialTDConfig, "step_size"),
+        (DifferentialTDConfig, "average_reward_step_size"),
+        (DifferentialTDConfig, "trace_decay"),
+        (DifferentialGTDConfig, "value_step_size"),
+        (DifferentialGTDConfig, "secondary_step_size"),
+        (DifferentialGTDConfig, "average_reward_step_size"),
+        (DifferentialGTDConfig, "trace_decay"),
+    ],
+)
+def test_differential_configs_reject_nonzero_float32_underflow(
+    config_type: type[DifferentialTDConfig] | type[DifferentialGTDConfig],
+    field: str,
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must remain nonzero"):
+        config_type(**{field: 2.0**-150})
+    with pytest.raises(ValueError, match=f"{field} must remain nonzero"):
+        config_type(**{field: 5e-324})
+
+
+def test_nonnegative_average_reward_float32_sinks_preserve_zero_and_minsubnormal() -> None:
+    smallest_float32 = 2.0**-149
+    td = DifferentialTDConfig(
+        step_size=0.0,
+        average_reward_step_size=smallest_float32,
+        trace_decay=smallest_float32,
+    )
+    gtd = DifferentialGTDConfig(
+        value_step_size=smallest_float32,
+        secondary_step_size=0.0,
+        average_reward_step_size=smallest_float32,
+        trace_decay=0.0,
+    )
+    horde = AverageRewardHordeLearner(
+        n_demons=2,
+        hidden_sizes=(4,),
+        average_reward_step_size=smallest_float32,
+        trace_decay=0.0,
+    )
+
+    assert td.step_size == 0.0
+    assert td.average_reward_step_size == smallest_float32
+    assert td.trace_decay == smallest_float32
+    assert gtd.value_step_size == smallest_float32
+    assert gtd.secondary_step_size == 0.0
+    assert horde.to_config()["average_reward_step_size"] == smallest_float32
+
+
+def test_average_reward_horde_rejects_nonzero_float32_underflow() -> None:
+    with pytest.raises(ValueError, match="average_reward_step_size must remain nonzero"):
+        AverageRewardHordeLearner(n_demons=2, average_reward_step_size=2.0**-150)
+    with pytest.raises(ValueError, match="trace_decay must remain nonzero"):
+        AverageRewardHordeLearner(n_demons=2, trace_decay=5e-324)
+
+
 def test_average_reward_configs_canonicalize_float32_sink_values() -> None:
     actor = AverageRewardHordeActorCriticConfig(
         n_actions=2,
