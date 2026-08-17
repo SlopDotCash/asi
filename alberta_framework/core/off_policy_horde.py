@@ -43,6 +43,7 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -197,8 +198,8 @@ class NonlinearSharedGTDHordeState:
     secondary_head_w: Float[Array, "n_demons hidden_dim"]
     secondary_head_b: Float[Array, " n_demons"]
     step_count: Float[Array, ""]
-    birth_timestamp: float = 0.0
-    uptime_s: float = 0.0
+    birth_timestamp: Float[Array, ""]
+    uptime_s: Float[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -300,10 +301,13 @@ class OffPolicyHordeLearner:
         if ratio_clip <= 0.0:
             raise ValueError(f"ratio_clip must be positive; got {ratio_clip}")
         if trace_ratio_clip <= 0.0:
-            raise ValueError(f"trace_ratio_clip must be positive; got {trace_ratio_clip}")
+            raise ValueError(
+                f"trace_ratio_clip must be positive; got {trace_ratio_clip}"
+            )
         if min_behavior_probability <= 0.0:
             raise ValueError(
-                f"min_behavior_probability must be positive; got {min_behavior_probability}"
+                "min_behavior_probability must be positive; "
+                f"got {min_behavior_probability}"
             )
 
         self._horde_spec = horde_spec
@@ -375,6 +379,7 @@ class OffPolicyHordeLearner:
     def predict(self, state: MultiHeadMLPState, observation: Array) -> Array:
         """Predict all demon values for one observation."""
         return self._learner.predict(state, observation)  # type: ignore[no-any-return]
+
 
     def update(
         self,
@@ -506,7 +511,10 @@ class OffPolicyHordeLearner:
             & jnp.isfinite(discounts)
             & (discounts >= 0.0)
             & (discounts <= 1.0)
-            & (zero_discount_mask | (next_observation_valid & jnp.isfinite(next_predictions)))
+            & (
+                zero_discount_mask
+                | (next_observation_valid & jnp.isfinite(next_predictions))
+            )
             & jnp.isfinite(td_targets)
         )
         active_mask = head_inputs_valid & global_inputs_valid & source_state_finite
@@ -572,9 +580,13 @@ class OffPolicyHordeLearner:
             effective_error_i = safe_clipped_rhos[i] * masked_td_error_i
 
             predictions_list.append(pred_i)
-            td_errors_list.append(jnp.where(active_mask[i], td_error_i, jnp.nan))
+            td_errors_list.append(
+                jnp.where(active_mask[i], td_error_i, jnp.nan)
+            )
             masked_td_errors_list.append(masked_td_error_i)
-            cotangent = cotangent + effective_error_i * jnp.squeeze(state.head_params.weights[i])
+            cotangent = cotangent + effective_error_i * jnp.squeeze(
+                state.head_params.weights[i]
+            )
 
         predictions = jnp.stack(predictions_list)
         td_errors = jnp.stack(td_errors_list)
@@ -610,11 +622,13 @@ class OffPolicyHordeLearner:
             else:
                 new_w_trace = w_grad_i
             new_trunk_traces.append(new_w_trace)
-            w_step, new_w_opt, w_update_applied = _update_from_gradient_with_diagnostics(
-                self._optimizer,
-                state.trunk_optimizer_states[2 * i],
-                new_w_trace,
-                error=None,
+            w_step, new_w_opt, w_update_applied = (
+                _update_from_gradient_with_diagnostics(
+                    self._optimizer,
+                    state.trunk_optimizer_states[2 * i],
+                    new_w_trace,
+                    error=None,
+                )
             )
             trunk_steps.append(w_step)
             new_trunk_opt_states.append(new_w_opt)
@@ -627,11 +641,13 @@ class OffPolicyHordeLearner:
             else:
                 new_b_trace = b_grad_i
             new_trunk_traces.append(new_b_trace)
-            b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
-                self._optimizer,
-                state.trunk_optimizer_states[2 * i + 1],
-                new_b_trace,
-                error=None,
+            b_step, new_b_opt, b_update_applied = (
+                _update_from_gradient_with_diagnostics(
+                    self._optimizer,
+                    state.trunk_optimizer_states[2 * i + 1],
+                    new_b_trace,
+                    error=None,
+                )
             )
             trunk_steps.append(b_step)
             new_trunk_opt_states.append(new_b_opt)
@@ -654,8 +670,12 @@ class OffPolicyHordeLearner:
         new_trunk_weights: list[Array] = []
         new_trunk_biases: list[Array] = []
         for i in range(n_trunk_layers):
-            new_trunk_weights.append(state.trunk_params.weights[i] + trunk_steps[2 * i])
-            new_trunk_biases.append(state.trunk_params.biases[i] + trunk_steps[2 * i + 1])
+            new_trunk_weights.append(
+                state.trunk_params.weights[i] + trunk_steps[2 * i]
+            )
+            new_trunk_biases.append(
+                state.trunk_params.biases[i] + trunk_steps[2 * i + 1]
+            )
 
         new_trunk_params = MLPParams(
             weights=tuple(new_trunk_weights),
@@ -703,17 +723,21 @@ class OffPolicyHordeLearner:
                 new_b_trace = _skip_zero_scale(head_gl, old_b_trace) + b_grad
 
             error_i = masked_td_errors[i]
-            w_step, new_w_opt, w_update_applied = _update_from_gradient_with_diagnostics(
-                head_optimizer,
-                old_w_opt,
-                new_w_trace,
-                error=error_i,
+            w_step, new_w_opt, w_update_applied = (
+                _update_from_gradient_with_diagnostics(
+                    head_optimizer,
+                    old_w_opt,
+                    new_w_trace,
+                    error=error_i,
+                )
             )
-            b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
-                head_optimizer,
-                old_b_opt,
-                new_b_trace,
-                error=error_i,
+            b_step, new_b_opt, b_update_applied = (
+                _update_from_gradient_with_diagnostics(
+                    head_optimizer,
+                    old_b_opt,
+                    new_b_trace,
+                    error=error_i,
+                )
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
 
@@ -838,7 +862,9 @@ class OffPolicyHordeLearner:
             jnp.zeros_like(predictions),
         )
         sanitized_next_predictions = jnp.where(
-            head_updates_applied & zero_discount_mask & ~jnp.isfinite(next_predictions),
+            head_updates_applied
+            & zero_discount_mask
+            & ~jnp.isfinite(next_predictions),
             jnp.zeros_like(next_predictions),
             next_predictions,
         )
@@ -856,10 +882,16 @@ class OffPolicyHordeLearner:
             state=committed_state,
             predictions=reported_predictions,
             next_predictions=reported_next_predictions,
-            td_targets=_report_demon_values(td_targets, requested_mask, head_updates_applied),
-            td_errors=_report_demon_values(td_errors, requested_mask, head_updates_applied),
+            td_targets=_report_demon_values(
+                td_targets, requested_mask, head_updates_applied
+            ),
+            td_errors=_report_demon_values(
+                td_errors, requested_mask, head_updates_applied
+            ),
             rhos=jnp.where(head_updates_applied, rhos, jnp.zeros_like(rhos)),
-            clipped_rhos=_report_demon_values(clipped_rhos, requested_mask, head_updates_applied),
+            clipped_rhos=_report_demon_values(
+                clipped_rhos, requested_mask, head_updates_applied
+            ),
             trace_coefficients=_report_demon_values(
                 trace_coefficients, requested_mask, head_updates_applied
             ),
@@ -887,7 +919,9 @@ class OffPolicyHordeLearner:
             "sparsity": self._sparsity,
             "leaky_relu_slope": self._leaky_relu_slope,
             "use_layer_norm": self._use_layer_norm,
-            "head_optimizer": (self._head_optimizer.to_config() if self._head_optimizer else None),
+            "head_optimizer": (
+                self._head_optimizer.to_config() if self._head_optimizer else None
+            ),
             "trace_mode": self._trace_mode.value,
             "utility_decay": self._utility_decay,
             "ratio_clip": self._ratio_clip,
@@ -913,7 +947,11 @@ class OffPolicyHordeLearner:
         normalizer_cfg = config.pop("normalizer", None)
         normalizer = normalizer_from_config(normalizer_cfg) if normalizer_cfg else None
         head_optimizer_cfg = config.pop("head_optimizer", None)
-        head_optimizer = optimizer_from_config(head_optimizer_cfg) if head_optimizer_cfg else None
+        head_optimizer = (
+            optimizer_from_config(head_optimizer_cfg)
+            if head_optimizer_cfg
+            else None
+        )
         trace_mode = TraceMode(config.pop("trace_mode", TraceMode.ACCUMULATING.value))
 
         return cls(
@@ -951,6 +989,24 @@ class NonlinearSharedGTDHordeLearner:
         if not horde_spec.demons:
             raise ValueError("horde_spec must contain at least one demon")
         hidden_size = _require_int32("hidden_size", hidden_size, minimum=1)
+        if type(horde_spec.demons) is not tuple or len(horde_spec.demons) < 1:
+            raise ValueError("horde_spec must contain at least one demon")
+        n_demons = len(horde_spec.demons)
+        for name, value in (
+            ("horde_spec.gammas", horde_spec.gammas),
+            ("horde_spec.lamdas", horde_spec.lamdas),
+        ):
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != (n_demons,):
+                raise ValueError(f"{name} must have shape ({n_demons},)")
+            if jnp.dtype(value.dtype) != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
+            host = np.asarray(value)
+            if not bool(np.all(np.isfinite(host))) or not bool(
+                np.all((host >= 0.0) & (host <= 1.0))
+            ):
+                raise ValueError(f"{name} must contain values in [0, 1]")
         self._horde_spec = horde_spec
         self._hidden_size = hidden_size
         self._primary_step_size = _require_float32(
@@ -1089,13 +1145,64 @@ class NonlinearSharedGTDHordeLearner:
             ),
             secondary_head_b=jnp.zeros(self.n_demons, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
-            birth_timestamp=time.time(),
-            uptime_s=0.0,
+            birth_timestamp=jnp.asarray(time.time(), dtype=jnp.float32),
+            uptime_s=jnp.asarray(0.0, dtype=jnp.float32),
         )
+
+    def _validate_state_static_contract(self, state: NonlinearSharedGTDHordeState) -> int:
+        """Return feature_dim after rejecting malformed adopted state metadata."""
+        if type(state) is not NonlinearSharedGTDHordeState:
+            raise TypeError("state must be a NonlinearSharedGTDHordeState")
+        try:
+            shape = tuple(state.trunk_w.shape)
+        except Exception as error:
+            raise TypeError("state.trunk_w must expose array metadata") from error
+        if len(shape) != 2 or shape[0] != self._hidden_size or shape[1] < 1:
+            raise ValueError("state.trunk_w has an invalid shape")
+        feature_dim = int(shape[1])
+        d = self.n_demons
+        h = self._hidden_size
+        expected = (
+            ("state.trunk_w", state.trunk_w, (h, feature_dim), jnp.float32),
+            ("state.trunk_b", state.trunk_b, (h,), jnp.float32),
+            ("state.head_w", state.head_w, (d, h), jnp.float32),
+            ("state.head_b", state.head_b, (d,), jnp.float32),
+            (
+                "state.secondary_trunk_w",
+                state.secondary_trunk_w,
+                (d, h, feature_dim),
+                jnp.float32,
+            ),
+            ("state.secondary_trunk_b", state.secondary_trunk_b, (d, h), jnp.float32),
+            ("state.secondary_head_w", state.secondary_head_w, (d, h), jnp.float32),
+            ("state.secondary_head_b", state.secondary_head_b, (d,), jnp.float32),
+            ("state.step_count", state.step_count, (), jnp.int32),
+            ("state.birth_timestamp", state.birth_timestamp, (), jnp.float32),
+            ("state.uptime_s", state.uptime_s, (), jnp.float32),
+        )
+        for name, value, expected_shape, dtype in expected:
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != expected_shape:
+                raise ValueError(f"{name} has an invalid shape")
+            if jnp.dtype(value.dtype) != jnp.dtype(dtype):
+                raise TypeError(f"{name} has an invalid dtype")
+        return feature_dim
+
+    @staticmethod
+    def _state_is_valid(state: NonlinearSharedGTDHordeState) -> Bool[Array, ""]:
+        return _floating_tree_is_finite(state) & (state.step_count >= 0)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(self, state: NonlinearSharedGTDHordeState, observation: Array) -> Array:
         """Predict all demon values for one observation."""
+        feature_dim = self._validate_state_static_contract(state)
+        if not hasattr(observation, "shape") or not hasattr(observation, "dtype"):
+            raise TypeError("observation must expose array shape and dtype metadata")
+        if tuple(observation.shape) != (feature_dim,):
+            raise ValueError(f"observation must have shape ({feature_dim},)")
+        if jnp.dtype(observation.dtype) != jnp.dtype(jnp.float32):
+            raise TypeError("observation must have dtype float32")
         hidden = jnp.tanh(state.trunk_w @ observation + state.trunk_b)
         return state.head_w @ hidden + state.head_b
 
@@ -1110,8 +1217,28 @@ class NonlinearSharedGTDHordeLearner:
         discounts: Array,
     ) -> NonlinearSharedGTDHordeUpdateResult:
         """Update with explicit per-demon ratios and discounts."""
+        feature_dim = self._validate_state_static_contract(state)
+        for name, value, shape in (
+            ("observation", observation, (feature_dim,)),
+            ("cumulants", cumulants, (self.n_demons,)),
+            ("next_observation", next_observation, (feature_dim,)),
+            ("rhos", rhos, (self.n_demons,)),
+            ("discounts", discounts, (self.n_demons,)),
+        ):
+            if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+                raise TypeError(f"{name} must expose array shape and dtype metadata")
+            if tuple(value.shape) != shape:
+                raise ValueError(f"{name} must have shape {shape}")
+            if jnp.dtype(value.dtype) != jnp.dtype(jnp.float32):
+                raise TypeError(f"{name} must have dtype float32")
         hidden = jnp.tanh(state.trunk_w @ observation + state.trunk_b)
-        next_hidden = jnp.tanh(state.trunk_w @ next_observation + state.trunk_b)
+        next_observation_valid = jnp.all(jnp.isfinite(next_observation))
+        safe_next_observation = jnp.where(
+            next_observation_valid,
+            next_observation,
+            jnp.zeros_like(next_observation),
+        )
+        next_hidden = jnp.tanh(state.trunk_w @ safe_next_observation + state.trunk_b)
         predictions = state.head_w @ hidden + state.head_b
         next_predictions = state.head_w @ next_hidden + state.head_b
         zero_discount_mask = discounts == 0.0
@@ -1127,11 +1254,15 @@ class NonlinearSharedGTDHordeLearner:
             requested
             & jnp.isfinite(cumulants)
             & jnp.isfinite(rhos)
+            & (rhos >= 0.0)
             & jnp.isfinite(discounts)
+            & (discounts >= 0.0)
+            & (discounts <= 1.0)
+            & ((discounts == 0.0) | next_observation_valid)
             & jnp.isfinite(td_targets)
         )
-        inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.all(jnp.isfinite(next_observation))
-        source_state_finite = _floating_tree_is_finite(state)
+        inputs_valid = jnp.all(jnp.isfinite(observation))
+        source_state_finite = self._state_is_valid(state)
         effective_mask = active_mask & inputs_valid & source_state_finite
         safe_td_errors = jnp.where(active_mask, td_errors, 0.0)
         clipped_rhos = jnp.minimum(
@@ -1331,15 +1462,12 @@ def run_off_policy_horde_learning_loop(
         )
 
     t0 = time.time()
-    (
-        final_state,
-        (
-            per_demon_metrics,
-            td_errors,
-            clipped_rhos,
-            head_updates_applied,
-            updates_applied,
-        ),
+    final_state, (
+        per_demon_metrics,
+        td_errors,
+        clipped_rhos,
+        head_updates_applied,
+        updates_applied,
     ) = jax.lax.scan(
         step_fn,
         state,
