@@ -144,14 +144,17 @@ def _zero_if_unused(scale: Array, value: Array) -> Array:
 
 def _array_metadata(name: str, value: object, shape: tuple[int, ...]) -> Array:
     """Require exact float32 host metadata before a value reaches JAX."""
+    actual_type = type(value)
     if not (
-        type(value) is np.ndarray
-        or isinstance(value, jax.Array)
-        or type(value) is jax.ShapeDtypeStruct
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+        or actual_type is jax.ShapeDtypeStruct
     ):
         raise ValueError(f"{name} must expose trusted array metadata")
-    actual_shape = tuple(value.shape)
-    actual_dtype = np.dtype(value.dtype)
+    trusted_value = cast(Any, value)
+    actual_shape = tuple(trusted_value.shape)
+    actual_dtype = np.dtype(trusted_value.dtype)
     if actual_shape != shape or actual_dtype != np.dtype(np.float32):
         raise ValueError(f"{name} must have shape {shape} and dtype float32")
     return cast(Array, value)
@@ -162,6 +165,14 @@ def _scalar_operand(name: str, value: object) -> Array:
         canonical = validated_float32_scalar(name, value)
         return jnp.asarray(canonical, dtype=jnp.float32)
     return _array_metadata(name, value, ())
+
+
+def _discount_operand(value: object) -> Array:
+    """Validate a discount in its exact host and consumed float32 domains."""
+    if type(value) in _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES:
+        canonical = validated_float32_scalar("gamma", value, lower=0.0, upper=1.0)
+        return jnp.asarray(canonical, dtype=jnp.float32)
+    return _array_metadata("gamma", value, ())
 
 
 def _stable_rms(values: Array) -> Array:
@@ -523,7 +534,7 @@ class OffPolicyTDLinearLearner:
         observation = _array_metadata("observation", observation, (feature_dim,))
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
-        gamma = _scalar_operand("gamma", gamma)
+        gamma = _discount_operand(gamma)
         rho = _scalar_operand("rho", rho)
         result = self._update_jit(state, observation, reward, next_observation, gamma, rho)
         return cast(
@@ -740,7 +751,7 @@ class ETDLinearLearner:
         observation = _array_metadata("observation", observation, (feature_dim,))
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
-        gamma = _scalar_operand("gamma", gamma)
+        gamma = _discount_operand(gamma)
         rho = _scalar_operand("rho", rho)
         interest = _scalar_operand("interest", interest)
         result = self._update_jit(
@@ -961,7 +972,7 @@ class GradientTDLinearLearner:
         observation = _array_metadata("observation", observation, (feature_dim,))
         next_observation = _array_metadata("next_observation", next_observation, (feature_dim,))
         reward = _scalar_operand("reward", reward)
-        gamma = _scalar_operand("gamma", gamma)
+        gamma = _discount_operand(gamma)
         rho = _scalar_operand("rho", rho)
         result = self._update_jit(state, observation, reward, next_observation, gamma, rho)
         return cast(

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from fractions import Fraction
 
 import chex
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -71,6 +73,150 @@ def test_update_rejects_discount_outside_unit_interval(learner, gamma: float) ->
     chex.assert_trees_all_equal(result.state, state)
     assert not bool(result.update_applied)
     assert float(result.td_error) == 0.0
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+@pytest.mark.parametrize(
+    "gamma",
+    [
+        -math.nextafter(0.0, 1.0),
+        -Fraction(1, 2**200),
+        math.nextafter(1.0, 2.0),
+        Fraction(1, 1) + Fraction(1, 2**100),
+    ],
+)
+def test_update_rejects_exact_host_gamma_before_float32_narrowing(learner, gamma: object) -> None:
+    state = learner.init(1)
+    with pytest.raises(ValueError, match="gamma"):
+        learner.update(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.asarray([jnp.inf], dtype=jnp.float32),
+            gamma,
+            jnp.asarray(1.0, dtype=jnp.float32),
+        )
+
+
+def test_gamma_operand_rejects_hostile_metadata_without_hooks() -> None:
+    class HostileGamma:
+        @property
+        def __class__(self) -> type:
+            raise AssertionError("class hook executed")
+
+        @property
+        def shape(self):
+            raise AssertionError("shape hook executed")
+
+        @property
+        def dtype(self):
+            raise AssertionError("dtype hook executed")
+
+    learner = OffPolicyTDLinearLearner()
+    with pytest.raises(ValueError, match="gamma"):
+        learner.update(
+            learner.init(1),
+            jnp.ones((1,), dtype=jnp.float32),
+            jnp.float32(1.0),
+            jnp.ones((1,), dtype=jnp.float32),
+            HostileGamma(),
+            jnp.float32(1.0),
+        )
+
+    with pytest.raises(ValueError, match="dtype float32"):
+        learner.update(
+            learner.init(1),
+            jnp.ones((1,), dtype=jnp.float32),
+            jnp.float32(1.0),
+            jnp.ones((1,), dtype=jnp.float32),
+            np.asarray(0.5, dtype=np.float64),
+            jnp.float32(1.0),
+        )
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+@pytest.mark.parametrize("gamma", [0.0, 1.0])
+def test_update_accepts_gamma_endpoints_eager_and_explicit_jit(learner, gamma: float) -> None:
+    state = learner.init(1)
+    observation = jnp.asarray([1.0], dtype=jnp.float32)
+    next_observation = jnp.asarray([2.0], dtype=jnp.float32)
+    reward = jnp.asarray(1.0, dtype=jnp.float32)
+    rho = jnp.asarray(1.0, dtype=jnp.float32)
+    gamma_array = jnp.asarray(gamma, dtype=jnp.float32)
+
+    eager = learner.update(state, observation, reward, next_observation, gamma_array, rho)
+    compiled = jax.jit(
+        lambda current, discount: learner.update(
+            current, observation, reward, next_observation, discount, rho
+        )
+    )(state, gamma_array)
+    assert bool(eager.update_applied)
+    assert bool(compiled.update_applied)
+    compiled_learning_state = compiled.state.replace(
+        birth_timestamp=eager.state.birth_timestamp,
+        uptime_s=eager.state.uptime_s,
+    )
+    chex.assert_trees_all_equal(eager.state, compiled_learning_state)
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+def test_runtime_gamma_rejection_is_atomic_and_neutral(learner) -> None:
+    state = learner.init(1)
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(1.25, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(result.update_applied)
+    for name in ("prediction", "td_error", "metrics"):
+        assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+    for name in ("rho_clipped", "follow_on_trace", "emphasis"):
+        if hasattr(result, name):
+            assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+
+
+def test_gradient_td_scan_rejects_only_invalid_gamma_rows_atomically() -> None:
+    learner = GradientTDLinearLearner(step_size=0.01)
+    state = learner.init(1)
+    result = run_gradient_td_learning_loop(
+        learner,
+        state,
+        jnp.ones((3, 1), dtype=jnp.float32),
+        jnp.ones((3,), dtype=jnp.float32),
+        jnp.ones((3, 1), dtype=jnp.float32),
+        jnp.asarray([0.0, 1.25, 1.0], dtype=jnp.float32),
+        jnp.ones((3,), dtype=jnp.float32),
+    )
+    assert result.updates_applied.tolist() == [True, False, True]
+    assert int(result.state.step_count) == 2
+    assert float(result.predictions[1]) == 0.0
+    assert float(result.td_errors[1]) == 0.0
+    assert bool(jnp.all(result.metrics[1] == 0))
 
 
 # =============================================================================
