@@ -176,6 +176,21 @@ def test_smoke_host_parameters_follow_exact_policy(field: str, value: object) ->
         run_step3_smoke(**{field: value})  # type: ignore[arg-type]
 
 
+def test_smoke_preflights_all_live_arrays_before_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_allocation(*args: object, **kwargs: object) -> None:
+        raise AssertionError("allocation must not start before resource preflight")
+
+    monkeypatch.setattr(jr, "normal", unexpected_allocation)
+    with pytest.raises(ValueError, match="smoke allocation bytes"):
+        run_step3_smoke(
+            steps=10_000_000,
+            raw_feature_dim=20,
+            constructed_feature_dim=0,
+        )
+
+
 def test_runtime_facade_rejects_narrowing_and_shape_mismatch() -> None:
     config = Step3HordeConfig(gammas=(0.0,), lamdas=(0.0,))
     horde = make_step3_horde(config)
@@ -194,6 +209,16 @@ def test_runtime_facade_rejects_narrowing_and_shape_mismatch() -> None:
             feature[None, :],
             jnp.ones((1, 2), dtype=jnp.float32),
             feature[None, :],
+        )
+
+
+def test_runtime_facade_requires_threefry_key() -> None:
+    horde = make_step3_horde(Step3HordeConfig(gammas=(0.0,), lamdas=(0.0,)))
+    with pytest.raises(ValueError, match="Threefry2x32"):
+        init_step3_state(
+            horde,
+            feature_dim=2,
+            key=jr.key(0, impl="rbg"),
         )
 
 

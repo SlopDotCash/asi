@@ -136,6 +136,8 @@ def _require_typed_key(name: str, value: object) -> Array:
         key.dtype, jax.dtypes.prng_key
     ):
         raise ValueError(f"{name} must be a scalar typed JAX PRNG key")
+    if str(jr.key_impl(key)) != "threefry2x32":
+        raise ValueError(f"{name} must use Threefry2x32")
     return key
 
 
@@ -157,6 +159,29 @@ def _require_handoff_resources(
     if allocated_bytes > _INT32_MAX:
         raise ValueError("derived Step 3 handoff allocation bytes must fit signed int32")
     return feature_dim
+
+
+def _require_smoke_resources(
+    *,
+    steps: int,
+    raw_dim: int,
+    constructed_dim: int,
+    n_demons: int,
+) -> None:
+    """Preflight all arrays materialized by :func:`run_step3_smoke`."""
+    _require_handoff_resources(
+        steps=steps,
+        raw_dim=raw_dim,
+        constructed_dim=constructed_dim,
+        n_demons=n_demons,
+    )
+    # raw observations; product columns plus their stack; cumulants; and the
+    # concatenated current/next handoff matrices are simultaneously live.
+    allocated_bytes = steps * (
+        12 * raw_dim + 16 * constructed_dim + 4 * n_demons
+    )
+    if allocated_bytes > _INT32_MAX:
+        raise ValueError("derived Step 3 smoke allocation bytes must fit signed int32")
 
 
 Step3RoutingName = Literal["shared", "independent", "mixed"]
@@ -736,7 +761,7 @@ def run_step3_smoke(
 
     cfg = Step3HordeConfig() if config is None else config
     _validate_horde_config(cfg)
-    _require_handoff_resources(
+    _require_smoke_resources(
         steps=steps,
         raw_dim=raw_feature_dim,
         constructed_dim=constructed_feature_dim,
