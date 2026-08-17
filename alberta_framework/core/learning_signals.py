@@ -309,6 +309,81 @@ class LearningSignalResourceBudget:
     output_logical_bytes: int
     trainable_scalars: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "input_float_scalars_per_step",
+            _require_int32(
+                "input_float_scalars_per_step",
+                self.input_float_scalars_per_step,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "persistent_float32_scalars",
+            _require_int32(
+                "persistent_float32_scalars",
+                self.persistent_float32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "persistent_int32_scalars",
+            _require_int32(
+                "persistent_int32_scalars",
+                self.persistent_int32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_scalars",
+            _require_int32(
+                "persistent_state_scalars",
+                self.persistent_state_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_bytes",
+            _require_int32(
+                "persistent_state_bytes",
+                self.persistent_state_bytes,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "output_float32_scalars",
+            _require_int32(
+                "output_float32_scalars",
+                self.output_float32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "output_bool_scalars",
+            _require_int32("output_bool_scalars", self.output_bool_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "output_logical_bytes",
+            _require_int32(
+                "output_logical_bytes",
+                self.output_logical_bytes,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "trainable_scalars",
+            _require_int32("trainable_scalars", self.trainable_scalars, minimum=0),
+        )
+
     def to_config(self) -> dict[str, int]:
         """Return a JSON-compatible budget description."""
         return dataclasses.asdict(self)
