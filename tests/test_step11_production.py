@@ -1263,3 +1263,31 @@ def test_step11_smoke_result_rejects_leftover_identities() -> None:
     assert '"seed": true' not in dumped
     assert '"finite": 1' not in dumped
     assert '"option_termination_count": true' not in dumped
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("steps", 0),
+        ("steps", 2**31),
+        ("steps", type("IntFacade", (int,), {})(8)),
+        ("seed", -1),
+        ("seed", 2**32),
+        ("finite", np.bool_(True)),
+        ("option_termination_count", -1),
+        ("option_termination_count", 2**31),
+    ),
+)
+def test_step11_smoke_result_rejects_hostile_and_boundary_scalars(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        _legal_step11_smoke_result(**{field: value})
+
+
+def test_step11_smoke_result_canonicalizes_supported_numpy_integer_identities() -> None:
+    result = _legal_step11_smoke_result(
+        steps=np.int64(8), option_termination_count=np.uint32(0)
+    )
+    assert type(result.steps) is int
+    assert type(result.option_termination_count) is int

@@ -29,6 +29,7 @@ from typing import Any, cast
 
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
@@ -47,6 +48,18 @@ _STEP5_CONFIG_KEYS_ERROR = (
     "['average_reward_step_size', 'step_size', 'trace_decay']"
 )
 _INT32_MAX = 2**31 - 1
+_NUMPY_INTEGER_TYPES = (
+    np.byte,
+    np.short,
+    np.intc,
+    np.int_,
+    np.longlong,
+    np.ubyte,
+    np.ushort,
+    np.uintc,
+    np.uint,
+    np.ulonglong,
+)
 
 
 def _require_int(
@@ -58,9 +71,12 @@ def _require_int(
 ) -> int:
     """Reject non-integers (including bool and class-spoofed actual types)."""
     actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
+    if actual_type is int:
+        number = cast(int, value)
+    elif actual_type in _NUMPY_INTEGER_TYPES:
+        number = int(cast(Integral, value))
+    else:
         raise ValueError(f"{name} must be an integer, got {value!r}")
-    number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
             raise ValueError(f"{name} must be positive, got {value!r}")

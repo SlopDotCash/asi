@@ -1454,3 +1454,87 @@ def test_matched_protocol_records_reject_leftover_identities() -> None:
     assert '"eligible": 1' not in dumped
     assert '"rank": true' not in dumped
     assert '"advance_count": true' not in dumped
+
+
+def test_matched_protocol_record_scalars_reject_hostile_exact_type_facades() -> None:
+    class IntFacade(int):
+        pass
+
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="aperture_size"):
+        matched.MatchedTask(
+            task_id="task",
+            preset="field_of_view",
+            environment_id="env",
+            foragax_distribution="dist",
+            foragax_version="0.1.0",
+            observation_type="rgb",
+            aperture_size=IntFacade(15),
+            task_identity_sha256=TASK_SHA,
+            environment_rng_schedule_sha256=SCHEDULE_SHA,
+        )
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="rank"):
+        matched.SelectionSlot(selection_group="alberta", rank=IntFacade(1))
+
+
+@pytest.mark.parametrize("aperture_size", (0, 2, 65_536))
+def test_matched_task_direct_construction_enforces_parser_aperture_bounds(
+    aperture_size: int,
+) -> None:
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="aperture_size"):
+        matched.MatchedTask(
+            task_id="task",
+            preset="field_of_view",
+            environment_id="env",
+            foragax_distribution="dist",
+            foragax_version="0.1.0",
+            observation_type="rgb",
+            aperture_size=aperture_size,
+            task_identity_sha256=TASK_SHA,
+            environment_rng_schedule_sha256=SCHEDULE_SHA,
+        )
+
+
+@pytest.mark.parametrize("rank", (0, 257))
+def test_selection_slot_direct_construction_enforces_rank_bounds(rank: int) -> None:
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="rank"):
+        matched.SelectionSlot(selection_group="alberta", rank=rank)
+
+
+@pytest.mark.parametrize("advance_count", (0, 2, 257))
+def test_selection_group_direct_construction_enforces_count_invariants(
+    advance_count: int,
+) -> None:
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="advance_count"):
+        matched.SelectionGroup(
+            selection_group="alberta",
+            candidate_ids=("candidate",),
+            advance_count=advance_count,
+        )
+
+
+@pytest.mark.parametrize(
+    ("analysis_role", "eligible", "exclusion_reasons"),
+    (
+        ("descriptive_only", True, ()),
+        ("inferential", True, ("reason",)),
+        ("inferential", False, ("reason",)),
+        ("descriptive_only", False, ()),
+    ),
+)
+def test_pairing_direct_construction_enforces_parser_cross_field_invariants(
+    analysis_role: matched.AnalysisRole,
+    eligible: bool,
+    exclusion_reasons: tuple[str, ...],
+) -> None:
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="pairing"):
+        matched.PairingEligibility(
+            analysis_role=analysis_role,
+            eligible=eligible,
+            exclusion_reasons=exclusion_reasons,
+        )
+
+
+@pytest.mark.parametrize("value", (-1, 2**63))
+def test_resource_record_direct_construction_enforces_exact_bounds(value: int) -> None:
+    with pytest.raises(matched.ForagerMatchedProtocolError, match="parameter_count"):
+        matched.ResourceAccounting(value, 0, 0, 0)
