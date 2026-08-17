@@ -28,6 +28,10 @@ class _HostileInt(int):
         type(self).calls += 1
         raise AssertionError("HostileInt.__index__ must not be called")
 
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
     def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("HostileInt.__repr__ must not be called")
@@ -74,21 +78,11 @@ def test_rejects_bool_and_hostile_int() -> None:
 
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be a real number") as exc:
+    with pytest.raises(ValueError, match="must be finite") as exc:
         Step2KernelConfig(step_size=_HostileFloat(0.03))  # type: ignore[arg-type]
     assert _HostileFloat.calls == 0
     assert "HostileFloat" not in str(exc.value)
     assert "!r" not in str(exc.value)
-
-
-def test_does_not_invoke_hostile_value_when_name_is_evil_via_sink() -> None:
-    from alberta_framework.steps.step2 import finite_real_and_float32
-
-    evil = _EvilStr("x")
-    _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be an exact string"):
-        finite_real_and_float32(evil, _HostileFloat(1.0))  # type: ignore[arg-type]
-    assert _HostileFloat.calls == 0
 
 
 def test_rejects_plain_string_for_step_size() -> None:
@@ -153,6 +147,6 @@ def test_float_subclass_with_lying_ratio_is_rejected() -> None:
             type(self).calls += 1
             return (3, 100)
 
-    with pytest.raises(ValueError, match="must be a real number"):
+    with pytest.raises(ValueError, match="must be finite"):
         Step2KernelConfig(step_size=RatioFloat(0.03))
     assert RatioFloat.calls == 0

@@ -800,7 +800,7 @@ def test_step2_rejects_spoofed_int_class_with_negative_ratio() -> None:
             type(self).ratio_calls += 1
             return (-1, 2**200)
 
-    with pytest.raises(ValueError, match="step_size must (narrow to a finite float32|be a real number)"):
+    with pytest.raises(ValueError, match="step_size must be finite"):
         Step2KernelConfig(step_size=SpoofedIntFloat(0.5))
     assert SpoofedIntFloat.class_calls == 0
     assert SpoofedIntFloat.ratio_calls == 0
@@ -822,7 +822,7 @@ def test_step2_rejects_spoofed_ratio_components() -> None:
             type(self).calls += 1
             return (SpoofedComponent(), 2)
 
-    with pytest.raises(ValueError, match="must (narrow to a finite float32|be a real number)"):
+    with pytest.raises(ValueError, match="must be finite"):
         Step2KernelConfig(step_size=BadRatioFloat(0.5))
     assert BadRatioFloat.calls == 0
 

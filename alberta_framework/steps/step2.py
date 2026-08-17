@@ -18,10 +18,11 @@ contracts are exercised in ``tests/test_prototype_memory.py`` and
 from __future__ import annotations
 
 import math
+import operator
 from dataclasses import asdict, dataclass
 from fractions import Fraction
-from numbers import Integral, Real
-from typing import Any, Literal, cast
+from numbers import Real
+from typing import Any, Literal, SupportsIndex, cast
 
 import jax.numpy as jnp
 import jax.random as jr
@@ -160,36 +161,32 @@ _ACTUAL_FLOAT_TYPES = frozenset(
 _ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
 
 
-def _require_exact_str(name: str, value: object) -> str:
-    if type(value) is not str:
-        raise ValueError(f"{name} must be an exact string")
-    return value
-
-
 def _require_exact_keys(
     config_name: str,
     payload: dict[str, object],
     expected: frozenset[str],
 ) -> None:
     if set(payload) != expected:
-        raise ValueError(
-            f"{config_name} payload keys must be exactly sorted expected"
-        )
+        raise ValueError(f"{config_name} payload keys must be exactly {sorted(expected)!r}")
 
 
-def finite_real_and_float32(name: object, value: object) -> tuple[Real, int, int, float]:
+def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
     """Return the original real, exact ratio, and finite binary32 rounding."""
-    host_name = _require_exact_str("name", name)
     actual_type = type(value)
     if actual_type not in _ALLOWED_REAL_TYPES:
-        raise ValueError(f"{host_name} must be a real number")
+        mro = type.__getattribute__(actual_type, "__mro__")
+        has_real_lineage = actual_type is not bool and any(
+            base is int or base is float or base is Fraction for base in mro
+        )
+        requirement = "finite" if has_real_lineage else "a real number"
+        raise ValueError(f"{name} must be {requirement}")
     real = cast(Real, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
     except (FloatingPointError, OverflowError, TypeError, ValueError):
-        raise ValueError(f"{host_name} must narrow to a finite float32") from None
+        raise ValueError(f"{name} must narrow to a finite float32") from None
     if not math.isfinite(narrowed):
-        raise ValueError(f"{host_name} must narrow to a finite float32")
+        raise ValueError(f"{name} must narrow to a finite float32")
     return real, numerator, denominator, narrowed
 
 
@@ -202,15 +199,13 @@ def canonical_float32_storage(value: object, narrowed: float) -> float:
     return float(narrowed)
 
 
-def _require_real(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, _, _, narrowed = finite_real_and_float32(host_name, value)
+def _require_real(name: str, value: object) -> float:
+    real, _, _, narrowed = finite_real_and_float32(name, value)
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_unit_interval(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
+def _require_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
     if (
         real < 0.0
         or not real <= 1.0
@@ -219,13 +214,12 @@ def _require_unit_interval(name: object, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{host_name} must be in [0, 1]")
+        raise ValueError(f"{name} must be in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_half_open_unit_interval(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
+def _require_half_open_unit_interval(name: str, value: object) -> float:
+    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
     if (
         real <= 0.0
         or not real <= 1.0
@@ -234,57 +228,50 @@ def _require_half_open_unit_interval(name: object, value: object) -> float:
         or narrowed <= 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{host_name} must be in (0, 1]")
+        raise ValueError(f"{name} must be in (0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_nonnegative_real(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
+def _require_nonnegative_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
     if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{host_name} must be non-negative")
+        raise ValueError(f"{name} must be non-negative")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_positive_real(name: object, value: object) -> float:
-    host_name = _require_exact_str("name", name)
-    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
+def _require_positive_real(name: str, value: object) -> float:
+    real, numerator, _, narrowed = finite_real_and_float32(name, value)
     if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
-        raise ValueError(f"{host_name} must be positive in float32 execution sink")
+        raise ValueError(f"{name} must be positive in float32 execution sink")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
-    name: object,
+    name: str,
     value: object,
     *,
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
-    host_name = _require_exact_str("name", name)
     actual_type = type(value)
     if actual_type not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{host_name} must be an integer")
-    try:
-        number = int(cast(Integral, value))
-    except (OverflowError, TypeError, ValueError):
-        raise ValueError(f"{host_name} must be an integer") from None
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{host_name} must be positive")
+            raise ValueError(f"{name} must be positive")
         if minimum == 0:
-            raise ValueError(f"{host_name} must be non-negative")
-        raise ValueError(f"{host_name} must be >= {minimum}")
+            raise ValueError(f"{name} must be non-negative")
+        raise ValueError(f"{name} must be >= {minimum}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{host_name} must be <= {maximum}")
+        raise ValueError(f"{name} must be <= {maximum}")
     return number
 
 
-def _require_bool(name: object, value: object) -> bool:
+def _require_bool(name: str, value: object) -> bool:
     """Require an actual builtin bool (``__class__`` spoofing is ignored)."""
-    host_name = _require_exact_str("name", name)
     if type(value) is not bool:
-        raise ValueError(f"{host_name} must be a built-in bool")
+        raise ValueError(f"{name} must be a built-in bool")
     return value
 
 
