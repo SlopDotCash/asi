@@ -39,10 +39,9 @@ References
 
 from __future__ import annotations
 
-import math
 from fractions import Fraction
 from numbers import Real
-from typing import cast
+from typing import Any, cast
 
 import chex
 import jax
@@ -52,12 +51,16 @@ import numpy as np
 from jax import Array
 from jaxtyping import Int, PRNGKeyArray
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import (
+    round_real_to_float32,
+    round_real_to_float32_with_ratio,
+)
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 4_294_967_295
+_MAX_PAVLOVIAN_NUMERIC_BYTES = 64 * 1024 * 1024
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
@@ -89,27 +92,34 @@ def _require_float32_resource(
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
-def _require_finite_real(
-    value: object,
-    *,
-    name: str,
-    nonnegative: bool = False,
-) -> float:
-    """Return a finite real, rejecting bools, NaN, and infinities."""
-    # Exact-type whitelist prevents ``__class__`` spoofing and hostile
-    # ``as_integer_ratio`` subclasses from reaching the narrowing routine.
-    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
-        raise ValueError(f"{name} must be a finite real")
-    real_value = cast(Real, value)
-    try:
-        number = float(real_value)
-    except Exception as error:
-        raise ValueError(f"{name} must be a finite real") from error
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real")
-    if nonnegative and number < 0.0:
-        raise ValueError(f"{name} must be a non-negative finite real")
-    return number
+def _pavlovian_resource_budget(
+    *, n_phases: int, n_cs: int, n_distractors: int
+) -> dict[str, int]:
+    """Return the complete resident numeric envelope before JAX allocation."""
+    phase_vector_scalars = 4 * n_phases
+    phase_mask_scalars = n_phases * n_cs
+    persistent_scalars = phase_vector_scalars + phase_mask_scalars
+    persistent_bytes = 4 * persistent_scalars
+    state_scalars = n_cs + n_distractors + 4
+    state_bytes = 4 * state_scalars + 8  # four int32 scalars and one Threefry key
+    for name, scalars, nbytes in (
+        ("Pavlovian persistent arrays", persistent_scalars, persistent_bytes),
+        ("Pavlovian state", state_scalars, state_bytes),
+    ):
+        if scalars > _INT32_MAX:
+            raise ValueError(f"{name} scalar count must fit signed int32")
+        if nbytes > _INT32_MAX:
+            raise ValueError(f"{name} byte count must fit signed int32")
+        if nbytes > _MAX_PAVLOVIAN_NUMERIC_BYTES:
+            raise ValueError(f"{name} exceeds the 64 MiB numeric budget")
+    return {
+        "phase_vector_scalars": phase_vector_scalars,
+        "phase_mask_scalars": phase_mask_scalars,
+        "persistent_scalars": persistent_scalars,
+        "persistent_bytes": persistent_bytes,
+        "state_scalars": state_scalars,
+        "state_bytes": state_bytes,
+    }
 
 
 def _require_nonnegative_float32(value: object, *, name: str) -> float:
@@ -144,18 +154,38 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
 
 
 def _require_unit_interval(value: object, *, name: str) -> float:
-    """Return a finite real in ``[0, 1]``, rejecting bool aliases."""
-    # Exact-type whitelist — hostile ``float`` subclasses are rejected before
-    # any ``__float__`` or ratio hook runs.
+    """Return an exact-host and float32-valid probability."""
     if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be in [0, 1]")
     try:
-        number = float(cast(Real, value))
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(
+            cast(Real, value)
+        )
     except Exception as error:
         raise ValueError(f"{name} must be in [0, 1]") from error
-    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+    if not 0 <= numerator <= denominator or not 0.0 <= narrowed <= 1.0:
         raise ValueError(f"{name} must be in [0, 1]")
-    return number
+    return narrowed
+
+
+def _require_state_array(
+    value: Any,
+    *,
+    name: str,
+    shape: tuple[int, ...],
+    dtype: jnp.dtype,
+) -> Array:
+    array = jnp.asarray(value)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if array.dtype != dtype:
+        raise TypeError(f"{name} must have dtype {dtype}")
+    return array
+
+
+def _saturating_nonnegative_increment(value: Array) -> Array:
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    return jnp.minimum(jnp.maximum(value, 0), maximum - 1) + 1
 
 
 def _require_builtin_int(
@@ -336,8 +366,8 @@ class ClassicalConditioningStream:
                 scientific scalar, or ``noise_std`` becomes non-finite when
                 rounded to the stream's float32 execution dtype.
         """
-        if not phases:
-            raise ValueError("phases must be non-empty")
+        if type(phases) is not tuple or not phases:
+            raise ValueError("phases must be a non-empty exact tuple")
         n_cs = _require_builtin_int(n_cs, name="n_cs", minimum=1)
         n_distractors = _require_builtin_int(
             n_distractors, name="n_distractors", minimum=0
@@ -363,23 +393,31 @@ class ClassicalConditioningStream:
             distractor_prob, name="distractor_prob"
         )
 
+        resources = _pavlovian_resource_budget(
+            n_phases=len(phases),
+            n_cs=n_cs,
+            n_distractors=n_distractors,
+        )
+        canonical_phases: list[PavlovianPhase] = []
         for phase in phases:
+            if type(phase) is not PavlovianPhase:
+                raise ValueError("phases entries must be actual PavlovianPhase records")
             if type(phase.name) is not str:
                 raise ValueError("phase name must be a string")
             try:
-                _require_unit_interval(
+                contingency = _require_unit_interval(
                     phase.cs_us_contingency, name="cs_us_contingency"
                 )
             except ValueError as error:
                 raise ValueError(
                     f"phase {phase.name!r} cs_us_contingency must be in [0, 1]"
                 ) from error
-            _require_builtin_int(phase.n_steps, name="n_steps", minimum=1)
+            n_steps = _require_builtin_int(phase.n_steps, name="n_steps", minimum=1)
             compound_index = _require_builtin_int(
                 phase.compound_index, name="compound_index", minimum=-1
             )
-            if not isinstance(phase.cs_active, tuple):
-                raise ValueError("phase cs_active must be a tuple of integers")
+            if type(phase.cs_active) is not tuple or not phase.cs_active:
+                raise ValueError("phase cs_active must be a non-empty exact tuple")
             for cs_idx in phase.cs_active:
                 if type(cs_idx) is not int:
                     raise ValueError(
@@ -389,28 +427,25 @@ class ClassicalConditioningStream:
                     raise ValueError(
                         f"phase {phase.name!r} references cs_active index out of range"
                     )
+            if len(set(phase.cs_active)) != len(phase.cs_active):
+                raise ValueError("phase cs_active indices must be unique")
             if compound_index >= n_cs:
                 raise ValueError(
                     f"phase {phase.name!r} has compound_index out of range"
                 )
+            if compound_index in phase.cs_active:
+                raise ValueError("phase compound_index must be additional to cs_active")
+            canonical_phases.append(
+                PavlovianPhase(
+                    name=phase.name,
+                    n_steps=n_steps,
+                    cs_us_contingency=contingency,
+                    cs_active=phase.cs_active,
+                    compound_index=compound_index,
+                )
+            )
 
-        # Derived allocations must fit signed int32 without allocating JAX arrays
-        feature_dim = int(n_cs) + int(n_distractors)
-        if feature_dim > _INT32_MAX:
-            raise ValueError("feature_dim must fit signed int32")
-        _require_float32_resource(
-            "Pavlovian phase mask",
-            vector_scalars=len(phases) * int(n_cs),
-        )
-        _require_float32_resource(
-            "Pavlovian feature state",
-            vector_scalars=feature_dim,
-            fixed_scalars=4,
-        )
-        if len(phases) > _INT32_MAX:
-            raise ValueError("n_phases must fit signed int32")
-
-        self._phases = tuple(phases)
+        self._phases = tuple(canonical_phases)
         self._n_cs = int(n_cs)
         self._n_distractors = int(n_distractors)
         self._cs_us_delay = int(cs_us_delay)
@@ -419,20 +454,23 @@ class ClassicalConditioningStream:
         self._iti_max = int(iti_max)
         self._noise_std = float(noise_std)
         self._distractor_prob = float(distractor_prob)
+        self._resource_budget = resources
 
         # Pre-compute JAX arrays for phase fields used inside step().
-        self._phase_n_steps = jnp.array([p.n_steps for p in phases], dtype=jnp.int32)
+        self._phase_n_steps = jnp.array(
+            [p.n_steps for p in self._phases], dtype=jnp.int32
+        )
         self._phase_contingency = jnp.array(
-            [p.cs_us_contingency for p in phases], dtype=jnp.float32
+            [p.cs_us_contingency for p in self._phases], dtype=jnp.float32
         )
         self._phase_compound = jnp.array(
-            [p.compound_index for p in phases], dtype=jnp.int32
+            [p.compound_index for p in self._phases], dtype=jnp.int32
         )
         # Build a per-phase ``(n_phases, n_cs)`` mask so a phase's
         # ``cs_active`` set can be sampled from inside ``jit``.
-        cs_active_mask = jnp.zeros((len(phases), n_cs), dtype=jnp.float32)
-        cs_active_count = jnp.zeros(len(phases), dtype=jnp.int32)
-        for i, phase in enumerate(phases):
+        cs_active_mask = jnp.zeros((len(self._phases), n_cs), dtype=jnp.float32)
+        cs_active_count = jnp.zeros(len(self._phases), dtype=jnp.int32)
+        for i, phase in enumerate(self._phases):
             for cs_idx in phase.cs_active:
                 cs_active_mask = cs_active_mask.at[i, cs_idx].set(1.0)
             cs_active_count = cs_active_count.at[i].set(len(phase.cs_active))
@@ -465,6 +503,11 @@ class ClassicalConditioningStream:
         return self._phases
 
     @property
+    def resource_budget(self) -> dict[str, int]:
+        """Complete resident numeric payload accounting."""
+        return dict(self._resource_budget)
+
+    @property
     def cs_us_delay(self) -> int:
         """Configured CS-to-US delay."""
         return self._cs_us_delay
@@ -473,6 +516,49 @@ class ClassicalConditioningStream:
     def cs_duration(self) -> int:
         """Configured CS active duration."""
         return self._cs_duration
+
+    def _require_state_contract(self, state: object) -> PavlovianState:
+        """Validate every static state boundary before indexed JAX work."""
+        if type(state) is not PavlovianState:
+            raise TypeError("state must be an actual PavlovianState")
+        record = state
+        key = jnp.asarray(record.key)
+        if key.shape != () or not jnp.issubdtype(key.dtype, jax.dtypes.prng_key):
+            raise TypeError("state.key must be a scalar PRNG key")
+        for name, value, shape in (
+            (
+                "cs_active_steps_remaining",
+                record.cs_active_steps_remaining,
+                (self._n_cs,),
+            ),
+            ("us_pending_steps_remaining", record.us_pending_steps_remaining, ()),
+            ("phase_idx", record.phase_idx, ()),
+            ("step_in_phase", record.step_in_phase, ()),
+            (
+                "n_distractor_active",
+                record.n_distractor_active,
+                (self._n_distractors,),
+            ),
+            ("iti_steps_remaining", record.iti_steps_remaining, ()),
+        ):
+            _require_state_array(
+                value,
+                name=f"state.{name}",
+                shape=shape,
+                dtype=jnp.dtype(jnp.int32),
+            )
+        return record
+
+    def _state_values_valid(self, state: PavlovianState) -> Array:
+        return (
+            jnp.all(state.cs_active_steps_remaining >= 0)
+            & (state.us_pending_steps_remaining >= -1)
+            & (state.phase_idx >= 0)
+            & (state.phase_idx < len(self._phases))
+            & (state.step_in_phase >= 0)
+            & jnp.all(state.n_distractor_active >= 0)
+            & (state.iti_steps_remaining >= 0)
+        )
 
     def init(self, key: Array) -> PavlovianState:
         """Initialize stream state.
@@ -487,7 +573,12 @@ class ClassicalConditioningStream:
         Returns:
             Initial ``PavlovianState``.
         """
-        key, k_iti = jr.split(key)
+        key_array = jnp.asarray(key)
+        if key_array.shape != () or not jnp.issubdtype(
+            key_array.dtype, jax.dtypes.prng_key
+        ):
+            raise TypeError("key must be a scalar PRNG key")
+        key, k_iti = jr.split(key_array)
         iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1)
         return PavlovianState(
             key=key,
@@ -515,6 +606,8 @@ class ClassicalConditioningStream:
             ``(1,)`` containing the US indicator.
         """
         del idx  # unused
+        state = self._require_state_contract(state)
+        state_valid = self._state_values_valid(state)
 
         (
             key,
@@ -532,7 +625,7 @@ class ClassicalConditioningStream:
         # 1. Phase progression
         # ------------------------------------------------------------------
         # If we have spent >= n_steps in this phase, advance (clamped).
-        cur_phase = state.phase_idx
+        cur_phase = jnp.clip(state.phase_idx, 0, n_phases - 1)
         cur_phase_steps = self._phase_n_steps[cur_phase]
         # Only advance phases that have a successor; the final phase repeats.
         on_last_phase = cur_phase >= (n_phases - 1)
@@ -678,16 +771,39 @@ class ClassicalConditioningStream:
             observation=observation,
             target=jnp.atleast_1d(target),
         )
-        new_state = PavlovianState(
+        candidate_state = PavlovianState(
             key=key,
             cs_active_steps_remaining=new_cs_active.astype(jnp.int32),
             us_pending_steps_remaining=new_us_pending.astype(jnp.int32),
             phase_idx=new_phase_idx.astype(jnp.int32),
-            step_in_phase=(new_step_in_phase + 1).astype(jnp.int32),
+            step_in_phase=_saturating_nonnegative_increment(new_step_in_phase),
             n_distractor_active=new_distractor_active.astype(jnp.int32),
             iti_steps_remaining=new_iti_remaining.astype(jnp.int32),
         )
-        return timestep, new_state
+        update_applied = state_valid & self._state_values_valid(candidate_state)
+        new_state = cast(
+            PavlovianState,
+            jax.tree.map(
+                lambda proposed, current: jnp.where(
+                    update_applied, proposed, current
+                ),
+                candidate_state,
+                state,
+            ),
+        )
+        safe_timestep = TimeStep(
+            observation=jnp.where(
+                update_applied,
+                timestep.observation,
+                jnp.zeros_like(timestep.observation),
+            ),
+            target=jnp.where(
+                update_applied,
+                timestep.target,
+                jnp.zeros_like(timestep.target),
+            ),
+        )
+        return safe_timestep, new_state
 
 
 # =============================================================================
