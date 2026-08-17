@@ -97,13 +97,25 @@ def test_issue184_workflow_pins_every_shell_mapping() -> None:
         < measurement_index
     )
     assert "python3 .github/scripts/ipmnist_prereg.py authorize" in workflow
-    assert "uv run --no-sync python .github/scripts/ipmnist_prereg.py preflight" in workflow
+    assert '"$UV_PATH" run --no-sync python .github/scripts/ipmnist_prereg.py preflight' in workflow
     upload = workflow[workflow.index("- name: Upload 90-day result or partial recovery bundle") :]
     assert "${{ steps.protocol.outputs.output_root }}" in upload
     assert "outputs/ipmnist_screening/replication_r1" not in upload
     assert "outputs/ipmnist_screening/rls_preset_ablation_r1" not in upload
     assert "outputs/ipmnist_screening/gate_ablation_r3" not in upload
     assert "retention-days: 90" in upload
+
+
+def test_prereg_workflow_invokes_only_setup_uv_pinned_binary() -> None:
+    workflow = (_ROOT / ".github" / "workflows" / "ipmnist-prereg.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "      - name: Set up exact uv 0.9.24\n        id: uv\n" in workflow
+    assert 'UV_PATH: ${{ steps.uv.outputs.uv-path }}' in workflow
+    assert '[[ "$UV_PATH" != /* || ! -x "$UV_PATH" ]]' in workflow
+    shell_lines = [line.strip() for line in workflow.splitlines()]
+    assert not any(line.startswith("uv ") or "$(uv " in line for line in shell_lines)
+    assert sum('"$UV_PATH" ' in line for line in shell_lines) >= 13
 
 
 def test_issue184_github_and_local_protocols_cannot_drift() -> None:
@@ -877,8 +889,8 @@ def test_workflow_installs_exact_uv_managed_python() -> None:
         encoding="utf-8"
     )
     assert "actions/setup-python@" not in workflow
-    assert "uv python install --managed-python 3.12.12" in workflow
-    assert 'uv python find --managed-python --no-project 3.12.12' in workflow
+    assert '"$UV_PATH" python install --managed-python 3.12.12' in workflow
+    assert '"$UV_PATH" python find --managed-python --no-project 3.12.12' in workflow
     assert "CPython 3.12.12 arm64" in workflow
     assert '--python "$PYTHON_PATH"' in workflow
     assert '"jax_disable_jit": False' in workflow

@@ -161,6 +161,7 @@ jobs:
             --output "$RUNNER_TEMP/prereg-metadata/owner-authorization.json"
 
       - name: Set up exact uv 0.9.24
+        id: uv
         uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e
         with:
           version: 0.9.24
@@ -170,9 +171,15 @@ jobs:
       - name: Install exact uv-managed CPython 3.12.12
         id: python
         shell: bash
+        env:
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          if [[ "$(uv --version)" != "uv 0.9.24" ]]; then
+          if [[ "$UV_PATH" != /* || ! -x "$UV_PATH" ]]; then
+            echo "setup-uv did not return an absolute executable uv path" >&2
+            exit 1
+          fi
+          if [[ "$("$UV_PATH" --version)" != "uv 0.9.24" ]]; then
             echo "setup-uv did not install exact uv 0.9.24" >&2
             exit 1
           fi
@@ -180,8 +187,8 @@ jobs:
             echo "PYTHONOPTIMIZE must be exactly zero" >&2
             exit 1
           fi
-          uv python install --managed-python 3.12.12
-          python_path="$(uv python find --managed-python --no-project 3.12.12)"
+          "$UV_PATH" python install --managed-python 3.12.12
+          python_path="$("$UV_PATH" python find --managed-python --no-project 3.12.12)"
           identity="$("$python_path" -c \
             'import platform; print(platform.python_implementation(), platform.python_version(), platform.machine())')"
           if [[ "$identity" != "CPython 3.12.12 arm64" ]]; then
@@ -198,6 +205,7 @@ jobs:
         shell: bash
         env:
           PYTHON_PATH: ${{ steps.python.outputs.path }}
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           cpu_brand="$(sysctl -n machdep.cpu.brand_string)"
@@ -205,11 +213,12 @@ jobs:
             echo "macos-14 runner is not an Apple M1 family host: $cpu_brand" >&2
             exit 1
           fi
-          uv sync \
+          "$UV_PATH" sync \
             --locked \
             --python "$PYTHON_PATH" \
             --extra research
-          uv run --no-sync python - "$cpu_brand" "$RUNNER_TEMP/prereg-metadata/runner.json" <<'PY'
+          "$UV_PATH" run --no-sync python - \
+            "$cpu_brand" "$RUNNER_TEMP/prereg-metadata/runner.json" <<'PY'
           import importlib.metadata
           import json
           import os
@@ -334,10 +343,11 @@ jobs:
           UV_LOCK_SHA256: ${{ steps.identity.outputs.uv_lock_sha256 }}
           WORKFLOW_BLOB_SHA1: ${{ steps.identity.outputs.workflow_blob_sha1 }}
           DRIVER_BLOB_SHA1: ${{ steps.identity.outputs.driver_blob_sha1 }}
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           metadata="$RUNNER_TEMP/prereg-metadata/launch-preflight.json"
-          uv run --no-sync python .github/scripts/ipmnist_prereg.py preflight \
+          "$UV_PATH" run --no-sync python .github/scripts/ipmnist_prereg.py preflight \
             --protocol "$PROTOCOL" \
             --repository "$GITHUB_REPOSITORY" \
             --source "$SOURCE" \
@@ -355,9 +365,11 @@ jobs:
 
       - name: Run code-only preregistration preflight tests
         shell: bash
+        env:
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          uv run --no-sync python -m pytest \
+          "$UV_PATH" run --no-sync python -m pytest \
             tests/test_ipmnist_prereg_workflow.py \
             tests/test_ipmnist_screening.py \
             -q \
@@ -368,10 +380,12 @@ jobs:
 
       - name: Materialize and hash the canonical MNIST cache
         shell: bash
+        env:
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           data_home="$RUNNER_TEMP/openml-cache"
-          uv run --no-sync python - "$data_home" <<'PY'
+          "$UV_PATH" run --no-sync python - "$data_home" <<'PY'
           import hashlib
           import os
           import sys
@@ -402,6 +416,7 @@ jobs:
         shell: bash
         env:
           PROTOCOL: ${{ inputs.protocol }}
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           case "$PROTOCOL" in
@@ -438,7 +453,7 @@ jobs:
             for arm in "$control" "$candidate"; do
               shard="$shards_dir/${arm}_seed${seed}.json"
               log="$logs_dir/${arm}_seed${seed}.log"
-              uv run --no-sync python -m \
+              "$UV_PATH" run --no-sync python -m \
                 alberta_framework.benchmarks.ipmnist_screening run \
                 --config-name "$arm" \
                 --seed "$seed" \
@@ -452,7 +467,7 @@ jobs:
               shard_args+=("$shard")
             done
           done
-          uv run --no-sync python -m \
+          "$UV_PATH" run --no-sync python -m \
             alberta_framework.benchmarks.ipmnist_screening merge \
             --shards "${shard_args[@]}" \
             --control-name "$control" \
@@ -471,10 +486,11 @@ jobs:
           SOURCE: ${{ inputs.launch_sha }}
           TREE: ${{ steps.identity.outputs.tree }}
           UV_LOCK_SHA256: ${{ steps.identity.outputs.uv_lock_sha256 }}
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
           result="$RUNNER_TEMP/prereg-metadata/result-validation.json"
-          uv run --no-sync python .github/scripts/ipmnist_prereg.py validate \
+          "$UV_PATH" run --no-sync python .github/scripts/ipmnist_prereg.py validate \
             --protocol "$PROTOCOL" \
             --root "$GITHUB_WORKSPACE" \
             --runner-receipt "$RUNNER_TEMP/prereg-metadata/runner.json" \
@@ -487,7 +503,7 @@ jobs:
             echo
             echo "- Protocol: $PROTOCOL"
             echo "- Source: $SOURCE"
-            echo "- Outcome: $(uv run --no-sync python -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$result")"
+            echo "- Outcome: $("$UV_PATH" run --no-sync python -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$result")"
             echo "- Validation metadata: result-validation.json"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -495,9 +511,10 @@ jobs:
         shell: bash
         env:
           PROTOCOL: ${{ inputs.protocol }}
+          UV_PATH: ${{ steps.uv.outputs.uv-path }}
         run: |
           set -euo pipefail
-          uv run --no-sync python .github/scripts/ipmnist_prereg.py seal \
+          "$UV_PATH" run --no-sync python .github/scripts/ipmnist_prereg.py seal \
             --protocol "$PROTOCOL" \
             --root "$GITHUB_WORKSPACE" \
             --launch-preflight "$RUNNER_TEMP/prereg-metadata/launch-preflight.json" \
