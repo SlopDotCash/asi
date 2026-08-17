@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -192,13 +195,9 @@ def test_upgd_memory_dimensions_preflight_without_allocation() -> None:
 
 
 def test_upgd_memory_state_preflight_bytes_without_allocation() -> None:
-    # For F=2,D=2,H=(4,), each slot/class adds 8 four-byte state leaves.
-    # The exact UPGD + wrapper + PRNG/counter fixed state is 68 leaves.
-    last_legal = (2**31 - 1 - 4 * 68) // 32
-    _base_cfg(feature_dim=2, n_heads=2, slots_per_class=last_legal)
-    with pytest.raises(ValueError, match="scalar count|byte count"):
-        _base_cfg(feature_dim=2, n_heads=2, slots_per_class=last_legal + 1)
-    with pytest.raises(ValueError, match="dimensions must fit signed|scalar count|byte count"):
+    with pytest.raises(ValueError, match="persistent state"):
+        _base_cfg(feature_dim=2, n_heads=2, slots_per_class=20_000_000)
+    with pytest.raises(ValueError, match="dimensions|scalar|byte|persistent"):
         _base_cfg(feature_dim=5000, n_heads=100, slots_per_class=500_000)
 
 
@@ -215,11 +214,41 @@ def test_upgd_memory_float_validators_accept_valid_values() -> None:
     assert cfg.memory_update_rate == 0.3
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "initial_novelty_threshold",
+        "memory_bandwidth",
+        "min_novelty_threshold",
+        "max_novelty_threshold",
+    ],
+)
+def test_upgd_memory_log_division_fields_require_positive_normal_float32(field: str) -> None:
+    minimum = np.finfo(np.float32).tiny
+    overrides = {field: minimum}
+    if field == "max_novelty_threshold":
+        overrides["min_novelty_threshold"] = minimum
+    assert getattr(_base_cfg(**overrides), field) == float(minimum)
+    with pytest.raises(ValueError, match=field):
+        _base_cfg(**{field: np.nextafter(np.float32(minimum), np.float32(0.0))})
+    with pytest.raises(ValueError, match=field):
+        _base_cfg(**{field: np.longdouble("1e-500")})
+
+
 def test_upgd_memory_combined_state_count_includes_all_components() -> None:
     # F=2,D=2,H=(4,),slots/class=3: 63+6*3 floats, 3+2*3 ints, two key words.
     assert _combined_state_resource_counts(2, 2, (4,), 3) == (81, 9, 2)
     with pytest.raises(ValueError, match="combined state.*(scalar|byte) count"):
         _base_cfg(feature_dim=50_000, hidden_sizes=(50_000,), slots_per_class=1)
+
+
+def test_upgd_memory_combined_resource_formula_matches_materialized_state() -> None:
+    for hidden_sizes in ((), (4,), (3, 5)):
+        learner = UPGDMemoryLearner(_base_cfg(hidden_sizes=hidden_sizes, slots_per_class=3))
+        state = learner.init(jax.random.key(1))
+        measured_bytes = sum(int(leaf.nbytes) for leaf in jax.tree_util.tree_leaves(state))
+        counts = _combined_state_resource_counts(4, 2, hidden_sizes, 3)
+        assert measured_bytes == 4 * sum(counts)
 
 
 def test_upgd_memory_resource_endpoint_is_exact_and_allocation_free() -> None:
@@ -231,23 +260,36 @@ def test_upgd_memory_resource_endpoint_is_exact_and_allocation_free() -> None:
         _require_resource("endpoint", bool_scalars=_INT32_MAX + 1)
 
 
-def test_upgd_memory_serialized_envelopes_are_exact() -> None:
+def test_upgd_memory_historical_mapping_envelopes_are_safe_and_compatible() -> None:
     learner = UPGDMemoryLearner(_base_cfg())
     config_payload = learner.config.to_config()
     learner_payload = learner.to_config()
-    assert UPGDMemoryConfig.from_config(config_payload) == learner.config
-    assert UPGDMemoryLearner.from_config(learner_payload).config == learner.config
+    assert UPGDMemoryConfig.from_config(MappingProxyType(config_payload)) == learner.config
+    assert UPGDMemoryLearner.from_config(MappingProxyType(learner_payload)).config == learner.config
+    partial = UPGDMemoryConfig.from_config(
+        MappingProxyType({"type": "historical", "feature_dim": 4, "n_heads": 2})
+    )
+    assert partial.hidden_sizes == (64,)
+    assert UPGDMemoryConfig.from_config(
+        {"feature_dim": np.int32(4), "n_heads": np.int32(2), "hidden_sizes": ()}
+    ).feature_dim == 4
 
-    for payload in (
-        {**config_payload, "extra": 1},
-        {key: value for key, value in config_payload.items() if key != "feature_dim"},
-        {**config_payload, "type": "Wrong"},
-        {**config_payload, "feature_dim": np.int32(4)},
-    ):
-        with pytest.raises(ValueError):
-            UPGDMemoryConfig.from_config(payload)
-    with pytest.raises(ValueError):
-        UPGDMemoryLearner.from_config({**learner_payload, "extra": 1})
+    class HostileMapping(Mapping):
+        def __getitem__(self, key):  # type: ignore[no-untyped-def]
+            raise RuntimeError("hostile mapping hook")
+
+        def __iter__(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("hostile mapping hook")
+
+        def __len__(self) -> int:
+            return 2
+
+    with pytest.raises(ValueError, match="could not be read"):
+        UPGDMemoryConfig.from_config(HostileMapping())
+    with pytest.raises(ValueError, match="list or tuple"):
+        UPGDMemoryConfig.from_config(
+            {"feature_dim": 4, "n_heads": 2, "hidden_sizes": "4"}
+        )
 
 
 def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
@@ -288,6 +330,27 @@ def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
         )
 
 
+def test_upgd_memory_scan_preflights_aggregate_working_set_without_allocation() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init(jax.random.key(0))
+
+    class HugeObservations:
+        shape = (10_000_000, 4)
+        dtype = jnp.float32
+
+    class HugeTargets:
+        shape = (10_000_000, 2)
+        dtype = jnp.float32
+
+    with pytest.raises(ValueError, match="working set"):
+        run_upgd_memory_arrays(
+            learner,
+            state,
+            HugeObservations(),  # type: ignore[arg-type]
+            HugeTargets(),  # type: ignore[arg-type]
+        )
+
+
 def test_upgd_memory_all_lifetime_counters_saturate() -> None:
     learner = UPGDMemoryLearner(_base_cfg())
     initial = learner.init(jax.random.key(0))
@@ -323,3 +386,21 @@ def test_upgd_memory_negative_adopted_counter_rolls_back() -> None:
     )
     assert not bool(result.update_applied)
     assert int(result.state.step_count) == -1
+
+
+def test_upgd_memory_finite_operation_overflow_rolls_back_atomically() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init(jax.random.key(7))
+    result = learner.update(
+        state,
+        jnp.zeros((4,), dtype=jnp.float32),
+        jnp.asarray([np.finfo(np.float32).max, 0.0], dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert jax.tree_util.tree_all(
+        jax.tree_util.tree_map(
+            lambda left, right: jnp.array_equal(left, right),
+            result.state,
+            state,
+        )
+    )
