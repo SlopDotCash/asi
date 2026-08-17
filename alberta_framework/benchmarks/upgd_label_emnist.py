@@ -125,6 +125,15 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 logger = logging.getLogger(__name__)
 
 LabelEMNISTLearner = Literal[
@@ -231,11 +240,12 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
 }
 
 
-def _validated_hyperparameter(name: str, value: object) -> float:
+def _validated_hyperparameter(name: object, value: object) -> float:
     """Validate one JSON override in its exact host and float32 execution domains."""
+    host_name = _require_exact_str("name", name)
     if type(value) not in (int, float):
-        raise ValueError(f"hyperparameter {name!r} must be a finite JSON number")
-    label = f"hyperparameter {name!r}"
+        raise ValueError(f"hyperparameter '{host_name}' must be a finite JSON number")
+    label = f"hyperparameter '{host_name}'"
     if name in {"step_size", "eps", "norm_epsilon"}:
         return validated_float32_scalar(label, value, positive=True)
     if name in {"utility_decay", "beta1", "beta2", "norm_decay"}:
@@ -340,9 +350,12 @@ class LabelEMNISTConfig:
 
     def __post_init__(self) -> None:
         for name in ("n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes"):
-            value = getattr(self, name)
+            host_name = _require_exact_str("name", name)
+            value = getattr(self, host_name)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise ValueError(f"{name} must be a positive integer, got {value!r}")
+                if type(value) is int and not isinstance(value, bool):
+                    raise ValueError(f"{host_name} must be a positive integer, got '{value}'")
+                raise ValueError(f"{host_name} must be a positive integer, got non-integer")
 
     @property
     def n_steps(self) -> int:
@@ -478,19 +491,20 @@ class LabelEMNISTRunResult:
 
 
 def resolve_hyperparameters(
-    learner: str, overrides: dict[str, float] | None = None
+    learner: object, overrides: dict[str, float] | None = None
 ) -> dict[str, float]:
     """Merge overrides into the learner's published defaults, rejecting unknown keys."""
-    if learner not in _LEARNER_DEFAULT_HYPERPARAMETERS:
+    host_learner = _require_exact_str("learner", learner)
+    if host_learner not in _LEARNER_DEFAULT_HYPERPARAMETERS:
         raise ValueError(
-            f"unknown learner {learner!r}; expected one of "
+            f"unknown learner '{host_learner}'; expected one of "
             f"{sorted(_LEARNER_DEFAULT_HYPERPARAMETERS)}"
         )
-    merged = dict(_LEARNER_DEFAULT_HYPERPARAMETERS[learner])
+    merged = dict(_LEARNER_DEFAULT_HYPERPARAMETERS[host_learner])
     if overrides:
         unknown = set(overrides) - set(merged)
         if unknown:
-            raise ValueError(f"unknown hyperparameters for {learner}: {sorted(unknown)}")
+            raise ValueError(f"unknown hyperparameters for '{host_learner}': {sorted(unknown)}")
         validated: dict[str, float] = {}
         for name, value in overrides.items():
             validated[name] = _validated_hyperparameter(name, value)
@@ -702,7 +716,7 @@ def load_emnist_balanced_train(
         return x, y, dict(cached_meta)
 
     try:
-        from sklearn.datasets import fetch_openml  # type: ignore[import-untyped]
+        from sklearn.datasets import fetch_openml  # type: ignore
     except ModuleNotFoundError as exc:  # pragma: no cover - environment dependent
         raise RuntimeError("scikit-learn is required to load OpenML EMNIST") from exc
 
@@ -915,8 +929,9 @@ def _strict_json_object(path: Path) -> dict[str, Any]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         parsed: dict[str, object] = {}
         for key, value in pairs:
-            if key in parsed:
-                raise ValueError(f"duplicate JSON key: {key!r}")
+            host_key = _require_exact_str("key", key)
+            if host_key in parsed:
+                raise ValueError(f"duplicate JSON key: '{host_key}'")
             parsed[key] = value
         return parsed
 
@@ -1045,8 +1060,12 @@ def _validated_partial(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
     if payload.get("plan_sha256") != plan["plan_sha256"]:
         raise ValueError(f"{path}: shard is bound to a different plan")
     learner = payload.get("learner")
-    if learner not in body["learner_ids"]:
-        raise ValueError(f"{path}: learner {learner!r} is not planned")
+    host_learner2 = learner if type(learner) is str else None
+    if host_learner2 is None or host_learner2 not in body["learner_ids"]:
+        if type(learner) is str:
+            host_l = _require_exact_str("learner", learner)
+            raise ValueError(f"{path}: learner '{host_l}' is not planned")
+        raise ValueError(f"{path}: learner is not an exact string and not planned")
     shard_hp = _validated_float_hyperparameters(
         payload.get("hyperparameters"), str(learner), context=str(path)
     )
@@ -1059,7 +1078,13 @@ def _validated_partial(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"{path}: hyperparameters differ from the plan")
     seed = require_jax_seed(payload.get("seed_id"), name=f"{path}: seed_id")
     if seed not in body["seed_ids"]:
-        raise ValueError(f"{path}: seed_id {seed!r} is not planned")
+        host_seed = payload.get("seed_id")
+        if type(host_seed) is int and not isinstance(host_seed, bool):
+            raise ValueError(f"{path}: seed_id '{host_seed}' is not planned")
+        if type(host_seed) is str:
+            host_s = _require_exact_str("seed_id", host_seed)
+            raise ValueError(f"{path}: seed_id '{host_s}' is not planned")
+        raise ValueError(f"{path}: seed_id is not planned")
     plan_config = {k: v for k, v in body["config"].items() if k != "n_steps"}
     if payload.get("config") != plan_config:
         raise ValueError(f"{path}: config differs from the plan")
@@ -1212,7 +1237,8 @@ def _cmd_shard(args: argparse.Namespace) -> None:
     plan = load_plan(args.plan)
     body = plan["plan"]
     if args.learner_id not in body["learner_ids"]:
-        raise SystemExit(f"learner {args.learner_id!r} is not planned")
+        host_lid = _require_exact_str("learner_id", args.learner_id)
+        raise SystemExit(f"learner '{host_lid}' is not planned")
     if args.seed_id not in body["seed_ids"]:
         raise SystemExit(f"seed {args.seed_id} is not planned")
     data_home = args.data_home if args.data_home is not None else default_openml_data_home()
