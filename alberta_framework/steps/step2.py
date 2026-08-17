@@ -162,17 +162,26 @@ _ACTUAL_FLOAT_TYPES = frozenset(
 _ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _require_exact_keys(
-    config_name: str,
-    payload: dict[str, object],
+    config_name: object,
+    payload: object,
     expected: frozenset[str],
 ) -> None:
+    host_config = _require_exact_str("config_name", config_name)
     if type(payload) is not dict:
-        raise ValueError(f"{config_name} payload must be an exact dict")
+        raise ValueError(f"{host_config} payload must be an exact dict")
     if any(type(key) is not str for key in payload):
-        raise ValueError(f"{config_name} payload keys must be exact strings")
+        raise ValueError(f"{host_config} payload keys must be exact strings")
     if set(payload) != expected:
-        raise ValueError(f"{config_name} payload keys must be exactly {sorted(expected)!r}")
+        raise ValueError(f"{host_config} payload keys must be exactly the expected keys")
 
 
 def _require_serialized_fields(
