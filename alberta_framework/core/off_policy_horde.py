@@ -97,6 +97,32 @@ def _preflight_nonlinear_state(*, n_demons: int, hidden_size: int, feature_dim: 
             raise ValueError(f"derived nonlinear Horde {name} must fit signed int32")
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Reject legacy or non-Threefry keys before random operations."""
+    if not isinstance(value, jax.Array) or tuple(value.shape) != ():
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    try:
+        implementation = str(jax.random.key_impl(value))
+        words = jax.random.key_data(value)
+    except Exception as error:
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if implementation != "threefry2x32" or tuple(words.shape) != (2,):
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    return value
+
+
+def _stable_l2_norm(*values: Array) -> Array:
+    """Compute a joint float32 L2 norm without squaring at the input scale."""
+    scale = jnp.asarray(0.0, dtype=jnp.float32)
+    for value in values:
+        scale = jnp.maximum(scale, jnp.max(jnp.abs(value), initial=0.0))
+    square_sum = jnp.asarray(0.0, dtype=jnp.float32)
+    for value in values:
+        normalized = jnp.where(scale > 0.0, value / scale, jnp.zeros_like(value))
+        square_sum = square_sum + jnp.sum(jnp.square(normalized))
+    return scale * jnp.sqrt(square_sum)
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so a 0*inf product cannot form."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -1072,6 +1098,7 @@ class NonlinearSharedGTDHordeLearner:
     def init(self, feature_dim: int, key: Array) -> NonlinearSharedGTDHordeState:
         """Initialize primary and secondary weights."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        key = _require_typed_threefry_key("key", key)
         _preflight_nonlinear_state(
             n_demons=self.n_demons,
             hidden_size=self._hidden_size,
@@ -1088,7 +1115,7 @@ class NonlinearSharedGTDHordeLearner:
             (self.n_demons, self._hidden_size),
             dtype=jnp.float32,
         )
-        return NonlinearSharedGTDHordeState(  # type: ignore[call-arg]
+        state = NonlinearSharedGTDHordeState(  # type: ignore[call-arg]
             trunk_w=trunk_w,
             trunk_b=jnp.zeros(self._hidden_size, dtype=jnp.float32),
             head_w=head_w,
@@ -1110,6 +1137,9 @@ class NonlinearSharedGTDHordeLearner:
             birth_timestamp=jnp.asarray(time.time(), dtype=jnp.float32),
             uptime_s=jnp.asarray(0.0, dtype=jnp.float32),
         )
+        if not bool(_floating_tree_is_finite(state)):
+            raise ValueError("initialized nonlinear Horde state must be finite")
+        return state
 
     def _validate_state_static_contract(self, state: NonlinearSharedGTDHordeState) -> int:
         """Return feature_dim after rejecting malformed adopted state metadata."""
@@ -1329,20 +1359,15 @@ class NonlinearSharedGTDHordeLearner:
             new_secondary_head_w.append(sec_head_w)
             new_secondary_head_b.append(sec_head_b)
             correction_norms.append(
-                jnp.sqrt(
-                    jnp.vdot(correction_trunk_w, correction_trunk_w)
-                    + jnp.vdot(correction_trunk_b, correction_trunk_b)
-                    + jnp.vdot(correction_head_w, correction_head_w)
-                    + correction_head_b**2
+                _stable_l2_norm(
+                    correction_trunk_w,
+                    correction_trunk_b,
+                    correction_head_w,
+                    correction_head_b,
                 )
             )
             secondary_norms.append(
-                jnp.sqrt(
-                    jnp.vdot(sec_trunk_w, sec_trunk_w)
-                    + jnp.vdot(sec_trunk_b, sec_trunk_b)
-                    + jnp.vdot(sec_head_w, sec_head_w)
-                    + sec_head_b**2
-                )
+                _stable_l2_norm(sec_trunk_w, sec_trunk_b, sec_head_w, sec_head_b)
             )
 
         proposed_state = state.replace(  # type: ignore[attr-defined]
@@ -1357,10 +1382,28 @@ class NonlinearSharedGTDHordeLearner:
             step_count=_saturating_int32_counter_increment(state.step_count),
         )
         candidate_state_finite = _floating_tree_is_finite(proposed_state)
+        correction_norms_array = jnp.stack(correction_norms)
+        secondary_norms_array = jnp.stack(secondary_norms)
+        reported_next_predictions = jnp.where(
+            zero_discount_mask, jnp.zeros_like(next_predictions), next_predictions
+        )
+        active_outputs_finite = jnp.all(
+            (~active_mask)
+            | (
+                jnp.isfinite(predictions)
+                & jnp.isfinite(reported_next_predictions)
+                & jnp.isfinite(td_targets)
+                & jnp.isfinite(td_errors)
+                & jnp.isfinite(clipped_rhos)
+                & jnp.isfinite(correction_norms_array)
+                & jnp.isfinite(secondary_norms_array)
+            )
+        )
         update_applied = (
             inputs_valid
             & source_state_finite
             & candidate_state_finite
+            & active_outputs_finite
             & (jnp.any(active_mask) | jnp.all(~requested))
         )
         head_updates_applied = effective_mask & update_applied
@@ -1371,15 +1414,33 @@ class NonlinearSharedGTDHordeLearner:
         )
         return NonlinearSharedGTDHordeUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            predictions=predictions,
-            next_predictions=jnp.where(
-                zero_discount_mask, jnp.zeros_like(next_predictions), next_predictions
+            predictions=jnp.where(
+                update_applied, predictions, jnp.zeros_like(predictions)
             ),
-            td_targets=td_targets,
-            td_errors=td_errors,
-            clipped_rhos=clipped_rhos,
-            correction_norms=jnp.stack(correction_norms),
-            secondary_norms=jnp.stack(secondary_norms),
+            next_predictions=jnp.where(
+                update_applied,
+                reported_next_predictions,
+                jnp.zeros_like(reported_next_predictions),
+            ),
+            td_targets=jnp.where(
+                update_applied, td_targets, jnp.zeros_like(td_targets)
+            ),
+            td_errors=jnp.where(
+                update_applied, td_errors, jnp.zeros_like(td_errors)
+            ),
+            clipped_rhos=jnp.where(
+                update_applied, clipped_rhos, jnp.zeros_like(clipped_rhos)
+            ),
+            correction_norms=jnp.where(
+                update_applied,
+                correction_norms_array,
+                jnp.zeros_like(correction_norms_array),
+            ),
+            secondary_norms=jnp.where(
+                update_applied,
+                secondary_norms_array,
+                jnp.zeros_like(secondary_norms_array),
+            ),
             head_updates_applied=head_updates_applied,
             update_applied=update_applied,
         )

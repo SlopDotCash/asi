@@ -645,7 +645,7 @@ def test_nonlinear_shared_gtd_horde_integer_validation() -> None:
     assert learner._hidden_size == 16
     assert type(learner._hidden_size) is int
 
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     with pytest.raises(ValueError, match="feature_dim"):
         learner.init(feature_dim=True, key=key)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="feature_dim"):
@@ -655,6 +655,8 @@ def test_nonlinear_shared_gtd_horde_integer_validation() -> None:
 
     state = learner.init(feature_dim=np.int32(4), key=key)
     assert state.trunk_w.shape == (16, 4)
+    with pytest.raises(ValueError, match="typed scalar"):
+        learner.init(feature_dim=4, key=jax.random.PRNGKey(0))
 
 
 def test_nonlinear_shared_gtd_horde_complete_scalar_and_schema_contract() -> None:
@@ -754,3 +756,61 @@ def test_nonlinear_shared_gtd_horde_terminal_next_and_ratio_domains() -> None:
     )
     assert not bool(rejected.update_applied)
     chex.assert_trees_all_equal(rejected.state, state)
+
+
+def test_nonlinear_shared_gtd_init_rejects_nonfinite_generated_state() -> None:
+    learner = NonlinearSharedGTDHordeLearner(
+        _spec(gammas=(0.0,)),
+        hidden_size=2,
+        init_scale=float(jnp.finfo(jnp.float32).max),
+    )
+    with pytest.raises(ValueError, match="initialized nonlinear Horde state"):
+        learner.init(2, jax.random.key(0))
+
+
+def test_nonlinear_shared_gtd_norms_are_stable_for_large_finite_state() -> None:
+    learner = NonlinearSharedGTDHordeLearner(
+        _spec(gammas=(0.0,)), hidden_size=2, secondary_step_size=1e-5
+    )
+    state = learner.init(2, jax.random.key(0)).replace(
+        secondary_trunk_w=jnp.full((1, 2, 2), 1e30, dtype=jnp.float32),
+        secondary_trunk_b=jnp.full((1, 2), 1e30, dtype=jnp.float32),
+        secondary_head_w=jnp.full((1, 2), 1e30, dtype=jnp.float32),
+        secondary_head_b=jnp.full((1,), 1e30, dtype=jnp.float32),
+    )
+    result = learner.update_with_ratios_and_discounts(
+        state,
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.zeros(1, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+        jnp.zeros(1, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result.correction_norms)
+    chex.assert_tree_all_finite(result.secondary_norms)
+
+
+def test_nonlinear_shared_gtd_rejection_neutralizes_complete_result() -> None:
+    learner = NonlinearSharedGTDHordeLearner(_spec(gammas=(1.0,)), hidden_size=2)
+    state = learner.init(2, jax.random.key(0))
+    poisoned = state.replace(trunk_w=jnp.full_like(state.trunk_w, jnp.inf))
+    result = learner.update_with_ratios_and_discounts(
+        poisoned,
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    for value in (
+        result.predictions,
+        result.next_predictions,
+        result.td_targets,
+        result.td_errors,
+        result.clipped_rhos,
+        result.correction_norms,
+        result.secondary_norms,
+    ):
+        chex.assert_trees_all_equal(value, jnp.zeros_like(value))
