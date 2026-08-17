@@ -6,6 +6,7 @@ from collections.abc import Iterator, Mapping
 from types import MappingProxyType
 from typing import Any
 
+import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -117,6 +118,14 @@ def _official(**overrides: Any) -> OfficialAdaUPGDConfig:
     }
     base.update(overrides)
     return OfficialAdaUPGDConfig(**base)
+
+
+def _floating_result_is_finite(result: object) -> bool:
+    return all(
+        bool(jnp.all(jnp.isfinite(leaf)))
+        for leaf in jax.tree.leaves(result)
+        if jnp.issubdtype(jnp.asarray(leaf).dtype, jnp.floating)
+    )
 
 
 def test_canonical_validators_accept_valid_values() -> None:
@@ -395,12 +404,12 @@ def test_canonical_normalization_fixed_by_profile() -> None:
 @pytest.mark.parametrize(
     ("optimizer", "bytes_per_scalar", "fixed_bytes"),
     [
-        (CanonicalUPGD(), 24, 33),
-        (AlbertaAdaUPGD(), 32, 50),
-        (OfficialAdaUPGD(), 36, 24),
+        (CanonicalUPGD(), 96, 128),
+        (AlbertaAdaUPGD(), 140, 128),
+        (OfficialAdaUPGD(), 140, 128),
     ],
 )
-def test_production_init_preflights_complete_update_result_before_conversion(
+def test_production_init_preflights_complete_working_set_before_conversion(
     optimizer: object, bytes_per_scalar: int, fixed_bytes: int
 ) -> None:
     last_legal = (_INT32_MAX - fixed_bytes) // bytes_per_scalar
@@ -410,7 +419,7 @@ def test_production_init_preflights_complete_update_result_before_conversion(
     assert legal.conversion_calls == 1
 
     oversized = _MetadataOnlyArray(last_legal + 1)
-    with pytest.raises(ValueError, match="derived .* update_result_nbytes"):
+    with pytest.raises(ValueError, match="derived .* working_set_nbytes"):
         optimizer.init({"w": oversized})  # type: ignore[attr-defined]
     assert oversized.conversion_calls == 0
 
@@ -494,3 +503,62 @@ def test_hostile_string_hooks_are_not_invoked() -> None:
         _alberta(profile=hostile)
     with pytest.raises(ValueError, match="profile"):
         _official(profile=hostile)
+
+
+def test_safe_canonical_operation_overflow_rolls_back_atomically() -> None:
+    maximum = np.finfo(np.float32).max
+    params = {"w": jnp.asarray([maximum], dtype=jnp.float32)}
+    gradients = {"w": jnp.asarray([-maximum], dtype=jnp.float32)}
+    noise = {"w": jnp.zeros((1,), dtype=jnp.float32)}
+    optimizer = CanonicalUPGD(
+        CanonicalUPGDConfig(
+            utility_decay=0.0,
+            noise_std=0.0,
+            profile="safe_extended",
+            normalization="global",
+        )
+    )
+    state = optimizer.init(params)
+    key = jr.key(11)
+    result = optimizer.update(state, params, gradients, key, noise=noise)
+    assert not bool(result.metrics["update_applied"])
+    chex.assert_trees_all_equal(result.params, params)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(jr.key_data(result.next_key), jr.key_data(key))
+    assert _floating_result_is_finite(result)
+
+
+def test_alberta_float64_metric_narrowing_overflow_rolls_back() -> None:
+    with jax.enable_x64():
+        maximum32 = float(np.finfo(np.float32).max)
+        params = {"w": jnp.asarray([maximum32 * 2.0], dtype=jnp.float64)}
+        gradients = {"w": jnp.asarray([-1.0], dtype=jnp.float64)}
+        noise = {"w": jnp.zeros((1,), dtype=jnp.float64)}
+        optimizer = AlbertaAdaUPGD(
+            AlbertaAdaUPGDConfig(
+                utility_decay=0.0,
+                second_moment_decay=0.0,
+                noise_std=0.0,
+                normalization="global",
+            )
+        )
+        state = optimizer.init(params)
+        key = jr.key(12)
+        result = optimizer.update(state, params, gradients, key, noise=noise)
+        assert not bool(result.accepted)
+        chex.assert_trees_all_equal(result.params, params)
+        chex.assert_trees_all_equal(result.state, state)
+        chex.assert_trees_all_equal(jr.key_data(result.next_key), jr.key_data(key))
+        assert _floating_result_is_finite(result)
+
+
+def test_official_counter_saturates_without_changing_source_equations() -> None:
+    params = {"w": jnp.ones((1,), dtype=jnp.float32)}
+    gradients = {"w": jnp.ones((1,), dtype=jnp.float32)}
+    noise = {"w": jnp.zeros((1,), dtype=jnp.float32)}
+    optimizer = OfficialAdaUPGD()
+    state = optimizer.init(params).replace(  # type: ignore[attr-defined]
+        step=jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    )
+    result = optimizer.update(state, params, gradients, jr.key(13), noise=noise)
+    assert int(result.state.step) == _INT32_MAX

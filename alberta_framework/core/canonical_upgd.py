@@ -235,6 +235,8 @@ def _parameter_arrays(
     owner: str,
     persistent_nbytes: Callable[[int, int], int],
     update_nbytes: Callable[[int, int], int],
+    working_scalars: Callable[[int], int],
+    working_nbytes: Callable[[int, int], int],
 ) -> tuple[list[Array], jax.tree_util.PyTreeDef, _ParameterResources]:
     leaves, structure = _flatten_with_none(params)
     if not leaves or any(value is None for value in leaves):
@@ -248,6 +250,8 @@ def _parameter_arrays(
         ("parameter_count", scalars),
         ("persistent_state_nbytes", persistent_nbytes(scalars, nbytes)),
         ("update_result_nbytes", update_nbytes(scalars, nbytes)),
+        ("working_set_scalars", working_scalars(scalars)),
+        ("working_set_nbytes", working_nbytes(scalars, nbytes)),
     ):
         if amount > _INT32_MAX:
             raise ValueError(f"derived {owner} {resource_name} must fit signed int32")
@@ -302,6 +306,16 @@ def _saturating_increment(value: Array, increment: Array | int = 1) -> Array:
         value + increment_array,
         maximum,
     )
+
+
+def _floating_leaves_are_finite(*trees: Any) -> Array:
+    valid = jnp.asarray(True, dtype=jnp.bool_)
+    for tree in trees:
+        for leaf in jax.tree.leaves(tree):
+            array = jnp.asarray(leaf)
+            if jnp.issubdtype(array.dtype, jnp.floating):
+                valid = valid & jnp.all(jnp.isfinite(array))
+    return valid
 
 
 @dataclass(frozen=True)
@@ -549,6 +563,8 @@ class CanonicalUPGD:
             persistent_nbytes=lambda scalars, nbytes: nbytes + 4 * scalars + 4,
             # params, state, three diagnostic trees, key, and six metrics.
             update_nbytes=lambda scalars, nbytes: 5 * nbytes + 4 * scalars + 33,
+            working_scalars=lambda scalars: 22 * scalars + 32,
+            working_nbytes=lambda scalars, nbytes: 23 * nbytes + 4 * scalars + 128,
         )
 
     @staticmethod
@@ -839,8 +855,9 @@ class CanonicalUPGD:
             new_param_leaves: list[Array] = []
             gate_leaves: list[Array] = []
             perturbation_leaves: list[Array] = []
-            gate_sum = jnp.array(0.0, dtype=jnp.float32)
-            utility_sum = jnp.array(0.0, dtype=jnp.float32)
+            mean_gate = jnp.array(0.0, dtype=jnp.float32)
+            mean_utility = jnp.array(0.0, dtype=jnp.float32)
+            count_floor = jnp.maximum(eligible_count, 1.0)
 
             for (
                 param,
@@ -888,22 +905,24 @@ class CanonicalUPGD:
                 candidate = decayed - direction_step * direction
                 updated = jnp.where(finite, candidate, param)
 
-                gate_sum = gate_sum + jnp.sum(gate.astype(jnp.float32))
-                utility_sum = utility_sum + jnp.sum(
+                mean_gate = mean_gate + jnp.sum(
+                    gate.astype(jnp.float32) / count_floor
+                )
+                mean_utility = mean_utility + jnp.sum(
                     jnp.where(active, jnp.abs(corrected), 0.0).astype(jnp.float32)
+                    / count_floor
                 )
 
                 new_param_leaves.append(updated)
                 gate_leaves.append(gate)
                 perturbation_leaves.append(perturbation)
 
-            count_floor = jnp.maximum(eligible_count, 1.0)
             proposed_state = CanonicalUPGDState(  # type: ignore[call-arg]
                 utility_ema=jax.tree_util.tree_unflatten(structure, new_utility_leaves),
                 utility_age=jax.tree_util.tree_unflatten(structure, new_age_leaves),
                 step=next_step,
             )
-            return CanonicalUPGDUpdate(  # type: ignore[call-arg]
+            proposed_result = CanonicalUPGDUpdate(  # type: ignore[call-arg]
                 params=jax.tree_util.tree_unflatten(structure, new_param_leaves),
                 state=proposed_state,
                 next_key=next_key,
@@ -916,12 +935,34 @@ class CanonicalUPGD:
                 ),
                 metrics={
                     "update_applied": jnp.asarray(True, dtype=jnp.bool_),
-                    "mean_scaled_utility": gate_sum / count_floor,
-                    "mean_absolute_utility": utility_sum / count_floor,
+                    "mean_scaled_utility": mean_gate,
+                    "mean_absolute_utility": mean_utility,
                     "global_maximum_utility": global_maximum,
                     "eligible_parameter_count": eligible_count,
                     "nonfinite_or_missing_count": nonfinite_count,
                 },
+            )
+            if self._config.profile != "safe_extended":
+                return proposed_result
+            finite_payload = _floating_leaves_are_finite(
+                proposed_result.params,
+                proposed_result.state,
+                proposed_result.scaled_utility,
+                proposed_result.corrected_utility,
+                proposed_result.perturbation,
+                mean_gate,
+                mean_utility,
+            )
+            if self._config.resolved_normalization == "global":
+                finite_payload = finite_payload & jnp.isfinite(global_maximum)
+            return cast(
+                CanonicalUPGDUpdate,
+                jax.lax.cond(
+                    finite_payload,
+                    lambda _: proposed_result,
+                    reject_update,
+                    operand=None,
+                ),
             )
 
         def reject_update(_: None) -> CanonicalUPGDUpdate:
@@ -1229,6 +1270,8 @@ class AlbertaAdaUPGD:
             persistent_nbytes=lambda scalars, nbytes: 2 * nbytes + 4 * scalars + 4,
             # params, state, four diagnostics, key/accepted, and ten metrics.
             update_nbytes=lambda scalars, nbytes: 7 * nbytes + 4 * scalars + 50,
+            working_scalars=lambda scalars: 33 * scalars + 32,
+            working_nbytes=lambda scalars, nbytes: 34 * nbytes + 4 * scalars + 128,
         )
         return arrays, structure
 
@@ -1631,12 +1674,50 @@ class AlbertaAdaUPGD:
             ),
             step=proposed_step,
         )
+        eligible_count = sum(
+            (
+                jnp.sum(eligible.astype(jnp.int32), dtype=jnp.int32)
+                for eligible in eligible_leaves
+            ),
+            start=jnp.asarray(0, dtype=jnp.int32),
+        )
+        count_floor = jnp.maximum(eligible_count.astype(jnp.float32), 1.0)
+        mean_gate = sum(
+            (
+                jnp.sum(gate.astype(jnp.float32) / count_floor)
+                for gate in gate_leaves
+            ),
+            start=jnp.asarray(0.0, dtype=jnp.float32),
+        )
+        mean_utility = sum(
+            (
+                jnp.sum(
+                    jnp.where(eligible, jnp.abs(corrected), 0.0).astype(jnp.float32)
+                    / count_floor
+                )
+                for corrected, eligible in zip(
+                    corrected_leaves, eligible_leaves, strict=True
+                )
+            ),
+            start=jnp.asarray(0.0, dtype=jnp.float32),
+        )
         candidate_is_valid = self.state_valid(proposed_state, proposed_params)
+        diagnostics_are_valid = _floating_leaves_are_finite(
+            corrected_leaves,
+            denominator_leaves,
+            gate_leaves,
+            perturbation_leaves,
+            mean_gate,
+            mean_utility,
+        )
+        if self._config.normalization == "global":
+            diagnostics_are_valid = diagnostics_are_valid & jnp.isfinite(global_maximum)
         accepted = (
             state_is_valid
             & capacity_available
             & input_is_valid
             & candidate_is_valid
+            & diagnostics_are_valid
         )
         committed_params = _adaupgd_select_tree(accepted, proposed_params, params)
         committed_state = _adaupgd_select_tree(accepted, proposed_state, state)
@@ -1667,30 +1748,7 @@ class AlbertaAdaUPGD:
             jax.tree_util.tree_unflatten(structure, perturbation_leaves),
             zero_tree,
         )
-        eligible_count = sum(
-            (
-                jnp.sum(eligible.astype(jnp.int32), dtype=jnp.int32)
-                for eligible in eligible_leaves
-            ),
-            start=jnp.asarray(0, dtype=jnp.int32),
-        )
         parameter_count = sum(param.size for param in param_leaves)
-        gate_sum = sum(
-            (jnp.sum(gate.astype(jnp.float32)) for gate in gate_leaves),
-            start=jnp.asarray(0.0, dtype=jnp.float32),
-        )
-        utility_sum = sum(
-            (
-                jnp.sum(jnp.where(eligible, jnp.abs(corrected), 0.0)).astype(
-                    jnp.float32
-                )
-                for corrected, eligible in zip(
-                    corrected_leaves, eligible_leaves, strict=True
-                )
-            ),
-            start=jnp.asarray(0.0, dtype=jnp.float32),
-        )
-        count_floor = jnp.maximum(eligible_count.astype(jnp.float32), 1.0)
         reported_global_maximum = jnp.where(
             accepted & (self._config.normalization == "global"),
             global_maximum,
@@ -1707,12 +1765,8 @@ class AlbertaAdaUPGD:
             perturbation=perturbation,
             metrics={
                 "accepted": accepted,
-                "mean_scaled_utility": jnp.where(
-                    accepted, gate_sum / count_floor, 0.0
-                ),
-                "mean_absolute_utility": jnp.where(
-                    accepted, utility_sum / count_floor, 0.0
-                ),
+                "mean_scaled_utility": jnp.where(accepted, mean_gate, 0.0),
+                "mean_absolute_utility": jnp.where(accepted, mean_utility, 0.0),
                 "global_maximum_utility": reported_global_maximum,
                 "eligible_parameter_count": eligible_count,
                 "parameter_count": jnp.asarray(parameter_count, dtype=jnp.int32),
@@ -1961,6 +2015,8 @@ class OfficialAdaUPGD:
             persistent_nbytes=lambda _scalars, nbytes: 3 * nbytes + 4,
             # params, state, five diagnostics, key, and three metrics.
             update_nbytes=lambda _scalars, nbytes: 9 * nbytes + 24,
+            working_scalars=lambda scalars: 33 * scalars + 32,
+            working_nbytes=lambda scalars, nbytes: 34 * nbytes + 4 * scalars + 128,
         )
         return arrays, structure
 
@@ -2119,7 +2175,7 @@ class OfficialAdaUPGD:
         split_keys = jr.split(checked_key, len(param_leaves) + 1)
         next_key = split_keys[0]
         noise_keys = split_keys[1:]
-        next_step = state.step + jnp.asarray(1, dtype=jnp.int32)
+        next_step = _saturating_increment(state.step)
         proposed_utility_leaves: list[Array] = []
         proposed_first_leaves: list[Array] = []
         proposed_second_leaves: list[Array] = []
