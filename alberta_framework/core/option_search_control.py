@@ -174,17 +174,17 @@ class OptionSearchControlResourceBudget:
         object.__setattr__(
             self,
             "n_options",
-            _require_int32("n_options", self.n_options, minimum=0),
+            _require_int32("n_options", self.n_options, minimum=1),
         )
         object.__setattr__(
             self,
             "observation_dim",
-            _require_int32("observation_dim", self.observation_dim, minimum=0),
+            _require_int32("observation_dim", self.observation_dim, minimum=1),
         )
         object.__setattr__(
             self,
             "backup_budget",
-            _require_int32("backup_budget", self.backup_budget, minimum=0),
+            _require_int32("backup_budget", self.backup_budget, minimum=1),
         )
         object.__setattr__(
             self,
@@ -272,6 +272,32 @@ class OptionSearchControlResourceBudget:
                 minimum=0,
             ),
         )
+        candidate_slots = self.n_options * self.backup_budget
+        diagnostic_bytes = (
+            4 * self.observation_dim
+            + 18
+            + 4 * self.n_options
+            + 16 * candidate_slots
+            + 19 * self.backup_budget
+            + 4
+        )
+        expected = {
+            "persistent_state_bytes": 0,
+            "rng_draws_per_call": 0,
+            "candidate_values_per_evaluation": self.n_options,
+            "max_candidate_evaluations_per_call": candidate_slots,
+            "max_base_learner_updates_per_call": self.backup_budget,
+            "max_model_matrix_vector_products_per_call": candidate_slots,
+            "max_base_value_forward_calls_per_call": (
+                self.n_options + 2
+            ) * self.backup_budget,
+            "max_base_value_backward_calls_per_call": self.backup_budget,
+            "stomp_self_audits_per_call": 1,
+            "max_diagnostic_payload_bytes_per_call": diagnostic_bytes,
+        }
+        for name, value in expected.items():
+            if getattr(self, name) != value:
+                raise ValueError(f"{name} does not match the option-search implementation")
 
     def to_config(self) -> dict[str, int]:
         """Return the exact JSON-compatible logical resource record."""
@@ -397,6 +423,8 @@ class OptionSearchControl:
     ) -> None:
         self._agent = stomp_agent
         self._config = config or OptionSearchControlConfig()
+        if self._agent.config.n_options < 1:
+            raise ValueError("option search control requires at least one option")
         candidate_slots = self._agent.config.n_options * self._config.backup_budget
         if candidate_slots > _MAX_CANDIDATE_DIAGNOSTIC_SLOTS:
             raise ValueError(

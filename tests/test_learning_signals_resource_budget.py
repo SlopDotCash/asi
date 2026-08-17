@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 
 import pytest
 
 from alberta_framework.core.learning_signals import LearningSignalResourceBudget
+
+
+class _HostileInt(int):
+    def __index__(self) -> int:
+        raise AssertionError("hostile index hook executed")
 
 
 def _legal_budget() -> LearningSignalResourceBudget:
@@ -71,3 +77,26 @@ def test_learning_signals_resource_budget_rejects_leftover_identities() -> None:
     assert '"input_float_scalars_per_step": true' not in dumped
     assert '"trainable_scalars": true' not in dumped
     assert '"persistent_state_bytes": true' not in dumped
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "persistent_float32_scalars",
+        "persistent_int32_scalars",
+        "persistent_state_scalars",
+        "persistent_state_bytes",
+        "output_float32_scalars",
+        "output_bool_scalars",
+        "output_logical_bytes",
+        "trainable_scalars",
+    ],
+)
+def test_learning_signal_budget_requires_exact_derived_identity(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        dataclasses.replace(_legal_budget(), **{field: getattr(_legal_budget(), field) + 1})
+
+
+def test_learning_signal_budget_rejects_hostile_integer_subclass_without_hook() -> None:
+    with pytest.raises(ValueError, match="input_float_scalars_per_step"):
+        dataclasses.replace(_legal_budget(), input_float_scalars_per_step=_HostileInt(15))

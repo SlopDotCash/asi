@@ -136,6 +136,10 @@ def test_config_is_strict_and_resource_budget_is_explicit() -> None:
             OptionSearchControlConfig(backup_budget=4_096),
         )
 
+    empty_agent = STOMPAgent(_stomp_config(n_options=0))
+    with pytest.raises(ValueError, match="at least one option"):
+        OptionSearchControl(empty_agent)
+
 
 def test_option_search_control_is_exported_from_public_namespaces() -> None:
     assert alberta_framework.OptionSearchControl is OptionSearchControl
