@@ -45,6 +45,7 @@ from alberta_framework.core.temporal_context import (
 )
 from alberta_framework.core.upgd import UPGDLearner, run_upgd_arrays
 from alberta_framework.core.upgd_memory import UPGDMemoryConfig, UPGDMemoryLearner
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 from alberta_framework.streams.out_of_class import (
     CompositionalStream,
     FrequencyMismatchStream,
@@ -669,6 +670,11 @@ class Step2SmokeResult:
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
         object.__setattr__(
             self,
+            "metrics_shape",
+            require_step_shape("metrics_shape", self.metrics_shape, steps=self.steps),
+        )
+        object.__setattr__(
+            self,
             "final_window_mse",
             _require_real("final_window_mse", self.final_window_mse),
         )
@@ -700,6 +706,11 @@ class Step2AssociativeSmokeResult:
             self, "steps", _require_int("steps", self.steps, minimum=1, maximum=_INT32_MAX)
         )
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        object.__setattr__(
+            self,
+            "metrics_shape",
+            require_step_shape("metrics_shape", self.metrics_shape, steps=self.steps),
+        )
         object.__setattr__(
             self,
             "initial_window_nll",

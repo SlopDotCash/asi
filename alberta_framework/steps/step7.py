@@ -72,6 +72,7 @@ from alberta_framework.steps._float32_validation import (
     canonical_float32_storage,
     finite_real_and_float32,
 )
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 from alberta_framework.steps.step6 import (
     Step6DifferentialSARSAConfig,
     make_step6_differential_sarsa_agent,
@@ -359,6 +360,19 @@ class Step7SmokeResult:
             self, "steps", _require_int("steps", self.steps, minimum=1, maximum=_INT32_MAX)
         )
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        for name in (
+            "real_td_errors_shape",
+            "planning_td_errors_shape",
+            "planning_priorities_shape",
+            "planning_anchor_indices_shape",
+            "planning_importance_ratios_shape",
+            "actions_shape",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                require_step_shape(name, getattr(self, name), steps=self.steps),
+            )
         object.__setattr__(self, "finite", _require_bool("finite", self.finite))
         object.__setattr__(
             self,

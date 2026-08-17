@@ -53,6 +53,10 @@ from alberta_framework.core.ftl_world_model import (
     SparseFTLWorldModelState,
     run_sparse_ftl_world_model,
 )
+from alberta_framework.evaluation._measurement_validation import (
+    finite_real,
+    validate_interval_bounds,
+)
 
 CONDITION_NAMES = (
     "sparse_untrained",
@@ -104,16 +108,6 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 
 def _require_uint32(name: str, value: object) -> int:
     return _require_int32(name, value, minimum=0, maximum=_UINT32_MAX)
-
-
-def _finite_real(name: str, value: object) -> float:
-    """Reject leftover bool and non-finite identities without narrowing."""
-    if type(value) is bool or type(value) not in (int, float):
-        raise ValueError(f"{name} must be a finite real number")
-    numeric = float(cast("int | float", value))
-    if not math.isfinite(numeric):
-        raise ValueError(f"{name} must be a finite real number")
-    return numeric
 
 
 def _require_derived_int32(name: str, value: int) -> int:
@@ -333,7 +327,7 @@ class DecisionMetrics:
             "return_mae",
             "normalized_return_mae",
         ):
-            object.__setattr__(self, name, _finite_real(name, getattr(self, name)))
+            object.__setattr__(self, name, finite_real(name, getattr(self, name)))
 
 
 @dataclass(frozen=True)
@@ -360,13 +354,13 @@ class BootstrapEstimate:
     sample_size: int
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "estimate", _finite_real("estimate", self.estimate))
-        object.__setattr__(self, "lower", _finite_real("lower", self.lower))
-        object.__setattr__(self, "upper", _finite_real("upper", self.upper))
+        object.__setattr__(self, "estimate", finite_real("estimate", self.estimate))
+        object.__setattr__(self, "lower", finite_real("lower", self.lower))
+        object.__setattr__(self, "upper", finite_real("upper", self.upper))
         object.__setattr__(
             self,
             "confidence_level",
-            _finite_real("confidence_level", self.confidence_level),
+            finite_real("confidence_level", self.confidence_level),
         )
         object.__setattr__(
             self,
@@ -377,6 +371,11 @@ class BootstrapEstimate:
             self,
             "sample_size",
             _require_int32("sample_size", self.sample_size, minimum=1),
+        )
+        validate_interval_bounds(
+            lower=self.lower,
+            upper=self.upper,
+            confidence_level=self.confidence_level,
         )
 
 

@@ -212,3 +212,27 @@ def test_condition_seed_and_report_reject_leftover_identities() -> None:
     )
     assert report.seeds == (8,)
     assert report.wall_time_seconds_by_condition[CONDITION_PRIMARY] == 1.25
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "phase_squared_error_sum",
+        "early_squared_error_sum",
+        "tail_squared_error_sum",
+        "asymptotic_squared_error_sum",
+    ),
+)
+def test_phase_window_record_rejects_negative_squared_error_sums(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        _legal_phase(**{field: -0.001})
+
+
+def test_scale_report_rejects_negative_wall_time() -> None:
+    with pytest.raises(ValueError, match="wall_time_seconds_by_condition"):
+        ScaleRobustFeatureReport(
+            seeds=(8,),
+            records=(),
+            memory_by_condition={},
+            wall_time_seconds_by_condition={CONDITION_PRIMARY: -0.001},
+        )

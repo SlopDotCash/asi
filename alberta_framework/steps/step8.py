@@ -47,6 +47,7 @@ from alberta_framework.steps._float32_validation import (
     canonical_float32_storage,
     finite_real_and_float32,
 )
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 
 @dataclass(frozen=True)
@@ -234,6 +235,17 @@ class Step8SmokeResult:
             self, "steps", _require_int("steps", self.steps, minimum=1, maximum=_INT32_MAX)
         )
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        for name in (
+            "reward_predictions_shape",
+            "next_observation_predictions_shape",
+            "reward_errors_shape",
+            "next_observation_errors_shape",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                require_step_shape(name, getattr(self, name), steps=self.steps),
+            )
         object.__setattr__(self, "finite", _require_bool("finite", self.finite))
 
     def to_dict(self) -> dict[str, object]:

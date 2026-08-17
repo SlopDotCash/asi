@@ -40,6 +40,7 @@ from alberta_framework.core.optimizers import (
     Autostep,
     AutostepGTDLambda,
 )
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 from alberta_framework.streams.alberta_plan_step1 import (
     AlbertaPlanStep1Stream,
     XDistShiftStream,
@@ -278,6 +279,11 @@ class Step1SmokeResult:
             self, "steps", _require_int("steps", self.steps, minimum=1, maximum=_INT32_MAX)
         )
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        object.__setattr__(
+            self,
+            "metrics_shape",
+            require_step_shape("metrics_shape", self.metrics_shape, steps=self.steps),
+        )
         object.__setattr__(
             self,
             "final_window_mse",

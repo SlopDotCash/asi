@@ -24,7 +24,7 @@ import math
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, cast
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -37,6 +37,7 @@ from alberta_framework._seed_validation import require_unique_jax_seeds
 from alberta_framework.core.interaction_features import (
     FixedBudgetInteractionLearner,
 )
+from alberta_framework.evaluation._measurement_validation import nonnegative_finite_real
 from alberta_framework.streams.gauntlet import (
     SEGMENT_NAMES,
     GauntletConfig,
@@ -218,21 +219,11 @@ def _nonnegative_int(value: object, *, name: str) -> int:
 def _optional_finite_float(value: object, *, name: str) -> float | None:
     if value is None:
         return None
-    if type(value) is bool or type(value) not in (int, float):
-        raise ValueError(f"{name} must be a finite real number or None")
-    numeric = float(cast("int | float", value))
-    if not math.isfinite(numeric):
-        raise ValueError(f"{name} must be a finite real number or None")
-    return numeric
+    return nonnegative_finite_real(name, value)
 
 
 def _finite_float(value: object, *, name: str) -> float:
-    if type(value) is bool or type(value) not in (int, float):
-        raise ValueError(f"{name} must be a finite real number")
-    numeric = float(cast("int | float", value))
-    if not math.isfinite(numeric):
-        raise ValueError(f"{name} must be a finite real number")
-    return numeric
+    return nonnegative_finite_real(name, value)
 
 
 def _integer_pairs(

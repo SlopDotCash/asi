@@ -742,6 +742,29 @@ def test_condition_timing_rejects_leftover_identities() -> None:
     assert '"wall_seconds": true' not in dumped
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"lower": 0.3, "upper": 0.2},
+        {"confidence_level": 0.0},
+        {"confidence_level": 1.0},
+    ),
+)
+def test_paired_bootstrap_interval_enforces_schema_invariants(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _legal_interval(**overrides)
+
+
+@pytest.mark.parametrize("value", (-1.0, -0.001))
+def test_condition_timing_rejects_negative_measurements(value: float) -> None:
+    with pytest.raises(ValueError, match="wall_seconds"):
+        ConditionTiming(value, 0.0)
+    with pytest.raises(ValueError, match="mean_step_latency_ms"):
+        ConditionTiming(0.0, value)
+
+
 def test_bootstrap_and_run_work_preflights_fire_before_large_allocations() -> None:
     with pytest.raises(ValueError, match="bootstrap_draw_count"):
         paired_bootstrap_mean_interval(

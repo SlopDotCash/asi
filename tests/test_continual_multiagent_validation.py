@@ -340,3 +340,26 @@ def test_timing_metrics_reject_leftover_identities() -> None:
     dumped = json.dumps({"wall_seconds": timing.wall_seconds}, allow_nan=False)
     assert '"wall_seconds": 1.25' in dumped
     assert '"wall_seconds": true' not in dumped
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"lower": 0.3, "upper": 0.2},
+        {"confidence_level": 0.0},
+        {"confidence_level": 1.0},
+    ),
+)
+def test_bootstrap_interval_enforces_schema_invariants(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _legal_interval(**overrides)
+
+
+@pytest.mark.parametrize("field", range(4))
+def test_timing_metrics_reject_negative_measurements(field: int) -> None:
+    values = [0.0, 0.0, 0.0, 0.0]
+    values[field] = -0.001
+    with pytest.raises(ValueError):
+        TimingMetrics(*values)

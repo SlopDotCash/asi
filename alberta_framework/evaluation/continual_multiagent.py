@@ -32,7 +32,6 @@ solution.  All updates are predict-act-observe-update and use no replay.
 
 from __future__ import annotations
 
-import math
 import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -47,6 +46,11 @@ from jax import Array
 from numpy.typing import NDArray
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.evaluation._measurement_validation import (
+    finite_real,
+    nonnegative_finite_real,
+    validate_interval_bounds,
+)
 from alberta_framework.streams.recurring_multiagent import (
     AVOID_CONTEXT,
     AVOID_CONTEXT_INDEX,
@@ -105,16 +109,6 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 
 def _require_uint32(name: str, value: object) -> int:
     return _require_int32(name, value, minimum=0, maximum=_UINT32_MAX)
-
-
-def _finite_real(name: str, value: object) -> float:
-    """Reject leftover bool and non-finite identities without narrowing."""
-    if type(value) is bool or type(value) not in (int, float):
-        raise ValueError(f"{name} must be a finite real number")
-    numeric = float(cast("int | float", value))
-    if not math.isfinite(numeric):
-        raise ValueError(f"{name} must be a finite real number")
-    return numeric
 
 
 def _require_seed(value: object) -> int:
@@ -350,7 +344,11 @@ class TimingMetrics:
             "mean_update_latency_ms",
             "p95_update_latency_ms",
         ):
-            object.__setattr__(self, name, _finite_real(name, getattr(self, name)))
+            object.__setattr__(
+                self,
+                name,
+                nonnegative_finite_real(name, getattr(self, name)),
+            )
 
 
 @dataclass(frozen=True)
@@ -366,13 +364,13 @@ class BootstrapInterval:
     method: str = "paired-percentile-bootstrap"
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "estimate", _finite_real("estimate", self.estimate))
-        object.__setattr__(self, "lower", _finite_real("lower", self.lower))
-        object.__setattr__(self, "upper", _finite_real("upper", self.upper))
+        object.__setattr__(self, "estimate", finite_real("estimate", self.estimate))
+        object.__setattr__(self, "lower", finite_real("lower", self.lower))
+        object.__setattr__(self, "upper", finite_real("upper", self.upper))
         object.__setattr__(
             self,
             "confidence_level",
-            _finite_real("confidence_level", self.confidence_level),
+            finite_real("confidence_level", self.confidence_level),
         )
         object.__setattr__(
             self,
@@ -386,6 +384,11 @@ class BootstrapInterval:
         )
         if type(self.method) is not str or not self.method:
             raise ValueError("method must be a non-empty string")
+        validate_interval_bounds(
+            lower=self.lower,
+            upper=self.upper,
+            confidence_level=self.confidence_level,
+        )
 
 
 @dataclass(frozen=True)

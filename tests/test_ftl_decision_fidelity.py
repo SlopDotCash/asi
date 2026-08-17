@@ -498,3 +498,18 @@ def test_decision_metrics_reject_leftover_identities() -> None:
     dumped = json.dumps({"normalized_regret": metrics.normalized_regret}, allow_nan=False)
     assert '"normalized_regret": 0.1' in dumped
     assert '"normalized_regret": true' not in dumped
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"lower": 0.3, "upper": 0.2},
+        {"confidence_level": 0.0},
+        {"confidence_level": 1.0},
+    ),
+)
+def test_bootstrap_estimate_enforces_schema_invariants(
+    overrides: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        _legal_interval(**overrides)

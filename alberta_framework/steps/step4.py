@@ -51,6 +51,7 @@ from alberta_framework.steps._float32_validation import (
     canonical_float32_storage,
     finite_real_and_float32,
 )
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 Step4OptimizerName = Literal["lms", "idbd", "autostep"]
 Step4BounderName = Literal["none", "obgd"]
@@ -122,6 +123,12 @@ class Step4SmokeResult:
     def __post_init__(self) -> None:
         object.__setattr__(self, "steps", _require_positive_int("steps", self.steps))
         object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        for name in ("q_values_shape", "td_errors_shape", "actions_shape"):
+            object.__setattr__(
+                self,
+                name,
+                require_step_shape(name, getattr(self, name), steps=self.steps),
+            )
         object.__setattr__(self, "finite", _require_bool("finite", self.finite))
 
     def to_dict(self) -> dict[str, object]:
