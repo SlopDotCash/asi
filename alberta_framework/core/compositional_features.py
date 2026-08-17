@@ -36,6 +36,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, PRNGKeyArray
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.future_utility import (
     bias_correct_future_utility,
     canonical_float32_ema_decay,
@@ -78,6 +79,12 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_choice(name: str, value: object, choices: frozenset[str]) -> str:
+    if type(value) is not str or value not in choices:
+        raise ValueError(f"{name} is unsupported")
+    return value
 
 
 def _selector_state_nbytes(n_candidates: int) -> int:
@@ -516,22 +523,29 @@ class FiniteCandidateSelector:
         n_candidates = _require_int32("n_candidates", n_candidates, minimum=1)
         if _selector_state_nbytes(n_candidates) > _INT32_MAX:
             raise ValueError("finite candidate selector state bytes must fit signed int32")
-        if learning_rate <= 0.0:
-            raise ValueError("learning_rate must be positive")
-        if not 0.0 <= exploration < 1.0:
-            raise ValueError("exploration must be in [0, 1)")
+        learning_rate = validated_float32_scalar(
+            "learning_rate", learning_rate, positive=True
+        )
+        exploration = validated_float32_scalar(
+            "exploration", exploration, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        loss_lower_bound = validated_float32_scalar("loss_lower_bound", loss_lower_bound)
+        loss_upper_bound = validated_float32_scalar("loss_upper_bound", loss_upper_bound)
         if loss_lower_bound >= loss_upper_bound:
             raise ValueError("loss_lower_bound must be < loss_upper_bound")
-        if update_rule not in {CANDIDATE_SELECTOR_HEDGE, CANDIDATE_SELECTOR_EXP3}:
-            raise ValueError("update_rule must be 'hedge' or 'exp3'")
+        update_rule = _require_choice(
+            "update_rule",
+            update_rule,
+            frozenset({CANDIDATE_SELECTOR_HEDGE, CANDIDATE_SELECTOR_EXP3}),
+        )
         if update_rule == CANDIDATE_SELECTOR_EXP3 and exploration <= 0.0:
             raise ValueError("exp3 selector requires positive exploration")
 
-        self._n_candidates = int(n_candidates)
-        self._learning_rate = float(learning_rate)
-        self._exploration = float(exploration)
-        self._loss_lower_bound = float(loss_lower_bound)
-        self._loss_upper_bound = float(loss_upper_bound)
+        self._n_candidates = n_candidates
+        self._learning_rate = learning_rate
+        self._exploration = exploration
+        self._loss_lower_bound = loss_lower_bound
+        self._loss_upper_bound = loss_upper_bound
         self._update_rule = update_rule
 
     @property
@@ -1157,10 +1171,167 @@ class CompositionalFeatureLearner:
         ):
             if type(value) is not bool:
                 raise ValueError(f"{name} must be an actual bool")
-        utility_decay_config = utility_decay
+        promotion_output_mode = _require_choice(
+            "promotion_output_mode",
+            promotion_output_mode,
+            frozenset({PROMOTION_SCALED_CANDIDATE, PROMOTION_BLEND}),
+        )
+        generation_strategy = _require_choice(
+            "generation_strategy",
+            generation_strategy,
+            frozenset(
+                {
+                    GENERATION_UNIFORM,
+                    GENERATION_UTILITY,
+                    GENERATION_MUTATION,
+                    GENERATION_RESIDUAL_IMPRINT,
+                    GENERATION_RECURSIVE_PRODUCT,
+                    GENERATION_ROBUST_RECURSIVE,
+                }
+            ),
+        )
+        future_utility_trace_mode = _require_choice(
+            "future_utility_trace_mode",
+            future_utility_trace_mode,
+            frozenset({"contribution", "marginal"}),
+        )
+        future_utility_normalization = _require_choice(
+            "future_utility_normalization",
+            future_utility_normalization,
+            frozenset({"none", "age", "uncertainty", "uncertainty_age"}),
+        )
+        candidate_scoring_mode = _require_choice(
+            "candidate_scoring_mode",
+            candidate_scoring_mode,
+            frozenset({"legacy", "energy_novelty"}),
+        )
+        candidate_selector = _require_choice(
+            "candidate_selector",
+            candidate_selector,
+            frozenset(
+                {CANDIDATE_SELECTOR_LEGACY, CANDIDATE_SELECTOR_HEDGE, CANDIDATE_SELECTOR_EXP3}
+            ),
+        )
+        generator_resource_update_rule = _require_choice(
+            "generator_resource_update_rule",
+            generator_resource_update_rule,
+            frozenset({"hedge", "exp3"}),
+        )
+        step_size_output = validated_float32_scalar(
+            "step_size_output", step_size_output, lower=0.0
+        )
+        step_size_theta = validated_float32_scalar(
+            "step_size_theta", step_size_theta, lower=0.0
+        )
         utility_decay = canonical_float32_ema_decay(
             "utility_decay",
             utility_decay,
+        )
+        utility_decay_config = utility_decay
+        promotion_margin = validated_float32_scalar(
+            "promotion_margin", promotion_margin, lower=0.0
+        )
+        promotion_blend = validated_float32_scalar(
+            "promotion_blend", promotion_blend, lower=0.0, upper=1.0
+        )
+        obgd_kappa = validated_float32_scalar("obgd_kappa", obgd_kappa, positive=True)
+        parent_temperature = validated_float32_scalar(
+            "parent_temperature", parent_temperature, positive=True
+        )
+        parent_novelty_weight = validated_float32_scalar(
+            "parent_novelty_weight", parent_novelty_weight, lower=0.0
+        )
+        parent_depth_prior = validated_float32_scalar(
+            "parent_depth_prior", parent_depth_prior, lower=0.0
+        )
+        retention_depth_bonus = validated_float32_scalar(
+            "retention_depth_bonus", retention_depth_bonus, lower=0.0
+        )
+        residual_guidance = validated_float32_scalar(
+            "residual_guidance", residual_guidance, lower=0.0
+        )
+        candidate_imprint_scale = validated_float32_scalar(
+            "candidate_imprint_scale", candidate_imprint_scale, lower=0.0
+        )
+        future_utility_mix = validated_float32_scalar(
+            "future_utility_mix", future_utility_mix, lower=0.0, upper=1.0
+        )
+        future_utility_trace_decay = validated_float32_scalar(
+            "future_utility_trace_decay",
+            future_utility_trace_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        future_utility_normalization_decay = validated_float32_scalar(
+            "future_utility_normalization_decay",
+            future_utility_normalization_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        future_utility_rare_task_power = validated_float32_scalar(
+            "future_utility_rare_task_power", future_utility_rare_task_power, lower=0.0
+        )
+        future_utility_task_activity_decay = validated_float32_scalar(
+            "future_utility_task_activity_decay",
+            future_utility_task_activity_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        candidate_score_trace_decay = validated_float32_scalar(
+            "candidate_score_trace_decay",
+            candidate_score_trace_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        candidate_score_energy_epsilon = validated_float32_scalar(
+            "candidate_score_energy_epsilon", candidate_score_energy_epsilon, positive=True
+        )
+        candidate_novelty_weight = validated_float32_scalar(
+            "candidate_novelty_weight", candidate_novelty_weight, lower=0.0, upper=1.0
+        )
+        candidate_novelty_power = validated_float32_scalar(
+            "candidate_novelty_power", candidate_novelty_power, positive=True
+        )
+        candidate_novelty_floor = validated_float32_scalar(
+            "candidate_novelty_floor", candidate_novelty_floor, lower=0.0, upper=1.0
+        )
+        candidate_selector_learning_rate = validated_float32_scalar(
+            "candidate_selector_learning_rate", candidate_selector_learning_rate, positive=True
+        )
+        candidate_selector_exploration = validated_float32_scalar(
+            "candidate_selector_exploration",
+            candidate_selector_exploration,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        generator_resource_learning_rate = validated_float32_scalar(
+            "generator_resource_learning_rate", generator_resource_learning_rate, lower=0.0
+        )
+        generator_resource_discount = validated_float32_scalar(
+            "generator_resource_discount", generator_resource_discount, lower=0.0, upper=1.0
+        )
+        generator_resource_exploration = validated_float32_scalar(
+            "generator_resource_exploration",
+            generator_resource_exploration,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        generator_resource_advantage_clip = validated_float32_scalar(
+            "generator_resource_advantage_clip", generator_resource_advantage_clip, positive=True
+        )
+        generator_resource_cost_weight = validated_float32_scalar(
+            "generator_resource_cost_weight", generator_resource_cost_weight, lower=0.0
+        )
+        generator_resource_promotion_credit = validated_float32_scalar(
+            "generator_resource_promotion_credit",
+            generator_resource_promotion_credit,
+            lower=0.0,
         )
         if not 0.0 <= promotion_blend <= 1.0:
             raise ValueError("promotion_blend must be in [0, 1]")
@@ -1244,21 +1415,26 @@ class CompositionalFeatureLearner:
             raise ValueError("candidate_selector_exploration must be in [0, 1)")
         if candidate_selector == CANDIDATE_SELECTOR_EXP3 and candidate_selector_exploration <= 0.0:
             raise ValueError("exp3 candidate_selector requires positive exploration")
-        retention_slow_utility_decay_config = retention_slow_utility_decay
         retention_slow_utility_decay = canonical_float32_ema_decay(
             "retention_slow_utility_decay",
             retention_slow_utility_decay,
         )
+        retention_slow_utility_decay_config = retention_slow_utility_decay
         if retention_tanh_min_count < 0:
             raise ValueError("retention_tanh_min_count must be non-negative")
         if retention_product_min_count < 0:
             raise ValueError("retention_product_min_count must be non-negative")
         if operation_prior is not None:
+            if type(operation_prior) is not tuple:
+                raise ValueError("operation_prior must be None or an exact tuple")
             if len(operation_prior) != NUM_OPS:
                 raise ValueError("operation_prior must have one entry per op")
-            if any(prob < 0.0 for prob in operation_prior):
-                raise ValueError("operation_prior entries must be non-negative")
-            if sum(operation_prior) <= 0.0:
+            operation_prior = tuple(
+                validated_float32_scalar(f"operation_prior[{index}]", value, lower=0.0)
+                for index, value in enumerate(operation_prior)
+            )
+            prior_total = float(np.sum(np.asarray(operation_prior, dtype=np.float32)))
+            if not math.isfinite(prior_total) or prior_total <= 0.0:
                 raise ValueError("operation_prior must have positive mass")
         if generator_resource_contexts < 1:
             raise ValueError("generator_resource_contexts must be positive")
@@ -1276,12 +1452,21 @@ class CompositionalFeatureLearner:
             raise ValueError("generator_resource_update_rule must be 'hedge' or 'exp3'")
         if generator_resource_promotion_credit < 0.0:
             raise ValueError("generator_resource_promotion_credit must be non-negative")
-        if generator_resource_initial_preferences is not None and len(
-            generator_resource_initial_preferences
-        ) != len(DEFAULT_GENERATOR_META_POLICY_NAMES):
-            raise ValueError(
-                "generator_resource_initial_preferences must match the default "
-                "generator policy count"
+        if generator_resource_initial_preferences is not None:
+            if type(generator_resource_initial_preferences) is not tuple:
+                raise ValueError("generator_resource_initial_preferences must be an exact tuple")
+            if len(generator_resource_initial_preferences) != len(
+                DEFAULT_GENERATOR_META_POLICY_NAMES
+            ):
+                raise ValueError(
+                    "generator_resource_initial_preferences must match the default "
+                    "generator policy count"
+                )
+            generator_resource_initial_preferences = tuple(
+                validated_float32_scalar(
+                    f"generator_resource_initial_preferences[{index}]", value
+                )
+                for index, value in enumerate(generator_resource_initial_preferences)
             )
 
         self._n_features = n_features
@@ -1482,7 +1667,7 @@ class CompositionalFeatureLearner:
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         if self._n_features < feature_dim:
             raise ValueError("n_features must be at least feature_dim so raw-input slots fit")
-        if self._generation_strategy in {
+        if self._n_features > feature_dim and self._generation_strategy in {
             GENERATION_RECURSIVE_PRODUCT,
             GENERATION_ROBUST_RECURSIVE,
         }:
@@ -1493,6 +1678,17 @@ class CompositionalFeatureLearner:
                 scalars=2 * pair_count,
                 nbytes=8 * pair_count,
             )
+            if (
+                self._generation_strategy == GENERATION_ROBUST_RECURSIVE
+                and self._signed_tanh_scaffold_count > 0
+            ):
+                distinct_pairs = feature_dim * (feature_dim - 1) // 2
+                signed_scalars = 16 * distinct_pairs
+                _require_resource(
+                    "signed-tanh scaffold construction",
+                    scalars=signed_scalars,
+                    nbytes=4 * signed_scalars,
+                )
 
         n_features = self._n_features
 

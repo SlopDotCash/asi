@@ -1566,5 +1566,12 @@ def test_compositional_init_rejects_hostile_and_derived_parent_resources() -> No
         1,
         generation_strategy="recursive_product",
     )
+    assert recursive.init(30_000, jr.key(0)).ops.shape == (30_000,)
+
+    recursive_with_composition = CompositionalFeatureLearner(
+        30_001,
+        1,
+        generation_strategy="recursive_product",
+    )
     with pytest.raises(ValueError, match="recursive parent construction byte count"):
-        recursive.init(30_000, jr.key(0))
+        recursive_with_composition.init(30_000, jr.key(0))
