@@ -246,6 +246,24 @@ def test_benchmark_config_rejects_class_spoofed_ewm_decay() -> None:
 def test_benchmark_config_accepts_numpy_float64_ewm_decay() -> None:
     config = ForagerBenchmarkConfig(ewm_decay=np.float64(0.5))
     assert config.ewm_decay == 0.5
+    assert type(config.ewm_decay) is float
+
+
+class _FloatSubclass(float):
+    """A real float subtype whose later arithmetic remains user-controlled."""
+
+    def __mul__(self, other: object) -> float:
+        raise AssertionError("custom arithmetic must never reach a benchmark")
+
+
+def test_benchmark_config_rejects_user_defined_float_subclass() -> None:
+    with pytest.raises(ValueError, match="ewm_decay"):
+        ForagerBenchmarkConfig(ewm_decay=_FloatSubclass(0.5))
+
+
+def test_benchmark_config_rejects_unrepresentable_builtin_integer() -> None:
+    with pytest.raises(ValueError, match="ewm_decay must be finite"):
+        ForagerBenchmarkConfig(ewm_decay=10**10000)
 
 
 def test_benchmark_chunk_is_bounded_by_requested_lifetime() -> None:
