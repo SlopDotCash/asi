@@ -58,6 +58,7 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.longlong,
     np.ulonglong,
 )
+_MIN_LOG_ROUNDTRIP_FLOAT32 = 2.0 * float(np.finfo(np.float32).tiny)
 
 
 def _require_resource(
@@ -181,6 +182,15 @@ def _require_positive_real(name: str, value: object) -> float:
 
 def _require_positive_normal_real(name: str, value: object) -> float:
     return validated_float32_scalar(name, value, lower=_FLOAT32_MIN_NORMAL)
+
+
+def _require_positive_log_real(name: str, value: object) -> float:
+    canonical = validated_float32_scalar(name, value, positive=True)
+    if canonical < _MIN_LOG_ROUNDTRIP_FLOAT32:
+        raise ValueError(
+            f"{name} must be at least the float32 log/exp round-trip endpoint"
+        )
+    return canonical
 
 
 def _require_int(
@@ -459,7 +469,7 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     memory_update_rate = _require_half_open_unit_interval(
         "memory_update_rate", config.memory_update_rate
     )
-    initial_novelty_threshold = _require_positive_normal_real(
+    initial_novelty_threshold = _require_positive_log_real(
         "initial_novelty_threshold", config.initial_novelty_threshold
     )
     memory_bandwidth = _require_positive_normal_real(
@@ -492,10 +502,10 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     target_allocation_rate = _require_unit_interval(
         "target_allocation_rate", config.target_allocation_rate
     )
-    min_novelty_threshold = _require_positive_normal_real(
+    min_novelty_threshold = _require_positive_log_real(
         "min_novelty_threshold", config.min_novelty_threshold
     )
-    max_novelty_threshold = _require_positive_normal_real(
+    max_novelty_threshold = _require_positive_log_real(
         "max_novelty_threshold", config.max_novelty_threshold
     )
     if min_novelty_threshold > max_novelty_threshold:
@@ -1151,28 +1161,36 @@ def run_upgd_memory_arrays(
         raise ValueError(
             f"observations must have shape (steps, {learner.config.feature_dim})"
         )
-    steps = observation_shape[0]
-    if type(steps) is not int or steps < 0:
-        raise ValueError("UPGD memory step count must be a non-negative integer")
+    steps = _require_int("steps", observation_shape[0], minimum=0, maximum=_INT32_MAX)
     if target_shape != (steps, learner.config.n_heads):
         raise ValueError(f"targets must have shape ({steps}, {learner.config.n_heads})")
     if observation_dtype != jnp.dtype(jnp.float32):
         raise TypeError("observations must have dtype float32")
     if target_dtype != jnp.dtype(jnp.float32):
         raise TypeError("targets must have dtype float32")
-    _require_resource(
-        "UPGD memory batch outputs",
-        float32_scalars=steps * (learner.config.n_heads + 10),
-        bool_scalars=steps,
-    )
-    float32_scalars, int32_scalars, uint32_scalars = _combined_state_resource_counts(
+    state_float32, state_int32, state_uint32 = _combined_state_resource_counts(
         learner.config.feature_dim,
         learner.config.n_heads,
         learner.config.hidden_sizes,
         learner.config.slots_per_class,
     )
+    _require_resource(
+        "UPGD memory batch aggregate",
+        float32_scalars=(
+            steps
+            * (
+                learner.config.feature_dim
+                + 2 * learner.config.n_heads
+                + 10
+            )
+            + 2 * state_float32
+        ),
+        int32_scalars=2 * state_int32,
+        uint32_scalars=2 * state_uint32,
+        bool_scalars=steps,
+    )
     working_set_bytes = (
-        4 * (float32_scalars + int32_scalars + uint32_scalars)
+        8 * (state_float32 + state_int32 + state_uint32)
         + steps
         * (4 * (learner.config.feature_dim + 2 * learner.config.n_heads + 10) + 1)
     )
@@ -1186,7 +1204,7 @@ def run_upgd_memory_arrays(
         batch: tuple[Array, Array],
     ) -> tuple[UPGDMemoryState, tuple[Array, Array, Array]]:
         observation, target = batch
-        result = learner.update(carry, observation, target)
+        result = learner._update_jitted(carry, observation, target)  # noqa: SLF001
         return result.state, (
             result.predictions,
             result.metrics,

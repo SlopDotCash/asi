@@ -233,21 +233,27 @@ def test_upgd_memory_float_validators_accept_valid_values() -> None:
     "field",
     [
         "initial_novelty_threshold",
-        "memory_bandwidth",
         "min_novelty_threshold",
         "max_novelty_threshold",
     ],
 )
-def test_upgd_memory_log_division_fields_require_positive_normal_float32(field: str) -> None:
-    minimum = np.finfo(np.float32).tiny
+def test_upgd_memory_log_fields_require_positive_float32_round_trip(field: str) -> None:
+    minimum = np.float32(2.0) * np.finfo(np.float32).tiny
     overrides = {field: minimum}
     if field == "max_novelty_threshold":
         overrides["min_novelty_threshold"] = minimum
     assert getattr(_base_cfg(**overrides), field) == float(minimum)
     with pytest.raises(ValueError, match=field):
-        _base_cfg(**{field: np.nextafter(np.float32(minimum), np.float32(0.0))})
+        _base_cfg(**{field: np.nextafter(minimum, np.float32(0.0))})
     with pytest.raises(ValueError, match=field):
         _base_cfg(**{field: np.longdouble("1e-500")})
+
+
+def test_upgd_memory_division_field_requires_positive_normal_float32() -> None:
+    minimum = np.finfo(np.float32).tiny
+    assert _base_cfg(memory_bandwidth=minimum).memory_bandwidth == float(minimum)
+    with pytest.raises(ValueError, match="memory_bandwidth"):
+        _base_cfg(memory_bandwidth=np.nextafter(minimum, np.float32(0.0)))
 
 
 def test_upgd_memory_combined_state_count_includes_all_components() -> None:
@@ -380,6 +386,63 @@ def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
             state,
             _RaisingMetadata(),  # type: ignore[arg-type]
             jnp.ones((1, 2), dtype=jnp.float32),
+        )
+
+    class HostileLeaf:
+        @property
+        def shape(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("shape hook")
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("JAX conversion must not run")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr must not run")
+
+    malformed = state.replace(memory_logit=HostileLeaf())
+    with pytest.raises(TypeError, match="state.memory_logit"):
+        learner.predict(malformed, jnp.ones((4,), dtype=jnp.float32))
+
+
+def test_upgd_memory_log_and_division_positive_endpoints() -> None:
+    minimum_normal = float(np.finfo(np.float32).tiny)
+    log_endpoint = 2.0 * minimum_normal
+    cfg = _base_cfg(
+        initial_novelty_threshold=log_endpoint,
+        min_novelty_threshold=log_endpoint,
+        memory_bandwidth=minimum_normal,
+    )
+    state = UPGDMemoryLearner(cfg).init()
+    assert bool(jnp.exp(state.novelty_log_threshold) > 0.0)
+    assert cfg.memory_bandwidth == minimum_normal
+
+    adjacent = float(np.nextafter(np.float32(log_endpoint), np.float32(0.0)))
+    with pytest.raises(ValueError, match="log/exp round-trip endpoint"):
+        _base_cfg(initial_novelty_threshold=adjacent)
+    with pytest.raises(ValueError, match="memory_bandwidth"):
+        _base_cfg(memory_bandwidth=float(np.nextafter(np.float32(minimum_normal), 0.0)))
+
+
+def test_upgd_memory_batch_aggregate_preflight_precedes_jax_conversion() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init()
+
+    class OversizedBatch:
+        dtype = np.dtype(np.float32)
+
+        def __init__(self, shape: tuple[int, ...]) -> None:
+            self.shape = shape
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("JAX conversion must not run")
+
+    steps = 100_000_000
+    with pytest.raises(ValueError, match="batch aggregate"):
+        run_upgd_memory_arrays(
+            learner,
+            state,
+            OversizedBatch((steps, 4)),  # type: ignore[arg-type]
+            OversizedBatch((steps, 2)),  # type: ignore[arg-type]
         )
 
 
