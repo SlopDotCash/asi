@@ -21,6 +21,7 @@ from typing import Any, Literal, cast
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
 from alberta_framework.core.horde import (
@@ -47,7 +48,28 @@ from alberta_framework.steps._float32_validation import (
 Step3NormalizerName = Literal["none", "ema"]
 Step3TraceModeName = Literal["accumulating", "replacing"]
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
 _FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
+
+
+def _require_exact_str(name: str, value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
 Step3RoutingName = Literal["shared", "independent", "mixed"]
 
 
@@ -175,8 +197,9 @@ class Step3OneStepResult:
     per_demon_metrics: Array
 
 
-def _require_unit_interval(name: str, value: object) -> float:
-    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+def _require_unit_interval(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
     if (
         real < 0.0
         or not real <= 1.0
@@ -185,12 +208,13 @@ def _require_unit_interval(name: str, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+        raise ValueError(f"{host_name} must be in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_gvf_probability(name: str, value: object) -> float:
-    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+def _require_gvf_probability(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
     if (
         real < 0.0
         or not real <= 1.0
@@ -199,45 +223,49 @@ def _require_gvf_probability(name: str, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+        raise ValueError(f"{host_name} must be in [0, 1]")
     if (
         (numerator != 0 and numerator << 126 < denominator)
         or (real != 0.0 and real < _FLOAT32_MIN_NORMAL)
         or (narrowed != 0.0 and narrowed < _FLOAT32_MIN_NORMAL)
     ):
-        raise ValueError(f"{name} must be zero or a normal float32 value in [0, 1]")
+        raise ValueError(f"{host_name} must be zero or a normal float32 value in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_nonnegative_real(name: str, value: object) -> float:
-    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+def _require_nonnegative_real(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
     if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{host_name} must be non-negative")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_positive_real(name: str, value: object) -> float:
-    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+def _require_positive_real(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
     if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
-        raise ValueError(f"{name} must be positive, got {value!r}")
+        raise ValueError(f"{host_name} must be positive")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_positive_int(name: str, value: object) -> int:
+def _require_positive_int(name: object, value: object) -> int:
+    host_name = _require_exact_str("name", name)
     actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
-        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    if actual_type not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{host_name} must be a positive integer")
     number = int(cast(Integral, value))
     if number < 1:
-        raise ValueError(f"{name} must be positive, got {value!r}")
+        raise ValueError(f"{host_name} must be positive")
     if number > _INT32_MAX:
-        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
+        raise ValueError(f"{host_name} must be at most int32 max")
     return number
 
 
-def _require_bool(name: str, value: object) -> bool:
+def _require_bool(name: object, value: object) -> bool:
+    host_name = _require_exact_str("name", name)
     if type(value) is not bool:
-        raise ValueError(f"{name} must be a boolean, got {value!r}")
+        raise ValueError(f"{host_name} must be a boolean")
     return value
 
 
@@ -278,7 +306,7 @@ def make_step3_normalizer(
         return None
     if config.normalizer == "ema":
         return EMANormalizer()
-    msg = f"unknown Step 3 normalizer {config.normalizer!r}"
+    msg = "unknown Step 3 normalizer"
     raise ValueError(msg)
 
 
@@ -335,7 +363,7 @@ def make_step3_horde(
         return IndependentDemonHorde(**common_kwargs)
     if cfg.routing == "mixed":
         return MixedHorde(**common_kwargs)
-    msg = f"unknown Step 3 routing {cfg.routing!r}"
+    msg = "unknown Step 3 routing"
     raise ValueError(msg)
 
 
