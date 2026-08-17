@@ -65,6 +65,14 @@ class MatchedStatisticsError(ValueError):
     """Raised when a matched-comparison contract or result fails closed."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise MatchedStatisticsError("name must be an exact string")
+    if type(value) is not str:
+        raise MatchedStatisticsError(f"{name} must be an exact string")
+    return value
+
+
 def _require_exact_bool(value: object, name: str) -> bool:
     if type(value) is not bool:
         raise MatchedStatisticsError(f"{name} must be a bool")
@@ -633,22 +641,28 @@ class MatchedComparisonContract:
         expected_evidence = methods[0].evidence
         for method in methods:
             if not method.preregistered:
+                host_method_id = _require_exact_str("method_id", method.method_id)
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} is not preregistered"
+                    f"learning method '{host_method_id}' is not preregistered"
                 )
             if method.seeds != expected_seeds:
+                host_method_id = _require_exact_str("method_id", method.method_id)
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} does not have the exact common "
+                    f"learning method '{host_method_id}' does not have the exact common "
                     "seed ordering"
                 )
             if method.evidence != expected_evidence:
+                host_method_id = _require_exact_str("method_id", method.method_id)
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} has a different evidence binding"
+                    f"learning method '{host_method_id}' has a different evidence binding"
                 )
         for diagnostic in diagnostics:
             if diagnostic.seeds != expected_seeds:
+                host_candidate_id = _require_exact_str(
+                    "candidate_id", diagnostic.candidate_id
+                )
                 raise MatchedStatisticsError(
-                    f"descriptive candidate {diagnostic.candidate_id!r} does not have the "
+                    f"descriptive candidate '{host_candidate_id}' does not have the "
                     "exact common seed ordering"
                 )
 
@@ -675,9 +689,15 @@ class MatchedComparisonContract:
                 comparison.comparator_id,
             } - method_id_set
             if unknown:
+                host_hypothesis_id = _require_exact_str(
+                    "hypothesis_id", comparison.hypothesis_id
+                )
+                validated_unknown = tuple(
+                    _require_exact_str("method_id", value) for value in sorted(unknown)
+                )
                 raise MatchedStatisticsError(
-                    f"comparison {comparison.hypothesis_id!r} references unknown methods: "
-                    + ", ".join(sorted(unknown))
+                    f"comparison '{host_hypothesis_id}' references unknown methods: "
+                    + ", ".join(f"'{value}'" for value in validated_unknown)
                 )
 
     @property
@@ -688,11 +708,12 @@ class MatchedComparisonContract:
     def evidence(self) -> EvidenceBinding:
         return self.methods[0].evidence
 
-    def method(self, method_id: str) -> LearningMethodScores:
+    def method(self, method_id: object) -> LearningMethodScores:
         for method in self.methods:
             if method.method_id == method_id:
                 return method
-        raise MatchedStatisticsError(f"unknown method identifier {method_id!r}")
+        host_method_id = _require_exact_str("method_id", method_id)
+        raise MatchedStatisticsError(f"unknown method identifier '{host_method_id}'")
 
     def to_payload(self) -> dict[str, object]:
         return {
