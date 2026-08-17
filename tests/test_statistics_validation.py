@@ -38,6 +38,7 @@ from alberta_framework.utils.statistics import (
     bonferroni_correction,
     bootstrap_ci,
     cohens_d,
+    common_final_window,
     compute_statistics,
     compute_timeseries_statistics,
     holm_correction,
@@ -1144,3 +1145,8 @@ class TestPairwiseComparisons:
 
         assert result[("short", "long")].effect_size == pytest.approx(0.0)
         assert not result[("short", "long")].significant
+
+    @pytest.mark.parametrize("window", [0, -1, True, 1.5])
+    def test_common_final_window_requires_positive_integer(self, window: object) -> None:
+        with pytest.raises(ValueError, match="window must be a positive integer"):
+            common_final_window({"learner": 10}, window, "squared_error")
