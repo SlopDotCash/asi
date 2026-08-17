@@ -40,6 +40,7 @@ References
 from __future__ import annotations
 
 import math
+from fractions import Fraction
 from numbers import Real
 from typing import cast
 
@@ -56,6 +57,36 @@ from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
 
 _INT32_MAX = 2**31 - 1
+_UINT32_MAX = 4_294_967_295
+_ACTUAL_INT_TYPES: frozenset[type] = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+_ACTUAL_FLOAT_TYPES: frozenset[type] = frozenset(
+    {float, Fraction, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
+)
+_ALLOWED_REAL_TYPES: frozenset[type] = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+
+
+def _require_float32_resource(
+    name: str, *, vector_scalars: int, fixed_scalars: int = 0
+) -> None:
+    total_scalars = vector_scalars + fixed_scalars
+    if total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * total_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
 
 
 def _require_finite_real(
@@ -65,24 +96,19 @@ def _require_finite_real(
     nonnegative: bool = False,
 ) -> float:
     """Return a finite real, rejecting bools, NaN, and infinities."""
-    # ``isinstance(value, Real)`` consults the overridable ``__class__``
-    # attribute, so an object whose ``__class__`` property returns ``float``
-    # passes the check even though its true type is not a registered
-    # ``Real``. Use the non-spoofable ``type()`` slot instead, and do not
-    # interpolate the untrusted value into the rejection message before its
-    # type is confirmed safe.
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+    # Exact-type whitelist prevents ``__class__`` spoofing and hostile
+    # ``as_integer_ratio`` subclasses from reaching the narrowing routine.
+    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be a finite real")
     real_value = cast(Real, value)
     try:
         number = float(real_value)
-    except (OverflowError, ValueError) as error:
-        raise ValueError(f"{name} must be a finite real, got {value!r}") from error
+    except Exception as error:
+        raise ValueError(f"{name} must be a finite real") from error
     if not math.isfinite(number):
-        raise ValueError(f"{name} must be a finite real, got {value!r}")
+        raise ValueError(f"{name} must be a finite real")
     if nonnegative and number < 0.0:
-        raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
+        raise ValueError(f"{name} must be a non-negative finite real")
     return number
 
 
@@ -93,37 +119,42 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
     below the float32 subnormal range are accepted as exact zero, matching the
     noise-free trajectory they produce in the stream's float32 arithmetic.
     """
-    # See ``_require_finite_real``: ``type()`` cannot be spoofed through a
-    # ``__class__`` property override the way ``isinstance`` can.
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+    # Exact-type whitelist rejects hostile subclasses before ``as_integer_ratio``
+    # is ever consulted — mirrors the world-model ensemble gate.
+    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be a non-negative finite real")
     real_value = cast(Real, value)
-    if real_value < 0:
-        raise ValueError(f"{name} must be a non-negative finite real, got {value!r}")
+    try:
+        is_negative = bool(real_value < 0)
+    except Exception as error:
+        raise ValueError(f"{name} must be a non-negative finite real") from error
+    if is_negative:
+        raise ValueError(f"{name} must be a non-negative finite real")
     try:
         narrowed = round_real_to_float32(real_value)
-    except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
+    except Exception as error:
         raise ValueError(
-            f"{name} must remain finite when rounded to float32, got {value!r}"
+            f"{name} must remain finite when rounded to float32"
         ) from error
     if not bool(np.isfinite(narrowed)):
         raise ValueError(
-            f"{name} must remain finite when rounded to float32, got {value!r}"
+            f"{name} must remain finite when rounded to float32"
         )
     return narrowed
 
 
 def _require_unit_interval(value: object, *, name: str) -> float:
     """Return a finite real in ``[0, 1]``, rejecting bool aliases."""
-    # See ``_require_finite_real``: ``type()`` cannot be spoofed through a
-    # ``__class__`` property override the way ``isinstance`` can.
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+    # Exact-type whitelist — hostile ``float`` subclasses are rejected before
+    # any ``__float__`` or ratio hook runs.
+    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be in [0, 1]")
-    number = float(cast(Real, value))
+    try:
+        number = float(cast(Real, value))
+    except Exception as error:
+        raise ValueError(f"{name} must be in [0, 1]") from error
     if not math.isfinite(number) or not 0.0 <= number <= 1.0:
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+        raise ValueError(f"{name} must be in [0, 1]")
     return number
 
 
@@ -136,11 +167,11 @@ def _require_builtin_int(
 ) -> int:
     """Return a built-in int at or above ``minimum``; reject bool and numpy ints."""
     if type(value) is not int:
-        raise ValueError(f"{name} must be a built-in integer, got {value!r}")
+        raise ValueError(f"{name} must be a built-in integer")
     if value < minimum:
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+        raise ValueError(f"{name} must be >= {minimum}")
     if value > maximum:
-        raise ValueError(f"{name} must be <= {maximum}, got {value!r}")
+        raise ValueError(f"{name} must be <= {maximum}")
     return value
 
 # =============================================================================
@@ -333,15 +364,13 @@ class ClassicalConditioningStream:
         )
 
         for phase in phases:
+            if type(phase.name) is not str:
+                raise ValueError("phase name must be a string")
             try:
                 _require_unit_interval(
                     phase.cs_us_contingency, name="cs_us_contingency"
                 )
             except ValueError as error:
-                # ``phase.cs_us_contingency`` is untrusted here (validation
-                # just rejected it); do not format it through its own
-                # __repr__/__str__ hook, which a hostile object can make
-                # raise an arbitrary exception instead of this ValueError.
                 raise ValueError(
                     f"phase {phase.name!r} cs_us_contingency must be in [0, 1]"
                 ) from error
@@ -349,22 +378,37 @@ class ClassicalConditioningStream:
             compound_index = _require_builtin_int(
                 phase.compound_index, name="compound_index", minimum=-1
             )
+            if not isinstance(phase.cs_active, tuple):
+                raise ValueError("phase cs_active must be a tuple of integers")
             for cs_idx in phase.cs_active:
                 if type(cs_idx) is not int:
                     raise ValueError(
-                        f"phase {phase.name!r} cs_active index must be a "
-                        f"built-in integer, got {cs_idx!r}"
+                        f"phase {phase.name!r} cs_active index must be a built-in integer"
                     )
                 if not (0 <= cs_idx < n_cs):
                     raise ValueError(
-                        f"phase {phase.name!r} references cs_active index {cs_idx}, "
-                        f"but n_cs={n_cs}"
+                        f"phase {phase.name!r} references cs_active index out of range"
                     )
             if compound_index >= n_cs:
                 raise ValueError(
-                    f"phase {phase.name!r} has compound_index={phase.compound_index} "
-                    f"but n_cs={n_cs}"
+                    f"phase {phase.name!r} has compound_index out of range"
                 )
+
+        # Derived allocations must fit signed int32 without allocating JAX arrays
+        feature_dim = int(n_cs) + int(n_distractors)
+        if feature_dim > _INT32_MAX:
+            raise ValueError("feature_dim must fit signed int32")
+        _require_float32_resource(
+            "Pavlovian phase mask",
+            vector_scalars=len(phases) * int(n_cs),
+        )
+        _require_float32_resource(
+            "Pavlovian feature state",
+            vector_scalars=feature_dim,
+            fixed_scalars=4,
+        )
+        if len(phases) > _INT32_MAX:
+            raise ValueError("n_phases must fit signed int32")
 
         self._phases = tuple(phases)
         self._n_cs = int(n_cs)
