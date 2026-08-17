@@ -116,18 +116,31 @@ def _read_mapping(name: str, value: object) -> dict[str, Any]:
 
 
 def _require_manager_state_budget(name: str, n_contexts: int, n_choices: int) -> None:
-    """Preflight the three float32 matrices plus the int32 step counter."""
+    """Preflight persistent state and conservative update/select working sets."""
     state_scalars = 3 * n_contexts * n_choices + 1
-    state_bytes = 4 * state_scalars
-    if state_scalars > _INT32_MAX or state_bytes > _INT32_MAX:
+    update_scalars = 3 * state_scalars + 40 * n_choices + 32
+    if (
+        state_scalars > _INT32_MAX
+        or 4 * state_scalars > _INT32_MAX
+        or update_scalars > _INT32_MAX
+        or 4 * update_scalars > _INT32_MAX
+    ):
         raise ValueError(f"{name} state exceeds the signed-int32 scalar/byte budget")
 
 
+def _require_array_metadata(name: str, value: object, shape: tuple[int, ...], dtype: Any) -> None:
+    try:
+        actual_shape = tuple(value.shape)  # type: ignore[attr-defined]
+        actual_dtype = jnp.dtype(value.dtype)  # type: ignore[attr-defined]
+    except Exception as error:
+        raise ValueError(f"{name} must expose array shape and dtype metadata") from error
+    if actual_shape != shape or actual_dtype != jnp.dtype(dtype):
+        raise ValueError(f"{name} has an invalid shape or dtype")
+
+
 def _require_vector(name: str, value: object, length: int, *, dtype: Any) -> Array:
-    array = jnp.asarray(value, dtype=dtype)
-    if array.shape != (length,):
-        raise ValueError(f"{name} must have shape ({length},)")
-    return array
+    _require_array_metadata(name, value, (length,), dtype)
+    return cast(Array, value)
 
 
 def _skip_zero_scale(scale: float, value: Array) -> Array:
@@ -402,7 +415,12 @@ class LearnedResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
         config = _read_mapping("config", config)
         config.pop("type", None)
-        return cls(**config)
+        try:
+            return cls(**config)
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized LearnedResourceManager is invalid") from error
 
     def init(self) -> LearnedResourceManagerState:
         """Create an initial uniform-allocation state."""
@@ -420,12 +438,9 @@ class LearnedResourceManager:
         shape = (self._n_contexts, self._n_actions)
         for name in ("log_weights", "loss_ema", "action_counts"):
             leaf = getattr(state, name)
-            if leaf.shape != shape or leaf.dtype != jnp.float32:
-                raise ValueError(f"state.{name} must have shape {shape} and dtype float32")
-        if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
-            raise ValueError("state.step_count must be a scalar int32")
+            _require_array_metadata(f"state.{name}", leaf, shape, jnp.float32)
+        _require_array_metadata("state.step_count", state.step_count, (), jnp.int32)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def weights(
         self,
         state: LearnedResourceManagerState,
@@ -433,6 +448,14 @@ class LearnedResourceManager:
     ) -> Float[Array, " n_actions"]:
         """Return the current allocation for ``context_id``."""
         self._require_state_contract(state)
+        return cast(Array, self._weights_jit(state, context_id))
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _weights_jit(
+        self,
+        state: LearnedResourceManagerState,
+        context_id: Array | int = 0,
+    ) -> Float[Array, " n_actions"]:
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -449,7 +472,6 @@ class LearnedResourceManager:
             jnp.full_like(weights, jnp.nan),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: LearnedResourceManagerState,
@@ -469,6 +491,24 @@ class LearnedResourceManager:
             :class:`LearnedResourceManagerUpdateResult`.
         """
         self._require_state_contract(state)
+        _require_vector("losses", losses, self._n_actions, dtype=jnp.float32)
+        if resource_costs is not None:
+            _require_vector(
+                "resource_costs", resource_costs, self._n_actions, dtype=jnp.float32
+            )
+        return cast(
+            LearnedResourceManagerUpdateResult,
+            self._update_jit(state, losses, context_id, resource_costs),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: LearnedResourceManagerState,
+        losses: Float[Array, " n_actions"],
+        context_id: Array | int = 0,
+        resource_costs: Float[Array, " n_actions"] | None = None,
+    ) -> LearnedResourceManagerUpdateResult:
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -487,7 +527,7 @@ class LearnedResourceManager:
         valid_actions = finite_losses & costs_valid
         adjusted = jnp.where(valid_actions, safe_losses + cost_terms, 0.0)
 
-        weights = self.weights(state, context)
+        weights = self._weights_jit(state, context)
         finite_weight_sum = jnp.maximum(jnp.sum(jnp.where(valid_actions, weights, 0.0)), 1e-12)
         masked_weights = jnp.where(valid_actions, weights / finite_weight_sum, 0.0)
         baseline = jnp.sum(masked_weights * adjusted)
@@ -805,28 +845,33 @@ class GeneratorMetaResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
         config = _read_mapping("config", config)
         config.pop("type", None)
-        initial_preferences = config.pop("initial_preferences", None)
-        return cls(
-            policy_names=_decode_sequence("policy_names", config.pop("policy_names")),
-            op_ids=_decode_sequence("op_ids", config.pop("op_ids")),
-            parent_modes=_decode_sequence("parent_modes", config.pop("parent_modes")),
-            replacement_multipliers=_decode_sequence(
-                "replacement_multipliers", config.pop("replacement_multipliers")
-            ),
-            promotion_margin_multipliers=_decode_sequence(
-                "promotion_margin_multipliers", config.pop("promotion_margin_multipliers")
-            ),
-            candidate_min_age_multipliers=_decode_sequence(
-                "candidate_min_age_multipliers", config.pop("candidate_min_age_multipliers")
-            ),
-            imprint_scales=_decode_sequence("imprint_scales", config.pop("imprint_scales")),
-            initial_preferences=(
-                None
-                if initial_preferences is None
-                else _decode_sequence("initial_preferences", initial_preferences)
-            ),
-            **config,
-        )
+        try:
+            initial_preferences = config.pop("initial_preferences", None)
+            return cls(
+                policy_names=_decode_sequence("policy_names", config.pop("policy_names")),
+                op_ids=_decode_sequence("op_ids", config.pop("op_ids")),
+                parent_modes=_decode_sequence("parent_modes", config.pop("parent_modes")),
+                replacement_multipliers=_decode_sequence(
+                    "replacement_multipliers", config.pop("replacement_multipliers")
+                ),
+                promotion_margin_multipliers=_decode_sequence(
+                    "promotion_margin_multipliers", config.pop("promotion_margin_multipliers")
+                ),
+                candidate_min_age_multipliers=_decode_sequence(
+                    "candidate_min_age_multipliers", config.pop("candidate_min_age_multipliers")
+                ),
+                imprint_scales=_decode_sequence("imprint_scales", config.pop("imprint_scales")),
+                initial_preferences=(
+                    None
+                    if initial_preferences is None
+                    else _decode_sequence("initial_preferences", initial_preferences)
+                ),
+                **config,
+            )
+        except ValueError:
+            raise
+        except Exception as error:
+            raise ValueError("serialized GeneratorMetaResourceManager is invalid") from error
 
     def init(self) -> GeneratorMetaResourceManagerState:
         """Create an initial uniform-allocation state."""
@@ -849,12 +894,9 @@ class GeneratorMetaResourceManager:
         shape = (self._n_contexts, self.n_policies)
         for name in ("log_weights", "reward_ema", "action_counts"):
             leaf = getattr(state, name)
-            if leaf.shape != shape or leaf.dtype != jnp.float32:
-                raise ValueError(f"state.{name} must have shape {shape} and dtype float32")
-        if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
-            raise ValueError("state.step_count must be a scalar int32")
+            _require_array_metadata(f"state.{name}", leaf, shape, jnp.float32)
+        _require_array_metadata("state.step_count", state.step_count, (), jnp.int32)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def weights(
         self,
         state: GeneratorMetaResourceManagerState,
@@ -862,6 +904,14 @@ class GeneratorMetaResourceManager:
     ) -> Float[Array, " n_policies"]:
         """Return the current policy allocation for ``context_id``."""
         self._require_state_contract(state)
+        return cast(Array, self._weights_jit(state, context_id))
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _weights_jit(
+        self,
+        state: GeneratorMetaResourceManagerState,
+        context_id: Array | int = 0,
+    ) -> Float[Array, " n_policies"]:
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -878,7 +928,6 @@ class GeneratorMetaResourceManager:
             jnp.full_like(weights, jnp.nan),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def select(
         self,
         state: GeneratorMetaResourceManagerState,
@@ -887,11 +936,20 @@ class GeneratorMetaResourceManager:
     ) -> GeneratorMetaResourceDecision:
         """Sample one policy and return the generator knobs it controls."""
         self._require_state_contract(state)
+        return cast(GeneratorMetaResourceDecision, self._select_jit(state, key, context_id))
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _select_jit(
+        self,
+        state: GeneratorMetaResourceManagerState,
+        key: Array,
+        context_id: Array | int = 0,
+    ) -> GeneratorMetaResourceDecision:
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
         )
-        weights = self.weights(state, context)
+        weights = self._weights_jit(state, context)
         selection_valid = (
             context_valid & floating_tree_is_finite(state) & jnp.all(jnp.isfinite(weights))
         )
@@ -940,7 +998,6 @@ class GeneratorMetaResourceManager:
             valid=selection_valid,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: GeneratorMetaResourceManagerState,
@@ -960,6 +1017,37 @@ class GeneratorMetaResourceManager:
         sparse and the experiment wants explicit exploration credit.
         """
         self._require_state_contract(state)
+        _require_vector("rewards", rewards, self.n_policies, dtype=jnp.float32)
+        if finite_mask is not None:
+            _require_vector("finite_mask", finite_mask, self.n_policies, dtype=jnp.bool_)
+        if resource_costs is not None:
+            _require_vector(
+                "resource_costs", resource_costs, self.n_policies, dtype=jnp.float32
+            )
+        return cast(
+            GeneratorMetaResourceUpdateResult,
+            self._update_jit(
+                state,
+                rewards,
+                context_id,
+                finite_mask,
+                resource_costs,
+                selected_action,
+                selected_probability,
+            ),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: GeneratorMetaResourceManagerState,
+        rewards: Float[Array, " n_policies"],
+        context_id: Array | int = 0,
+        finite_mask: Array | None = None,
+        resource_costs: Float[Array, " n_policies"] | None = None,
+        selected_action: Array | int | None = None,
+        selected_probability: Array | float | None = None,
+    ) -> GeneratorMetaResourceUpdateResult:
         context, context_valid = safe_discrete_action(
             context_id,
             self._n_contexts,
@@ -982,7 +1070,7 @@ class GeneratorMetaResourceManager:
         finite = finite & costs_valid
         adjusted = jnp.where(finite, safe_rewards - cost_terms, 0.0)
 
-        weights = self.weights(state, context)
+        weights = self._weights_jit(state, context)
         finite_weight_sum = jnp.maximum(jnp.sum(jnp.where(finite, weights, 0.0)), 1e-12)
         masked_weights = jnp.where(finite, weights / finite_weight_sum, 0.0)
         baseline = jnp.sum(masked_weights * adjusted)

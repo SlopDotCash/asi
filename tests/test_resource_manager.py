@@ -601,12 +601,16 @@ def test_resource_manager_float32_config_is_canonical_and_json_safe() -> None:
 
 
 def test_resource_manager_preflights_complete_state_before_allocation() -> None:
-    # 3 float32 matrices plus one int32 counter must fit a signed-int32 byte count.
-    LearnedResourceManager(n_actions=178_956_970)
+    # Conservative update/select working set is 49*n_actions+35 for one context.
+    last_legal = ((2**31 - 1) // 4 - 35) // 49
+    LearnedResourceManager(n_actions=last_legal)
     with pytest.raises(ValueError, match="state exceeds"):
-        LearnedResourceManager(n_actions=178_956_971)
+        LearnedResourceManager(n_actions=last_legal + 1)
+    # Multiple contexts are covered by the same aggregate formula.
+    generator_last = ((2**31 - 1) // 4 - 115) // 18
+    _minimal_generator_manager(n_contexts=generator_last)
     with pytest.raises(ValueError, match="state exceeds"):
-        _minimal_generator_manager(n_contexts=89_478_486)
+        _minimal_generator_manager(n_contexts=generator_last + 1)
 
 
 def test_generator_config_rejects_hostile_sequences_and_accepts_mapping_proxy() -> None:
@@ -666,3 +670,48 @@ def test_resource_manager_state_contract_and_counter_saturation() -> None:
     result = learned.update(invalid, jnp.asarray([0.0, 1.0], dtype=jnp.float32))
     assert not bool(result.update_applied)
     chex.assert_trees_all_equal(result.state, invalid)
+
+
+def test_resource_manager_host_preflight_and_hostile_state_metadata() -> None:
+    learned = LearnedResourceManager(n_actions=2)
+    generator = _minimal_generator_manager()
+
+    class HostVector:
+        shape = (2,)
+        dtype = np.dtype(np.float64)
+
+        def __jax_array__(self):  # type: ignore[no-untyped-def]
+            raise AssertionError("conversion must not run")
+
+    with pytest.raises(ValueError, match="losses"):
+        learned.update(learned.init(), HostVector())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="rewards"):
+        generator.update(generator.init(), HostVector())  # type: ignore[arg-type]
+
+    class HostileLeaf:
+        @property
+        def shape(self):  # type: ignore[no-untyped-def]
+            raise RuntimeError("shape hook")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr hook must not run")
+
+    malformed = learned.init().replace(log_weights=HostileLeaf())
+    with pytest.raises(ValueError, match="state.log_weights"):
+        learned.weights(malformed)
+
+    malformed_generator = generator.init().replace(log_weights=HostileLeaf())
+    with pytest.raises(ValueError, match="state.log_weights"):
+        generator.select(malformed_generator, jr.key(0))
+
+
+def test_resource_manager_loader_failures_are_normalized() -> None:
+    learned = LearnedResourceManager(n_actions=2)
+    with pytest.raises(ValueError, match="serialized LearnedResourceManager"):
+        LearnedResourceManager.from_config({**learned.to_config(), "unknown": 1})
+
+    generator = _minimal_generator_manager()
+    payload = generator.to_config()
+    del payload["policy_names"]
+    with pytest.raises(ValueError, match="serialized GeneratorMetaResourceManager"):
+        GeneratorMetaResourceManager.from_config(payload)
