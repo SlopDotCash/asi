@@ -381,6 +381,30 @@ class TestGVFSpecRemainingFields:
         assert spec.terminal_reward == -1.0
         assert spec.to_config()["terminal_reward"] == -1.0
 
+    @pytest.mark.parametrize("value", [2.0**-150, -(2.0**-150), 5e-324, -5e-324])
+    def test_terminal_reward_rejects_nonzero_float32_underflow(self, value):
+        with pytest.raises(ValueError, match="terminal_reward must remain nonzero"):
+            GVFSpec(
+                name="d0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.0,
+                lamda=0.0,
+                cumulant_index=0,
+                terminal_reward=value,
+            )
+
+    @pytest.mark.parametrize("value", [0.0, 2.0**-149, -(2.0**-149)])
+    def test_terminal_reward_preserves_zero_and_float32_minsubnormal(self, value):
+        spec = GVFSpec(
+            name="d0",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=0,
+            terminal_reward=value,
+        )
+        assert spec.terminal_reward == value
+
     @pytest.mark.parametrize(
         "value",
         [float("nan"), float("inf"), float("-inf"), True, False, "0.0", None],

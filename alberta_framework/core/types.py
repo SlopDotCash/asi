@@ -18,7 +18,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.normalizers import (
     AnyNormalizerState,
 )
@@ -29,6 +29,7 @@ Target = Array  # y*_t: desired output
 Prediction = Array  # y_t: model output
 Reward = float  # r_t: scalar reward
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+_FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
     {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
@@ -706,6 +707,21 @@ def _require_gvf_cumulant_index(value: object) -> int:
     return number
 
 
+def _validated_gvf_reward(value: object) -> float:
+    """Validate a float32 reward without silently erasing an exact nonzero."""
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        "terminal_reward", value
+    )
+    if (
+        numerator != 0
+        and abs(numerator) * _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR <= denominator
+    ):
+        raise ValueError(
+            "terminal_reward must remain nonzero once narrowed to float32"
+        )
+    return stored
+
+
 @chex.dataclass(frozen=True)
 class GVFSpec:
     """One GVF demon's question functions (Sutton et al. 2011).
@@ -737,9 +753,7 @@ class GVFSpec:
         gamma = _normalized_gvf_probability("gamma", self.gamma)
         lamda = _normalized_gvf_probability("lamda", self.lamda)
         cumulant_index = _require_gvf_cumulant_index(self.cumulant_index)
-        terminal_reward = validated_float32_scalar(
-            "terminal_reward", self.terminal_reward
-        )
+        terminal_reward = _validated_gvf_reward(self.terminal_reward)
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "gamma", gamma)
         object.__setattr__(self, "lamda", lamda)
