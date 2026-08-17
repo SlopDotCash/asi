@@ -68,9 +68,7 @@ class MatchedAlbertaWorkerError(RuntimeError):
     """The matched Alberta workload input or output contract was violated."""
 
 
-def _require_exact_str(name: object, value: object) -> str:
-    if type(name) is not str:
-        raise MatchedAlbertaWorkerError("name must be a string")
+def _require_exact_str(name: str, value: object) -> str:
     if type(value) is not str:
         raise MatchedAlbertaWorkerError(f"{name} must be a string")
     return value
@@ -163,7 +161,6 @@ def _parse_agent_configuration(
             payload["features"] = _feature_configuration(payload.get("features"))
             result = RTURTRLForagerConfig(**payload)
         else:
-            _require_exact_str("implementation_kind", implementation_kind)
             raise MatchedAlbertaWorkerError("unsupported Alberta implementation kind")
     except MatchedAlbertaWorkerError:
         raise
