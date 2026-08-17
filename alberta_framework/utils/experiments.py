@@ -24,6 +24,7 @@ import jax.random as jr
 import numpy as np
 from numpy.typing import NDArray
 
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.learners import (
     LinearLearner,
     metrics_to_dicts,
@@ -31,7 +32,6 @@ from alberta_framework.core.learners import (
 )
 from alberta_framework.core.types import LearnerState
 from alberta_framework.streams.base import ScanStream
-from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.utils.statistics import common_final_window
 
 _NUMPY_COORDINATE_TYPES = frozenset(
@@ -368,7 +368,7 @@ def run_multi_seed_experiment(
                 "of unique built-in integer seeds"
             )
         try:
-            raw_seeds = tuple(seeds)
+            raw_seeds = tuple(cast(Iterable[int], seeds))
         except TypeError as exc:
             raise ValueError(
                 "seeds must be a positive built-in integer count or a sequence "
