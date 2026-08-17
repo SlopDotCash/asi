@@ -92,6 +92,14 @@ class ForagerMatchedProtocolError(ValueError):
     """The matched-current protocol is malformed or internally inconsistent."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ForagerMatchedProtocolError("name must be an exact string")
+    if type(value) is not str:
+        raise ForagerMatchedProtocolError(f"{name} must be an exact string")
+    return value
+
+
 @dataclass(frozen=True)
 class MatchedTask:
     """One exact current Forager task identity."""
@@ -1018,22 +1026,31 @@ def _duplicate_free_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ForagerMatchedProtocolError(f"duplicate JSON object key {key!r}")
+            host_key = _require_exact_str("key", key)
+            raise ForagerMatchedProtocolError(f"duplicate JSON object key '{host_key}'")
         result[key] = value
     return result
 
 
-def _reject_nonfinite(token: str) -> Any:
-    raise ForagerMatchedProtocolError(f"non-finite JSON number {token!r} is forbidden")
+def _reject_nonfinite(token: object) -> Any:
+    if type(token) is str:
+        host_token = _require_exact_str("token", token)
+        raise ForagerMatchedProtocolError(f"non-finite JSON number '{host_token}' is forbidden")
+    raise ForagerMatchedProtocolError(
+        "non-finite JSON number must be an exact string is forbidden"
+    )
 
 
-def _parse_json_float(token: str) -> float:
+def _parse_json_float(token: object) -> float:
+    if type(token) is not str:
+        raise ForagerMatchedProtocolError("token must be an exact string")
+    host_token = _require_exact_str("token", token)
     try:
         value = float(token)
     except (OverflowError, ValueError) as exc:
-        raise ForagerMatchedProtocolError(f"invalid JSON number {token!r}") from exc
+        raise ForagerMatchedProtocolError(f"invalid JSON number '{host_token}'") from exc
     if not math.isfinite(value):
-        raise ForagerMatchedProtocolError(f"non-finite JSON number {token!r} is forbidden")
+        raise ForagerMatchedProtocolError(f"non-finite JSON number '{host_token}' is forbidden")
     return value
 
 
@@ -2565,14 +2582,16 @@ def _validate_cross_references(
     for group in selection_plan.groups:
         expected_ids = tuple(grouped_candidate_ids.get(group.selection_group, []))
         if group.candidate_ids != expected_ids:
+            host_group = _require_exact_str("selection_group", group.selection_group)
             raise ForagerMatchedProtocolError(
-                f"protocol.selection_plan group {group.selection_group!r} candidate IDs/order "
+                f"protocol.selection_plan group '{host_group}' candidate IDs/order "
                 "must exactly match pairing-eligible candidates"
             )
         strata = {index[candidate_id].stratum for candidate_id in group.candidate_ids}
         if len(strata) != 1:
+            host_group = _require_exact_str("selection_group", group.selection_group)
             raise ForagerMatchedProtocolError(
-                f"protocol.selection_plan group {group.selection_group!r} may not mix strata"
+                f"protocol.selection_plan group '{host_group}' may not mix strata"
             )
 
     expected_slots = selection_plan.slots
@@ -2723,7 +2742,7 @@ def parse_forager_matched_protocol(value: Any) -> ForagerMatchedProtocol:
     schema = _require_string(payload["schema_version"], "protocol.schema_version", maximum=64)
     if schema != FORAGER_MATCHED_PROTOCOL_SCHEMA_VERSION:
         raise ForagerMatchedProtocolError(
-            f"protocol.schema_version must be {FORAGER_MATCHED_PROTOCOL_SCHEMA_VERSION!r}"
+            f"protocol.schema_version must be '{FORAGER_MATCHED_PROTOCOL_SCHEMA_VERSION}'"
         )
     stage_value = _require_literal(
         payload["stage"], "protocol.stage", ("open_tuning", "sealed_evaluation")
@@ -2861,8 +2880,10 @@ def parse_forager_matched_selection_result(value: Any) -> ForagerMatchedSelectio
     )
     schema = _require_string(payload["schema_version"], f"{path}.schema_version", maximum=64)
     if schema != FORAGER_MATCHED_SELECTION_RESULT_SCHEMA_VERSION:
+        host_path = _require_exact_str("path", path)
         raise ForagerMatchedProtocolError(
-            f"{path}.schema_version must be {FORAGER_MATCHED_SELECTION_RESULT_SCHEMA_VERSION!r}"
+            f"'{host_path}'.schema_version must be "
+            f"'{FORAGER_MATCHED_SELECTION_RESULT_SCHEMA_VERSION}'"
         )
     group_values = _require_array(payload["ranked_groups"], f"{path}.ranked_groups")
     if not group_values or len(group_values) > _MAX_CANDIDATES:
@@ -2996,8 +3017,9 @@ def seal_forager_matched_protocol(
             len(ranked_group.ranked_candidate_ids) != len(plan_group.candidate_ids)
             or set(ranked_group.ranked_candidate_ids) != set(plan_group.candidate_ids)
         ):
+            host_group = _require_exact_str("selection_group", plan_group.selection_group)
             raise ForagerMatchedProtocolError(
-                f"selection result group {plan_group.selection_group!r} must rank every "
+                f"selection result group '{host_group}' must rank every "
                 "preregistered candidate exactly once"
             )
         resolutions.extend(
@@ -3098,8 +3120,9 @@ def validate_sealed_protocol_transition(
         if len(ranked_group.ranked_candidate_ids) != len(plan_group.candidate_ids) or set(
             ranked_group.ranked_candidate_ids
         ) != set(plan_group.candidate_ids):
+            host_group = _require_exact_str("selection_group", plan_group.selection_group)
             raise ForagerMatchedProtocolError(
-                f"selection result group {plan_group.selection_group!r} must rank every "
+                f"selection result group '{host_group}' must rank every "
                 "preregistered candidate exactly once"
             )
         expected_resolutions.extend(
