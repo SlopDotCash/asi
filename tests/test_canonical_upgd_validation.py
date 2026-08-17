@@ -169,25 +169,25 @@ def test_official_rejects_bool_and_spoof(field: str) -> None:
             _official(**{field: bad})
 
 
-def test_canonical_hostile_ratio_is_caught_and_counts_once() -> None:
+def test_canonical_hostile_ratio_is_rejected_without_executing_hook() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be a finite real"):
         _canon(step_size=_HostileFloat(1.0))
-    assert _HostileFloat.calls == 1
+    assert _HostileFloat.calls == 0
 
 
-def test_alberta_hostile_ratio_is_caught_and_counts_once() -> None:
+def test_alberta_hostile_ratio_is_rejected_without_executing_hook() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be a finite real"):
         _alberta(step_size=_HostileFloat(1.0))
-    assert _HostileFloat.calls == 1
+    assert _HostileFloat.calls == 0
 
 
-def test_official_hostile_ratio_is_caught_and_counts_once() -> None:
+def test_official_hostile_ratio_is_rejected_without_executing_hook() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be a finite real"):
         _official(step_size=_HostileFloat(1.0))
-    assert _HostileFloat.calls == 1
+    assert _HostileFloat.calls == 0
 
 
 def test_hostile_repr_is_not_executed_for_float_fields() -> None:
@@ -220,6 +220,8 @@ def test_canonical_domain_rejects_invalid_ranges() -> None:
         _canon(utility_decay=1.0)
     with pytest.raises(ValueError, match="must be"):
         _canon(utility_decay=-0.1)
+    with pytest.raises(ValueError, match="remain in"):
+        _canon(utility_decay=0.999999999)
     # epsilon must be positive
     with pytest.raises(ValueError, match="must be"):
         _canon(epsilon=0.0)
@@ -287,7 +289,7 @@ def test_float32_underflow_is_rejected_for_positive() -> None:
 def test_nonnegative_nonzero_scalars_cannot_silently_underflow(
     factory: Any, field: str
 ) -> None:
-    with pytest.raises(ValueError, match="must not underflow"):
+    with pytest.raises(ValueError, match="remain nonzero"):
         factory(**{field: 1e-50})
     assert getattr(factory(**{field: 0.0}), field) == 0.0
 

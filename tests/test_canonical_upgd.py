@@ -16,6 +16,17 @@ from alberta_framework.core.canonical_upgd import (
 from alberta_framework.core.checkpoints import load_checkpoint, save_checkpoint
 
 
+def _legacy_sink_decay_config(**overrides: object) -> CanonicalUPGDConfig:
+    """Build the formerly accepted decay sink for defensive update-path tests."""
+
+    config = CanonicalUPGDConfig(utility_decay=0.9, **overrides)  # type: ignore[arg-type]
+    # Construction now rejects this value because it narrows to float32 1.0.
+    # Simulate an already-loaded legacy/corrupt in-memory config so the atomic
+    # refusal branch remains covered without reopening the public sink.
+    object.__setattr__(config, "utility_decay", 0.999999999)
+    return config
+
+
 def test_config_validation_and_roundtrip() -> None:
     config = CanonicalUPGDConfig(
         step_size=0.02,
@@ -314,9 +325,8 @@ def test_lifetime_counter_capacity_rejects_the_complete_update(
         params = {"w": jnp.array([2.0], dtype=jnp.float64)}
         gradients = {"w": jnp.array([-0.5], dtype=jnp.float64)}
         optimizer = CanonicalUPGD(
-            CanonicalUPGDConfig(
+            _legacy_sink_decay_config(
                 step_size=0.1,
-                utility_decay=0.999999999,
                 noise_std=0.0,
                 profile=profile,  # type: ignore[arg-type]
                 normalization=normalization,  # type: ignore[arg-type]
@@ -364,7 +374,7 @@ def test_final_representable_lifetime_update_is_consumed_before_capacity(
     with jax.enable_x64():
         params = {"w": jnp.array([2.0], dtype=jnp.float64)}
         gradients = {"w": jnp.array([-0.5], dtype=jnp.float64)}
-        decay = 0.999999999
+        decay = float(jnp.nextafter(jnp.float32(1.0), jnp.float32(0.0)))
         optimizer = CanonicalUPGD(
             CanonicalUPGDConfig(
                 step_size=0.1,
@@ -446,7 +456,7 @@ def test_safe_profile_global_saturation_does_not_consume_inactive_clock() -> Non
         optimizer = CanonicalUPGD(
             CanonicalUPGDConfig(
                 step_size=0.1,
-                utility_decay=0.999999999,
+                utility_decay=float(jnp.nextafter(jnp.float32(1.0), jnp.float32(0.0))),
                 noise_std=0.0,
                 profile="safe_extended",
                 normalization="global",
@@ -492,9 +502,8 @@ def test_safe_profile_exhausted_active_clock_rejects_available_peer_atomically(
             "exhausted": jnp.array([-0.5], dtype=jnp.float64),
         }
         optimizer = CanonicalUPGD(
-            CanonicalUPGDConfig(
+            _legacy_sink_decay_config(
                 step_size=0.1,
-                utility_decay=0.999999999,
                 noise_std=0.0,
                 mode=mode,  # type: ignore[arg-type]
                 profile="safe_extended",
@@ -551,9 +560,8 @@ def test_lifetime_refusal_is_reverse_mode_atomic_when_proposal_is_nonfinite(
             utility = jnp.array([jnp.finfo(jnp.float64).max], dtype=jnp.float64)
         params = {"w": param}
         optimizer = CanonicalUPGD(
-            CanonicalUPGDConfig(
+            _legacy_sink_decay_config(
                 step_size=0.1,
-                utility_decay=0.999999999,
                 noise_std=0.0,
                 mode=mode,  # type: ignore[arg-type]
                 profile=profile,  # type: ignore[arg-type]

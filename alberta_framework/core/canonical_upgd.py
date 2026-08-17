@@ -66,10 +66,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Int
 
-from alberta_framework.core._float32_scalars import (
-    validated_float32_scalar,
-    validated_float32_scalar_with_ratio,
-)
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 
 UPGDMode = Literal["protecting", "non_protecting"]
 UPGDNormalization = Literal["global", "local"]
@@ -117,6 +114,9 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.uint64,
     np.longlong,
     np.ulonglong,
+)
+_ACTUAL_REAL_TYPES = frozenset(
+    (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble)
 )
 
 
@@ -260,13 +260,28 @@ def _parameter_arrays(
     return arrays, structure, _ParameterResources(scalars=scalars, nbytes=nbytes)
 
 
-def _nonnegative_float32_scalar(name: str, value: object) -> float:
-    """Validate a nonnegative sink without silently erasing a nonzero value."""
+def _validated_float32_scalar(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> float:
+    """Validate an exact trusted scalar before any user-defined ratio hook."""
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
     stored, numerator, denominator = validated_float32_scalar_with_ratio(
-        name, value, lower=0.0
+        name,
+        value,
+        positive=positive,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
     )
-    if numerator != 0 and abs(numerator) * (1 << 150) <= denominator:
-        raise ValueError(f"{name} must not underflow to zero once narrowed to float32")
+    if numerator != 0 and float(np.float32(numerator / denominator)) == 0.0:
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
 
 
@@ -319,20 +334,21 @@ class CanonicalUPGDConfig:
     epsilon: float = 1e-8
 
     def __post_init__(self) -> None:
-        step_size = validated_float32_scalar(
+        step_size = _validated_float32_scalar(
             "step_size", self.step_size, lower=0.0, positive=True
         )
-        # Host domain for decay is [0,1) exact; narrowed 1.0 is tolerated for
-        # continuity with existing lifetime-counter tests (e.g. 0.999999999
-        # rounds to 1.0 in float32 but remains <1.0 as a host ratio).
-        utility_decay = _nonnegative_float32_scalar(
-            "utility_decay", self.utility_decay
+        utility_decay = _validated_float32_scalar(
+            "utility_decay",
+            self.utility_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
         )
-        if not 0.0 <= float(utility_decay) < 1.0:
-            raise ValueError("utility_decay must be in [0.0, 1.0)")
-        noise_std = _nonnegative_float32_scalar("noise_std", self.noise_std)
-        weight_decay = _nonnegative_float32_scalar("weight_decay", self.weight_decay)
-        epsilon = validated_float32_scalar(
+        noise_std = _validated_float32_scalar("noise_std", self.noise_std, lower=0.0)
+        weight_decay = _validated_float32_scalar(
+            "weight_decay", self.weight_decay, lower=0.0
+        )
+        epsilon = _validated_float32_scalar(
             "epsilon", self.epsilon, lower=0.0, positive=True
         )
         object.__setattr__(self, "step_size", step_size)
@@ -992,22 +1008,26 @@ class AlbertaAdaUPGDConfig:
             raise ValueError(
                 "profile must be the explicit Alberta-derived AdaUPGD profile"
             )
-        step_size = validated_float32_scalar(
+        step_size = _validated_float32_scalar(
             "step_size", self.step_size, lower=0.0, positive=True
         )
-        utility_decay = _nonnegative_float32_scalar(
-            "utility_decay", self.utility_decay
+        utility_decay = _validated_float32_scalar(
+            "utility_decay", self.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
         )
-        if not 0.0 <= float(utility_decay) < 1.0:
-            raise ValueError("utility_decay must be in [0.0, 1.0)")
-        second_moment_decay = _nonnegative_float32_scalar(
-            "second_moment_decay", self.second_moment_decay
+        second_moment_decay = _validated_float32_scalar(
+            "second_moment_decay",
+            self.second_moment_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
         )
-        if not 0.0 <= float(second_moment_decay) < 1.0:
-            raise ValueError("second_moment_decay must be in [0.0, 1.0)")
-        noise_std = _nonnegative_float32_scalar("noise_std", self.noise_std)
-        weight_decay = _nonnegative_float32_scalar("weight_decay", self.weight_decay)
-        epsilon = validated_float32_scalar("epsilon", self.epsilon, lower=0.0, positive=True)
+        noise_std = _validated_float32_scalar("noise_std", self.noise_std, lower=0.0)
+        weight_decay = _validated_float32_scalar(
+            "weight_decay", self.weight_decay, lower=0.0
+        )
+        epsilon = _validated_float32_scalar(
+            "epsilon", self.epsilon, lower=0.0, positive=True
+        )
         object.__setattr__(self, "step_size", step_size)
         object.__setattr__(self, "utility_decay", utility_decay)
         object.__setattr__(self, "second_moment_decay", second_moment_decay)
@@ -1761,23 +1781,25 @@ class OfficialAdaUPGDConfig:
             raise ValueError("source_commit must match the pinned AdaptiveUPGD commit")
         if type(self.source_path) is not str or self.source_path != OFFICIAL_ADAUPGD_PATH:
             raise ValueError("source_path must match the pinned AdaptiveUPGD path")
-        step_size = validated_float32_scalar(
+        step_size = _validated_float32_scalar(
             "step_size", self.step_size, lower=0.0, positive=True
         )
-        weight_decay = _nonnegative_float32_scalar("weight_decay", self.weight_decay)
-        utility_decay = _nonnegative_float32_scalar(
-            "utility_decay", self.utility_decay
+        weight_decay = _validated_float32_scalar(
+            "weight_decay", self.weight_decay, lower=0.0
         )
-        if not 0.0 <= float(utility_decay) < 1.0:
-            raise ValueError("utility_decay must be in [0.0, 1.0)")
-        noise_std = _nonnegative_float32_scalar("noise_std", self.noise_std)
-        beta1 = _nonnegative_float32_scalar("beta1", self.beta1)
-        if not 0.0 <= float(beta1) < 1.0:
-            raise ValueError("beta1 must be in [0.0, 1.0)")
-        beta2 = _nonnegative_float32_scalar("beta2", self.beta2)
-        if not 0.0 <= float(beta2) < 1.0:
-            raise ValueError("beta2 must be in [0.0, 1.0)")
-        epsilon = validated_float32_scalar("epsilon", self.epsilon, lower=0.0, positive=True)
+        utility_decay = _validated_float32_scalar(
+            "utility_decay", self.utility_decay, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        noise_std = _validated_float32_scalar("noise_std", self.noise_std, lower=0.0)
+        beta1 = _validated_float32_scalar(
+            "beta1", self.beta1, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        beta2 = _validated_float32_scalar(
+            "beta2", self.beta2, lower=0.0, upper=1.0, upper_inclusive=False
+        )
+        epsilon = _validated_float32_scalar(
+            "epsilon", self.epsilon, lower=0.0, positive=True
+        )
         object.__setattr__(self, "step_size", step_size)
         object.__setattr__(self, "weight_decay", weight_decay)
         object.__setattr__(self, "utility_decay", utility_decay)
