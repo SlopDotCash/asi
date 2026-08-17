@@ -1015,7 +1015,7 @@ def update_keyboard_chord_learner(
     proposed_state = KeyboardChordLearnerState(
         chord_vector=proposed_vector * scale,
         reward_baseline=baseline,
-        step_count=state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(state.step_count),
     )
     # Inf reward * a zero chord coordinate is 0*inf = NaN, then the
     # max-norm rescaling is nan/inf and the whole vector stays poisoned.
