@@ -9,18 +9,25 @@ from typing import cast
 from alberta_framework._float32 import round_real_to_float32_with_ratio
 
 
-def finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:
+def _require_exact_str(name: str, value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def finite_real_and_float32(name: object, value: object) -> tuple[Real, int, int, float]:
     """Return the original real, exact ratio, and finite binary32 rounding."""
+    host_name = _require_exact_str("name", name)
     actual_type = type(value)
     if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{name} must be a real number, got {value!r}")
+        raise ValueError(f"{host_name} must be a real number")
     real = cast(Real, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
     except Exception:
-        raise ValueError(f"{name} must be finite, got {value!r}") from None
+        raise ValueError(f"{host_name} must be finite") from None
     if not math.isfinite(narrowed):
-        raise ValueError(f"{name} must be finite, got {value!r}")
+        raise ValueError(f"{host_name} must be finite")
     return real, numerator, denominator, narrowed
 
 
