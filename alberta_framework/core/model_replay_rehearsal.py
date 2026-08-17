@@ -188,6 +188,8 @@ class ModelReplayRehearsalConfig:
                 raise ValueError("one_hot requires replay.action_dim == model.n_actions")
         else:
             raise ValueError("action_encoding must be 'scalar_index' or 'one_hot'")
+        if self.ensemble.ensemble_size * (self.replay_quota + 1) > _INT32_MAX:
+            raise ValueError("derived per-event model update candidates must fit signed int32")
 
     @property
     def replay_quota(self) -> int:
@@ -409,6 +411,45 @@ class ModelReplayRehearsalResourceBudget:
                 name,
                 _require_int(name, getattr(self, name), minimum=0),
             )
+        if self.persistent_state_scalars <= 0:
+            raise ValueError("persistent_state_scalars must be positive")
+        if self.ensemble_state_bytes <= 0:
+            raise ValueError("ensemble_state_bytes must be positive")
+        if self.replay_state_bytes <= 0:
+            raise ValueError("replay_state_bytes must be positive")
+        if self.fixed_replay_quota < 1:
+            raise ValueError("fixed_replay_quota must be positive")
+        if self.short_term_capacity < 1 or self.long_term_capacity < 1:
+            raise ValueError("replay tier capacities must be positive")
+        if self.fixed_replay_quota > self.replay_total_capacity:
+            raise ValueError("fixed_replay_quota cannot exceed replay_total_capacity")
+        if self.max_real_model_update_candidates_per_event < 2:
+            raise ValueError("max_real_model_update_candidates_per_event must be at least two")
+        expected = {
+            "composer_accounting_bytes": 28,
+            "persistent_state_bytes": (
+                self.ensemble_state_bytes + self.replay_state_bytes + 28
+            ),
+            "replay_total_capacity": self.short_term_capacity + self.long_term_capacity,
+            "max_replay_model_update_candidates_per_event": (
+                self.fixed_replay_quota
+                * self.max_real_model_update_candidates_per_event
+            ),
+            "max_total_model_update_candidates_per_event": (
+                (self.fixed_replay_quota + 1)
+                * self.max_real_model_update_candidates_per_event
+            ),
+            "max_actor_updates_per_event": 0,
+            "max_critic_updates_per_event": 0,
+            "max_state_builder_updates_per_event": 0,
+            "max_real_event_count": _INT32_MAX // self.fixed_replay_quota,
+            "max_rehearsal_attempt_count": (
+                (_INT32_MAX // self.fixed_replay_quota) * self.fixed_replay_quota
+            ),
+        }
+        for name, value in expected.items():
+            if getattr(self, name) != value:
+                raise ValueError(f"{name} does not match the model-replay implementation")
 
     def to_config(self) -> dict[str, int]:
         """Return JSON-compatible exact accounting."""

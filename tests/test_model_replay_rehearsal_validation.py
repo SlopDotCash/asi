@@ -299,6 +299,22 @@ def test_composer_persistent_bytes_preflight_without_allocation() -> None:
     )
 
 
+def test_config_rejects_derived_per_event_candidate_overflow_before_allocation() -> None:
+    ensemble = _ensemble(ensemble_size=50_000)
+    replay = _replay(
+        total_capacity=100_000,
+        short_term_capacity=50_000,
+        short_term_sample_size=50_000,
+        long_term_sample_size=50_000,
+    )
+    with pytest.raises(ValueError, match="per-event model update candidates"):
+        ModelReplayRehearsalConfig(
+            ensemble=ensemble,
+            replay=replay,
+            action_encoding="one_hot",
+        )
+
+
 def test_from_config_requires_exact_schema() -> None:
     cfg = _composer()
     payload = cfg.to_config()
