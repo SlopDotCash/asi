@@ -1181,6 +1181,19 @@ def _require_exact_bool(value: Any, path: str) -> bool:
     return value
 
 
+def _require_exact_identity(value: Any, path: str, expected: str) -> str:
+    if type(value) is not str or value != expected:
+        raise ValueError(f"{path} must equal the canonical identity {expected!r}")
+    return value
+
+
+def _require_exact_parity(value: Any, path: str, expected: bool) -> bool:
+    parity = _require_exact_bool(value, path)
+    if parity is not expected:
+        raise ValueError(f"{path} must be {expected}")
+    return parity
+
+
 @dataclass(frozen=True)
 class AlbertaAdaUPGDResources:
     """Exact persistent-array accounting for one adaptive optimizer state."""
@@ -1194,8 +1207,17 @@ class AlbertaAdaUPGDResources:
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
+            "profile",
+            _require_exact_identity(self.profile, "profile", ALBERTA_ADAUPGD_PROFILE),
+        )
+        object.__setattr__(
+            self,
             "official_reference_parity",
-            _require_exact_bool(self.official_reference_parity, "official_reference_parity"),
+            _require_exact_parity(
+                self.official_reference_parity,
+                "official_reference_parity",
+                False,
+            ),
         )
         object.__setattr__(
             self,
@@ -1994,10 +2016,24 @@ class OfficialAdaUPGDResources:
     persistent_state_nbytes: int
 
     def __post_init__(self) -> None:
+        for field_name, value, expected in (
+            ("profile", self.profile, OFFICIAL_ADAUPGD_PROFILE),
+            ("source_commit", self.source_commit, OFFICIAL_ADAUPGD_COMMIT),
+            ("source_path", self.source_path, OFFICIAL_ADAUPGD_PATH),
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _require_exact_identity(value, field_name, expected),
+            )
         object.__setattr__(
             self,
             "official_reference_parity",
-            _require_exact_bool(self.official_reference_parity, "official_reference_parity"),
+            _require_exact_parity(
+                self.official_reference_parity,
+                "official_reference_parity",
+                True,
+            ),
         )
         object.__setattr__(
             self,

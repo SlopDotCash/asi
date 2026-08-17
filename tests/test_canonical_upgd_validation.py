@@ -15,6 +15,10 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.canonical_upgd import (
+    ALBERTA_ADAUPGD_PROFILE,
+    OFFICIAL_ADAUPGD_COMMIT,
+    OFFICIAL_ADAUPGD_PATH,
+    OFFICIAL_ADAUPGD_PROFILE,
     AlbertaAdaUPGD,
     AlbertaAdaUPGDConfig,
     AlbertaAdaUPGDResources,
@@ -572,7 +576,7 @@ def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
 
     with pytest.raises(ValueError, match="official_reference_parity"):
         AlbertaAdaUPGDResources(
-            profile="safe_extended",
+            profile=ALBERTA_ADAUPGD_PROFILE,
             official_reference_parity=1,
             parameter_count=1,
             persistent_array_count=2,
@@ -580,17 +584,17 @@ def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
         )
     with pytest.raises(ValueError, match="parameter_count"):
         AlbertaAdaUPGDResources(
-            profile="safe_extended",
-            official_reference_parity=True,
+            profile=ALBERTA_ADAUPGD_PROFILE,
+            official_reference_parity=False,
             parameter_count=True,
             persistent_array_count=2,
             persistent_state_nbytes=3,
         )
     with pytest.raises(ValueError, match="parameter_count"):
         OfficialAdaUPGDResources(
-            profile="official_experiment_global",
-            source_commit="c",
-            source_path="path",
+            profile=OFFICIAL_ADAUPGD_PROFILE,
+            source_commit=OFFICIAL_ADAUPGD_COMMIT,
+            source_path=OFFICIAL_ADAUPGD_PATH,
             official_reference_parity=True,
             parameter_count=True,
             persistent_array_count=2,
@@ -598,9 +602,9 @@ def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
         )
     with pytest.raises(ValueError, match="persistent_state_nbytes"):
         OfficialAdaUPGDResources(
-            profile="official_experiment_global",
-            source_commit="c",
-            source_path="path",
+            profile=OFFICIAL_ADAUPGD_PROFILE,
+            source_commit=OFFICIAL_ADAUPGD_COMMIT,
+            source_path=OFFICIAL_ADAUPGD_PATH,
             official_reference_parity=True,
             parameter_count=1,
             persistent_array_count=2,
@@ -608,16 +612,16 @@ def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
         )
 
     legal_alberta = AlbertaAdaUPGDResources(
-        profile="safe_extended",
+        profile=ALBERTA_ADAUPGD_PROFILE,
         official_reference_parity=False,
         parameter_count=1,
         persistent_array_count=2,
         persistent_state_nbytes=3,
     )
     legal_official = OfficialAdaUPGDResources(
-        profile="official_experiment_global",
-        source_commit="c",
-        source_path="path",
+        profile=OFFICIAL_ADAUPGD_PROFILE,
+        source_commit=OFFICIAL_ADAUPGD_COMMIT,
+        source_path=OFFICIAL_ADAUPGD_PATH,
         official_reference_parity=True,
         parameter_count=1,
         persistent_array_count=2,
@@ -635,3 +639,96 @@ def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
     assert '"parameter_count": 1' in dumped
     assert '"parameter_count": true' not in dumped
     assert '"official_reference_parity": 1' not in dumped
+
+
+class _HostileRecordIdentity:
+    def __eq__(self, other: object) -> bool:
+        del other
+        raise AssertionError("untrusted equality hook executed")
+
+    def __index__(self) -> int:
+        raise AssertionError("untrusted index hook executed")
+
+    def __int__(self) -> int:
+        raise AssertionError("untrusted integer hook executed")
+
+
+class _HostileStringIdentity(str):
+    def __eq__(self, other: object) -> bool:
+        del other
+        raise AssertionError("untrusted string equality hook executed")
+
+
+def _legal_alberta_resources(**overrides: object) -> AlbertaAdaUPGDResources:
+    values: dict[str, object] = {
+        "profile": ALBERTA_ADAUPGD_PROFILE,
+        "official_reference_parity": False,
+        "parameter_count": 1,
+        "persistent_array_count": 2,
+        "persistent_state_nbytes": 3,
+    }
+    values.update(overrides)
+    return AlbertaAdaUPGDResources(**values)  # type: ignore[arg-type]
+
+
+def _legal_official_resources(**overrides: object) -> OfficialAdaUPGDResources:
+    values: dict[str, object] = {
+        "profile": OFFICIAL_ADAUPGD_PROFILE,
+        "source_commit": OFFICIAL_ADAUPGD_COMMIT,
+        "source_path": OFFICIAL_ADAUPGD_PATH,
+        "official_reference_parity": True,
+        "parameter_count": 1,
+        "persistent_array_count": 2,
+        "persistent_state_nbytes": 3,
+    }
+    values.update(overrides)
+    return OfficialAdaUPGDResources(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("factory", "field", "value"),
+    [
+        (_legal_alberta_resources, "profile", "safe_extended"),
+        (_legal_alberta_resources, "profile", _HostileStringIdentity(ALBERTA_ADAUPGD_PROFILE)),
+        (_legal_alberta_resources, "official_reference_parity", True),
+        (_legal_official_resources, "profile", ALBERTA_ADAUPGD_PROFILE),
+        (_legal_official_resources, "source_commit", "main"),
+        (
+            _legal_official_resources,
+            "source_path",
+            _HostileStringIdentity(OFFICIAL_ADAUPGD_PATH),
+        ),
+        (_legal_official_resources, "official_reference_parity", False),
+        (_legal_official_resources, "parameter_count", _HostileRecordIdentity()),
+        (_legal_official_resources, "persistent_array_count", np.int32(2)),
+        (_legal_official_resources, "persistent_state_nbytes", -1),
+        (_legal_official_resources, "persistent_state_nbytes", _INT32_MAX + 1),
+    ],
+)
+def test_adaupgd_resource_records_bind_exact_hostile_safe_identities(
+    factory: Any,
+    field: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        factory(**{field: value})
+
+
+def test_adaupgd_resource_records_dump_only_bound_json_primitives() -> None:
+    records = {
+        "alberta": _legal_alberta_resources(
+            parameter_count=_INT32_MAX,
+            persistent_array_count=0,
+            persistent_state_nbytes=_INT32_MAX,
+        ).to_dict(),
+        "official": _legal_official_resources().to_dict(),
+    }
+    dumped = json.dumps(records, allow_nan=False, sort_keys=True)
+    decoded = json.loads(dumped)
+
+    assert decoded["alberta"]["profile"] == ALBERTA_ADAUPGD_PROFILE
+    assert decoded["alberta"]["official_reference_parity"] is False
+    assert decoded["official"]["profile"] == OFFICIAL_ADAUPGD_PROFILE
+    assert decoded["official"]["source_commit"] == OFFICIAL_ADAUPGD_COMMIT
+    assert decoded["official"]["source_path"] == OFFICIAL_ADAUPGD_PATH
+    assert decoded["official"]["official_reference_parity"] is True
