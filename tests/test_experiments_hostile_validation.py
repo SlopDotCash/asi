@@ -3,9 +3,11 @@
 import pytest
 
 from alberta_framework.utils.experiments import (
+    ExperimentConfig,
     _require_coordinate_hash,
     _require_finite_metric_array,
     _require_hyperparameter_coordinate,
+    run_multi_seed_experiment,
 )
 
 
@@ -19,6 +21,10 @@ class _EvilStr(str):
     def __repr__(self) -> str:  # pragma: no cover
         type(self).calls += 1
         raise AssertionError("EvilStr.__repr__ must not be called")
+
+    def __hash__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("EvilStr.__hash__ must not be called")
 
 
 class _StringSubclass(str):
@@ -86,3 +92,18 @@ def test_coordinate_hash_sanitized() -> None:
         _require_coordinate_hash(BadHash(), name="good_name")
     assert "!r" not in str(exc.value)
     assert "good_name" in str(exc.value)
+
+
+def test_multi_seed_rejects_hostile_config_name_before_hash_or_factories() -> None:
+    evil = _EvilStr("candidate")
+    _EvilStr.calls = 0
+
+    def fail_factory():
+        raise AssertionError("factory must not run")
+
+    config = ExperimentConfig(evil, fail_factory, fail_factory, 1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="must be an exact string"):
+        run_multi_seed_experiment(
+            [config], seeds=[0], parallel=False, show_progress=False
+        )
+    assert _EvilStr.calls == 0

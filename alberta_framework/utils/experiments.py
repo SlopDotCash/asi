@@ -61,9 +61,7 @@ _NUMPY_COORDINATE_TYPES = frozenset(
 )
 
 
-def _require_exact_str(name: object, value: object) -> str:
-    if type(name) is not str:
-        raise ValueError("name must be an exact string")
+def _require_exact_str(name: str, value: object) -> str:
     if type(value) is not str:
         raise ValueError(f"{name} must be an exact string")
     return value
@@ -226,6 +224,8 @@ def run_single_experiment(
     Returns:
         SingleRunResult with metrics and final state
     """
+    config_name = _require_exact_str("config.name", config.name)
+    seed = require_jax_seed(seed, name="seed")
     learner = config.learner_factory()
     stream = config.stream_factory()
     key = jr.key(seed)
@@ -236,7 +236,7 @@ def run_single_experiment(
     metrics_history = metrics_to_dicts(metrics, normalized=normalized)
 
     return SingleRunResult(
-        config_name=config.name,
+        config_name=config_name,
         seed=seed,
         metrics_history=metrics_history,
         final_state=final_state,
@@ -272,13 +272,15 @@ def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
     if not results:
         raise ValueError("Cannot aggregate empty results list")
 
-    config_names = sorted({r.config_name for r in results})
+    config_names = sorted(
+        {_require_exact_str("config_name", r.config_name) for r in results}
+    )
     if len(config_names) != 1:
         raise ValueError(
             f"aggregate_metrics requires runs from one configuration; got {config_names}"
         )
     config_name = config_names[0]
-    seeds = [r.seed for r in results]
+    seeds = [require_jax_seed(r.seed, name="seed") for r in results]
     if len(set(seeds)) != len(seeds):
         raise ValueError(f"aggregate_metrics requires unique seed identities; got {seeds}")
 
@@ -353,10 +355,11 @@ def run_multi_seed_experiment(
     seen_names: set[str] = set()
     duplicate_names: set[str] = set()
     for config in configs:
-        if config.name in seen_names:
-            duplicate_names.add(config.name)
+        config_name = _require_exact_str("config.name", config.name)
+        if config_name in seen_names:
+            duplicate_names.add(config_name)
         else:
-            seen_names.add(config.name)
+            seen_names.add(config_name)
 
     if duplicate_names:
         safe_names: list[str] = []
