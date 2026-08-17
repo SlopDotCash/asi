@@ -125,6 +125,22 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 
+_ACTUAL_INT_TYPES: frozenset[type] = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+
 
 def _require_exact_str(name: object, value: object) -> str:
     if type(name) is not str:
@@ -246,7 +262,7 @@ def _validated_hyperparameter(name: object, value: object) -> float:
     if type(value) not in (int, float):
         raise ValueError(f"hyperparameter '{host_name}' must be a finite JSON number")
     label = f"hyperparameter '{host_name}'"
-    if name in {"step_size", "eps", "norm_epsilon"}:
+    if host_name in {"step_size", "eps", "norm_epsilon"}:
         return validated_float32_scalar(label, value, positive=True)
     if name in {"utility_decay", "beta1", "beta2", "norm_decay"}:
         return validated_float32_scalar(
@@ -352,10 +368,8 @@ class LabelEMNISTConfig:
         for name in ("n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes"):
             host_name = _require_exact_str("name", name)
             value = getattr(self, host_name)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                if type(value) is int and not isinstance(value, bool):
-                    raise ValueError(f"{host_name} must be a positive integer, got '{value}'")
-                raise ValueError(f"{host_name} must be a positive integer, got non-integer")
+            if type(value) not in _ACTUAL_INT_TYPES or value <= 0:
+                raise ValueError(f"{host_name} must be a positive integer")
 
     @property
     def n_steps(self) -> int:
@@ -936,7 +950,7 @@ def _strict_json_object(path: Path) -> dict[str, Any]:
             host_key = _require_exact_str("key", key)
             if host_key in parsed:
                 raise ValueError(f"duplicate JSON key: '{host_key}'")
-            parsed[key] = value
+            parsed[host_key] = value
         return parsed
 
     def reject_constant(value: str) -> object:
@@ -1063,13 +1077,9 @@ def _validated_partial(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
     body = plan["plan"]
     if payload.get("plan_sha256") != plan["plan_sha256"]:
         raise ValueError(f"{path}: shard is bound to a different plan")
-    learner = payload.get("learner")
-    host_learner2 = learner if type(learner) is str else None
-    if host_learner2 is None or host_learner2 not in body["learner_ids"]:
-        if type(learner) is str:
-            host_l = _require_exact_str("learner", learner)
-            raise ValueError(f"{path}: learner '{host_l}' is not planned")
-        raise ValueError(f"{path}: learner is not an exact string and not planned")
+    learner = _require_exact_str("learner", payload.get("learner"))
+    if learner not in body["learner_ids"]:
+        raise ValueError(f"{path}: learner '{learner}' is not planned")
     shard_hp = _validated_float_hyperparameters(
         payload.get("hyperparameters"), str(learner), context=str(path)
     )
@@ -1240,8 +1250,8 @@ def _cmd_plan(args: argparse.Namespace) -> None:
 def _cmd_shard(args: argparse.Namespace) -> None:
     plan = load_plan(args.plan)
     body = plan["plan"]
-    if args.learner_id not in body["learner_ids"]:
-        host_lid = _require_exact_str("learner_id", args.learner_id)
+    host_lid = _require_exact_str("learner_id", args.learner_id)
+    if host_lid not in body["learner_ids"]:
         raise SystemExit(f"learner '{host_lid}' is not planned")
     if args.seed_id not in body["seed_ids"]:
         raise SystemExit(f"seed {args.seed_id} is not planned")

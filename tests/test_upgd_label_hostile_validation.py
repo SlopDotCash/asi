@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pathlib
 
+import numpy as np
 import pytest
 
 from alberta_framework.benchmarks.upgd_label_emnist import (
+    LabelEMNISTConfig,
     _require_exact_str,
     _validated_hyperparameter,
     resolve_hyperparameters,
@@ -27,6 +29,18 @@ class _EvilStr(str):
 
 class _StringSubclass(str):
     pass
+
+
+class _HostileInt(int):
+    calls = 0
+
+    def __le__(self, other: object) -> bool:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__le__ must not be called")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__repr__ must not be called")
 
 
 def test_require_exact_str_rejects_evil() -> None:
@@ -61,6 +75,20 @@ def test_validated_hyperparameter_sanitized() -> None:
     with pytest.raises(ValueError, match="hyperparameter") as exc:
         _validated_hyperparameter("bad_param", "not_a_number")
     assert "!r" not in str(exc.value)
+
+
+def test_label_config_rejects_int_subclass_without_hooks() -> None:
+    hostile = _HostileInt(4)
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="positive integer"):
+        LabelEMNISTConfig(n_tasks=hostile)
+    assert _HostileInt.calls == 0
+
+
+def test_label_config_accepts_numpy_integer_scalars() -> None:
+    config = LabelEMNISTConfig(n_tasks=np.int32(3), task_length=np.int64(8))
+    assert int(config.n_tasks) == 3
+    assert int(config.task_length) == 8
 
 
 def test_resolve_rejects_evil_without_hooks() -> None:
