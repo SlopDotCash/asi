@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import time
 from collections.abc import Mapping, Sequence
 from enum import IntEnum
@@ -281,15 +282,20 @@ def coerce_security_action(action: SecurityAction | int | str) -> SecurityAction
     """Coerce an integer or name to ``SecurityAction``."""
     if isinstance(action, SecurityAction):
         return action
-    if isinstance(action, int):
-        return SecurityAction(action)
-    normalized = action.strip().lower()
-    if normalized in _ACTION_ALIASES:
-        return _ACTION_ALIASES[normalized]
-    for candidate in SecurityAction:
-        if candidate.name.lower() == normalized:
-            return candidate
-    raise ValueError(f"unknown security action: {action!r}")
+    if type(action) is int:
+        try:
+            return SecurityAction(action)
+        except ValueError as exc:
+            raise ValueError("unknown security action") from exc
+    if type(action) is str:
+        normalized = action.strip().lower()
+        if normalized in _ACTION_ALIASES:
+            return _ACTION_ALIASES[normalized]
+        for candidate in SecurityAction:
+            if candidate.name.lower() == normalized:
+                return candidate
+        raise ValueError(f"unknown security action: {action!r}")
+    raise ValueError("unknown security action")
 
 
 def security_gym_action_name(action: SecurityAction | int | str) -> str:
@@ -307,7 +313,12 @@ def to_security_gym_action(
     ``action`` id and a one-element ``risk_score`` array. A one-element tuple is
     accepted by the environment and keeps this module dependency-free.
     """
-    clipped_risk = min(10.0, max(0.0, float(risk_score)))
+    if type(risk_score) is bool or type(risk_score) not in (int, float):
+        raise ValueError("risk_score must be a finite real number")
+    score = float(risk_score)
+    if not math.isfinite(score):
+        raise ValueError("risk_score must be a finite real number")
+    clipped_risk = min(10.0, max(0.0, score))
     return {
         "action": int(coerce_security_action(action)),
         "risk_score": (clipped_risk,),

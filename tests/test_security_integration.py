@@ -43,6 +43,21 @@ def test_security_action_indices_are_stable() -> None:
     assert coerce_security_action(5) == SecurityAction.ISOLATE
 
 
+@pytest.mark.parametrize("action", [True, False, 1.0, 99])
+def test_coerce_security_action_rejects_noncanonical_actions(action: object) -> None:
+    with pytest.raises(ValueError, match="security action"):
+        coerce_security_action(action)  # type: ignore[arg-type]
+
+
+def test_to_security_gym_action_rejects_boolean_and_nonfinite_risk() -> None:
+    with pytest.raises(ValueError, match="risk_score"):
+        to_security_gym_action("pass", risk_score=True)
+    with pytest.raises(ValueError, match="risk_score"):
+        to_security_gym_action("pass", risk_score=float("nan"))
+    with pytest.raises(ValueError, match="risk_score"):
+        to_security_gym_action("pass", risk_score=float("inf"))
+
+
 def test_security_gym_action_adapter_matches_sibling_contract() -> None:
     assert SECURITY_GYM_ACTION_NAMES == (
         "pass",
