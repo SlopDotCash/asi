@@ -763,3 +763,120 @@ def test_checkpoint_rejects_invalid_state(tmp_path: Path) -> None:
             corrupt,
             tmp_path / "invalid",
         )
+
+
+def test_config_preflights_complete_update_result_at_exact_boundary() -> None:
+    # Linear 2-observation/2-action fixture: 324 * ensemble_size + 196 bytes.
+    last_legal = (2**31 - 1 - 196) // 324
+    _config(ensemble_size=last_legal)
+    with pytest.raises(ValueError, match="update-result bytes"):
+        _config(ensemble_size=last_legal + 1)
+
+
+def test_prediction_reductions_remain_finite_at_full_float32_member_means() -> None:
+    ensemble = WorldModelEnsemble(_config(ensemble_size=2))
+    state = ensemble.init(jr.key(0))
+    maximum = jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32)
+    members = tuple(
+        dataclasses.replace(
+            member,
+            observation_min=jnp.full((2,), maximum, dtype=jnp.float32),
+            observation_max=jnp.full((2,), maximum, dtype=jnp.float32),
+            reward_min=maximum,
+            reward_max=maximum,
+            step_count=jnp.asarray(1, dtype=jnp.int32),
+        )
+        for member in state.member_states
+    )
+    prediction = ensemble._predict_unchecked(  # noqa: SLF001
+        dataclasses.replace(state, member_states=members),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    assert bool(prediction.valid)
+    assert bool(jnp.all(jnp.isfinite(prediction.mean_next_observation)))
+    assert bool(jnp.isfinite(prediction.mean_reward))
+    np.testing.assert_array_equal(
+        np.asarray(prediction.mean_next_observation),
+        np.full((2,), np.finfo(np.float32).max, dtype=np.float32),
+    )
+
+
+def test_prediction_variance_reduction_scales_before_sum() -> None:
+    magnitude = 8.0e18
+    ensemble_size = 8
+    model = ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, hidden_sizes=(), sparsity=0.0
+    )
+    signals = LearningSignalEstimatorConfig(
+        ensemble_size=ensemble_size,
+        target_dim=4,
+        max_input_magnitude=magnitude,
+    )
+    ensemble = WorldModelEnsemble(
+        WorldModelEnsembleConfig(
+            model=model,
+            signal_estimator=signals,
+            ensemble_size=ensemble_size,
+        )
+    )
+    state = ensemble.init(jr.key(0))
+    members = []
+    for index, member in enumerate(state.member_states):
+        heads = member.learner_state.head_params
+        signed = magnitude if index % 2 == 0 else -magnitude
+        members.append(
+            dataclasses.replace(
+                member,
+                learner_state=dataclasses.replace(
+                    member.learner_state,
+                    head_params=dataclasses.replace(
+                        heads,
+                        weights=tuple(jnp.zeros_like(weight) for weight in heads.weights),
+                        biases=tuple(jnp.full_like(bias, signed) for bias in heads.biases),
+                    ),
+                ),
+            )
+        )
+    prediction = ensemble._predict_unchecked(  # noqa: SLF001
+        dataclasses.replace(state, member_states=tuple(members)),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    assert bool(prediction.valid)
+    assert bool(jnp.all(jnp.isfinite(prediction.per_head_epistemic_variance)))
+    assert bool(jnp.isfinite(prediction.epistemic_disagreement))
+
+
+def test_public_prediction_neutralizes_nonfinite_aggregate_variance() -> None:
+    ensemble = WorldModelEnsemble(_config(ensemble_size=2))
+    state = ensemble.init(jr.key(0))
+    maximum = np.finfo(np.float32).max
+    members = []
+    for index, member in enumerate(state.member_states):
+        heads = member.learner_state.head_params
+        signed = maximum if index == 0 else -maximum
+        members.append(
+            dataclasses.replace(
+                member,
+                learner_state=dataclasses.replace(
+                    member.learner_state,
+                    head_params=dataclasses.replace(
+                        heads,
+                        weights=tuple(jnp.zeros_like(weight) for weight in heads.weights),
+                        biases=tuple(jnp.full_like(bias, signed) for bias in heads.biases),
+                    ),
+                ),
+            )
+        )
+    prediction = ensemble.predict(
+        dataclasses.replace(state, member_states=tuple(members)),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    assert not bool(prediction.valid)
+    chex.assert_tree_all_finite(prediction)
+    np.testing.assert_array_equal(
+        np.asarray(prediction.member_raw_predictions),
+        np.zeros((2, 4), dtype=np.float32),
+    )

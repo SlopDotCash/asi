@@ -156,6 +156,30 @@ def _preflight_ensemble_state_resources(
         if not 1 <= value <= _INT32_MAX:
             raise ValueError(f"derived {name} must fit signed int32")
 
+    update_float32_scalars = (
+        2 * ensemble_size * target_dim
+        + 3 * target_dim
+        + ensemble_size * model.observation_dim
+        + 2 * model.observation_dim
+        + 3 * ensemble_size
+        + 13
+    )
+    update_bool_scalars = 2 * ensemble_size + 20
+    update_scalars = logical_scalars + update_float32_scalars + update_bool_scalars
+    update_bytes = logical_bytes + 4 * update_float32_scalars + update_bool_scalars
+    for name, value in (
+        ("ensemble update-result scalars", update_scalars),
+        ("ensemble update-result bytes", update_bytes),
+    ):
+        if not 1 <= value <= _INT32_MAX:
+            raise ValueError(f"derived {name} must fit signed int32")
+
+
+def _safe_mean(values: Array, *, axis: int | None = None) -> Array:
+    """Compute a float32 mean without first forming an overflowing sum."""
+    divisor = values.size if axis is None else values.shape[axis]
+    return jnp.sum(values / jnp.asarray(divisor, dtype=values.dtype), axis=axis)
+
 
 _REPLAY_KEY_FOLD_IN = 0x5245504C
 _V1_REPLAY_KEY_FOLD_IN = 0x50525632
@@ -1068,25 +1092,39 @@ class WorldModelEnsemble:
         )
         rewards = jnp.stack([prediction.reward for prediction in predictions])
         discounts = jnp.stack([prediction.discount for prediction in predictions])
-        per_head_epistemic = jnp.var(raw, axis=0)
+        mean_raw = _safe_mean(raw, axis=0)
+        mean_next_observation = _safe_mean(next_observations, axis=0)
+        mean_reward = _safe_mean(rewards)
+        mean_discount = _safe_mean(discounts)
+        per_head_epistemic = _safe_mean(jnp.square(raw - mean_raw[None, :]), axis=0)
+        epistemic_disagreement = _safe_mean(per_head_epistemic)
+        aggregates_finite = (
+            jnp.all(jnp.isfinite(mean_raw))
+            & jnp.all(jnp.isfinite(mean_next_observation))
+            & jnp.isfinite(mean_reward)
+            & jnp.isfinite(mean_discount)
+            & jnp.all(jnp.isfinite(per_head_epistemic))
+            & jnp.isfinite(epistemic_disagreement)
+        )
         finite = (
             jnp.all(jnp.isfinite(raw))
             & jnp.all(jnp.isfinite(next_observations))
             & jnp.all(jnp.isfinite(rewards))
             & jnp.all(jnp.isfinite(discounts))
             & jnp.all(jnp.abs(raw) <= self._config.signal_estimator.max_input_magnitude)
+            & aggregates_finite
         )
         return WorldModelEnsemblePrediction(
             member_raw_predictions=raw,
-            mean_raw_prediction=jnp.mean(raw, axis=0),
+            mean_raw_prediction=mean_raw,
             member_next_observations=next_observations,
-            mean_next_observation=jnp.mean(next_observations, axis=0),
+            mean_next_observation=mean_next_observation,
             member_rewards=rewards,
-            mean_reward=jnp.mean(rewards),
+            mean_reward=mean_reward,
             member_discounts=discounts,
-            mean_discount=jnp.mean(discounts),
+            mean_discount=mean_discount,
             per_head_epistemic_variance=per_head_epistemic,
-            epistemic_disagreement=jnp.mean(per_head_epistemic),
+            epistemic_disagreement=epistemic_disagreement,
             residual_variances=state.residual_variances,
             residual_proxy_ready=(state.event_count >= self._config.residual_variance_warmup_steps),
             valid=finite,
@@ -1117,10 +1155,15 @@ class WorldModelEnsemble:
 
         def do_predict(_: None) -> WorldModelEnsemblePrediction:
             result = self._predict_unchecked(state, obs, act)
-            return dataclasses.replace(
-                result,
-                valid=result.valid & valid,
-            )  # type: ignore[type-var]
+            result_valid = result.valid & valid
+            return cast(
+                WorldModelEnsemblePrediction,
+                jax.lax.cond(
+                    result_valid,
+                    lambda: dataclasses.replace(cast(Any, result), valid=result_valid),
+                    self._zero_prediction,
+                ),
+            )
 
         return cast(
             WorldModelEnsemblePrediction,
@@ -1314,8 +1357,8 @@ class WorldModelEnsemble:
             targets = self._model.targets(obs, rew, disc, next_obs)
             residuals = prediction.member_raw_predictions - targets[None, :]
             squared_residuals = jnp.square(residuals)
-            member_losses = jnp.mean(squared_residuals, axis=1)
-            observed_loss = jnp.mean(member_losses)
+            member_losses = _safe_mean(squared_residuals, axis=1)
+            observed_loss = _safe_mean(member_losses)
             signal_cfg = self._config.signal_estimator
             predictions_valid = (
                 prediction.valid
@@ -1494,7 +1537,7 @@ class WorldModelEnsemble:
                     act,
                 )
                 residual = preupdate_prediction.member_raw_predictions - stopped_targets[None, :]
-                return 0.5 * jnp.mean(jnp.square(residual)), preupdate_prediction
+                return 0.5 * _safe_mean(jnp.square(residual)), preupdate_prediction
 
             (
                 (representation_objective, prediction),
@@ -1502,8 +1545,8 @@ class WorldModelEnsemble:
             ) = jax.value_and_grad(representation_loss, has_aux=True)(obs)
             residuals = prediction.member_raw_predictions - stopped_targets[None, :]
             squared_residuals = jnp.square(residuals)
-            member_losses = jnp.mean(squared_residuals, axis=1)
-            observed_loss = jnp.mean(member_losses)
+            member_losses = _safe_mean(squared_residuals, axis=1)
+            observed_loss = _safe_mean(member_losses)
             signal_cfg = self._config.signal_estimator
             predictions_valid = (
                 prediction.valid
@@ -1645,7 +1688,10 @@ class WorldModelEnsemble:
             )
             return WorldModelEnsembleUpdateResult(
                 state=next_state,
-                prediction=prediction,
+                prediction=cast(
+                    WorldModelEnsemblePrediction,
+                    jax.lax.cond(applied, lambda: prediction, self._zero_prediction),
+                ),
                 signals=reported_signals,
                 targets=jnp.where(applied, targets, zero_target),
                 observed_loss=jnp.where(applied, observed_loss, 0.0),
