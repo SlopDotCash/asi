@@ -5,8 +5,9 @@ including learning curves, bar plots, heatmaps, and multi-panel figures.
 """
 
 import math
+import operator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, SupportsIndex, cast
 
 import numpy as np
 
@@ -31,6 +32,13 @@ _DEFAULT_STYLE = {
 
 _current_style = _DEFAULT_STYLE.copy()
 
+_ACTUAL_INT_TYPES = frozenset(
+    {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
+)
+_ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
+    {float, *(np.dtype(code).type for code in "efdg")}
+)
+
 
 def _require_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
@@ -39,7 +47,7 @@ def _require_exact_bool(name: str, value: object) -> bool:
 
 
 def _require_finite_positive(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in _ACTUAL_REAL_TYPES:
         raise ValueError(f"{name} must be a real number")
     number = float(value)
     if not math.isfinite(number) or number <= 0.0:
@@ -48,11 +56,12 @@ def _require_finite_positive(name: str, value: object) -> float:
 
 
 def _require_positive_int(name: str, value: object) -> int:
-    if type(value) is not int:
-        raise ValueError(f"{name} must be an exact int")
-    if value <= 0:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer")
+    number = operator.index(cast(SupportsIndex, value))
+    if number <= 0:
         raise ValueError(f"{name} must be a positive int")
-    return value
+    return number
 
 
 def set_publication_style(

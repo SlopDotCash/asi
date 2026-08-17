@@ -395,3 +395,23 @@ def test_set_publication_style_keeps_legal_hosts() -> None:
         assert plt.rcParams["text.usetex"] is False
     finally:
         plt.rcParams.update(before)
+
+
+def test_visualization_keeps_concrete_numpy_numeric_hosts(results) -> None:
+    """Scientific callers commonly source style and window values from NumPy."""
+    before = dict(plt.rcParams)
+    try:
+        set_publication_style(
+            font_size=np.int32(10),
+            figure_width=np.float32(3.5),
+            figure_height=np.float64(2.8),
+        )
+        _, ax = plot_learning_curves(
+            results,
+            show_ci=False,
+            log_scale=False,
+            window_size=np.int32(5),
+        )
+        assert ax.lines
+    finally:
+        plt.rcParams.update(before)
