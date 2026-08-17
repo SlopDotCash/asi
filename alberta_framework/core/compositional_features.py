@@ -567,8 +567,10 @@ class FiniteCandidateSelector:
         if loss_lower_bound >= loss_upper_bound:
             raise ValueError("loss_lower_bound must be < loss_upper_bound")
         loss_width = loss_upper_bound - loss_lower_bound
-        if loss_width > float(np.finfo(np.float32).max):
-            raise ValueError("loss bounds must have a finite float32 width")
+        if not float(np.finfo(np.float32).tiny) <= loss_width <= float(
+            np.finfo(np.float32).max
+        ):
+            raise ValueError("loss bounds must have a finite normal float32 width")
         update_rule = _require_choice(
             "update_rule",
             update_rule,
@@ -594,6 +596,7 @@ class FiniteCandidateSelector:
         self._exploration = exploration
         self._loss_lower_bound = loss_lower_bound
         self._loss_upper_bound = loss_upper_bound
+        self._loss_width = float(np.float32(loss_width))
         self._update_rule = update_rule
 
     @property
@@ -671,10 +674,7 @@ class FiniteCandidateSelector:
     def _unit_losses(self, losses: Array) -> Array:
         losses = jnp.asarray(losses, dtype=jnp.float32)
         finite = jnp.isfinite(losses)
-        width = jnp.asarray(
-            self._loss_upper_bound - self._loss_lower_bound,
-            dtype=jnp.float32,
-        )
+        width = jnp.asarray(self._loss_width, dtype=jnp.float32)
         unit = (losses - self._loss_lower_bound) / width
         unit = jnp.clip(unit, 0.0, 1.0)
         return jnp.where(finite, unit, jnp.nan)

@@ -74,12 +74,35 @@ def test_nonzero_float32_sinks_reject_underflow_to_zero(field: str) -> None:
 def test_selector_bounds_reject_nonzero_underflow() -> None:
     with pytest.raises(ValueError, match="remain nonzero"):
         FiniteCandidateSelector(2, loss_lower_bound=1e-100)
-    with pytest.raises(ValueError, match="finite float32 width"):
+    with pytest.raises(ValueError, match="finite normal float32 width"):
         FiniteCandidateSelector(
             2,
             loss_lower_bound=-float(np.finfo(np.float32).max),
             loss_upper_bound=float(np.finfo(np.float32).max),
         )
+
+
+def test_selector_loss_width_must_survive_the_jax_division_sink() -> None:
+    smallest_subnormal = float.fromhex("0x1p-149")
+    with pytest.raises(ValueError, match="finite normal float32 width"):
+        FiniteCandidateSelector(
+            2,
+            loss_lower_bound=0.0,
+            loss_upper_bound=smallest_subnormal,
+        )
+
+    smallest_normal = float(np.finfo(np.float32).tiny)
+    selector = FiniteCandidateSelector(
+        2,
+        loss_lower_bound=0.0,
+        loss_upper_bound=smallest_normal,
+    )
+    result = selector.update(
+        selector.init(),
+        jnp.asarray([0.0, smallest_normal], dtype=jnp.float32),
+    )
+    np.testing.assert_array_equal(np.asarray(result.bounded_losses), np.asarray([0.0, 1.0]))
+    assert int(result.state.step_count) == 1
 
 
 def test_selector_float_and_string_sinks_are_exact_and_canonical() -> None:
