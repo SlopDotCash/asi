@@ -32,9 +32,7 @@ References:
 
 from __future__ import annotations
 
-import math
 from functools import partial
-from numbers import Real
 
 import jax
 import jax.numpy as jnp
@@ -47,37 +45,58 @@ def _is_bool(value: object) -> bool:
     return type(value) is bool or type(value) is np.bool_
 
 
-def _require_host_discount(name: str, value: object) -> object:
+def _concrete_numeric_array(
+    name: str,
+    value: object,
+    *,
+    ndim: int,
+) -> np.ndarray | None:
+    """Return a concrete numeric host view, or ``None`` for a JAX tracer."""
+    if isinstance(value, jax.core.Tracer):
+        if value.ndim != ndim:
+            raise ValueError(f"{name} must be {ndim}-dimensional")
+        if jnp.issubdtype(value.dtype, jnp.bool_):
+            raise ValueError(f"{name} must not be boolean")
+        return None
+    try:
+        array = np.asarray(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be numeric") from exc
+    if array.ndim != ndim:
+        raise ValueError(f"{name} must be {ndim}-dimensional")
+    if array.dtype.kind not in "biuf":
+        raise ValueError(f"{name} must be real-valued")
+    return array
+
+
+def _require_host_discount[T](name: str, value: T, *, ndim: int) -> T:
     """Reject boolean / non-finite host discounts before they become 0/1 identities."""
     if _is_bool(value):
         raise ValueError(f"{name} must be a finite discount in [0, 1], not a boolean")
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
-            raise ValueError(f"{name} must be a finite discount in [0, 1]")
+    array = _concrete_numeric_array(name, value, ndim=ndim)
+    if array is None:
         return value
-    dtype = getattr(value, "dtype", None)
-    if dtype is not None and jnp.issubdtype(dtype, jnp.bool_):
+    if array.dtype.kind == "b":
         raise ValueError(f"{name} must be a finite discount in [0, 1], not a boolean")
-    if dtype is not None:
-        return value
-    raise ValueError(f"{name} must be a finite discount in [0, 1]")
+    if not bool(np.all(np.isfinite(array))) or not bool(
+        np.all((array >= 0.0) & (array <= 1.0))
+    ):
+        raise ValueError(f"{name} must be a finite discount in [0, 1]")
+    return value
 
 
-def _require_host_finite_real(name: str, value: object) -> object:
+def _require_host_finite_real[T](name: str, value: T) -> T:
     """Reject boolean / non-finite host scalars before they become 0/1 bootstraps."""
     if _is_bool(value):
         raise ValueError(f"{name} must be a finite real number, not a boolean")
-    if isinstance(value, Real):
-        if not math.isfinite(float(value)):
-            raise ValueError(f"{name} must be a finite real number")
+    array = _concrete_numeric_array(name, value, ndim=0)
+    if array is None:
         return value
-    dtype = getattr(value, "dtype", None)
-    if dtype is not None and jnp.issubdtype(dtype, jnp.bool_):
+    if array.dtype.kind == "b":
         raise ValueError(f"{name} must be a finite real number, not a boolean")
-    if dtype is not None:
-        return value
-    raise ValueError(f"{name} must be a finite real number")
+    if not bool(np.isfinite(array)):
+        raise ValueError(f"{name} must be a finite real number")
+    return value
 
 
 def forward_view_returns(
@@ -101,7 +120,7 @@ def forward_view_returns(
         Array of shape ``(T,)`` where index ``t`` is the forward-view
         return ``G_t = c_{t+1} + gamma * c_{t+2} + gamma^2 * c_{t+3} + ...``.
     """
-    gamma = _require_host_discount("gamma", gamma)
+    gamma = _require_host_discount("gamma", gamma, ndim=0)
     terminal_value = _require_host_finite_real("terminal_value", terminal_value)
     gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
     init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
@@ -135,7 +154,7 @@ def multi_horizon_returns(
         Array of shape ``(T, H)`` -- ``[t, h]`` is the forward-view return
         from step ``t`` at horizon ``gammas[h]``.
     """
-    gammas = _require_host_discount("gammas", gammas)
+    gammas = _require_host_discount("gammas", gammas, ndim=1)
     terminal_value = _require_host_finite_real("terminal_value", terminal_value)
 
     def per_gamma(g: Array) -> Array:
