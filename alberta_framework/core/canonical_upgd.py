@@ -280,7 +280,7 @@ def _validated_float32_scalar(
         upper=upper,
         upper_inclusive=upper_inclusive,
     )
-    if numerator != 0 and float(np.float32(numerator / denominator)) == 0.0:
+    if numerator != 0 and abs(numerator) * (1 << 150) <= denominator:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
 
