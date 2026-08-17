@@ -16,6 +16,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
+import pytest
 
 from alberta_framework import (
     LMS,
@@ -48,6 +49,20 @@ class TestInit:
         state = learner.init(3)
         pred = learner.predict(state, jnp.array([1.0, 2.0, 3.0]))
         chex.assert_trees_all_close(pred, jnp.array([0.0]))
+
+    @pytest.mark.parametrize("step_size", [float("nan"), float("inf"), 0.0, -0.1, True])
+    def test_rejects_illegal_step_size(self, step_size: object) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            TrueOnlineTDLearner(step_size=step_size)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("trace_decay", [float("nan"), float("inf"), -0.1, 1.5, True])
+    def test_rejects_illegal_trace_decay(self, trace_decay: object) -> None:
+        with pytest.raises(ValueError, match="trace_decay"):
+            TrueOnlineTDLearner(trace_decay=trace_decay)  # type: ignore[arg-type]
+
+    def test_legal_zero_trace_decay_is_td0(self) -> None:
+        learner = TrueOnlineTDLearner(step_size=0.05, trace_decay=0.0)
+        assert learner._trace_decay == 0.0
 
     def test_inf_reward_silent_feature_holds_finite_state(self) -> None:
         """Inf reward * a silent feature is 0*inf = NaN in the Dutch-trace update.

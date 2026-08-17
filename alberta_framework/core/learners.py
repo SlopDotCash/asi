@@ -30,6 +30,7 @@ import jax.numpy as jnp
 from jax import Array
 from jaxtyping import Bool, Float
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.normalizers import (
     EMANormalizerState,
@@ -1914,8 +1915,10 @@ class TrueOnlineTDLearner:
 
     def __init__(self, step_size: float = 0.05, trace_decay: float = 0.9):
         """Initialize the learner."""
-        self._step_size = step_size
-        self._trace_decay = trace_decay
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._trace_decay = validated_float32_scalar(
+            "trace_decay", trace_decay, lower=0.0, upper=1.0
+        )
 
     def init(self, feature_dim: int) -> TrueOnlineTDState:
         """Initialize learner state."""
