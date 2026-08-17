@@ -170,6 +170,109 @@ class OptionSearchControlResourceBudget:
     stomp_self_audits_per_call: int
     max_diagnostic_payload_bytes_per_call: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "n_options",
+            _require_int32("n_options", self.n_options, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "observation_dim",
+            _require_int32("observation_dim", self.observation_dim, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "backup_budget",
+            _require_int32("backup_budget", self.backup_budget, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_bytes",
+            _require_int32(
+                "persistent_state_bytes",
+                self.persistent_state_bytes,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "rng_draws_per_call",
+            _require_int32("rng_draws_per_call", self.rng_draws_per_call, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "candidate_values_per_evaluation",
+            _require_int32(
+                "candidate_values_per_evaluation",
+                self.candidate_values_per_evaluation,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_candidate_evaluations_per_call",
+            _require_int32(
+                "max_candidate_evaluations_per_call",
+                self.max_candidate_evaluations_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_base_learner_updates_per_call",
+            _require_int32(
+                "max_base_learner_updates_per_call",
+                self.max_base_learner_updates_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_model_matrix_vector_products_per_call",
+            _require_int32(
+                "max_model_matrix_vector_products_per_call",
+                self.max_model_matrix_vector_products_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_base_value_forward_calls_per_call",
+            _require_int32(
+                "max_base_value_forward_calls_per_call",
+                self.max_base_value_forward_calls_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_base_value_backward_calls_per_call",
+            _require_int32(
+                "max_base_value_backward_calls_per_call",
+                self.max_base_value_backward_calls_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "stomp_self_audits_per_call",
+            _require_int32(
+                "stomp_self_audits_per_call",
+                self.stomp_self_audits_per_call,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "max_diagnostic_payload_bytes_per_call",
+            _require_int32(
+                "max_diagnostic_payload_bytes_per_call",
+                self.max_diagnostic_payload_bytes_per_call,
+                minimum=0,
+            ),
+        )
+
     def to_config(self) -> dict[str, int]:
         """Return the exact JSON-compatible logical resource record."""
 
