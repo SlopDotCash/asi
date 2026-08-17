@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -339,7 +341,7 @@ def test_cumulant_discovery_rejects_hostile_integer_subclasses(field: str) -> No
 @pytest.mark.parametrize(
     "field", ["decay_rate", "replacement_rate", "predictor_step_size", "gamma"]
 )
-def test_cumulant_discovery_float_hook_runs_once(field: str) -> None:
+def test_cumulant_discovery_rejects_float_subclasses_without_hooks(field: str) -> None:
     class CountingFloat(float):
         def __new__(cls):
             instance = super().__new__(cls, 0.5)
@@ -351,10 +353,9 @@ def test_cumulant_discovery_float_hook_runs_once(field: str) -> None:
             return (1, 2)
 
     value = CountingFloat()
-    discovery = CumulantDiscovery(raw_dim=4, **{field: value})
-
-    assert value.calls == 1
-    assert type(getattr(discovery, f"_{field}")) is float
+    with pytest.raises(ValueError, match=field):
+        CumulantDiscovery(raw_dim=4, **{field: value})
+    assert value.calls == 0
 
 
 def test_cumulant_discovery_hostile_float_failure_never_formats_repr() -> None:
@@ -367,6 +368,13 @@ def test_cumulant_discovery_hostile_float_failure_never_formats_repr() -> None:
 
     with pytest.raises(ValueError, match="decay_rate"):
         CumulantDiscovery(raw_dim=4, decay_rate=ExplodingFloat(0.5))
+
+
+@pytest.mark.parametrize("field", ["replacement_rate", "gamma"])
+def test_cumulant_discovery_rejects_exact_nonzero_float32_underflow(field: str) -> None:
+    tiny = np.nextafter(np.longdouble(0), np.longdouble(1))
+    with pytest.raises(ValueError, match="remain nonzero"):
+        CumulantDiscovery(raw_dim=4, **{field: tiny})
 
 
 def test_cumulant_discovery_resource_formula_matches_state() -> None:
@@ -385,22 +393,13 @@ def test_cumulant_discovery_resource_boundary_is_allocation_free() -> None:
         CumulantDiscovery(raw_dim=last_valid_dim + 1, n_candidates=1)
 
 
-def test_cumulant_discovery_config_schema_is_exact_json() -> None:
+def test_cumulant_discovery_config_preserves_historical_mapping_forms() -> None:
     config = CumulantDiscovery(raw_dim=4).to_config()
     config["raw_dim"] = np.int32(4)
-    with pytest.raises(ValueError, match="exact JSON integer"):
-        CumulantDiscovery.from_config(config)
-
-    config = CumulantDiscovery(raw_dim=4).to_config()
-    config["unknown"] = 1
-    with pytest.raises(ValueError, match="exact schema"):
-        CumulantDiscovery.from_config(config)
-
-    class ConfigSubclass(dict):
-        pass
-
-    with pytest.raises(ValueError, match="exact dictionary"):
-        CumulantDiscovery.from_config(ConfigSubclass())
+    assert CumulantDiscovery.from_config(MappingProxyType(config)).raw_dim == 4
+    partial = {"type": "historical-marker", "raw_dim": 4}
+    restored = CumulantDiscovery.from_config(partial)
+    assert restored.n_candidates == 16
 
 
 def test_cumulant_discovery_age_saturates_at_int32_max() -> None:

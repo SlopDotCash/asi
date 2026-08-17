@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -65,12 +66,15 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 
 _INT32_MAX = 2**31 - 1
 _MAX_PERSISTENT_STATE_BYTES = 256 * 1024 * 1024
 _ACTUAL_INT_TYPES = frozenset(
     {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+)
+_ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
+    {float, *(np.dtype(code).type for code in "efdg")}
 )
 
 
@@ -91,18 +95,21 @@ def _require_float32(
     upper: float | None = None,
     upper_inclusive: bool = True,
     positive: bool = False,
+    preserve_nonzero: bool = False,
 ) -> float:
-    try:
-        return validated_float32_scalar(
-            name,
-            value,
-            lower=lower,
-            upper=upper,
-            upper_inclusive=upper_inclusive,
-            positive=positive,
-        )
-    except Exception as error:
-        raise ValueError(f"{name} is outside its finite float32 domain") from error
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+    stored, numerator, _ = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+        positive=positive,
+    )
+    if preserve_nonzero and numerator != 0 and stored == 0.0:
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
 
 
 def _persistent_resources(raw_dim: int, n_candidates: int) -> dict[str, int]:
@@ -205,12 +212,18 @@ class CumulantDiscovery:
             upper_inclusive=False,
         )
         replacement_rate = _require_float32(
-            "replacement_rate", replacement_rate, lower=0.0, upper=1.0
+            "replacement_rate",
+            replacement_rate,
+            lower=0.0,
+            upper=1.0,
+            preserve_nonzero=True,
         )
         predictor_step_size = _require_float32(
             "predictor_step_size", predictor_step_size, positive=True
         )
-        gamma = _require_float32("gamma", gamma, lower=0.0, upper=1.0)
+        gamma = _require_float32(
+            "gamma", gamma, lower=0.0, upper=1.0, preserve_nonzero=True
+        )
         if type(enabled) is not bool:
             raise ValueError("enabled must be an exact boolean")
 
@@ -514,37 +527,18 @@ class CumulantDiscovery:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> CumulantDiscovery:
+    def from_config(cls, config: Mapping[str, Any]) -> CumulantDiscovery:
         """Reconstruct from dict."""
-        if type(config) is not dict:
-            raise ValueError("cumulant-discovery config must be an exact dictionary")
-        config = dict(config)
-        expected = {
-            "type",
-            "raw_dim",
-            "n_candidates",
-            "decay_rate",
-            "replacement_rate",
-            "maturity_threshold",
-            "predictor_step_size",
-            "gamma",
-            "enabled",
-        }
-        if set(config) != expected:
-            raise ValueError("cumulant-discovery config keys are not the exact schema")
-        if config.pop("type") != "CumulantDiscovery":
-            raise ValueError("cumulant-discovery config type is unsupported")
-        for name in ("raw_dim", "n_candidates", "maturity_threshold"):
-            if type(config[name]) is not int:
-                raise ValueError(f"serialized {name} must be an exact JSON integer")
-        for name in (
-            "decay_rate",
-            "replacement_rate",
-            "predictor_step_size",
-            "gamma",
-        ):
-            if type(config[name]) is not float:
-                raise ValueError(f"serialized {name} must be an exact JSON float")
-        if type(config["enabled"]) is not bool:
-            raise ValueError("serialized enabled must be an exact JSON boolean")
-        return cls(**config)
+        if not issubclass(type(config), Mapping):
+            raise ValueError("config must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("config must be a readable mapping") from error
+        if any(type(key) is not str for key in payload):
+            raise ValueError("config keys must be strings")
+        payload.pop("type", None)
+        try:
+            return cls(**payload)
+        except TypeError as error:
+            raise ValueError("config has missing or unsupported fields") from error
