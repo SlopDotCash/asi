@@ -121,6 +121,11 @@ def _require_resource(name: str, *, scalars: int, nbytes: int) -> None:
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
+def _saturating_int32_increment(value: Array) -> Array:
+    one = jnp.asarray(1, dtype=jnp.int32)
+    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
+
+
 def _compositional_state_nbytes(
     n_features: int,
     n_tasks: int,
@@ -623,6 +628,7 @@ class FiniteCandidateSelector:
         state: FiniteCandidateSelectorState,
     ) -> Float[Array, " n_candidates"]:
         """Return the current candidate probabilities."""
+        self._validate_state_static_contract(state)
         logits = state.log_weights - jnp.max(state.log_weights)
         weights = jax.nn.softmax(logits)
         if self._exploration > 0.0:
@@ -664,6 +670,7 @@ class FiniteCandidateSelector:
         losses are observed.  For ``update_rule="exp3"``, only
         ``selected_action`` receives an importance-weighted update.
         """
+        self._validate_state_static_contract(state)
         bounded_losses = self._unit_losses(losses)
         finite = jnp.isfinite(bounded_losses)
         probabilities = self.probabilities(state)
@@ -699,14 +706,31 @@ class FiniteCandidateSelector:
             log_weights=log_weights,
             cumulative_loss=cumulative_loss,
             action_counts=action_counts,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_increment(state.step_count),
+        )
+        update_available = (
+            floating_tree_is_finite(state)
+            & (state.step_count >= 0)
+            & (state.step_count < _INT32_MAX)
+            & floating_tree_is_finite(next_state)
         )
         return FiniteCandidateSelectorUpdateResult(
-            state=next_state,
+            state=select_transaction(update_available, next_state, state),
             probabilities=probabilities,
             bounded_losses=bounded_losses,
             selected_action=action,
         )
+
+    def _validate_state_static_contract(self, state: FiniteCandidateSelectorState) -> None:
+        expected = (
+            (state.log_weights, (self._n_candidates,), jnp.float32),
+            (state.cumulative_loss, (self._n_candidates,), jnp.float32),
+            (state.action_counts, (self._n_candidates,), jnp.float32),
+            (state.step_count, (), jnp.int32),
+        )
+        for value, shape, dtype in expected:
+            if value.shape != shape or value.dtype != dtype:
+                raise ValueError("finite candidate selector state shape or dtype is invalid")
 
     def regret_metadata(self, horizon: int) -> dict[str, Any]:
         """Return finite-candidate regret assumptions and bound metadata."""
@@ -2827,6 +2851,28 @@ class CompositionalFeatureLearner:
                 ),
             )
         source_state_finite = floating_tree_is_finite(previous_checked)
+        source_integer_state_valid = (
+            (state.step_count >= 0)
+            & jnp.all(state.ages >= 0)
+            & jnp.all(state.candidate_ages >= 0)
+            & jnp.all((state.ops >= OP_RAW) & (state.ops < NUM_OPS))
+            & jnp.all((state.candidate_ops >= OP_RAW) & (state.candidate_ops < NUM_OPS))
+            & jnp.all((state.depth >= 0) & (state.depth <= self._max_depth))
+            & jnp.all(
+                (state.candidate_depth >= 0) & (state.candidate_depth <= self._max_depth)
+            )
+            & jnp.all((state.parent_a >= 0) & (state.parent_a < self._n_features))
+            & jnp.all((state.parent_b >= -1) & (state.parent_b < self._n_features))
+            & jnp.all(
+                (state.candidate_parent_a >= 0)
+                & (state.candidate_parent_a < self._n_features)
+            )
+            & jnp.all(
+                (state.candidate_parent_b >= -1)
+                & (state.candidate_parent_b < self._n_features)
+            )
+        )
+        lifetime_capacity_available = state.step_count < _INT32_MAX
         context_input = jnp.asarray(context_id)
         inputs_valid = (
             jnp.all(jnp.isfinite(observation))
@@ -3061,8 +3107,8 @@ class CompositionalFeatureLearner:
         theta = state.theta + theta_delta
         candidate_theta = state.candidate_theta + candidate_theta_delta
         candidate_output_weights = state.candidate_output_weights + candidate_output_delta
-        ages = state.ages + 1
-        candidate_ages = state.candidate_ages + 1
+        ages = _saturating_int32_increment(state.ages)
+        candidate_ages = _saturating_int32_increment(state.candidate_ages)
         ranking_utilities = self._ranking_utility(
             new_utilities,
             ages,
@@ -3083,7 +3129,7 @@ class CompositionalFeatureLearner:
             candidate_ages,
             self._retention_slow_utility_decay,
         )
-        step_count = state.step_count + 1
+        step_count = _saturating_int32_increment(state.step_count)
         key, decision_key, curation_key = jr.split(state.key, 3)
         proposal_key, cascade_key = compositional_curation_keys(curation_key)
 
@@ -4525,6 +4571,8 @@ class CompositionalFeatureLearner:
 
         update_applied = (
             source_state_finite
+            & source_integer_state_valid
+            & lifetime_capacity_available
             & inputs_valid
             & generator_decision_valid
             & floating_tree_is_finite(candidate_state)

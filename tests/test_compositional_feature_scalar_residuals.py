@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+import chex
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
@@ -84,6 +86,47 @@ def test_selector_float_and_string_sinks_are_exact_and_canonical() -> None:
             FiniteCandidateSelector(2, **cast(Any, {field: _HostileFloat(0.5)}))
     with pytest.raises(ValueError, match="update_rule"):
         FiniteCandidateSelector(2, update_rule=np.str_("hedge"))
+
+
+def test_selector_refuses_updates_after_exact_int32_horizon() -> None:
+    selector = FiniteCandidateSelector(2)
+    state = selector.init().replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
+    result = selector.update(state, jnp.zeros((2,), dtype=jnp.float32))
+    chex.assert_trees_all_equal(result.state, state)
+
+
+def test_compositional_update_refuses_exhausted_or_corrupt_integer_state() -> None:
+    learner = _learner()
+    state = learner.init(feature_dim=2, key=jr.key(0))
+    exhausted = state.replace(
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+        ages=jnp.full_like(state.ages, 2**31 - 1),
+        candidate_ages=jnp.full_like(state.candidate_ages, 2**31 - 1),
+    )
+    event = (
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+    )
+    rejected = learner.update(exhausted, *event)
+    assert not bool(rejected.update_applied)
+    chex.assert_trees_all_equal(
+        rejected.state,
+        exhausted.replace(
+            birth_timestamp=rejected.state.birth_timestamp,
+            uptime_s=rejected.state.uptime_s,
+        ),
+    )
+
+    corrupt = state.replace(ages=state.ages.at[0].set(-1))
+    rejected = learner.update(corrupt, *event)
+    assert not bool(rejected.update_applied)
+    chex.assert_trees_all_equal(
+        rejected.state,
+        corrupt.replace(
+            birth_timestamp=rejected.state.birth_timestamp,
+            uptime_s=rejected.state.uptime_s,
+        ),
+    )
 
 
 def test_sequence_and_string_contracts_roundtrip_canonically() -> None:
