@@ -1,5 +1,8 @@
 """Tests for Horde-backed actor-critic integration."""
 
+from collections.abc import Callable
+from typing import Any
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -130,19 +133,6 @@ def test_horde_actor_critic_value_head_updates_actor_and_critic() -> None:
     assert not jnp.allclose(result.state.actor_weights, state.actor_weights)
 
 
-def test_horde_actor_critic_step_count_saturates_at_int32_max() -> None:
-    agent = _make_agent()
-    state = agent.init(feature_dim=2, key=jr.key(0)).replace(
-        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
-        last_action=jnp.array(0, dtype=jnp.int32),
-        step_count=jnp.array(2**31 - 1, dtype=jnp.int32),
-    )
-    result = agent.update(
-        state,
-        reward=jnp.array(1.0, dtype=jnp.float32),
-        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
-    )
-    assert int(result.state.step_count) == 2**31 - 1
     assert not jnp.allclose(
         agent.critic.predict(result.state.critic_state, state.last_observation)[0],
         agent.critic.predict(state.critic_state, state.last_observation)[0],
@@ -1758,3 +1748,111 @@ def test_horde_array_action_contract_is_jittable_and_invalid_values_are_atomic()
     ):
         with pytest.raises(ValueError):
             compiled(state, bad_actions)
+
+
+CounterUpdate = Callable[[Any, jax.Array], Any]
+
+
+def _linear_value_counter_case() -> tuple[Any, CounterUpdate]:
+    agent = _make_agent()
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+
+    def update(current: Any, reward: jax.Array) -> Any:
+        return agent.update(
+            current,
+            reward,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+        )
+
+    return state, update
+
+
+def _linear_q_counter_case() -> tuple[Any, CounterUpdate]:
+    agent = _make_qhorde_agent()
+    state = agent.init(feature_dim=2, key=jr.key(1)).replace(
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+
+    def update(current: Any, reward: jax.Array) -> Any:
+        return agent.update(
+            current,
+            reward,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.asarray(False, dtype=jnp.bool_),
+        )
+
+    return state, update
+
+
+def _nonlinear_value_counter_case() -> tuple[Any, CounterUpdate]:
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = _init_nlhac(agent)
+
+    def update(current: Any, reward: jax.Array) -> Any:
+        return agent.update(
+            current,
+            reward,
+            jnp.ones((OBS_DIM,), dtype=jnp.float32),
+        )
+
+    return state, update
+
+
+def _nonlinear_q_counter_case() -> tuple[Any, CounterUpdate]:
+    agent = TestNonlinearQHordeActorCritic()._agent()
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(2))
+    state, _, _ = agent.start(state, jnp.zeros((OBS_DIM,), dtype=jnp.float32))
+
+    def update(current: Any, reward: jax.Array) -> Any:
+        return agent.update(
+            current,
+            reward,
+            jnp.ones((OBS_DIM,), dtype=jnp.float32),
+            jnp.asarray(False, dtype=jnp.bool_),
+        )
+
+    return state, update
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(_linear_value_counter_case, id="linear-value"),
+        pytest.param(_linear_q_counter_case, id="linear-q"),
+        pytest.param(_nonlinear_value_counter_case, id="nonlinear-value"),
+        pytest.param(_nonlinear_q_counter_case, id="nonlinear-q"),
+    ],
+)
+def test_all_horde_actor_critic_counters_saturate_and_rollback(
+    factory: Callable[[], tuple[Any, CounterUpdate]],
+) -> None:
+    state, update = factory()
+    maximum = jnp.asarray(2**31 - 1, dtype=jnp.int32)
+    saturated = state.replace(step_count=maximum)
+
+    eager = update(saturated, jnp.asarray(1.0, dtype=jnp.float32))
+    assert bool(eager.update_applied)
+    assert eager.state.step_count.shape == ()
+    assert eager.state.step_count.dtype == jnp.int32
+    assert int(eager.state.step_count) == 2**31 - 1
+
+    invalid = jax.jit(update)(saturated, jnp.asarray(jnp.nan, dtype=jnp.float32))
+    assert not bool(invalid.update_applied)
+    _assert_state_unchanged(invalid.state, saturated)
+
+    def scan_step(current: Any, reward: jax.Array) -> tuple[Any, jax.Array]:
+        result = update(current, reward)
+        return result.state, result.update_applied
+
+    final_state, applied = jax.lax.scan(
+        scan_step,
+        saturated,
+        jnp.asarray([jnp.nan, 1.0], dtype=jnp.float32),
+    )
+    assert applied.tolist() == [False, True]
+    assert final_state.step_count.dtype == jnp.int32
+    assert int(final_state.step_count) == 2**31 - 1
