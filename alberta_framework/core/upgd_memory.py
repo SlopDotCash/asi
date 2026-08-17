@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import functools
 import operator
-from dataclasses import asdict, dataclass
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass, fields
 from typing import Any, Literal, SupportsIndex, cast
 
 import chex
@@ -54,20 +55,68 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
     np.longlong,
     np.ulonglong,
 )
-_UINT32_MAX: int = 4294967295
 
 
-def _require_float32_resource(
+def _require_resource(
     name: str,
     *,
-    vector_scalars: int,
-    fixed_scalars: int = 0,
+    float32_scalars: int = 0,
+    int32_scalars: int = 0,
+    uint32_scalars: int = 0,
+    bool_scalars: int = 0,
 ) -> None:
-    total_scalars = vector_scalars + fixed_scalars
+    total_scalars = float32_scalars + int32_scalars + uint32_scalars + bool_scalars
     if total_scalars > _INT32_MAX:
         raise ValueError(f"{name} scalar count must fit signed int32")
-    if 4 * total_scalars > _INT32_MAX:
+    total_bytes = 4 * (float32_scalars + int32_scalars + uint32_scalars) + bool_scalars
+    if total_bytes > _INT32_MAX:
         raise ValueError(f"{name} byte count must fit signed int32")
+
+
+def _combined_state_resource_counts(
+    feature_dim: int,
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    slots_per_class: int,
+) -> tuple[int, int, int]:
+    """Return exact serialized float32, int32, and uint32 state leaf counts."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_weights = sum(
+        layer_sizes[index] * layer_sizes[index + 1]
+        for index in range(len(layer_sizes) - 1)
+    )
+    trunk_biases = sum(hidden_sizes)
+    head_input_dim = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_weights = n_heads * head_input_dim
+    slots = n_heads * slots_per_class
+    # UPGD serializes ordinary and fast head leaves separately, even though
+    # initialization aliases their arrays. It also stores utilities, the
+    # label adapter, targets, nine control scalars, and two telemetry scalars.
+    upgd_float32 = (
+        2 * trunk_weights
+        + trunk_biases
+        + 2 * head_weights
+        + 3 * n_heads
+        + n_heads * n_heads
+        + 11
+    )
+    # Prototype means/counts plus the six wrapper EMA/logit scalars.
+    memory_and_wrapper_float32 = slots * feature_dim + slots + 6
+    # Prototype last-update words and three component/wrapper step counters.
+    int32_scalars = slots + 3
+    # One typed Threefry key has two underlying uint32 words.
+    return upgd_float32 + memory_and_wrapper_float32, int32_scalars, 2
+
+
+def _require_array(
+    name: str, value: object, shape: tuple[int, ...], dtype: Any
+) -> None:
+    if not hasattr(value, "shape") or not hasattr(value, "dtype"):
+        raise TypeError(f"{name} must expose array shape and dtype metadata")
+    if tuple(value.shape) != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if jnp.dtype(value.dtype) != jnp.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {jnp.dtype(dtype)}")
 
 
 def _require_real(name: str, value: object) -> float:
@@ -246,18 +295,53 @@ class UPGDMemoryConfig:
         return payload
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> UPGDMemoryConfig:
+    def from_config(cls, config: Mapping[str, Any]) -> UPGDMemoryConfig:
         """Reconstruct from :meth:`to_config` output."""
-        payload = dict(config)
-        payload.pop("type", None)
-        if "hidden_sizes" in payload:
-            payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
-        return cls(**payload)
+        return cls._from_serialized(config, require_type=True)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> UPGDMemoryConfig:
+    def from_dict(cls, data: Mapping[str, Any]) -> UPGDMemoryConfig:
         """Reconstruct from :meth:`to_dict` output."""
-        return cls.from_config(data)
+        return cls._from_serialized(data, require_type=False)
+
+    @classmethod
+    def _from_serialized(
+        cls, data: Mapping[str, Any], *, require_type: bool
+    ) -> UPGDMemoryConfig:
+        if not issubclass(type(data), Mapping):
+            raise ValueError("UPGDMemoryConfig payload must be a mapping")
+        try:
+            payload = dict(data)
+        except Exception as error:
+            raise ValueError("UPGDMemoryConfig mapping could not be read") from error
+        marker = payload.pop("type", None)
+        if require_type and marker != "UPGDMemoryConfig":
+            raise ValueError("UPGDMemoryConfig type is invalid")
+        if not require_type and marker is not None:
+            raise ValueError("UPGDMemoryConfig dictionary must not contain a type marker")
+        if set(payload) != {field.name for field in fields(cls)}:
+            raise ValueError("UPGDMemoryConfig fields do not match its schema")
+        integer_fields = {
+            "feature_dim",
+            "n_heads",
+            "slots_per_class",
+            "upgd_head_loss_pressure_warmup_steps",
+            "upgd_head_repetition_warmup_steps",
+        }
+        for name in integer_fields:
+            if type(payload[name]) is not int:
+                raise ValueError(f"serialized {name} must be a JSON integer")
+        hidden = payload["hidden_sizes"]
+        if type(hidden) is not list or any(type(item) is not int for item in hidden):
+            raise ValueError("serialized hidden_sizes must be a list of JSON integers")
+        payload["hidden_sizes"] = tuple(hidden)
+        if type(payload["readout_mode"]) is not str:
+            raise ValueError("serialized readout_mode must be a JSON string")
+        for name, value in payload.items():
+            if name not in integer_fields | {"hidden_sizes", "readout_mode"}:
+                if type(value) is not float:
+                    raise ValueError(f"serialized {name} must be a JSON number")
+        return cls(**payload)
 
 
 @chex.dataclass(frozen=True)
@@ -501,22 +585,18 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     object.__setattr__(
         config, "max_novelty_threshold", max_novelty_threshold
     )
-    if n_heads * slots_per_class > _INT32_MAX:
-        raise ValueError("UPGDMemoryConfig dimensions must fit signed int32")
-    if n_heads * slots_per_class * feature_dim > _INT32_MAX:
-        raise ValueError("UPGDMemoryConfig dimensions must fit signed int32")
-    total_means = n_heads * slots_per_class * feature_dim
-    fixed_state_scalars = 2 * n_heads * slots_per_class + 9
-    _require_float32_resource(
-        "UPGDMemoryConfig state",
-        vector_scalars=total_means,
-        fixed_scalars=fixed_state_scalars,
+    float32_scalars, int32_scalars, uint32_scalars = _combined_state_resource_counts(
+        feature_dim,
+        n_heads,
+        canonical_hidden,
+        slots_per_class,
     )
-    persistent_bytes = 4 * (total_means + fixed_state_scalars)
-    if persistent_bytes > _INT32_MAX:
-        raise ValueError("UPGDMemoryConfig state byte count must fit signed int32")
-    if persistent_bytes > _UINT32_MAX:
-        raise ValueError("upgd memory allocation exceeds uint32 byte accounting")
+    _require_resource(
+        "UPGDMemoryConfig combined state",
+        float32_scalars=float32_scalars,
+        int32_scalars=int32_scalars,
+        uint32_scalars=uint32_scalars,
+    )
 
 
 def _active_mse(prediction: Array, target: Array) -> Array:
@@ -606,17 +686,182 @@ class UPGDMemoryLearner:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> UPGDMemoryLearner:
+    def from_config(cls, config: Mapping[str, Any]) -> UPGDMemoryLearner:
         """Reconstruct from :meth:`to_config` output."""
-        return cls(UPGDMemoryConfig.from_config(dict(config["config"])))
+        if not issubclass(type(config), Mapping):
+            raise ValueError("UPGDMemoryLearner payload must be a mapping")
+        try:
+            payload = dict(config)
+        except Exception as error:
+            raise ValueError("UPGDMemoryLearner mapping could not be read") from error
+        if set(payload) != {"type", "config"}:
+            raise ValueError("UPGDMemoryLearner fields do not match its schema")
+        if payload["type"] != "UPGDMemoryLearner":
+            raise ValueError("UPGDMemoryLearner type is invalid")
+        inner = payload["config"]
+        if not issubclass(type(inner), Mapping):
+            raise ValueError("UPGDMemoryLearner config must be a mapping")
+        return cls(UPGDMemoryConfig.from_config(cast(Mapping[str, Any], inner)))
+
+    def _validate_state_static_contract(self, state: UPGDMemoryState) -> None:
+        """Reject malformed combined state before any traced computation."""
+        if type(state) is not UPGDMemoryState:
+            raise TypeError("state must be a UPGDMemoryState")
+        if type(state.upgd_state) is not UPGDState:
+            raise TypeError("state.upgd_state must be a UPGDState")
+        self._memory._validate_state_static_contract(state.memory_state)  # noqa: SLF001
+        cfg = self._config
+        upgd = state.upgd_state
+        layer_sizes = (cfg.feature_dim, *cfg.hidden_sizes)
+        if (
+            type(upgd.trunk_params.weights) is not tuple
+            or type(upgd.trunk_params.biases) is not tuple
+        ):
+            raise TypeError("UPGD trunk parameters must use tuple containers")
+        if len(upgd.trunk_params.weights) != len(cfg.hidden_sizes):
+            raise ValueError("UPGD trunk layer count is invalid")
+        if type(upgd.utilities) is not tuple or len(upgd.utilities) != len(cfg.hidden_sizes):
+            raise ValueError("UPGD utility layer count is invalid")
+        for index in range(len(cfg.hidden_sizes)):
+            shape = (layer_sizes[index + 1], layer_sizes[index])
+            _require_array(
+                f"state.upgd_state.trunk_params.weights[{index}]",
+                upgd.trunk_params.weights[index],
+                shape,
+                jnp.float32,
+            )
+            _require_array(
+                f"state.upgd_state.trunk_params.biases[{index}]",
+                upgd.trunk_params.biases[index],
+                (layer_sizes[index + 1],),
+                jnp.float32,
+            )
+            _require_array(
+                f"state.upgd_state.utilities[{index}]",
+                upgd.utilities[index],
+                shape,
+                jnp.float32,
+            )
+        head_input = cfg.hidden_sizes[-1] if cfg.hidden_sizes else cfg.feature_dim
+        for label, params in (
+            ("head_params", upgd.head_params),
+            ("readout_fast_head_params", upgd.readout_fast_head_params),
+        ):
+            if type(params.weights) is not tuple or type(params.biases) is not tuple:
+                raise TypeError(f"UPGD {label} must use tuple containers")
+            if len(params.weights) != cfg.n_heads or len(params.biases) != cfg.n_heads:
+                raise ValueError(f"UPGD {label} count is invalid")
+            for index in range(cfg.n_heads):
+                _require_array(
+                    f"state.upgd_state.{label}.weights[{index}]",
+                    params.weights[index],
+                    (1, head_input),
+                    jnp.float32,
+                )
+                _require_array(
+                    f"state.upgd_state.{label}.biases[{index}]",
+                    params.biases[index],
+                    (1,),
+                    jnp.float32,
+                )
+        _require_array(
+            "state.upgd_state.readout_label_adapter",
+            upgd.readout_label_adapter,
+            (cfg.n_heads, cfg.n_heads),
+            jnp.float32,
+        )
+        for name in (
+            "unit_utilities",
+            "unit_long_utilities",
+            "unit_gradient_emas",
+            "unit_ages",
+            "previous_trunk_weight_grads",
+            "previous_trunk_bias_grads",
+            "previous_head_weight_grads",
+            "previous_head_bias_grads",
+        ):
+            if getattr(upgd, name) != ():
+                raise ValueError(f"state.upgd_state.{name} must be empty")
+        _require_array(
+            "state.upgd_state.unit_replacement_counts",
+            upgd.unit_replacement_counts,
+            (0,),
+            jnp.float32,
+        )
+        _require_array(
+            "state.upgd_state.unit_replacement_accumulators",
+            upgd.unit_replacement_accumulators,
+            (0,),
+            jnp.float32,
+        )
+        _require_array(
+            "state.upgd_state.previous_targets",
+            upgd.previous_targets,
+            (cfg.n_heads,),
+            jnp.float32,
+        )
+        for name in (
+            "loss_fast_ema",
+            "loss_slow_ema",
+            "target_repeat_ema",
+            "target_simplex_ema",
+            "meta_trunk_log_scale",
+            "meta_head_weight_log_scale",
+            "meta_head_bias_log_scale",
+            "meta_repetition_log_scale",
+            "adaptive_kappa_log_scale",
+            "birth_timestamp",
+            "uptime_s",
+        ):
+            _require_array(f"state.upgd_state.{name}", getattr(upgd, name), (), jnp.float32)
+        _require_array("state.upgd_state.step_count", upgd.step_count, (), jnp.int32)
+        if not (
+            hasattr(upgd.key, "shape")
+            and tuple(upgd.key.shape) == ()
+            and jax.dtypes.issubdtype(  # type: ignore[attr-defined]
+                upgd.key.dtype, jax.dtypes.prng_key
+            )
+        ):
+            raise TypeError("state.upgd_state.key must be a scalar typed JAX PRNG key")
+        for name in (
+            "memory_logit",
+            "novelty_log_threshold",
+            "upgd_loss_ema",
+            "memory_loss_ema",
+            "blended_loss_ema",
+            "allocation_ema",
+        ):
+            _require_array(f"state.{name}", getattr(state, name), (), jnp.float32)
+        _require_array("state.step_count", state.step_count, (), jnp.int32)
+
+    def _state_is_valid(self, state: UPGDMemoryState) -> Bool[Array, ""]:
+        return (
+            floating_tree_is_finite(state)
+            & (state.step_count >= 0)
+            & (state.upgd_state.step_count >= 0)
+            & self._memory._state_is_valid(state.memory_state)  # noqa: SLF001
+        )
 
     def init(self, key: Array | None = None) -> UPGDMemoryState:
         """Initialize both components and adaptive blend state."""
         if key is None:
             key = jr.key(0)
+        if not (
+            hasattr(key, "shape")
+            and tuple(key.shape) == ()
+            and jax.dtypes.issubdtype(  # type: ignore[attr-defined]
+                key.dtype, jax.dtypes.prng_key
+            )
+        ):
+            raise TypeError("key must be a scalar typed JAX PRNG key")
         cfg = self._config
+        raw_upgd_state = self._upgd.init(cfg.feature_dim, key)
+        upgd_state = raw_upgd_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=jnp.asarray(raw_upgd_state.birth_timestamp, dtype=jnp.float32),
+            uptime_s=jnp.asarray(0.0, dtype=jnp.float32),
+        )
         return UPGDMemoryState(
-            upgd_state=self._upgd.init(cfg.feature_dim, key),
+            upgd_state=upgd_state,
             memory_state=self._memory.init(),
             memory_logit=jnp.asarray(cfg.initial_memory_logit, dtype=jnp.float32),
             novelty_log_threshold=jnp.log(
@@ -694,6 +939,8 @@ class UPGDMemoryLearner:
         observation: Float[Array, " feature_dim"],
     ) -> Float[Array, " n_heads"]:
         """Predict with the current learned UPGD-memory blend."""
+        self._validate_state_static_contract(state)
+        _require_array("observation", observation, (self._config.feature_dim,), jnp.float32)
         upgd_prediction = self._upgd.predict(state.upgd_state, observation)
         memory_prediction = self._memory.predict(state.memory_state, observation)
         prediction, _gate = self._blend_predictions(
@@ -712,8 +959,11 @@ class UPGDMemoryLearner:
         target: Float[Array, " n_heads"],
     ) -> UPGDMemoryUpdateResult:
         """Update UPGD, memory, blend reliability, and novelty threshold."""
-        observation_arr = jnp.asarray(observation, dtype=jnp.float32)
-        target_arr = jnp.asarray(target, dtype=jnp.float32)
+        self._validate_state_static_contract(state)
+        _require_array("observation", observation, (self._config.feature_dim,), jnp.float32)
+        _require_array("target", target, (self._config.n_heads,), jnp.float32)
+        observation_arr = jnp.asarray(observation)
+        target_arr = jnp.asarray(target)
         observation_valid = jnp.all(jnp.isfinite(observation_arr))
         target_valid = jnp.all(~jnp.isinf(target_arr))
         safe_observation = jnp.where(
@@ -757,6 +1007,15 @@ class UPGDMemoryLearner:
         upgd_result = self._upgd.update(
             state.upgd_state, safe_observation, safe_update_target
         )
+        safe_upgd_state = upgd_result.state.replace(
+            step_count=(
+                jnp.minimum(
+                    state.upgd_state.step_count,
+                    jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
+                )
+                + 1
+            )
+        )
         memory_result = self._memory.update_with_novelty_threshold(
             state.memory_state,
             safe_observation,
@@ -783,7 +1042,7 @@ class UPGDMemoryLearner:
         )
 
         candidate_state = UPGDMemoryState(
-            upgd_state=upgd_result.state,
+            upgd_state=safe_upgd_state,
             memory_state=memory_result.state,
             memory_logit=next_memory_logit,
             novelty_log_threshold=next_log_threshold,
@@ -796,7 +1055,13 @@ class UPGDMemoryLearner:
                 + one_minus_decay * blended_loss
             ),
             allocation_ema=next_allocation_ema,
-            step_count=state.step_count + 1,
+            step_count=(
+                jnp.minimum(
+                    state.step_count,
+                    jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
+                )
+                + 1
+            ),
         )
         metrics = jnp.asarray(
             [
@@ -827,7 +1092,7 @@ class UPGDMemoryLearner:
             observation_valid
             & target_valid
             & memory_result.update_applied
-            & floating_tree_is_finite(checked_state)
+            & self._state_is_valid(checked_state)
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(prediction))
             & jnp.all(jnp.isfinite(errors))
@@ -854,6 +1119,31 @@ def run_upgd_memory_arrays(
     novelty_threshold, allocation_ema, active_prototypes, upgd_conf,
     memory_conf``.
     """
+    if type(learner) is not UPGDMemoryLearner:
+        raise TypeError("learner must be a UPGDMemoryLearner")
+    learner._validate_state_static_contract(state)  # noqa: SLF001
+    if not hasattr(observations, "shape") or not hasattr(observations, "dtype"):
+        raise TypeError("observations must expose array shape and dtype metadata")
+    if not hasattr(targets, "shape") or not hasattr(targets, "dtype"):
+        raise TypeError("targets must expose array shape and dtype metadata")
+    if len(observations.shape) != 2 or tuple(observations.shape[1:]) != (
+        learner.config.feature_dim,
+    ):
+        raise ValueError(
+            f"observations must have shape (steps, {learner.config.feature_dim})"
+        )
+    steps = int(observations.shape[0])
+    if tuple(targets.shape) != (steps, learner.config.n_heads):
+        raise ValueError(f"targets must have shape ({steps}, {learner.config.n_heads})")
+    if jnp.dtype(observations.dtype) != jnp.dtype(jnp.float32):
+        raise TypeError("observations must have dtype float32")
+    if jnp.dtype(targets.dtype) != jnp.dtype(jnp.float32):
+        raise TypeError("targets must have dtype float32")
+    _require_resource(
+        "UPGD memory batch outputs",
+        float32_scalars=steps * (learner.config.n_heads + 10),
+        bool_scalars=steps,
+    )
 
     def step_fn(
         carry: UPGDMemoryState,

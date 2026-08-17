@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework.core.upgd_memory import UPGDMemoryConfig
+from alberta_framework.core.upgd_memory import (
+    UPGDMemoryConfig,
+    UPGDMemoryLearner,
+    _combined_state_resource_counts,
+    _require_resource,
+    run_upgd_memory_arrays,
+)
 
 _INT32_MAX = 2**31 - 1
 
@@ -184,10 +192,9 @@ def test_upgd_memory_dimensions_preflight_without_allocation() -> None:
 
 
 def test_upgd_memory_state_preflight_bytes_without_allocation() -> None:
-    # total_means = n_heads*slots*feature_dim, fixed=2*n_heads*slots+9
-    # With n_heads=2, slots var, feature_dim=2 -> total_state=8*slots+9
-    # persistent=32slots+36 -> last_legal=(INT32-36)//32
-    last_legal = (2**31 - 1 - 36) // 32
+    # For F=2,D=2,H=(4,), each slot/class adds 8 four-byte state leaves.
+    # The exact UPGD + wrapper + PRNG/counter fixed state is 68 leaves.
+    last_legal = (2**31 - 1 - 4 * 68) // 32
     _base_cfg(feature_dim=2, n_heads=2, slots_per_class=last_legal)
     with pytest.raises(ValueError, match="scalar count|byte count"):
         _base_cfg(feature_dim=2, n_heads=2, slots_per_class=last_legal + 1)
@@ -206,3 +213,113 @@ def test_upgd_memory_float_validators_accept_valid_values() -> None:
     )
     assert cfg.upgd_step_size == 0.03
     assert cfg.memory_update_rate == 0.3
+
+
+def test_upgd_memory_combined_state_count_includes_all_components() -> None:
+    # F=2,D=2,H=(4,),slots/class=3: 63+6*3 floats, 3+2*3 ints, two key words.
+    assert _combined_state_resource_counts(2, 2, (4,), 3) == (81, 9, 2)
+    with pytest.raises(ValueError, match="combined state.*(scalar|byte) count"):
+        _base_cfg(feature_dim=50_000, hidden_sizes=(50_000,), slots_per_class=1)
+
+
+def test_upgd_memory_resource_endpoint_is_exact_and_allocation_free() -> None:
+    scalar_budget = _INT32_MAX // 4
+    _require_resource("endpoint", float32_scalars=scalar_budget)
+    with pytest.raises(ValueError, match="byte count"):
+        _require_resource("endpoint", float32_scalars=scalar_budget + 1)
+    with pytest.raises(ValueError, match="scalar count"):
+        _require_resource("endpoint", bool_scalars=_INT32_MAX + 1)
+
+
+def test_upgd_memory_serialized_envelopes_are_exact() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    config_payload = learner.config.to_config()
+    learner_payload = learner.to_config()
+    assert UPGDMemoryConfig.from_config(config_payload) == learner.config
+    assert UPGDMemoryLearner.from_config(learner_payload).config == learner.config
+
+    for payload in (
+        {**config_payload, "extra": 1},
+        {key: value for key, value in config_payload.items() if key != "feature_dim"},
+        {**config_payload, "type": "Wrong"},
+        {**config_payload, "feature_dim": np.int32(4)},
+    ):
+        with pytest.raises(ValueError):
+            UPGDMemoryConfig.from_config(payload)
+    with pytest.raises(ValueError):
+        UPGDMemoryLearner.from_config({**learner_payload, "extra": 1})
+
+
+def test_upgd_memory_validates_nested_and_wrapper_state_metadata() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init(jax.random.key(0))
+    observation = jnp.ones((4,), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="state.memory_logit must have shape"):
+        learner.predict(
+            state.replace(memory_logit=jnp.zeros((1,), dtype=jnp.float32)),
+            observation,
+        )
+    malformed_upgd = state.upgd_state.replace(  # type: ignore[attr-defined]
+        utilities=(jnp.zeros((4, 3), dtype=jnp.float32),)
+    )
+    with pytest.raises(ValueError, match=r"utilities\[0\].*shape"):
+        learner.predict(state.replace(upgd_state=malformed_upgd), observation)
+
+
+def test_upgd_memory_public_input_metadata_fails_before_tracing() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init(jax.random.key(0))
+    with pytest.raises(ValueError, match="observation must have shape"):
+        learner.predict(state, jnp.ones((3,), dtype=jnp.float32))
+    with pytest.raises(TypeError, match="observation must have dtype"):
+        learner.predict(state, jnp.ones((4,), dtype=jnp.int32))
+    with pytest.raises(ValueError, match="target must have shape"):
+        learner.update(
+            state,
+            jnp.ones((4,), dtype=jnp.float32),
+            jnp.ones((3,), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="targets must have shape"):
+        run_upgd_memory_arrays(
+            learner,
+            state,
+            jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((1, 2), dtype=jnp.float32),
+        )
+
+
+def test_upgd_memory_all_lifetime_counters_saturate() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    initial = learner.init(jax.random.key(0))
+    state = initial.replace(
+        upgd_state=initial.upgd_state.replace(  # type: ignore[attr-defined]
+            step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+        ),
+        memory_state=initial.memory_state.replace(  # type: ignore[attr-defined]
+            step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+        ),
+        step_count=jnp.asarray(_INT32_MAX, dtype=jnp.int32),
+    )
+    result = learner.update(
+        state,
+        jnp.ones((4,), dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == _INT32_MAX
+    assert int(result.state.upgd_state.step_count) == _INT32_MAX
+    assert int(result.state.memory_state.step_count) == _INT32_MAX
+
+
+def test_upgd_memory_negative_adopted_counter_rolls_back() -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    state = learner.init(jax.random.key(0)).replace(
+        step_count=jnp.asarray(-1, dtype=jnp.int32)
+    )
+    result = learner.update(
+        state,
+        jnp.ones((4,), dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.step_count) == -1
