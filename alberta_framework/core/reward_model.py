@@ -76,6 +76,13 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _saturating_int32_increment(value: Array) -> Array:
+    """Increment a diagnostic counter without signed-int32 wraparound."""
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    counter = jnp.asarray(value, dtype=jnp.int32)
+    return jnp.minimum(jnp.maximum(counter, 0), maximum - 1) + 1
+
+
 @dataclass(frozen=True)
 class RLSRewardModelConfig:
     """Configuration for a linear recursive-least-squares reward model.
@@ -276,7 +283,7 @@ class RLSRewardModel:
             weights=next_weights,
             covariance=next_covariance,
             abs_error_ema=next_abs_error_ema,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_increment(state.step_count),
         )
         # Inf reward * a silent feature's zero gain is 0*inf = NaN, and
         # that channel stays poisoned. Hold the previous finite state.

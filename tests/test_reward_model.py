@@ -235,6 +235,16 @@ def test_zero_error_decay_does_not_multiply_inf_ema() -> None:
     assert bool(jnp.isfinite(result.state.abs_error_ema))
 
 
+def test_reward_model_step_count_saturates_at_int32_max() -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=1, forgetting=1.0))
+    state = model.init().replace(step_count=jnp.array(2**31 - 1, dtype=jnp.int32))
+
+    result = model.update(state, jnp.array([1.0], dtype=jnp.float32), jnp.array(1.0))
+
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 2**31 - 1
+
+
 def test_rls_reward_model_config_integer_and_scalar_validation() -> None:
     with pytest.raises(ValueError, match="feature_dim"):
         RLSRewardModelConfig(feature_dim=True)  # type: ignore[arg-type]
