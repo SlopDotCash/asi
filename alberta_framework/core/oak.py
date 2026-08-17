@@ -356,6 +356,36 @@ class OaKExternalSTOMPAdoptionResourceBudget:
     caller_authority_required: bool
     caller_authenticated: bool
 
+    def __post_init__(self) -> None:
+        for name in (
+            "persistent_state_nbytes_before",
+            "persistent_state_nbytes_after",
+            "persistent_state_growth_bytes",
+            "stomp_update_evaluations_per_adopt",
+            "stomp_update_evaluations_per_delegated_update",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_int32(name, getattr(self, name), minimum=0),
+            )
+        for name in (
+            "derivation_recomputed_on_adopt",
+            "source_result_integrity_checked",
+            "caller_authority_required",
+            "caller_authenticated",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_exact_bool(name, getattr(self, name)),
+            )
+
+    def to_config(self) -> dict[str, int | bool]:
+        """Return an exact JSON-compatible resource record."""
+
+        return dataclasses.asdict(self)
+
 
 @chex.dataclass(frozen=True)
 class OaKArrayResult:
