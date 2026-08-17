@@ -62,6 +62,14 @@ _ACTUAL_INT_TYPES: tuple[type, ...] = (
 )
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _require_int(
     name: str,
     value: object,
@@ -381,7 +389,7 @@ class Normalizer[
             configured_momentum = jnp.asarray(self._momentum, dtype=jnp.float32)
             valid = valid & momentum_valid & (state.momentum == configured_momentum)
         else:
-            raise TypeError(f"unsupported normalizer state type: {type(state)!r}")
+            raise TypeError("unsupported normalizer state type")
         return NormalizerCounterStatus(
             counter_valid=valid,
             lifetime_capacity_available=lifetime_capacity,
@@ -894,19 +902,20 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
 
 
 def normalizer_state_nbytes_formula(
-    normalizer_type: str,
+    normalizer_type: object,
     feature_dim: int,
 ) -> int:
     """Return exact persistent JAX-array bytes for a normalizer state."""
 
+    host_type = _require_exact_str("normalizer_type", normalizer_type)
     feature_dim = _require_int(
         "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
     )
-    if normalizer_type in {"EMANormalizer", "StreamingBatchNormalizer"}:
+    if host_type in {"EMANormalizer", "StreamingBatchNormalizer"}:
         return 8 * feature_dim + 16
-    if normalizer_type == "WelfordNormalizer":
+    if host_type == "WelfordNormalizer":
         return 12 * feature_dim + 12
-    raise ValueError(f"Unknown normalizer type: {normalizer_type!r}")
+    raise ValueError(f"Unknown normalizer type: '{host_type}'")
 
 
 def measure_normalizer_state_nbytes(state: AnyNormalizerState) -> int:
@@ -935,7 +944,7 @@ def _legacy_state_mapping(legacy_state: Any) -> dict[str, Any]:
 def migrate_legacy_normalizer_state(
     legacy_state: Any,
     *,
-    normalizer_type: str,
+    normalizer_type: object,
 ) -> AnyNormalizerState:
     """Migrate an exact pre-v2 normalizer state on the host.
 
@@ -945,14 +954,15 @@ def migrate_legacy_normalizer_state(
     fractional counts, are rejected rather than assigned invented history.
     """
 
+    host_type = _require_exact_str("normalizer_type", normalizer_type)
     classes: dict[str, type[AnyNormalizerState]] = {
         "EMANormalizer": EMANormalizerState,
         "WelfordNormalizer": WelfordNormalizerState,
         "StreamingBatchNormalizer": StreamingBatchNormalizerState,
     }
-    state_class = classes.get(normalizer_type)
+    state_class = classes.get(host_type)
     if state_class is None:
-        raise ValueError(f"Unknown normalizer type: {normalizer_type!r}")
+        raise ValueError(f"Unknown normalizer type: '{host_type}'")
     fields = _legacy_state_mapping(legacy_state)
     current_names = {
         field.name
@@ -1007,16 +1017,17 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     type_name = config.pop("type")
     state_schema = config.pop("state_schema", NORMALIZER_STATE_SCHEMA)
     if state_schema != NORMALIZER_STATE_SCHEMA:
-        raise ValueError(f"Unsupported normalizer state schema: {state_schema!r}")
+        raise ValueError("Unsupported normalizer state schema")
     estimator_schema = config.pop("estimator_schema", None)
     estimator_semantics = config.pop("estimator_semantics", None)
     legacy_estimator_semantics: str | None = None
     if type_name == "WelfordNormalizer":
         if estimator_schema not in {None, WELFORD_ESTIMATOR_SCHEMA}:
-            raise ValueError(f"Unsupported Welford estimator schema: {estimator_schema!r}")
+            raise ValueError("Unsupported Welford estimator schema")
         expected_semantics = CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
     elif estimator_schema is not None:
-        raise ValueError(f"estimator_schema is not valid for normalizer type {type_name!r}")
+        host_type_name = _require_exact_str("type_name", type_name)
+        raise ValueError(f"estimator_schema is not valid for normalizer type '{host_type_name}'")
     elif type_name == "EMANormalizer":
         if _stored_float32_equals_one(config.get("decay", 0.99)):
             expected_semantics = EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
@@ -1039,13 +1050,24 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
             and estimator_semantics != legacy_estimator_semantics
         )
     ):
+        if expected_semantics is None:
+            exp_repr = "None"
+        else:
+            host_expected = _require_exact_str(
+                "expected_semantics", expected_semantics
+            )
+            exp_repr = f"'{host_expected}'"
+        host_estimator = _require_exact_str(
+            "estimator_semantics", estimator_semantics
+        )
         raise ValueError(
             "normalizer estimator_semantics does not match its parameters: "
-            f"expected {expected_semantics!r}, got {estimator_semantics!r}"
+            f"expected {exp_repr}, got '{host_estimator}'"
         )
     cls = _NORMALIZER_REGISTRY.get(type_name)
     if cls is None:
-        raise ValueError(f"Unknown normalizer type: {type_name!r}")
+        host_type_name_final = _require_exact_str("type_name", type_name)
+        raise ValueError(f"Unknown normalizer type: '{host_type_name_final}'")
     result: Normalizer[Any] = cls(**config)
     return result
 
