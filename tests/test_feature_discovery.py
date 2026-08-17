@@ -3267,3 +3267,132 @@ class TestFeatureDiscoveryStreamsValidation:
             collect_feature_discovery_stream(stream, -1, key)
         with pytest.raises(TypeError, match="init"):
             collect_feature_discovery_stream(object(), 10, key)
+
+
+_NUMPY_INTEGER_TYPES = (
+    np.int8,
+    np.int16,
+    np.int32,
+    np.int64,
+    np.longlong,
+    np.uint8,
+    np.uint16,
+    np.uint32,
+    np.uint64,
+    np.ulonglong,
+)
+
+
+@pytest.mark.parametrize("integer_type", _NUMPY_INTEGER_TYPES)
+def test_fixed_budget_integer_fields_accept_and_canonicalize_numpy(
+    integer_type: type[np.integer[Any]],
+) -> None:
+    learner = FixedBudgetFeatureLearner(
+        n_features=integer_type(4),
+        n_tasks=integer_type(2),
+        candidate_count=integer_type(1),
+        replacement_interval=integer_type(2),
+        min_feature_age=integer_type(1),
+        candidate_min_age=integer_type(1),
+        utility_top_k=integer_type(1),
+    )
+    config = learner.to_config()
+    for name in (
+        "n_features",
+        "n_tasks",
+        "candidate_count",
+        "replacement_interval",
+        "min_feature_age",
+        "candidate_min_age",
+        "utility_top_k",
+    ):
+        assert type(config[name]) is int
+
+
+def test_fixed_budget_integer_validation_does_not_run_hostile_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileInt(int):
+        def __index__(self) -> int:
+            calls.append("index")
+            return 4
+
+        def __repr__(self) -> str:
+            calls.append("repr")
+            raise AssertionError("repr executed")
+
+    with pytest.raises(ValueError, match="n_features must be an integer"):
+        FixedBudgetFeatureLearner(n_features=HostileInt(4), n_tasks=1)
+    assert calls == []
+
+
+def test_fixed_budget_float32_sink_rejects_exact_nonzero_underflow() -> None:
+    tiny = np.nextafter(np.longdouble(0), np.longdouble(1))
+    with pytest.raises(ValueError, match="step_size_output must remain nonzero"):
+        FixedBudgetFeatureLearner(n_features=2, n_tasks=1, step_size_output=tiny)
+    learner = FixedBudgetFeatureLearner(n_features=2, n_tasks=1, step_size_output=-0.0)
+    assert learner.to_config()["step_size_output"] == 0.0
+
+
+def test_fixed_budget_from_config_preserves_historical_forms_and_round_trip() -> None:
+    learner = FixedBudgetFeatureLearner(n_features=np.int64(3), n_tasks=np.uint32(2))
+    restored = FixedBudgetFeatureLearner.from_config(learner.to_config())
+    assert restored.to_config() == learner.to_config()
+    malformed = learner.to_config()
+    malformed["generator_mix"] = tuple(malformed["generator_mix"])
+    malformed["n_features"] = np.int64(3)
+    compatible = FixedBudgetFeatureLearner.from_config(malformed)
+    assert compatible.n_features == 3
+
+
+def test_fixed_budget_init_preflights_aggregate_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    learner = FixedBudgetFeatureLearner(n_features=1, n_tasks=1)
+    last_legal_feature_dim = 67_108_834
+    assert learner._configured_state_nbytes(last_legal_feature_dim) == 256 * 1024 * 1024
+    with pytest.raises(ValueError, match="state requires"):
+        learner._configured_state_nbytes(last_legal_feature_dim + 1)
+    split_called = False
+
+    def forbidden_split(*args: object, **kwargs: object) -> None:
+        nonlocal split_called
+        split_called = True
+        raise AssertionError("allocation path reached")
+
+    monkeypatch.setattr("alberta_framework.core.feature_discovery.jr.split", forbidden_split)
+    with pytest.raises(ValueError, match="state requires"):
+        learner.init(100_000_000, jr.key(0))
+    assert not split_called
+
+
+def test_fixed_budget_outer_jit_shapes_and_saturating_counters() -> None:
+    learner = FixedBudgetFeatureLearner(
+        n_features=2,
+        n_tasks=1,
+        candidate_count=1,
+        replacement_interval=0,
+    )
+    state = learner.init(3, jr.key(0)).replace(  # type: ignore[attr-defined]
+        ages=jnp.full((2,), 2**31 - 1, dtype=jnp.int32),
+        candidate_ages=jnp.full((1,), 2**31 - 1, dtype=jnp.int32),
+        step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32),
+    )
+    step = jax.jit(lambda s, x, y: learner.update(s, x, y))
+    result = step(
+        state,
+        jnp.ones((3,), dtype=jnp.float32),
+        jnp.ones((1,), dtype=jnp.float32),
+    )
+    assert int(result.state.step_count) == 2**31 - 1
+    assert np.all(np.asarray(result.state.ages) == 2**31 - 1)
+    with pytest.raises(ValueError, match="observation must have shape"):
+        step(
+            state,
+            jnp.ones((1, 3), dtype=jnp.float32),
+            jnp.ones((1,), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="targets must have shape"):
+        step(
+            state,
+            jnp.ones((3,), dtype=jnp.float32),
+            jnp.ones((1, 1), dtype=jnp.float32),
+        )
