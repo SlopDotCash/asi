@@ -6,7 +6,7 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
-from alberta_framework.steps.step3 import Step3HordeConfig
+from alberta_framework.steps.step3 import Step3HordeConfig, run_step3_smoke
 
 
 class _EvilStr(str):
@@ -28,6 +28,10 @@ class _HostileInt(int):
         type(self).calls += 1
         raise AssertionError("HostileInt.__index__ must not be called")
 
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
     def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("HostileInt.__repr__ must not be called")
@@ -47,6 +51,69 @@ class _HostileFloat(float):
     def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("HostileFloat.__repr__ must not be called")
+
+
+class _HostileTuple(tuple[object, ...]):
+    calls = 0
+
+    def __iter__(self):  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("HostileTuple.__iter__ must not be called")
+
+    def __len__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileTuple.__len__ must not be called")
+
+    def __getitem__(self, key: object) -> object:
+        type(self).calls += 1
+        raise AssertionError("HostileTuple.__getitem__ must not be called")
+
+
+class _HostileList(list[object]):
+    calls = 0
+
+    def __iter__(self):
+        type(self).calls += 1
+        raise AssertionError("HostileList.__iter__ must not be called")
+
+
+class _HostileDict(dict[str, object]):
+    calls = 0
+
+    def __iter__(self):
+        type(self).calls += 1
+        raise AssertionError("HostileDict.__iter__ must not be called")
+
+    def keys(self):
+        type(self).calls += 1
+        raise AssertionError("HostileDict.keys must not be called")
+
+
+class _HostileMeta(type):
+    calls = 0
+
+    def __instancecheck__(cls, instance: object) -> bool:
+        cls.calls += 1
+        raise AssertionError("HostileMeta.__instancecheck__ must not be called")
+
+    def __subclasscheck__(cls, subclass: type[object]) -> bool:
+        cls.calls += 1
+        raise AssertionError("HostileMeta.__subclasscheck__ must not be called")
+
+
+class _MetaclassScalar(metaclass=_HostileMeta):
+    @property
+    def __class__(self) -> type[int]:
+        _HostileMeta.calls += 1
+        raise AssertionError("MetaclassScalar.__class__ must not be read")
+
+    def __int__(self) -> int:
+        _HostileMeta.calls += 1
+        raise AssertionError("MetaclassScalar.__int__ must not be called")
+
+    def __repr__(self) -> str:
+        _HostileMeta.calls += 1
+        raise AssertionError("MetaclassScalar.__repr__ must not be called")
 
 
 def test_rejects_string_subclass_for_hidden_sizes() -> None:
@@ -72,6 +139,13 @@ def test_rejects_bool_and_hostile_int() -> None:
     assert "HostileInt" not in str(exc.value)
 
 
+def test_rejects_metaclass_scalar_without_spoofing_or_conversion_hooks() -> None:
+    _HostileMeta.calls = 0
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        Step3HordeConfig(hidden_sizes=(_MetaclassScalar(),))  # type: ignore[arg-type]
+    assert _HostileMeta.calls == 0
+
+
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be finite") as exc:
@@ -79,16 +153,6 @@ def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     assert _HostileFloat.calls == 0
     assert "HostileFloat" not in str(exc.value)
     assert "!r" not in str(exc.value)
-
-
-def test_does_not_invoke_hostile_value_when_name_is_evil_via_sink() -> None:
-    from alberta_framework.steps._float32_validation import finite_real_and_float32
-
-    evil = _EvilStr("x")
-    _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be an exact string"):
-        finite_real_and_float32(evil, _HostileFloat(1.0))  # type: ignore[arg-type]
-    assert _HostileFloat.calls == 0
 
 
 def test_rejects_plain_string_for_step_size() -> None:
@@ -122,15 +186,116 @@ def test_rejects_nonnegative_step_size_negative_without_repr() -> None:
 
 
 def test_rejects_bool_gate_without_repr() -> None:
-    from alberta_framework.steps.step3 import _require_bool
+    with pytest.raises(ValueError, match="must be a boolean") as exc:
+        Step3HordeConfig(use_obgd=_StringSubclass("true"))  # type: ignore[arg-type]
+    assert "StringSubclass" not in str(exc.value)
+    assert "!r" not in str(exc.value)
 
-    with pytest.raises(ValueError, match="must be an exact string") as exc:
-        _require_bool(_EvilStr("use_obgd"), True)  # type: ignore[arg-type]
-    assert "EvilStr" not in str(exc.value)
-    with pytest.raises(ValueError, match="must be a boolean") as exc2:
-        _require_bool("use_obgd", _StringSubclass("true"))  # type: ignore[arg-type]
-    assert "StringSubclass" not in str(exc2.value)
-    assert "!r" not in str(exc2.value)
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("normalizer", "ema"),
+        ("trace_mode", "replacing"),
+        ("routing", "mixed"),
+    ],
+)
+def test_rejects_string_subclasses_for_choices(field: str, value: str) -> None:
+    with pytest.raises(ValueError, match=f"{field} must be one of"):
+        Step3HordeConfig(**{field: _StringSubclass(value)})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("normalizer", "median"),
+        ("trace_mode", "dutch"),
+        ("routing", "unknown"),
+    ],
+)
+def test_rejects_unknown_exact_choices(field: str, value: str) -> None:
+    with pytest.raises(ValueError, match=f"{field} must be one of"):
+        Step3HordeConfig(**{field: value})  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("field", ["gammas", "lamdas", "hidden_sizes"])
+def test_rejects_non_exact_tuple_containers_without_hooks(field: str) -> None:
+    value: object = _HostileTuple((0.5,))
+    if field == "hidden_sizes":
+        value = _HostileTuple((4,))
+    _HostileTuple.calls = 0
+    with pytest.raises(ValueError, match=f"{field} must be an actual tuple"):
+        Step3HordeConfig(**{field: value})  # type: ignore[arg-type]
+    assert _HostileTuple.calls == 0
+
+
+def test_config_json_round_trip_and_exact_container_contract() -> None:
+    config = Step3HordeConfig(
+        gammas=(0.25, 0.75),
+        lamdas=(0.0, 0.5),
+        hidden_sizes=(4,),
+        normalizer="ema",
+        trace_mode="replacing",
+        routing="mixed",
+    )
+    payload = config.to_dict()
+    assert Step3HordeConfig.from_dict(payload) == config
+
+    hostile_payload = _HostileDict(payload)
+    _HostileDict.calls = 0
+    with pytest.raises(ValueError, match="must be an actual dict"):
+        Step3HordeConfig.from_dict(hostile_payload)
+    assert _HostileDict.calls == 0
+
+    for field in ("gammas", "lamdas", "hidden_sizes"):
+        malformed = dict(payload)
+        malformed[field] = _HostileList(cast(list[object], payload[field]))
+        _HostileList.calls = 0
+        with pytest.raises(ValueError, match=f"serialized {field} must be a JSON array"):
+            Step3HordeConfig.from_dict(malformed)
+        assert _HostileList.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("steps", True),
+        ("steps", 1.0),
+        ("seed", -1),
+        ("seed", 2**32),
+        ("final_window", False),
+        ("raw_feature_dim", 0),
+        ("constructed_feature_dim", -1),
+    ],
+)
+def test_smoke_rejects_noncanonical_or_out_of_range_integers(
+    name: str, value: object
+) -> None:
+    kwargs = {name: value}
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match=name):
+        run_step3_smoke(**kwargs)  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
+
+
+def test_smoke_rejects_hostile_int_without_hooks() -> None:
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="steps must be an integer"):
+        run_step3_smoke(steps=_HostileInt(2))
+    assert _HostileInt.calls == 0
+
+
+def test_smoke_accepts_exact_boundary_shaped_small_inputs() -> None:
+    result = run_step3_smoke(
+        steps=2,
+        seed=2**32 - 1,
+        final_window=1,
+        raw_feature_dim=1,
+        constructed_feature_dim=0,
+    )
+    assert result.steps == 2
+    assert result.seed == 2**32 - 1
+    assert result.finite
 
 
 def test_valid_configs_still_pass() -> None:
