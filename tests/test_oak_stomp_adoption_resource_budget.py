@@ -48,3 +48,17 @@ def test_oak_stomp_adoption_resource_budget_rejects_leftover_identities() -> Non
     assert '"persistent_state_nbytes_before": true' not in dumped
     assert '"stomp_update_evaluations_per_delegated_update": true' not in dumped
     assert '"caller_authenticated": 1' not in dumped
+
+
+def test_oak_stomp_adoption_resource_budget_binds_growth_formula() -> None:
+    with pytest.raises(ValueError, match="growth_bytes must equal after minus before"):
+        replace(_legal_budget(), persistent_state_nbytes_after=65)
+    with pytest.raises(ValueError, match="growth_bytes must equal after minus before"):
+        replace(_legal_budget(), persistent_state_growth_bytes=1)
+
+    grown = replace(
+        _legal_budget(),
+        persistent_state_nbytes_after=65,
+        persistent_state_growth_bytes=1,
+    )
+    assert grown.persistent_state_growth_bytes == 1

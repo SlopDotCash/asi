@@ -380,6 +380,12 @@ class OaKExternalSTOMPAdoptionResourceBudget:
                 name,
                 _require_exact_bool(name, getattr(self, name)),
             )
+        if self.persistent_state_growth_bytes != (
+            self.persistent_state_nbytes_after - self.persistent_state_nbytes_before
+        ):
+            raise ValueError(
+                "persistent_state_growth_bytes must equal after minus before"
+            )
 
     def to_config(self) -> dict[str, int | bool]:
         """Return an exact JSON-compatible resource record."""
