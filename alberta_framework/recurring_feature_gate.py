@@ -62,6 +62,46 @@ PAIRWISE_PROBE_SCOPE = (
 )
 
 
+def _require_builtin_int(
+    name: str,
+    value: object,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{name} must be a built-in integer")
+    if minimum is not None and maximum is not None:
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{name} must be in [{minimum}, {maximum}]")
+    elif minimum is not None and value < minimum:
+        if minimum == 1:
+            raise ValueError(f"{name} must be positive")
+        raise ValueError(f"{name} must be >= {minimum}")
+    elif maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
+    return value
+
+
+def _require_exact_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be boolean")
+    return value
+
+
+def _preflight_seed_array_resources(
+    *, feature_dim: int, output_heads: int, total_steps: int, heldout_samples: int
+) -> None:
+    scalar_count = total_steps * (feature_dim + output_heads + 2) + heldout_samples * (
+        feature_dim + output_heads
+    )
+    byte_count = 4 * scalar_count
+    if scalar_count > 2**31 - 1 or byte_count > 2**31 - 1:
+        raise ValueError("per-seed arrays must fit signed-int32 scalar and byte resources")
+    if byte_count > 256 * 1024 * 1024:
+        raise ValueError("per-seed arrays must fit the 256 MiB resource budget")
+
+
 @dataclass(frozen=True, slots=True)
 class RecurringFeatureProtocol:
     """Fully specified stream and learner settings for the recurring probe."""
@@ -100,59 +140,112 @@ class RecurringFeatureProtocol:
 
     def validate(self) -> None:
         """Reject malformed protocols before allocating experiment arrays."""
-        if type(self.feature_dim) is not int or self.feature_dim < 6:
+        _require_builtin_int("feature_dim", self.feature_dim)
+        if self.feature_dim < 6:
             raise ValueError("feature_dim must be at least 6 for the declared task pairs")
-        if type(self.output_heads) is not int or self.output_heads != len(TASK_NAMES):
+        _require_builtin_int("output_heads", self.output_heads)
+        if self.output_heads != len(TASK_NAMES):
             raise ValueError(f"output_heads must be {len(TASK_NAMES)}")
-        if type(self.steps_per_phase) is not int or self.steps_per_phase < 1:
-            raise ValueError("steps_per_phase must be a positive integer")
-        if type(self.active_pair_budget) is not int or self.active_pair_budget < 1:
-            raise ValueError("active_pair_budget must be a positive integer")
-        if type(self.candidate_pair_budget) is not int or self.candidate_pair_budget < 1:
-            raise ValueError("candidate_pair_budget must be a positive integer")
-        if type(self.replacement_interval) is not int or self.replacement_interval < 0:
-            raise ValueError("replacement_interval must be a non-negative integer")
-        if type(self.min_feature_age) is not int or self.min_feature_age < 0:
-            raise ValueError("min_feature_age must be a non-negative integer")
-        if type(self.candidate_min_age) is not int or self.candidate_min_age < 0:
-            raise ValueError("candidate_min_age must be a non-negative integer")
-        if type(self.heldout_samples) is not int or self.heldout_samples < 1:
-            raise ValueError("heldout_samples must be a positive integer")
-        if (
-            type(self.recovery_window) is not int
-            or not 1 <= self.recovery_window <= self.steps_per_phase
-        ):
-            raise ValueError("recovery_window must be an integer in [1, steps_per_phase]")
-
-        validated_float32_scalar("target_amplitude", self.target_amplitude, positive=True)
-        validated_float32_scalar("step_size_output", self.step_size_output, lower=0.0)
-        validated_float32_scalar("utility_decay", self.utility_decay, lower=0.0, upper=1.0)
-        validated_float32_scalar(
-            "retained_utility_decay", self.retained_utility_decay, lower=0.0, upper=1.0
+        _require_builtin_int("steps_per_phase", self.steps_per_phase, minimum=1)
+        _require_builtin_int("active_pair_budget", self.active_pair_budget, minimum=1)
+        _require_builtin_int("candidate_pair_budget", self.candidate_pair_budget, minimum=1)
+        _require_builtin_int("heldout_samples", self.heldout_samples, minimum=1)
+        _require_builtin_int("replacement_interval", self.replacement_interval, minimum=0)
+        _require_builtin_int("min_feature_age", self.min_feature_age, minimum=0)
+        _require_builtin_int("candidate_min_age", self.candidate_min_age, minimum=0)
+        _require_builtin_int(
+            "recovery_window",
+            self.recovery_window,
+            minimum=1,
+            maximum=self.steps_per_phase,
         )
-        validated_float32_scalar("promotion_margin", self.promotion_margin, lower=0.0)
-        validated_float32_scalar("promotion_blend", self.promotion_blend, lower=0.0, upper=1.0)
-        validated_float32_scalar(
-            "future_utility_mix", self.future_utility_mix, lower=0.0, upper=1.0
+        _preflight_seed_array_resources(
+            feature_dim=self.feature_dim,
+            output_heads=self.output_heads,
+            total_steps=self.total_steps,
+            heldout_samples=self.heldout_samples,
+        )
+        object.__setattr__(
+            self,
+            "target_amplitude",
+            validated_float32_scalar("target_amplitude", self.target_amplitude, positive=True),
+        )
+        object.__setattr__(
+            self,
+            "recovery_nmse_threshold",
+            validated_float32_scalar(
+                "recovery_nmse_threshold", self.recovery_nmse_threshold, positive=True
+            ),
+        )
+        object.__setattr__(
+            self,
+            "step_size_output",
+            validated_float32_scalar("step_size_output", self.step_size_output, lower=0.0),
+        )
+        utility_decay = validated_float32_scalar(
+            "utility_decay",
+            self.utility_decay,
+            lower=0.0,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        object.__setattr__(self, "utility_decay", utility_decay)
+        object.__setattr__(
+            self,
+            "retained_utility_decay",
+            validated_float32_scalar(
+                "retained_utility_decay",
+                self.retained_utility_decay,
+                lower=utility_decay,
+                upper=1.0,
+                upper_inclusive=False,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "promotion_margin",
+            validated_float32_scalar("promotion_margin", self.promotion_margin, positive=True),
+        )
+        object.__setattr__(
+            self,
+            "promotion_blend",
+            validated_float32_scalar(
+                "promotion_blend", self.promotion_blend, lower=0.0, upper=1.0
+            ),
+        )
+        object.__setattr__(
+            self,
+            "future_utility_mix",
+            validated_float32_scalar(
+                "future_utility_mix", self.future_utility_mix, lower=0.0, upper=1.0
+            ),
+        )
+        object.__setattr__(
+            self,
+            "obgd_kappa",
+            validated_float32_scalar("obgd_kappa", self.obgd_kappa, positive=True),
         )
         if self.candidate_utility_retention_decay is not None:
-            validated_float32_scalar(
+            object.__setattr__(
+                self,
                 "candidate_utility_retention_decay",
-                self.candidate_utility_retention_decay,
-                lower=0.0,
-                upper=1.0,
+                validated_float32_scalar(
+                    "candidate_utility_retention_decay",
+                    self.candidate_utility_retention_decay,
+                    lower=utility_decay,
+                    upper=1.0,
+                    upper_inclusive=False,
+                ),
             )
-        validated_float32_scalar("obgd_kappa", self.obgd_kappa, positive=True)
-        validated_float32_scalar(
-            "recovery_nmse_threshold", self.recovery_nmse_threshold, positive=True
-        )
-
-        if type(self.refresh_candidates) is not bool:
-            raise ValueError("refresh_candidates must be an actual bool")
-        if type(self.refresh_promoted_candidate) is not bool:
-            raise ValueError("refresh_promoted_candidate must be an actual bool")
-        if type(self.use_obgd) is not bool:
-            raise ValueError("use_obgd must be an actual bool")
+        if self.candidate_strategy != "all_pairs":
+            raise ValueError("candidate_strategy must be 'all_pairs'")
+        if self.utility_aggregation != "max":
+            raise ValueError("utility_aggregation must be 'max'")
+        if self.utility_task_balancing != "active":
+            raise ValueError("utility_task_balancing must be 'active'")
+        _require_exact_bool("refresh_candidates", self.refresh_candidates)
+        _require_exact_bool("refresh_promoted_candidate", self.refresh_promoted_candidate)
+        _require_exact_bool("use_obgd", self.use_obgd)
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,38 +423,70 @@ class RecurringFeatureGateCriteria:
     minimum_critical_nmse_gain_over_baseline: float = 0.5
     require_recurrence_faster_than_acquisition: bool = True
 
-    def __post_init__(self) -> None:
-        """Validate criteria thresholds."""
-        if type(self.minimum_seeds) is not int or self.minimum_seeds < 1:
-            raise ValueError("minimum_seeds must be a positive integer")
-        if type(self.minimum_heldout_samples) is not int or self.minimum_heldout_samples < 1:
-            raise ValueError("minimum_heldout_samples must be a positive integer")
-        validated_float32_scalar(
+    def validate(self) -> None:
+        """Reject boolean or non-finite criteria before comparing evidence."""
+        _require_builtin_int("minimum_seeds", self.minimum_seeds, minimum=1)
+        _require_builtin_int(
+            "minimum_heldout_samples", self.minimum_heldout_samples, minimum=1
+        )
+        object.__setattr__(
+            self,
             "minimum_retained_all_critical_rate",
-            self.minimum_retained_all_critical_rate,
-            lower=0.0,
-            upper=1.0,
+            validated_float32_scalar(
+                "minimum_retained_all_critical_rate",
+                self.minimum_retained_all_critical_rate,
+                lower=0.0,
+                upper=1.0,
+            ),
         )
-        validated_float32_scalar(
+        object.__setattr__(
+            self,
             "minimum_obsolete_eviction_rate",
-            self.minimum_obsolete_eviction_rate,
-            lower=0.0,
-            upper=1.0,
+            validated_float32_scalar(
+                "minimum_obsolete_eviction_rate",
+                self.minimum_obsolete_eviction_rate,
+                lower=0.0,
+                upper=1.0,
+            ),
         )
-        validated_float32_scalar(
-            "maximum_median_critical_nmse", self.maximum_median_critical_nmse, lower=0.0
+        object.__setattr__(
+            self,
+            "maximum_median_critical_nmse",
+            validated_float32_scalar(
+                "maximum_median_critical_nmse",
+                self.maximum_median_critical_nmse,
+                lower=0.0,
+            ),
         )
-        validated_float32_scalar("minimum_median_obsolete_nmse", self.minimum_median_obsolete_nmse)
-        validated_float32_scalar(
+        object.__setattr__(
+            self,
+            "minimum_median_obsolete_nmse",
+            validated_float32_scalar(
+                "minimum_median_obsolete_nmse",
+                self.minimum_median_obsolete_nmse,
+                lower=0.0,
+            ),
+        )
+        object.__setattr__(
+            self,
             "minimum_retention_rate_gain_over_baseline",
-            self.minimum_retention_rate_gain_over_baseline,
+            validated_float32_scalar(
+                "minimum_retention_rate_gain_over_baseline",
+                self.minimum_retention_rate_gain_over_baseline,
+            ),
         )
-        validated_float32_scalar(
+        object.__setattr__(
+            self,
             "minimum_critical_nmse_gain_over_baseline",
-            self.minimum_critical_nmse_gain_over_baseline,
+            validated_float32_scalar(
+                "minimum_critical_nmse_gain_over_baseline",
+                self.minimum_critical_nmse_gain_over_baseline,
+            ),
         )
-        if type(self.require_recurrence_faster_than_acquisition) is not bool:
-            raise ValueError("require_recurrence_faster_than_acquisition must be an actual bool")
+        _require_exact_bool(
+            "require_recurrence_faster_than_acquisition",
+            self.require_recurrence_faster_than_acquisition,
+        )
 
 
 class RecurringFeatureGateError(AssertionError):
@@ -682,7 +807,7 @@ def run_recurring_feature_gate(
     """
     chosen_protocol = protocol or RecurringFeatureProtocol()
     chosen_protocol.validate()
-    chosen_seeds = tuple(require_unique_jax_seeds(tuple(seeds), name="seeds"))
+    chosen_seeds = require_unique_jax_seeds(tuple(seeds))
 
     retained_learner = _make_learner(
         chosen_protocol,
@@ -813,6 +938,7 @@ def evaluate_recurring_feature_gate(
 ) -> RecurringFeatureGateDecision:
     """Recompute a fail-closed decision from raw per-seed evidence."""
     chosen = criteria or RecurringFeatureGateCriteria()
+    chosen.validate()
     failures = _canonical_protocol_failures(result.protocol)
     failures.extend(_seed_failures(result))
 

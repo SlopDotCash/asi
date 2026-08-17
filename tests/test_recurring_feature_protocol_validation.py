@@ -1,5 +1,11 @@
-"""Tests for RecurringFeatureProtocol, criteria, and seed validation."""
+"""Host-boundary identities for the recurring-feature protocol and criteria."""
 
+from __future__ import annotations
+
+import math
+from dataclasses import replace
+
+import numpy as np
 import pytest
 
 from alberta_framework.recurring_feature_gate import (
@@ -9,81 +15,151 @@ from alberta_framework.recurring_feature_gate import (
 )
 
 
-def test_protocol_validate_rejects_booleans_and_nans() -> None:
-    # Boolean integers
-    with pytest.raises(ValueError, match="feature_dim"):
-        RecurringFeatureProtocol(feature_dim=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="steps_per_phase"):
-        RecurringFeatureProtocol(steps_per_phase=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="active_pair_budget"):
-        RecurringFeatureProtocol(active_pair_budget=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="heldout_samples"):
-        RecurringFeatureProtocol(heldout_samples=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="recovery_window"):
-        RecurringFeatureProtocol(recovery_window=True).validate()  # type: ignore[arg-type]
-
-    # Boolean / NaN floats
-    with pytest.raises(ValueError, match="target_amplitude"):
-        RecurringFeatureProtocol(target_amplitude=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="target_amplitude"):
-        RecurringFeatureProtocol(target_amplitude=float("nan")).validate()
-
-    with pytest.raises(ValueError, match="step_size_output"):
-        RecurringFeatureProtocol(step_size_output=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="step_size_output"):
-        RecurringFeatureProtocol(step_size_output=float("nan")).validate()
-
-    with pytest.raises(ValueError, match="utility_decay"):
-        RecurringFeatureProtocol(utility_decay=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="utility_decay"):
-        RecurringFeatureProtocol(utility_decay=float("nan")).validate()
-
-    with pytest.raises(ValueError, match="recovery_nmse_threshold"):
-        RecurringFeatureProtocol(recovery_nmse_threshold=True).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="recovery_nmse_threshold"):
-        RecurringFeatureProtocol(recovery_nmse_threshold=float("nan")).validate()
-
-    # Boolean flags
-    with pytest.raises(ValueError, match="refresh_candidates"):
-        RecurringFeatureProtocol(refresh_candidates=1).validate()  # type: ignore[arg-type]
-
-    with pytest.raises(ValueError, match="use_obgd"):
-        RecurringFeatureProtocol(use_obgd=1).validate()  # type: ignore[arg-type]
-
-    # Valid protocol
+def test_canonical_protocol_and_criteria_remain_legal() -> None:
     RecurringFeatureProtocol().validate()
+    RecurringFeatureGateCriteria().validate()
+    protocol = replace(
+        RecurringFeatureProtocol(),
+        step_size_output=0.0,
+        utility_decay=0.0,
+        retained_utility_decay=0.0,
+        replacement_interval=0,
+        min_feature_age=0,
+        candidate_min_age=0,
+        promotion_blend=0.0,
+        future_utility_mix=0.0,
+        candidate_utility_retention_decay=None,
+    )
+    protocol.validate()
 
 
-def test_criteria_rejects_booleans_and_nans() -> None:
-    with pytest.raises(ValueError, match="minimum_seeds"):
-        RecurringFeatureGateCriteria(minimum_seeds=False)  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    "field",
+    [
+        "steps_per_phase",
+        "active_pair_budget",
+        "candidate_pair_budget",
+        "heldout_samples",
+        "recovery_window",
+        "replacement_interval",
+        "min_feature_age",
+        "candidate_min_age",
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, np.bool_(True), 1.0, np.int64(1)])
+def test_protocol_integer_fields_reject_bool_and_non_builtin(
+    field: str, invalid: object
+) -> None:
+    overrides: dict[str, object] = {field: invalid}
+    if field == "steps_per_phase":
+        overrides["recovery_window"] = 1
+    with pytest.raises(ValueError, match=f"{field} must"):
+        replace(RecurringFeatureProtocol(), **overrides).validate()
 
-    with pytest.raises(ValueError, match="minimum_heldout_samples"):
-        RecurringFeatureGateCriteria(minimum_heldout_samples=False)  # type: ignore[arg-type]
 
-    with pytest.raises(ValueError, match="minimum_retained_all_critical_rate"):
-        RecurringFeatureGateCriteria(minimum_retained_all_critical_rate=float("nan"))
+@pytest.mark.parametrize(
+    "field",
+    [
+        "target_amplitude",
+        "recovery_nmse_threshold",
+        "step_size_output",
+        "utility_decay",
+        "retained_utility_decay",
+        "promotion_margin",
+        "promotion_blend",
+        "future_utility_mix",
+        "obgd_kappa",
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, np.bool_(True), math.nan, math.inf])
+def test_protocol_float_fields_reject_bool_and_non_finite(
+    field: str, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must"):
+        replace(RecurringFeatureProtocol(), **{field: invalid}).validate()
 
+
+def test_protocol_optional_retention_decay_rejects_bool_and_non_finite() -> None:
+    for invalid in (True, False, np.bool_(True), math.nan, math.inf):
+        with pytest.raises(ValueError, match="candidate_utility_retention_decay"):
+            replace(
+                RecurringFeatureProtocol(),
+                candidate_utility_retention_decay=invalid,
+            ).validate()
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["refresh_candidates", "refresh_promoted_candidate", "use_obgd"],
+)
+def test_protocol_flags_require_exact_bool(field: str) -> None:
+    with pytest.raises(ValueError, match=field):
+        replace(RecurringFeatureProtocol(), **{field: 1}).validate()
+    with pytest.raises(ValueError, match=field):
+        replace(RecurringFeatureProtocol(), **{field: np.bool_(True)}).validate()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "minimum_seeds",
+        "minimum_heldout_samples",
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, np.bool_(True), 1.0])
+def test_criteria_integer_fields_reject_bool(field: str, invalid: object) -> None:
+    with pytest.raises(ValueError, match=f"{field} must"):
+        RecurringFeatureGateCriteria(**{field: invalid}).validate()
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "minimum_retained_all_critical_rate",
+        "minimum_obsolete_eviction_rate",
+        "maximum_median_critical_nmse",
+        "minimum_median_obsolete_nmse",
+        "minimum_retention_rate_gain_over_baseline",
+        "minimum_critical_nmse_gain_over_baseline",
+    ],
+)
+@pytest.mark.parametrize("invalid", [True, False, np.bool_(True), math.nan, math.inf])
+def test_criteria_float_fields_reject_bool_and_non_finite(
+    field: str, invalid: object
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must"):
+        RecurringFeatureGateCriteria(**{field: invalid}).validate()
+
+
+def test_criteria_recurrence_flag_requires_exact_bool() -> None:
     with pytest.raises(ValueError, match="require_recurrence_faster_than_acquisition"):
-        RecurringFeatureGateCriteria(require_recurrence_faster_than_acquisition=1)  # type: ignore[arg-type]
-
-    # Valid criteria
-    criteria = RecurringFeatureGateCriteria()
-    assert criteria.minimum_seeds == 30
+        RecurringFeatureGateCriteria(
+            require_recurrence_faster_than_acquisition=1
+        ).validate()
 
 
-def test_run_recurring_feature_gate_rejects_boolean_seeds() -> None:
-    protocol = RecurringFeatureProtocol(steps_per_phase=10, recovery_window=5, heldout_samples=16)
-    with pytest.raises(ValueError, match="seed"):
-        run_recurring_feature_gate((True,), protocol=protocol)  # type: ignore[arg-type]
+def test_run_rejects_boolean_seed_before_allocation() -> None:
+    protocol = replace(
+        RecurringFeatureProtocol(),
+        steps_per_phase=1,
+        recovery_window=1,
+        heldout_samples=1,
+    )
+    with pytest.raises(ValueError, match="seeds"):
+        run_recurring_feature_gate((True,), protocol=protocol)
 
-    with pytest.raises(ValueError, match="seed"):
-        run_recurring_feature_gate((False,), protocol=protocol)  # type: ignore[arg-type]
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"steps_per_phase": 2**24},
+        {"heldout_samples": 2**27},
+        {"feature_dim": 2**27},
+    ],
+)
+def test_protocol_rejects_oversized_seed_arrays_before_allocation(
+    overrides: dict[str, int],
+) -> None:
+    protocol = replace(RecurringFeatureProtocol(), **overrides)
+    with pytest.raises(ValueError, match="resource"):
+        protocol.validate()
