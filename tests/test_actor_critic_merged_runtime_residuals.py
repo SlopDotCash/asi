@@ -120,8 +120,8 @@ def test_scan_rejects_hostile_input_before_jax_conversion(continuous: bool) -> N
 
 
 def test_discrete_scan_working_set_formula_has_exact_byte_boundary() -> None:
-    # Persistent=52 bytes, reusable single-step scan workspace=880 bytes.
-    last_legal = (2**31 - 1 - 932) // 38
+    # Two 52-byte carry trees plus an 880-byte reusable workspace.
+    last_legal = (2**31 - 1 - 984) // 38
     actor_critic_module._require_discrete_scan_resources(
         n_actions=1, feature_dim=1, num_steps=last_legal
     )
@@ -132,8 +132,8 @@ def test_discrete_scan_working_set_formula_has_exact_byte_boundary() -> None:
 
 
 def test_continuous_scan_working_set_formula_has_exact_byte_boundary() -> None:
-    # Persistent=60 bytes, reusable single-step scan workspace=976 bytes.
-    last_legal = (2**31 - 1 - 1_036) // 42
+    # Two 60-byte carry trees plus a 976-byte reusable workspace.
+    last_legal = (2**31 - 1 - 1_096) // 42
     actor_critic_module._require_continuous_scan_resources(
         action_dim=1, feature_dim=1, num_steps=last_legal
     )
@@ -141,6 +141,33 @@ def test_continuous_scan_working_set_formula_has_exact_byte_boundary() -> None:
         actor_critic_module._require_continuous_scan_resources(
             action_dim=1, feature_dim=1, num_steps=last_legal + 1
         )
+
+
+@pytest.mark.parametrize(
+    ("continuous", "exact_bytes"),
+    [
+        (False, 4_410),
+        (True, 5_022),
+    ],
+)
+def test_scan_working_set_formula_covers_multidimensional_terms(
+    continuous: bool,
+    exact_bytes: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # At action count 3, feature count 5, and horizon 7, these are the exact
+    # conservative-envelope byte totals, including both retained carry trees.
+    monkeypatch.setattr(actor_critic_module, "_INT32_MAX", exact_bytes)
+    if continuous:
+        helper = actor_critic_module._require_continuous_scan_resources
+        dimensions = {"action_dim": 3, "feature_dim": 5, "num_steps": 7}
+    else:
+        helper = actor_critic_module._require_discrete_scan_resources
+        dimensions = {"n_actions": 3, "feature_dim": 5, "num_steps": 7}
+    helper(**dimensions)
+    monkeypatch.setattr(actor_critic_module, "_INT32_MAX", exact_bytes - 1)
+    with pytest.raises(ValueError, match="working set"):
+        helper(**dimensions)
 
 
 @pytest.mark.parametrize("continuous", [False, True])

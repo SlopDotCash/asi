@@ -136,8 +136,11 @@ def _require_discrete_scan_resources(
         + 16 * feature_dim
         + 64
     )
-    total_scalars = state_scalars + input_scalars + output_scalars + temporary_scalars
-    total_bytes = state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
+    # The caller retains the initial carry while ``lax.scan`` materialises the
+    # returned final carry. Count both state trees in addition to the reusable
+    # source-level update/select temporary envelope.
+    total_scalars = 2 * state_scalars + input_scalars + output_scalars + temporary_scalars
+    total_bytes = 2 * state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
     if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
         raise ValueError("derived actor-critic scan working set exceeds the signed-int32 budget")
 
@@ -162,8 +165,9 @@ def _require_continuous_scan_resources(
         + 16 * feature_dim
         + 64
     )
-    total_scalars = state_scalars + input_scalars + output_scalars + temporary_scalars
-    total_bytes = state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
+    # Retain both carry trees and add the reusable update/select envelope.
+    total_scalars = 2 * state_scalars + input_scalars + output_scalars + temporary_scalars
+    total_bytes = 2 * state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
     if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
         raise ValueError(
             "derived continuous actor-critic scan working set exceeds the signed-int32 budget"
