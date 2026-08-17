@@ -305,6 +305,30 @@ def test_recovery_rejects_boolean_change_point() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "change_points",
+    [
+        np.array([1.0]),
+        np.array([1.5]),
+        np.array([np.nan]),
+        np.array([np.iinfo(np.uint64).max], dtype=np.uint64),
+    ],
+)
+def test_recovery_rejects_coerced_numpy_change_points(change_points: object) -> None:
+    with pytest.raises(ValueError, match="change_points"):
+        compute_recovery_lengths(
+            [0.1, 0.9, 0.9],
+            change_points=change_points,  # type: ignore[arg-type]
+            threshold=0.8,
+            window_size=1,
+        )
+
+
+def test_nested_numpy_boolean_trace_is_rejected() -> None:
+    with pytest.raises(ValueError, match="online_performance"):
+        compute_prequential_performance([np.array(True), np.array(False)])
+
+
 @pytest.mark.parametrize("threshold", [True, False, float("nan"), float("inf")])
 def test_recovery_rejects_boolean_or_nonfinite_threshold(threshold: object) -> None:
     with pytest.raises(ValueError, match="threshold"):

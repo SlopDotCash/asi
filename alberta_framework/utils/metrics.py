@@ -53,12 +53,13 @@ def _reject_boolean_numeric_trace(values: object, *, name: str) -> None:
         for index, item in enumerate(values):
             if _is_bool(item):
                 raise ValueError(f"{name}[{index}] must not be a boolean")
-            if isinstance(item, (list, tuple)):
-                for inner_index, inner in enumerate(item):
-                    if _is_bool(inner):
-                        raise ValueError(f"{name}[{index}][{inner_index}] must not be a boolean")
-    elif isinstance(values, np.ndarray) and values.dtype == np.bool_:
-        raise ValueError(f"{name} must not be a boolean array")
+            _reject_boolean_numeric_trace(item, name=f"{name}[{index}]")
+    elif isinstance(values, np.ndarray):
+        if values.dtype.kind == "b":
+            raise ValueError(f"{name} must not be a boolean array")
+        if values.dtype.kind == "O":
+            for index, item in enumerate(values.flat):
+                _reject_boolean_numeric_trace(item, name=f"{name}[{index}]")
 
 
 def _require_index_vector(values: object, *, name: str) -> NDArray[np.int64]:
@@ -68,11 +69,16 @@ def _require_index_vector(values: object, *, name: str) -> NDArray[np.int64]:
         for index, item in enumerate(values):
             if not _is_index_int(item):
                 raise ValueError(f"{name}[{index}] must be an integer index, not a boolean")
+        return np.asarray(values, dtype=np.int64)
     else:
         array = np.asarray(values)
-        if array.dtype == np.bool_ or array.dtype.kind == "b":
-            raise ValueError(f"{name} must be integer indices, not booleans")
-    return np.asarray(values, dtype=np.int64)
+        if array.size == 0:
+            return np.asarray(array, dtype=np.int64)
+        if array.dtype.kind not in "iu":
+            raise ValueError(f"{name} must contain integer indices, not coerced values")
+        if array.dtype.kind == "u" and bool(np.any(array > np.iinfo(np.int64).max)):
+            raise ValueError(f"{name} contains an index outside the int64 domain")
+        return np.asarray(array, dtype=np.int64)
 
 
 @dataclass(frozen=True)
