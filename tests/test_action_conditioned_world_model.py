@@ -574,10 +574,18 @@ def test_config_canonicalizes_numpy_integer_family_and_complete_scalars() -> Non
     )
 
 
+def test_config_accepts_exact_zero_step_size_but_rejects_float32_underflow() -> None:
+    assert ActionConditionedWorldModelConfig(
+        observation_dim=2, n_actions=2, step_size=0.0
+    ).step_size == 0.0
+    with pytest.raises(ValueError, match="remain positive once narrowed.*or be exact zero"):
+        ActionConditionedWorldModelConfig(observation_dim=2, n_actions=2, step_size=1e-100)
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"step_size": 0.0},
+        {"step_size": -0.01},
         {"sparsity": -0.1},
         {"sparsity": 1.1},
         {"leaky_relu_slope": -0.1},

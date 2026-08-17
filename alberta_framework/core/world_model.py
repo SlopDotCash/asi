@@ -28,7 +28,10 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -89,6 +92,20 @@ def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
     return validated_float32_scalar(name, value, **bounds)
+
+
+def _validated_step_size(name: str, value: object) -> float:
+    """Accept an exact zero freeze without silently underflowing learning to zero."""
+    if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
+        raise ValueError(f"{name} must be a finite real scalar")
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name, value, lower=0.0
+    )
+    # Values at or below half the smallest binary32 subnormal round to zero
+    # (the exact halfway case ties to the even zero significand).
+    if numerator > 0 and numerator * (1 << 150) <= denominator:
+        raise ValueError(f"{name} must remain positive once narrowed to float32 or be exact zero")
+    return stored
 
 
 def _validate_hidden_sizes(value: object) -> tuple[int, ...]:
@@ -279,7 +296,6 @@ class ActionConditionedWorldModelConfig:
         scalar_specs: tuple[tuple[str, dict[str, Any]], ...] = (
             ("gamma", {"lower": 0.0, "upper": 1.0}),
             ("reward_scale", {"positive": True}),
-            ("step_size", {"positive": True}),
             ("sparsity", {"lower": 0.0, "upper": 1.0}),
             ("leaky_relu_slope", {"lower": 0.0, "upper": 1.0}),
             ("utility_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
@@ -291,6 +307,7 @@ class ActionConditionedWorldModelConfig:
         object.__setattr__(self, "n_actions", n_actions)
         object.__setattr__(self, "hidden_sizes", hidden_sizes)
         object.__setattr__(self, "observation_scale", observation_scale)
+        object.__setattr__(self, "step_size", _validated_step_size("step_size", self.step_size))
         for name, bounds in scalar_specs:
             object.__setattr__(
                 self,
@@ -1104,7 +1121,6 @@ class WorldModelConfig:
         for name in ("use_layer_norm", "predict_delta"):
             object.__setattr__(self, name, _require_bool(name, getattr(self, name)))
         scalar_specs: tuple[tuple[str, dict[str, Any]], ...] = (
-            ("step_size", {"positive": True}),
             ("sparsity", {"lower": 0.0, "upper": 1.0}),
             ("leaky_relu_slope", {"lower": 0.0, "upper": 1.0}),
             ("utility_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
@@ -1113,6 +1129,7 @@ class WorldModelConfig:
         object.__setattr__(self, "n_actions", n_actions)
         object.__setattr__(self, "action_dim", action_dim)
         object.__setattr__(self, "hidden_sizes", hidden_sizes)
+        object.__setattr__(self, "step_size", _validated_step_size("step_size", self.step_size))
         for name, bounds in scalar_specs:
             object.__setattr__(
                 self,
