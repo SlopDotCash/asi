@@ -256,6 +256,14 @@ class ForagerMatchedFinalAnalysisError(ValueError):
     """Final-analysis inputs, content, authority pins, or publication failed closed."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ForagerMatchedFinalAnalysisError("name must be an exact string")
+    if type(value) is not str:
+        raise ForagerMatchedFinalAnalysisError(f"{name} must be an exact string")
+    return value
+
+
 class PublishedFinalAnalysisUncertainError(ForagerMatchedFinalAnalysisError):
     """Publication occurred, but durability or final replay could not be established."""
 
@@ -1083,8 +1091,9 @@ def _expected_entrypoint_binding(candidate_id: str) -> dict[str, Any]:
                 qualification._EXTERNAL_EXECUTION[candidate_id]
             )
         except KeyError as exc:
+            host_candidate_id = _require_exact_str("candidate_id", candidate_id)
             raise ForagerMatchedFinalAnalysisError(
-                f"candidate {candidate_id!r} has no frozen entrypoint binding"
+                f"candidate '{host_candidate_id}' has no frozen entrypoint binding"
             ) from exc
         source_key = str(raw_source)
     return {
@@ -1795,8 +1804,9 @@ def _validate_plan_and_manifests(
             f"evaluation source manifest candidate {index}",
         )
         if candidate_id not in sealed_protocol.candidate_index:
+            host_candidate_id = _require_exact_str("candidate_id", candidate_id)
             raise ForagerMatchedFinalAnalysisError(
-                f"evaluation source manifest names unknown candidate {candidate_id!r}"
+                f"evaluation source manifest names unknown candidate '{host_candidate_id}'"
             )
         frozen_candidate = sealed_protocol.candidate_index[candidate_id]
         expected_entrypoint = _expected_entrypoint_binding(candidate_id)
@@ -1958,8 +1968,9 @@ def _validate_plan_and_manifests(
             f"evaluation candidate command template {index}",
         )
         if candidate_id not in sealed_protocol.candidate_index:
+            host_candidate_id = _require_exact_str("candidate_id", candidate_id)
             raise ForagerMatchedFinalAnalysisError(
-                f"evaluation command template names unknown candidate {candidate_id!r}"
+                f"evaluation command template names unknown candidate '{host_candidate_id}'"
             )
         expected_argv = _expected_candidate_command_template(
             sealed_protocol,
