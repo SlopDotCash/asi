@@ -106,6 +106,17 @@ def test_learning_signal_budget_rejects_hostile_integer_subclass_without_hook() 
         dataclasses.replace(_legal_budget(), input_float_scalars_per_step=_HostileInt(15))
 
 
+@pytest.mark.parametrize("count", [6, 8, 10, 11, 2_147_483_647])
+def test_learning_signal_budget_accepts_attainable_input_counts(count: int) -> None:
+    assert dataclasses.replace(_legal_budget(), input_float_scalars_per_step=count)
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 4, 5, 7, 9, 13, 17])
+def test_learning_signal_budget_rejects_unattainable_input_counts(count: int) -> None:
+    with pytest.raises(ValueError, match="not attainable"):
+        dataclasses.replace(_legal_budget(), input_float_scalars_per_step=count)
+
+
 def test_learning_signal_config_gates_exact_derived_input_budget_bound() -> None:
     largest = LearningSignalEstimatorConfig(ensemble_size=1_073_741_822, target_dim=1)
     assert (

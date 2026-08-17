@@ -324,6 +324,16 @@ class LearningSignalResourceBudget:
                 minimum=1,
             ),
         )
+        # Producer counts have the exact form D * (2E + 1) + 1 for
+        # ensemble size E >= 2 and target dimension D >= 1.  Removing all
+        # factors of two from count - 1 therefore leaves an odd factor >= 5.
+        odd_factor = self.input_float_scalars_per_step - 1
+        while odd_factor > 0 and odd_factor % 2 == 0:
+            odd_factor //= 2
+        if odd_factor < 5:
+            raise ValueError(
+                "input_float_scalars_per_step is not attainable by a legal estimator config"
+            )
         object.__setattr__(
             self,
             "persistent_float32_scalars",
