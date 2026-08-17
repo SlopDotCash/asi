@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from fractions import Fraction
+
 import chex
 import jax.numpy as jnp
 import numpy as np
@@ -817,6 +819,8 @@ class TestZeroGammaDoesNotMultiplyInfBootstrap:
         )
         assert bool(result.update_applied)
         chex.assert_tree_all_finite(result.state.eligibility_traces)
+
+
         assert bool(jnp.isfinite(result.state.bias_eligibility_trace))
 
     def test_etd_does_not_multiply_inf_follow_on(self) -> None:
@@ -861,3 +865,90 @@ class TestZeroGammaDoesNotMultiplyInfBootstrap:
         )
         assert bool(result.update_applied)
         chex.assert_tree_all_finite(result.state.eligibility_traces)
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [OffPolicyTDLinearLearner(), ETDLinearLearner(), GradientTDLinearLearner()],
+)
+@pytest.mark.parametrize("value", [True, np.bool_(True), 1.5, "4", object(), 0])
+def test_feature_dim_rejects_non_integer_families_without_repr(
+    learner: object, value: object
+) -> None:
+    with pytest.raises(ValueError, match="feature_dim"):
+        learner.init(value)  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))
+def test_feature_dim_accepts_and_canonicalizes_numpy_integer_families(code: str) -> None:
+    feature_dim = np.dtype(code).type(4)
+    assert OffPolicyTDLinearLearner().init(feature_dim).weights.shape == (4,)
+    assert ETDLinearLearner().init(feature_dim).weights.shape == (4,)
+    assert GradientTDLinearLearner().init(feature_dim).weights.shape == (5,)
+
+
+def test_init_preflights_state_bytes_and_augmented_width_before_allocation() -> None:
+    for learner in (
+        OffPolicyTDLinearLearner(),
+        ETDLinearLearner(),
+        GradientTDLinearLearner(),
+    ):
+        with pytest.raises(ValueError, match="state_nbytes"):
+            learner.init(300_000_000)
+    with pytest.raises(ValueError, match="feature_dim"):
+        GradientTDLinearLearner().init(2**31 - 1)
+
+
+@pytest.mark.parametrize(
+    ("factory", "field"),
+    [
+        (lambda value: OffPolicyTDLinearLearner(step_size=value), "step_size"),
+        (lambda value: ETDLinearLearner(trace_decay=value), "trace_decay"),
+        (
+            lambda value: GradientTDLinearLearner(secondary_step_size=value),
+            "secondary_step_size",
+        ),
+    ],
+)
+def test_config_scalars_reject_hostile_and_float32_invalid_values(
+    factory: object, field: str
+) -> None:
+    for value in (float("nan"), 1.0e100, object()):
+        with pytest.raises(ValueError, match=field):
+            factory(value)  # type: ignore[operator]
+
+
+def test_config_scalars_canonicalize_reals_and_preserve_infinity_clip_sentinel() -> None:
+    off_policy = OffPolicyTDLinearLearner(
+        step_size=Fraction(1, 4),
+        trace_decay=np.float64(0.5),
+        retrace_clip=float("inf"),
+    )
+    gradient = GradientTDLinearLearner(
+        step_size=np.float32(0.25),
+        secondary_step_size=Fraction(1, 2),
+        trace_decay=np.float64(0.5),
+        ratio_clip=np.float64(np.inf),
+    )
+    assert off_policy.step_size == 0.25
+    assert off_policy.trace_decay == 0.5
+    assert off_policy.retrace_clip == float("inf")
+    assert gradient.step_size == 0.25
+    assert gradient.secondary_step_size == 0.5
+    assert gradient.trace_decay == 0.5
+    assert gradient.ratio_clip == float("inf")
+    assert all(
+        type(value) is float
+        for value in (
+            off_policy.step_size,
+            off_policy.trace_decay,
+            gradient.step_size,
+            gradient.secondary_step_size,
+            gradient.trace_decay,
+        )
+    )
+    huge_finite = np.longdouble("1e400")
+    with pytest.raises(ValueError, match="retrace_clip"):
+        OffPolicyTDLinearLearner(retrace_clip=huge_finite)
+    with pytest.raises(ValueError, match="ratio_clip"):
+        GradientTDLinearLearner(ratio_clip=huge_finite)

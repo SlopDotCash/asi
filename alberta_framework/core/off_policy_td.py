@@ -51,19 +51,76 @@ Reference:
 from __future__ import annotations
 
 import functools
+import math
+import operator
 import time
-from typing import Any
+from numbers import Real
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.types import Observation
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
 )
+
+_INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+_ACTUAL_FLOAT_TYPES = frozenset(
+    {float, np.float16, np.float32, np.float64, np.longdouble}
+)
+
+
+def _require_feature_dim(
+    value: object, *, vectors: int, fixed_scalars: int, augmented: bool = False
+) -> int:
+    maximum = _INT32_MAX - 1 if augmented else _INT32_MAX
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"feature_dim must be an integer in [1, {maximum}]")
+    feature_dim = operator.index(cast(SupportsIndex, value))
+    if not 1 <= feature_dim <= maximum:
+        raise ValueError(f"feature_dim must be an integer in [1, {maximum}]")
+    width = feature_dim + 1 if augmented else feature_dim
+    scalar_count = vectors * width + fixed_scalars
+    if 4 * scalar_count > _INT32_MAX:
+        raise ValueError("derived state_nbytes must fit in signed int32")
+    return feature_dim
+
+
+def _positive_float32_or_infinity(name: str, value: object) -> float:
+    """Preserve the documented infinity sentinel but reject finite overflow."""
+    actual_type = type(value)
+    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
+        raise ValueError(f"{name} must be positive or infinity")
+    try:
+        numeric_value = cast(Any, value)
+        if actual_type in _ACTUAL_FLOAT_TYPES and bool(np.isinf(numeric_value)):
+            if bool(np.signbit(numeric_value)):
+                raise ValueError(f"{name} must be positive or infinity")
+            return math.inf
+    except Exception as error:
+        raise ValueError(f"{name} must be positive or infinity") from error
+    return validated_float32_scalar(name, value, positive=True)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -257,15 +314,11 @@ class OffPolicyTDLinearLearner:
             retrace_clip: Maximum allowed importance ratio (default 1.0;
                 pass float("inf") to disable clipping).
         """
-        if step_size <= 0:
-            raise ValueError(f"step_size must be positive; got {step_size}")
-        if not 0.0 <= trace_decay <= 1.0:
-            raise ValueError(f"trace_decay must lie in [0, 1]; got {trace_decay}")
-        if retrace_clip <= 0:
-            raise ValueError(f"retrace_clip must be positive; got {retrace_clip}")
-        self._step_size = step_size
-        self._trace_decay = trace_decay
-        self._retrace_clip = retrace_clip
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._trace_decay = validated_float32_scalar(
+            "trace_decay", trace_decay, lower=0.0, upper=1.0
+        )
+        self._retrace_clip = _positive_float32_or_infinity("retrace_clip", retrace_clip)
 
     @property
     def step_size(self) -> float:
@@ -284,6 +337,7 @@ class OffPolicyTDLinearLearner:
 
     def init(self, feature_dim: int) -> OffPolicyTDState:
         """Initialize learner state with zero weights and zero traces."""
+        feature_dim = _require_feature_dim(feature_dim, vectors=2, fixed_scalars=3)
         return OffPolicyTDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
@@ -453,12 +507,10 @@ class ETDLinearLearner:
             step_size: Learning rate alpha (scalar)
             trace_decay: Eligibility trace decay lambda in [0, 1]
         """
-        if step_size <= 0:
-            raise ValueError(f"step_size must be positive; got {step_size}")
-        if not 0.0 <= trace_decay <= 1.0:
-            raise ValueError(f"trace_decay must lie in [0, 1]; got {trace_decay}")
-        self._step_size = step_size
-        self._trace_decay = trace_decay
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._trace_decay = validated_float32_scalar(
+            "trace_decay", trace_decay, lower=0.0, upper=1.0
+        )
 
     @property
     def step_size(self) -> float:
@@ -472,6 +524,7 @@ class ETDLinearLearner:
 
     def init(self, feature_dim: int) -> ETDState:
         """Initialize learner state with zero weights and zero traces."""
+        feature_dim = _require_feature_dim(feature_dim, vectors=2, fixed_scalars=5)
         return ETDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
@@ -638,21 +691,14 @@ class GradientTDLinearLearner:
         ratio_clip: float = 10.0,
     ):
         """Initialize the learner."""
-        if step_size <= 0.0:
-            raise ValueError(f"step_size must be positive; got {step_size}")
-        if secondary_step_size < 0.0:
-            raise ValueError(
-                "secondary_step_size must be non-negative; "
-                f"got {secondary_step_size}"
-            )
-        if not 0.0 <= trace_decay <= 1.0:
-            raise ValueError(f"trace_decay must lie in [0, 1]; got {trace_decay}")
-        if ratio_clip <= 0.0:
-            raise ValueError(f"ratio_clip must be positive; got {ratio_clip}")
-        self._step_size = step_size
-        self._secondary_step_size = secondary_step_size
-        self._trace_decay = trace_decay
-        self._ratio_clip = ratio_clip
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._secondary_step_size = validated_float32_scalar(
+            "secondary_step_size", secondary_step_size, lower=0.0
+        )
+        self._trace_decay = validated_float32_scalar(
+            "trace_decay", trace_decay, lower=0.0, upper=1.0
+        )
+        self._ratio_clip = _positive_float32_or_infinity("ratio_clip", ratio_clip)
 
     @property
     def step_size(self) -> float:
@@ -676,6 +722,9 @@ class GradientTDLinearLearner:
 
     def init(self, feature_dim: int) -> GradientTDState:
         """Initialize primary weights, secondary weights, and traces."""
+        feature_dim = _require_feature_dim(
+            feature_dim, vectors=3, fixed_scalars=1, augmented=True
+        )
         augmented_dim = feature_dim + 1
         return GradientTDState(  # type: ignore[call-arg]
             weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
