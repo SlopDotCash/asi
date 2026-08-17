@@ -101,9 +101,9 @@ def _require_exact_tuple(name: str, value: object) -> tuple[Any, ...]:
 
 
 def _decode_sequence(name: str, value: object) -> tuple[Any, ...]:
-    if type(value) not in {list, tuple}:
-        raise ValueError(f"{name} must be an exact list or tuple")
-    return tuple(cast(list[Any] | tuple[Any, ...], value))
+    if type(value) is not list:
+        raise ValueError(f"serialized {name} must be an exact JSON list")
+    return tuple(value)
 
 
 def _read_mapping(name: str, value: object) -> dict[str, Any]:
@@ -113,6 +113,28 @@ def _read_mapping(name: str, value: object) -> dict[str, Any]:
         return dict(cast(Mapping[str, Any], value))
     except Exception as error:
         raise ValueError(f"{name} must be a readable mapping") from error
+
+
+def _require_serialized_fields(
+    payload: Mapping[str, Any],
+    *,
+    owner: str,
+    expected: set[str],
+    integer_fields: tuple[str, ...] = (),
+    float_fields: tuple[str, ...] = (),
+    string_fields: tuple[str, ...] = (),
+) -> None:
+    if set(payload) != expected:
+        raise ValueError(f"serialized {owner} config fields do not match its schema")
+    for name in integer_fields:
+        if type(payload[name]) is not int:
+            raise ValueError(f"serialized {name} must be a JSON integer")
+    for name in float_fields:
+        if type(payload[name]) is not float:
+            raise ValueError(f"serialized {name} must be a JSON number")
+    for name in string_fields:
+        if type(payload[name]) is not str:
+            raise ValueError(f"serialized {name} must be a JSON string")
 
 
 def _require_manager_state_budget(name: str, n_contexts: int, n_choices: int) -> None:
@@ -414,7 +436,31 @@ class LearnedResourceManager:
     def from_config(cls, config: Mapping[str, Any]) -> LearnedResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
         config = _read_mapping("config", config)
-        config.pop("type", None)
+        if config.pop("type", None) != "LearnedResourceManager":
+            raise ValueError("serialized LearnedResourceManager type is invalid")
+        _require_serialized_fields(
+            config,
+            owner="LearnedResourceManager",
+            expected={
+                "n_actions",
+                "n_contexts",
+                "learning_rate",
+                "discount",
+                "exploration",
+                "loss_decay",
+                "cost_weight",
+                "advantage_clip",
+            },
+            integer_fields=("n_actions", "n_contexts"),
+            float_fields=(
+                "learning_rate",
+                "discount",
+                "exploration",
+                "loss_decay",
+                "cost_weight",
+                "advantage_clip",
+            ),
+        )
         try:
             return cls(**config)
         except ValueError:
@@ -844,28 +890,76 @@ class GeneratorMetaResourceManager:
     def from_config(cls, config: Mapping[str, Any]) -> GeneratorMetaResourceManager:
         """Reconstruct a manager from :meth:`to_config` output."""
         config = _read_mapping("config", config)
-        config.pop("type", None)
+        if config.pop("type", None) != "GeneratorMetaResourceManager":
+            raise ValueError("serialized GeneratorMetaResourceManager type is invalid")
+        _require_serialized_fields(
+            config,
+            owner="GeneratorMetaResourceManager",
+            expected={
+                "policy_names",
+                "op_ids",
+                "parent_modes",
+                "replacement_multipliers",
+                "promotion_margin_multipliers",
+                "candidate_min_age_multipliers",
+                "imprint_scales",
+                "n_contexts",
+                "learning_rate",
+                "discount",
+                "exploration",
+                "reward_decay",
+                "cost_weight",
+                "advantage_clip",
+                "update_rule",
+                "initial_preferences",
+            },
+            integer_fields=("n_contexts",),
+            float_fields=(
+                "learning_rate",
+                "discount",
+                "exploration",
+                "reward_decay",
+                "cost_weight",
+                "advantage_clip",
+            ),
+            string_fields=("update_rule",),
+        )
         try:
-            initial_preferences = config.pop("initial_preferences", None)
+            initial_preferences = config.pop("initial_preferences")
+            decoded_policy_names = _decode_sequence("policy_names", config.pop("policy_names"))
+            decoded_op_ids = _decode_sequence("op_ids", config.pop("op_ids"))
+            decoded_parent_modes = _decode_sequence("parent_modes", config.pop("parent_modes"))
+            if any(type(value) is not str for value in decoded_policy_names):
+                raise ValueError("serialized policy_names elements must be JSON strings")
+            if any(type(value) is not int for value in (*decoded_op_ids, *decoded_parent_modes)):
+                raise ValueError("serialized policy ids and modes must be JSON integers")
+            float_sequences: dict[str, tuple[Any, ...]] = {}
+            for name in (
+                "replacement_multipliers",
+                "promotion_margin_multipliers",
+                "candidate_min_age_multipliers",
+                "imprint_scales",
+            ):
+                values = _decode_sequence(name, config.pop(name))
+                if any(type(value) is not float for value in values):
+                    raise ValueError(f"serialized {name} elements must be JSON numbers")
+                float_sequences[name] = values
+            decoded_initial = _decode_sequence("initial_preferences", initial_preferences)
+            if any(type(value) is not float for value in decoded_initial):
+                raise ValueError("serialized initial_preferences elements must be JSON numbers")
             return cls(
-                policy_names=_decode_sequence("policy_names", config.pop("policy_names")),
-                op_ids=_decode_sequence("op_ids", config.pop("op_ids")),
-                parent_modes=_decode_sequence("parent_modes", config.pop("parent_modes")),
-                replacement_multipliers=_decode_sequence(
-                    "replacement_multipliers", config.pop("replacement_multipliers")
-                ),
-                promotion_margin_multipliers=_decode_sequence(
-                    "promotion_margin_multipliers", config.pop("promotion_margin_multipliers")
-                ),
-                candidate_min_age_multipliers=_decode_sequence(
-                    "candidate_min_age_multipliers", config.pop("candidate_min_age_multipliers")
-                ),
-                imprint_scales=_decode_sequence("imprint_scales", config.pop("imprint_scales")),
-                initial_preferences=(
-                    None
-                    if initial_preferences is None
-                    else _decode_sequence("initial_preferences", initial_preferences)
-                ),
+                policy_names=decoded_policy_names,
+                op_ids=decoded_op_ids,
+                parent_modes=decoded_parent_modes,
+                replacement_multipliers=float_sequences["replacement_multipliers"],
+                promotion_margin_multipliers=float_sequences[
+                    "promotion_margin_multipliers"
+                ],
+                candidate_min_age_multipliers=float_sequences[
+                    "candidate_min_age_multipliers"
+                ],
+                imprint_scales=float_sequences["imprint_scales"],
+                initial_preferences=decoded_initial,
                 **config,
             )
         except ValueError:

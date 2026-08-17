@@ -715,3 +715,34 @@ def test_resource_manager_loader_failures_are_normalized() -> None:
     del payload["policy_names"]
     with pytest.raises(ValueError, match="serialized GeneratorMetaResourceManager"):
         GeneratorMetaResourceManager.from_config(payload)
+
+
+def test_resource_manager_serialized_schemas_are_exact() -> None:
+    learned_payload = LearnedResourceManager(n_actions=2).to_config()
+    learned_clone = LearnedResourceManager.from_config(MappingProxyType(learned_payload))
+    assert learned_clone.to_config() == learned_payload
+    for mutation, match in (
+        ({"type": "Other"}, "type"),
+        ({"n_actions": np.int32(2)}, "n_actions"),
+        ({"learning_rate": np.float32(0.1)}, "learning_rate"),
+        ({"extra": 1}, "fields"),
+    ):
+        invalid = dict(learned_payload)
+        invalid.update(mutation)
+        with pytest.raises(ValueError, match=match):
+            LearnedResourceManager.from_config(invalid)
+
+    generator_payload = _minimal_generator_manager().to_config()
+    for mutation, match in (
+        ({"type": "Other"}, "type"),
+        ({"n_contexts": np.int32(1)}, "n_contexts"),
+        ({"policy_names": ("p1", "p2")}, "policy_names"),
+        ({"op_ids": [np.int32(0), 1]}, "policy ids"),
+        ({"replacement_multipliers": [1, 1.0]}, "replacement_multipliers"),
+        ({"initial_preferences": [0, 0.0]}, "initial_preferences"),
+        ({"extra": 1}, "fields"),
+    ):
+        invalid = dict(generator_payload)
+        invalid.update(mutation)
+        with pytest.raises(ValueError, match=match):
+            GeneratorMetaResourceManager.from_config(invalid)
