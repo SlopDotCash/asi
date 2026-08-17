@@ -31,6 +31,7 @@ from alberta_framework.core.learners import (
 )
 from alberta_framework.core.types import LearnerState
 from alberta_framework.streams.base import ScanStream
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.utils.statistics import common_final_window
 
 _NUMPY_COORDINATE_TYPES = frozenset(
@@ -336,8 +337,9 @@ def run_multi_seed_experiment(
         Dictionary mapping config name to AggregatedResults
 
     Raises:
-        ValueError: If two or more configurations have the same name, or if the
-            explicit seed list contains duplicates
+        ValueError: If two or more configurations have the same name, if the
+            seed count is not a positive built-in integer, or if the explicit
+            seed list is empty, non-canonical, or contains duplicates
     """
     seen_names: set[str] = set()
     duplicate_names: set[str] = set()
@@ -353,11 +355,33 @@ def run_multi_seed_experiment(
             f"Experiment configuration names must be unique; duplicates: {formatted_names}"
         )
 
-    # Convert seeds to list
-    if isinstance(seeds, int):
+    # Convert seeds to list. Bool is a subclass of int, so isinstance(seeds, int)
+    # would treat True as a one-seed experiment and False as an empty run.
+    if type(seeds) is int:
+        if seeds < 1:
+            raise ValueError("seeds count must be a positive built-in integer")
         seed_list = list(range(seeds))
     else:
-        seed_list = list(seeds)
+        if isinstance(seeds, (str, bytes, bytearray)):
+            raise ValueError(
+                "seeds must be a positive built-in integer count or a sequence "
+                "of unique built-in integer seeds"
+            )
+        try:
+            raw_seeds = tuple(seeds)
+        except TypeError as exc:
+            raise ValueError(
+                "seeds must be a positive built-in integer count or a sequence "
+                "of unique built-in integer seeds"
+            ) from exc
+        if not raw_seeds:
+            raise ValueError(
+                "seeds must be a non-empty sequence of unique built-in integer seeds"
+            )
+        seed_list = [
+            require_jax_seed(seed, name=f"seeds[{index}]")
+            for index, seed in enumerate(raw_seeds)
+        ]
 
     seen_seeds: set[int] = set()
     duplicate_seeds: set[int] = set()
@@ -481,6 +505,8 @@ def get_final_performance(
             trace, so the helper refuses rather than silently reporting a
             full-horizon mean.
     """
+    if type(window) is not int:
+        raise ValueError("window must be a positive built-in integer")
     if window <= 0:
         raise ValueError(f"window must be positive (got {window})")
 

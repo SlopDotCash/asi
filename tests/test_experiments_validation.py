@@ -139,6 +139,48 @@ def test_multiple_duplicate_seeds_are_reported_deterministically() -> None:
     assert str(exc_info.value) == "Experiment seeds must be unique; duplicates: 3, 7"
 
 
+@pytest.mark.parametrize("seeds", [True, False, 0, -1, 1.0])
+def test_noncanonical_seed_count_rejects_before_factories_execute(seeds: object) -> None:
+    configs = [
+        _config(
+            "baseline",
+            learner_factory=_fail_if_called,
+            stream_factory=_fail_if_called,
+        )
+    ]
+    with pytest.raises(ValueError, match="seeds"):
+        run_multi_seed_experiment(configs, seeds=seeds, parallel=False, show_progress=False)
+
+
+@pytest.mark.parametrize("seeds", [[True], [False], [1.0], []])
+def test_noncanonical_seed_identities_reject_before_factories_execute(seeds: object) -> None:
+    configs = [
+        _config(
+            "baseline",
+            learner_factory=_fail_if_called,
+            stream_factory=_fail_if_called,
+        )
+    ]
+    with pytest.raises(ValueError, match="seeds"):
+        run_multi_seed_experiment(configs, seeds=seeds, parallel=False, show_progress=False)
+
+
+def test_integer_seed_count_still_aligns_identities() -> None:
+    results = run_multi_seed_experiment(
+        [_config("baseline")],
+        seeds=2,
+        parallel=False,
+        show_progress=False,
+    )
+    assert results["baseline"].seeds == [0, 1]
+
+
+@pytest.mark.parametrize("window", [True, False, 1.0])
+def test_get_final_performance_rejects_noncanonical_window(window: object) -> None:
+    with pytest.raises(ValueError, match="window"):
+        get_final_performance({"candidate": _two_seed_trace()}, window=window)
+
+
 def test_unique_names_preserve_config_and_seed_order() -> None:
     results = run_multi_seed_experiment(
         [_config("second"), _config("first")],
