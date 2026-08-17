@@ -55,6 +55,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 from jax import Array
 
 from alberta_framework._seed_validation import require_jax_seed
@@ -146,24 +147,48 @@ class Step7DynaConfig:
 
 
 _INT32_MAX = 2**31 - 1
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
 
 
-def _require_nonnegative_real(name: str, value: object) -> float:
-    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+def _require_exact_str(name: str, value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def _require_nonnegative_real(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
     if real < 0.0 or numerator < 0 or narrowed < 0.0:
-        raise ValueError(f"{name} must be non-negative, got {value!r}")
+        raise ValueError(f"{host_name} must be non-negative")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_positive_real(name: str, value: object) -> float:
-    real, numerator, _, narrowed = finite_real_and_float32(name, value)
+def _require_positive_real(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, _, narrowed = finite_real_and_float32(host_name, value)
     if real <= 0.0 or numerator <= 0 or narrowed <= 0.0:
-        raise ValueError(f"{name} must be positive, got {value!r}")
+        raise ValueError(f"{host_name} must be positive")
     return canonical_float32_storage(real, narrowed)
 
 
-def _require_unit_interval(name: str, value: object) -> float:
-    real, numerator, denominator, narrowed = finite_real_and_float32(name, value)
+def _require_unit_interval(name: object, value: object) -> float:
+    host_name = _require_exact_str("name", name)
+    real, numerator, denominator, narrowed = finite_real_and_float32(host_name, value)
     if (
         real < 0.0
         or not real <= 1.0
@@ -172,35 +197,37 @@ def _require_unit_interval(name: str, value: object) -> float:
         or narrowed < 0.0
         or not narrowed <= 1.0
     ):
-        raise ValueError(f"{name} must be in [0, 1], got {value!r}")
+        raise ValueError(f"{host_name} must be in [0, 1]")
     return canonical_float32_storage(real, narrowed)
 
 
 def _require_int(
-    name: str,
+    name: object,
     value: object,
     *,
     minimum: int | None = None,
     maximum: int | None = None,
 ) -> int:
+    host_name = _require_exact_str("name", name)
     actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Integral):
-        raise ValueError(f"{name} must be an integer, got {value!r}")
+    if actual_type not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{host_name} must be an integer")
     number = int(cast(Integral, value))
     if minimum is not None and number < minimum:
         if minimum == 1:
-            raise ValueError(f"{name} must be positive, got {value!r}")
+            raise ValueError(f"{host_name} must be positive")
         if minimum == 0:
-            raise ValueError(f"{name} must be non-negative, got {value!r}")
-        raise ValueError(f"{name} must be >= {minimum}, got {value!r}")
+            raise ValueError(f"{host_name} must be non-negative")
+        raise ValueError(f"{host_name} must be >= {minimum}")
     if maximum is not None and number > maximum:
-        raise ValueError(f"{name} must be at most int32 max, got {value!r}")
+        raise ValueError(f"{host_name} must be at most int32 max")
     return number
 
 
-def _require_bool(name: str, value: object) -> bool:
+def _require_bool(name: object, value: object) -> bool:
+    host_name = _require_exact_str("name", name)
     if type(value) is not bool:
-        raise ValueError(f"{name} must be a boolean, got {value!r}")
+        raise ValueError(f"{host_name} must be a built-in bool")
     return value
 
 
@@ -243,15 +270,10 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         config.planning_utility_step_size,
     )
     if type(config.planning_apply_importance_correction) is not bool:
-        raise ValueError(
-            f"planning_apply_importance_correction must be a bool, got "
-            f"{config.planning_apply_importance_correction!r}"
-        )
+        raise ValueError("planning_apply_importance_correction must be a built-in bool")
     strategy = config.planning_strategy
     if type(strategy) is not str:
-        raise ValueError(
-            f"planning_strategy must be an actual string, got {strategy!r}"
-        )
+        raise ValueError("planning_strategy must be an actual string")
     if strategy not in (
         "random",
         "reward",
