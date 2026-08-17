@@ -43,6 +43,14 @@ ATTESTATION_ROOT = Path("/opt/alberta-attestations")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ImageHelperError("name must be an exact string")
+    if type(value) is not str:
+        raise ImageHelperError(f"{name} must be an exact string")
+    return value
+
+
 class ImageHelperError(RuntimeError):
     """Fail-closed image construction error."""
 
@@ -76,15 +84,17 @@ def _strict_json(path: Path) -> dict[str, Any]:
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
-            if key in result:
-                raise ImageHelperError(f"{path} repeats JSON key {key!r}")
-            result[key] = value
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
+                raise ImageHelperError(f"{path} repeats JSON key")
+            result[host_key] = value
         return result
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
-            raise ImageHelperError(f"{path} contains non-finite JSON number {value!r}")
+            raise ImageHelperError(f"{path} contains non-finite JSON number")
         return parsed
 
     try:
@@ -92,7 +102,7 @@ def _strict_json(path: Path) -> dict[str, Any]:
             path.read_bytes(),
             object_pairs_hook=pairs,
             parse_constant=lambda value: (_ for _ in ()).throw(
-                ImageHelperError(f"{path} contains JSON constant {value}")
+                ImageHelperError(f"{path} contains JSON constant")
             ),
             parse_float=parse_float,
         )
