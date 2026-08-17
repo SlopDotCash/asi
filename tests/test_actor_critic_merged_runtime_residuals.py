@@ -120,7 +120,8 @@ def test_scan_rejects_hostile_input_before_jax_conversion(continuous: bool) -> N
 
 
 def test_discrete_scan_working_set_formula_has_exact_byte_boundary() -> None:
-    last_legal = (2**31 - 1 - 52) // 38
+    # Persistent=52 bytes, reusable single-step scan workspace=880 bytes.
+    last_legal = (2**31 - 1 - 932) // 38
     actor_critic_module._require_discrete_scan_resources(
         n_actions=1, feature_dim=1, num_steps=last_legal
     )
@@ -131,7 +132,8 @@ def test_discrete_scan_working_set_formula_has_exact_byte_boundary() -> None:
 
 
 def test_continuous_scan_working_set_formula_has_exact_byte_boundary() -> None:
-    last_legal = (2**31 - 1 - 60) // 42
+    # Persistent=60 bytes, reusable single-step scan workspace=976 bytes.
+    last_legal = (2**31 - 1 - 1_036) // 42
     actor_critic_module._require_continuous_scan_resources(
         action_dim=1, feature_dim=1, num_steps=last_legal
     )
@@ -182,4 +184,82 @@ def test_scan_working_set_preflight_precedes_jax_conversion(
             None,
             observations,
             discounts=rewards,
+        )
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+@pytest.mark.parametrize("malformed_name", ["terminated", "discounts", "actions"])
+def test_scan_validates_all_host_metadata_before_any_jax_conversion(
+    continuous: bool,
+    malformed_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if continuous:
+        agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=2))
+        state = agent.init(2, jr.key(0))
+        runner = run_continuous_actor_critic_from_arrays
+        good_actions = np.zeros((1, 2), dtype=np.float32)
+    else:
+        agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+        state = agent.init(2, jr.key(0))
+        runner = run_actor_critic_from_arrays
+        good_actions = np.zeros((1,), dtype=np.int32)
+
+    observations = np.zeros((1, 2), dtype=np.float32)
+    rewards = np.zeros((1,), dtype=np.float32)
+    terminated: object = np.zeros((1,), dtype=np.bool_)
+    discounts: object = np.zeros((1,), dtype=np.float32)
+    actions: object = good_actions
+    if malformed_name == "terminated":
+        terminated = np.zeros((2,), dtype=np.bool_)
+    elif malformed_name == "discounts":
+        discounts = np.zeros((2,), dtype=np.float32)
+    else:
+        actions = np.zeros((2,), dtype=good_actions.dtype)
+
+    def unexpected_conversion(*args: object, **kwargs: object) -> None:
+        raise AssertionError("JAX conversion ran before complete metadata validation")
+
+    monkeypatch.setattr(actor_critic_module.jnp, "asarray", unexpected_conversion)
+    with pytest.raises(ValueError, match=f"{malformed_name} must have shape"):
+        runner(  # type: ignore[arg-type]
+            agent,
+            state,
+            observations,
+            rewards,
+            terminated,
+            observations,
+            actions=actions,
+            discounts=discounts,
+        )
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_scan_requires_transition_semantics_before_jax_conversion(
+    continuous: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if continuous:
+        agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=1))
+        state = agent.init(1, jr.key(0))
+        runner = run_continuous_actor_critic_from_arrays
+    else:
+        agent = ActorCriticAgent(ActorCriticConfig(n_actions=1))
+        state = agent.init(1, jr.key(0))
+        runner = run_actor_critic_from_arrays
+    observations = np.zeros((1, 1), dtype=np.float32)
+    rewards = np.zeros((1,), dtype=np.float32)
+
+    def unexpected_conversion(*args: object, **kwargs: object) -> None:
+        raise AssertionError("JAX conversion ran before transition-semantics validation")
+
+    monkeypatch.setattr(actor_critic_module.jnp, "asarray", unexpected_conversion)
+    with pytest.raises(ValueError, match="terminated or discounts"):
+        runner(  # type: ignore[arg-type]
+            agent,
+            state,
+            observations,
+            rewards,
+            None,
+            observations,
         )

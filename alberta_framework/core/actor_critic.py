@@ -97,14 +97,14 @@ def _serialized_mapping(
 
 
 def _require_discrete_state_resources(n_actions: int, feature_dim: int) -> None:
-    state_scalars = 2 * n_actions * feature_dim + 3 * feature_dim + 2 * n_actions + 5
+    state_scalars = 2 * n_actions * feature_dim + 3 * feature_dim + 2 * n_actions + 6
     state_bytes = 8 * n_actions * feature_dim + 12 * feature_dim + 8 * n_actions + 24
     if state_scalars > _INT32_MAX or state_bytes > _INT32_MAX:
         raise ValueError("derived actor-critic state exceeds the signed-int32 budget")
 
 
 def _require_continuous_state_resources(action_dim: int, feature_dim: int) -> None:
-    state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 4
+    state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 5
     state_bytes = 8 * action_dim * feature_dim + 20 * action_dim + 12 * feature_dim + 20
     if state_scalars > _INT32_MAX or state_bytes > _INT32_MAX:
         raise ValueError("derived continuous actor-critic state exceeds the signed-int32 budget")
@@ -113,15 +113,31 @@ def _require_continuous_state_resources(action_dim: int, feature_dim: int) -> No
 def _require_discrete_scan_resources(
     *, n_actions: int, feature_dim: int, num_steps: int
 ) -> None:
-    """Preflight the complete canonical input, state, and output working set."""
-    state_scalars = 2 * n_actions * feature_dim + 3 * feature_dim + 2 * n_actions + 5
+    """Preflight a backend-independent logical upper bound for the complete scan."""
+    # State counts the typed key as its two physical uint32 words. Inputs count
+    # both observation matrices and the materialized reward, terminal,
+    # discount, and action vectors. Outputs count action, policy, value,
+    # TD-error, and acceptance rows. The scan-body envelope is independent of
+    # num_steps because lax.scan reuses it: eight additional state-sized
+    # buffers cover updated/held/proposed/final states and full-tree predicates;
+    # the remaining terms cover every matrix/vector-width gradient, trace,
+    # step, policy, selection, and scalar temporary. Charging every temporary
+    # as four bytes also upper-bounds int32, uint32, and bool predicates.
+    state_scalars = 2 * n_actions * feature_dim + 3 * feature_dim + 2 * n_actions + 6
     state_bytes = 8 * n_actions * feature_dim + 12 * feature_dim + 8 * n_actions + 24
     input_scalars = num_steps * (2 * feature_dim + 4)
     input_bytes = num_steps * (8 * feature_dim + 13)
     output_scalars = num_steps * (n_actions + 4)
     output_bytes = num_steps * (4 * n_actions + 13)
-    total_scalars = state_scalars + input_scalars + output_scalars
-    total_bytes = state_bytes + input_bytes + output_bytes
+    temporary_scalars = (
+        8 * state_scalars
+        + 12 * n_actions * feature_dim
+        + 24 * n_actions
+        + 16 * feature_dim
+        + 64
+    )
+    total_scalars = state_scalars + input_scalars + output_scalars + temporary_scalars
+    total_bytes = state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
     if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
         raise ValueError("derived actor-critic scan working set exceeds the signed-int32 budget")
 
@@ -129,15 +145,25 @@ def _require_discrete_scan_resources(
 def _require_continuous_scan_resources(
     *, action_dim: int, feature_dim: int, num_steps: int
 ) -> None:
-    """Preflight the complete canonical input, state, and output working set."""
-    state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 4
+    """Preflight a backend-independent logical upper bound for the complete scan."""
+    # This is the continuous analogue of _require_discrete_scan_resources:
+    # action inputs and action/mean/sigma outputs have action_dim width, while
+    # the reusable workspace includes Gaussian-policy gradients and samples.
+    state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 5
     state_bytes = 8 * action_dim * feature_dim + 20 * action_dim + 12 * feature_dim + 20
     input_scalars = num_steps * (2 * feature_dim + action_dim + 3)
     input_bytes = num_steps * (8 * feature_dim + 4 * action_dim + 9)
     output_scalars = num_steps * (3 * action_dim + 3)
     output_bytes = num_steps * (12 * action_dim + 9)
-    total_scalars = state_scalars + input_scalars + output_scalars
-    total_bytes = state_bytes + input_bytes + output_bytes
+    temporary_scalars = (
+        8 * state_scalars
+        + 12 * action_dim * feature_dim
+        + 32 * action_dim
+        + 16 * feature_dim
+        + 64
+    )
+    total_scalars = state_scalars + input_scalars + output_scalars + temporary_scalars
+    total_bytes = state_bytes + input_bytes + output_bytes + 4 * temporary_scalars
     if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
         raise ValueError(
             "derived continuous actor-critic scan working set exceeds the signed-int32 budget"
@@ -846,6 +872,14 @@ def run_actor_critic_from_arrays(
         raise ValueError("observations and next_observations must match state feature_dim")
     if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
+    if terminated is None and discounts is None:
+        raise ValueError("terminated or discounts must be provided")
+    if terminated is not None and _trusted_shape("terminated", terminated) != (num_steps,):
+        raise ValueError("terminated must have shape (num_steps,)")
+    if discounts is not None and _trusted_shape("discounts", discounts) != (num_steps,):
+        raise ValueError("discounts must have shape (num_steps,)")
+    if actions is not None and _trusted_shape("actions", actions) != (num_steps,):
+        raise ValueError("actions must have shape (num_steps,)")
     _require_discrete_scan_resources(
         n_actions=agent.config.n_actions,
         feature_dim=feature_dim,
@@ -854,15 +888,9 @@ def run_actor_critic_from_arrays(
     observations = jnp.asarray(observations, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
-    if terminated is None and discounts is None:
-        raise ValueError("terminated or discounts must be provided")
     if terminated is not None:
-        if _trusted_shape("terminated", terminated) != (num_steps,):
-            raise ValueError("terminated must have shape (num_steps,)")
         terminated = jnp.asarray(terminated, dtype=jnp.bool_)
     if discounts is not None:
-        if _trusted_shape("discounts", discounts) != (num_steps,):
-            raise ValueError("discounts must have shape (num_steps,)")
         discounts = jnp.asarray(discounts, dtype=jnp.float32)
     if terminated is None:
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
@@ -872,8 +900,6 @@ def run_actor_critic_from_arrays(
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
         use_fixed_actions = False
     else:
-        if _trusted_shape("actions", actions) != (num_steps,):
-            raise ValueError("actions must have shape (num_steps,)")
         actions = jnp.asarray(actions, dtype=jnp.int32)
         use_fixed_actions = True
 
@@ -1662,6 +1688,14 @@ def run_continuous_actor_critic_from_arrays(
     if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
     action_dim = agent.config.action_dim
+    if terminated is None and discounts is None:
+        raise ValueError("terminated or discounts must be provided")
+    if terminated is not None and _trusted_shape("terminated", terminated) != (num_steps,):
+        raise ValueError("terminated must have shape (num_steps,)")
+    if discounts is not None and _trusted_shape("discounts", discounts) != (num_steps,):
+        raise ValueError("discounts must have shape (num_steps,)")
+    if actions is not None and _trusted_shape("actions", actions) != (num_steps, action_dim):
+        raise ValueError("actions must have shape (num_steps, action_dim)")
     _require_continuous_scan_resources(
         action_dim=action_dim,
         feature_dim=feature_dim,
@@ -1670,15 +1704,9 @@ def run_continuous_actor_critic_from_arrays(
     observations = jnp.asarray(observations, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
-    if terminated is None and discounts is None:
-        raise ValueError("terminated or discounts must be provided")
     if terminated is not None:
-        if _trusted_shape("terminated", terminated) != (num_steps,):
-            raise ValueError("terminated must have shape (num_steps,)")
         terminated = jnp.asarray(terminated, dtype=jnp.bool_)
     if discounts is not None:
-        if _trusted_shape("discounts", discounts) != (num_steps,):
-            raise ValueError("discounts must have shape (num_steps,)")
         discounts = jnp.asarray(discounts, dtype=jnp.float32)
     if terminated is None:
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
@@ -1688,8 +1716,6 @@ def run_continuous_actor_critic_from_arrays(
         actions = jnp.zeros((rewards.shape[0], action_dim), dtype=jnp.float32)
         use_fixed_actions = False
     else:
-        if _trusted_shape("actions", actions) != (num_steps, action_dim):
-            raise ValueError("actions must have shape (num_steps, action_dim)")
         actions = jnp.asarray(actions, dtype=jnp.float32)
         use_fixed_actions = True
 
