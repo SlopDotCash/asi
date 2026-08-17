@@ -384,6 +384,32 @@ class ModelReplayRehearsalResourceBudget:
     max_real_event_count: int
     max_rehearsal_attempt_count: int
 
+    def __post_init__(self) -> None:
+        for name in (
+            "persistent_state_scalars",
+            "persistent_state_bytes",
+            "ensemble_state_bytes",
+            "replay_state_bytes",
+            "composer_accounting_bytes",
+            "replay_total_capacity",
+            "short_term_capacity",
+            "long_term_capacity",
+            "fixed_replay_quota",
+            "max_real_model_update_candidates_per_event",
+            "max_replay_model_update_candidates_per_event",
+            "max_total_model_update_candidates_per_event",
+            "max_actor_updates_per_event",
+            "max_critic_updates_per_event",
+            "max_state_builder_updates_per_event",
+            "max_real_event_count",
+            "max_rehearsal_attempt_count",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_int(name, getattr(self, name), minimum=0),
+            )
+
     def to_config(self) -> dict[str, int]:
         """Return JSON-compatible exact accounting."""
         return dataclasses.asdict(self)
