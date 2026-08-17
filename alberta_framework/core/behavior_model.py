@@ -328,6 +328,69 @@ class BehaviorModelResourceBudget:
     learned_float32_scalars_touched_per_update: int
     replay_capacity: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "feature_dim",
+            _require_int32("feature_dim", self.feature_dim, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "n_actions",
+            _require_int32("n_actions", self.n_actions, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "trainable_float32_scalars",
+            _require_int32(
+                "trainable_float32_scalars",
+                self.trainable_float32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "diagnostic_float32_scalars",
+            _require_int32(
+                "diagnostic_float32_scalars",
+                self.diagnostic_float32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "administrative_int32_scalars",
+            _require_int32(
+                "administrative_int32_scalars",
+                self.administrative_int32_scalars,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "rng_uint32_scalars",
+            _require_int32("rng_uint32_scalars", self.rng_uint32_scalars, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "state_nbytes",
+            _require_int32("state_nbytes", self.state_nbytes, minimum=0),
+        )
+        object.__setattr__(
+            self,
+            "learned_float32_scalars_touched_per_update",
+            _require_int32(
+                "learned_float32_scalars_touched_per_update",
+                self.learned_float32_scalars_touched_per_update,
+                minimum=0,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "replay_capacity",
+            _require_int32("replay_capacity", self.replay_capacity, minimum=0),
+        )
+
     def to_dict(self) -> dict[str, int]:
         """Return a JSON-compatible resource record."""
         return dataclasses.asdict(self)
