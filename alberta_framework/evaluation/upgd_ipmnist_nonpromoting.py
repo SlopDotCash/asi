@@ -244,22 +244,33 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key: {key!r}")
-            result[key] = value
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
+                raise ValueError("duplicate JSON key")
+            result[host_key] = value
         return result
 
     def reject_constant(value: str) -> object:
-        raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+        _require_exact_str("value", value)
+        raise ValueError("non-finite JSON constant is forbidden")
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
-            raise ValueError(f"non-finite JSON number is forbidden: {value}")
+            raise ValueError("non-finite JSON number is forbidden")
         return parsed
 
     parsed = json.loads(
