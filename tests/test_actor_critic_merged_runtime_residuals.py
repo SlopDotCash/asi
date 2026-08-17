@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 from jax import Array
 
+from alberta_framework.core import actor_critic as actor_critic_module
 from alberta_framework.core.actor_critic import (
     ActorCriticAgent,
     ActorCriticConfig,
@@ -115,4 +116,70 @@ def test_scan_rejects_hostile_input_before_jax_conversion(continuous: bool) -> N
             None,
             jnp.zeros((1, 2), dtype=jnp.float32),
             discounts=jnp.zeros((1,), dtype=jnp.float32),
+        )
+
+
+def test_discrete_scan_working_set_formula_has_exact_byte_boundary() -> None:
+    last_legal = (2**31 - 1 - 52) // 38
+    actor_critic_module._require_discrete_scan_resources(
+        n_actions=1, feature_dim=1, num_steps=last_legal
+    )
+    with pytest.raises(ValueError, match="working set"):
+        actor_critic_module._require_discrete_scan_resources(
+            n_actions=1, feature_dim=1, num_steps=last_legal + 1
+        )
+
+
+def test_continuous_scan_working_set_formula_has_exact_byte_boundary() -> None:
+    last_legal = (2**31 - 1 - 60) // 42
+    actor_critic_module._require_continuous_scan_resources(
+        action_dim=1, feature_dim=1, num_steps=last_legal
+    )
+    with pytest.raises(ValueError, match="working set"):
+        actor_critic_module._require_continuous_scan_resources(
+            action_dim=1, feature_dim=1, num_steps=last_legal + 1
+        )
+
+
+@pytest.mark.parametrize("continuous", [False, True])
+def test_scan_working_set_preflight_precedes_jax_conversion(
+    continuous: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    feature_dim = 1_000
+    num_steps = 1_000_000
+    if continuous:
+        agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=1))
+        state = agent.init(feature_dim, jr.key(0))
+        runner = run_continuous_actor_critic_from_arrays
+    else:
+        agent = ActorCriticAgent(ActorCriticConfig(n_actions=1))
+        state = agent.init(feature_dim, jr.key(0))
+        runner = run_actor_critic_from_arrays
+
+    scalar = np.zeros((1,), dtype=np.float32)
+    observations = np.lib.stride_tricks.as_strided(
+        scalar,
+        shape=(num_steps, feature_dim),
+        strides=(0, 0),
+    )
+    rewards = np.lib.stride_tricks.as_strided(
+        scalar,
+        shape=(num_steps,),
+        strides=(0,),
+    )
+
+    def unexpected_conversion(*args: object, **kwargs: object) -> None:
+        raise AssertionError("JAX conversion ran before the working-set preflight")
+
+    monkeypatch.setattr(actor_critic_module.jnp, "asarray", unexpected_conversion)
+    with pytest.raises(ValueError, match="working set"):
+        runner(  # type: ignore[arg-type]
+            agent,
+            state,
+            observations,
+            rewards,
+            None,
+            observations,
+            discounts=rewards,
         )

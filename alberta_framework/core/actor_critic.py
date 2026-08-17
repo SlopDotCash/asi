@@ -110,6 +110,40 @@ def _require_continuous_state_resources(action_dim: int, feature_dim: int) -> No
         raise ValueError("derived continuous actor-critic state exceeds the signed-int32 budget")
 
 
+def _require_discrete_scan_resources(
+    *, n_actions: int, feature_dim: int, num_steps: int
+) -> None:
+    """Preflight the complete canonical input, state, and output working set."""
+    state_scalars = 2 * n_actions * feature_dim + 3 * feature_dim + 2 * n_actions + 5
+    state_bytes = 8 * n_actions * feature_dim + 12 * feature_dim + 8 * n_actions + 24
+    input_scalars = num_steps * (2 * feature_dim + 4)
+    input_bytes = num_steps * (8 * feature_dim + 13)
+    output_scalars = num_steps * (n_actions + 4)
+    output_bytes = num_steps * (4 * n_actions + 13)
+    total_scalars = state_scalars + input_scalars + output_scalars
+    total_bytes = state_bytes + input_bytes + output_bytes
+    if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
+        raise ValueError("derived actor-critic scan working set exceeds the signed-int32 budget")
+
+
+def _require_continuous_scan_resources(
+    *, action_dim: int, feature_dim: int, num_steps: int
+) -> None:
+    """Preflight the complete canonical input, state, and output working set."""
+    state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 4
+    state_bytes = 8 * action_dim * feature_dim + 20 * action_dim + 12 * feature_dim + 20
+    input_scalars = num_steps * (2 * feature_dim + action_dim + 3)
+    input_bytes = num_steps * (8 * feature_dim + 4 * action_dim + 9)
+    output_scalars = num_steps * (3 * action_dim + 3)
+    output_bytes = num_steps * (12 * action_dim + 9)
+    total_scalars = state_scalars + input_scalars + output_scalars
+    total_bytes = state_bytes + input_bytes + output_bytes
+    if total_scalars > _INT32_MAX or total_bytes > _INT32_MAX:
+        raise ValueError(
+            "derived continuous actor-critic scan working set exceeds the signed-int32 budget"
+        )
+
+
 def _array(name: str, value: object, shape: tuple[int, ...], dtype: Any) -> Array:
     if shape == () and dtype == jnp.bool_ and type(value) is bool:
         return jnp.asarray(value, dtype=dtype)
@@ -812,10 +846,11 @@ def run_actor_critic_from_arrays(
         raise ValueError("observations and next_observations must match state feature_dim")
     if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
-    output_scalars = num_steps * (agent.config.n_actions + 4)
-    output_bytes = num_steps * (4 * agent.config.n_actions + 13)
-    if output_scalars > _INT32_MAX or output_bytes > _INT32_MAX:
-        raise ValueError("derived actor-critic scan outputs exceed the signed-int32 budget")
+    _require_discrete_scan_resources(
+        n_actions=agent.config.n_actions,
+        feature_dim=feature_dim,
+        num_steps=num_steps,
+    )
     observations = jnp.asarray(observations, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
@@ -1627,12 +1662,11 @@ def run_continuous_actor_critic_from_arrays(
     if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
     action_dim = agent.config.action_dim
-    output_scalars = num_steps * (3 * action_dim + 3)
-    output_bytes = num_steps * (12 * action_dim + 9)
-    if output_scalars > _INT32_MAX or output_bytes > _INT32_MAX:
-        raise ValueError(
-            "derived continuous actor-critic scan outputs exceed the signed-int32 budget"
-        )
+    _require_continuous_scan_resources(
+        action_dim=action_dim,
+        feature_dim=feature_dim,
+        num_steps=num_steps,
+    )
     observations = jnp.asarray(observations, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
