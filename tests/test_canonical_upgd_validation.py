@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
 from types import MappingProxyType
 from typing import Any
@@ -16,10 +17,12 @@ import pytest
 from alberta_framework.core.canonical_upgd import (
     AlbertaAdaUPGD,
     AlbertaAdaUPGDConfig,
+    AlbertaAdaUPGDResources,
     CanonicalUPGD,
     CanonicalUPGDConfig,
     OfficialAdaUPGD,
     OfficialAdaUPGDConfig,
+    OfficialAdaUPGDResources,
 )
 
 _INT32_MAX = 2_147_483_647
@@ -562,3 +565,73 @@ def test_official_counter_saturates_without_changing_source_equations() -> None:
     )
     result = optimizer.update(state, params, gradients, jr.key(13), noise=noise)
     assert int(result.state.step) == _INT32_MAX
+
+
+def test_canonical_upgd_resource_records_reject_leftover_identities() -> None:
+    """Public AdaUPGD resource records must not keep leftover bool/int identities."""
+
+    with pytest.raises(ValueError, match="official_reference_parity"):
+        AlbertaAdaUPGDResources(
+            profile="safe_extended",
+            official_reference_parity=1,
+            parameter_count=1,
+            persistent_array_count=2,
+            persistent_state_nbytes=3,
+        )
+    with pytest.raises(ValueError, match="parameter_count"):
+        AlbertaAdaUPGDResources(
+            profile="safe_extended",
+            official_reference_parity=True,
+            parameter_count=True,
+            persistent_array_count=2,
+            persistent_state_nbytes=3,
+        )
+    with pytest.raises(ValueError, match="parameter_count"):
+        OfficialAdaUPGDResources(
+            profile="official_experiment_global",
+            source_commit="c",
+            source_path="path",
+            official_reference_parity=True,
+            parameter_count=True,
+            persistent_array_count=2,
+            persistent_state_nbytes=3,
+        )
+    with pytest.raises(ValueError, match="persistent_state_nbytes"):
+        OfficialAdaUPGDResources(
+            profile="official_experiment_global",
+            source_commit="c",
+            source_path="path",
+            official_reference_parity=True,
+            parameter_count=1,
+            persistent_array_count=2,
+            persistent_state_nbytes=float("nan"),
+        )
+
+    legal_alberta = AlbertaAdaUPGDResources(
+        profile="safe_extended",
+        official_reference_parity=False,
+        parameter_count=1,
+        persistent_array_count=2,
+        persistent_state_nbytes=3,
+    )
+    legal_official = OfficialAdaUPGDResources(
+        profile="official_experiment_global",
+        source_commit="c",
+        source_path="path",
+        official_reference_parity=True,
+        parameter_count=1,
+        persistent_array_count=2,
+        persistent_state_nbytes=3,
+    )
+    dumped = json.dumps(
+        {
+            "alberta": legal_alberta.to_dict(),
+            "official": legal_official.to_dict(),
+        },
+        allow_nan=False,
+    )
+    assert '"official_reference_parity": false' in dumped
+    assert '"official_reference_parity": true' in dumped
+    assert '"parameter_count": 1' in dumped
+    assert '"parameter_count": true' not in dumped
+    assert '"official_reference_parity": 1' not in dumped

@@ -1167,6 +1167,20 @@ class AlbertaAdaUPGDUpdate:
     metrics: dict[str, Array]
 
 
+def _require_exact_int(value: Any, path: str) -> int:
+    if type(value) is not int:
+        raise ValueError(f"{path} must be an integer")
+    if value < 0 or value > _INT32_MAX:
+        raise ValueError(f"{path} must lie in [0, {_INT32_MAX}]")
+    return value
+
+
+def _require_exact_bool(value: Any, path: str) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{path} must be a boolean")
+    return value
+
+
 @dataclass(frozen=True)
 class AlbertaAdaUPGDResources:
     """Exact persistent-array accounting for one adaptive optimizer state."""
@@ -1176,6 +1190,28 @@ class AlbertaAdaUPGDResources:
     parameter_count: int
     persistent_array_count: int
     persistent_state_nbytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "official_reference_parity",
+            _require_exact_bool(self.official_reference_parity, "official_reference_parity"),
+        )
+        object.__setattr__(
+            self,
+            "parameter_count",
+            _require_exact_int(self.parameter_count, "parameter_count"),
+        )
+        object.__setattr__(
+            self,
+            "persistent_array_count",
+            _require_exact_int(self.persistent_array_count, "persistent_array_count"),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_nbytes",
+            _require_exact_int(self.persistent_state_nbytes, "persistent_state_nbytes"),
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible resource record."""
@@ -1956,6 +1992,28 @@ class OfficialAdaUPGDResources:
     parameter_count: int
     persistent_array_count: int
     persistent_state_nbytes: int
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "official_reference_parity",
+            _require_exact_bool(self.official_reference_parity, "official_reference_parity"),
+        )
+        object.__setattr__(
+            self,
+            "parameter_count",
+            _require_exact_int(self.parameter_count, "parameter_count"),
+        )
+        object.__setattr__(
+            self,
+            "persistent_array_count",
+            _require_exact_int(self.persistent_array_count, "persistent_array_count"),
+        )
+        object.__setattr__(
+            self,
+            "persistent_state_nbytes",
+            _require_exact_int(self.persistent_state_nbytes, "persistent_state_nbytes"),
+        )
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-compatible resource record."""
