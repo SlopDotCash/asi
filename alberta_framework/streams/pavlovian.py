@@ -42,7 +42,7 @@ from __future__ import annotations
 import math
 from fractions import Fraction
 from numbers import Real
-from typing import cast
+from typing import Any, cast
 
 import chex
 import jax
@@ -52,7 +52,10 @@ import numpy as np
 from jax import Array
 from jaxtyping import Int, PRNGKeyArray
 
-from alberta_framework._float32 import round_real_to_float32
+from alberta_framework._float32 import (
+    round_real_to_float32,
+    round_real_to_float32_with_ratio,
+)
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
 
@@ -147,18 +150,33 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
 
 
 def _require_unit_interval(value: object, *, name: str) -> float:
-    """Return a finite real in ``[0, 1]``, rejecting bool aliases."""
-    # Exact-type whitelist — hostile ``float`` subclasses are rejected before
-    # any ``__float__`` or ratio hook runs.
+    """Return a probability valid in both exact-host and float32 domains."""
     if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be in [0, 1]")
     try:
-        number = float(cast(Real, value))
+        numerator, denominator, narrowed = round_real_to_float32_with_ratio(
+            cast(Real, value)
+        )
     except Exception as error:
         raise ValueError(f"{name} must be in [0, 1]") from error
-    if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+    if not 0 <= numerator <= denominator or not 0.0 <= narrowed <= 1.0:
         raise ValueError(f"{name} must be in [0, 1]")
-    return number
+    return narrowed
+
+
+def _require_state_array(
+    value: Any,
+    *,
+    name: str,
+    shape: tuple[int, ...],
+    dtype: jnp.dtype,
+) -> Array:
+    array = jnp.asarray(value)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if array.dtype != dtype:
+        raise TypeError(f"{name} must have dtype {dtype}")
+    return array
 
 
 def _require_builtin_int(
@@ -483,6 +501,49 @@ class ClassicalConditioningStream:
         """Configured CS active duration."""
         return self._cs_duration
 
+    def _require_state_contract(self, state: object) -> PavlovianState:
+        """Validate static state structure before indexed JAX operations."""
+        if type(state) is not PavlovianState:
+            raise TypeError("state must be an actual PavlovianState")
+        key = jnp.asarray(state.key)
+        if key.shape != () or not jnp.issubdtype(key.dtype, jax.dtypes.prng_key):
+            raise TypeError("state.key must be a scalar PRNG key")
+        for name, value, shape in (
+            (
+                "cs_active_steps_remaining",
+                state.cs_active_steps_remaining,
+                (self._n_cs,),
+            ),
+            ("us_pending_steps_remaining", state.us_pending_steps_remaining, ()),
+            ("phase_idx", state.phase_idx, ()),
+            ("step_in_phase", state.step_in_phase, ()),
+            (
+                "n_distractor_active",
+                state.n_distractor_active,
+                (self._n_distractors,),
+            ),
+            ("iti_steps_remaining", state.iti_steps_remaining, ()),
+        ):
+            _require_state_array(
+                value,
+                name=f"state.{name}",
+                shape=shape,
+                dtype=jnp.dtype(jnp.int32),
+            )
+        return state
+
+    def _state_values_valid(self, state: PavlovianState) -> Array:
+        """Return the dynamic state-domain verdict used for atomic updates."""
+        return (
+            jnp.all(state.cs_active_steps_remaining >= 0)
+            & (state.us_pending_steps_remaining >= -1)
+            & (state.phase_idx >= 0)
+            & (state.phase_idx < len(self._phases))
+            & (state.step_in_phase >= 0)
+            & jnp.all(state.n_distractor_active >= 0)
+            & (state.iti_steps_remaining >= 0)
+        )
+
     def init(self, key: Array) -> PavlovianState:
         """Initialize stream state.
 
@@ -496,7 +557,12 @@ class ClassicalConditioningStream:
         Returns:
             Initial ``PavlovianState``.
         """
-        key, k_iti = jr.split(key)
+        key_array = jnp.asarray(key)
+        if key_array.shape != () or not jnp.issubdtype(
+            key_array.dtype, jax.dtypes.prng_key
+        ):
+            raise TypeError("key must be a scalar PRNG key")
+        key, k_iti = jr.split(key_array)
         iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1)
         return PavlovianState(
             key=key,
@@ -524,6 +590,8 @@ class ClassicalConditioningStream:
             ``(1,)`` containing the US indicator.
         """
         del idx  # unused
+        state = self._require_state_contract(state)
+        state_valid = self._state_values_valid(state)
 
         (
             key,
@@ -541,7 +609,7 @@ class ClassicalConditioningStream:
         # 1. Phase progression
         # ------------------------------------------------------------------
         # If we have spent >= n_steps in this phase, advance (clamped).
-        cur_phase = state.phase_idx
+        cur_phase = jnp.clip(state.phase_idx, 0, n_phases - 1)
         cur_phase_steps = self._phase_n_steps[cur_phase]
         # Only advance phases that have a successor; the final phase repeats.
         on_last_phase = cur_phase >= (n_phases - 1)
@@ -689,7 +757,7 @@ class ClassicalConditioningStream:
             observation=observation,
             target=jnp.atleast_1d(target),
         )
-        new_state = PavlovianState(
+        candidate_state = PavlovianState(
             key=key,
             cs_active_steps_remaining=new_cs_active.astype(jnp.int32),
             us_pending_steps_remaining=new_us_pending.astype(jnp.int32),
@@ -700,7 +768,30 @@ class ClassicalConditioningStream:
             n_distractor_active=new_distractor_active.astype(jnp.int32),
             iti_steps_remaining=new_iti_remaining.astype(jnp.int32),
         )
-        return timestep, new_state
+        update_applied = state_valid & self._state_values_valid(candidate_state)
+        new_state = cast(
+            PavlovianState,
+            jax.tree.map(
+                lambda proposed, current: jnp.where(
+                    update_applied, proposed, current
+                ),
+                candidate_state,
+                state,
+            ),
+        )
+        safe_timestep = TimeStep(
+            observation=jnp.where(
+                update_applied,
+                timestep.observation,
+                jnp.zeros_like(timestep.observation),
+            ),
+            target=jnp.where(
+                update_applied,
+                timestep.target,
+                jnp.zeros_like(timestep.target),
+            ),
+        )
+        return safe_timestep, new_state
 
 
 # =============================================================================
