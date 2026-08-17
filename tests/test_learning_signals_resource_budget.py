@@ -7,7 +7,11 @@ import json
 
 import pytest
 
-from alberta_framework.core.learning_signals import LearningSignalResourceBudget
+from alberta_framework.core.learning_signals import (
+    LearningSignalEstimator,
+    LearningSignalEstimatorConfig,
+    LearningSignalResourceBudget,
+)
 
 
 class _HostileInt(int):
@@ -100,3 +104,15 @@ def test_learning_signal_budget_requires_exact_derived_identity(field: str) -> N
 def test_learning_signal_budget_rejects_hostile_integer_subclass_without_hook() -> None:
     with pytest.raises(ValueError, match="input_float_scalars_per_step"):
         dataclasses.replace(_legal_budget(), input_float_scalars_per_step=_HostileInt(15))
+
+
+def test_learning_signal_config_gates_exact_derived_input_budget_bound() -> None:
+    largest = LearningSignalEstimatorConfig(ensemble_size=1_073_741_822, target_dim=1)
+    assert (
+        LearningSignalEstimator(largest).resource_budget().input_float_scalars_per_step
+        == 2_147_483_646
+    )
+    with pytest.raises(ValueError, match="input resource budget"):
+        LearningSignalEstimatorConfig(ensemble_size=1_073_741_823, target_dim=1)
+    with pytest.raises(ValueError, match="input resource budget"):
+        LearningSignalEstimatorConfig(ensemble_size=50_000, target_dim=50_000)

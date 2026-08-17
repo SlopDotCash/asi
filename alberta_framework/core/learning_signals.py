@@ -159,6 +159,11 @@ class LearningSignalEstimatorConfig:
             "target_dim",
             _require_int32("target_dim", self.target_dim, minimum=1),
         )
+        input_scalars = 2 * self.ensemble_size * self.target_dim + self.target_dim + 1
+        if input_scalars > _INT32_MAX:
+            raise ValueError(
+                "ensemble_size and target_dim produce an input resource budget above int32"
+            )
         object.__setattr__(
             self,
             "progress_warmup_steps",
