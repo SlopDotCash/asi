@@ -385,7 +385,7 @@ class TestStep1StreamsValidation:
             def as_integer_ratio(self) -> tuple[int, int]:
                 return ratio
 
-        with pytest.raises(ValueError, match="drift_rate_w must be non-negative"):
+        with pytest.raises(ValueError, match="drift_rate_w must narrow to a finite float32"):
             AlbertaPlanStep1Stream(drift_rate_w=HiddenBoundaryFloat(0.5))
 
     def test_alberta_plan_step1_rejects_spoofed_int_class(self) -> None:
@@ -397,7 +397,7 @@ class TestStep1StreamsValidation:
             def as_integer_ratio(self) -> tuple[int, int]:
                 return (-1, 2**200)
 
-        with pytest.raises(ValueError, match="drift_rate_w must be non-negative"):
+        with pytest.raises(ValueError, match="drift_rate_w must narrow to a finite float32"):
             AlbertaPlanStep1Stream(drift_rate_w=SpoofedIntFloat(0.5))
 
     def test_alberta_plan_step1_rejects_spoofed_ratio_components(self) -> None:
@@ -500,5 +500,5 @@ class TestStep1StreamsValidation:
             def as_integer_ratio(self) -> tuple[int, int]:
                 return (-1, 2**200)
 
-        with pytest.raises(ValueError, match="noise_std must be non-negative"):
+        with pytest.raises(ValueError, match="noise_std must narrow to a finite float32"):
             XDistShiftStream(feature_dim=10, num_relevant=3, noise_std=HiddenBoundaryFloat(0.5))
