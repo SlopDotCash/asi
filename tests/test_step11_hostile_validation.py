@@ -25,6 +25,10 @@ class _StringSubclass(str):
 class _HostileInt(int):
     calls = 0
 
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
     def __index__(self) -> int:  # type: ignore[override]
         type(self).calls += 1
         raise AssertionError("HostileInt.__index__ must not be called")
@@ -50,6 +54,30 @@ class _HostileFloat(float):
         raise AssertionError("HostileFloat.__repr__ must not be called")
 
 
+class _HostileIntMeta(type):
+    calls = 0
+
+    def __hash__(cls) -> int:
+        type(cls).calls += 1
+        raise AssertionError("HostileIntMeta.__hash__ must not be called")
+
+
+class _MetaclassHostileInt(int, metaclass=_HostileIntMeta):
+    pass
+
+
+class _HostileFloatMeta(type):
+    calls = 0
+
+    def __hash__(cls) -> int:
+        type(cls).calls += 1
+        raise AssertionError("HostileFloatMeta.__hash__ must not be called")
+
+
+class _MetaclassHostileFloat(float, metaclass=_HostileFloatMeta):
+    pass
+
+
 def test_rejects_string_subclass_for_observation_dim() -> None:
     with pytest.raises(ValueError, match="must be an integer"):
         Step11OaKConfig(observation_dim=_StringSubclass("4"))  # type: ignore[arg-type]
@@ -73,6 +101,13 @@ def test_rejects_bool_and_hostile_int() -> None:
     assert "HostileInt" not in str(exc.value)
 
 
+def test_rejects_hostile_int_metaclass_without_hooks() -> None:
+    _HostileIntMeta.calls = 0
+    with pytest.raises(ValueError, match="must be an integer"):
+        Step11OaKConfig(observation_dim=_MetaclassHostileInt(4))
+    assert _HostileIntMeta.calls == 0
+
+
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be finite") as exc:
@@ -82,14 +117,11 @@ def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
     assert "!r" not in str(exc.value)
 
 
-def test_does_not_invoke_hostile_value_when_name_is_evil_via_sink() -> None:
-    from alberta_framework.steps._float32_validation import finite_real_and_float32
-
-    evil = _EvilStr("x")
-    _HostileFloat.calls = 0
-    with pytest.raises(ValueError, match="must be an exact string"):
-        finite_real_and_float32(evil, _HostileFloat(1.0))  # type: ignore[arg-type]
-    assert _HostileFloat.calls == 0
+def test_rejects_hostile_float_metaclass_without_hooks() -> None:
+    _HostileFloatMeta.calls = 0
+    with pytest.raises(ValueError, match="must be finite"):
+        Step11OaKConfig(base_step_size=_MetaclassHostileFloat(0.05))
+    assert _HostileFloatMeta.calls == 0
 
 
 def test_rejects_plain_string_for_option_gamma() -> None:
@@ -113,6 +145,30 @@ def test_rejects_subtask_specs_non_tuple_without_repr() -> None:
     with pytest.raises(ValueError, match="must be a tuple of SubtaskSpec") as exc:
         Step11OaKConfig(subtask_specs=[SubtaskSpec(feature_index=0)])  # type: ignore[arg-type]
     assert "!r" not in str(exc.value)
+
+
+def test_rejects_tuple_and_subtask_spec_subclasses_without_hooks() -> None:
+    calls: list[str] = []
+
+    class HostileTuple(tuple[SubtaskSpec, ...]):
+        def __iter__(self):  # type: ignore[override]
+            calls.append("iter")
+            raise AssertionError("HostileTuple.__iter__ must not be called")
+
+        def __repr__(self) -> str:
+            calls.append("repr")
+            raise AssertionError("HostileTuple.__repr__ must not be called")
+
+    class HostileSpec(SubtaskSpec):
+        def __repr__(self) -> str:
+            calls.append("spec-repr")
+            raise AssertionError("HostileSpec.__repr__ must not be called")
+
+    with pytest.raises(ValueError, match="must be a tuple of SubtaskSpec"):
+        Step11OaKConfig(subtask_specs=HostileTuple((SubtaskSpec(feature_index=0),)))
+    with pytest.raises(ValueError, match="must contain SubtaskSpec values"):
+        Step11OaKConfig(subtask_specs=(HostileSpec(feature_index=0),))
+    assert calls == []
 
 
 def test_rejects_feature_index_out_of_range_without_repr() -> None:
