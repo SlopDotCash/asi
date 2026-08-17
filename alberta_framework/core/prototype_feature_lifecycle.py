@@ -75,8 +75,9 @@ PROTOTYPE_FEATURE_LIFECYCLE_SCIENTIFIC_PROMOTION_ALLOWED = False
 
 _CONFIG_TYPE = "PrototypeFeatureLifecycleConfig"
 _INT32_MAX = 2_147_483_647
-_ACTUAL_INT_TYPES = frozenset(
-    {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
+_ACTUAL_INT_TYPES = (
+    int,
+    *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")),
 )
 _MAX_TOTAL_FEATURE_DIM = 4_096
 _MAX_PAIR_SLOTS = 262_144
@@ -96,7 +97,8 @@ def _strict_int(
 ) -> int:
     """Validate and canonicalize a supported concrete host integer."""
 
-    if type(value) not in _ACTUAL_INT_TYPES:
+    actual_type = type(value)
+    if not any(actual_type is candidate for candidate in _ACTUAL_INT_TYPES):
         raise ValueError(
             f"{name} must be a strict integer in [{minimum}, {maximum}]"
         )
@@ -591,8 +593,13 @@ class PrototypeFeatureLifecycleResourceBudget:
     max_observations: int
 
     def __post_init__(self) -> None:
-        if type(self.mechanism_status) is not str:
-            raise ValueError("mechanism_status must be an actual str")
+        if type(self) is not PrototypeFeatureLifecycleResourceBudget:
+            raise ValueError("resource budget must be an actual record")
+        if (
+            type(self.mechanism_status) is not str
+            or self.mechanism_status != PROTOTYPE_FEATURE_LIFECYCLE_MECHANISM_STATUS
+        ):
+            raise ValueError("mechanism_status must be the lifecycle development status")
         object.__setattr__(
             self,
             "scientific_promotion_allowed",
@@ -630,6 +637,47 @@ class PrototypeFeatureLifecycleResourceBudget:
                 name,
                 _strict_int(getattr(self, name), name=name, minimum=0),
             )
+        if self.scientific_promotion_allowed is not False:
+            raise ValueError("scientific_promotion_allowed must remain false")
+        expected_fields = {
+            "managed_oak_feature_width": self.base_feature_slots + self.active_pair_slots,
+            "lifecycle_state_nbytes": (
+                self.learner_persistent_state_nbytes
+                + self.router_persistent_state_nbytes
+                + self.lifecycle_counter_nbytes
+            ),
+            "consumer_binding_persistent_nbytes": 4 + 8 * self.active_pair_slots,
+            "internal_template_nbytes": (
+                self.internal_learner_template_nbytes
+                + self.internal_oak_template_nbytes
+            ),
+            "owned_persistent_state_nbytes": (
+                self.lifecycle_state_nbytes + self.internal_template_nbytes
+            ),
+            "managed_oak_consumer_nbytes": (
+                4
+                * self.managed_oak_feature_width
+                * (self.input_route_feature_groups + 1)
+            ),
+            "rebuilt_base_cache_nbytes": 4 * self.managed_oak_feature_width,
+            "router_calls_per_observe": 2,
+            "router_calls_per_committed_curation": 2,
+            "max_active_pair_products_per_observe": 5 * self.active_pair_slots,
+            "max_candidate_pair_products_per_observe": self.candidate_pair_slots,
+        }
+        for name, expected in expected_fields.items():
+            if getattr(self, name) != expected:
+                raise ValueError(f"{name} does not match the lifecycle resource formula")
+        positive_fields = (
+            "base_feature_slots",
+            "active_pair_slots",
+            "managed_oak_feature_width",
+            "input_route_feature_groups",
+            "output_route_feature_groups",
+            "max_observations",
+        )
+        if any(getattr(self, name) < 1 for name in positive_fields):
+            raise ValueError("lifecycle resource dimensions and horizon must be positive")
 
     def to_config(self) -> dict[str, str | int | bool]:
         """Return an exact JSON-compatible resource record."""
