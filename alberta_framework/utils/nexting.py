@@ -32,12 +32,52 @@ References:
 
 from __future__ import annotations
 
+import math
 from functools import partial
+from numbers import Real
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Float
+
+
+def _is_bool(value: object) -> bool:
+    return type(value) is bool or type(value) is np.bool_
+
+
+def _require_host_discount(name: str, value: object) -> object:
+    """Reject boolean / non-finite host discounts before they become 0/1 identities."""
+    if _is_bool(value):
+        raise ValueError(f"{name} must be a finite discount in [0, 1], not a boolean")
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not 0.0 <= number <= 1.0:
+            raise ValueError(f"{name} must be a finite discount in [0, 1]")
+        return value
+    dtype = getattr(value, "dtype", None)
+    if dtype is not None and jnp.issubdtype(dtype, jnp.bool_):
+        raise ValueError(f"{name} must be a finite discount in [0, 1], not a boolean")
+    if dtype is not None:
+        return value
+    raise ValueError(f"{name} must be a finite discount in [0, 1]")
+
+
+def _require_host_finite_real(name: str, value: object) -> object:
+    """Reject boolean / non-finite host scalars before they become 0/1 bootstraps."""
+    if _is_bool(value):
+        raise ValueError(f"{name} must be a finite real number, not a boolean")
+    if isinstance(value, Real):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{name} must be a finite real number")
+        return value
+    dtype = getattr(value, "dtype", None)
+    if dtype is not None and jnp.issubdtype(dtype, jnp.bool_):
+        raise ValueError(f"{name} must be a finite real number, not a boolean")
+    if dtype is not None:
+        return value
+    raise ValueError(f"{name} must be a finite real number")
 
 
 def forward_view_returns(
@@ -61,6 +101,8 @@ def forward_view_returns(
         Array of shape ``(T,)`` where index ``t`` is the forward-view
         return ``G_t = c_{t+1} + gamma * c_{t+2} + gamma^2 * c_{t+3} + ...``.
     """
+    gamma = _require_host_discount("gamma", gamma)
+    terminal_value = _require_host_finite_real("terminal_value", terminal_value)
     gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
     init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
 
@@ -93,6 +135,8 @@ def multi_horizon_returns(
         Array of shape ``(T, H)`` -- ``[t, h]`` is the forward-view return
         from step ``t`` at horizon ``gammas[h]``.
     """
+    gammas = _require_host_discount("gammas", gammas)
+    terminal_value = _require_host_finite_real("terminal_value", terminal_value)
 
     def per_gamma(g: Array) -> Array:
         return forward_view_returns(cumulants, g, terminal_value=terminal_value)
