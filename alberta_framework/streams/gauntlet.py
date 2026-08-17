@@ -90,7 +90,10 @@ def _require_int(
     minimum: int = 0,
     maximum: int = _INT32_MAX,
 ) -> int:
-    if type(value) is bool or not isinstance(value, int):
+    # This is a JSON/checkpoint identity boundary. Reject by exact type before
+    # comparisons so hostile ``int`` subclasses cannot execute hooks and
+    # NumPy scalar identities cannot leak into persisted metadata.
+    if type(value) is not int:
         raise ValueError(f"{name} must be an integer")
     if value < minimum or value > maximum:
         raise ValueError(f"{name} must lie in [{minimum}, {maximum}]")
