@@ -121,6 +121,24 @@ class ExperientialMemoryPolicyResourceDeclaration:
     hard_safety_values_interpreted_per_proposal: int
     argmax_candidates_per_proposal: int
 
+    def __post_init__(self) -> None:
+        for name in (
+            "n_actions",
+            "owned_trainable_float32_scalars",
+            "owned_persistent_state_bytes",
+            "external_memory_persistent_state_bytes",
+            "memory_queries_per_proposal",
+            "random_draws_per_proposal",
+            "score_mass_values_interpreted_per_proposal",
+            "hard_safety_values_interpreted_per_proposal",
+            "argmax_candidates_per_proposal",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_int(name, getattr(self, name), minimum=0),
+            )
+
     def to_config(self) -> dict[str, int]:
         """Return the exact JSON-compatible resource declaration."""
         return dataclasses.asdict(self)
