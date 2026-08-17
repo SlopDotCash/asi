@@ -218,24 +218,36 @@ def _require_sha256(value: Any, *, label: str) -> str:
     return value
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise OfficialForagaxOciError("name must be an exact string")
+    if type(value) is not str:
+        raise OfficialForagaxOciError(f"{name} must be an exact string")
+    return value
+
+
 def _strict_json_bytes(contents: bytes, *, label: str) -> Any:
+    host_label = _require_exact_str("label", label)
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
-            if key in result:
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
                 raise OfficialForagaxOciError(
-                    f"{label} repeats object key {key!r}"
+                    f"{host_label} repeats object key"
                 )
-            result[key] = value
+            result[host_key] = value
         return result
 
     def constant(value: str) -> Any:
+        _require_exact_str("value", value)
         raise OfficialForagaxOciError(
-            f"{label} contains non-finite constant {value}"
+            f"{host_label} contains non-finite constant"
         )
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
             raise OfficialForagaxOciError(
                 f"{label} contains non-finite JSON number {value}"
