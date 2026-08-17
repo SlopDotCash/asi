@@ -70,6 +70,9 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
+_ACTUAL_REAL_TYPES = frozenset(
+    (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble)
+)
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -97,6 +100,8 @@ def _validated_float32_scalar(
     upper_inclusive: bool = True,
 ) -> float:
     """Validate one float32 sink without silently erasing a nonzero value."""
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
     stored, numerator, denominator = validated_float32_scalar_with_ratio(
         name,
         value,
@@ -105,7 +110,7 @@ def _validated_float32_scalar(
         upper=upper,
         upper_inclusive=upper_inclusive,
     )
-    if numerator != 0 and float(np.float32(numerator / denominator)) == 0.0:
+    if numerator != 0 and abs(numerator) * (1 << 150) <= denominator:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
 
@@ -671,24 +676,34 @@ class FiniteCandidateSelector:
         ``selected_action`` receives an importance-weighted update.
         """
         self._validate_state_static_contract(state)
+        self._validate_losses_static_contract(losses)
         bounded_losses = self._unit_losses(losses)
         finite = jnp.isfinite(bounded_losses)
         probabilities = self.probabilities(state)
         if self._update_rule == CANDIDATE_SELECTOR_EXP3:
-            action = (
-                jnp.argmax(probabilities).astype(jnp.int32)
-                if selected_action is None
-                else jnp.asarray(selected_action, dtype=jnp.int32)
-            )
-            probability = jnp.maximum(probabilities[action], 1e-6)
-            selected_finite = finite[action]
+            if selected_action is None:
+                action = jnp.argmax(probabilities).astype(jnp.int32)
+            elif type(selected_action) in _ACTUAL_INT_TYPES:
+                action = jnp.asarray(
+                    operator.index(cast(SupportsIndex, selected_action)), dtype=jnp.int32
+                )
+            elif isinstance(selected_action, Array):
+                if selected_action.shape != () or selected_action.dtype != jnp.int32:
+                    raise TypeError("selected_action must be one scalar int32 action")
+                action = selected_action
+            else:
+                raise TypeError("selected_action must be one scalar integer action")
+            action_in_range = (action >= 0) & (action < self._n_candidates)
+            safe_action = jnp.clip(action, 0, self._n_candidates - 1)
+            probability = jnp.maximum(probabilities[safe_action], 1e-6)
+            selected_finite = finite[safe_action] & action_in_range
             loss_hat = jnp.where(
                 selected_finite,
                 bounded_losses[action] / probability,
                 jnp.array(0.0, dtype=jnp.float32),
             )
-            update_losses = jnp.zeros_like(bounded_losses).at[action].set(loss_hat)
-            update_finite = jnp.zeros_like(finite).at[action].set(selected_finite)
+            update_losses = jnp.zeros_like(bounded_losses).at[safe_action].set(loss_hat)
+            update_finite = jnp.zeros_like(finite).at[safe_action].set(selected_finite)
         else:
             action = jnp.argmin(jnp.where(finite, bounded_losses, jnp.inf)).astype(jnp.int32)
             update_losses = jnp.where(finite, bounded_losses, 0.0)
@@ -712,6 +727,7 @@ class FiniteCandidateSelector:
             floating_tree_is_finite(state)
             & (state.step_count >= 0)
             & (state.step_count < _INT32_MAX)
+            & (action_in_range if self._update_rule == CANDIDATE_SELECTOR_EXP3 else True)
             & floating_tree_is_finite(next_state)
         )
         return FiniteCandidateSelectorUpdateResult(
@@ -722,6 +738,8 @@ class FiniteCandidateSelector:
         )
 
     def _validate_state_static_contract(self, state: FiniteCandidateSelectorState) -> None:
+        if type(state) is not FiniteCandidateSelectorState:
+            raise TypeError("state must be a FiniteCandidateSelectorState")
         expected = (
             (state.log_weights, (self._n_candidates,), jnp.float32),
             (state.cumulative_loss, (self._n_candidates,), jnp.float32),
@@ -729,8 +747,24 @@ class FiniteCandidateSelector:
             (state.step_count, (), jnp.int32),
         )
         for value, shape, dtype in expected:
-            if value.shape != shape or value.dtype != dtype:
+            try:
+                actual_shape = tuple(value.shape)
+                actual_dtype = jnp.dtype(value.dtype)
+            except Exception as error:
+                raise TypeError("finite candidate selector state metadata is invalid") from error
+            if actual_shape != shape or actual_dtype != jnp.dtype(dtype):
                 raise ValueError("finite candidate selector state shape or dtype is invalid")
+
+    def _validate_losses_static_contract(self, losses: object) -> None:
+        try:
+            shape = tuple(losses.shape)  # type: ignore[attr-defined]
+            dtype = jnp.dtype(losses.dtype)  # type: ignore[attr-defined]
+        except Exception as error:
+            raise TypeError("finite candidate selector losses metadata is invalid") from error
+        if shape != (self._n_candidates,):
+            raise ValueError("finite candidate selector losses shape is invalid")
+        if dtype != jnp.dtype(jnp.float32):
+            raise TypeError("finite candidate selector losses dtype must be float32")
 
     def regret_metadata(self, horizon: int) -> dict[str, Any]:
         """Return finite-candidate regret assumptions and bound metadata."""

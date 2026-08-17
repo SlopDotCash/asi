@@ -14,6 +14,7 @@ from alberta_framework.core.compositional_features import (
     GENERATION_ROBUST_RECURSIVE,
     CompositionalFeatureLearner,
     FiniteCandidateSelector,
+    FiniteCandidateSelectorState,
 )
 
 
@@ -93,6 +94,48 @@ def test_selector_refuses_updates_after_exact_int32_horizon() -> None:
     state = selector.init().replace(step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32))
     result = selector.update(state, jnp.zeros((2,), dtype=jnp.float32))
     chex.assert_trees_all_equal(result.state, state)
+
+
+def test_selector_static_state_and_loss_shapes_fail_before_computation() -> None:
+    selector = FiniteCandidateSelector(2)
+    state = selector.init()
+    with pytest.raises(TypeError, match="FiniteCandidateSelectorState"):
+        selector.probabilities(object())  # type: ignore[arg-type]
+    malformed = FiniteCandidateSelectorState(
+        log_weights=jnp.zeros((1,), dtype=jnp.float32),
+        cumulative_loss=state.cumulative_loss,
+        action_counts=state.action_counts,
+        step_count=state.step_count,
+    )
+    with pytest.raises(ValueError, match="shape or dtype"):
+        selector.probabilities(malformed)
+    with pytest.raises(ValueError, match="losses shape"):
+        selector.update(state, jnp.zeros((1,), dtype=jnp.float32))
+    with pytest.raises(TypeError, match="losses dtype"):
+        selector.update(state, jnp.zeros((2,), dtype=jnp.int32))
+
+
+def test_exp3_selector_rejects_out_of_range_and_hostile_actions_atomically() -> None:
+    selector = FiniteCandidateSelector(2, exploration=0.1, update_rule="exp3")
+    state = selector.init()
+    for action in (-1, 2):
+        result = selector.update(
+            state,
+            jnp.zeros((2,), dtype=jnp.float32),
+            selected_action=action,
+        )
+        chex.assert_trees_all_equal(result.state, state)
+
+    class HostileInt(int):
+        def __index__(self) -> int:  # pragma: no cover
+            raise AssertionError("hostile action hook executed")
+
+    with pytest.raises(TypeError, match="scalar integer"):
+        selector.update(
+            state,
+            jnp.zeros((2,), dtype=jnp.float32),
+            selected_action=HostileInt(0),
+        )
 
 
 def test_compositional_update_refuses_exhausted_or_corrupt_integer_state() -> None:
