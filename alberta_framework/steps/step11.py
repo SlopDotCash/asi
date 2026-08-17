@@ -1,4 +1,4 @@
-# mypy: disable-error-code="attr-defined,call-arg,comparison-overlap,redundant-cast,unused-ignore"
+# mypy: disable-error-code="attr-defined,call-arg"
 """Production-facing Step 11 OaK facade.
 
 Step 11 of the Alberta Plan introduces the OaK (Options and Knowledge)
@@ -151,9 +151,9 @@ class Step11OaKConfig:
         specs_raw = payload["subtask_specs"]
         if type(specs_raw) is not list:
             raise ValueError("subtask_specs must be an actual list")
-        if len(specs_raw) > _MAX_CONFIG_SEQUENCE_LENGTH:
+        if len(specs_raw) > _MAX_SUBTASK_SPECS:
             raise ValueError(
-                f"subtask_specs must contain at most {_MAX_CONFIG_SEQUENCE_LENGTH} elements"
+                f"subtask_specs must contain at most {_MAX_SUBTASK_SPECS} elements"
             )
         specs: list[SubtaskSpec] = []
         for raw in specs_raw:
@@ -198,32 +198,10 @@ class Step11OaKConfig:
 
 
 _INT32_MAX = 2**31 - 1
-_MAX_CONFIG_SEQUENCE_LENGTH = 4096
-_STEP11_CONFIG_FIELDS = frozenset(
-    {
-        "type",
-        "subtask_specs",
-        "observation_dim",
-        "n_primitive_actions",
-        "base_step_size",
-        "base_avg_reward_step_size",
-        "base_trace_decay",
-        "option_step_size",
-        "option_avg_reward_step_size",
-        "option_trace_decay",
-        "option_gamma",
-        "option_model_decay",
-        "option_model_step_size",
-        "option_planning_backups_per_step",
-        "epsilon_base",
-        "epsilon_option",
-        "utility_ema_decay",
-        "curation_threshold",
-    }
-)
-_SUBTASK_SPEC_FIELDS = frozenset(
-    {"feature_index", "threshold", "pseudo_reward_scale", "max_option_steps"}
-)
+_MAX_SUBTASK_SPECS = 4_096
+_MAX_PLANNING_BACKUPS_PER_STEP = 4_096
+_STEP11_CONFIG_FIELDS = frozenset({"type", *Step11OaKConfig.__dataclass_fields__})
+_SUBTASK_SPEC_FIELDS = frozenset(SubtaskSpec.__dataclass_fields__)
 _ACTUAL_INT_TYPES = (
     int,
     np.int8,
@@ -329,52 +307,95 @@ def _trusted_array(
     dtype: Any,
 ) -> Array:
     """Validate static array metadata without dispatching on hostile objects."""
-    actual_type = type(value)
-    if not (
-        actual_type is np.ndarray
-        or issubclass(actual_type, jax.Array)
-        or issubclass(actual_type, jax.core.Tracer)
-    ):
+    if not _has_trusted_array_type(value):
         raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
     try:
-        actual_shape = tuple(value.shape)  # type: ignore[attr-defined]
-        actual_dtype = jnp.dtype(value.dtype)  # type: ignore[attr-defined]
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = jnp.dtype(trusted.dtype)
     except (AttributeError, TypeError, ValueError) as error:
         raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
     if actual_shape != shape:
         raise ValueError(f"{name} must have shape {shape}")
     if actual_dtype != jnp.dtype(dtype):
         raise TypeError(f"{name} must have dtype {jnp.dtype(dtype)}")
-    return cast(Array, value)
+    return trusted
+
+
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    )
 
 
 def _require_typed_key(name: str, value: object) -> Array:
     actual_type = type(value)
     if not (issubclass(actual_type, jax.Array) or issubclass(actual_type, jax.core.Tracer)):
         raise TypeError(f"{name} must be a scalar typed JAX PRNG key")
+    key = cast(Array, value)
     try:
-        shape = tuple(value.shape)  # type: ignore[attr-defined]
-        words = jr.key_data(cast(Array, value))
-        implementation = str(jr.key_impl(cast(Array, value)))
+        shape = tuple(key.shape)
+        words = jr.key_data(key)
+        implementation = str(jr.key_impl(key))
     except (AttributeError, TypeError, ValueError) as error:
         raise TypeError(f"{name} must be a scalar typed JAX PRNG key") from error
     if shape != () or words.shape != (2,) or words.dtype != jnp.uint32:
         raise TypeError(f"{name} must be a scalar typed JAX PRNG key")
     if implementation != "threefry2x32":
         raise ValueError(f"{name} must use Threefry2x32")
-    return cast(Array, value)
+    return key
 
 
 def _require_agent(agent: object) -> OaKAgent:
     if type(agent) is not OaKAgent:
         raise TypeError("agent must be an actual OaKAgent")
-    return cast(OaKAgent, agent)
+    return agent
 
 
 def _require_state(state: object) -> OaKState:
     if type(state) is not OaKState:
         raise TypeError("state must be an actual OaKState")
-    return cast(OaKState, state)
+    return state
+
+
+def _checked_product(name: str, *factors: int) -> int:
+    product = 1
+    for factor in factors:
+        if factor < 0 or (factor != 0 and product > _INT32_MAX // factor):
+            raise ValueError(f"derived {name} must fit signed int32")
+        product *= factor
+    return product
+
+
+def _checked_sum(name: str, *terms: int) -> int:
+    total = 0
+    for term in terms:
+        if term < 0 or term > _INT32_MAX - total:
+            raise ValueError(f"derived {name} must fit signed int32")
+        total += term
+    return total
+
+
+def _preflight_step11_smoke_resources(config: Step11OaKConfig, steps: int) -> None:
+    rows = _checked_sum("Step 11 observation row count", steps, 1)
+    observations = _checked_product(
+        "Step 11 observation count", rows, config.observation_dim
+    )
+    utility_outputs = _checked_product(
+        "Step 11 utility output count", steps, len(config.subtask_specs)
+    )
+    # The scan exposes seven scalar 32-bit outputs, four uint32 counter words,
+    # and eight boolean outputs per step, plus the option utility matrix.
+    _checked_sum(
+        "Step 11 smoke array bytes",
+        _checked_product("Step 11 observation bytes", 4, observations),
+        _checked_product("Step 11 reward bytes", 4, steps),
+        _checked_product("Step 11 scalar output bytes", 52, steps),
+        _checked_product("Step 11 utility output bytes", 4, utility_outputs),
+    )
 
 
 def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
@@ -396,13 +417,13 @@ def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
         "option_planning_backups_per_step",
         config.option_planning_backups_per_step,
         minimum=0,
-        maximum=_INT32_MAX - 1,
+        maximum=_MAX_PLANNING_BACKUPS_PER_STEP,
     )
     if type(config.subtask_specs) is not tuple:
         raise ValueError("subtask_specs must be a tuple of SubtaskSpec")
-    if len(config.subtask_specs) > _MAX_CONFIG_SEQUENCE_LENGTH:
+    if len(config.subtask_specs) > _MAX_SUBTASK_SPECS:
         raise ValueError(
-            f"subtask_specs must contain at most {_MAX_CONFIG_SEQUENCE_LENGTH} elements"
+            f"subtask_specs must contain at most {_MAX_SUBTASK_SPECS} elements"
         )
     canonical_specs: list[SubtaskSpec] = []
     for spec in config.subtask_specs:
@@ -668,15 +689,10 @@ def run_step11_scan(
     """
     checked_agent = _require_agent(agent)
     checked_state = _require_state(state)
-    actual_type = type(rewards)
-    if not (
-        actual_type is np.ndarray
-        or issubclass(actual_type, jax.Array)
-        or issubclass(actual_type, jax.core.Tracer)
-    ):
+    if not _has_trusted_array_type(rewards):
         raise TypeError("rewards must be a trusted array")
     try:
-        steps = int(rewards.shape[0])  # type: ignore[attr-defined]
+        steps = int(rewards.shape[0])
     except (AttributeError, IndexError, TypeError, ValueError) as error:
         raise TypeError("rewards must expose trusted shape metadata") from error
     if not 1 <= steps <= _INT32_MAX:
@@ -716,6 +732,7 @@ def run_step11_smoke(
     elif type(cfg) is not Step11OaKConfig:
         raise TypeError("config must be an actual Step11OaKConfig")
 
+    _preflight_step11_smoke_resources(cfg, steps)
     agent = make_step11_oak_agent(cfg)
     obs_dim = cfg.observation_dim
 

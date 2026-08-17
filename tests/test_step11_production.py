@@ -411,7 +411,7 @@ def test_step11_oak_fields_preserve_legal_endpoints() -> None:
         epsilon_option=1.0,
         utility_ema_decay=1.0,
         curation_threshold=10.0,
-        option_planning_backups_per_step=2**31 - 2,
+        option_planning_backups_per_step=4_096,
     )
     make_step11_oak_agent(upper)
     assert upper.base_trace_decay == 1.0
@@ -422,7 +422,7 @@ def test_step11_oak_fields_preserve_legal_endpoints() -> None:
     assert upper.epsilon_option == 1.0
     assert upper.utility_ema_decay == 1.0
     assert upper.curation_threshold == 10.0
-    assert upper.option_planning_backups_per_step == 2**31 - 2
+    assert upper.option_planning_backups_per_step == 4_096
 
 
 def test_step11_oak_rejects_float32_underflow_for_positive_fields() -> None:
@@ -1182,14 +1182,14 @@ def test_step11_config_preserves_float32_boundaries() -> None:
         option_gamma=1.0,
         option_model_decay=1.0,
         option_model_step_size=f32_max,
-        option_planning_backups_per_step=2**31 - 2,
+        option_planning_backups_per_step=4_096,
         epsilon_base=1.0,
         epsilon_option=1.0,
         utility_ema_decay=1.0,
         curation_threshold=f32_max,
     )
     assert config.observation_dim == 4
-    assert config.option_planning_backups_per_step == 2**31 - 2
+    assert config.option_planning_backups_per_step == 4_096
     assert config.base_step_size == f32_max
 
 
@@ -1200,6 +1200,25 @@ def test_step11_config_rejects_derived_core_resource_overflow() -> None:
             observation_dim=1,
             n_primitive_actions=2**31 - 1,
         )
+
+
+def test_step11_config_bounds_static_planning_work() -> None:
+    with pytest.raises(ValueError, match="option_planning_backups_per_step"):
+        Step11OaKConfig(
+            subtask_specs=(SubtaskSpec(feature_index=0),),
+            option_planning_backups_per_step=4_097,
+        )
+
+
+def test_step11_smoke_preflights_aggregate_arrays_before_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_allocation(*args: object, **kwargs: object) -> None:
+        raise AssertionError("allocation must not start before resource preflight")
+
+    monkeypatch.setattr(jr, "normal", unexpected_allocation)
+    with pytest.raises(ValueError, match="Step 11 scalar output bytes"):
+        run_step11_smoke(steps=50_000_000)
 
 
 def test_step11_oak_normalizes_conversion_hook_failures() -> None:
