@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import functools
 from collections.abc import Iterator, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from typing import Any, cast
 
 import chex
@@ -112,7 +112,10 @@ class WorkingMemoryConfig:
             payload = dict(config)
         except Exception as error:
             raise ValueError("WorkingMemoryConfig mapping could not be read") from error
-        payload.pop("type", None)
+        if payload.pop("type", None) != "WorkingMemoryConfig":
+            raise ValueError("WorkingMemoryConfig type is invalid")
+        if set(payload) != {field.name for field in fields(cls)}:
+            raise ValueError("WorkingMemoryConfig fields do not match its schema")
         for key in (
             "observation_decay_rates",
             "action_decay_rates",
@@ -124,12 +127,25 @@ class WorkingMemoryConfig:
                     payload[key] = tuple(value)
                 elif type(value) is not tuple:
                     raise ValueError(f"{key} must be an actual list or tuple")
-        try:
-            return cls(**payload)
-        except ValueError:
-            raise
-        except Exception as error:
-            raise ValueError("serialized WorkingMemoryConfig is invalid") from error
+                if any(type(item) is not float for item in payload[key]):
+                    raise ValueError(f"serialized {key} values must be JSON numbers")
+        for key in ("observation_dim", "action_dim", "reward_dim"):
+            if type(payload[key]) is not int:
+                raise ValueError(f"serialized {key} must be a JSON integer")
+        for key in (
+            "include_current_observation",
+            "include_current_action",
+            "include_current_reward",
+            "include_traces",
+            "include_innovations",
+            "gated_update",
+        ):
+            if type(payload[key]) is not bool:
+                raise ValueError(f"serialized {key} must be a JSON boolean")
+        for key in ("gate_threshold", "gate_temperature"):
+            if type(payload[key]) is not float:
+                raise ValueError(f"serialized {key} must be a JSON number")
+        return cls(**payload)
 
 
 @chex.dataclass(frozen=True)
@@ -462,7 +478,11 @@ class WorkingMemoryFeaturizer:
             payload = dict(config)
         except Exception as error:
             raise ValueError("WorkingMemoryFeaturizer mapping could not be read") from error
-        inner = payload.get("config")
+        if set(payload) != {"type", "config"}:
+            raise ValueError("WorkingMemoryFeaturizer fields do not match its schema")
+        if payload["type"] != "WorkingMemoryFeaturizer":
+            raise ValueError("WorkingMemoryFeaturizer type is invalid")
+        inner = payload["config"]
         if not issubclass(type(inner), Mapping):
             raise ValueError("WorkingMemoryFeaturizer config must be a mapping")
         return cls(WorkingMemoryConfig.from_config(cast(Mapping[str, Any], inner)))

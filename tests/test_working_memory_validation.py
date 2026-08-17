@@ -262,20 +262,28 @@ def test_working_state_preflight_feature_dim_boundary() -> None:
         _base_cfg(observation_dim=600_000_000, action_dim=600_000_000, reward_dim=600_000_000)
 
 
-def test_working_serialization_preserves_historical_constructor_compatibility() -> None:
+def test_working_serialized_schema_preserves_only_exact_list_tuple_compatibility() -> None:
     config = _base_cfg()
     payload = config.to_config()
     payload["observation_decay_rates"] = tuple(payload["observation_decay_rates"])
     assert WorkingMemoryConfig.from_config(MappingProxyType(payload)) == config
 
-    payload["type"] = "historical-marker"
-    payload["observation_dim"] = np.int32(2)
-    payload["gate_threshold"] = np.float32(0.0)
-    assert WorkingMemoryConfig.from_config(payload) == config
-    partial = {"observation_dim": 2, "action_dim": 1, "reward_dim": 1}
-    assert WorkingMemoryConfig.from_config(partial) == config
-    with pytest.raises(ValueError, match="serialized WorkingMemoryConfig"):
-        WorkingMemoryConfig.from_config({**config.to_config(), "extra": 1})
+    for mutation, match in (
+        ({"type": "OtherConfig"}, "type"),
+        ({"observation_dim": np.int32(2)}, "observation_dim"),
+        ({"gate_threshold": np.float32(0.0)}, "gate_threshold"),
+        ({"include_traces": 1}, "include_traces"),
+        ({"observation_decay_rates": [np.float32(0.5)]}, "JSON numbers"),
+        ({"extra": 1}, "fields"),
+    ):
+        invalid = config.to_config()
+        invalid.update(mutation)
+        with pytest.raises(ValueError, match=match):
+            WorkingMemoryConfig.from_config(invalid)
+    missing = config.to_config()
+    missing.pop("gate_temperature")
+    with pytest.raises(ValueError, match="fields"):
+        WorkingMemoryConfig.from_config(missing)
 
 
 def test_working_mapping_hooks_are_normalized_without_class_spoofing() -> None:
@@ -304,14 +312,14 @@ def test_working_mapping_hooks_are_normalized_without_class_spoofing() -> None:
             loader(MappingSpoof())  # type: ignore[arg-type]
 
 
-def test_working_featurizer_preserves_historical_outer_metadata() -> None:
+def test_working_featurizer_serialized_envelope_is_exact() -> None:
     memory = WorkingMemoryFeaturizer(_base_cfg())
     payload = memory.to_config()
     assert WorkingMemoryFeaturizer.from_config(MappingProxyType(payload)).config == memory.config
-    restored = WorkingMemoryFeaturizer.from_config(
-        {**payload, "type": "historical-marker", "extra": 1}
-    )
-    assert restored.config == memory.config
+    with pytest.raises(ValueError, match="type"):
+        WorkingMemoryFeaturizer.from_config({**payload, "type": "OtherFeaturizer"})
+    with pytest.raises(ValueError, match="fields"):
+        WorkingMemoryFeaturizer.from_config({**payload, "extra": 1})
 
 
 @pytest.mark.parametrize(
