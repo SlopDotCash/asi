@@ -204,6 +204,20 @@ def _require_int(
     return number
 
 
+def _integer_associative_input(name: str, value: Array) -> Array:
+    """Narrow associative indices without laundering floats or booleans.
+
+    ``AssociativeMemoryLearner`` documents integer contexts and labels and
+    validates that contract itself. Narrowing a caller's array to ``int32``
+    before handing it over would defeat that validator and silently truncate
+    an invalid input into a valid-looking one, so reject it here instead.
+    """
+    array = jnp.asarray(value)
+    if not jnp.issubdtype(array.dtype, jnp.integer):
+        raise ValueError(f"{name} must have an integer dtype")
+    return array.astype(jnp.int32)
+
+
 @dataclass(frozen=True)
 class Step2FeatureConfig:
     """Config for the lightweight temporal-context Step 2 layer.
@@ -992,7 +1006,7 @@ class AlbertaPipeline:
             assert associative_state is not None
             prediction = associative.predict(
                 associative_state,
-                jnp.asarray(observation, dtype=jnp.int32),
+                _integer_associative_input("observation", observation),
             )
             return feature_state, upgd_state, associative_state, prediction.probabilities
         # identity
@@ -1028,7 +1042,7 @@ class AlbertaPipeline:
             associative_state = associative.init()
             initial_features = associative.predict(
                 associative_state,
-                jnp.asarray(initial_observation, dtype=jnp.int32),
+                _integer_associative_input("initial_observation", initial_observation),
             ).probabilities
         else:
             initial_features = initial_observation
@@ -1154,8 +1168,8 @@ class AlbertaPipeline:
             associative = cast(AssociativeMemoryLearner, self._associative)
             assoc_result = associative.update(
                 new_associative_state,
-                jnp.asarray(observation, dtype=jnp.int32),
-                jnp.asarray(associative_label, dtype=jnp.int32),
+                _integer_associative_input("observation", observation),
+                _integer_associative_input("associative_label", associative_label),
             )
             new_associative_state = assoc_result.state
             features = assoc_result.predictions
@@ -1269,7 +1283,7 @@ class AlbertaPipeline:
         else:
             upgd_targets_array = jnp.asarray(upgd_targets, dtype=jnp.float32)
         associative_labels_array = (
-            jnp.asarray(associative_labels, dtype=jnp.int32)
+            _integer_associative_input("associative_labels", associative_labels)
             if associative_labels is not None
             else jnp.zeros((observations.shape[0],), dtype=jnp.int32)
         )
