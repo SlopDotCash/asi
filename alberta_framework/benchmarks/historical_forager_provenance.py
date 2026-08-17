@@ -136,6 +136,14 @@ class HistoricalForagerFamilyMismatchError(ValueError):
     """Raised when a comparison attempts to cross environment families."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise HistoricalForagerProvenanceError("name must be a string")
+    if type(value) is not str:
+        raise HistoricalForagerProvenanceError(f"{name} must be a string")
+    return value
+
+
 def _canonical_json_bytes(value: Any) -> bytes:
     try:
         return json.dumps(
@@ -175,14 +183,13 @@ def validate_historical_forager_provenance(value: Mapping[str, Any]) -> None:
         )
 
 
-def assert_historical_family_pairing(left_family_id: str, right_family_id: str) -> None:
+def assert_historical_family_pairing(left_family_id: object, right_family_id: object) -> None:
     """Reject cross-family and unknown-family pairing before metric comparison."""
-    if (
-        left_family_id != HISTORICAL_FORAGER_FAMILY_ID
-        or right_family_id != HISTORICAL_FORAGER_FAMILY_ID
-    ):
+    host_left = _require_exact_str("left_family_id", left_family_id)
+    host_right = _require_exact_str("right_family_id", right_family_id)
+    if host_left != HISTORICAL_FORAGER_FAMILY_ID or host_right != HISTORICAL_FORAGER_FAMILY_ID:
         raise HistoricalForagerFamilyMismatchError(
             "historical reconstructed results pair only with "
-            f"{HISTORICAL_FORAGER_FAMILY_ID!r}; received "
-            f"{left_family_id!r} and {right_family_id!r}"
+            f"'{HISTORICAL_FORAGER_FAMILY_ID}'; received "
+            f"'{host_left}' and '{host_right}'"
         )
