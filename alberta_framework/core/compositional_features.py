@@ -566,6 +566,9 @@ class FiniteCandidateSelector:
         loss_upper_bound = _validated_float32_scalar("loss_upper_bound", loss_upper_bound)
         if loss_lower_bound >= loss_upper_bound:
             raise ValueError("loss_lower_bound must be < loss_upper_bound")
+        loss_width = loss_upper_bound - loss_lower_bound
+        if loss_width > float(np.finfo(np.float32).max):
+            raise ValueError("loss bounds must have a finite float32 width")
         update_rule = _require_choice(
             "update_rule",
             update_rule,
@@ -573,6 +576,18 @@ class FiniteCandidateSelector:
         )
         if update_rule == CANDIDATE_SELECTOR_EXP3 and exploration <= 0.0:
             raise ValueError("exp3 selector requires positive exploration")
+        if update_rule == CANDIDATE_SELECTOR_EXP3:
+            minimum_probability = float(
+                np.float32(exploration) * np.float32(1.0 / n_candidates)
+            )
+            if minimum_probability == 0.0:
+                raise ValueError(
+                    "exp3 exploration must provide nonzero float32 mass to every candidate"
+                )
+            if learning_rate / minimum_probability > float(np.finfo(np.float32).max):
+                raise ValueError(
+                    "exp3 learning_rate / minimum probability must remain finite in float32"
+                )
 
         self._n_candidates = n_candidates
         self._learning_rate = learning_rate
@@ -701,8 +716,10 @@ class FiniteCandidateSelector:
                 raise TypeError("selected_action must be one scalar integer action")
             action_in_range = (action >= 0) & (action < self._n_candidates)
             safe_action = jnp.clip(action, 0, self._n_candidates - 1)
-            probability = jnp.maximum(probabilities[safe_action], 1e-6)
-            selected_finite = finite[safe_action] & action_in_range
+            raw_probability = probabilities[safe_action]
+            probability_valid = jnp.isfinite(raw_probability) & (raw_probability > 0.0)
+            probability = jnp.where(probability_valid, raw_probability, 1.0)
+            selected_finite = finite[safe_action] & action_in_range & probability_valid
             loss_hat = jnp.where(
                 selected_finite,
                 bounded_losses[safe_action] / probability,

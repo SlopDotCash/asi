@@ -74,6 +74,12 @@ def test_nonzero_float32_sinks_reject_underflow_to_zero(field: str) -> None:
 def test_selector_bounds_reject_nonzero_underflow() -> None:
     with pytest.raises(ValueError, match="remain nonzero"):
         FiniteCandidateSelector(2, loss_lower_bound=1e-100)
+    with pytest.raises(ValueError, match="finite float32 width"):
+        FiniteCandidateSelector(
+            2,
+            loss_lower_bound=-float(np.finfo(np.float32).max),
+            loss_upper_bound=float(np.finfo(np.float32).max),
+        )
 
 
 def test_selector_float_and_string_sinks_are_exact_and_canonical() -> None:
@@ -177,6 +183,45 @@ def test_exp3_invalid_array_action_does_not_index_the_untrusted_value() -> None:
     assert int(valid.state.step_count) == 1
     rejected = update_jit(state, jnp.asarray(2, dtype=jnp.int32))
     chex.assert_trees_all_equal(rejected.state, state)
+
+
+def test_exp3_uses_the_reported_probability_without_a_biased_floor() -> None:
+    learning_rate = 0.001
+    selector = FiniteCandidateSelector(
+        2,
+        learning_rate=learning_rate,
+        exploration=1e-7,
+        update_rule="exp3",
+    )
+    state = selector.init().replace(
+        log_weights=jnp.asarray([0.0, -100.0], dtype=jnp.float32)
+    )
+    probability = selector.probabilities(state)[1]
+    assert 0.0 < float(probability) < 1e-6
+
+    result = selector.update(
+        state,
+        jnp.asarray([0.0, 1.0], dtype=jnp.float32),
+        selected_action=1,
+    )
+    expected_log_weight_gap = -100.0 - learning_rate / float(probability)
+    observed_log_weight_gap = float(result.state.log_weights[1] - result.state.log_weights[0])
+    assert observed_log_weight_gap == pytest.approx(expected_log_weight_gap, rel=1e-5)
+
+    smallest_float32 = float(np.nextafter(np.float32(0.0), np.float32(1.0)))
+    with pytest.raises(ValueError, match="nonzero float32 mass"):
+        FiniteCandidateSelector(
+            2,
+            exploration=smallest_float32,
+            update_rule="exp3",
+        )
+    with pytest.raises(ValueError, match="minimum probability"):
+        FiniteCandidateSelector(
+            2,
+            learning_rate=float(np.finfo(np.float32).max),
+            exploration=0.1,
+            update_rule="exp3",
+        )
 
 
 def test_selector_rejects_semantically_corrupt_state_atomically() -> None:
