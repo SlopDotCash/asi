@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -12,6 +14,7 @@ import pytest
 from alberta_framework.core.cumulant_discovery import (
     CumulantDiscovery,
     CumulantDiscoveryState,
+    _require_state_resources,
 )
 
 # =============================================================================
@@ -315,3 +318,86 @@ def test_cumulant_discovery_integer_validation() -> None:
     assert type(discovery._raw_dim) is int
     assert type(discovery._n_candidates) is int
     assert type(discovery._maturity_threshold) is int
+
+
+class _HostileFloat(float):
+    def as_integer_ratio(self) -> tuple[int, int]:
+        raise RuntimeError("hostile hook executed")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("decay_rate", _HostileFloat(0.5)),
+        ("decay_rate", np.float64(1.0 - 1e-10)),
+        ("replacement_rate", np.float64(1e-100)),
+        ("predictor_step_size", 1e100),
+        ("gamma", np.float64(1e-100)),
+        ("gamma", -0.1),
+        ("enabled", np.bool_(True)),
+    ],
+)
+def test_cumulant_discovery_rejects_invalid_float32_and_static_config(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        CumulantDiscovery(raw_dim=2, **{field: value})  # type: ignore[arg-type]
+
+
+def test_cumulant_discovery_config_is_canonical_and_mapping_compatible() -> None:
+    discovery = CumulantDiscovery(
+        raw_dim=np.int16(2),
+        n_candidates=np.uint16(3),
+        decay_rate=np.float32(0.5),
+        replacement_rate=np.float64(0.25),
+        predictor_step_size=np.float16(0.125),
+        gamma=np.float32(0.75),
+    )
+    config = discovery.to_config()
+    clone = CumulantDiscovery.from_config(MappingProxyType(config))
+    assert clone.to_config() == config
+    for name in ("decay_rate", "replacement_rate", "predictor_step_size", "gamma"):
+        assert type(config[name]) is float
+
+
+def test_cumulant_discovery_preflights_state_before_allocation() -> None:
+    _require_state_resources(268_435_453, 1)
+    with pytest.raises(ValueError, match="state_bytes"):
+        _require_state_resources(268_435_454, 1)
+    with pytest.raises(ValueError, match="state_bytes"):
+        CumulantDiscovery(raw_dim=268_435_454, n_candidates=1)
+
+
+@pytest.mark.parametrize("shape", [(), (1,), (1, 2), (2, 1), (3,)])
+def test_cumulant_discovery_rejects_wrong_observation_shapes(shape: tuple[int, ...]) -> None:
+    discovery = CumulantDiscovery(raw_dim=2, n_candidates=2)
+    state = discovery.init(jr.key(0))
+    malformed = jnp.zeros(shape, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="observation"):
+        discovery.cumulants(state, malformed)
+    with pytest.raises(ValueError, match="observation"):
+        discovery.step(state, malformed, jnp.zeros((2,), dtype=jnp.float32))
+
+
+def test_cumulant_discovery_state_contract_and_saturating_ages() -> None:
+    discovery = CumulantDiscovery(raw_dim=2, n_candidates=2, replacement_rate=1.0)
+    state = discovery.init(jr.key(0))
+    malformed = state.replace(weights=jnp.zeros((2,), dtype=jnp.float32))
+    with pytest.raises(ValueError, match="state.weights"):
+        discovery.step(
+            malformed,
+            jnp.zeros((2,), dtype=jnp.float32),
+            jnp.zeros((2,), dtype=jnp.float32),
+        )
+
+    saturated = state.replace(ages=jnp.full((2,), 2**31 - 1, dtype=jnp.int32))
+    stepped = discovery.step(
+        saturated,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+    )
+    assert stepped.ages.tolist() == [2**31 - 1, 2**31 - 1]
+
+    invalid = state.replace(ages=jnp.asarray([-1, 0], dtype=jnp.int32))
+    replaced = discovery.maybe_replace(invalid)
+    chex.assert_trees_all_equal(replaced, invalid)

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import functools
 import operator
+from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -65,21 +66,14 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
+
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
+    {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
+)
+_ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
+    {float, *(np.dtype(code).type for code in "efdg")}
 )
 
 
@@ -90,6 +84,48 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_float32(
+    name: str,
+    value: object,
+    *,
+    positive: bool = False,
+    lower: float | None = None,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+    preserve_nonzero: bool = False,
+) -> float:
+    if type(value) not in _ACTUAL_REAL_TYPES:
+        raise ValueError(f"{name} must be a finite real number")
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        positive=positive,
+        lower=lower,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
+    if preserve_nonzero and numerator != 0 and np.float32(numerator / denominator) == 0.0:
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
+
+
+def _require_state_resources(raw_dim: int, n_candidates: int) -> None:
+    logical_scalars = 2 * raw_dim * n_candidates + 3 * n_candidates + 1
+    state_bytes = 4 * (2 * raw_dim * n_candidates + 3 * n_candidates) + 8
+    for name, value in (("state_scalars", logical_scalars), ("state_bytes", state_bytes)):
+        if value > _INT32_MAX:
+            raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
+
+
+def _read_mapping(value: object) -> dict[str, Any]:
+    if not issubclass(type(value), Mapping):
+        raise ValueError("config must be a mapping")
+    try:
+        return dict(cast(Mapping[str, Any], value))
+    except Exception as error:
+        raise ValueError("config must be a readable mapping") from error
 
 
 # =============================================================================
@@ -168,12 +204,25 @@ class CumulantDiscovery:
         raw_dim = _require_int32("raw_dim", raw_dim, minimum=1)
         n_candidates = _require_int32("n_candidates", n_candidates, minimum=1)
         maturity_threshold = _require_int32("maturity_threshold", maturity_threshold, minimum=0)
-        if not 0.0 < decay_rate < 1.0:
-            raise ValueError(f"decay_rate must lie in (0, 1); got {decay_rate}")
-        if not 0.0 <= replacement_rate <= 1.0:
-            raise ValueError(f"replacement_rate must lie in [0, 1]; got {replacement_rate}")
-        if predictor_step_size <= 0:
-            raise ValueError(f"predictor_step_size must be positive; got {predictor_step_size}")
+        _require_state_resources(raw_dim, n_candidates)
+        decay_rate = _require_float32(
+            "decay_rate", decay_rate, positive=True, upper=1.0, upper_inclusive=False
+        )
+        replacement_rate = _require_float32(
+            "replacement_rate",
+            replacement_rate,
+            lower=0.0,
+            upper=1.0,
+            preserve_nonzero=True,
+        )
+        predictor_step_size = _require_float32(
+            "predictor_step_size", predictor_step_size, positive=True
+        )
+        gamma = _require_float32(
+            "gamma", gamma, lower=0.0, upper=1.0, preserve_nonzero=True
+        )
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be an exact bool")
 
         self._raw_dim = raw_dim
         self._n_candidates = n_candidates
@@ -183,6 +232,50 @@ class CumulantDiscovery:
         self._predictor_step_size = predictor_step_size
         self._gamma = gamma
         self._enabled = enabled
+
+    def _require_state_contract(self, state: CumulantDiscoveryState) -> None:
+        if type(state) is not CumulantDiscoveryState:
+            raise ValueError("state must be a CumulantDiscoveryState")
+        matrix_shape = (self._n_candidates, self._raw_dim)
+        vector_shape = (self._n_candidates,)
+        for name in ("projections", "weights"):
+            leaf = getattr(state, name)
+            if leaf.shape != matrix_shape or leaf.dtype != jnp.float32:
+                raise ValueError(f"state.{name} must have shape {matrix_shape} and dtype float32")
+        for name in ("biases", "utility"):
+            leaf = getattr(state, name)
+            if leaf.shape != vector_shape or leaf.dtype != jnp.float32:
+                raise ValueError(f"state.{name} must have shape {vector_shape} and dtype float32")
+        if state.ages.shape != vector_shape or state.ages.dtype != jnp.int32:
+            raise ValueError(f"state.ages must have shape {vector_shape} and dtype int32")
+        self._require_key(state.key)
+
+    @staticmethod
+    def _require_key(key: object) -> Array:
+        try:
+            key_data = jr.key_data(cast(Any, key))
+        except Exception as error:
+            raise ValueError("key must be a Threefry JAX key") from error
+        if key_data.shape != (2,) or key_data.dtype != jnp.uint32:
+            raise ValueError("key must be a Threefry JAX key")
+        return cast(Array, key)
+
+    def _observation(self, name: str, value: object) -> Array:
+        observation = jnp.asarray(value, dtype=jnp.float32)
+        if observation.shape != (self._raw_dim,):
+            raise ValueError(f"{name} must have shape ({self._raw_dim},)")
+        return observation
+
+    @staticmethod
+    def _state_is_valid(state: CumulantDiscoveryState) -> Array:
+        return (
+            jnp.all(jnp.isfinite(state.projections))
+            & jnp.all(jnp.isfinite(state.weights))
+            & jnp.all(jnp.isfinite(state.biases))
+            & jnp.all(jnp.isfinite(state.utility))
+            & jnp.all(state.utility >= 0.0)
+            & jnp.all(state.ages >= 0)
+        )
 
     @property
     def n_candidates(self) -> int:
@@ -199,6 +292,7 @@ class CumulantDiscovery:
     def init(self, key: Array) -> CumulantDiscoveryState:
         """Initialize state with random projections, zero predictors,
         zero utility, zero ages."""
+        key = self._require_key(key)
         k_proj, k_state = jr.split(key)
         # Unit-norm random projections
         raw_proj = jr.normal(k_proj, (self._n_candidates, self._raw_dim), dtype=jnp.float32)
@@ -224,6 +318,8 @@ class CumulantDiscovery:
         ``s_t`` to ``s_{t+1}`` should use ``c_{t+1}``, so callers feeding a
         Horde should normally pass the *next* observation here.
         """
+        self._require_state_contract(state)
+        observation = self._observation("observation", observation)
         return state.projections @ observation
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -255,6 +351,9 @@ class CumulantDiscovery:
         Returns:
             Updated discovery state
         """
+        self._require_state_contract(state)
+        observation = self._observation("observation", observation)
+        next_observation = self._observation("next_observation", next_observation)
         alpha = jnp.asarray(self._predictor_step_size, dtype=jnp.float32)
         gamma = jnp.asarray(self._gamma, dtype=jnp.float32)
         decay = jnp.asarray(self._decay_rate, dtype=jnp.float32)
@@ -276,7 +375,7 @@ class CumulantDiscovery:
             weights=proposed_weights,
             biases=proposed_biases,
             utility=proposed_utility,
-            ages=state.ages + 1,
+            ages=jnp.minimum(state.ages, _INT32_MAX - 1) + 1,
             key=state.key,
         )
         # Inf next obs makes 0 @ inf = NaN in V(s') at zero init, then
@@ -290,7 +389,7 @@ class CumulantDiscovery:
         return cast(
             CumulantDiscoveryState,
             jax.lax.cond(
-                inputs_valid & proposed_finite,
+                self._state_is_valid(state) & inputs_valid & proposed_finite,
                 lambda: proposed_state,
                 lambda: state,
             ),
@@ -311,6 +410,7 @@ class CumulantDiscovery:
         Replacement: re-sample the projection row, zero the predictor
         weights/bias, reset utility to 0 and age to 0.
         """
+        self._require_state_contract(state)
         if not self._enabled:
             return state
 
@@ -359,13 +459,18 @@ class CumulantDiscovery:
             state.ages,
         )
 
-        return CumulantDiscoveryState(  # type: ignore[call-arg]
+        candidate = CumulantDiscoveryState(  # type: ignore[call-arg]
             projections=new_projections,
             weights=new_weights,
             biases=new_biases,
             utility=new_utility,
             ages=new_ages,
             key=k_next,
+        )
+        commit = self._state_is_valid(state) & self._state_is_valid(candidate)
+        return cast(
+            CumulantDiscoveryState,
+            jax.lax.cond(commit, lambda: candidate, lambda: state),
         )
 
     def to_config(self) -> dict[str, Any]:
@@ -383,8 +488,8 @@ class CumulantDiscovery:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> CumulantDiscovery:
+    def from_config(cls, config: Mapping[str, Any]) -> CumulantDiscovery:
         """Reconstruct from dict."""
-        config = dict(config)
+        config = _read_mapping(config)
         config.pop("type", None)
         return cls(**config)
