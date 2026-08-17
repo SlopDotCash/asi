@@ -84,6 +84,14 @@ class PublishedSealUncertainError(ForagerMatchedSealError):
         super().__init__(f"seal published at {destination}, but {detail}")
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ForagerMatchedSealError("name must be an exact string")
+    if type(value) is not str:
+        raise ForagerMatchedSealError(f"{name} must be an exact string")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class ContentVerifiedSealBundle:
     """A deterministically replayed seal whose external trust is unchecked.
@@ -203,19 +211,28 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ForagerMatchedSealError(f"duplicate JSON key {key!r}")
+            host_key = _require_exact_str("key", key)
+            raise ForagerMatchedSealError(f"duplicate JSON key '{host_key}'")
         result[key] = value
     return result
 
 
-def _reject_nonfinite(value: str) -> NoReturn:
-    raise ForagerMatchedSealError(f"non-finite JSON number {value!r} is forbidden")
+def _reject_nonfinite(value: object) -> NoReturn:
+    if type(value) is str:
+        host_value = _require_exact_str("value", value)
+        raise ForagerMatchedSealError(f"non-finite JSON number '{host_value}' is forbidden")
+    raise ForagerMatchedSealError(
+        "non-finite JSON number must be an exact string is forbidden"
+    )
 
 
-def _parse_finite_json_float(value: str) -> float:
+def _parse_finite_json_float(value: object) -> float:
+    if type(value) is not str:
+        raise ForagerMatchedSealError("value must be an exact string")
+    host_value = _require_exact_str("value", value)
     parsed = float(value)
     if not math.isfinite(parsed):
-        raise ForagerMatchedSealError(f"non-finite JSON number {value!r} is forbidden")
+        raise ForagerMatchedSealError(f"non-finite JSON number '{host_value}' is forbidden")
     return parsed
 
 
@@ -1408,9 +1425,13 @@ def authenticate_forager_matched_seal_bundle(
     return resolved
 
 
-def _write_exclusive_at(root: _OpenDirectory, name: str, raw: bytes) -> None:
+def _write_exclusive_at(root: _OpenDirectory, name: object, raw: bytes) -> None:
     if not raw:
         raise ForagerMatchedSealError("empty seal artifacts are forbidden")
+    if type(name) is str:
+        host_name = _require_exact_str("name", name)
+    else:
+        raise ForagerMatchedSealError("name must be an exact string")
     flags = (
         os.O_WRONLY
         | os.O_CREAT
@@ -1419,36 +1440,39 @@ def _write_exclusive_at(root: _OpenDirectory, name: str, raw: bytes) -> None:
         | getattr(os, "O_NOFOLLOW", 0)
     )
     try:
-        descriptor = os.open(name, flags, 0o600, dir_fd=root.descriptor)
+        descriptor = os.open(host_name, flags, 0o600, dir_fd=root.descriptor)
     except OSError as exc:
-        raise ForagerMatchedSealError(f"cannot stage seal artifact {name!r}") from exc
+        raise ForagerMatchedSealError(f"cannot stage seal artifact '{host_name}'") from exc
     try:
         remaining = memoryview(raw)
         while remaining:
             written = os.write(descriptor, remaining)
             if written < 1:
-                raise ForagerMatchedSealError(f"cannot completely stage artifact {name!r}")
+                raise ForagerMatchedSealError(
+                    f"cannot completely stage artifact '{host_name}'"
+                )
             remaining = remaining[written:]
         os.fsync(descriptor)
         opened = os.fstat(descriptor)
-        current = os.stat(name, dir_fd=root.descriptor, follow_symlinks=False)
+        current = os.stat(host_name, dir_fd=root.descriptor, follow_symlinks=False)
         if (
             not stat.S_ISREG(opened.st_mode)
             or opened.st_nlink != 1
             or opened.st_size != len(raw)
             or _stat_identity(opened) != _stat_identity(current)
         ):
-            raise ForagerMatchedSealError(f"staged artifact {name!r} changed while writing")
+            raise ForagerMatchedSealError(f"staged artifact '{host_name}' changed while writing")
     except OSError as exc:
-        raise ForagerMatchedSealError(f"cannot stage seal artifact {name!r}") from exc
+        raise ForagerMatchedSealError(f"cannot stage seal artifact '{host_name}'") from exc
     finally:
         os.close(descriptor)
 
 
-def _write_pair_at(root: _OpenDirectory, name: str, raw: bytes) -> None:
+def _write_pair_at(root: _OpenDirectory, name: object, raw: bytes) -> None:
+    host_name = _require_exact_str("name", name)
     digest = hashlib.sha256(raw).hexdigest()
-    _write_exclusive_at(root, name, raw)
-    _write_exclusive_at(root, f"{name}.sha256", f"{digest}\n".encode("ascii"))
+    _write_exclusive_at(root, host_name, raw)
+    _write_exclusive_at(root, f"{host_name}.sha256", f"{digest}\n".encode("ascii"))
 
 
 def _durably_sync_open_tree(root: _OpenDirectory) -> None:
