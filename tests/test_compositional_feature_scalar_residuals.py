@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -113,6 +114,10 @@ def test_selector_static_state_and_loss_shapes_fail_before_computation() -> None
         selector.update(state, jnp.zeros((1,), dtype=jnp.float32))
     with pytest.raises(TypeError, match="losses dtype"):
         selector.update(state, jnp.zeros((2,), dtype=jnp.int32))
+    with pytest.raises(ValueError, match="losses shape"):
+        selector.validate_bounded_losses(jnp.zeros((1,), dtype=jnp.float32))
+    with pytest.raises(TypeError, match="losses dtype"):
+        selector.validate_bounded_losses(jnp.zeros((2,), dtype=jnp.int32))
 
 
 def test_exp3_selector_rejects_out_of_range_and_hostile_actions_atomically() -> None:
@@ -136,6 +141,88 @@ def test_exp3_selector_rejects_out_of_range_and_hostile_actions_atomically() -> 
             jnp.zeros((2,), dtype=jnp.float32),
             selected_action=HostileInt(0),
         )
+
+    with pytest.raises(ValueError, match="selected_action is required"):
+        selector.update(state, jnp.zeros((2,), dtype=jnp.float32))
+
+    # A wide exact integer must not wrap through int32 to a valid action.
+    wrapped = selector.update(
+        state,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+        selected_action=np.uint64(2**32),
+    )
+    chex.assert_trees_all_equal(wrapped.state, state)
+    assert int(wrapped.selected_action) == -1
+
+
+def test_exp3_invalid_array_action_does_not_index_the_untrusted_value() -> None:
+    selector = FiniteCandidateSelector(2, exploration=0.1, update_rule="exp3")
+    state = selector.init()
+    result = selector.update(
+        state,
+        jnp.asarray([0.25, 0.75], dtype=jnp.float32),
+        selected_action=jnp.asarray(2, dtype=jnp.int32),
+    )
+    chex.assert_trees_all_equal(result.state, state)
+    np.testing.assert_allclose(np.asarray(result.bounded_losses), np.asarray([0.25, 0.75]))
+
+    update_jit = jax.jit(
+        lambda current, action: selector.update(
+            current,
+            jnp.asarray([0.25, 0.75], dtype=jnp.float32),
+            selected_action=action,
+        )
+    )
+    valid = update_jit(state, jnp.asarray(1, dtype=jnp.int32))
+    assert int(valid.state.step_count) == 1
+    rejected = update_jit(state, jnp.asarray(2, dtype=jnp.int32))
+    chex.assert_trees_all_equal(rejected.state, state)
+
+
+def test_selector_rejects_semantically_corrupt_state_atomically() -> None:
+    selector = FiniteCandidateSelector(2)
+    state = selector.init()
+    losses = jnp.asarray([0.25, 0.75], dtype=jnp.float32)
+    corruptions = (
+        state.replace(cumulative_loss=state.cumulative_loss.at[0].set(-1.0)),
+        state.replace(action_counts=state.action_counts.at[0].set(-1.0)),
+        state.replace(action_counts=state.action_counts.at[0].set(1.0)),
+        state.replace(cumulative_loss=state.cumulative_loss.at[0].set(1.0)),
+    )
+    for corrupt in corruptions:
+        result = selector.update(corrupt, losses)
+        chex.assert_trees_all_equal(result.state, corrupt)
+
+
+@pytest.mark.parametrize("horizon", [True, 1.5, np.float32(1.0), 0, 2**31])
+def test_selector_regret_horizon_is_an_exact_bounded_integer(horizon: object) -> None:
+    selector = FiniteCandidateSelector(2)
+    with pytest.raises(ValueError, match="horizon"):
+        selector.regret_metadata(cast(Any, horizon))
+
+    metadata = selector.regret_metadata(np.int64(2**31 - 1))
+    assert metadata["horizon"] == 2**31 - 1
+    assert type(metadata["horizon"]) is int
+
+
+def test_selector_regret_metadata_accounts_for_exploration_and_exp3_tuning() -> None:
+    horizon = 20
+    base = FiniteCandidateSelector(2, learning_rate=0.5).regret_metadata(horizon)
+    explored = FiniteCandidateSelector(
+        2,
+        learning_rate=0.5,
+        exploration=0.25,
+    ).regret_metadata(horizon)
+    assert explored["regret_bound"] == pytest.approx(base["regret_bound"] + 0.25 * horizon)
+
+    exp3 = FiniteCandidateSelector(
+        2,
+        learning_rate=0.5,
+        exploration=0.25,
+        update_rule="exp3",
+    ).regret_metadata(horizon)
+    assert exp3["regret_bound"] == pytest.approx(float(horizon))
+    assert exp3["bound_kind"] == "worst_case"
 
 
 def test_compositional_update_refuses_exhausted_or_corrupt_integer_state() -> None:

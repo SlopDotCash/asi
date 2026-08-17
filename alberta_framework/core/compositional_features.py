@@ -643,7 +643,8 @@ class FiniteCandidateSelector:
 
     def validate_bounded_losses(self, losses: Array) -> None:
         """Raise if finite losses violate the selector's theorem range."""
-        losses = jnp.asarray(losses, dtype=jnp.float32)
+        self._validate_losses_static_contract(losses)
+        losses = jnp.asarray(losses)
         finite = jnp.isfinite(losses)
         outside = finite & ((losses < self._loss_lower_bound) | (losses > self._loss_upper_bound))
         if bool(jnp.any(outside)):
@@ -673,7 +674,8 @@ class FiniteCandidateSelector:
 
         ``NaN`` losses are ignored.  For ``update_rule="hedge"``, all finite
         losses are observed.  For ``update_rule="exp3"``, only
-        ``selected_action`` receives an importance-weighted update.
+        ``selected_action`` receives an importance-weighted update and the
+        caller must provide that action explicitly.
         """
         self._validate_state_static_contract(state)
         self._validate_losses_static_contract(losses)
@@ -682,11 +684,15 @@ class FiniteCandidateSelector:
         probabilities = self.probabilities(state)
         if self._update_rule == CANDIDATE_SELECTOR_EXP3:
             if selected_action is None:
-                action = jnp.argmax(probabilities).astype(jnp.int32)
+                raise ValueError("selected_action is required for update_rule='exp3'")
             elif type(selected_action) in _ACTUAL_INT_TYPES:
-                action = jnp.asarray(
-                    operator.index(cast(SupportsIndex, selected_action)), dtype=jnp.int32
+                host_action = operator.index(cast(SupportsIndex, selected_action))
+                # Do not narrow an untrusted wide integer before validating it:
+                # values such as uint64(2**32) otherwise wrap to action zero.
+                representable_action = (
+                    host_action if -(2**31) <= host_action <= _INT32_MAX else -1
                 )
+                action = jnp.asarray(representable_action, dtype=jnp.int32)
             elif isinstance(selected_action, Array):
                 if selected_action.shape != () or selected_action.dtype != jnp.int32:
                     raise TypeError("selected_action must be one scalar int32 action")
@@ -699,7 +705,7 @@ class FiniteCandidateSelector:
             selected_finite = finite[safe_action] & action_in_range
             loss_hat = jnp.where(
                 selected_finite,
-                bounded_losses[action] / probability,
+                bounded_losses[safe_action] / probability,
                 jnp.array(0.0, dtype=jnp.float32),
             )
             update_losses = jnp.zeros_like(bounded_losses).at[safe_action].set(loss_hat)
@@ -723,9 +729,16 @@ class FiniteCandidateSelector:
             action_counts=action_counts,
             step_count=_saturating_int32_increment(state.step_count),
         )
-        update_available = (
+        source_state_valid = (
             floating_tree_is_finite(state)
             & (state.step_count >= 0)
+            & jnp.all(state.cumulative_loss >= 0.0)
+            & jnp.all(state.action_counts >= 0.0)
+            & jnp.all(state.cumulative_loss <= state.action_counts)
+            & jnp.all(state.action_counts <= state.step_count.astype(jnp.float32))
+        )
+        update_available = (
+            source_state_valid
             & (state.step_count < _INT32_MAX)
             & (action_in_range if self._update_rule == CANDIDATE_SELECTOR_EXP3 else True)
             & floating_tree_is_finite(next_state)
@@ -768,23 +781,33 @@ class FiniteCandidateSelector:
 
     def regret_metadata(self, horizon: int) -> dict[str, Any]:
         """Return finite-candidate regret assumptions and bound metadata."""
-        if horizon < 1:
-            raise ValueError("horizon must be positive")
+        horizon = _require_int32("horizon", horizon, minimum=1)
         width = self._loss_upper_bound - self._loss_lower_bound
         log_k = math.log(self._n_candidates)
         if self._n_candidates == 1:
             regret_bound = 0.0
+            bound_kind = "exact"
         elif self._update_rule == CANDIDATE_SELECTOR_HEDGE:
             regret_bound = width * (
-                log_k / self._learning_rate + self._learning_rate * horizon / 8.0
+                log_k / self._learning_rate
+                + self._learning_rate * horizon / 8.0
+                + self._exploration * horizon
             )
+            bound_kind = "hedge_with_exploration_penalty"
         else:
-            regret_bound = width * 2.0 * math.sqrt(horizon * self._n_candidates * log_k)
+            # The usual O(sqrt(T K log K)) Exp3 claim requires coupled
+            # learning-rate/exploration tuning and actions sampled from the
+            # reported probabilities.  This abstraction accepts an external
+            # action and arbitrary valid tuning, so only the universal bounded-
+            # loss guarantee is truthful without additional execution proof.
+            regret_bound = width * horizon
+            bound_kind = "worst_case"
 
         return {
             "algorithm": self._update_rule,
             "candidate_count": self._n_candidates,
             "horizon": horizon,
+            "bound_kind": bound_kind,
             "assumptions": {
                 "finite_candidate_set": True,
                 "fixed_candidate_identities": True,
@@ -795,13 +818,17 @@ class FiniteCandidateSelector:
                 "exp3_requires_unbiased_importance_weighted_losses": (
                     self._update_rule == CANDIDATE_SELECTOR_EXP3
                 ),
+                "exp3_order_bound_requires_tuned_parameters_and_sampled_actions": (
+                    self._update_rule == CANDIDATE_SELECTOR_EXP3
+                ),
             },
             "regret_bound": regret_bound,
             "regret_statement": (
                 "Hedge full-information regret is bounded by "
-                "(b-a)(ln(K)/eta + eta*T/8) for losses in [a,b]. "
-                "The Exp3-style entry records the usual order bound and "
-                "requires positive exploration plus unbiased bandit losses."
+                "(b-a)(ln(K)/eta + eta*T/8 + exploration*T) for losses in [a,b]. "
+                "The Exp3-style entry reports the tuning-independent worst-case "
+                "(b-a)T bound; a sharper order bound additionally requires coupled "
+                "tuning, sampled actions, and unbiased importance-weighted losses."
             ),
         }
 
