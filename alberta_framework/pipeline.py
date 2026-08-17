@@ -204,7 +204,12 @@ def _require_int(
     return number
 
 
-def _integer_associative_input(name: str, value: Array) -> Array:
+def _integer_associative_input(
+    name: str,
+    value: object,
+    *,
+    expected_shape: tuple[int, ...],
+) -> Array:
     """Narrow associative indices without laundering floats or booleans.
 
     ``AssociativeMemoryLearner`` documents integer contexts and labels and
@@ -212,10 +217,28 @@ def _integer_associative_input(name: str, value: Array) -> Array:
     before handing it over would defeat that validator and silently truncate
     an invalid input into a valid-looking one, so reject it here instead.
     """
-    array = jnp.asarray(value)
-    if not jnp.issubdtype(array.dtype, jnp.integer):
+    actual_type = type(value)
+    trusted = (
+        issubclass(actual_type, jax.core.Tracer)
+        or actual_type is np.ndarray
+        or isinstance(value, jax.Array)
+    )
+    if not trusted:
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        shape = tuple(value.shape)  # type: ignore[attr-defined]
+        dtype = np.dtype(value.dtype)  # type: ignore[attr-defined]
+    except (AttributeError, TypeError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if shape != expected_shape:
+        raise ValueError(f"{name} must have shape {expected_shape}")
+    if not np.issubdtype(dtype, np.integer):
         raise ValueError(f"{name} must have an integer dtype")
-    return array.astype(jnp.int32)
+    bounds = np.iinfo(cast(Any, dtype))
+    int32_bounds = np.iinfo(np.int32)
+    if bounds.min < int32_bounds.min or bounds.max > int32_bounds.max:
+        raise ValueError(f"{name} integer dtype must be wholly representable as int32")
+    return jnp.asarray(value, dtype=jnp.int32)
 
 
 @dataclass(frozen=True)
@@ -1006,7 +1029,11 @@ class AlbertaPipeline:
             assert associative_state is not None
             prediction = associative.predict(
                 associative_state,
-                _integer_associative_input("observation", observation),
+                _integer_associative_input(
+                    "observation",
+                    observation,
+                    expected_shape=(associative.config.block_size,),
+                ),
             )
             return feature_state, upgd_state, associative_state, prediction.probabilities
         # identity
@@ -1042,7 +1069,11 @@ class AlbertaPipeline:
             associative_state = associative.init()
             initial_features = associative.predict(
                 associative_state,
-                _integer_associative_input("initial_observation", initial_observation),
+                _integer_associative_input(
+                    "initial_observation",
+                    initial_observation,
+                    expected_shape=(associative.config.block_size,),
+                ),
             ).probabilities
         else:
             initial_features = initial_observation
@@ -1168,8 +1199,16 @@ class AlbertaPipeline:
             associative = cast(AssociativeMemoryLearner, self._associative)
             assoc_result = associative.update(
                 new_associative_state,
-                _integer_associative_input("observation", observation),
-                _integer_associative_input("associative_label", associative_label),
+                _integer_associative_input(
+                    "observation",
+                    observation,
+                    expected_shape=(associative.config.block_size,),
+                ),
+                _integer_associative_input(
+                    "associative_label",
+                    associative_label,
+                    expected_shape=(),
+                ),
             )
             new_associative_state = assoc_result.state
             features = assoc_result.predictions
@@ -1283,7 +1322,11 @@ class AlbertaPipeline:
         else:
             upgd_targets_array = jnp.asarray(upgd_targets, dtype=jnp.float32)
         associative_labels_array = (
-            _integer_associative_input("associative_labels", associative_labels)
+            _integer_associative_input(
+                "associative_labels",
+                associative_labels,
+                expected_shape=(observations.shape[0],),
+            )
             if associative_labels is not None
             else jnp.zeros((observations.shape[0],), dtype=jnp.int32)
         )
