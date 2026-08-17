@@ -59,6 +59,14 @@ CAUSAL_MAP_VARIANT_KIND = "alberta_causal_map"
 _CAUSAL_MAP_RNG_NAMESPACE = 0xCA05A14
 _CAUSAL_MAP_PRNG_IMPL = "threefry2x32"
 _CAUSAL_MAP_ENVIRONMENT_PRNG_IMPL = "threefry2x32"
+
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
 _INT32_MAX = int(np.iinfo(np.int32).max)
 _MAX_CAUSAL_MAP_CELLS = 4_096
 _MAX_SAFE_FLOAT32_INT32 = float(
@@ -1956,10 +1964,11 @@ def validate_causal_map_state(
                 impl = _prng_impl_name(value)
             except (TypeError, ValueError) as exc:
                 raise ValueError("rng_key must be a valid JAX PRNG key") from exc
-            if impl != _CAUSAL_MAP_PRNG_IMPL:
+            host_impl = _require_exact_str("impl", impl)
+            if host_impl != _CAUSAL_MAP_PRNG_IMPL:
                 raise ValueError(
                     "rng_key must use the causal-map PRNG implementation "
-                    f"{_CAUSAL_MAP_PRNG_IMPL!r}"
+                    f"'{_CAUSAL_MAP_PRNG_IMPL}'"
                 )
             if array.shape != (2,) or array.dtype != np.dtype(np.uint32):
                 raise ValueError("rng_key must contain exactly two uint32 words")
@@ -2424,7 +2433,8 @@ def _raw_json_array(
                     and float(np.float32(value)) == value
                 )
         else:  # pragma: no cover - internal schema table is closed
-            raise RuntimeError(f"unknown serialized state kind {kind!r}")
+            host_kind = _require_exact_str("kind", kind)
+            raise RuntimeError(f"unknown serialized state kind '{host_kind}'")
         if not valid:
             raise ValueError(
                 f"serialized {name} contains a value incompatible with {kind}"
