@@ -68,3 +68,16 @@ def test_numpy_int_n_actions_remains_legal() -> None:
     assert int(safe) == 1
     assert bool(valid)
     assert jnp.issubdtype(safe.dtype, jnp.integer)
+
+
+@pytest.mark.parametrize(
+    "n_actions",
+    [
+        pytest.param(-1, id="negative"),
+        pytest.param(2**31, id="builtin-above-int32"),
+        pytest.param(np.uint64(2**32), id="numpy-above-int32"),
+    ],
+)
+def test_n_actions_must_fit_the_int32_action_sink(n_actions: object) -> None:
+    with pytest.raises(ValueError, match=r"n_actions.*\[0, 2147483647\]"):
+        safe_discrete_action(0, n_actions)  # type: ignore[arg-type]

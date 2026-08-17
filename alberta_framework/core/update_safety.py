@@ -26,6 +26,7 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
+_INT32_MAX = int(np.iinfo(np.int32).max)
 
 
 def _require_exact_bool(name: str, value: object) -> bool:
@@ -36,10 +37,10 @@ def _require_exact_bool(name: str, value: object) -> bool:
 
 def _require_non_negative_int(name: str, value: object) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
-        raise ValueError(f"{name} must be a non-negative integer")
+        raise ValueError(f"{name} must be an integer in [0, {_INT32_MAX}]")
     number = operator.index(cast(SupportsIndex, value))
-    if number < 0:
-        raise ValueError(f"{name} must be non-negative")
+    if not 0 <= number <= _INT32_MAX:
+        raise ValueError(f"{name} must be an integer in [0, {_INT32_MAX}]")
     return number
 
 
