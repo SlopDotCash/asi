@@ -333,6 +333,28 @@ def test_class_spoofed_reward_is_rejected_and_never_reaches_kernel(
     assert not config.output_directory.exists()
 
 
+class _HostileFloatSubclass(float):
+    def __float__(self) -> float:
+        raise RuntimeError("hostile conversion")
+
+
+def test_hostile_real_conversion_is_translated_and_never_reaches_kernel(
+    tmp_path: Path,
+) -> None:
+    adapter, kernel, config, events, _, _ = _fake_lane(
+        tmp_path, [_HostileFloatSubclass(0.5)]
+    )
+
+    with pytest.raises(
+        HistoricalForagerContractError,
+        match="reward must be a finite real scalar",
+    ):
+        run_historical_forager(adapter, kernel, config)
+
+    assert not any(event[0] == "kernel.update" for event in events)
+    assert not config.output_directory.exists()
+
+
 @pytest.mark.parametrize("bad_action", [True, 1.0, -1, 4, np.asarray([1])])
 def test_invalid_actions_fail_closed_without_partial_artifact(
     tmp_path: Path,
