@@ -125,6 +125,12 @@ def _array(name: str, value: object, shape: tuple[int, ...], dtype: Any) -> Arra
     return array
 
 
+def _trusted_shape(name: str, value: object) -> tuple[int, ...]:
+    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+        raise ValueError(f"{name} must expose trusted array metadata")
+    return tuple(value.shape)
+
+
 def _require_key(key: object) -> Array:
     if not isinstance(key, jax.Array):
         raise ValueError("key must be a Threefry JAX key")
@@ -691,12 +697,14 @@ class ActorCriticAgent:
             last_action=next_action,
             rng_key=key,
         )
+        bound_metric = actor_metric / 2.0 + critic_metric / 2.0
         params_ok = (
             candidate_ok
             & _floating_tree_is_finite(proposed_final_state)
             & jnp.all(jnp.isfinite(next_policy))
             & (next_action >= 0)
             & (next_action < cfg.n_actions)
+            & jnp.isfinite(bound_metric)
         )
         new_state = jax.lax.cond(
             params_ok,
@@ -716,7 +724,7 @@ class ActorCriticAgent:
             value=jnp.where(params_ok, value, zero),
             next_value=jnp.where(params_ok & jnp.isfinite(next_value), next_value, zero),
             td_error=jnp.where(params_ok, td_error, zero),
-            bound_metric=jnp.where(params_ok, (actor_metric + critic_metric) / 2.0, zero),
+            bound_metric=jnp.where(params_ok, bound_metric, zero),
             update_applied=params_ok,
         )
 
@@ -758,30 +766,34 @@ def run_actor_critic_from_arrays(
         ``ActorCriticArrayResult`` with final state and per-step metrics.
     """
     feature_dim = agent._feature_dim(state)
-    observations = jnp.asarray(observations, dtype=jnp.float32)
-    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
-    rewards = jnp.asarray(rewards, dtype=jnp.float32)
-    if observations.ndim != 2 or observations.shape[0] < 1:
+    observations_shape = _trusted_shape("observations", observations)
+    if len(observations_shape) != 2 or observations_shape[0] < 1:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
-    num_steps = observations.shape[0]
-    if observations.shape[1] != feature_dim or next_observations.shape != observations.shape:
+    num_steps = observations_shape[0]
+    expected_observations_shape = (num_steps, feature_dim)
+    if observations_shape != expected_observations_shape or _trusted_shape(
+        "next_observations", next_observations
+    ) != expected_observations_shape:
         raise ValueError("observations and next_observations must match state feature_dim")
-    if rewards.shape != (num_steps,):
+    if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
     output_scalars = num_steps * (agent.config.n_actions + 4)
     output_bytes = num_steps * (4 * agent.config.n_actions + 13)
     if output_scalars > _INT32_MAX or output_bytes > _INT32_MAX:
         raise ValueError("derived actor-critic scan outputs exceed the signed-int32 budget")
+    observations = jnp.asarray(observations, dtype=jnp.float32)
+    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
+    rewards = jnp.asarray(rewards, dtype=jnp.float32)
     if terminated is None and discounts is None:
         raise ValueError("terminated or discounts must be provided")
     if terminated is not None:
-        terminated = jnp.asarray(terminated, dtype=jnp.bool_)
-        if terminated.shape != (num_steps,):
+        if _trusted_shape("terminated", terminated) != (num_steps,):
             raise ValueError("terminated must have shape (num_steps,)")
+        terminated = jnp.asarray(terminated, dtype=jnp.bool_)
     if discounts is not None:
-        discounts = jnp.asarray(discounts, dtype=jnp.float32)
-        if discounts.shape != (num_steps,):
+        if _trusted_shape("discounts", discounts) != (num_steps,):
             raise ValueError("discounts must have shape (num_steps,)")
+        discounts = jnp.asarray(discounts, dtype=jnp.float32)
     if terminated is None:
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
     if discounts is None:
@@ -790,9 +802,9 @@ def run_actor_critic_from_arrays(
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
         use_fixed_actions = False
     else:
-        actions = jnp.asarray(actions, dtype=jnp.int32)
-        if actions.shape != (num_steps,):
+        if _trusted_shape("actions", actions) != (num_steps,):
             raise ValueError("actions must have shape (num_steps,)")
+        actions = jnp.asarray(actions, dtype=jnp.int32)
         use_fixed_actions = True
 
     def _scan_fn(
@@ -1500,12 +1512,14 @@ class ContinuousActorCriticAgent:
             last_action=next_action,
             rng_key=key,
         )
+        bound_metric = actor_metric / 2.0 + critic_metric / 2.0
         params_ok = (
             candidate_ok
             & _floating_tree_is_finite(proposed_final_state)
             & jnp.all(jnp.isfinite(next_action))
             & jnp.all(jnp.isfinite(next_mean))
             & jnp.all(jnp.isfinite(next_sigma))
+            & jnp.isfinite(bound_metric)
         )
         new_state = jax.lax.cond(
             params_ok,
@@ -1522,7 +1536,7 @@ class ContinuousActorCriticAgent:
             value=jnp.where(params_ok, value, zero),
             next_value=jnp.where(params_ok & jnp.isfinite(next_value), next_value, zero),
             td_error=jnp.where(params_ok, td_error, zero),
-            bound_metric=jnp.where(params_ok, (actor_metric + critic_metric) / 2.0, zero),
+            bound_metric=jnp.where(params_ok, bound_metric, zero),
             update_applied=params_ok,
         )
 
@@ -1558,15 +1572,16 @@ def run_continuous_actor_critic_from_arrays(
         ``ContinuousActorCriticArrayResult`` with final state and per-step metrics.
     """
     feature_dim = agent._feature_dim(state)
-    observations = jnp.asarray(observations, dtype=jnp.float32)
-    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
-    rewards = jnp.asarray(rewards, dtype=jnp.float32)
-    if observations.ndim != 2 or observations.shape[0] < 1:
+    observations_shape = _trusted_shape("observations", observations)
+    if len(observations_shape) != 2 or observations_shape[0] < 1:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
-    num_steps = observations.shape[0]
-    if observations.shape[1] != feature_dim or next_observations.shape != observations.shape:
+    num_steps = observations_shape[0]
+    expected_observations_shape = (num_steps, feature_dim)
+    if observations_shape != expected_observations_shape or _trusted_shape(
+        "next_observations", next_observations
+    ) != expected_observations_shape:
         raise ValueError("observations and next_observations must match state feature_dim")
-    if rewards.shape != (num_steps,):
+    if _trusted_shape("rewards", rewards) != (num_steps,):
         raise ValueError("rewards must have shape (num_steps,)")
     action_dim = agent.config.action_dim
     output_scalars = num_steps * (3 * action_dim + 3)
@@ -1575,16 +1590,19 @@ def run_continuous_actor_critic_from_arrays(
         raise ValueError(
             "derived continuous actor-critic scan outputs exceed the signed-int32 budget"
         )
+    observations = jnp.asarray(observations, dtype=jnp.float32)
+    next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
+    rewards = jnp.asarray(rewards, dtype=jnp.float32)
     if terminated is None and discounts is None:
         raise ValueError("terminated or discounts must be provided")
     if terminated is not None:
-        terminated = jnp.asarray(terminated, dtype=jnp.bool_)
-        if terminated.shape != (num_steps,):
+        if _trusted_shape("terminated", terminated) != (num_steps,):
             raise ValueError("terminated must have shape (num_steps,)")
+        terminated = jnp.asarray(terminated, dtype=jnp.bool_)
     if discounts is not None:
-        discounts = jnp.asarray(discounts, dtype=jnp.float32)
-        if discounts.shape != (num_steps,):
+        if _trusted_shape("discounts", discounts) != (num_steps,):
             raise ValueError("discounts must have shape (num_steps,)")
+        discounts = jnp.asarray(discounts, dtype=jnp.float32)
     if terminated is None:
         terminated = jnp.zeros_like(rewards, dtype=jnp.bool_)
     if discounts is None:
@@ -1593,9 +1611,9 @@ def run_continuous_actor_critic_from_arrays(
         actions = jnp.zeros((rewards.shape[0], action_dim), dtype=jnp.float32)
         use_fixed_actions = False
     else:
-        actions = jnp.asarray(actions, dtype=jnp.float32)
-        if actions.shape != (num_steps, action_dim):
+        if _trusted_shape("actions", actions) != (num_steps, action_dim):
             raise ValueError("actions must have shape (num_steps, action_dim)")
+        actions = jnp.asarray(actions, dtype=jnp.float32)
         use_fixed_actions = True
 
     def _scan_fn(
