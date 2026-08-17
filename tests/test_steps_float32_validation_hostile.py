@@ -31,15 +31,19 @@ class _HostileFloat(float):
         type(self).calls += 1
         raise AssertionError("HostileFloat.__float__ must not be called")
 
+    def __repr__(self) -> str:
+        type(self).calls += 1
+        raise AssertionError("HostileFloat.__repr__ must not be called")
+
 
 def test_hostile_float_raises_finite_without_repr_leak() -> None:
-    # This layer intentionally allows true float subclasses (see HiddenBoundaryFloat
-    # tests) so the hostile hook IS invoked, but the error must be sanitized to
-    # "must be finite" without leaking the hostile repr via !r.
+    # The shared exact-scalar converter rejects subclasses before any instance
+    # hook; this wrapper must preserve that no-hook guarantee while normalizing
+    # the public error.
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be finite") as exc:
         finite_real_and_float32("x", _HostileFloat(1.0))
-    assert _HostileFloat.calls == 1
+    assert _HostileFloat.calls == 0
     assert "HostileFloat" not in str(exc.value)
     assert "!r" not in str(exc.value)
 
@@ -71,7 +75,7 @@ def test_hostile_float_value_raises_finite() -> None:
     _HostileFloat.calls = 0
     with pytest.raises(ValueError, match="must be finite"):
         finite_real_and_float32("x", _HostileFloat(0.5))
-    assert _HostileFloat.calls == 1
+    assert _HostileFloat.calls == 0
 
 
 def test_rejects_plain_string_without_repr() -> None:
@@ -113,11 +117,14 @@ def test_rejects_non_finite_narrowed() -> None:
         finite_real_and_float32("x", 1e40)
 
 
-def test_float_subclass_with_lying_ratio_is_canonicalized() -> None:
+def test_float_subclass_with_lying_ratio_is_rejected_without_hook() -> None:
     class RatioFloat(float):
+        calls = 0
+
         def as_integer_ratio(self) -> tuple[int, int]:
+            type(self).calls += 1
             return (3, 4)
 
-    _, n, d, narrowed = finite_real_and_float32("x", RatioFloat(0.5))
-    assert (n, d) == (3, 4)
-    assert narrowed == pytest.approx(0.75)
+    with pytest.raises(ValueError, match="must be finite"):
+        finite_real_and_float32("x", RatioFloat(0.5))
+    assert RatioFloat.calls == 0
