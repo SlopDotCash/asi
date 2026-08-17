@@ -400,6 +400,48 @@ class WorldModelEnsembleResourceBudget:
     max_replay_member_update_count: int
     replay_capacity: int
 
+    def __post_init__(self) -> None:
+        for name in (
+            "ensemble_size",
+            "observation_dim",
+            "target_dim",
+            "member_state_scalars_per_member",
+            "member_state_bytes_per_member",
+            "member_trainable_scalars",
+            "total_trainable_scalars",
+            "persistent_float32_scalars",
+            "persistent_float64_scalars",
+            "persistent_int32_scalars",
+            "persistent_int64_scalars",
+            "persistent_uint32_scalars",
+            "persistent_bool_scalars",
+            "persistent_state_scalars",
+            "persistent_state_bytes",
+            "bootstrap_prng_keys",
+            "bootstrap_prng_uint32_scalars",
+            "bootstrap_prng_bytes",
+            "prediction_output_logical_scalars",
+            "prediction_output_logical_bytes",
+            "update_result_output_logical_scalars",
+            "update_result_output_logical_bytes",
+            "replay_update_result_output_logical_scalars",
+            "replay_update_result_output_logical_bytes",
+            "member_update_candidates_per_valid_event",
+            "max_member_updates_per_event",
+            "replay_member_update_candidates_per_available_sample",
+            "max_replay_member_updates_per_available_sample",
+            "max_event_count",
+            "max_member_update_count",
+            "max_replay_event_count",
+            "max_replay_member_update_count",
+            "replay_capacity",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_int(name, getattr(self, name), minimum=0, maximum=_INT32_MAX),
+            )
+
     def to_config(self) -> dict[str, int]:
         """Return a JSON-compatible exact accounting record."""
         return dataclasses.asdict(self)
