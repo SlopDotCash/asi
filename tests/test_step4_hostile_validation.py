@@ -28,6 +28,10 @@ class _HostileInt(int):
         type(self).calls += 1
         raise AssertionError("HostileInt.__index__ must not be called")
 
+    def __int__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("HostileInt.__int__ must not be called")
+
     def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("HostileInt.__repr__ must not be called")
@@ -70,6 +74,26 @@ def test_rejects_bool_and_hostile_int() -> None:
         Step4SARSAConfig(n_actions=_HostileInt(2))  # type: ignore[arg-type]
     assert _HostileInt.calls == 0
     assert "HostileInt" not in str(exc.value)
+
+
+def test_rejects_hostile_config_containers_and_choices_without_hooks() -> None:
+    with pytest.raises(ValueError, match="hidden_sizes must be an actual tuple"):
+        Step4SARSAConfig(hidden_sizes=[8])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="optimizer must be one of"):
+        Step4SARSAConfig(optimizer=_EvilStr("lms"))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="bounder must be one of"):
+        Step4SARSAConfig(bounder=_EvilStr("obgd"))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="trace_mode must be one of"):
+        Step4SARSAConfig(trace_mode=_EvilStr("accumulating"))  # type: ignore[arg-type]
+
+
+def test_smoke_rejects_hostile_dimensions_before_numeric_hooks() -> None:
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="steps must be a positive integer"):
+        from alberta_framework.steps.step4 import run_step4_smoke
+
+        run_step4_smoke(steps=_HostileInt(1))  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
 
 
 def test_rejects_hostile_float_without_hook_and_repr_leak() -> None:
