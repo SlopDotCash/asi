@@ -386,6 +386,59 @@ def test_update_rejects_non_integer_action_dtypes(action: jax.Array) -> None:
         model.update(state, observation, action)
 
 
+@pytest.mark.parametrize(
+    "action",
+    (
+        np.int64(2**32),
+        np.uint64(2**32),
+        np.int64(-1),
+    ),
+)
+def test_behavior_model_rejects_original_width_action_before_jax_narrowing(
+    action: object,
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.array([1.0, -0.5], dtype=jnp.float32)
+    probabilities = jnp.array([0.2, 0.3, 0.5], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="actions must lie"):
+        model.update(state, observation, action)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="actions must lie"):
+        model.input_loss_gradient(state, observation, action)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="actions must lie"):
+        selected_action_probabilities(probabilities, action)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="actions must lie"):
+        run_behavior_model_from_arrays(
+            model,
+            state,
+            observations=observation[None, :],
+            actions=np.asarray([action]),  # type: ignore[arg-type]
+        )
+
+
+@pytest.mark.parametrize("action", (-1, 3, 2**31 - 1))
+def test_behavior_model_staged_invalid_actions_are_atomic_and_neutral(action: int) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.array([1.0, -0.5], dtype=jnp.float32)
+
+    staged_update = jax.jit(lambda current, selected: model.update(current, observation, selected))
+    result = staged_update(state, jnp.asarray(action, dtype=jnp.int32))
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.probabilities, jnp.zeros((3,), dtype=jnp.float32))
+    assert float(result.loss) == 0.0
+
+    staged_gradient = jax.jit(
+        lambda current, selected: model.input_loss_gradient(current, observation, selected)
+    )
+    gradient = staged_gradient(state, jnp.asarray(action, dtype=jnp.int32))
+    assert not bool(gradient.valid)
+    chex.assert_trees_all_equal(gradient.gradient, jnp.zeros((2,), dtype=jnp.float32))
+    assert float(gradient.loss) == 0.0
+
+
 def test_likelihood_improves_on_deterministic_policy_stream() -> None:
     model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.2, diagnostic_decay=0.9))
     state = model.init(feature_dim=2, key=jax.random.key(2))

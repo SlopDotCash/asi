@@ -88,12 +88,37 @@ def _saturating_int32_increment(value: Array) -> Array:
     return jnp.minimum(jnp.maximum(counter, 0), maximum - 1) + 1
 
 
-def _integer_action_ids(actions: Array) -> Array:
-    """Narrow integer action IDs without laundering floats or booleans."""
-    raw_actions = jnp.asarray(actions)
-    if not jnp.issubdtype(raw_actions.dtype, jnp.integer):
+def _integer_action_ids(
+    actions: object,
+    *,
+    n_actions: int,
+    expected_shape: tuple[int, ...],
+) -> tuple[Array, Bool[Array, " *shape"]]:
+    """Validate original-width action IDs before exposing safe int32 indices."""
+
+    if isinstance(actions, jax.core.Tracer):
+        raw_shape = tuple(actions.shape)
+        raw_dtype = np.dtype(actions.dtype)
+    else:
+        host_actions = np.asarray(actions)
+        raw_shape = tuple(host_actions.shape)
+        raw_dtype = host_actions.dtype
+        if not np.issubdtype(raw_dtype, np.integer):
+            raise ValueError("actions must have an integer dtype")
+        if not bool(np.all((host_actions >= 0) & (host_actions < n_actions))):
+            raise ValueError(f"actions must lie in [0, {n_actions})")
+    if not np.issubdtype(raw_dtype, np.integer):
         raise ValueError("actions must have an integer dtype")
-    return raw_actions.astype(jnp.int32)
+    try:
+        broadcast_shape = np.broadcast_shapes(raw_shape, expected_shape)
+    except ValueError as error:
+        raise ValueError(f"actions must broadcast to shape {expected_shape}") from error
+    if broadcast_shape != expected_shape:
+        raise ValueError(f"actions must broadcast to shape {expected_shape}")
+    raw_actions = jnp.broadcast_to(jnp.asarray(actions), expected_shape)
+    valid = (raw_actions >= 0) & (raw_actions < n_actions)
+    safe = jnp.where(valid, raw_actions, 0).astype(jnp.int32)
+    return safe, valid
 
 
 def floor_and_renormalize_probabilities(
@@ -133,10 +158,15 @@ def selected_action_probabilities(
     broadcast to ``probabilities.shape[:-1]``.
     """
     probs = jnp.asarray(probabilities, dtype=jnp.float32)
-    action_ids = _integer_action_ids(actions)
+    action_ids, actions_valid = _integer_action_ids(
+        actions,
+        n_actions=probs.shape[-1],
+        expected_shape=tuple(probs.shape[:-1]),
+    )
     one_hot = jax.nn.one_hot(action_ids, probs.shape[-1], dtype=jnp.float32)
     selected = jnp.sum(probs * one_hot, axis=-1)
-    return jnp.maximum(selected, jnp.asarray(min_probability, dtype=jnp.float32))
+    floor = jnp.asarray(min_probability, dtype=jnp.float32)
+    return jnp.where(actions_valid, jnp.maximum(selected, floor), floor)
 
 
 def action_log_likelihoods(
@@ -332,12 +362,12 @@ class BehaviorModelResourceBudget:
         object.__setattr__(
             self,
             "feature_dim",
-            _require_int32("feature_dim", self.feature_dim, minimum=0),
+            _require_int32("feature_dim", self.feature_dim, minimum=1),
         )
         object.__setattr__(
             self,
             "n_actions",
-            _require_int32("n_actions", self.n_actions, minimum=0),
+            _require_int32("n_actions", self.n_actions, minimum=1),
         )
         object.__setattr__(
             self,
@@ -390,6 +420,22 @@ class BehaviorModelResourceBudget:
             "replay_capacity",
             _require_int32("replay_capacity", self.replay_capacity, minimum=0),
         )
+        trainable, state_nbytes = _resource_counts(self.n_actions, self.feature_dim)
+        expected = {
+            "trainable_float32_scalars": trainable,
+            "diagnostic_float32_scalars": 3,
+            "administrative_int32_scalars": 1,
+            "rng_uint32_scalars": 2,
+            "state_nbytes": state_nbytes,
+            "learned_float32_scalars_touched_per_update": trainable + 3,
+            "replay_capacity": 0,
+        }
+        for name, expected_value in expected.items():
+            if getattr(self, name) != expected_value:
+                raise ValueError(
+                    f"{name} must equal the exact behavior-model resource formula "
+                    f"({expected_value})"
+                )
 
     def to_dict(self) -> dict[str, int]:
         """Return a JSON-compatible resource record."""
@@ -560,7 +606,6 @@ class BehaviorModel:
         logits = self.predict_logits(state, observation)
         return jax.nn.softmax(logits / self._config.temperature)
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def action_probability(
         self,
         state: BehaviorModelState,
@@ -575,7 +620,6 @@ class BehaviorModel:
             min_probability=self._config.min_probability,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def action_log_likelihood(
         self,
         state: BehaviorModelState,
@@ -585,7 +629,6 @@ class BehaviorModel:
         """Return the floor-clipped log-likelihood of ``action``."""
         return jnp.log(self.action_probability(state, observation, action))
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def input_loss_gradient(
         self,
         state: BehaviorModelState,
@@ -602,9 +645,32 @@ class BehaviorModel:
         mutation from this result must commit it only when ``result.valid`` is
         true.
         """
+        action_id, action_valid = _integer_action_ids(
+            action,
+            n_actions=self._config.n_actions,
+            expected_shape=(),
+        )
+        return cast(
+            BehaviorModelInputGradient,
+            self._input_loss_gradient_jit(
+                state,
+                observation,
+                action_id,
+                action_valid,
+            ),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _input_loss_gradient_jit(
+        self,
+        state: BehaviorModelState,
+        observation: Array,
+        action_id: Array,
+        action_valid: Array,
+    ) -> BehaviorModelInputGradient:
+        """Execute one already identity-checked input-gradient transaction."""
         cfg = self._config
         obs = jnp.asarray(observation, dtype=jnp.float32)
-        action_id = _integer_action_ids(action)
         logits = state.weights @ obs + state.bias
         scaled_logits = logits / cfg.temperature
         probabilities = jax.nn.softmax(scaled_logits)
@@ -619,8 +685,7 @@ class BehaviorModel:
         # NaN gradient to the state builder.
         inputs_valid = (
             jnp.all(jnp.isfinite(obs))
-            & (action_id >= 0)
-            & (action_id < cfg.n_actions)
+            & action_valid
         )
         source_finite = jnp.all(jnp.isfinite(state.weights)) & jnp.all(
             jnp.isfinite(state.bias)
@@ -645,7 +710,6 @@ class BehaviorModel:
             valid=valid,
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def update(
         self,
         state: BehaviorModelState,
@@ -653,9 +717,32 @@ class BehaviorModel:
         action: Array,
     ) -> BehaviorModelUpdateResult:
         """Update the behavior model from one observed action."""
+        action_id, action_valid = _integer_action_ids(
+            action,
+            n_actions=self._config.n_actions,
+            expected_shape=(),
+        )
+        return cast(
+            BehaviorModelUpdateResult,
+            self._update_jit(
+                state,
+                observation,
+                action_id,
+                action_valid,
+            ),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _update_jit(
+        self,
+        state: BehaviorModelState,
+        observation: Array,
+        action_id: Array,
+        action_valid: Array,
+    ) -> BehaviorModelUpdateResult:
+        """Execute one already identity-checked atomic update."""
         cfg = self._config
         obs = jnp.asarray(observation, dtype=jnp.float32)
-        action_id = _integer_action_ids(action)
         logits = state.weights @ obs + state.bias
         probabilities = jax.nn.softmax(logits / cfg.temperature)
         one_hot = jax.nn.one_hot(action_id, cfg.n_actions, dtype=jnp.float32)
@@ -741,8 +828,7 @@ class BehaviorModel:
         )
         inputs_valid = (
             jnp.all(jnp.isfinite(obs))
-            & (action_id >= 0)
-            & (action_id < cfg.n_actions)
+            & action_valid
         )
         proposed_finite = (
             jnp.all(jnp.isfinite(new_state.weights))
@@ -807,7 +893,6 @@ class BehaviorModel:
             log_likelihood=jnp.log(action_prob),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def importance_ratio(
         self,
         state: BehaviorModelState,
@@ -834,6 +919,14 @@ def run_behavior_model_from_arrays(
     actions: Int[Array, " num_steps"],
 ) -> BehaviorModelArrayResult:
     """Run online behavior prediction over arrays with ``jax.lax.scan``."""
+
+    if len(observations.shape) != 2:
+        raise ValueError("observations must have shape (num_steps, feature_dim)")
+    _, _ = _integer_action_ids(
+        actions,
+        n_actions=model.config.n_actions,
+        expected_shape=(observations.shape[0],),
+    )
 
     def _scan_fn(
         carry: BehaviorModelState,

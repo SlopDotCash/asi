@@ -287,7 +287,12 @@ class RepresentationGradientMixerResourceBudget:
         object.__setattr__(
             self,
             "representation_dim",
-            _require_int32("representation_dim", self.representation_dim, minimum=0),
+            _require_int32(
+                "representation_dim",
+                self.representation_dim,
+                minimum=1,
+                maximum=_MAX_REPRESENTATION_DIM,
+            ),
         )
         object.__setattr__(
             self,
@@ -325,6 +330,24 @@ class RepresentationGradientMixerResourceBudget:
             "output_nbytes",
             _require_int32("output_nbytes", self.output_nbytes, minimum=0),
         )
+        expected = {
+            "persistent_state_scalars": 0,
+            "persistent_state_bytes": 0,
+            "output_float32_scalars": self.representation_dim
+            + _DIAGNOSTIC_FLOAT32_SCALARS,
+            "output_bool_scalars": _OUTPUT_BOOL_SCALARS,
+            "output_scalars": self.representation_dim
+            + _DIAGNOSTIC_FLOAT32_SCALARS
+            + _OUTPUT_BOOL_SCALARS,
+            "output_nbytes": 4
+            * (self.representation_dim + _DIAGNOSTIC_FLOAT32_SCALARS)
+            + _OUTPUT_BOOL_SCALARS,
+        }
+        for name, expected_value in expected.items():
+            if getattr(self, name) != expected_value:
+                raise ValueError(
+                    f"{name} must equal the exact mixer resource formula ({expected_value})"
+                )
 
     def to_dict(self) -> dict[str, int]:
         """Return a JSON-compatible resource record."""
