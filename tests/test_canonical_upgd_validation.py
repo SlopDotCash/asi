@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from typing import Any
 
+import jax
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 
 from alberta_framework.core.canonical_upgd import (
+    AlbertaAdaUPGD,
     AlbertaAdaUPGDConfig,
+    CanonicalUPGD,
     CanonicalUPGDConfig,
+    OfficialAdaUPGD,
     OfficialAdaUPGDConfig,
-    _require_float32_resource,
 )
 
 _INT32_MAX = 2_147_483_647
@@ -44,6 +50,29 @@ class _ClassSpoof:
 
     def __repr__(self) -> str:  # pragma: no cover
         raise AssertionError("repr executed")
+
+
+class _MetadataOnlyArray:
+    dtype = np.dtype(np.float32)
+
+    def __init__(self, size: int):
+        self.shape = (size,)
+        self.conversion_calls = 0
+
+    def __jax_array__(self) -> jax.Array:
+        self.conversion_calls += 1
+        raise RuntimeError("conversion must not run before resource preflight")
+
+
+class _UnreadableMapping(Mapping[str, object]):
+    def __getitem__(self, key: str) -> object:
+        raise RuntimeError("hostile mapping hook")
+
+    def __iter__(self) -> Iterator[str]:
+        raise RuntimeError("hostile mapping hook")
+
+    def __len__(self) -> int:
+        return 1
 
 
 def _canon(**overrides: Any) -> CanonicalUPGDConfig:
@@ -245,6 +274,24 @@ def test_float32_underflow_is_rejected_for_positive() -> None:
         _canon(epsilon=tiny)
 
 
+@pytest.mark.parametrize(
+    ("factory", "field"),
+    [
+        (_canon, "utility_decay"),
+        (_canon, "noise_std"),
+        (_canon, "weight_decay"),
+        (_alberta, "second_moment_decay"),
+        (_official, "beta1"),
+    ],
+)
+def test_nonnegative_nonzero_scalars_cannot_silently_underflow(
+    factory: Any, field: str
+) -> None:
+    with pytest.raises(ValueError, match="must not underflow"):
+        factory(**{field: 1e-50})
+    assert getattr(factory(**{field: 0.0}), field) == 0.0
+
+
 def test_config_string_validators_reject_invalid_and_hostile_repr() -> None:
     # mode must be protecting/non_protecting without !r
     class BadRepr:
@@ -343,16 +390,105 @@ def test_canonical_normalization_fixed_by_profile() -> None:
     _canon(profile="safe_extended", normalization="local")
 
 
-def test_resource_helper_allocation_free_boundaries() -> None:
-    legal_scalars = _INT32_MAX // 4
-    # scalar count must fit signed int32
-    _require_float32_resource("test", vector_scalars=legal_scalars)
-    with pytest.raises(ValueError, match="scalar count must fit signed int32"):
-        _require_float32_resource("test", vector_scalars=_INT32_MAX + 1)
-    # byte count must fit signed int32 (4*scalars)
-    with pytest.raises(ValueError, match="byte count must fit signed int32"):
-        _require_float32_resource("test", vector_scalars=legal_scalars + 1)
-    # combined vector + fixed
-    _require_float32_resource("test", vector_scalars=legal_scalars - 5, fixed_scalars=5)
-    with pytest.raises(ValueError, match="byte count"):
-        _require_float32_resource("test", vector_scalars=legal_scalars, fixed_scalars=1)
+@pytest.mark.parametrize(
+    ("optimizer", "bytes_per_scalar", "fixed_bytes"),
+    [
+        (CanonicalUPGD(), 24, 33),
+        (AlbertaAdaUPGD(), 32, 50),
+        (OfficialAdaUPGD(), 36, 24),
+    ],
+)
+def test_production_init_preflights_complete_update_result_before_conversion(
+    optimizer: object, bytes_per_scalar: int, fixed_bytes: int
+) -> None:
+    last_legal = (_INT32_MAX - fixed_bytes) // bytes_per_scalar
+    legal = _MetadataOnlyArray(last_legal)
+    with pytest.raises(ValueError, match="could not be converted"):
+        optimizer.init({"w": legal})  # type: ignore[attr-defined]
+    assert legal.conversion_calls == 1
+
+    oversized = _MetadataOnlyArray(last_legal + 1)
+    with pytest.raises(ValueError, match="derived .* update_result_nbytes"):
+        optimizer.init({"w": oversized})  # type: ignore[attr-defined]
+    assert oversized.conversion_calls == 0
+
+
+def _tree_nbytes(tree: object) -> int:
+    return sum(int(leaf.size) * int(leaf.dtype.itemsize) for leaf in jax.tree.leaves(tree))
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.float32, jnp.float64])
+def test_resource_formulas_match_initialized_state_and_update_results(dtype: Any) -> None:
+    with jax.enable_x64():
+        params = {"w": jnp.ones((2, 3), dtype=dtype)}
+        gradients = jax.tree.map(jnp.ones_like, params)
+        noise = jax.tree.map(jnp.zeros_like, params)
+        parameter_nbytes = _tree_nbytes(params)
+        cases = [
+            (
+                CanonicalUPGD(),
+                parameter_nbytes + 4 * 6 + 4,
+                5 * parameter_nbytes + 4 * 6 + 33,
+            ),
+            (
+                AlbertaAdaUPGD(),
+                2 * parameter_nbytes + 4 * 6 + 4,
+                7 * parameter_nbytes + 4 * 6 + 50,
+            ),
+            (
+                OfficialAdaUPGD(),
+                3 * parameter_nbytes + 4,
+                9 * parameter_nbytes + 24,
+            ),
+        ]
+        for optimizer, expected_state, expected_update in cases:
+            state = optimizer.init(params)
+            result = optimizer.update(
+                state, params, gradients, jr.key(0), noise=noise
+            )
+            assert _tree_nbytes(state) == expected_state
+            assert _tree_nbytes(result) == expected_update
+
+
+@pytest.mark.parametrize("optimizer", [CanonicalUPGD(), AlbertaAdaUPGD(), OfficialAdaUPGD()])
+def test_python_float_parameter_leaf_compatibility(optimizer: object) -> None:
+    params = {"w": 1.0}
+    state = optimizer.init(params)  # type: ignore[attr-defined]
+    result = optimizer.update(  # type: ignore[attr-defined]
+        state, params, {"w": 0.5}, jr.key(4), noise={"w": 0.0}
+    )
+    assert jnp.asarray(result.params["w"]).shape == ()
+
+
+@pytest.mark.parametrize(
+    "config_type",
+    [CanonicalUPGDConfig, AlbertaAdaUPGDConfig, OfficialAdaUPGDConfig],
+)
+def test_from_config_preserves_mapping_compatibility_and_normalizes_hooks(
+    config_type: type[object],
+) -> None:
+    original = config_type()  # type: ignore[call-arg]
+    payload = original.to_config()  # type: ignore[attr-defined]
+    assert config_type.from_config(MappingProxyType(payload)) == original  # type: ignore[attr-defined]
+    with pytest.raises(ValueError, match="readable mapping"):
+        config_type.from_config(_UnreadableMapping())  # type: ignore[attr-defined]
+
+
+def test_hostile_string_hooks_are_not_invoked() -> None:
+    class HostileString:
+        def __hash__(self) -> int:
+            raise AssertionError("hash executed")
+
+        def __eq__(self, other: object) -> bool:
+            raise AssertionError("equality executed")
+
+        def __repr__(self) -> str:
+            raise AssertionError("repr executed")
+
+    hostile = HostileString()
+    with pytest.raises(ValueError, match="mode"):
+        _canon(mode=hostile)
+    with pytest.raises(ValueError, match="profile"):
+        _alberta(profile=hostile)
+    with pytest.raises(ValueError, match="profile"):
+        _official(profile=hostile)
