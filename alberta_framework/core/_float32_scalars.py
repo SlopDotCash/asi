@@ -13,20 +13,77 @@ binary32 value.
 from __future__ import annotations
 
 import math
-from numbers import Real
+from fractions import Fraction
 from typing import Any, cast
+
+import numpy as np
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
 
+_ACTUAL_INT_TYPES = frozenset(
+    {
+        int,
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    }
+)
+_ACTUAL_FLOAT_TYPES = frozenset(
+    {
+        float,
+        Fraction,
+        np.dtype("e").type,
+        np.dtype("f").type,
+        np.dtype("d").type,
+        np.dtype("g").type,
+    }
+)
+_ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+
+
+def _require_exact_str(name: str, value: object) -> str:
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def _require_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a built-in bool")
+    return value
+
+
+def _require_optional_finite_real(
+    bound_name: str,
+    value: object,
+) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{bound_name} must be a finite real number")
+    if type(value) not in _ALLOWED_REAL_TYPES:
+        raise ValueError(f"{bound_name} must be a finite real number")
+    number = float(cast(float, value))
+    if not math.isfinite(number):
+        raise ValueError(f"{bound_name} must be a finite real number")
+    return number
+
 
 def validated_float32_scalar(
-    name: str,
+    name: object,
     value: object,
     *,
-    positive: bool = False,
-    lower: float | None = None,
-    upper: float | None = None,
-    upper_inclusive: bool = True,
+    positive: object = False,
+    lower: object | None = None,
+    upper: object | None = None,
+    upper_inclusive: object = True,
 ) -> float:
     """Return the canonical stored value of one float32-consumed scalar or fail closed.
 
@@ -47,68 +104,90 @@ def validated_float32_scalar(
 
 
 def validated_float32_scalar_with_ratio(
-    name: str,
+    name: object,
     value: object,
     *,
-    positive: bool = False,
-    lower: float | None = None,
-    upper: float | None = None,
-    upper_inclusive: bool = True,
+    positive: object = False,
+    lower: object | None = None,
+    upper: object | None = None,
+    upper_inclusive: object = True,
 ) -> tuple[float, int, int]:
     """Validate once and also return the exact host numerator and denominator."""
-    actual_type = type(value)
-    if issubclass(actual_type, bool) or not issubclass(actual_type, Real):
-        raise ValueError(f"{name} must be a finite real number")
+    _require_exact_str("name", name)
+    host_name = cast(str, name)
+    _require_bool("positive", positive)
+    _require_bool("upper_inclusive", upper_inclusive)
+    pos = cast(bool, positive)
+    upper_inc = cast(bool, upper_inclusive)
+    if isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{host_name} must be a finite real number")
+    if type(value) not in _ALLOWED_REAL_TYPES:
+        raise ValueError(f"{host_name} must be a finite real number")
+    _require_optional_finite_real(f"{host_name} lower", lower)
+    _require_optional_finite_real(f"{host_name} upper", upper)
     real = cast(Any, value)
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(real)
     except Exception as error:
-        raise ValueError(f"{name} must be a finite real number") from error
+        raise ValueError(f"{host_name} must be a finite real number") from error
     if not math.isfinite(narrowed):
-        raise ValueError(f"{name} must remain finite once narrowed to float32")
+        raise ValueError(f"{host_name} must remain finite once narrowed to float32")
 
     def narrowed_in_domain(candidate: float) -> bool:
-        if positive and candidate <= 0.0:
+        if pos and candidate <= 0.0:
             return False
-        if lower is not None and candidate < lower:
+        if lower is not None and candidate < float(cast(float, lower)):
             return False
         if upper is not None:
-            if upper_inclusive:
-                return bool(candidate <= upper)
-            return bool(candidate < upper)
+            ub = float(cast(float, upper))
+            if upper_inc:
+                return bool(candidate <= ub)
+            return bool(candidate < ub)
         return True
 
-    def ratio_compares_to(bound: float) -> int:
-        bound_numerator, bound_denominator = bound.as_integer_ratio()
-        left = numerator * bound_denominator
-        right = bound_numerator * denominator
+    def ratio_compares_to(bound: object) -> int:
+        # bound is validated finite real above, so as_integer_ratio is safe.
+        assert bound is not None
+        raw = cast(Any, bound)
+        method = getattr(raw, "as_integer_ratio", None)
+        # Fallback for actual ints that expose no method on some numpy scalars.
+        if not callable(method):
+            b_num, b_den = int(raw), 1
+        else:
+            pair = method()
+            b_num, b_den = int(pair[0]), int(pair[1])
+        left = numerator * b_den
+        right = b_num * denominator
         return (left > right) - (left < right)
 
     def exact_in_domain() -> bool:
-        if positive and numerator <= 0:
+        if pos and numerator <= 0:
             return False
         if lower is not None and ratio_compares_to(lower) < 0:
             return False
         if upper is not None:
             comparison = ratio_compares_to(upper)
-            if comparison > 0 or (comparison == 0 and not upper_inclusive):
+            if comparison > 0 or (comparison == 0 and not upper_inc):
                 return False
         return True
 
-    domain = _describe_domain(positive, lower, upper, upper_inclusive)
+    domain = _describe_domain(pos, lower, upper, upper_inc)
     if not exact_in_domain():
-        raise ValueError(f"{name} must be {domain}")
+        raise ValueError(f"{host_name} must be {domain}")
     if not narrowed_in_domain(narrowed):
-        raise ValueError(f"{name} must remain {domain} once narrowed to float32")
+        raise ValueError(f"{host_name} must remain {domain} once narrowed to float32")
     stored = real if type(real) is float else narrowed
     return stored, numerator, denominator
 
 
 def _describe_domain(
-    positive: bool, lower: float | None, upper: float | None, upper_inclusive: bool
+    positive: bool,
+    lower: object | None,
+    upper: object | None,
+    upper_inclusive: bool,
 ) -> str:
     if upper is not None:
-        floor = lower if lower is not None else "-inf"
+        floor: object = lower if lower is not None else "-inf"
         bracket = "]" if upper_inclusive else ")"
         return f"in [{floor}, {upper}{bracket}"
     if positive:
