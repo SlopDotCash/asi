@@ -577,7 +577,7 @@ def test_config_canonicalizes_numpy_integer_family_and_complete_scalars() -> Non
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"step_size": 0.0},
+        {"step_size": -0.01},
         {"sparsity": -0.1},
         {"sparsity": 1.1},
         {"leaky_relu_slope": -0.1},
@@ -592,6 +592,16 @@ def test_config_rejects_invalid_complete_public_fields(overrides: dict[str, obje
         ActionConditionedWorldModelConfig(
             observation_dim=2, n_actions=2, **overrides  # type: ignore[arg-type]
         )
+
+
+def test_config_preserves_zero_step_size_for_frozen_models() -> None:
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        hidden_sizes=(),
+        step_size=0.0,
+    )
+    assert config.step_size == 0.0
 
 
 def test_config_preflights_derived_dimensions_and_state() -> None:

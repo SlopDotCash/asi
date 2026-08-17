@@ -347,7 +347,7 @@ def test_world_model_config_validates_all_public_fields_and_resources() -> None:
         {"n_actions": 2.5},
         {"action_dim": False},
         {"hidden_sizes": [4]},
-        {"step_size": 0.0},
+        {"step_size": -0.01},
         {"sparsity": float("nan")},
         {"leaky_relu_slope": 1.1},
         {"use_layer_norm": np.bool_(True)},
@@ -359,6 +359,9 @@ def test_world_model_config_validates_all_public_fields_and_resources() -> None:
 
     with pytest.raises(ValueError, match="combined_direct_state_bytes"):
         WorldModelConfig(observation_dim=20_000, n_actions=2, hidden_sizes=())
+
+    frozen = WorldModelConfig(observation_dim=2, hidden_sizes=(), step_size=0.0)
+    assert frozen.step_size == 0.0
 
 
 def test_world_model_config_deserialization_preserves_sequence_compatibility() -> None:

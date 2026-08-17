@@ -279,7 +279,7 @@ class ActionConditionedWorldModelConfig:
         scalar_specs: tuple[tuple[str, dict[str, Any]], ...] = (
             ("gamma", {"lower": 0.0, "upper": 1.0}),
             ("reward_scale", {"positive": True}),
-            ("step_size", {"positive": True}),
+            ("step_size", {"lower": 0.0}),
             ("sparsity", {"lower": 0.0, "upper": 1.0}),
             ("leaky_relu_slope", {"lower": 0.0, "upper": 1.0}),
             ("utility_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
@@ -1104,7 +1104,7 @@ class WorldModelConfig:
         for name in ("use_layer_norm", "predict_delta"):
             object.__setattr__(self, name, _require_bool(name, getattr(self, name)))
         scalar_specs: tuple[tuple[str, dict[str, Any]], ...] = (
-            ("step_size", {"positive": True}),
+            ("step_size", {"lower": 0.0}),
             ("sparsity", {"lower": 0.0, "upper": 1.0}),
             ("leaky_relu_slope", {"lower": 0.0, "upper": 1.0}),
             ("utility_decay", {"lower": 0.0, "upper": 1.0, "upper_inclusive": False}),
