@@ -878,6 +878,23 @@ def test_official_npz_import_accepts_numpy_float64_ewm_decay(tmp_path: Path) -> 
     assert result.mean_reward == pytest.approx(1.0)
 
 
+def test_official_npz_import_rejects_user_defined_float_subclass(tmp_path: Path) -> None:
+    class FloatSubclass(float):
+        def __float__(self) -> float:
+            raise AssertionError("custom conversion must not reach the importer")
+
+    path = tmp_path / "0.npz"
+    np.savez_compressed(path, rewards=np.ones((4,), dtype=np.float32))
+
+    with pytest.raises(ValueError, match="ewm_decay must be a finite number"):
+        import_official_foragax_npz(
+            OfficialForagaxRunSpec(agent="DQN", seed=0, path=path, expected_steps=4),
+            ewm_decay=FloatSubclass(0.5),
+            record_every=1,
+            final_window=1,
+        )
+
+
 def test_protocol_attestation_cannot_be_minted_by_constructing_evidence(
     tmp_path: Path,
 ) -> None:

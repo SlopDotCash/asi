@@ -1567,8 +1567,10 @@ def import_official_foragax_npz(
     final_window: int = 100_000,
 ) -> ForagerRunResult:
     """Convert one official ``data/<seed>.npz`` archive to Alberta's schema."""
-    ewm_decay_type = type(ewm_decay)
-    if issubclass(ewm_decay_type, bool) or not issubclass(ewm_decay_type, (int, float)):
+    # NumPy's concrete float64 scalar was accepted by the historical
+    # isinstance gate. Retain that compatibility without admitting arbitrary
+    # user-defined int/float subclasses with overloaded conversion hooks.
+    if type(ewm_decay) not in (int, float, np.float64):
         raise ValueError("ewm_decay must be a finite number in [0, 1)")
     try:
         ewm_decay_as_float = float(cast(Any, ewm_decay))
