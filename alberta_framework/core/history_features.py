@@ -97,6 +97,39 @@ def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
+def _preflight_history_resources(
+    *, raw_dim: int, n_decays: int, n_channels: int, feature_dim: int
+) -> None:
+    """Bound the trace state, output, and complete source-level step envelope."""
+
+    trace_scalars = n_decays * n_channels
+    _require_float32_resource(
+        "history-feature traces",
+        float32_scalars=trace_scalars,
+    )
+    _require_float32_resource(
+        "history-feature output",
+        float32_scalars=feature_dim,
+    )
+    # Charge source/product/zero/carried/contribution/proposed/finite-mask/
+    # selected trace banks; raw/finite/zero/safe observation vectors; channel
+    # indices and tracked observations; decay temporaries; the returned output;
+    # and scalar predicates. Every logical element is charged at four bytes,
+    # conservatively covering float32, int32, and boolean arrays.
+    step_scalars = (
+        8 * trace_scalars
+        + 4 * raw_dim
+        + 2 * n_channels
+        + 3 * n_decays
+        + feature_dim
+        + 16
+    )
+    _require_float32_resource(
+        "history-feature step working set",
+        float32_scalars=step_scalars,
+    )
+
+
 def _require_decay_rates(value: object) -> tuple[float, ...]:
     if type(value) is not tuple:
         raise ValueError("decay_rates must be an actual tuple")
@@ -200,9 +233,11 @@ class HistoryFeatureExtractor:
             raise ValueError(
                 f"feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
             )
-        _require_float32_resource(
-            "history-feature traces",
-            float32_scalars=channel_count * len(decay_rates),
+        _preflight_history_resources(
+            raw_dim=raw_dim,
+            n_decays=len(decay_rates),
+            n_channels=channel_count,
+            feature_dim=feature_dim,
         )
         if canonical_channels is None:
             canonical_channels = tuple(range(raw_dim))
@@ -246,6 +281,13 @@ class HistoryFeatureExtractor:
         )
         return HistoryFeatureState(traces=traces)  # type: ignore[call-arg]
 
+    def _require_state_contract(self, state: HistoryFeatureState) -> None:
+        if type(state) is not HistoryFeatureState:
+            raise TypeError("state must be an exact HistoryFeatureState")
+        expected_shape = (len(self._decay_rates), len(self._channels))
+        if state.traces.shape != expected_shape or state.traces.dtype != jnp.float32:
+            raise ValueError("state.traces has an invalid shape or dtype")
+
     @functools.partial(jax.jit, static_argnums=(0,))
     def step(
         self,
@@ -265,6 +307,7 @@ class HistoryFeatureExtractor:
               channel-major within each decay rate
             - ``new_state`` carries the updated trace values
         """
+        self._require_state_contract(state)
         # Select tracked channels
         channel_indices = jnp.asarray(self._channels, dtype=jnp.int32)
         observation = jnp.asarray(observation, dtype=jnp.float32)

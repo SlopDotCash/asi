@@ -33,13 +33,24 @@ def test_extractor_rejects_trace_bank_byte_overflow() -> None:
         )
 
 
-def test_width_boundary_from_661_still_constructs() -> None:
-    boundary = HistoryFeatureExtractor(
-        raw_dim=_INT32_MAX - 1,
-        decay_rates=(0.5,),
-        channels=(0,),
-    )
-    assert boundary.feature_dim() == _INT32_MAX
+def test_width_can_fit_while_output_bytes_do_not() -> None:
+    with pytest.raises(ValueError, match="output byte count"):
+        HistoryFeatureExtractor(
+            raw_dim=_INT32_MAX - 1,
+            decay_rates=(0.5,),
+            channels=(0,),
+        )
+
+
+def test_step_working_set_is_preflighted_before_default_channel_expansion() -> None:
+    # Trace/output banks each fit. The simultaneous trace temporaries and raw
+    # observation vectors do not; rejection must precede tuple(range(raw_dim)).
+    with pytest.raises(ValueError, match="step working set"):
+        HistoryFeatureExtractor(
+            raw_dim=40_000_000,
+            decay_rates=(0.5,),
+            include_raw=False,
+        )
 
 
 def test_legal_step_allocation_identity_is_unchanged() -> None:
@@ -55,3 +66,17 @@ def test_legal_step_allocation_identity_is_unchanged() -> None:
     augmented, advanced = extractor.step(state, jnp.ones(4, dtype=jnp.float32))
     assert augmented.shape == (8,)
     assert advanced.traces.shape == (2, 4)
+
+
+@pytest.mark.parametrize(
+    "bad_traces",
+    [
+        jnp.zeros((1, 4), dtype=jnp.float32),
+        jnp.zeros((2, 4), dtype=jnp.float16),
+    ],
+)
+def test_step_rejects_malformed_state_before_computation(bad_traces: jnp.ndarray) -> None:
+    extractor = HistoryFeatureExtractor(raw_dim=4, decay_rates=(0.5, 0.9))
+    state = extractor.init().replace(traces=bad_traces)
+    with pytest.raises(ValueError, match="state.traces"):
+        extractor.step(state, jnp.ones(4, dtype=jnp.float32))

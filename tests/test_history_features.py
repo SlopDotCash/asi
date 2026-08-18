@@ -138,12 +138,14 @@ class TestValidation:
                 decay_rates=(0.5,),
                 channels=(0,),
             )
-        boundary = HistoryFeatureExtractor(
-            raw_dim=2**31 - 2,
-            decay_rates=(0.5,),
-            channels=(0,),
-        )
-        assert boundary.feature_dim() == 2**31 - 1
+        # A width that is nameable as int32 is still not executable when its
+        # float32 output bytes and simultaneous step envelope overflow.
+        with pytest.raises(ValueError, match="output byte count"):
+            HistoryFeatureExtractor(
+                raw_dim=2**31 - 2,
+                decay_rates=(0.5,),
+                channels=(0,),
+            )
 
     def test_hostile_integral_subclasses_are_rejected(self) -> None:
         class LieInt(int):
