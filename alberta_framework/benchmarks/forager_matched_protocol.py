@@ -803,7 +803,7 @@ class RankedSelectionGroup:
     def __post_init__(self) -> None:
         _require_identifier(self.selection_group, "ranked_selection_group.selection_group")
         if type(self.ranked_candidate_ids) is not tuple or not all(
-            isinstance(cid, str) and cid for cid in self.ranked_candidate_ids
+            type(cid) is str and cid for cid in self.ranked_candidate_ids
         ):
             raise ForagerMatchedProtocolError(
                 "ranked_candidate_ids must be a tuple of candidate IDs"
@@ -912,7 +912,7 @@ class DescriptiveContext:
 
     def __post_init__(self) -> None:
         if type(self.candidate_ids) is not tuple or not all(
-            isinstance(cid, str) and cid for cid in self.candidate_ids
+            type(cid) is str and cid for cid in self.candidate_ids
         ):
             raise ForagerMatchedProtocolError("candidate_ids must be a tuple of candidate IDs")
         if self.analysis_role != "descriptive_only":
@@ -1088,7 +1088,7 @@ def _validate_json_complexity(value: Any) -> None:
             raise ForagerMatchedProtocolError("protocol exceeds the JSON nesting limit")
         if isinstance(item, Mapping):
             for key in item:
-                if not isinstance(key, str):
+                if type(key) is not str:
                     raise ForagerMatchedProtocolError("JSON object keys must be strings")
                 try:
                     key.encode("utf-8")
@@ -1145,7 +1145,7 @@ def decode_strict_json(data: bytes | str) -> Any:
 def _require_object(value: Any, path: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
         raise ForagerMatchedProtocolError(f"{path} must be a JSON object")
-    if any(not isinstance(key, str) for key in value):
+    if any(type(key) is not str for key in value):
         raise ForagerMatchedProtocolError(f"{path} keys must be strings")
     return cast(Mapping[str, Any], value)
 
@@ -1171,7 +1171,7 @@ def _require_exact_keys(
 
 
 def _require_string(value: Any, path: str, *, maximum: int = 512) -> str:
-    if not isinstance(value, str) or not value or len(value) > maximum:
+    if type(value) is not str or not value or len(value) > maximum:
         raise ForagerMatchedProtocolError(
             f"{path} must be a non-empty string of at most {maximum} characters"
         )
