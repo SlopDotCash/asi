@@ -150,6 +150,27 @@ def _compositional_state_nbytes(
     )
 
 
+def _compositional_update_working_set_bytes(
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    generator_resource_contexts: int,
+) -> int:
+    """Source persist, proposed persist, and returned non-state result bytes."""
+    persist_bytes = _compositional_state_nbytes(
+        n_features,
+        n_tasks,
+        candidate_count,
+        generator_resource_contexts,
+    )
+    # predictions/errors, metrics, two slot ids, applied flag, plus the
+    # published curation-trace banks that ride with one update result.
+    result_extras = (
+        227 + 31 * n_features + 8 * n_tasks + 32 * candidate_count
+    )
+    return 2 * persist_bytes + result_extras
+
+
 def _require_serialized_scalars(payload: Mapping[str, Any], owner: type[Any]) -> None:
     annotations = get_type_hints(owner.__init__)
     for name, parameter in inspect.signature(owner).parameters.items():
@@ -1822,6 +1843,16 @@ class CompositionalFeatureLearner:
                     scalars=signed_scalars,
                     nbytes=4 * signed_scalars,
                 )
+
+        if _compositional_update_working_set_bytes(
+            self._n_features,
+            self._n_tasks,
+            self._candidate_count,
+            self._generator_resource_contexts,
+        ) > _INT32_MAX:
+            raise ValueError(
+                "compositional feature update working set byte count must fit signed int32"
+            )
 
         n_features = self._n_features
 
