@@ -39,7 +39,7 @@ def _require_exact_bool(name: str, value: object) -> bool:
 
 
 def _require_finite_positive(name: str, value: object) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise ValueError(f"{name} must be a real number")
     number = float(cast(Any, value))
     if not math.isfinite(number) or number <= 0.0:
