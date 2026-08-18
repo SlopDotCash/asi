@@ -621,9 +621,9 @@ def _validate_config_payload(
     if agent.startswith("PPO"):
         rollout = hypers.get("rollout_steps")
         updates = hypers.get("num_updates")
-        if not isinstance(rollout, int) or isinstance(rollout, bool):
+        if type(rollout) is not int:
             raise ScreenError(f"PPO rollout_steps is not explicit: {relative}")
-        if not isinstance(updates, int) or isinstance(updates, bool):
+        if type(updates) is not int:
             raise ScreenError(f"PPO num_updates is not explicit: {relative}")
         if rollout * updates != horizon:
             raise ScreenError(f"PPO schedule does not match horizon: {relative}")
@@ -860,7 +860,7 @@ def load_frozen_protocol(protocol_dir: Path) -> FrozenProtocol:
         raise ScreenError("frozen screen must contain exactly two seeds")
     seeds: list[int] = []
     for index, value in enumerate(raw_seeds):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        if type(value) is not int or value < 0:
             raise ScreenError(f"task.seeds[{index}] must be a non-negative integer")
         seeds.append(value)
     if seeds != sorted(set(seeds)) or seeds[1] != seeds[0] + 1:
