@@ -571,6 +571,68 @@ class AggregateEvidence:
     budgets_identical: bool
     all_values_finite: bool
 
+    def __post_init__(self) -> None:
+        """Reject leftover seed/bool/measurement identities before acceptance."""
+        if type(self.seeds) is not tuple or not self.seeds:
+            raise ValueError("seeds must be a non-empty exact tuple")
+        seeds = tuple(_require_seed(seed) for seed in self.seeds)
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("seeds must be unique")
+        object.__setattr__(self, "seeds", seeds)
+        for name in (
+            "frozen_prequential_reward",
+            "learner_only_prequential_reward",
+            "joint_adaptive_prequential_reward",
+            "reward_uplift_over_frozen",
+            "partner_uplift",
+            "recurrent_a_probe_reward",
+            "mean_forgetting",
+            "max_forgetting",
+            "mean_interference_forgetting",
+            "recurrence_recovery_fraction",
+            "mean_recurrence_recovery_steps",
+            "mean_stability_gap",
+            "maximum_update_latency_ms",
+        ):
+            # real_number rejects leftover bools and still records non-finite
+            # recovery means the factory emits when no seed recovered.
+            object.__setattr__(self, name, real_number(name, getattr(self, name)))
+        if type(self.reward_uplift_interval) is not BootstrapInterval:
+            raise ValueError("reward_uplift_interval must be a BootstrapInterval")
+        if type(self.partner_uplift_interval) is not BootstrapInterval:
+            raise ValueError("partner_uplift_interval must be a BootstrapInterval")
+        phase_rewards = _require_ndarray(
+            "joint_adaptive_phase_rewards",
+            self.joint_adaptive_phase_rewards,
+            dtype=np.dtype(np.float64),
+            ndim=1,
+        )
+        performance = _require_ndarray(
+            "joint_adaptive_performance_matrix",
+            self.joint_adaptive_performance_matrix,
+            dtype=np.dtype(np.float64),
+            ndim=2,
+        )
+        object.__setattr__(self, "joint_adaptive_phase_rewards", _freeze_ndarray(phase_rewards))
+        object.__setattr__(
+            self, "joint_adaptive_performance_matrix", _freeze_ndarray(performance)
+        )
+        object.__setattr__(
+            self, "state_scalars", _require_int32("state_scalars", self.state_scalars, minimum=0)
+        )
+        object.__setattr__(
+            self, "state_bytes", _require_int32("state_bytes", self.state_bytes, minimum=0)
+        )
+        object.__setattr__(
+            self,
+            "action_scalars_per_step",
+            _require_int32("action_scalars_per_step", self.action_scalars_per_step, minimum=0),
+        )
+        if type(self.budgets_identical) is not bool:
+            raise ValueError("budgets_identical must be an exact bool")
+        if type(self.all_values_finite) is not bool:
+            raise ValueError("all_values_finite must be an exact bool")
+
 
 @dataclass(frozen=True)
 class AcceptanceEvidence:
