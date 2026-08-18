@@ -634,21 +634,21 @@ class MatchedComparisonContract:
         for method in methods:
             if not method.preregistered:
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} is not preregistered"
+                    f"learning method '{method.method_id}' is not preregistered"
                 )
             if method.seeds != expected_seeds:
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} does not have the exact common "
+                    f"learning method '{method.method_id}' does not have the exact common "
                     "seed ordering"
                 )
             if method.evidence != expected_evidence:
                 raise MatchedStatisticsError(
-                    f"learning method {method.method_id!r} has a different evidence binding"
+                    f"learning method '{method.method_id}' has a different evidence binding"
                 )
         for diagnostic in diagnostics:
             if diagnostic.seeds != expected_seeds:
                 raise MatchedStatisticsError(
-                    f"descriptive candidate {diagnostic.candidate_id!r} does not have the "
+                    f"descriptive candidate '{diagnostic.candidate_id}' does not have the "
                     "exact common seed ordering"
                 )
 
@@ -676,7 +676,7 @@ class MatchedComparisonContract:
             } - method_id_set
             if unknown:
                 raise MatchedStatisticsError(
-                    f"comparison {comparison.hypothesis_id!r} references unknown methods: "
+                    f"comparison '{comparison.hypothesis_id}' references unknown methods: "
                     + ", ".join(sorted(unknown))
                 )
 
@@ -692,7 +692,8 @@ class MatchedComparisonContract:
         for method in self.methods:
             if method.method_id == method_id:
                 return method
-        raise MatchedStatisticsError(f"unknown method identifier {method_id!r}")
+        host_method_id = _require_identifier(method_id, "method_id")
+        raise MatchedStatisticsError(f"unknown method identifier '{host_method_id}'")
 
     def to_payload(self) -> dict[str, object]:
         return {
