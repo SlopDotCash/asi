@@ -122,7 +122,7 @@ def _validate_ppo_schedule(
 
 
 def _relative_path(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         _fail(f"{label} must be a non-empty relative path")
     path = PurePosixPath(value)
     if path.is_absolute() or ".." in path.parts or "." in path.parts:
@@ -146,7 +146,7 @@ def _source_records(protocol: dict[str, Any]) -> list[dict[str, str]]:
             _fail(f"source_files[{index}] must be an object")
         relative = _relative_path(item.get("path"), f"source_files[{index}].path")
         expected = item.get("sha256")
-        if not isinstance(expected, str) or len(expected) != 64:
+        if type(expected) is not str or len(expected) != 64:
             _fail(f"source_files[{index}].sha256 is invalid")
         if relative in seen:
             _fail(f"duplicate source path: {relative}")
@@ -241,7 +241,7 @@ def _validate_scorer_equivalence(
 
     expected_reference = scoring.get("reference_implementation_sha256")
     if (
-        not isinstance(expected_reference, str)
+        type(expected_reference) is not str
         or _sha256(_REFERENCE_SCORER_PATH) != expected_reference
     ):
         _fail("reference scorer identity drift")
@@ -352,7 +352,7 @@ def _validate_configurations(
         if not isinstance(nested_experiment, dict) or nested_experiment.get("seed_offset", 0) != 0:
             _fail(f"configuration seed offset drift: {relative}")
         agent = config.get("agent")
-        if not isinstance(agent, str) or not agent:
+        if type(agent) is not str or not agent:
             _fail(f"configuration agent is invalid: {relative}")
         if agent.startswith("PPO"):
             rollout, updates = _validate_ppo_schedule(
@@ -519,7 +519,7 @@ def main() -> None:
     protocol_path = _PROTOCOL_ROOT / "PROTOCOL.json"
     protocol = _load_config(protocol_path)
     schema = protocol.get("schema_version")
-    if not isinstance(schema, str) or schema not in _CPU_SCHEMAS:
+    if type(schema) is not str or schema not in _CPU_SCHEMAS:
         _fail("unsupported frozen screening protocol schema")
     protocol_sha256 = _sha256(protocol_path)
     if protocol_sha256 != _FROZEN_PROTOCOL_SHA256[schema]:
