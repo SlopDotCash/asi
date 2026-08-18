@@ -124,6 +124,22 @@ def _preflight_float32_resources(name: str, scalar_count: int) -> None:
         raise ValueError(f"{name} resource must not exceed the 256 MiB budget")
 
 
+def _learner_clock_has_capacity(step_count: Array) -> Bool[Array, ""]:
+    """Validate one learner clock and report whether another commit is identifiable.
+
+    The int32 clock is the only committed-update identity carried by these
+    legacy states. Once it reaches ``INT32_MAX``, applying another parameter
+    update while retaining the same clock would alias two distinct commits.
+    """
+
+    if getattr(step_count, "shape", None) != ():
+        raise ValueError("learner step_count must be scalar")
+    if getattr(step_count, "dtype", None) != jnp.dtype(jnp.int32):
+        raise TypeError("learner step_count must have dtype int32")
+    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
+    return (step_count >= 0) & (step_count < maximum)
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip a collapsed 0*inf product before it becomes NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -294,6 +310,7 @@ class LinearLearner:
         Returns:
             UpdateResult with new state, prediction, error, and metrics
         """
+        clock_has_capacity = _learner_clock_has_capacity(state.step_count)
         new_normalizer_state = state.normalizer_state
         obs = observation
         normalizer_update_applied = jnp.asarray(True, dtype=jnp.bool_)
@@ -358,7 +375,8 @@ class LinearLearner:
             jnp.isfinite(target)
         )
         update_applied = (
-            floating_tree_is_finite(state)
+            clock_has_capacity
+            & floating_tree_is_finite(state)
             & inputs_valid
             & normalizer_update_applied
             & opt_update.update_applied
@@ -1347,6 +1365,7 @@ class MLPLearner:
         target_scalar = jnp.squeeze(target)
 
         obs = observation
+        clock_has_capacity = _learner_clock_has_capacity(state.step_count)
         new_normalizer_state = state.normalizer_state
         normalizer_update_applied = jnp.asarray(True, dtype=jnp.bool_)
         if self._normalizer is not None and state.normalizer_state is not None:
@@ -1491,7 +1510,8 @@ class MLPLearner:
             )
         inputs_valid = jnp.all(jnp.isfinite(observation)) & jnp.isfinite(target_scalar)
         update_applied = (
-            inputs_valid
+            clock_has_capacity
+            & inputs_valid
             & floating_tree_is_finite(previous_checked)
             & floating_tree_is_finite(proposed_state)
             & normalizer_update_applied
@@ -1861,6 +1881,7 @@ class TDLinearLearner:
         Returns:
             TDUpdateResult with new state, prediction, TD error, and metrics
         """
+        clock_has_capacity = _learner_clock_has_capacity(state.step_count)
         prediction = self.predict(state, observation)
         next_prediction = self.predict(state, next_observation)
 
@@ -1908,7 +1929,8 @@ class TDLinearLearner:
             & jnp.all(jnp.isfinite(gamma))
         )
         update_applied = (
-            floating_tree_is_finite(state)
+            clock_has_capacity
+            & floating_tree_is_finite(state)
             & inputs_valid
             & opt_update.update_applied
             & floating_tree_is_finite(candidate_state)
@@ -2013,6 +2035,7 @@ class TrueOnlineTDLearner:
         gamma: Array,
     ) -> TrueOnlineTDUpdateResult:
         """Apply one True Online TD(lambda) update."""
+        clock_has_capacity = _learner_clock_has_capacity(state.step_count)
         alpha = jnp.asarray(self._step_size, dtype=jnp.float32)
         lamda = jnp.asarray(self._trace_decay, dtype=jnp.float32)
         gamma_scalar = jnp.squeeze(gamma).astype(jnp.float32)
@@ -2076,7 +2099,12 @@ class TrueOnlineTDLearner:
             & jnp.isfinite(proposed_state.bias_eligibility_trace)
             & jnp.isfinite(proposed_state.v_old)
         )
-        update_applied = inputs_valid & floating_tree_is_finite(state) & proposed_finite
+        update_applied = (
+            clock_has_capacity
+            & inputs_valid
+            & floating_tree_is_finite(state)
+            & proposed_finite
+        )
         new_state = jax.lax.cond(
             update_applied,
             lambda: proposed_state,
