@@ -123,6 +123,15 @@ from alberta_framework.core.update_safety import (
     select_transaction,
 )
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -769,11 +778,12 @@ _LEARNER_DEFAULT_HYPERPARAMETERS: dict[str, dict[str, float]] = {
 }
 
 
-def _validated_hyperparameter(name: str, value: object) -> float:
+def _validated_hyperparameter(name: object, value: object) -> float:
     """Validate one JSON override in its exact host and float32 execution domains."""
+    host_name = _require_exact_str("name", name)
     if type(value) not in (int, float):
-        raise ValueError(f"hyperparameter {name!r} must be a finite JSON number")
-    label = f"hyperparameter {name!r}"
+        raise ValueError(f"hyperparameter '{host_name}' must be a finite JSON number")
+    label = f"hyperparameter '{host_name}'"
     if name in {"step_size", "eps"}:
         return validated_float32_scalar(label, value, positive=True)
     if name in {"utility_decay", "beta1", "beta2"}:
@@ -810,7 +820,11 @@ class IPMNISTRunResult:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "learner", _require_nonempty_string("learner", self.learner))
+        if not isinstance(self.hyperparameters, dict):
+            raise TypeError("hyperparameters must be a dict")
         object.__setattr__(self, "seeds", _require_seed_identities(self.seeds, name="seeds"))
+        if type(self.config) is not IPMNISTConfig:
+            raise TypeError("config must be an IPMNISTConfig")
         object.__setattr__(
             self,
             "wall_clock_seconds",
@@ -824,17 +838,18 @@ class IPMNISTRunResult:
 
 
 def resolve_hyperparameters(
-    learner: str, overrides: dict[str, float] | None = None
+    learner: object, overrides: dict[str, float] | None = None
 ) -> dict[str, float]:
     """Merge overrides into the learner's published defaults, rejecting unknown keys."""
-    if learner not in _LEARNER_DEFAULT_HYPERPARAMETERS:
-        raise ValueError(f"unknown learner {learner!r}; expected one of "
+    host_learner = _require_exact_str("learner", learner)
+    if host_learner not in _LEARNER_DEFAULT_HYPERPARAMETERS:
+        raise ValueError(f"unknown learner '{host_learner}'; expected one of "
                          f"{sorted(_LEARNER_DEFAULT_HYPERPARAMETERS)}")
-    merged = dict(_LEARNER_DEFAULT_HYPERPARAMETERS[learner])
+    merged = dict(_LEARNER_DEFAULT_HYPERPARAMETERS[host_learner])
     if overrides:
         unknown = set(overrides) - set(merged)
         if unknown:
-            raise ValueError(f"unknown hyperparameters for {learner}: {sorted(unknown)}")
+            raise ValueError(f"unknown hyperparameters for '{host_learner}': {sorted(unknown)}")
         validated: dict[str, float] = {}
         for name, value in overrides.items():
             validated[name] = _validated_hyperparameter(name, value)
@@ -893,7 +908,8 @@ def run_ipmnist(
     if config is None:
         config = IPMNISTConfig()
     if noise_mode not in ("step", "pool"):
-        raise ValueError(f"noise_mode must be 'step' or 'pool', got {noise_mode!r}")
+        host_noise = _require_exact_str("noise_mode", noise_mode)
+        raise ValueError(f"noise_mode must be 'step' or 'pool', got '{host_noise}'")
     if noise_mode == "pool":
         noise_pool_steps = _require_int32(
             "noise_pool_steps", noise_pool_steps, minimum=2
@@ -1196,7 +1212,8 @@ def _validate_result_set(
         raise ValueError("at least one learner result is required")
     for learner, result in results.items():
         if learner != result.learner:
-            raise ValueError(f"result key {learner!r} does not match payload learner")
+            host_learner3 = _require_exact_str("learner", learner)
+            raise ValueError(f"result key '{host_learner3}' does not match payload learner")
         if result.config != config:
             raise ValueError(f"{learner}: result config does not match artifact config")
         require_unique_jax_seeds(result.seeds, name=f"{learner} seeds")
@@ -1338,9 +1355,10 @@ def partial_payload(result: IPMNISTRunResult) -> dict[str, Any]:
     if len(seeds) != 1:
         raise ValueError("a v2 partial must contain exactly one seed")
     if result.noise_mode != "step":
+        host_nm = _require_exact_str("noise_mode", result.noise_mode)
         raise ValueError(
             "only exact per-step noise results may become v2 shards; got "
-            f"noise_mode={result.noise_mode!r} (screening-only approximation)"
+            f"noise_mode='{host_nm}' (screening-only approximation)"
         )
     return {
         "schema": PARTIAL_SCHEMA,
@@ -1370,7 +1388,8 @@ def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
         parsed: dict[str, object] = {}
         for key, value in pairs:
             if key in parsed:
-                raise ValueError(f"duplicate JSON key: {key!r}")
+                host_key = _require_exact_str("key", key)
+                raise ValueError(f"duplicate JSON key: '{host_key}'")
             parsed[key] = value
         return parsed
 
@@ -1666,7 +1685,8 @@ def main_v2_compat(argv: Sequence[str] | None = None) -> None:
     learners = [name.strip() for name in args.learners.split(",") if name.strip()]
     for name in learners:
         if name not in _LEARNER_FACTORIES:
-            raise SystemExit(f"unknown learner {name!r}")
+            host_name2 = _require_exact_str("name", name)
+            raise SystemExit(f"unknown learner '{host_name2}'")
 
     if args.seed_list is not None:
         raw_seeds = [int(part) for part in args.seed_list.split(",") if part.strip()]

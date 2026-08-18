@@ -87,6 +87,14 @@ _ACTUAL_INT_TYPES = frozenset(
 )
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _require_integer(
     name: str,
     value: object,
@@ -1983,13 +1991,14 @@ StateBuilderConfig = (
 def state_builder_config_from_config(payload: dict[str, Any]) -> StateBuilderConfig:
     """Parse one known state-builder configuration without creating state."""
     builder_type = payload.get("type")
-    if builder_type == "IdentityStateBuilder":
+    host_builder_type = _require_exact_str("payload.type", builder_type)
+    if host_builder_type == "IdentityStateBuilder":
         return IdentityStateBuilderConfig.from_config(payload)
-    if builder_type == "FixedTraceStateBuilder":
+    if host_builder_type == "FixedTraceStateBuilder":
         return FixedTraceStateBuilderConfig.from_config(payload)
-    if builder_type == "OnlineGatedStateBuilder":
+    if host_builder_type == "OnlineGatedStateBuilder":
         return OnlineGatedStateBuilderConfig.from_config(payload)
-    raise ValueError(f"unknown state builder type: {builder_type!r}")
+    raise ValueError(f"unknown state builder type: '{host_builder_type}'")
 
 
 def state_builder_from_config(payload: dict[str, Any]) -> StateBuilder[Any]:

@@ -20,6 +20,7 @@ from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -454,7 +455,7 @@ class AbruptChangeStream:
         new_state = AbruptChangeState(
             key=key,
             true_weights=new_weights,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
 
         return timestep, new_state
@@ -611,7 +612,7 @@ class SuttonExperiment1Stream:
             key=key,
             signs=new_signs,
             wt_irr=wt_irr,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
 
         return timestep, new_state
@@ -722,7 +723,7 @@ class CyclicStream:
         new_state = CyclicState(
             key=key,
             configurations=state.configurations,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
 
         return timestep, new_state
@@ -838,7 +839,7 @@ class PeriodicChangeStream:
             key=key,
             base_weights=state.base_weights,
             phases=state.phases,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
 
         return timestep, new_state
@@ -1170,7 +1171,7 @@ class DynamicScaleShiftStream:
             key=key,
             true_weights=new_weights,
             current_scales=new_scales,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         return timestep, new_state
 
@@ -1313,7 +1314,7 @@ class ScaleDriftStream:
             key=key,
             true_weights=new_weights,
             log_scales=new_log_scales,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         return timestep, new_state
 

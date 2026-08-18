@@ -162,6 +162,27 @@ class OciBuildInputs:
     debian_manifest: Path
     output_context: Path
 
+    def __post_init__(self) -> None:
+        for name in (
+            "source_archive",
+            "dependency_lock",
+            "uv_binary",
+            "uv_cache_archive",
+            "debian_bundle",
+            "debian_manifest",
+            "output_context",
+        ):
+            if not isinstance(getattr(self, name), Path):
+                raise OfficialForagaxOciError(f"{name} must be a Path")
+        _require_sha256(self.source_archive_sha256, label="source_archive_sha256")
+        _require_sha256(self.dependency_lock_sha256, label="dependency_lock_sha256")
+        _require_sha256(self.uv_binary_sha256, label="uv_binary_sha256")
+        _require_sha256(self.uv_cache_archive_sha256, label="uv_cache_archive_sha256")
+        for name in ("source_commit", "source_tree_git_sha1", "base_image"):
+            val = getattr(self, name)
+            if type(val) is not str or not val:
+                raise OfficialForagaxOciError(f"{name} must be a non-empty string")
+
 
 @dataclasses.dataclass(frozen=True)
 class PreparedOciBuild:
@@ -172,6 +193,15 @@ class PreparedOciBuild:
     build_spec_sha256: str
     dockerfile_sha256: str
     launcher_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.context, Path):
+            raise OfficialForagaxOciError("context must be a Path")
+        if not isinstance(self.build_spec, Mapping):
+            raise OfficialForagaxOciError("build_spec must be a mapping")
+        _require_sha256(self.build_spec_sha256, label="build_spec_sha256")
+        _require_sha256(self.dockerfile_sha256, label="dockerfile_sha256")
+        _require_sha256(self.launcher_sha256, label="launcher_sha256")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -184,6 +214,20 @@ class DriverLaunchContract:
     device_indices: tuple[int, ...]
     cuda_wheel_library_paths: tuple[str, ...]
     driver_user_library_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.driver_host_path) is not str or not self.driver_host_path:
+            raise OfficialForagaxOciError("driver_host_path must be a non-empty string")
+        if type(self.driver_container_path) is not str or not self.driver_container_path:
+            raise OfficialForagaxOciError("driver_container_path must be a non-empty string")
+        for name in (
+            "device_paths",
+            "device_indices",
+            "cuda_wheel_library_paths",
+            "driver_user_library_paths",
+        ):
+            if type(getattr(self, name)) is not tuple:
+                raise OfficialForagaxOciError(f"{name} must be an exact tuple")
 
 
 def _canonical_json_bytes(value: Any, *, newline: bool = False) -> bytes:
@@ -218,24 +262,36 @@ def _require_sha256(value: Any, *, label: str) -> str:
     return value
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise OfficialForagaxOciError("name must be an exact string")
+    if type(value) is not str:
+        raise OfficialForagaxOciError(f"{name} must be an exact string")
+    return value
+
+
 def _strict_json_bytes(contents: bytes, *, label: str) -> Any:
+    host_label = _require_exact_str("label", label)
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in items:
-            if key in result:
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
                 raise OfficialForagaxOciError(
-                    f"{label} repeats object key {key!r}"
+                    f"{host_label} repeats object key"
                 )
-            result[key] = value
+            result[host_key] = value
         return result
 
     def constant(value: str) -> Any:
+        _require_exact_str("value", value)
         raise OfficialForagaxOciError(
-            f"{label} contains non-finite constant {value}"
+            f"{host_label} contains non-finite constant"
         )
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
             raise OfficialForagaxOciError(
                 f"{label} contains non-finite JSON number {value}"

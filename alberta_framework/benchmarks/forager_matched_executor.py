@@ -245,6 +245,38 @@ class PreparedCandidate:
     capability_receipt_sha256: str
     source_inventory: Mapping[str, Any]
 
+    def __post_init__(self) -> None:
+        if type(self.candidate) is not MatchedCandidate:
+            raise ForagerMatchedExecutorError(
+                "candidate must be a MatchedCandidate"
+            )
+        for name, value in (
+            ("source_root", self.source_root),
+            ("source_archive", self.source_archive),
+            ("original_configuration", self.original_configuration),
+            ("configuration", self.configuration),
+        ):
+            if not isinstance(value, Path):
+                raise ForagerMatchedExecutorError(f"candidate {name} must be a Path")
+        _string(self.entrypoint_path, "entrypoint_path")
+        _string(self.python_import_root, "python_import_root")
+        _string(self.result_root, "result_root")
+        if self.invocation_style not in (
+            "official_foragax_continuing_main_v4",
+            "official_foragax_ppo_frozen_updates_v1",
+            "alberta_single_seed_v1",
+        ):
+            raise ForagerMatchedExecutorError(
+                "invocation_style must be 'module_entrypoint' or 'inline_command'"
+            )
+        if self.rng_isolation_patch_sha256 is not None:
+            _sha256(self.rng_isolation_patch_sha256, "rng_isolation_patch_sha256")
+        if not isinstance(self.capability_receipt, Mapping):
+            raise ForagerMatchedExecutorError("capability_receipt must be a mapping")
+        _sha256(self.capability_receipt_sha256, "capability_receipt_sha256")
+        if not isinstance(self.source_inventory, Mapping):
+            raise ForagerMatchedExecutorError("source_inventory must be a mapping")
+
 
 @dataclass(frozen=True, slots=True)
 class MatchedExecutionPlan:
@@ -658,6 +690,16 @@ class LiveRuntimeIdentity:
     version: Mapping[str, Any]
     image_inspection: Mapping[str, Any]
     executor_manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.executable, Path):
+            raise ForagerMatchedExecutorError("executable must be a Path")
+        _sha256(self.executable_sha256, "executable_sha256")
+        if not isinstance(self.version, Mapping):
+            raise ForagerMatchedExecutorError("version must be a mapping")
+        if not isinstance(self.image_inspection, Mapping):
+            raise ForagerMatchedExecutorError("image_inspection must be a mapping")
+        _sha256(self.executor_manifest_sha256, "executor_manifest_sha256")
 
     @property
     def unsigned_dict(self) -> dict[str, Any]:

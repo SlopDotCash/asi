@@ -216,6 +216,19 @@ class OfficialForagaxValidationError(ValueError):
     """Raised when provenance or artifact verification fails closed."""
 
 
+def _require_string(value: Any, *, label: str) -> str:
+    if type(value) is not str or not value:
+        raise OfficialForagaxValidationError(f"{label} must be a non-empty string")
+    return value
+
+
+def _require_sha256(value: Any, *, label: str) -> str:
+    result = _require_string(value, label=label)
+    if _SHA256_PATTERN.fullmatch(result) is None:
+        raise OfficialForagaxValidationError(f"{label} must be a lowercase SHA-256")
+    return result
+
+
 @dataclass(frozen=True)
 class OfficialForagaxRunRequest:
     """Inputs for one official seed/index execution.
@@ -415,6 +428,20 @@ class OfficialForagaxRunPlan:
     config_snapshot_bytes: bytes = dataclasses.field(repr=False)
     execution_config_bytes: bytes = dataclasses.field(repr=False)
 
+    def __post_init__(self) -> None:
+        if type(self.request) is not OfficialForagaxRunRequest:
+            raise TypeError("request must be an OfficialForagaxRunRequest")
+        _require_sha256(self.interpreter_sha256, label="interpreter_sha256")
+        _require_sha256(self.package_freeze_sha256, label="package_freeze_sha256")
+        if not isinstance(self.command, tuple):
+            raise TypeError("command must be a tuple")
+        if not isinstance(self.package_freeze, tuple):
+            raise TypeError("package_freeze must be a tuple")
+        if not isinstance(self.config_snapshot_bytes, (bytes, bytearray)):
+            raise TypeError("config_snapshot_bytes must be bytes")
+        if not isinstance(self.execution_config_bytes, (bytes, bytearray)):
+            raise TypeError("execution_config_bytes must be bytes")
+
     @property
     def output_dir(self) -> Path:
         return _absolute_without_resolving_symlinks(self.request.output_dir)
@@ -476,6 +503,20 @@ class OfficialForagaxBatchRunPlan:
     runtime: Mapping[str, Any]
     config_snapshot_bytes: bytes = dataclasses.field(repr=False)
     execution_config_bytes: bytes = dataclasses.field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not OfficialForagaxBatchRunRequest:
+            raise TypeError("request must be an OfficialForagaxBatchRunRequest")
+        _require_sha256(self.interpreter_sha256, label="interpreter_sha256")
+        _require_sha256(self.package_freeze_sha256, label="package_freeze_sha256")
+        if not isinstance(self.command, tuple):
+            raise TypeError("command must be a tuple")
+        if not isinstance(self.package_freeze, tuple):
+            raise TypeError("package_freeze must be a tuple")
+        if not isinstance(self.config_snapshot_bytes, (bytes, bytearray)):
+            raise TypeError("config_snapshot_bytes must be bytes")
+        if not isinstance(self.execution_config_bytes, (bytes, bytearray)):
+            raise TypeError("execution_config_bytes must be bytes")
 
     @property
     def output_dir(self) -> Path:
@@ -540,6 +581,23 @@ class VerifiedOfficialForagaxEvidence:
     endorsement_descriptor_sha256: str
     endorsement_sha256: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        _require_sha256(self.manifest_sha256, label="manifest_sha256")
+        if self.manifest_kind not in ("official_foragax_single", "official_foragax_batch"):
+            raise OfficialForagaxValidationError(
+                "manifest_kind must be 'official_foragax_single' or 'official_foragax_batch'"
+            )
+        _require_string(self.trust_descriptor_id, label="trust_descriptor_id")
+        _require_sha256(self.trust_descriptor_sha256, label="trust_descriptor_sha256")
+        _require_string(self.profile_id, label="profile_id")
+        _require_sha256(self.profile_sha256, label="profile_sha256")
+        _require_sha256(self.artifact_identities_sha256, label="artifact_identities_sha256")
+        _require_string(self.endorsement_descriptor_id, label="endorsement_descriptor_id")
+        _require_sha256(self.endorsement_descriptor_sha256, label="endorsement_descriptor_sha256")
+        _require_sha256(self.endorsement_sha256, label="endorsement_sha256")
+
 
 @dataclass(frozen=True)
 class VerifiedOfficialForagaxManifest:
@@ -549,6 +607,20 @@ class VerifiedOfficialForagaxManifest:
     artifact_path: Path
     manifest: Mapping[str, Any]
     evidence: VerifiedOfficialForagaxEvidence | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if not isinstance(self.artifact_path, Path):
+            raise OfficialForagaxValidationError("artifact_path must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        if self.evidence is not None and not isinstance(
+            self.evidence, VerifiedOfficialForagaxEvidence
+        ):
+            raise OfficialForagaxValidationError(
+                "evidence must be a VerifiedOfficialForagaxEvidence or None"
+            )
 
 
 @dataclass(frozen=True)
@@ -560,6 +632,15 @@ class OfficialForagaxRun:
     manifest: Mapping[str, Any]
     resumed: bool
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if not isinstance(self.artifact_path, Path):
+            raise OfficialForagaxValidationError("artifact_path must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        _require_bool(self.resumed, label="resumed")
+
 
 @dataclass(frozen=True)
 class VerifiedOfficialForagaxBatchManifest:
@@ -570,6 +651,24 @@ class VerifiedOfficialForagaxBatchManifest:
     manifest: Mapping[str, Any]
     evidence: VerifiedOfficialForagaxEvidence | None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if type(self.artifact_paths) is not tuple or not all(
+            isinstance(p, Path) for p in self.artifact_paths
+        ):
+            raise OfficialForagaxValidationError(
+                "artifact_paths must be a tuple of Path instances"
+            )
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        if self.evidence is not None and not isinstance(
+            self.evidence, VerifiedOfficialForagaxEvidence
+        ):
+            raise OfficialForagaxValidationError(
+                "evidence must be a VerifiedOfficialForagaxEvidence or None"
+            )
+
 
 @dataclass(frozen=True)
 class OfficialForagaxBatchRun:
@@ -579,6 +678,19 @@ class OfficialForagaxBatchRun:
     artifact_paths: tuple[Path, ...]
     manifest: Mapping[str, Any]
     resumed: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if type(self.artifact_paths) is not tuple or not all(
+            isinstance(p, Path) for p in self.artifact_paths
+        ):
+            raise OfficialForagaxValidationError(
+                "artifact_paths must be a tuple of Path instances"
+            )
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        _require_bool(self.resumed, label="resumed")
 
 
 def _absolute_without_resolving_symlinks(path: Path) -> Path:
@@ -1261,19 +1373,6 @@ def _expect_exact_keys(
         raise OfficialForagaxValidationError(
             f"{label} has an unexpected schema: missing={missing}, extra={extra}"
         )
-
-
-def _require_string(value: Any, *, label: str) -> str:
-    if type(value) is not str or not value:
-        raise OfficialForagaxValidationError(f"{label} must be a non-empty string")
-    return value
-
-
-def _require_sha256(value: Any, *, label: str) -> str:
-    result = _require_string(value, label=label)
-    if _SHA256_PATTERN.fullmatch(result) is None:
-        raise OfficialForagaxValidationError(f"{label} must be a lowercase SHA-256")
-    return result
 
 
 def _require_git_sha1(value: Any, *, label: str) -> str:
@@ -4930,6 +5029,18 @@ def _classify_official_foragax_agent_access(
     registry: Mapping[str, str],
 ) -> dict[str, Any]:
     """Classify scientific identity and information access, failing closed."""
+    def finite_json_number(value: object) -> bool:
+        # Resolved hyperparameters have already crossed the canonical-JSON
+        # boundary.  Keep this check total even for arbitrarily large JSON
+        # integers: ``math.isfinite`` converts integers through binary64 and
+        # raises ``OverflowError`` for values such as ``10**1000``.
+        if type(value) not in (int, float):
+            return False
+        try:
+            return math.isfinite(cast(int | float, value))
+        except (OverflowError, TypeError, ValueError):
+            return False
+
     registry_class = registry["class"]
     if registry_class in _LEARNING_REGISTRY_CLASSES:
         method_family = "learning"
@@ -4968,10 +5079,7 @@ def _classify_official_foragax_agent_access(
         and isinstance(use_sinusoidal_encoding, bool)
         and isinstance(channel_priorities, dict)
         and all(isinstance(key, str) for key in channel_priorities)
-        and all(
-            isinstance(priority, (int, float)) and not isinstance(priority, bool)
-            for priority in channel_priorities.values()
-        )
+        and all(finite_json_number(priority) for priority in channel_priorities.values())
     )
     aperture_size = semantic_environment.get("aperture_size")
     observation_type = semantic_environment.get("observation_type")

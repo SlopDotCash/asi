@@ -145,6 +145,14 @@ class ForagerRngParityError(ValueError):
     """The fixed-action parity contract or an executor trace is invalid."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ForagerRngParityError("name must be an exact string")
+    if type(value) is not str:
+        raise ForagerRngParityError(f"{name} must be an exact string")
+    return value
+
+
 class ForagerRngParityMismatchError(ForagerRngParityError):
     """The exact wrapper and direct environment traces differ."""
 
@@ -291,6 +299,23 @@ class TransitionDigest:
     info: TreeDigest
     state: TreeDigest
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "index",
+            _require_int(self.index, "transition.index", minimum=0, maximum=MAX_ACTIONS),
+        )
+        object.__setattr__(
+            self,
+            "action",
+            _require_int(self.action, "transition.action", minimum=0, maximum=3),
+        )
+        if not isinstance(self.keys, KeyFrame):
+            raise ForagerRngParityError("keys must be a KeyFrame")
+        for name in ("observation", "reward", "done", "info", "state"):
+            if not isinstance(getattr(self, name), TreeDigest):
+                raise ForagerRngParityError(f"{name} must be a TreeDigest")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "index": self.index,
@@ -315,6 +340,34 @@ class EnvironmentTraceDigest:
     reset_state: TreeDigest
     transitions: tuple[TransitionDigest, ...]
     trace_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "seed",
+            _require_int(self.seed, "trace.seed", minimum=0, maximum=MAX_SEED),
+        )
+        object.__setattr__(
+            self,
+            "action_sequence_sha256",
+            _require_sha256(self.action_sequence_sha256, "trace.action_sequence_sha256"),
+        )
+        if not isinstance(self.reset_keys, KeyFrame):
+            raise ForagerRngParityError("reset_keys must be a KeyFrame")
+        if not isinstance(self.reset_observation, TreeDigest):
+            raise ForagerRngParityError("reset_observation must be a TreeDigest")
+        if not isinstance(self.reset_state, TreeDigest):
+            raise ForagerRngParityError("reset_state must be a TreeDigest")
+        if type(self.transitions) is not tuple or not all(
+            isinstance(t, TransitionDigest) for t in self.transitions
+        ):
+            raise ForagerRngParityError("transitions must be a tuple of TransitionDigest")
+        if self.trace_sha256:
+            object.__setattr__(
+                self,
+                "trace_sha256",
+                _require_sha256(self.trace_sha256, "trace.trace_sha256"),
+            )
 
     def unsigned_dict(self) -> dict[str, Any]:
         return {
@@ -408,6 +461,30 @@ class ParityProbeResult:
     direct_trace_sha256: str
     payload_sha256: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.runtime, VerifiedRuntimeIdentity):
+            raise ForagerRngParityError("runtime must be a VerifiedRuntimeIdentity")
+        if not isinstance(self.config, FixedActionProbeConfig):
+            raise ForagerRngParityError("config must be a FixedActionProbeConfig")
+        if not isinstance(self.matched_trace, EnvironmentTraceDigest):
+            raise ForagerRngParityError("matched_trace must be an EnvironmentTraceDigest")
+        object.__setattr__(
+            self,
+            "wrapper_trace_sha256",
+            _require_sha256(self.wrapper_trace_sha256, "wrapper_trace_sha256"),
+        )
+        object.__setattr__(
+            self,
+            "direct_trace_sha256",
+            _require_sha256(self.direct_trace_sha256, "direct_trace_sha256"),
+        )
+        if self.payload_sha256:
+            object.__setattr__(
+                self,
+                "payload_sha256",
+                _require_sha256(self.payload_sha256, "payload_sha256"),
+            )
+
     def unsigned_dict(self) -> dict[str, Any]:
         return {
             "schema_version": PARITY_RESULT_SCHEMA_VERSION,
@@ -446,6 +523,22 @@ class ParityCollectorResult:
     trace: EnvironmentTraceDigest
     payload_sha256: str
 
+    def __post_init__(self) -> None:
+        if self.collector not in ("wrapper", "direct"):
+            raise ForagerRngParityError("collector must be 'wrapper' or 'direct'")
+        if not isinstance(self.runtime, VerifiedRuntimeIdentity):
+            raise ForagerRngParityError("runtime must be a VerifiedRuntimeIdentity")
+        if not isinstance(self.config, FixedActionProbeConfig):
+            raise ForagerRngParityError("config must be a FixedActionProbeConfig")
+        if not isinstance(self.trace, EnvironmentTraceDigest):
+            raise ForagerRngParityError("trace must be an EnvironmentTraceDigest")
+        if self.payload_sha256:
+            object.__setattr__(
+                self,
+                "payload_sha256",
+                _require_sha256(self.payload_sha256, "payload_sha256"),
+            )
+
     def unsigned_dict(self) -> dict[str, Any]:
         return {
             "schema_version": COLLECTOR_RESULT_SCHEMA_VERSION,
@@ -473,20 +566,23 @@ class ParityCollectorResult:
 def _duplicate_free_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
-        if key in result:
-            raise ForagerRngParityError(f"duplicate JSON object key {key!r}")
+        host_key = _require_exact_str("key", key)
+        if host_key in result:
+            raise ForagerRngParityError("duplicate JSON object key")
         result[key] = value
     return result
 
 
 def _reject_nonfinite(token: str) -> Any:
-    raise ForagerRngParityError(f"non-finite JSON number {token!r} is forbidden")
+    _require_exact_str("token", token)
+    raise ForagerRngParityError("non-finite JSON number is forbidden")
 
 
 def _parse_json_float(token: str) -> float:
-    value = float(token)
+    host_token = _require_exact_str("token", token)
+    value = float(host_token)
     if not math.isfinite(value):
-        raise ForagerRngParityError(f"non-finite JSON number {token!r} is forbidden")
+        raise ForagerRngParityError("non-finite JSON number is forbidden")
     return value
 
 
@@ -702,7 +798,8 @@ def _path_component(value: Any) -> list[Any]:
             "flattened_index",
             _require_int(value.key, "pytree flattened index", minimum=0, maximum=2**31 - 1),
         ]
-    raise ForagerRngParityError(f"unsupported pytree path entry {name!r}")
+    host_name = _require_exact_str("name", name)
+    raise ForagerRngParityError(f"unsupported pytree path entry '{host_name}'")
 
 
 def _canonical_array(leaf: Any, path: str) -> tuple[dict[str, Any], str]:
@@ -1419,7 +1516,8 @@ def _require_loaded_modules_under(prefix: str, root: Path) -> None:
         _require_trusted_module_origin(module, root, label=name)
         matched = True
     if not matched:
-        raise ForagerRngParityError(f"trusted module prefix {prefix!r} was not loaded")
+        host_prefix = _require_exact_str("prefix", prefix)
+        raise ForagerRngParityError(f"trusted module prefix '{host_prefix}' was not loaded")
 
 
 def collect_verified_runtime_identity() -> VerifiedRuntimeIdentity:

@@ -1945,6 +1945,25 @@ class MicroTaskConfig:
     hidden2: int
     crop: bool
 
+    def __post_init__(self) -> None:
+        _require_nonempty_string(self.name, context="MicroTaskConfig.name")
+        _require_nonempty_string(self.kind, context="MicroTaskConfig.kind")
+        if self.role not in ("search", "holdout"):
+            raise ValueError("MicroTaskConfig.role must be 'search' or 'holdout'")
+        for field_name in (
+            "input_dim",
+            "n_classes",
+            "n_tasks",
+            "task_length",
+            "hidden1",
+            "hidden2",
+        ):
+            val = getattr(self, field_name)
+            if type(val) is not int or val <= 0:
+                raise ValueError(f"MicroTaskConfig.{field_name} must be a positive integer")
+        if type(self.crop) is not bool:
+            raise ValueError("MicroTaskConfig.crop must be a boolean")
+
 
 MICRO_SUITE: dict[str, MicroTaskConfig] = {
     "M1": MicroTaskConfig(
@@ -1992,6 +2011,19 @@ class MicroStream:
     example_indices: np.ndarray
     config: MicroTaskConfig
     seed: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.xs, np.ndarray):
+            raise TypeError("MicroStream.xs must be a numpy ndarray")
+        if not isinstance(self.ys, np.ndarray):
+            raise TypeError("MicroStream.ys must be a numpy ndarray")
+        if not isinstance(self.example_indices, np.ndarray):
+            raise TypeError("MicroStream.example_indices must be a numpy ndarray")
+        if type(self.config) is not MicroTaskConfig:
+            raise TypeError("MicroStream.config must be a MicroTaskConfig")
+        object.__setattr__(
+            self, "seed", require_jax_seed(self.seed, name="MicroStream.seed")
+        )
 
 
 @lru_cache(maxsize=2)

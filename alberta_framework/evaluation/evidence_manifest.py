@@ -387,6 +387,16 @@ class _HistoricalIAChainValidation:
     artifacts: tuple[dict[str, object], ...]
     record: dict[str, object]
 
+    def __post_init__(self) -> None:
+        if type(self.valid) is not bool:
+            raise ValueError("valid must be a boolean")
+        if type(self.errors) is not tuple or not all(isinstance(e, str) for e in self.errors):
+            raise ValueError("errors must be a tuple of strings")
+        if type(self.artifacts) is not tuple:
+            raise ValueError("artifacts must be a tuple")
+        if type(self.record) is not dict:
+            raise ValueError("record must be a dict")
+
 
 @dataclass(frozen=True)
 class _HistoricalFTLChainValidation:
@@ -397,6 +407,18 @@ class _HistoricalFTLChainValidation:
     errors: tuple[str, ...]
     artifacts: tuple[dict[str, object], ...]
     record: dict[str, object]
+
+    def __post_init__(self) -> None:
+        if type(self.valid) is not bool:
+            raise ValueError("valid must be a boolean")
+        if type(self.accepted) is not bool:
+            raise ValueError("accepted must be a boolean")
+        if type(self.errors) is not tuple or not all(isinstance(e, str) for e in self.errors):
+            raise ValueError("errors must be a tuple of strings")
+        if type(self.artifacts) is not tuple:
+            raise ValueError("artifacts must be a tuple")
+        if type(self.record) is not dict:
+            raise ValueError("record must be a dict")
 
 
 def _required_mapping(

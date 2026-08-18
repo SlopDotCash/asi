@@ -2300,6 +2300,39 @@ class ForagerPairedComparison:
     ci_high: float
     confidence: float
 
+    def __post_init__(self) -> None:
+        if type(self.candidate) is not str or not self.candidate:
+            raise ValueError("candidate must be a non-empty string")
+        if type(self.baseline) is not str or not self.baseline:
+            raise ValueError("baseline must be a non-empty string")
+        if type(self.candidate_privileged) is not bool:
+            raise TypeError("candidate_privileged must be an exact boolean")
+        if type(self.baseline_privileged) is not bool:
+            raise TypeError("baseline_privileged must be an exact boolean")
+        if self.metric not in (
+            "mean_reward",
+            "final_window_mean_reward",
+            "final_ewm_reward",
+            "mean_ewm_reward",
+            "fov_last_10pct_ema_auc",
+        ):
+            raise ValueError(f"metric {self.metric!r} is not a valid ForagerMetric")
+        if type(self.seeds) is not tuple:
+            raise TypeError("seeds must be an exact tuple")
+        if not self.seeds:
+            raise ValueError("seeds must not be empty")
+        for seed in self.seeds:
+            if type(seed) is not int or isinstance(seed, bool):
+                raise TypeError("seeds must contain integers")
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("seeds must be unique")
+        for name in ("mean_difference", "ci_low", "ci_high"):
+            val = getattr(self, name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(f"{name} must be a finite float")
+        if not isinstance(self.confidence, (int, float)) or not (0.0 < self.confidence < 1.0):
+            raise ValueError("confidence must be a probability in (0, 1)")
+
     def to_dict(self) -> dict[str, Any]:
         data = dataclasses.asdict(self)
         data["seeds"] = list(self.seeds)
@@ -2441,6 +2474,34 @@ class ForagerComparisonReport:
     summaries: Mapping[str, ForagerBenchmarkSummary]
     paired_comparisons: tuple[ForagerPairedComparison, ...]
     unpaired_methods: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.candidate) is not str or not self.candidate:
+            raise ValueError("candidate must be a non-empty string")
+        if self.metric not in (
+            "mean_reward",
+            "final_window_mean_reward",
+            "final_ewm_reward",
+            "mean_ewm_reward",
+            "fov_last_10pct_ema_auc",
+        ):
+            raise ValueError(f"metric {self.metric!r} is not a valid ForagerMetric")
+        if not isinstance(self.summaries, Mapping):
+            raise TypeError("summaries must be a mapping")
+        for name, summary in self.summaries.items():
+            if type(name) is not str or not name:
+                raise ValueError("summary names must be non-empty strings")
+            if type(summary) is not ForagerBenchmarkSummary:
+                raise TypeError("summaries must contain ForagerBenchmarkSummary instances")
+        if type(self.paired_comparisons) is not tuple:
+            raise TypeError("paired_comparisons must be an exact tuple")
+        if any(type(comp) is not ForagerPairedComparison for comp in self.paired_comparisons):
+            raise TypeError("paired_comparisons must contain ForagerPairedComparison instances")
+        if type(self.unpaired_methods) is not tuple:
+            raise TypeError("unpaired_methods must be an exact tuple")
+        for method in self.unpaired_methods:
+            if type(method) is not str or not method:
+                raise ValueError("unpaired_methods must contain non-empty strings")
 
     def to_dict(self) -> dict[str, Any]:
         return {

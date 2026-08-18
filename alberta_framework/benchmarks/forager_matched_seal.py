@@ -106,6 +106,33 @@ class ContentVerifiedSealBundle:
     sealed_transition: Mapping[str, Any]
     sealed_transition_sha256: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_root, Path):
+            raise ForagerMatchedSealError("output_root must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise ForagerMatchedSealError("manifest must be a Mapping")
+        if not isinstance(self.open_protocol, protocol.ForagerMatchedProtocol):
+            raise ForagerMatchedSealError("open_protocol must be a ForagerMatchedProtocol")
+        if not isinstance(self.open_score_evidence, evidence.MatchedScoreEvidence):
+            raise ForagerMatchedSealError("open_score_evidence must be a MatchedScoreEvidence")
+        if not isinstance(self.open_verification_request, executor.VerificationRequest):
+            raise ForagerMatchedSealError(
+                "open_verification_request must be a VerificationRequest"
+            )
+        if not isinstance(self.recorded_bindings_cache, Mapping):
+            raise ForagerMatchedSealError("recorded_bindings_cache must be a Mapping")
+        if not isinstance(self.selection_result, protocol.ForagerMatchedSelectionResult):
+            raise ForagerMatchedSealError(
+                "selection_result must be a ForagerMatchedSelectionResult"
+            )
+        if not isinstance(self.selection_report, Mapping):
+            raise ForagerMatchedSealError("selection_report must be a Mapping")
+        if not isinstance(self.sealed_protocol, protocol.ForagerMatchedProtocol):
+            raise ForagerMatchedSealError("sealed_protocol must be a ForagerMatchedProtocol")
+        if not isinstance(self.sealed_transition, Mapping):
+            raise ForagerMatchedSealError("sealed_transition must be a Mapping")
+        _require_sha256(self.sealed_transition_sha256, "sealed_transition_sha256")
+
 
 @dataclass(frozen=True, slots=True)
 class _OpenDirectory:
@@ -114,6 +141,14 @@ class _OpenDirectory:
     path: Path
     descriptor: int
     inode_identity: tuple[int, int, int]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.path, Path):
+            raise ForagerMatchedSealError("path must be a Path")
+        if type(self.descriptor) is not int or self.descriptor < 0:
+            raise ForagerMatchedSealError("descriptor must be a non-negative int")
+        if type(self.inode_identity) is not tuple or len(self.inode_identity) != 3:
+            raise ForagerMatchedSealError("inode_identity must be a 3-element tuple")
 
 
 def _plain(value: Any) -> Any:

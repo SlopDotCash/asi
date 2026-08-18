@@ -279,6 +279,50 @@ class ContentVerifiedFinalAnalysisBundle:
     contract: statistics.MatchedComparisonContract
     result: statistics.MatchedComparisonResult
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_root, Path):
+            raise ForagerMatchedFinalAnalysisError("output_root must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise ForagerMatchedFinalAnalysisError("manifest must be a Mapping")
+        if not isinstance(self.seal_content, seal.ContentVerifiedSealBundle):
+            raise ForagerMatchedFinalAnalysisError(
+                "seal_content must be a ContentVerifiedSealBundle"
+            )
+        if not isinstance(self.evaluation_score_evidence, evidence.MatchedScoreEvidence):
+            raise ForagerMatchedFinalAnalysisError(
+                "evaluation_score_evidence must be a MatchedScoreEvidence"
+            )
+        if not isinstance(
+            self.evaluation_verification_request, executor.VerificationRequest
+        ):
+            raise ForagerMatchedFinalAnalysisError(
+                "evaluation_verification_request must be a VerificationRequest"
+            )
+        if not isinstance(
+            self.open_bindings_cache, evidence.AuthenticatedEvidenceBindings
+        ):
+            raise ForagerMatchedFinalAnalysisError(
+                "open_bindings_cache must be an AuthenticatedEvidenceBindings"
+            )
+        if not isinstance(
+            self.evaluation_bindings_cache, evidence.AuthenticatedEvidenceBindings
+        ):
+            raise ForagerMatchedFinalAnalysisError(
+                "evaluation_bindings_cache must be an AuthenticatedEvidenceBindings"
+            )
+        if not isinstance(self.analysis_runtime_source, Mapping):
+            raise ForagerMatchedFinalAnalysisError(
+                "analysis_runtime_source must be a Mapping"
+            )
+        if not isinstance(self.contract, statistics.MatchedComparisonContract):
+            raise ForagerMatchedFinalAnalysisError(
+                "contract must be a MatchedComparisonContract"
+            )
+        if not isinstance(self.result, statistics.MatchedComparisonResult):
+            raise ForagerMatchedFinalAnalysisError(
+                "result must be a MatchedComparisonResult"
+            )
+
 
 @dataclass(frozen=True, slots=True)
 class FreshFinalAnalysisBindings:
@@ -286,6 +330,18 @@ class FreshFinalAnalysisBindings:
 
     open_bindings: evidence.AuthenticatedEvidenceBindings
     evaluation_bindings: evidence.AuthenticatedEvidenceBindings
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.open_bindings, evidence.AuthenticatedEvidenceBindings):
+            raise ForagerMatchedFinalAnalysisError(
+                "open_bindings must be an AuthenticatedEvidenceBindings"
+            )
+        if not isinstance(
+            self.evaluation_bindings, evidence.AuthenticatedEvidenceBindings
+        ):
+            raise ForagerMatchedFinalAnalysisError(
+                "evaluation_bindings must be an AuthenticatedEvidenceBindings"
+            )
 
 
 @dataclass(frozen=True, slots=True)

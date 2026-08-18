@@ -20,6 +20,14 @@ from typing import Any
 
 import numpy as np
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
 REFERENCE_AGENT_API_VERSION = "asi.reference_agent.preview1"
 REFERENCE_AGENT_MANIFEST_SCHEMA = "asi.reference_agent_manifest.preview1"
 REFERENCE_TRANSACTION_STATE_SCHEMA = "asi.reference_transaction_state.preview1"
@@ -188,10 +196,11 @@ class ArrayValue:
 
     def __post_init__(self) -> None:
         _require_safe_id(self.semantic_id, name="semantic_id")
+        host_dtype = _require_exact_str("dtype", self.dtype)
         try:
-            dtype = np.dtype(self.dtype)
+            dtype = np.dtype(host_dtype)
         except TypeError as exc:
-            raise ValueError(f"unsupported dtype {self.dtype!r}") from exc
+            raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES or dtype.name != self.dtype:
             raise ValueError("ArrayValue dtype must be a portable canonical numeric dtype")
         if not isinstance(self.shape, tuple) or any(
@@ -260,14 +269,16 @@ class SpaceSpec:
             for dimension in self.shape
         ):
             raise ValueError("shape must be a tuple of positive integer dimensions or ()")
+        host_dtype = _require_exact_str("dtype", self.dtype)
         try:
-            dtype = np.dtype(self.dtype)
+            dtype = np.dtype(host_dtype)
         except TypeError as exc:
-            raise ValueError(f"unsupported dtype {self.dtype!r}") from exc
+            raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES:
             raise ValueError("dtype must be a supported portable floating-point or integer dtype")
         if dtype.name != self.dtype:
-            raise ValueError(f"dtype must use canonical spelling {dtype.name!r}")
+            host_canonical = _require_exact_str("dtype.name", dtype.name)
+            raise ValueError(f"dtype must use canonical spelling '{host_canonical}'")
         if len(self.shape) > _MAX_ARRAY_RANK:
             raise ValueError(f"space rank must be <= {_MAX_ARRAY_RANK}")
         if _shape_size(self.shape) > _MAX_ARRAY_ELEMENTS:
@@ -492,8 +503,10 @@ class AgentManifest:
 
     def __post_init__(self) -> None:
         if self.schema != REFERENCE_AGENT_MANIFEST_SCHEMA:
+            host_schema = _require_exact_str("schema", self.schema)
+            host_expected = _require_exact_str("expected_schema", REFERENCE_AGENT_MANIFEST_SCHEMA)
             raise ValueError(
-                f"schema must be {REFERENCE_AGENT_MANIFEST_SCHEMA!r}, got {self.schema!r}"
+                f"schema must be '{host_expected}', got '{host_schema}'"
             )
         _require_safe_id(self.implementation_id, name="implementation_id")
         _require_safe_id(self.state_schema, name="state_schema")
@@ -646,7 +659,8 @@ class Decision:
             )
         expected_id = f"{self.lifecycle_id}:{self.decision_index}"
         if self.decision_id != expected_id:
-            raise ValueError(f"decision_id must use canonical value {expected_id!r}")
+            host_expected = _require_exact_str("expected_id", expected_id)
+            raise ValueError(f"decision_id must use canonical value '{host_expected}'")
         _require_safe_id(self.decision_id, name="decision_id")
         _require_safe_id(self.observation_id, name="observation_id")
         if not isinstance(self.observation, ArrayValue):
@@ -704,7 +718,8 @@ class DispatchAuthorization:
         _require_safe_id(self.authorization_id, name="authorization_id")
         expected_id = f"{self.decision.decision_id}:authorization"
         if self.authorization_id != expected_id:
-            raise ValueError(f"authorization_id must use canonical value {expected_id!r}")
+            host_expected = _require_exact_str("expected_id", expected_id)
+            raise ValueError(f"authorization_id must use canonical value '{host_expected}'")
         if self.status is AuthorizationStatus.VETOED:
             if self.authorized_action is not None:
                 raise ValueError("vetoed authorization cannot carry an action")
@@ -752,7 +767,8 @@ class DispatchAck:
         _require_safe_id(self.settlement_id, name="settlement_id")
         expected_id = f"{self.decision_id}:settlement"
         if self.settlement_id != expected_id:
-            raise ValueError(f"settlement_id must use canonical value {expected_id!r}")
+            host_expected = _require_exact_str("expected_id", expected_id)
+            raise ValueError(f"settlement_id must use canonical value '{host_expected}'")
         assert self.authorization.authorized_action is not None
         if self.effective_action != self.authorization.authorized_action:
             raise ValueError("settlement action must equal the independently authorized action")
@@ -794,7 +810,8 @@ class DispatchReceipt:
         _require_safe_id(self.executor_id, name="executor_id")
         expected_id = f"{self.decision.decision_id}:receipt"
         if self.receipt_id != expected_id:
-            raise ValueError(f"receipt_id must use canonical value {expected_id!r}")
+            host_expected = _require_exact_str("expected_id", expected_id)
+            raise ValueError(f"receipt_id must use canonical value '{host_expected}'")
 
     @property
     def effective_action(self) -> ArrayValue:

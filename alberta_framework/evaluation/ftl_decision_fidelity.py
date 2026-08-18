@@ -341,6 +341,13 @@ class SeedDecisionResult:
     seed: int
     metrics: tuple[DecisionMetrics, ...]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "seed", _require_int32("seed", self.seed, minimum=0))
+        if not isinstance(self.metrics, tuple) or not all(
+            isinstance(m, DecisionMetrics) for m in self.metrics
+        ):
+            raise ValueError("metrics must be a tuple of DecisionMetrics")
+
 
 @dataclass(frozen=True)
 class BootstrapEstimate:
@@ -392,6 +399,22 @@ class ConditionAggregate:
     return_mae: BootstrapEstimate
     normalized_return_mae: BootstrapEstimate
 
+    def __post_init__(self) -> None:
+        if type(self.condition) is not str or not self.condition:
+            raise ValueError("condition must be a non-empty string")
+        for name in (
+            "normalized_regret",
+            "domain_a_normalized_regret",
+            "domain_b_normalized_regret",
+            "oracle_pick_rate",
+            "reward_mae",
+            "return_mae",
+            "normalized_return_mae",
+        ):
+            val = getattr(self, name)
+            if not isinstance(val, BootstrapEstimate):
+                raise ValueError(f"{name} must be a BootstrapEstimate")
+
 
 @dataclass(frozen=True)
 class PairedComparison:
@@ -400,6 +423,14 @@ class PairedComparison:
     name: str
     definition: str
     estimate: BootstrapEstimate
+
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name:
+            raise ValueError("name must be a non-empty string")
+        if type(self.definition) is not str or not self.definition:
+            raise ValueError("definition must be a non-empty string")
+        if not isinstance(self.estimate, BootstrapEstimate):
+            raise ValueError("estimate must be a BootstrapEstimate")
 
 
 @dataclass(frozen=True)
@@ -411,6 +442,26 @@ class DecisionFidelityReport:
     seed_results: tuple[SeedDecisionResult, ...]
     aggregates: tuple[ConditionAggregate, ...]
     comparisons: tuple[PairedComparison, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config, DecisionFidelityConfig):
+            raise ValueError("config must be a DecisionFidelityConfig")
+        if not isinstance(self.seeds, tuple) or not all(
+            type(s) is int and 0 <= s < _INT32_MAX for s in self.seeds
+        ):
+            raise ValueError("seeds must be a tuple of non-negative int32 seeds")
+        if not isinstance(self.seed_results, tuple) or not all(
+            isinstance(r, SeedDecisionResult) for r in self.seed_results
+        ):
+            raise ValueError("seed_results must be a tuple of SeedDecisionResult")
+        if not isinstance(self.aggregates, tuple) or not all(
+            isinstance(a, ConditionAggregate) for a in self.aggregates
+        ):
+            raise ValueError("aggregates must be a tuple of ConditionAggregate")
+        if not isinstance(self.comparisons, tuple) or not all(
+            isinstance(c, PairedComparison) for c in self.comparisons
+        ):
+            raise ValueError("comparisons must be a tuple of PairedComparison")
 
     def aggregate(self, condition: str) -> ConditionAggregate:
         """Return one named condition or fail rather than silently substituting."""

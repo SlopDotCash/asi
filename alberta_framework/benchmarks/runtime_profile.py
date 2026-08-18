@@ -1107,6 +1107,17 @@ class EnvironmentRuntimeIdentity:
     environment_rng_schedule: EnvironmentRngSchedule
     environment_rng_schedule_sha256: str
 
+    def __post_init__(self) -> None:
+        _string(self.runtime_profile_id, label="runtime_profile_id")
+        _sha256(
+            self.environment_runtime_profile_sha256,
+            label="environment_runtime_profile_sha256",
+        )
+        _sha256(
+            self.environment_rng_schedule_sha256,
+            label="environment_rng_schedule_sha256",
+        )
+
 
 def validate_environment_runtime_identity(
     *,

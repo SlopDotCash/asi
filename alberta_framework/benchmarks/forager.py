@@ -4087,6 +4087,10 @@ class PaperBaseline:
     source: str
     official_config_path: str | None = None
 
+    def __post_init__(self) -> None:
+        if type(self.in_tree_implementation) is not bool:
+            raise ValueError("in_tree_implementation must be a boolean")
+
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
@@ -4471,6 +4475,15 @@ class PaperReferenceTarget:
     condition: str = "continuously_learning"
     source: str = FORAGER_PAPER_URL
     precision: str = "figure_digitized_approximation"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "central_estimate",
+            _require_real(self.central_estimate, name="central_estimate"),
+        )
+        if type(self.privileged) is not bool:
+            raise ValueError("privileged must be a boolean")
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

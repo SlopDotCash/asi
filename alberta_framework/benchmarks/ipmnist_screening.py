@@ -2183,6 +2183,12 @@ class _CBPLayerRefs:
     in_bias: str
     out_weight: str
 
+    def __post_init__(self) -> None:
+        for attr in ("in_weight", "in_bias", "out_weight"):
+            val = getattr(self, attr)
+            if type(val) is not str or not val:
+                raise ValueError(f"{attr} must be a non-empty string")
+
 
 _CBP_LAYERS = (
     _CBPLayerRefs(in_weight="w1", in_bias="b1", out_weight="w2"),
@@ -5315,6 +5321,16 @@ class ScreeningSpec:
     noise_update: NoiseUpdateFn | None = None
     frozen_probe_input: FrozenProbeInputFn = _raw_frozen_probe_input
 
+    def __post_init__(self) -> None:
+        for attr in ("name", "base_learner", "mechanism"):
+            val = getattr(self, attr)
+            if type(val) is not str or not val:
+                raise ValueError(f"{attr} must be a non-empty string")
+        if not isinstance(self.hyperparameters, dict):
+            raise TypeError("hyperparameters must be a dict")
+        if not callable(self.factory):
+            raise TypeError("factory must be callable")
+
 
 def _upgd_hp(**overrides: float) -> dict[str, float]:
     merged = dict(UPGD_W_PROTOCOL_HYPERPARAMETERS)
@@ -7672,6 +7688,24 @@ class ScreeningRunResult:
     wall_clock_seconds: float
     noise_mode: str = "step"
     noise_pool_steps: int | None = None
+
+    def __post_init__(self) -> None:
+        for attr in ("config_name", "base_learner", "noise_mode"):
+            val = getattr(self, attr)
+            if type(val) is not str or not val:
+                raise ValueError(f"{attr} must be a non-empty string")
+        if not isinstance(self.hyperparameters, dict):
+            raise TypeError("hyperparameters must be a dict")
+        object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        if type(self.config) is not IPMNISTConfig:
+            raise TypeError("config must be an IPMNISTConfig")
+        for arr_name in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
+            if not isinstance(getattr(self, arr_name), np.ndarray):
+                raise TypeError(f"{arr_name} must be a numpy ndarray")
+        if not isinstance(self.wall_clock_seconds, (int, float)) or not math.isfinite(
+            self.wall_clock_seconds
+        ):
+            raise ValueError("wall_clock_seconds must be a finite float")
 
 
 def run_screening_config(

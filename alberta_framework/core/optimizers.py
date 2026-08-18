@@ -45,6 +45,13 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so IEEE ``0 * inf`` does not become NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -706,7 +713,7 @@ class IDBD(Optimizer[IDBDState]):
         self,
         initial_step_size: float = 0.01,
         meta_step_size: float = 0.01,
-        h_decay_mode: str = "prediction_grads",
+        h_decay_mode: object = "prediction_grads",
     ):
         """Initialize IDBD optimizer.
 
@@ -729,8 +736,9 @@ class IDBD(Optimizer[IDBDState]):
                 ``meta_step_size`` nonnegative).
         """
         if h_decay_mode not in ("prediction_grads", "loss_grads"):
+            host_mode = _require_exact_str("h_decay_mode", h_decay_mode)
             raise ValueError(
-                f"Invalid h_decay_mode: {h_decay_mode!r}. "
+                f"Invalid h_decay_mode: '{host_mode}'. "
                 "Must be 'prediction_grads' or 'loss_grads'."
             )
         self._initial_step_size = _validated_idbd_step_size(
@@ -2331,9 +2339,10 @@ def optimizer_from_config(config: dict[str, Any]) -> Optimizer[Any]:
     _ensure_registry_extras()
     config = dict(config)
     type_name = config.pop("type")
-    cls = _OPTIMIZER_REGISTRY.get(type_name)
+    host_type = _require_exact_str("type_name", type_name)
+    cls = _OPTIMIZER_REGISTRY.get(host_type)
     if cls is None:
-        raise ValueError(f"Unknown optimizer type: {type_name!r}")
+        raise ValueError(f"Unknown optimizer type: '{host_type}'")
     result: Optimizer[Any] = cls(**config)
     return result
 
@@ -2352,8 +2361,9 @@ def bounder_from_config(config: dict[str, Any]) -> Bounder:
     """
     config = dict(config)
     type_name = config.pop("type")
-    cls = _BOUNDER_REGISTRY.get(type_name)
+    host_type = _require_exact_str("type_name", type_name)
+    cls = _BOUNDER_REGISTRY.get(host_type)
     if cls is None:
-        raise ValueError(f"Unknown bounder type: {type_name!r}")
+        raise ValueError(f"Unknown bounder type: '{host_type}'")
     result: Bounder = cls(**config)
     return result

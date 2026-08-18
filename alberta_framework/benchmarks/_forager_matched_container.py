@@ -76,6 +76,14 @@ class ContainerError(RuntimeError):
     """The in-container invocation or artifact stream violated its contract."""
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ContainerError("name must be an exact string")
+    if type(value) is not str:
+        raise ContainerError(f"{name} must be an exact string")
+    return value
+
+
 @dataclass(frozen=True)
 class _OutputMember:
     name: str
@@ -781,12 +789,14 @@ def _strict_json(raw: bytes) -> dict[str, Any]:
         return result
 
     def reject_constant(value: str) -> Any:
-        raise ContainerError(f"scorer JSON contains non-finite number {value!r}")
+        _require_exact_str("value", value)
+        raise ContainerError("scorer JSON contains non-finite number")
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
-            raise ContainerError(f"scorer JSON contains non-finite number {value!r}")
+            raise ContainerError("scorer JSON contains non-finite number")
         return parsed
 
     try:

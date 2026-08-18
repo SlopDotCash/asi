@@ -70,6 +70,14 @@ def _require_exact_bool(name: str, value: object) -> bool:
     return value
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _canonical_horde_host_scalars(
     step_size: object,
     sparsity: object,
@@ -353,8 +361,11 @@ class HordeLearner:
         config = dict(config)
         config.pop("type", None)
         state_schema = config.pop("state_schema", MULTI_HEAD_MLP_STATE_SCHEMA)
-        if state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
-            raise ValueError(f"unsupported Horde state schema: {state_schema!r}")
+        host_state_schema = _require_exact_str("state_schema", state_schema)
+        if host_state_schema != MULTI_HEAD_MLP_STATE_SCHEMA:
+            raise ValueError(
+                f"unsupported Horde state schema: '{MULTI_HEAD_MLP_STATE_SCHEMA}'"
+            )
 
         horde_spec = HordeSpec.from_config(config.pop("horde_spec"))
         optimizer = optimizer_from_config(config.pop("optimizer"))

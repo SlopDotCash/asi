@@ -54,6 +54,14 @@ _LIFECYCLE_PATTERN = re.compile(r"^prototype\.([0-9a-f]{8})([0-9a-f]{8})$")
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class PrototypeReferenceState:
     """Process-local, adapter-owned envelope around functional Prototype state."""
@@ -68,9 +76,10 @@ class PrototypeReferenceState:
     _owner_token: object = dataclasses.field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if self.schema != PROTOTYPE_REFERENCE_STATE_SCHEMA:
+        host_schema = _require_exact_str("schema", self.schema)
+        if host_schema != PROTOTYPE_REFERENCE_STATE_SCHEMA:
             raise ValueError(
-                f"schema must be {PROTOTYPE_REFERENCE_STATE_SCHEMA!r}, got {self.schema!r}"
+                f"schema must be '{PROTOTYPE_REFERENCE_STATE_SCHEMA}'"
             )
         if not isinstance(self.manifest_id, str) or _SHA256_PATTERN.fullmatch(
             self.manifest_id

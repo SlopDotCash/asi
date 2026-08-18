@@ -236,6 +236,21 @@ class MatchedCurrentRuntimeQualification:
     executor_qualification_receipt_sha256: str
     qualification_trust_anchor_identity: str
 
+    def __post_init__(self) -> None:
+        _require_real_sha256(self.image_sha256, "runtime.image_sha256")
+        _require_real_sha256(self.runtime_profile_sha256, "runtime.runtime_profile_sha256")
+        _require_real_sha256(
+            self.executor_qualification_receipt_sha256,
+            "runtime.executor_qualification_receipt_sha256",
+        )
+        if (
+            type(self.qualification_trust_anchor_identity) is not str
+            or not self.qualification_trust_anchor_identity
+        ):
+            raise ForagerMatchedOpenProtocolBuildError(
+                "runtime.qualification_trust_anchor_identity must be a non-empty string"
+            )
+
 
 @dataclass(frozen=True)
 class MatchedCurrentCandidateQualification:
@@ -246,6 +261,26 @@ class MatchedCurrentCandidateQualification:
     effective_seed_proof_sha256: str
     capability_qualification_receipt_sha256: str
     resources: ResourceAccounting
+
+    def __post_init__(self) -> None:
+        if type(self.source) is not SourceBinding:
+            raise ForagerMatchedOpenProtocolBuildError("candidate source must be a SourceBinding")
+        if type(self.configuration) is not ConfigurationBinding:
+            raise ForagerMatchedOpenProtocolBuildError(
+                "candidate configuration must be a ConfigurationBinding"
+            )
+        _require_real_sha256(
+            self.effective_seed_proof_sha256,
+            "candidate.effective_seed_proof_sha256",
+        )
+        _require_real_sha256(
+            self.capability_qualification_receipt_sha256,
+            "candidate.capability_qualification_receipt_sha256",
+        )
+        if type(self.resources) is not ResourceAccounting:
+            raise ForagerMatchedOpenProtocolBuildError(
+                "candidate resources must be a ResourceAccounting"
+            )
 
 
 @dataclass(frozen=True)

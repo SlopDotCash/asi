@@ -195,6 +195,14 @@ class ArtifactValidation:
     accepted: bool
     errors: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if type(self.valid) is not bool:
+            raise ValueError("valid must be a boolean")
+        if type(self.accepted) is not bool:
+            raise ValueError("accepted must be a boolean")
+        if type(self.errors) is not tuple or not all(isinstance(e, str) for e in self.errors):
+            raise ValueError("errors must be a tuple of strings")
+
 
 def _threshold_payload() -> dict[str, object]:
     return {

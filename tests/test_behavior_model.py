@@ -633,3 +633,44 @@ def test_behavior_model_preflights_resource_bytes_before_allocation(
     with pytest.raises(AssertionError, match="allocator reached"):
         model.init(max_feature_dim, jax.random.key(0))
     assert calls == 1
+
+
+def test_action_ids_reject_untrusted_arrays_without_running_conversion_hooks() -> None:
+    """The host path must gate on type before any conversion hook can run.
+
+    ``_integer_action_ids`` reaches ``np.asarray(actions)`` before validating
+    anything on the non-tracer path, so an untrusted ``__array__`` hook
+    executes ahead of the dtype and range checks and can decide the value that
+    is subsequently validated.
+    """
+
+    class _HostileArray:
+        def __array__(self, dtype: object = None, copy: object = None) -> np.ndarray:
+            raise AssertionError("array hook must not run")
+
+    probabilities = jnp.asarray([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
+    with pytest.raises(TypeError, match="trusted array"):
+        selected_action_probabilities(probabilities, _HostileArray())
+
+    model = BehaviorModel(BehaviorModelConfig(n_actions=4, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.array([1.0, -0.5], dtype=jnp.float32)
+    with pytest.raises(TypeError, match="trusted array"):
+        model.update(state, observation, _HostileArray())
+
+
+def test_action_ids_still_accept_trusted_hosts_and_tracers() -> None:
+    """The gate must not reject the array types the module already supports."""
+    probabilities = jnp.asarray([0.1, 0.2, 0.3, 0.4], dtype=jnp.float32)
+    for action in (
+        jnp.asarray(2, dtype=jnp.int32),
+        np.array(2, dtype=np.int16),
+        np.int32(1),
+        2,
+    ):
+        chex.assert_tree_all_finite(selected_action_probabilities(probabilities, action))
+
+    traced = jax.jit(lambda a: selected_action_probabilities(probabilities, a))(
+        jnp.asarray(3, dtype=jnp.int32)
+    )
+    chex.assert_tree_all_finite(traced)
