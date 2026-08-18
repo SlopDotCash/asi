@@ -243,7 +243,10 @@ class ExperimentConfig(_ExperimentConfigTuple):
     def _replace(self, **changes: object) -> ExperimentConfig:
         unexpected = changes.keys() - self._fields
         if unexpected:
-            raise ValueError(f"Got unexpected field names: {sorted(unexpected)!r}")
+            sanitized = ", ".join(
+                f"'{_require_exact_str('field', k)}'" for k in sorted(unexpected)
+            )
+            raise ValueError(f"Got unexpected field names: [{sanitized}]")
         values = self._asdict()
         values.update(changes)
         return type(self)(**values)
@@ -297,7 +300,10 @@ class SingleRunResult(_SingleRunResultTuple):
     def _replace(self, **changes: object) -> SingleRunResult:
         unexpected = changes.keys() - self._fields
         if unexpected:
-            raise ValueError(f"Got unexpected field names: {sorted(unexpected)!r}")
+            sanitized = ", ".join(
+                f"'{_require_exact_str('field', k)}'" for k in sorted(unexpected)
+            )
+            raise ValueError(f"Got unexpected field names: [{sanitized}]")
         values = self._asdict()
         values.update(changes)
         return type(self)(**values)
