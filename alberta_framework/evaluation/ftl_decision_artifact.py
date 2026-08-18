@@ -173,7 +173,7 @@ def _finite_float(value: float) -> float | None:
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is not int and type(value) is not float:
         return None
     numeric = float(value)
     return numeric if math.isfinite(numeric) else None
@@ -924,7 +924,7 @@ def _mapping(
     errors: list[str],
 ) -> Mapping[str, object] | None:
     value = parent.get(key)
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{location}.{key} must be an object")
         return None
     return value
@@ -944,8 +944,8 @@ def _compare_structure(
 ) -> None:
     """Compare exact schemas and finite values after a JSON float round trip."""
 
-    if isinstance(expected, Mapping):
-        if not isinstance(actual, Mapping):
+    if type(expected) is dict:
+        if type(actual) is not dict:
             errors.append(f"{location} must be an object")
             return
         if set(actual) != set(expected):
@@ -958,8 +958,8 @@ def _compare_structure(
                 errors,
             )
         return
-    if isinstance(expected, list):
-        if not isinstance(actual, list):
+    if type(expected) is list:
+        if type(actual) is not list:
             errors.append(f"{location} must be an array")
             return
         if len(actual) != len(expected):
@@ -1275,6 +1275,9 @@ def validate_ftl_decision_artifact(
     """Reconstruct all summaries and checks; reject unknown or stale content."""
 
     errors: list[str] = []
+    if type(artifact) is not dict:
+        errors.append("artifact must be an object")
+        return ArtifactValidation(valid=False, accepted=False, errors=tuple(errors))
     if set(artifact) != {
         "schema_version",
         "scientific_payload",
