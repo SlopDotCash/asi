@@ -1,0 +1,259 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_resid_l1_preset005",
+ "created_unix": 1787025486.569498,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "arm64",
+   "release": "23.6.0",
+   "system": "Darwin"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": "",
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": "false",
+   "JAX_PLATFORMS": "cpu",
+   "JAX_PLATFORM_NAME": "cpu",
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": "--xla_force_host_platform_device_count=1"
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.12"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 6,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8693922011666668,
+   "average_online_accuracy_stderr": 7.454373354448635e-05,
+   "average_plasticity_mean": 0.005319375888888888,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_l1_preset005",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.00040404799999999973,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.869473,
+    0.86946,
+    0.869243
+   ],
+   "per_seed_late_window_slope": [
+    8.643e-05,
+    -0.00071143,
+    -0.00058714
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 299.93
+  },
+  {
+   "average_online_accuracy_mean": 0.8613244196666666,
+   "average_online_accuracy_stderr": 9.361634308507648e-05,
+   "average_plasticity_mean": 0.001013059888888889,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_l1_noreset",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 2.0,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.0002564289404761895,
+   "n_seeds": 3,
+   "paired_vs_control": {
+    "all_seeds_improve": false,
+    "beats_control": false,
+    "confirmation_candidate": false,
+    "control": "rls_head_resid_l1_preset005",
+    "mean_diff": -0.00806778150000013,
+    "per_seed_diff": [
+     -0.00822,
+     -0.00795,
+     -0.008033
+    ],
+    "seeds": [
+     0,
+     1,
+     2
+    ],
+    "stderr_diff": 7.982303614743532e-05
+   },
+   "per_seed_average_online_accuracy": [
+    0.861253,
+    0.86151,
+    0.86121
+   ],
+   "per_seed_late_window_slope": [
+    -7.429e-05,
+    -0.000215,
+    -0.00048
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 301.87
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_l1_noreset",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_noreset_seed0.json",
+   "seed": 0,
+   "sha256": "5740e249c7aebf241a6031b9751145f2e26b3d6ac83c7d950497f392f8e033e4",
+   "size_bytes": 5761
+  },
+  {
+   "config_name": "rls_head_resid_l1_noreset",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_noreset_seed1.json",
+   "seed": 1,
+   "sha256": "c543dfa9dfba03b7e8c996a6f2abb141edcf80ebde686cdd72f175d628ac43e1",
+   "size_bytes": 5776
+  },
+  {
+   "config_name": "rls_head_resid_l1_noreset",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_noreset_seed2.json",
+   "seed": 2,
+   "sha256": "3d697fe04e3a3389837cb7d4320a080d9fe5526e976ca3e038ba79da05855dc9",
+   "size_bytes": 5762
+  },
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_preset005_seed0.json",
+   "seed": 0,
+   "sha256": "9ea7a47c8a098668eb9e04e8955f3d99f1f813da831b75d71a97e873822fa5bc",
+   "size_bytes": 5775
+  },
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_preset005_seed1.json",
+   "seed": 1,
+   "sha256": "13fd1a0a8ee5cb1445e9236540519227917e7a389a6ad6e03e4d08067380b8ab",
+   "size_bytes": 5784
+  },
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_preset_ablation_r1/shards/rls_head_resid_l1_preset005_seed2.json",
+   "seed": 2,
+   "sha256": "ac4d3af73042e30a3580cf6c766321176e9cc6118b5dfe6425de8f9c4b2908be",
+   "size_bytes": 5763
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "2f4f92afbdfea9f6b48144734f378b2af0987c60",
+  "git_object_format": "sha1",
+  "git_tree": "65b8390fd430149ddcca80ea8da75e1782ac8e3b",
+  "relevant_source_file_count": 180,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "2516dba5dfc4a0d96e3280c65fc92d5b132abbe44c3458fdb253d87ec5699067",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}
