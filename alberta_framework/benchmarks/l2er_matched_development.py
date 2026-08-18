@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
+import os
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -12,7 +14,6 @@ import numpy as np
 
 from alberta_framework.benchmarks.ipmnist_screening import (
     ScreeningRunResult,
-    _atomic_write_json,
     _screening_dataset_provenance,
     _screening_runtime_environment,
     _screening_source_provenance,
@@ -25,7 +26,6 @@ from alberta_framework.benchmarks.ipmnist_screening import (
 )
 from alberta_framework.benchmarks.upgd_ipmnist import (
     IPMNISTConfig,
-    _preflight_new_output,
     default_openml_data_home,
     load_mnist_train,
 )
@@ -33,22 +33,40 @@ from alberta_framework.evaluation.l2er_ipmnist_nonpromoting import (
     validate_l2er_development_result,
 )
 
-SCHEMA = "asi.l2er-ipmnist.matched-development-report.v1"
-PLAN_ID = "asi.l2er-ipmnist.cheap-screen.v1"
+SCHEMA = "asi.l2er-ipmnist.matched-development-report.v2"
+PLAN_ID = "asi.l2er-ipmnist.cheap-screen.v2"
 ARMS = (
     "l2er_mechanism_off",
     "l2er_l2_only",
     "l2er_er_only",
     "l2er_combined",
 )
-SEEDS = (1711, 1712, 1713)
+SEEDS = (1721, 1722, 1723)
 CONFIG = IPMNISTConfig(n_tasks=2, task_length=500)
-CONSUMED_AUDIT_SEEDS = (1701,)
-_T95_DF2 = 4.302652729696142
+_T95_DF2 = math.sqrt(1.805 / 0.0975)
+_INVALID_V1_ATTEMPT = {
+    "schema": "asi.l2er-ipmnist.matched-development-report.v1",
+    "path": "outputs/l2er_matched_development/report.v1.json",
+    "artifact_sha256": "ab7f03b73993b79c53021970926181130980dd84b180e095779e30960953ff86",
+    "source_commit": "f62d157a449c30a79dcf01740ae7f20a6c27e726",
+    "seeds": [1701, 1702, 1703],
+    "disposition": "invalid_unmerged_historical_attempt",
+    "execution_history": [
+        "seed 1701 was consumed across all arms during executable-path audit",
+        "one planned invocation failed during dataset download before arm execution or output",
+        "a later complete v1 matrix produced the invalid unmerged artifact",
+    ],
+    "invalid_reasons": [
+        "normal critical 1.96 was used instead of Student t(df=2)",
+        "effective-rank parameter updates were omitted from the update counter",
+        "seed 1701 had already been consumed during executable-path audit",
+    ],
+}
 _MAX_REPORT_RECORDS = 32
+_MAX_REPORT_BYTES = 16 * 1024 * 1024
 _PATH_TYPE = type(Path())
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-OUTPUT_PATH = _REPO_ROOT / "outputs/l2er_matched_development/report.v1.json"
+OUTPUT_PATH = _REPO_ROOT / "outputs/l2er_matched_development/report.v2.json"
 
 
 def frozen_plan() -> dict[str, object]:
@@ -57,11 +75,10 @@ def frozen_plan() -> dict[str, object]:
         "plan_id": PLAN_ID,
         "arms": list(ARMS),
         "seeds": list(SEEDS),
-        "consumed_preplan_audit_seeds": list(CONSUMED_AUDIT_SEEDS),
-        "consumed_preplan_audit_note": (
-            "seed 1701 ran once across all four arms during executable-path audit; "
-            "no complete report was produced"
-        ),
+        "prior_invalid_attempt": {
+            key: list(value) if type(value) is list else value
+            for key, value in _INVALID_V1_ATTEMPT.items()
+        },
         "config": CONFIG.to_config(),
         "primary_metric": "mean_online_accuracy",
         "control_arm": "l2er_mechanism_off",
@@ -77,7 +94,7 @@ def frozen_plan() -> dict[str, object]:
         "null_delta": 0.0,
         "confidence_method": "two_sided_student_t",
         "confidence_level": 0.95,
-        "confidence_degrees_of_freedom": 2,
+        "confidence_degrees_of_freedom": len(SEEDS) - 1,
         "confidence_critical": _T95_DF2,
         "allowed_boundary_information": [],
         "allowed_task_information": ["current_example_label"],
@@ -91,11 +108,10 @@ def _object(value: object, keys: frozenset[str], *, context: str) -> dict[str, A
     if type(value) is not dict:
         raise ValueError(f"{context} must be an exact object")
     result = cast(dict[str, Any], value)
-    if (
-        len(result) != len(keys)
-        or any(type(key) is not str for key in result)
-        or frozenset(result) != keys
-    ):
+    raw_keys = tuple(result.keys())
+    if len(raw_keys) != len(keys) or any(type(key) is not str for key in raw_keys):
+        raise ValueError(f"{context} keys do not match the frozen schema")
+    if frozenset(raw_keys) != keys:
         raise ValueError(f"{context} keys do not match the frozen schema")
     return result
 
@@ -210,7 +226,6 @@ def _validated_plan(value: object) -> dict[str, object]:
         "control_arm",
         "paired_direction",
         "confidence_method",
-        "consumed_preplan_audit_note",
         "arm_specific_charged_axis",
     ):
         if type(plan[key]) is not str:
@@ -220,7 +235,6 @@ def _validated_plan(value: object) -> dict[str, object]:
             raise ValueError(f"plan.{key} must be an exact bool")
     arms = plan["arms"]
     seeds = plan["seeds"]
-    consumed_seeds = plan["consumed_preplan_audit_seeds"]
     matched_axes = plan["matched_axes"]
     boundary = plan["allowed_boundary_information"]
     task = plan["allowed_task_information"]
@@ -236,12 +250,35 @@ def _validated_plan(value: object) -> dict[str, object]:
         or any(type(item) is not int for item in seeds)
     ):
         raise ValueError("plan.seeds must be an exact integer list")
+    prior = _object(
+        plan["prior_invalid_attempt"],
+        frozenset(_INVALID_V1_ATTEMPT),
+        context="plan.prior_invalid_attempt",
+    )
+    for key in ("schema", "path", "artifact_sha256", "source_commit", "disposition"):
+        if type(prior[key]) is not str:
+            raise ValueError(f"plan.prior_invalid_attempt.{key} must be an exact string")
+    prior_seeds = prior["seeds"]
+    history = prior["execution_history"]
+    reasons = prior["invalid_reasons"]
     if (
-        type(consumed_seeds) is not list
-        or len(consumed_seeds) != len(CONSUMED_AUDIT_SEEDS)
-        or any(type(item) is not int for item in consumed_seeds)
+        type(prior_seeds) is not list
+        or len(prior_seeds) != 3
+        or any(type(item) is not int for item in prior_seeds)
     ):
-        raise ValueError("plan.consumed_preplan_audit_seeds must be an exact integer list")
+        raise ValueError("plan.prior_invalid_attempt.seeds must be an exact integer list")
+    if (
+        type(history) is not list
+        or len(history) != 3
+        or any(type(item) is not str for item in history)
+    ):
+        raise ValueError("plan.prior_invalid_attempt.execution_history must be exact strings")
+    if (
+        type(reasons) is not list
+        or len(reasons) != 3
+        or any(type(item) is not str for item in reasons)
+    ):
+        raise ValueError("plan.prior_invalid_attempt.invalid_reasons must be exact strings")
     if (
         type(matched_axes) is not list
         or len(matched_axes) != 5
@@ -424,7 +461,15 @@ def validate_report(
                 ("hidden2", CONFIG.hidden2),
                 ("n_classes", CONFIG.n_classes),
                 ("observations", CONFIG.n_steps),
-                ("updates", CONFIG.n_steps),
+                (
+                    "updates",
+                    CONFIG.n_steps
+                    + (
+                        CONFIG.n_steps // 100
+                        if screening_spec(identity[1]).hyperparameters["er_enabled"] == 1.0
+                        else 0
+                    ),
+                ),
                 (
                     "effective_rank_updates",
                     CONFIG.n_steps // 100
@@ -525,14 +570,123 @@ def run(*, data_home: Path) -> dict[str, object]:
     )
 
 
+def _open_output_transaction() -> tuple[int, int, str]:
+    """Reserve the fixed output before execution through pinned directory fds."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    current = os.open(_REPO_ROOT, flags)
+    try:
+        for segment in ("outputs", "l2er_matched_development"):
+            try:
+                os.mkdir(segment, mode=0o755, dir_fd=current)
+            except FileExistsError:
+                pass
+            child = os.open(segment, flags, dir_fd=current)
+            os.close(current)
+            current = child
+        try:
+            os.stat(OUTPUT_PATH.name, dir_fd=current, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"refusing to overwrite immutable output: {OUTPUT_PATH}")
+        temporary_name = f".{OUTPUT_PATH.name}.pending"
+        try:
+            temporary_fd = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=current,
+            )
+        except FileExistsError as error:
+            raise FileExistsError(
+                f"another execution already reserved immutable output: {OUTPUT_PATH}"
+            ) from error
+        try:
+            os.fsync(current)
+        except BaseException:
+            os.close(temporary_fd)
+            os.unlink(temporary_name, dir_fd=current)
+            raise
+        return current, temporary_fd, temporary_name
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _publish_report(
+    directory_fd: int,
+    temporary_fd: int,
+    temporary_name: str,
+    report: dict[str, object],
+) -> None:
+    """Publish and reload one report through a pinned directory descriptor."""
+    normalized = validate_report(report)
+    encoded = (
+        json.dumps(normalized, allow_nan=False, indent=1, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if len(encoded) > _MAX_REPORT_BYTES:
+        raise ValueError("encoded report exceeds the output byte limit")
+    offset = 0
+    while offset < len(encoded):
+        written = os.write(temporary_fd, encoded[offset:])
+        if written <= 0:
+            raise OSError("short write while staging matched report")
+        offset += written
+    os.fchmod(temporary_fd, 0o444)
+    os.fsync(temporary_fd)
+    try:
+        os.link(
+            temporary_name,
+            OUTPUT_PATH.name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+            follow_symlinks=False,
+        )
+    except FileExistsError as error:
+        raise FileExistsError(
+            f"refusing to overwrite immutable output: {OUTPUT_PATH}"
+        ) from error
+    os.fsync(directory_fd)
+    published_fd = os.open(
+        OUTPUT_PATH.name,
+        os.O_RDONLY | os.O_NOFOLLOW,
+        dir_fd=directory_fd,
+    )
+    try:
+        reloaded = bytearray()
+        while True:
+            chunk = os.read(published_fd, min(65_536, _MAX_REPORT_BYTES + 1 - len(reloaded)))
+            if not chunk:
+                break
+            reloaded.extend(chunk)
+            if len(reloaded) > _MAX_REPORT_BYTES:
+                raise ValueError("published report exceeds the output byte limit")
+        if bytes(reloaded) != encoded:
+            raise RuntimeError("published report bytes differ from the staged report")
+        decoded = json.loads(reloaded)
+        if validate_report(decoded) != normalized:
+            raise RuntimeError("published report failed strict canonical reload")
+    finally:
+        os.close(published_fd)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Execute once and publish only to the explicit append-only development path."""
     parser = argparse.ArgumentParser(description="Run the frozen L2-ER development screen")
     parser.add_argument("--data-home", type=Path, default=default_openml_data_home())
     args = parser.parse_args(argv)
-    output = _preflight_new_output(OUTPUT_PATH)
-    report = run(data_home=args.data_home)
-    _atomic_write_json(output, validate_report(report))
+    directory_fd, temporary_fd, temporary_name = _open_output_transaction()
+    try:
+        report = run(data_home=args.data_home)
+        _publish_report(directory_fd, temporary_fd, temporary_name, report)
+    finally:
+        os.close(temporary_fd)
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+            os.fsync(directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
     return 0
 
 

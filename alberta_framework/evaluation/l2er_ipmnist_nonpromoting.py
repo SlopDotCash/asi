@@ -38,8 +38,8 @@ L2ER_PROTOCOL = MappingProxyType(
         "official_er_steps_per_batch": 1,
         "effective_rank_epsilon": 1e-8,
         "update_accounting": (
-            "updates counts one supervised update per observation; "
-            "effective_rank_updates separately counts arm-specific auxiliary ER steps"
+            "updates equals supervised observations plus charged effective_rank_updates; "
+            "effective_rank_updates is retained as the arm-specific auxiliary ER subcount"
         ),
         "persistent_bytes_scope": (
             "float32 parameters plus the fixed 100-example float32 ER buffer, int32 count, "
@@ -78,8 +78,11 @@ _MAX_STRING_BYTES = 512
 def _object(value: object, keys: frozenset[str], *, context: str) -> Mapping[str, Any]:
     if type(value) is not dict:
         raise ValueError(f"{context} must be an exact object")
-    actual = set(value)
-    if actual != keys:
+    trusted = cast(dict[object, object], value)
+    raw_keys = tuple(trusted.keys())
+    if len(raw_keys) != len(keys) or any(type(key) is not str for key in raw_keys):
+        raise ValueError(f"{context} keys must be exactly {sorted(keys)}")
+    if frozenset(cast(tuple[str, ...], raw_keys)) != keys:
         raise ValueError(f"{context} keys must be exactly {sorted(keys)}")
     return cast(Mapping[str, Any], value)
 
@@ -176,8 +179,8 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
     )
     if n_tasks > _INT32_MAX // task_length:
         raise ValueError("n_tasks * task_length exceeds signed int32")
-    if observations != n_tasks * task_length or updates != observations:
-        raise ValueError("observations and updates must equal n_tasks * task_length")
+    if observations != n_tasks * task_length:
+        raise ValueError("observations must equal n_tasks * task_length")
     boundary = _strings(
         outer["allowed_boundary_information"], context="allowed_boundary_information"
     )
@@ -191,6 +194,9 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
         for key in _HYPERPARAMETER_KEYS
     }
     expected_wd, expected_er_lr, expected_enabled = _ARMS[arm]
+    er_updates = observations // 100 if expected_enabled == 1.0 else 0
+    if updates != observations + er_updates:
+        raise ValueError("updates must include supervised and effective-rank updates")
     expected_hp = {
         "step_size": 1e-3,
         "weight_decay": expected_wd,
@@ -244,7 +250,6 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
         raise ValueError("resources exceed the bounded development protocol")
     if environment_steps != 0 or data_steps != observations:
         raise ValueError("environment_steps/data_steps do not match the supervised protocol")
-    er_updates = observations // 100 if expected_enabled == 1.0 else 0
     if effective_rank_updates != er_updates:
         raise ValueError("effective_rank_updates does not match the executed ER schedule")
     if model_queries != 2 * observations + er_updates:
@@ -331,7 +336,6 @@ def validate_matched_l2er_development_results(
         "hidden2",
         "n_classes",
         "observations",
-        "updates",
         "allowed_boundary_information",
         "allowed_task_information",
     )

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import dataclasses
+import os
 from copy import deepcopy
+from pathlib import Path
 from typing import Never
 
 import numpy as np
@@ -101,6 +103,81 @@ def test_validator_rejects_hostile_plan_container_without_dispatch(
         matched.validate_report(hostile_runtime, require_current_source=False)
 
 
+def test_validator_preflights_hostile_dict_keys_before_hash_or_equality(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class HostileStr(str):
+        armed = False
+        calls = 0
+
+        def __hash__(self) -> int:
+            if type(self).armed:
+                type(self).calls += 1
+                raise AssertionError("hostile hash")
+            return super().__hash__()
+
+        def __eq__(self, other: object) -> bool:
+            if type(self).armed:
+                type(self).calls += 1
+                raise AssertionError("hostile equality")
+            return super().__eq__(other)
+
+    monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_runtime_environment", lambda value, **_: value)
+    hostile = matched.build_report(
+        _results(), source_provenance={}, dataset_provenance={}, environment={}
+    )
+    value = hostile.pop("schema")
+    hostile[HostileStr("schema")] = value
+    HostileStr.armed = True
+    with pytest.raises(ValueError, match="keys do not match"):
+        matched.validate_report(hostile, require_current_source=False)
+    assert HostileStr.calls == 0
+
+
+@pytest.mark.parametrize("nested", ("record", "hyperparameters", "metrics", "resources"))
+def test_report_preflights_nested_receipt_keys_before_hostile_dispatch(
+    nested: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class HostileStr(str):
+        armed = False
+        calls = 0
+
+        def __hash__(self) -> int:
+            if type(self).armed:
+                type(self).calls += 1
+                raise AssertionError("hostile hash")
+            return super().__hash__()
+
+        def __eq__(self, other: object) -> bool:
+            if type(self).armed:
+                type(self).calls += 1
+                raise AssertionError("hostile equality")
+            return super().__eq__(other)
+
+    monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_runtime_environment", lambda value, **_: value)
+    report = matched.build_report(
+        _results(), source_provenance={}, dataset_provenance={}, environment={}
+    )
+    records = report["records"]
+    assert isinstance(records, list)
+    record = records[0]
+    assert isinstance(record, dict)
+    target = record if nested == "record" else record[nested]
+    assert isinstance(target, dict)
+    key = next(iter(target))
+    assert isinstance(key, str)
+    value = target.pop(key)
+    target[HostileStr(key)] = value
+    HostileStr.armed = True
+    with pytest.raises(ValueError, match="keys must be exactly"):
+        matched.validate_report(report, require_current_source=False)
+    assert HostileStr.calls == 0
+
+
 def test_builder_revalidates_forged_result_before_field_dispatch() -> None:
     class HostileInt(int):
         calls = 0
@@ -157,6 +234,10 @@ def test_three_seed_interval_uses_student_t_not_normal_critical_value() -> None:
     assert lower < 0.0 < upper
     assert outcome == "inconclusive"
     assert matched.frozen_plan()["confidence_method"] == "two_sided_student_t"
+    critical = matched.frozen_plan()["confidence_critical"]
+    assert critical == 4.302652729749464
+    assert isinstance(critical, float)
+    assert critical.hex() == "0x1.135ea98e146bbp+2"
 
 
 def test_report_revalidates_result_identity_before_reading_metrics(
@@ -175,8 +256,67 @@ def test_report_revalidates_result_identity_before_reading_metrics(
 
 def test_output_namespace_is_one_new_development_path() -> None:
     assert matched.OUTPUT_PATH.relative_to(matched._REPO_ROOT).as_posix() == (
-        "outputs/l2er_matched_development/report.v1.json"
+        "outputs/l2er_matched_development/report.v2.json"
     )
-    assert matched.frozen_plan()["consumed_preplan_audit_seeds"] == [1701]
+    assert matched.SEEDS == (1721, 1722, 1723)
+    prior = matched.frozen_plan()["prior_invalid_attempt"]
+    assert prior["artifact_sha256"] == (
+        "ab7f03b73993b79c53021970926181130980dd84b180e095779e30960953ff86"
+    )
+    assert prior["seeds"] == [1701, 1702, 1703]
     assert matched.frozen_plan()["development_only"] is True
     assert matched.frozen_plan()["scientific_promotion_allowed"] is False
+
+
+def test_output_directory_rejects_symlinked_segments_and_occupied_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (tmp_path / "outputs").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(matched, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        matched,
+        "OUTPUT_PATH",
+        tmp_path / "outputs/l2er_matched_development/report.v2.json",
+    )
+    with pytest.raises(OSError):
+        matched._open_output_transaction()
+
+    (tmp_path / "outputs").unlink()
+    target = tmp_path / "outputs/l2er_matched_development/report.v2.json"
+    target.parent.mkdir(parents=True)
+    target.write_text("occupied", encoding="utf-8")
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        matched._open_output_transaction()
+
+
+def test_output_publication_uses_pinned_dirfd_and_strict_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(matched, "_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(
+        matched,
+        "OUTPUT_PATH",
+        tmp_path / "outputs/l2er_matched_development/report.v2.json",
+    )
+    monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_runtime_environment", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_screening_source_provenance", lambda: {})
+    monkeypatch.setattr(matched, "_screening_runtime_environment", lambda: {})
+    report = matched.build_report(
+        _results(), source_provenance={}, dataset_provenance={}, environment={}
+    )
+    directory_fd, temporary_fd, temporary_name = matched._open_output_transaction()
+    try:
+        with pytest.raises(FileExistsError, match="already reserved"):
+            matched._open_output_transaction()
+        matched._publish_report(directory_fd, temporary_fd, temporary_name, report)
+    finally:
+        os.close(temporary_fd)
+        os.unlink(temporary_name, dir_fd=directory_fd)
+        os.close(directory_fd)
+    assert matched.OUTPUT_PATH.is_file()
+    with pytest.raises(FileExistsError, match="refusing to overwrite"):
+        matched._open_output_transaction()

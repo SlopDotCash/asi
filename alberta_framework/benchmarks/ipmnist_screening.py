@@ -8703,7 +8703,7 @@ def l2er_development_result_payload(
         "hidden2": config.hidden2,
         "n_classes": config.n_classes,
         "observations": observations,
-        "updates": observations,
+        "updates": observations + er_updates,
         "effective_rank_updates": er_updates,
         "allowed_boundary_information": [],
         "allowed_task_information": ["current_example_label"],

@@ -280,7 +280,7 @@ def test_result_receipt_accounts_resources_and_is_permanently_nonpromoting() -> 
     assert payload["outcome_retained"] is True
     assert payload["development_only"] is True
     assert payload["scientific_promotion_allowed"] is False
-    assert payload["updates"] == 100
+    assert payload["updates"] == 101
     assert payload["effective_rank_updates"] == 1
     resources = payload["resources"]
     assert isinstance(resources, dict)
@@ -300,6 +300,11 @@ def test_result_receipt_accounts_resources_and_is_permanently_nonpromoting() -> 
     hostile_er_updates["effective_rank_updates"] = 0
     with pytest.raises(ValueError, match="effective_rank_updates"):
         validate_l2er_development_result(hostile_er_updates)
+
+    missing_auxiliary_update = deepcopy(payload)
+    missing_auxiliary_update["updates"] = 100
+    with pytest.raises(ValueError, match="supervised and effective-rank"):
+        validate_l2er_development_result(missing_auxiliary_update)
 
     hostile_bytes = deepcopy(payload)
     hostile_byte_resources = hostile_bytes["resources"]
@@ -335,8 +340,13 @@ def test_matched_validator_requires_all_arms_and_axes() -> None:
     assert len(validate_matched_l2er_development_results(payloads)) == 4
     mismatched = deepcopy(payloads)
     mismatched[1]["updates"] = 99
-    with pytest.raises(ValueError, match="observations and updates"):
+    with pytest.raises(ValueError, match="updates must include"):
         validate_matched_l2er_development_results(mismatched)
+
+    off = l2er_development_result_payload(
+        _result("l2er_mechanism_off"), outcome="inconclusive"
+    )
+    assert off["updates"] == 100
 
     class HostileMeta(type):
         calls = 0
@@ -360,5 +370,9 @@ def test_protocol_pins_sources_and_records_material_differences() -> None:
     differences = L2ER_PROTOCOL["protocol_differences"]
     assert isinstance(differences, tuple)
     assert len(differences) == 8
+    assert L2ER_PROTOCOL["update_accounting"] == (
+        "updates equals supervised observations plus charged effective_rank_updates; "
+        "effective_rank_updates is retained as the arm-specific auxiliary ER subcount"
+    )
     assert L2ER_PROTOCOL["development_only"] is True
     assert L2ER_PROTOCOL["scientific_promotion_allowed"] is False
