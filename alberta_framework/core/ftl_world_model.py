@@ -119,6 +119,15 @@ def _configured_state_nbytes(
     return 4 * (float_count + 1)
 
 
+def _preflight_update_working_set(feature_dim: int) -> None:
+    # Live Gram, proposed Gram, plus feature-width dense/cross/weight copies.
+    update_scalars = 2 * feature_dim * feature_dim + 5 * feature_dim + 8
+    if 4 * update_scalars > _INT32_MAX:
+        raise ValueError(
+            "sparse FTL update working set byte count must fit signed int32"
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class SparseFTLWorldModelConfig:
     """Configuration for :class:`SparseFTLWorldModel`.
@@ -332,6 +341,7 @@ class SparseFTLWorldModel:
     def init(self, key: Array) -> SparseFTLWorldModelState:
         """Initialize fixed projections and zero sufficient statistics."""
         cfg = self._config
+        _preflight_update_working_set(cfg.feature_dim)
         projection = jr.normal(
             key,
             (cfg.projection_dim, cfg.input_dim),
