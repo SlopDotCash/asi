@@ -145,13 +145,32 @@ postmortem.
     the failure is not a position confound: the reference lives in weight space
     ("how does position i drive class c") and the post descriptor in data space
     ("how bright is position j for class c"), correlated but not commensurable.
-    The reusable point is structural — any model-side quantity is indexed by
-    the pre-shift input layout, so scoring it requires a post-shift content
-    statistic, which is the estimator V1 already showed to be binding. A
-    model-side probe can improve the reference and cannot move the term that
-    binds. Entry 15 stays open: model-side probes remain untested across two
-    constructions, not refuted. Record:
+    These two constructions therefore do not provide a commensurable
+    model-side reference, and the post-shift estimator remains the measured
+    bottleneck for the control. Entry 15 stays open: model-side probes remain
+    untested across two constructions, not refuted. Record:
     [`V5_model_side.md`](../../outputs/new_directions/V5_model_side.md).
+
+17. **Every ladder arm already benefits from recurrence, and conditioning takes
+    most of it.** The #1875 preregistration predicted that no existing arm
+    exploits recurrence, reasoning that none indexes permutations. That is
+    refuted: on the micro suite all six ladder arms score higher on M4
+    (`recurrence`, pool 5 over 100 regimes) than on M1 (`input_permutation`),
+    every seed positive. The prediction conflated *having a recurrence
+    mechanism* with *benefiting from recurrence* — no arm indexes permutations,
+    but persistent weights stay partly fit when a mapping repeats. The
+    structure is the result: unconditioned arms gain +0.3688 mean (`sgd_raw`
+    +0.3869, `adamw` +0.3507) while conditioned arms gain +0.0469 (`gated_norm`
+    +0.0472), a 7.9x difference. Input conditioning already recovers most of
+    what implicit reuse offers, mirroring the campaign's conditioning result on
+    the memory axis. For direction D the reusable number is that 20x reuse is
+    worth only **+0.047** on a champion-like arm, so an explicit
+    recurrence-indexing mechanism must beat that implicit baseline rather than
+    start from zero. This does **not** cap direction D: an explicit mechanism
+    could jump to stored state instead of re-adapting. Bayes accuracy is
+    family-invariant at 0.9833, verified rather than assumed, so the gaps are
+    learning gains and not a ceiling difference. Record:
+    [`V6_recurrence_headroom.md`](../../outputs/new_directions/V6_recurrence_headroom.md).
 
 ## Evidence and campaign closures
 
