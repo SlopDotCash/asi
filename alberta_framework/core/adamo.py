@@ -1,4 +1,3 @@
-# mypy: disable-error-code="call-arg"
 """AdamO: Adam with decoupled pseudo-orthogonality updates.
 
 This implements equations 16, 19, and 20 of Rosseau, Müller, and Nowé,
@@ -10,9 +9,11 @@ are intentionally not regularized.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import cast
 
 import chex
+import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
@@ -26,7 +27,7 @@ from alberta_framework.core.update_safety import (
 )
 
 ADAMO_PAPER_REVISION = "arXiv:2606.09762v1"
-ADAMO_PROTOCOL = {
+ADAMO_PROTOCOL = MappingProxyType({
     "paper_revision": ADAMO_PAPER_REVISION,
     "paper_url": "https://arxiv.org/abs/2606.09762v1",
     "equations": (16, 19, 20),
@@ -43,7 +44,37 @@ ADAMO_PROTOCOL = {
     "timing_is_telemetry_only": True,
     "development_only": True,
     "scientific_promotion_allowed": False,
-}
+})
+
+_INT32_MAX = (1 << 31) - 1
+_MAX_ARRAY_ELEMENTS = 1_000_000
+_MAX_WORKING_BYTES = 256 * 1024 * 1024
+
+
+def _trusted_float_array(value: object, *, name: str) -> Array:
+    actual_type = type(value)
+    if actual_type is not np.ndarray and not issubclass(
+        actual_type, (jax.Array, jax.core.Tracer)
+    ):
+        raise ValueError(f"{name} must be an exact NumPy or JAX array")
+    array = jnp.asarray(value)
+    if (
+        array.size < 1
+        or array.size > _MAX_ARRAY_ELEMENTS
+        or not jnp.issubdtype(array.dtype, jnp.floating)
+    ):
+        raise ValueError(f"{name} must be a bounded non-empty floating array")
+    return array
+
+
+def _gram_bytes(rows: int, columns: int, dtype_bytes: int) -> int:
+    smaller = min(rows, columns)
+    if smaller > _INT32_MAX // smaller:
+        raise ValueError("Gram element count exceeds signed int32")
+    count = smaller * smaller
+    if dtype_bytes > _MAX_WORKING_BYTES // count:
+        raise ValueError("Gram working bytes exceed 256 MiB")
+    return count * dtype_bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,26 +141,29 @@ class AdamOUpdate:
 def isometry_penalty(weight: Array) -> Array:
     """Return the rectangular Gram-deviation penalty from paper equation 16."""
 
-    matrix = jnp.asarray(weight)
+    matrix = _trusted_float_array(weight, name="weight")
     if matrix.ndim != 2:
         raise ValueError("isometry_penalty requires a rank-two weight matrix")
     rows, columns = matrix.shape
+    _gram_bytes(rows, columns, matrix.dtype.itemsize)
     if rows >= columns:
         gram = matrix.T @ matrix
         identity = jnp.eye(columns, dtype=matrix.dtype)
     else:
         gram = matrix @ matrix.T
         identity = jnp.eye(rows, dtype=matrix.dtype)
-    return jnp.sum(jnp.square(gram - identity))
+    candidate = jnp.sum(jnp.square(gram - identity))
+    return jnp.where(jnp.isfinite(candidate), candidate, jnp.zeros_like(candidate))
 
 
 def isometry_gradient(weight: Array) -> Array:
     """Return the closed-form gradient of :func:`isometry_penalty`."""
 
-    matrix = jnp.asarray(weight)
+    matrix = _trusted_float_array(weight, name="weight")
     if matrix.ndim != 2:
         raise ValueError("isometry_gradient requires a rank-two weight matrix")
     rows, columns = matrix.shape
+    _gram_bytes(rows, columns, matrix.dtype.itemsize)
     if rows >= columns:
         identity = jnp.eye(columns, dtype=matrix.dtype)
         return 4.0 * matrix @ (matrix.T @ matrix - identity)
@@ -142,6 +176,7 @@ def state_persistent_bytes(state: AdamOState) -> int:
 
     if type(state) is not AdamParamState:
         raise TypeError("state must be an exact AdamParamState")
+
     leaves = (
         state.m,
         state.v,
@@ -151,7 +186,16 @@ def state_persistent_bytes(state: AdamOState) -> int:
         state.beta2,
         state.eps,
     )
-    return sum(int(np.prod(leaf.shape, dtype=np.int64)) * leaf.dtype.itemsize for leaf in leaves)
+    total = 0
+    for leaf in leaves:
+        actual_type = type(leaf)
+        if not issubclass(actual_type, jax.Array):
+            raise ValueError("state must contain exact JAX arrays")
+        size = int(leaf.nbytes)
+        if size > _MAX_WORKING_BYTES - total:
+            raise ValueError("AdamO state exceeds 256 MiB")
+        total += size
+    return total
 
 
 def gram_working_bytes(shape: tuple[int, ...], *, dtype_bytes: int = 4) -> int:
@@ -159,15 +203,14 @@ def gram_working_bytes(shape: tuple[int, ...], *, dtype_bytes: int = 4) -> int:
 
     if type(shape) is not tuple:
         raise TypeError("shape must be an exact tuple")
-    if len(shape) != 2 or any(type(dimension) is not int or dimension < 1 for dimension in shape):
+    if len(shape) != 2 or any(
+        type(dimension) is not int or not 1 <= dimension <= _INT32_MAX
+        for dimension in shape
+    ):
         raise ValueError("shape must contain exactly two positive built-in integers")
-    if type(dtype_bytes) is not int or dtype_bytes < 1:
+    if type(dtype_bytes) is not int or not 1 <= dtype_bytes <= _INT32_MAX:
         raise ValueError("dtype_bytes must be a positive built-in integer")
-    smaller = min(shape)
-    count = smaller * smaller
-    if count > (2**63 - 1) // dtype_bytes:
-        raise ValueError("Gram working byte count exceeds signed int64")
-    return count * dtype_bytes
+    return _gram_bytes(shape[0], shape[1], dtype_bytes)
 
 
 class AdamO:
@@ -203,16 +246,26 @@ class AdamO:
 
         if type(regularize) is not bool:
             raise TypeError("regularize must be a built-in bool")
-        parameter = jnp.asarray(param)
-        gradient = jnp.asarray(task_gradient)
-        if not jnp.issubdtype(parameter.dtype, jnp.floating):
-            raise ValueError("parameter must have a floating dtype")
+        if type(state) is not AdamParamState:
+            raise TypeError("state must be an exact AdamParamState")
+        parameter = _trusted_float_array(param, name="parameter")
+        gradient = _trusted_float_array(task_gradient, name="task_gradient")
         if gradient.dtype != parameter.dtype:
             raise ValueError("gradient and parameter dtypes must match")
-        if gradient.shape != parameter.shape or state.m.shape != parameter.shape:
+        scalar_leaves = (state.t, state.step_size, state.beta1, state.beta2, state.eps)
+        if (
+            gradient.shape != parameter.shape
+            or state.m.shape != parameter.shape
+            or state.v.shape != parameter.shape
+            or state.m.dtype != parameter.dtype
+            or state.v.dtype != parameter.dtype
+            or any(leaf.shape != () or leaf.dtype != parameter.dtype for leaf in scalar_leaves)
+        ):
             raise ValueError("state, gradient, and parameter shapes must match")
         if regularize and parameter.ndim != 2:
             raise ValueError("only rank-two weight leaves can be isometry-regularized")
+        if regularize:
+            _gram_bytes(parameter.shape[0], parameter.shape[1], parameter.dtype.itemsize)
         config = self.config
         task_update = self._adam.update_from_gradient_checked(
             state, gradient, error=None, param=parameter
@@ -237,7 +290,7 @@ class AdamO:
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(step))
         )
-        return AdamOUpdate(
+        return AdamOUpdate(  # type: ignore[call-arg]
             step=neutralize_array(update_applied, step),
             new_state=select_transaction(update_applied, candidate_state, state),
             task_step=neutralize_array(update_applied, task_step),

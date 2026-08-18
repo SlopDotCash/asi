@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from alberta_framework.core.adamo import (
+    ADAMO_PROTOCOL,
     AdamO,
     AdamOConfig,
     gram_working_bytes,
@@ -97,6 +98,28 @@ def test_resource_accounting_names_state_and_gram() -> None:
     state = AdamO().init_for_shape((3, 5))
     assert state_persistent_bytes(state) == (2 * 15 + 5) * 4
     assert gram_working_bytes((3, 5)) == 3 * 3 * 4
+    with pytest.raises(ValueError, match="256 MiB"):
+        gram_working_bytes((10_000, 10_000))
+
+
+def test_hostile_arrays_state_and_protocol_fail_before_dispatch() -> None:
+    class HostileArray:
+        def __jax_array__(self) -> object:
+            raise AssertionError("hostile conversion must not run")
+
+    with pytest.raises(ValueError, match="exact NumPy or JAX"):
+        isometry_gradient(HostileArray())  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        ADAMO_PROTOCOL["development_only"] = False  # type: ignore[index]
+
+    optimizer = AdamO()
+    weight = jnp.eye(2, dtype=jnp.float32)
+    state = optimizer.init_for_shape(weight.shape)
+    corrupt = state.replace(v=jnp.zeros(3, dtype=jnp.float32))
+    with pytest.raises(ValueError, match="shapes"):
+        optimizer.update_from_gradient_checked(
+            corrupt, jnp.ones_like(weight), weight, regularize=True
+        )
 
 
 def test_resource_accounting_rejects_hostile_outer_objects_without_hooks() -> None:
