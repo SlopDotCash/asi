@@ -2626,9 +2626,9 @@ def _validate_run_record(
             raise ValueError(f"{path} failure record is incomplete")
         if failure["stage"] not in {"build", "init", "step"}:
             raise ValueError(f"{path} failure stage is unsupported")
-        if not isinstance(failure["type"], str) or not failure["type"]:
+        if type(failure["type"]) is not str or not failure["type"]:
             raise ValueError(f"{path} failure type must be nonempty")
-        if not isinstance(failure["message"], str) or not failure["message"]:
+        if type(failure["message"]) is not str or not failure["message"]:
             raise ValueError(f"{path} failure message must be nonempty")
         if type(failure["accepted_events"]) is not int or failure["accepted_events"] < 0:
             raise ValueError(f"{path} failure accepted-event count is invalid")
@@ -3284,7 +3284,7 @@ def validate_scorecard_run_record(
     environment = payload.get("environment_kind")
     arm = payload.get("arm")
     seed = payload.get("seed")
-    if not isinstance(environment, str) or not isinstance(arm, str) or type(seed) is not int:
+    if type(environment) is not str or type(arm) is not str or type(seed) is not int:
         raise ValueError("run shard identity is malformed")
     spec = _spec_for_identity(
         effective_plan,
