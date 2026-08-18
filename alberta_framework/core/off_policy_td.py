@@ -95,7 +95,13 @@ _INFINITY_TYPES = _ACTUAL_FLOAT_TYPES - {Fraction}
 
 
 def _require_feature_dim(
-    value: object, *, vectors: int, fixed_scalars: int, augmented: bool = False
+    value: object,
+    *,
+    vectors: int,
+    fixed_scalars: int,
+    update_vectors: int,
+    update_scalars: int = 16,
+    augmented: bool = False,
 ) -> int:
     maximum = _INT32_MAX - 1 if augmented else _INT32_MAX
     if type(value) not in _ACTUAL_INT_TYPES:
@@ -107,6 +113,9 @@ def _require_feature_dim(
     scalar_count = vectors * width + fixed_scalars
     if 4 * scalar_count > _INT32_MAX:
         raise ValueError("derived state_nbytes must fit in signed int32")
+    update_scalar_count = update_vectors * width + update_scalars
+    if 4 * update_scalar_count > _INT32_MAX:
+        raise ValueError("derived update working set byte count must fit in signed int32")
     return feature_dim
 
 
@@ -485,7 +494,9 @@ class OffPolicyTDLinearLearner:
 
     def init(self, feature_dim: int) -> OffPolicyTDState:
         """Initialize learner state with zero weights and zero traces."""
-        feature_dim = _require_feature_dim(feature_dim, vectors=2, fixed_scalars=3)
+        feature_dim = _require_feature_dim(
+            feature_dim, vectors=2, fixed_scalars=3, update_vectors=8
+        )
         return OffPolicyTDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
@@ -699,7 +710,9 @@ class ETDLinearLearner:
 
     def init(self, feature_dim: int) -> ETDState:
         """Initialize learner state with zero weights and zero traces."""
-        feature_dim = _require_feature_dim(feature_dim, vectors=2, fixed_scalars=5)
+        feature_dim = _require_feature_dim(
+            feature_dim, vectors=2, fixed_scalars=5, update_vectors=8
+        )
         return ETDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
@@ -927,7 +940,13 @@ class GradientTDLinearLearner:
 
     def init(self, feature_dim: int) -> GradientTDState:
         """Initialize primary weights, secondary weights, and traces."""
-        feature_dim = _require_feature_dim(feature_dim, vectors=3, fixed_scalars=1, augmented=True)
+        feature_dim = _require_feature_dim(
+            feature_dim,
+            vectors=3,
+            fixed_scalars=1,
+            update_vectors=9,
+            augmented=True,
+        )
         augmented_dim = feature_dim + 1
         return GradientTDState(  # type: ignore[call-arg]
             weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
