@@ -109,6 +109,29 @@ def test_report_rejects_identity_observation_or_counter_mismatch() -> None:
         build_matched_report(plan, (off, replace(on, model_queries=1)))
 
 
+def test_distinct_matched_counter_budgets_are_representable() -> None:
+    plan = replace(
+        _plan(seeds=(0,)),
+        expected_updates=10_000,
+        expected_observations=10_000,
+        expected_data_steps=10_000,
+        expected_model_queries=10_128,
+    )
+    records = tuple(
+        replace(
+            _record(plan, arm, 0, metric),
+            updates=10_000,
+            observations=10_000,
+            data_steps=10_000,
+            model_queries=10_128,
+        )
+        for arm, metric in (("off", 1.0), ("on", 2.0))
+    )
+    report = build_matched_report(plan, records)
+    assert report["arm_summaries"]["off"]["total_model_queries"] == 10_128
+    assert report["arm_summaries"]["on"]["total_data_steps"] == 10_000
+
+
 def test_consumption_revalidates_mutated_frozen_values() -> None:
     plan = _plan(seeds=(0,))
     off = _record(plan, "off", 0, 1.0)
@@ -144,8 +167,32 @@ def test_plan_rejects_hostile_or_unbounded_values_without_iteration() -> None:
         replace(_plan(), arms=HostileTuple())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="bounded"):
         replace(_plan(), metric_name="é" * 300)
+    with pytest.raises(ValueError, match="valid UTF-8"):
+        replace(_plan(), metric_name="\ud800")
     with pytest.raises(ValueError, match="expected_updates"):
         replace(_plan(), expected_updates=2**100)
+
+
+def test_report_rejects_non_string_mapping_keys_without_hooks() -> None:
+    class HostileKey:
+        calls = 0
+
+        def __hash__(self) -> int:
+            return hash("plan")
+
+        def __eq__(self, other: object) -> bool:
+            type(self).calls += 1
+            raise AssertionError("hostile key equality executed")
+
+    report = build_matched_report(_plan(), _records(_plan()))
+    hostile = HostileKey()
+    forged = dict(report)
+    del forged["plan"]
+    forged[hostile] = None  # type: ignore[index]
+    HostileKey.calls = 0
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        validate_matched_report(forged)
+    assert HostileKey.calls == 0
 
 
 def test_report_rejects_invalid_transaction_numeric_and_total_resource_overflow() -> None:

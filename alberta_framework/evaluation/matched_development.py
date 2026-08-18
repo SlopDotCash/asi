@@ -69,8 +69,8 @@ def _finite_float(name: str, value: object, *, nonnegative: bool = False) -> flo
 class MatchedDevelopmentPlan:
     """Frozen two-arm schedule and resource contract.
 
-    ``source_sha256`` is the deterministic aggregate digest of every runner and mechanism
-    source file named by the protocol, rather than a digest of only one entry point.
+    ``source_sha256`` is supplied by the issue-specific protocol.  This generic contract
+    validates and binds that identifier; it does not derive or authenticate current source.
     """
 
     protocol_id: str
@@ -423,6 +423,8 @@ def build_matched_report(
 def _exact_dict(name: str, value: object) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError(f"{name} must be an exact dict")
+    if any(type(key) is not str for key in value):
+        raise ValueError(f"{name} keys must be exact strings")
     return value
 
 
