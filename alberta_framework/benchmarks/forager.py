@@ -237,7 +237,7 @@ def _require_builtin_int(
     maximum: int = _MAX_JAX_INT32,
 ) -> int:
     """Validate an integer-valued configuration field without bool coercion."""
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         raise ValueError(f"{name} must be an integer")
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must lie in [{minimum}, {maximum}]")
@@ -956,7 +956,7 @@ class AlbertaForagerConfig:
             ("critic_hidden_sizes", self.critic_hidden_sizes),
         ):
             if not isinstance(widths, tuple) or not widths or any(
-                isinstance(width, bool) or not isinstance(width, int) or width < 1
+                type(width) is not int or width < 1
                 for width in widths
             ):
                 raise ValueError(f"{name} must contain positive integer widths")
@@ -967,16 +967,14 @@ class AlbertaForagerConfig:
         }
         for name, value in unit_interval.items():
             if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
+                type(value) not in (int, float)
                 or not math.isfinite(value)
                 or not _finite_jax_float32(value)
                 or not 0.0 <= value <= 1.0
             ):
                 raise ValueError(f"{name} must be finite and lie in [0, 1]")
         if (
-            isinstance(self.actor_epsilon, bool)
-            or not isinstance(self.actor_epsilon, (int, float))
+            type(self.actor_epsilon) not in (int, float)
             or not math.isfinite(self.actor_epsilon)
             or not _finite_jax_float32(self.actor_epsilon)
             or not 0.0 <= self.actor_epsilon < 1.0
@@ -992,16 +990,14 @@ class AlbertaForagerConfig:
         }
         for name, value in positive_finite.items():
             if (
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
+                type(value) not in (int, float)
                 or not math.isfinite(value)
                 or value <= 0.0
                 or not _positive_jax_float32(value)
             ):
                 raise ValueError(f"{name} must be finite and positive")
         if (
-            isinstance(self.sparsity, bool)
-            or not isinstance(self.sparsity, (int, float))
+            type(self.sparsity) not in (int, float)
             or not math.isfinite(self.sparsity)
             or not _finite_jax_float32(self.sparsity)
             or not 0.0 <= self.sparsity <= 1.0
@@ -1010,11 +1006,7 @@ class AlbertaForagerConfig:
         if (
             self.td_error_normalizer_decay is not None
             and (
-                isinstance(self.td_error_normalizer_decay, bool)
-                or not isinstance(
-                    self.td_error_normalizer_decay,
-                    (int, float),
-                )
+                type(self.td_error_normalizer_decay) not in (int, float)
                 or not math.isfinite(self.td_error_normalizer_decay)
                 or not _finite_jax_float32(self.td_error_normalizer_decay)
                 or not 0.0 <= self.td_error_normalizer_decay < 1.0
