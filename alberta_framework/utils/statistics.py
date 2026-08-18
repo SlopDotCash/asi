@@ -69,7 +69,18 @@ class StatisticalSummary(NamedTuple):
     n_seeds: int
 
 
-class SignificanceResult(NamedTuple):
+class _SignificanceResultTuple(NamedTuple):
+    test_name: str
+    statistic: float
+    p_value: float
+    significant: bool
+    alpha: float
+    effect_size: float
+    method_a: str
+    method_b: str
+
+
+class SignificanceResult(_SignificanceResultTuple):
     """Result of a statistical significance test.
 
     Attributes:
@@ -83,14 +94,37 @@ class SignificanceResult(NamedTuple):
         method_b: Name of second method
     """
 
-    test_name: str
-    statistic: float
-    p_value: float
-    significant: bool
-    alpha: float
-    effect_size: float
-    method_a: str
-    method_b: str
+    __slots__ = ()
+
+    def __new__(
+        cls,
+        test_name: str,
+        statistic: float,
+        p_value: float,
+        significant: bool,
+        alpha: float,
+        effect_size: float,
+        method_a: str,
+        method_b: str,
+    ) -> "SignificanceResult":
+        checked_test_name = _require_exact_str("test_name", test_name)
+        if type(significant) is not bool:
+            raise ValueError("significant must be an exact bool")
+        checked_method_a = _require_exact_str("method_a", method_a)
+        checked_method_b = _require_exact_str("method_b", method_b)
+        return tuple.__new__(
+            cls,
+            (
+                checked_test_name,
+                statistic,
+                p_value,
+                significant,
+                alpha,
+                effect_size,
+                checked_method_a,
+                checked_method_b,
+            ),
+        )
 
 
 def _validate_confidence_level(confidence_level: object) -> None:
