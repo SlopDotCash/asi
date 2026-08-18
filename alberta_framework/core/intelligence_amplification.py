@@ -39,7 +39,6 @@ from __future__ import annotations
 import dataclasses
 import math
 import operator
-from collections.abc import Mapping
 from numbers import Real
 from typing import Any, SupportsIndex, cast
 
@@ -1496,7 +1495,7 @@ class IAAgent:
 def _host_field_mapping(value: Any, *, name: str) -> dict[str, Any]:
     """Return an exact shallow field mapping for one legacy state."""
 
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         return dict(value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return {field.name: getattr(value, field.name) for field in dataclasses.fields(value)}
