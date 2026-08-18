@@ -2567,7 +2567,7 @@ def test_agent_access_rejects_nonfinite_channel_priorities() -> None:
             "module": "algorithms.MCTSAgent",
         },
     }
-    for value in (float("nan"), float("inf"), float("-inf")):
+    for value in (float("nan"), float("inf"), float("-inf"), 10**1000, True):
         result = official_foragax_module._classify_official_foragax_agent_access(
             resolved_hyperparameters={
                 "mode": "world",

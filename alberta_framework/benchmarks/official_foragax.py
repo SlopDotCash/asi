@@ -4930,6 +4930,18 @@ def _classify_official_foragax_agent_access(
     registry: Mapping[str, str],
 ) -> dict[str, Any]:
     """Classify scientific identity and information access, failing closed."""
+    def finite_json_number(value: object) -> bool:
+        # Resolved hyperparameters have already crossed the canonical-JSON
+        # boundary.  Keep this check total even for arbitrarily large JSON
+        # integers: ``math.isfinite`` converts integers through binary64 and
+        # raises ``OverflowError`` for values such as ``10**1000``.
+        if type(value) not in (int, float):
+            return False
+        try:
+            return math.isfinite(cast(int | float, value))
+        except (OverflowError, TypeError, ValueError):
+            return False
+
     registry_class = registry["class"]
     if registry_class in _LEARNING_REGISTRY_CLASSES:
         method_family = "learning"
@@ -4968,12 +4980,7 @@ def _classify_official_foragax_agent_access(
         and isinstance(use_sinusoidal_encoding, bool)
         and isinstance(channel_priorities, dict)
         and all(isinstance(key, str) for key in channel_priorities)
-        and all(
-            isinstance(priority, (int, float))
-            and not isinstance(priority, bool)
-            and math.isfinite(priority)
-            for priority in channel_priorities.values()
-        )
+        and all(finite_json_number(priority) for priority in channel_priorities.values())
     )
     aperture_size = semantic_environment.get("aperture_size")
     observation_type = semantic_environment.get("observation_type")
