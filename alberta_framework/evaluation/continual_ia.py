@@ -117,6 +117,24 @@ def _require_integer(
     return canonical
 
 
+def _require_ndarray(
+    name: str,
+    value: object,
+    *,
+    dtype: np.dtype[Any],
+    length: int | None = None,
+) -> NDArray[Any]:
+    if type(value) is not np.ndarray:
+        raise ValueError(f"{name} must be an exact numpy.ndarray")
+    if value.dtype != dtype:
+        raise ValueError(f"{name} must have dtype {dtype}")
+    if value.ndim != 1:
+        raise ValueError(f"{name} must be one-dimensional")
+    if length is not None and int(value.shape[0]) != length:
+        raise ValueError(f"{name} must have length {length}")
+    return value
+
+
 def _require_derived_int32(name: str, value: int) -> None:
     if not 0 <= value <= _INT32_MAX:
         raise ValueError(f"derived {name} must be in [0, {_INT32_MAX}]")
@@ -433,6 +451,71 @@ class IAConditionResult:
     executed_action_credit_mismatches: int
     controller_budget: ControllerBudget
     timing: ConditionTiming
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "seed",
+            _require_integer("seed", self.seed, minimum=0, maximum=JAX_KEY_SEED_MAX),
+        )
+        if type(self.condition) is not str or self.condition not in CONDITION_NAMES:
+            raise ValueError("condition must be a known IA condition name")
+        rewards = _require_ndarray("rewards", self.rewards, dtype=np.dtype(np.float64))
+        steps = int(rewards.shape[0])
+        if steps < 1:
+            raise ValueError("rewards must contain at least one step")
+        for name in (
+            "executed_actions",
+            "credited_actions",
+            "recommendations",
+            "partner_proposals",
+        ):
+            _require_ndarray(
+                name,
+                getattr(self, name),
+                dtype=np.dtype(np.int64),
+                length=steps,
+            )
+        _require_ndarray(
+            "accepted_recommendations",
+            self.accepted_recommendations,
+            dtype=np.dtype(np.bool_),
+            length=steps,
+        )
+        object.__setattr__(self, "mean_reward", finite_real("mean_reward", self.mean_reward))
+        _require_ndarray(
+            "phase_mean_rewards",
+            self.phase_mean_rewards,
+            dtype=np.dtype(np.float64),
+        )
+        _require_ndarray(
+            "recovery_lengths",
+            self.recovery_lengths,
+            dtype=np.dtype(np.int64),
+        )
+        for name in (
+            "nominal_recommendation_decisions",
+            "nominal_accepted_recommendations",
+            "executed_accepted_recommendations",
+            "action_changing_interventions",
+            "executed_action_credit_mismatches",
+        ):
+            object.__setattr__(
+                self,
+                name,
+                _require_integer(name, getattr(self, name), minimum=0),
+            )
+        rate = finite_real(
+            "changed_action_intervention_rate",
+            self.changed_action_intervention_rate,
+        )
+        if not 0.0 <= rate <= 1.0:
+            raise ValueError("changed_action_intervention_rate must lie in [0, 1]")
+        object.__setattr__(self, "changed_action_intervention_rate", rate)
+        if not isinstance(self.controller_budget, ControllerBudget):
+            raise ValueError("controller_budget must be a ControllerBudget")
+        if not isinstance(self.timing, ConditionTiming):
+            raise ValueError("timing must be a ConditionTiming")
 
 
 @dataclass(frozen=True)
