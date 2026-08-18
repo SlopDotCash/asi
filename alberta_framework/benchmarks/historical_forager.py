@@ -167,7 +167,7 @@ def _json_mapping_copy(
     name: str,
     maximum_bytes: int = _MAX_JSON_BYTES,
 ) -> dict[str, Any]:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         raise HistoricalForagerContractError(f"{name} must be a mapping")
     encoded = _canonical_json_bytes(value)
     if len(encoded) > maximum_bytes:
@@ -1094,12 +1094,14 @@ def _strict_json_object(path: Path) -> tuple[dict[str, Any], bytes]:
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], *, name: str) -> None:
+    if type(value) is not dict:
+        raise HistoricalForagerArtifactError(f"{name} must be a mapping")
     if set(value) != expected:
         raise HistoricalForagerArtifactError(f"{name} fields are invalid")
 
 
 def _validate_adapter_manifest(value: Any) -> None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         raise HistoricalForagerArtifactError("environment_adapter must be an object")
     _require_exact_keys(
         value,
