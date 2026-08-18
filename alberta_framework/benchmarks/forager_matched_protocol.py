@@ -683,38 +683,6 @@ class PrimaryBootstrapAnalysis:
     implementation_sha256: str
     gate: Literal["lower_bound_strictly_greater_than_margin"]
 
-    def __post_init__(self) -> None:
-        if self.method != "paired_percentile_bootstrap_lower_bound":
-            raise ForagerMatchedProtocolError("invalid method")
-        if (
-            type(self.resamples) is not int
-            or isinstance(self.resamples, bool)
-            or self.resamples <= 0
-        ):
-            raise ForagerMatchedProtocolError("resamples must be a positive integer")
-        if type(self.seed) is not int or isinstance(self.seed, bool):
-            raise ForagerMatchedProtocolError("seed must be an integer")
-        if (
-            not isinstance(self.confidence, (int, float))
-            or isinstance(self.confidence, bool)
-            or not math.isfinite(self.confidence)
-            or not (0.0 < self.confidence < 1.0)
-        ):
-            raise ForagerMatchedProtocolError("confidence must be a float in (0.0, 1.0)")
-        if (
-            not isinstance(self.primary_margin, (int, float))
-            or isinstance(self.primary_margin, bool)
-            or not math.isfinite(self.primary_margin)
-        ):
-            raise ForagerMatchedProtocolError("primary_margin must be a finite float")
-        if self.rng_algorithm != "PCG64":
-            raise ForagerMatchedProtocolError("invalid rng_algorithm")
-        if self.quantile_method != "linear":
-            raise ForagerMatchedProtocolError("invalid quantile_method")
-        _require_sha256(self.implementation_sha256, "implementation_sha256")
-        if self.gate != "lower_bound_strictly_greater_than_margin":
-            raise ForagerMatchedProtocolError("invalid gate")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "method": self.method,
@@ -743,34 +711,6 @@ class SecondarySignFlipAnalysis:
     multiplicity_method: Literal["holm"]
     familywise_alpha: float
 
-    def __post_init__(self) -> None:
-        if self.method != "paired_sign_flip":
-            raise ForagerMatchedProtocolError("invalid method")
-        if (
-            type(self.monte_carlo_resamples) is not int
-            or isinstance(self.monte_carlo_resamples, bool)
-            or self.monte_carlo_resamples <= 0
-        ):
-            raise ForagerMatchedProtocolError("monte_carlo_resamples must be a positive integer")
-        if type(self.seed) is not int or isinstance(self.seed, bool):
-            raise ForagerMatchedProtocolError("seed must be an integer")
-        if self.exact_max_pairs != 20 or type(self.exact_max_pairs) is not int:
-            raise ForagerMatchedProtocolError("exact_max_pairs must be 20")
-        if self.rng_algorithm != "PCG64":
-            raise ForagerMatchedProtocolError("invalid rng_algorithm")
-        _require_sha256(self.implementation_sha256, "implementation_sha256")
-        if self.alternative != "greater":
-            raise ForagerMatchedProtocolError("invalid alternative")
-        if self.multiplicity_method != "holm":
-            raise ForagerMatchedProtocolError("invalid multiplicity_method")
-        if (
-            not isinstance(self.familywise_alpha, (int, float))
-            or isinstance(self.familywise_alpha, bool)
-            or not math.isfinite(self.familywise_alpha)
-            or not (0.0 < self.familywise_alpha < 1.0)
-        ):
-            raise ForagerMatchedProtocolError("familywise_alpha must be a float in (0.0, 1.0)")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "method": self.method,
@@ -794,17 +734,6 @@ class MatchedAnalysisPlan:
     metric_direction: Literal["maximize"]
     primary: PrimaryBootstrapAnalysis
     secondary: SecondarySignFlipAnalysis
-
-    def __post_init__(self) -> None:
-        if type(self.metric) is not str or not self.metric:
-            raise ForagerMatchedProtocolError("metric must be a non-empty string")
-        _require_sha256(self.metric_implementation_sha256, "metric_implementation_sha256")
-        if self.metric_direction != "maximize":
-            raise ForagerMatchedProtocolError("metric_direction must be maximize")
-        if not isinstance(self.primary, PrimaryBootstrapAnalysis):
-            raise ForagerMatchedProtocolError("primary must be a PrimaryBootstrapAnalysis")
-        if not isinstance(self.secondary, SecondarySignFlipAnalysis):
-            raise ForagerMatchedProtocolError("secondary must be a SecondarySignFlipAnalysis")
 
     def to_dict(self) -> dict[str, Any]:
         return {
