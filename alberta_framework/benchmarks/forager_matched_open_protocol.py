@@ -1016,7 +1016,7 @@ _UPSTREAM_CONFIGURATION_REQUIREMENTS: Final = MappingProxyType(
 
 
 def _require_real_sha256(value: str, path: str) -> None:
-    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+    if type(value) is not str or _SHA256_RE.fullmatch(value) is None:
         raise ForagerMatchedOpenProtocolBuildError(f"{path} must be a lowercase SHA-256")
     if _PLACEHOLDER_SHA256_RE.fullmatch(value) is not None:
         raise ForagerMatchedOpenProtocolBuildError(
