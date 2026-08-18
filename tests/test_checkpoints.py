@@ -36,6 +36,7 @@ class TestSaveLoadRoundTrip:
         assert loaded["empty"].dtype == jnp.float32
         chex.assert_trees_all_equal(loaded["payload"], state["payload"])
         assert metadata == {}
+        assert load_checkpoint_metadata(tmp_path / "empty_leaf") == {}
 
     def test_empty_template_cannot_discard_nonempty_saved_array(self, tmp_path):
         saved = {"x": jnp.array([42.0], dtype=jnp.float32)}
@@ -54,6 +55,21 @@ class TestSaveLoadRoundTrip:
 
         with pytest.raises(ValueError, match="does not match the restore template"):
             load_checkpoint(template, tmp_path / "empty_shape")
+
+    def test_user_metadata_cannot_forge_empty_array_manifest(self, tmp_path):
+        saved = {"x": jnp.array([42.0], dtype=jnp.float32)}
+        template = {"x": jnp.empty((0,), dtype=jnp.float32)}
+
+        save_checkpoint(
+            saved,
+            tmp_path / "forged_empty",
+            metadata={
+                "_empty_array_leaves": [{"shape": [0], "dtype": "float32"}],
+            },
+        )
+
+        with pytest.raises(ValueError, match="does not identify its empty array leaves"):
+            load_checkpoint(template, tmp_path / "forged_empty")
 
     def test_linear_learner_state(self, tmp_path):
         """LinearLearner state should round-trip correctly."""
