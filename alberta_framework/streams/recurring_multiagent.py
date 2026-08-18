@@ -382,15 +382,15 @@ class RecurringTwoAgentWorld:
         partner_policy: PartnerPolicy | None = None,
     ) -> None:
         if (
-            isinstance(context_length, bool)
-            or not isinstance(context_length, int)
+            type(context_length) is bool
+            or type(context_length) is not int
             or context_length <= 0
         ):
-            raise ValueError(f"context_length must be positive, got {context_length}")
+            raise ValueError("context_length must be positive")
         if context_length > _INT32_MAX // 2:
             raise ValueError("2 * context_length must fit in signed schedule telemetry")
-        if isinstance(nuisance_dim, bool) or not isinstance(nuisance_dim, int) or nuisance_dim < 0:
-            raise ValueError(f"nuisance_dim must be non-negative, got {nuisance_dim}")
+        if type(nuisance_dim) is bool or type(nuisance_dim) is not int or nuisance_dim < 0:
+            raise ValueError("nuisance_dim must be non-negative")
         for name, value in (
             ("nuisance_scale", nuisance_scale),
             ("world_limit", world_limit),
@@ -399,22 +399,24 @@ class RecurringTwoAgentWorld:
             ("time_delta", time_delta),
             ("max_speed", max_speed),
         ):
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            if type(value) is bool or (
+                type(value) is not int and type(value) is not float
+            ):
                 raise ValueError(f"{name} must be a finite real number")
             if not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
         if nuisance_scale < 0.0:
-            raise ValueError(f"nuisance_scale must be non-negative, got {nuisance_scale}")
+            raise ValueError("nuisance_scale must be non-negative")
         if world_limit <= 0.0:
-            raise ValueError(f"world_limit must be positive, got {world_limit}")
+            raise ValueError("world_limit must be positive")
         if not 0.0 <= damping < 1.0:
-            raise ValueError(f"damping must lie in [0, 1), got {damping}")
+            raise ValueError("damping must lie in [0, 1)")
         if acceleration <= 0.0:
-            raise ValueError(f"acceleration must be positive, got {acceleration}")
+            raise ValueError("acceleration must be positive")
         if time_delta <= 0.0:
-            raise ValueError(f"time_delta must be positive, got {time_delta}")
+            raise ValueError("time_delta must be positive")
         if max_speed <= 0.0:
-            raise ValueError(f"max_speed must be positive, got {max_speed}")
+            raise ValueError("max_speed must be positive")
         if type(initial_positions) is not tuple or len(initial_positions) != N_AGENTS:
             raise ValueError(f"initial_positions must be an exact {N_AGENTS}-tuple")
         canonical_positions = tuple(
