@@ -91,14 +91,6 @@ class ForagerMatchedEvidenceError(ValueError):
     """A score bundle or protocol-to-statistics adaptation failed closed."""
 
 
-def _require_exact_str(name: object, value: object) -> str:
-    if type(name) is not str:
-        raise ForagerMatchedEvidenceError("name must be an exact string")
-    if type(value) is not str:
-        raise ForagerMatchedEvidenceError(f"{name} must be an exact string")
-    return value
-
-
 def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
     try:
         return json.dumps(
@@ -188,31 +180,22 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            host_key = _require_exact_str("key", key)
-            raise ForagerMatchedEvidenceError(f"duplicate JSON object key '{host_key}'")
+            raise ForagerMatchedEvidenceError(f"duplicate JSON object key {key!r}")
         result[key] = value
     return result
 
 
-def _reject_nonfinite(value: object) -> NoReturn:
-    if type(value) is str:
-        host_value = _require_exact_str("value", value)
-        raise ForagerMatchedEvidenceError(f"non-finite JSON constant '{host_value}' is forbidden")
-    raise ForagerMatchedEvidenceError(
-        "non-finite JSON constant must be an exact string is forbidden"
-    )
+def _reject_nonfinite(value: str) -> NoReturn:
+    raise ForagerMatchedEvidenceError(f"non-finite JSON constant {value!r} is forbidden")
 
 
-def _parse_json_float(value: object) -> float:
-    if type(value) is not str:
-        raise ForagerMatchedEvidenceError("value must be an exact string")
-    host_value = _require_exact_str("value", value)
+def _parse_json_float(value: str) -> float:
     try:
         parsed = float(value)
     except (OverflowError, ValueError) as exc:
-        raise ForagerMatchedEvidenceError(f"invalid JSON number '{host_value}'") from exc
+        raise ForagerMatchedEvidenceError(f"invalid JSON number {value!r}") from exc
     if not math.isfinite(parsed):
-        raise ForagerMatchedEvidenceError(f"non-finite JSON number '{host_value}' is forbidden")
+        raise ForagerMatchedEvidenceError(f"non-finite JSON number {value!r} is forbidden")
     return parsed
 
 
@@ -1631,16 +1614,12 @@ def validate_score_evidence_against_protocol(
     for candidate_scores in scores.candidate_scores:
         candidate = frozen.candidate_index.get(candidate_scores.candidate_id)
         if candidate is None:
-            host_candidate_id = _require_exact_str(
-                "candidate_id", candidate_scores.candidate_id
-            )
             raise ForagerMatchedEvidenceError(
-                f"score evidence names unknown candidate '{host_candidate_id}'"
+                f"score evidence names unknown candidate {candidate_scores.candidate_id!r}"
             )
         if candidate_scores.seeds != frozen.active_seeds:
-            host_candidate_id = _require_exact_str("candidate_id", candidate.candidate_id)
             raise ForagerMatchedEvidenceError(
-                f"candidate '{host_candidate_id}' does not contain the exact active seed block"
+                f"candidate {candidate.candidate_id!r} does not contain the exact active seed block"
             )
         expected_subject = candidate_capability_descriptor_sha256(candidate)
         binding = candidate.runtime_binding
@@ -1650,9 +1629,8 @@ def validate_score_evidence_against_protocol(
             or candidate_scores.capability_qualification_receipt_sha256
             != binding.capability_qualification_receipt_sha256
         ):
-            host_candidate_id = _require_exact_str("candidate_id", candidate.candidate_id)
             raise ForagerMatchedEvidenceError(
-                f"candidate '{host_candidate_id}' capability evidence "
+                f"candidate {candidate.candidate_id!r} capability evidence "
                 "does not bind its frozen semantics"
             )
     _validate_authenticated_bindings(
