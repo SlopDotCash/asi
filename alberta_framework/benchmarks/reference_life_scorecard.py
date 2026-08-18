@@ -2772,6 +2772,8 @@ def validate_scorecard_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
         "summary",
         "artifact_sha256",
     }
+    if type(payload) is not dict:
+        raise ValueError("artifact must be an object")
     if set(payload) != required:
         raise ValueError("artifact fields do not match the scorecard schema")
     if (
@@ -2796,7 +2798,7 @@ def validate_scorecard_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
     ):
         raise ValueError("artifact identity scope note is misleading")
     plan_value = payload["plan"]
-    if not isinstance(plan_value, Mapping):
+    if type(plan_value) is not dict:
         raise ValueError("artifact plan must be an object")
     plan = ReferenceLifeDevelopmentPlan.from_payload(plan_value)
     if payload["plan_sha256"] != plan.plan_sha256:
@@ -2815,7 +2817,7 @@ def validate_scorecard_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
     if not _json_exact_equal(payload["run_order"], expected_order):
         raise ValueError("artifact run order is not the fixed cyclic schedule")
     runs = payload["runs"]
-    if not isinstance(runs, list) or len(runs) != len(specs):
+    if type(runs) is not list or len(runs) != len(specs):
         raise ValueError("artifact must retain exactly one record per scheduled run")
     for index, (record, spec) in enumerate(zip(runs, specs, strict=True)):
         _validate_run_record(
