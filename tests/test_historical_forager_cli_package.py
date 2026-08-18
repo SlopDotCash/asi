@@ -61,6 +61,7 @@ _EXPECTED_SCRIPT_NAMES = {
     "alberta-scale-robust-evidence",
     "alberta-step1-smoke",
     "alberta-step2-smoke",
+    "asi-reference-life-scorecard",
 }
 _HARD_LINK_SENSITIVE_SOURCES = (
     "alberta_framework/benchmarks/official_foragax.py",
