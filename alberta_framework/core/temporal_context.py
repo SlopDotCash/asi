@@ -156,6 +156,105 @@ def _require_int(
     return number
 
 
+def _temporal_context_persist_bytes(input_dim: int) -> int:
+    """EMA float32 vector plus the signed-int32 step counter."""
+
+    return 4 * input_dim + 4
+
+
+def _temporal_context_output_dim(
+    input_dim: int,
+    *,
+    include_raw: bool,
+    include_ema: bool,
+    include_delta: bool,
+    include_phase_products: bool,
+    n_periods: int,
+) -> int:
+    copies = int(include_raw) + int(include_ema) + int(include_delta)
+    phase_dim = 2 * n_periods
+    product_dim = phase_dim * input_dim * int(include_phase_products and n_periods > 0)
+    return copies * input_dim + phase_dim + product_dim
+
+
+def _temporal_context_update_working_set_bytes(
+    input_dim: int,
+    *,
+    include_raw: bool,
+    include_ema: bool,
+    include_delta: bool,
+    include_phase_products: bool,
+    n_periods: int,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras.
+
+    ``step`` keeps the source EMA/counter, the proposed EMA/counter, and the
+    transaction-selected result live together with the observation, sanitized
+    copies, optional delta pair, phase code, optional phase×obs products, and
+    the returned feature leaf.
+    """
+
+    persist_bytes = _temporal_context_persist_bytes(input_dim)
+    copies = int(include_raw) + int(include_ema) + int(include_delta)
+    phase_dim = 2 * n_periods
+    product_dim = phase_dim * input_dim * int(include_phase_products and n_periods > 0)
+    output_dim = copies * input_dim + phase_dim + product_dim
+    extra_bytes = (
+        4 * input_dim
+        + 4 * input_dim
+        + 4 * input_dim
+        + 4 * input_dim
+        + 8 * input_dim * int(include_delta)
+        + 4 * phase_dim
+        + 4 * product_dim
+        + 4 * output_dim
+        + 16
+    )
+    return 3 * persist_bytes + extra_bytes
+
+
+def _preflight_temporal_context_update_working_set(
+    input_dim: int,
+    *,
+    include_raw: bool,
+    include_ema: bool,
+    include_delta: bool,
+    include_phase_products: bool,
+    n_periods: int,
+) -> None:
+    """Reject a step envelope the host cannot name in signed int32."""
+
+    persist_bytes = _temporal_context_persist_bytes(input_dim)
+    if persist_bytes > _INT32_MAX:
+        raise ValueError(
+            "temporal-context persistent state byte count must fit signed int32"
+        )
+    output_dim = _temporal_context_output_dim(
+        input_dim,
+        include_raw=include_raw,
+        include_ema=include_ema,
+        include_delta=include_delta,
+        include_phase_products=include_phase_products,
+        n_periods=n_periods,
+    )
+    if output_dim > _INT32_MAX or 4 * output_dim > _INT32_MAX:
+        raise ValueError(
+            "temporal-context returned feature byte count must fit signed int32"
+        )
+    working_set_bytes = _temporal_context_update_working_set_bytes(
+        input_dim,
+        include_raw=include_raw,
+        include_ema=include_ema,
+        include_delta=include_delta,
+        include_phase_products=include_phase_products,
+        n_periods=n_periods,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "temporal-context update working set byte count must fit signed int32"
+        )
+
+
 @dataclass(frozen=True)
 class TemporalContextConfig:
     """Configuration for :class:`TemporalContextFeaturizer`.
@@ -184,10 +283,14 @@ class TemporalContextConfig:
 
     def output_dim(self) -> int:
         """Return the transformed feature dimensionality."""
-        copies = int(self.include_raw) + int(self.include_ema) + int(self.include_delta)
-        phase_dim = 2 * len(self.periods)
-        product_dim = phase_dim * self.input_dim * int(self.include_phase_products)
-        return copies * self.input_dim + phase_dim + product_dim
+        return _temporal_context_output_dim(
+            self.input_dim,
+            include_raw=self.include_raw,
+            include_ema=self.include_ema,
+            include_delta=self.include_delta,
+            include_phase_products=self.include_phase_products,
+            n_periods=len(self.periods),
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a plain dictionary."""
@@ -312,6 +415,14 @@ def _validate_config(config: TemporalContextConfig) -> None:
     )
     object.__setattr__(config, "ema_decay", ema_decay)
     object.__setattr__(config, "periods", canonical_periods)
+    _preflight_temporal_context_update_working_set(
+        input_dim,
+        include_raw=config.include_raw,
+        include_ema=config.include_ema,
+        include_delta=config.include_delta,
+        include_phase_products=config.include_phase_products,
+        n_periods=len(canonical_periods),
+    )
 
 
 class TemporalContextFeaturizer:
