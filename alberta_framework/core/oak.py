@@ -130,6 +130,35 @@ def _default_stomp_config() -> STOMPConfig:
     return STOMPConfig(subtask_specs=(SubtaskSpec(feature_index=0),))
 
 
+def _oak_direct_state_bytes(stomp: STOMPConfig) -> int:
+    """Named persist already preflighted by ``OaKConfig.__post_init__``."""
+    n_options = len(stomp.subtask_specs)
+    return 4 * (_stomp_direct_array_scalars(stomp) + 3 * n_options + 3)
+
+
+def _oak_update_result_extras_bytes(n_options: int) -> int:
+    """Returned ``OaKUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published diagnostic, clock-word,
+    and per-option utility leaves.
+    """
+    return 52 + 4 * n_options
+
+
+def _oak_update_working_set_bytes(stomp: STOMPConfig) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _oak_direct_state_bytes(stomp) + _oak_update_result_extras_bytes(
+        len(stomp.subtask_specs)
+    )
+
+
+def _preflight_oak_update_working_set(stomp: STOMPConfig) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _oak_update_working_set_bytes(stomp) > _INT32_MAX:
+        raise ValueError("OaK update working set byte count must fit signed int32")
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -187,6 +216,7 @@ class OaKConfig:
         combined_scalars = _stomp_direct_array_scalars(self.stomp) + 3 * self.n_options + 3
         if combined_scalars > _INT32_MAX or 4 * combined_scalars > _INT32_MAX:
             raise ValueError("derived OaK direct array bytes must fit signed int32")
+        _preflight_oak_update_working_set(self.stomp)
 
     @property
     def n_options(self) -> int:
