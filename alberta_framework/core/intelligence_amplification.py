@@ -128,11 +128,26 @@ def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
 
 
 def _preflight_cerebellum_resources(n_demons: int, obs_dim: int) -> None:
-    """Reject weight and concat widths the exo-cerebellum update cannot name."""
+    """Reject persistent and update working sets the cerebellum cannot name."""
 
+    weight_scalars = n_demons * obs_dim
+    # The agent owns the float32 weights, one int32 cumulant-index vector,
+    # one int32 telemetry scalar, and two uint32 lifetime words.  Every leaf
+    # occupies four bytes, so account for the aggregate rather than merely
+    # proving that the largest single array is nameable.
+    persistent_scalars = weight_scalars + n_demons + 3
     _require_float32_resource(
-        "exo-cerebellum weights",
-        float32_scalars=n_demons * obs_dim,
+        "exo-cerebellum persistent state",
+        float32_scalars=persistent_scalars,
+    )
+    # During update, weights, the outer-product delta, and candidate weights
+    # are simultaneously live.  The remaining term conservatively covers the
+    # two raw/safe observations, predictions, targets, errors, neutral result
+    # vectors, lifetime words, and transaction flags.
+    update_scalars = 3 * weight_scalars + 6 * n_demons + 4 * obs_dim + 16
+    _require_float32_resource(
+        "exo-cerebellum update working set",
+        float32_scalars=update_scalars,
     )
     _require_derived_int32("augmented observation dim", n_demons + obs_dim, minimum=2)
     _require_float32_resource(

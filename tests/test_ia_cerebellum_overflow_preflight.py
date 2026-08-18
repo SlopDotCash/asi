@@ -33,6 +33,20 @@ def test_cerebellum_config_rejects_weight_product_overflow() -> None:
         ExoCerebellumConfig(n_demons=65536, obs_dim=32768)
 
 
+def test_cerebellum_config_rejects_aggregate_before_allocation() -> None:
+    # The weight array alone is 4 bytes below INT32_MAX, but the persistent
+    # cumulant-index vector/counters and update working copies do not fit.
+    with pytest.raises(ValueError, match="persistent state byte count"):
+        ExoCerebellumConfig(n_demons=_INT32_MAX // 4, obs_dim=1)
+
+
+def test_cerebellum_config_rejects_simultaneous_update_working_set() -> None:
+    # Each individual matrix is below the byte ceiling; the live weights,
+    # outer product, and candidate matrix together exceed it.
+    with pytest.raises(ValueError, match="update working set byte count"):
+        ExoCerebellumConfig(n_demons=100_000_000, obs_dim=1)
+
+
 def test_ia_config_rejects_overflowing_published_update_width() -> None:
     cortex = _default_oak_config()
     overflowing_demons = _INT32_MAX - cortex.observation_dim + 1
