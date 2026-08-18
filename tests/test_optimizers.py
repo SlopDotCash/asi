@@ -53,6 +53,11 @@ class TestLMS:
 
         assert result.new_state.step_size == state.step_size
 
+    @pytest.mark.parametrize("step_size", [float("nan"), float("inf"), 0.0, -0.1, True, False])
+    def test_rejects_illegal_step_size(self, step_size: object) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            LMS(step_size=step_size)  # type: ignore[arg-type]
+
 
 class TestIDBD:
     """Tests for the IDBD optimizer."""
@@ -221,6 +226,18 @@ class TestAutostep:
         chex.assert_trees_all_close(state.normalizers, jnp.zeros(10))
         assert state.meta_step_size == pytest.approx(0.001)
         assert state.tau == pytest.approx(10000.0)
+
+    @pytest.mark.parametrize(
+        "initial_step_size", [float("nan"), float("inf"), 0.0, -0.1, True, False]
+    )
+    def test_rejects_illegal_initial_step_size(self, initial_step_size: object) -> None:
+        with pytest.raises(ValueError, match="initial_step_size"):
+            Autostep(initial_step_size=initial_step_size)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("meta_step_size", [float("nan"), float("inf"), -0.1, True])
+    def test_rejects_illegal_meta_step_size(self, meta_step_size: object) -> None:
+        with pytest.raises(ValueError, match="meta_step_size"):
+            Autostep(meta_step_size=meta_step_size)  # type: ignore[arg-type]
 
     def test_update_returns_correct_shapes(self, sample_observation):
         """Autostep update should return correctly shaped deltas."""
@@ -643,6 +660,29 @@ class TestObGD:
         assert state.kappa == pytest.approx(2.0)
         assert state.gamma == pytest.approx(0.0)
         assert state.lamda == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("step_size", [float("nan"), float("inf"), 0.0, -0.1, True, False])
+    def test_rejects_illegal_step_size(self, step_size: object) -> None:
+        with pytest.raises(ValueError, match="step_size"):
+            ObGD(step_size=step_size)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("kappa", [float("nan"), float("inf"), -0.1, True])
+    def test_rejects_illegal_kappa(self, kappa: object) -> None:
+        with pytest.raises(ValueError, match="kappa"):
+            ObGD(kappa=kappa)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("gamma", float("nan")),
+            ("gamma", True),
+            ("lamda", float("nan")),
+            ("lamda", True),
+        ],
+    )
+    def test_rejects_illegal_gamma_lamda(self, field: str, value: object) -> None:
+        with pytest.raises(ValueError, match=field):
+            ObGD(**{field: value})  # type: ignore[arg-type]
 
     def test_update_returns_correct_shapes(self, sample_observation):
         """ObGD update should return correctly shaped deltas."""

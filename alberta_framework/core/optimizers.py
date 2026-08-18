@@ -24,7 +24,10 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 from alberta_framework.core.types import (
     AutostepGTDLambdaState,
     AutostepParamState,
@@ -586,8 +589,13 @@ class LMS(Optimizer[LMSState]):
 
         Args:
             step_size: Fixed learning rate
+
+        Raises:
+            ValueError: If ``step_size`` is not a finite non-bool positive real.
         """
-        self._step_size = step_size
+        self._step_size = validated_float32_scalar(
+            "step_size", step_size, positive=True
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -1100,9 +1108,18 @@ class Autostep(Optimizer[AutostepState]):
             meta_step_size: Meta learning rate for adapting step-sizes
             tau: Time constant for normalizer adaptation (default: 10000).
                 Higher values mean slower normalizer decay.
+
+        Raises:
+            ValueError: If ``initial_step_size`` is not a finite non-bool
+                positive real, or ``meta_step_size`` is not a finite non-bool
+                nonnegative real.
         """
-        self._initial_step_size = initial_step_size
-        self._meta_step_size = meta_step_size
+        self._initial_step_size = validated_float32_scalar(
+            "initial_step_size", initial_step_size, positive=True
+        )
+        self._meta_step_size = validated_float32_scalar(
+            "meta_step_size", meta_step_size, lower=0.0
+        )
         self._tau = tau
 
     def to_config(self) -> dict[str, Any]:
@@ -1643,11 +1660,16 @@ class ObGD(Optimizer[ObGDState]):
             kappa: Bounding sensitivity parameter (default: 2.0)
             gamma: Discount factor for trace decay (default: 0.0 for supervised)
             lamda: Eligibility trace decay parameter (default: 0.0 for supervised)
+
+        Raises:
+            ValueError: If ``step_size`` is not a finite non-bool positive real,
+                ``kappa`` is not a finite non-bool nonnegative real, or
+                ``gamma`` / ``lamda`` are not finite non-bool reals in ``[0, 1]``.
         """
-        self._step_size = step_size
-        self._kappa = kappa
-        self._gamma = gamma
-        self._lamda = lamda
+        self._step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        self._kappa = validated_float32_scalar("kappa", kappa, lower=0.0)
+        self._gamma = validated_float32_scalar("gamma", gamma, lower=0.0, upper=1.0)
+        self._lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
