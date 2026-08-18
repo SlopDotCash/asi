@@ -880,14 +880,14 @@ def _mapping(
     errors: list[str],
 ) -> Mapping[str, object] | None:
     value = parent.get(key)
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{location}.{key} must be an object")
         return None
     return value
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is not int and type(value) is not float:
         return None
     numeric = float(value)
     return numeric if math.isfinite(numeric) else None
@@ -981,14 +981,14 @@ def _nmse_values(
 
 
 def _pair_set(value: object) -> set[tuple[int, int]] | None:
-    if not isinstance(value, list):
+    if type(value) is not list:
         return None
     pairs: set[tuple[int, int]] = set()
     for pair in value:
         if (
-            not isinstance(pair, list)
+            type(pair) is not list
             or len(pair) != 2
-            or any(isinstance(item, bool) or not isinstance(item, int) for item in pair)
+            or any(type(item) is not int for item in pair)
         ):
             return None
         pairs.add((pair[0], pair[1]))
@@ -997,7 +997,7 @@ def _pair_set(value: object) -> set[tuple[int, int]] | None:
 
 def _valid_optional_recovery_step(value: object, *, maximum: int) -> bool:
     return value is None or (
-        not isinstance(value, bool) and isinstance(value, int) and 1 <= value <= maximum
+        type(value) is int and 1 <= value <= maximum
     )
 
 
@@ -1772,6 +1772,9 @@ def validate_recurring_feature_artifact(
     """Validate schema, provenance, raw evidence, aggregates, checks, and digest."""
 
     errors: list[str] = []
+    if type(artifact) is not dict:
+        errors.append("artifact must be a mapping with exact dict identities")
+        return ArtifactValidation(valid=False, accepted=False, errors=tuple(errors))
     expected_top_level = {
         "schema_version",
         "scientific_payload",
