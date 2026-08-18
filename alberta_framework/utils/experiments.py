@@ -14,8 +14,11 @@ Two conventions matter for downstream analysis:
   :func:`aggregate_metrics`.
 """
 
+from __future__ import annotations
+
 import math
 from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any, NamedTuple, NoReturn, cast
@@ -33,6 +36,8 @@ from alberta_framework.core.learners import (
 from alberta_framework.core.types import LearnerState
 from alberta_framework.streams.base import ScanStream
 from alberta_framework.utils.statistics import common_final_window
+
+_INT32_MAX = 2**31 - 1
 
 _NUMPY_COORDINATE_TYPES = frozenset(
     np.dtype(dtype_code).type
@@ -67,6 +72,24 @@ def _require_exact_str(name: str, value: object) -> str:
     return value
 
 
+def _require_positive_int(name: str, value: object) -> int:
+    if type(value) is not int or value < 1 or value > _INT32_MAX:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _require_callable(name: str, value: object) -> Callable[..., object]:
+    if not callable(value):
+        raise ValueError(f"{name} must be callable")
+    return value
+
+
+def _require_metrics_history(value: object) -> list[dict[str, float]]:
+    if type(value) is not list:
+        raise ValueError("metrics_history must be an exact list")
+    return value  # type: ignore[return-value]
+
+
 def _type_identity_in(
     value_type: type[object],
     candidates: Iterable[type[object]],
@@ -84,7 +107,7 @@ class _CanonicalFractionCoordinate(tuple[int, int]):
         cls,
         numerator: int,
         denominator: int,
-    ) -> "_CanonicalFractionCoordinate":
+    ) -> _CanonicalFractionCoordinate:
         if type(numerator) is not int or type(denominator) is not int or denominator <= 0:
             raise ValueError("canonical Fraction coordinates require builtin integer components")
         normalized = Fraction(numerator, denominator)
@@ -143,7 +166,8 @@ _BYTES_COORDINATE_TYPES = (bytes, np.bytes_)
 _MAX_HYPERPARAMETER_COORDINATE_NESTING = 32
 
 
-class ExperimentConfig(NamedTuple):
+@dataclass(frozen=True)
+class ExperimentConfig:
     """Configuration for a single experiment.
 
     Attributes:
@@ -158,8 +182,24 @@ class ExperimentConfig(NamedTuple):
     stream_factory: Callable[[], ScanStream[Any]]
     num_steps: int
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "name", _require_exact_str("name", self.name))
+        object.__setattr__(
+            self, "learner_factory", _require_callable("learner_factory", self.learner_factory)
+        )
+        object.__setattr__(
+            self, "stream_factory", _require_callable("stream_factory", self.stream_factory)
+        )
+        object.__setattr__(
+            self, "num_steps", _require_positive_int("num_steps", self.num_steps)
+        )
 
-class SingleRunResult(NamedTuple):
+    def _replace(self, **changes: object) -> ExperimentConfig:
+        return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class SingleRunResult:
     """Result from a single experiment run.
 
     Attributes:
@@ -173,6 +213,20 @@ class SingleRunResult(NamedTuple):
     seed: int
     metrics_history: list[dict[str, float]]
     final_state: LearnerState
+
+    def __post_init__(self) -> None:
+        if type(self.final_state) is not LearnerState:
+            raise TypeError("final_state must be an exact LearnerState")
+        object.__setattr__(
+            self, "config_name", _require_exact_str("config_name", self.config_name)
+        )
+        object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        object.__setattr__(
+            self, "metrics_history", _require_metrics_history(self.metrics_history)
+        )
+
+    def _replace(self, **changes: object) -> SingleRunResult:
+        return replace(self, **changes)
 
 
 class MetricSummary(NamedTuple):
