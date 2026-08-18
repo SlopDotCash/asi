@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from alberta_framework.evaluation.matched_development import (
@@ -25,10 +27,23 @@ def _record(arm: str, seed: int, metric: float) -> ArmRecord:
     )
 
 
-def test_report_requires_complete_matched_cross_product() -> None:
-    plan = MatchedDevelopmentPlan(
-        protocol_id="test.v1", control="off", arms=("off", "on"), seeds=(0, 1), steps=4
+def _plan(*, seeds: tuple[int, ...] = (0, 1)) -> MatchedDevelopmentPlan:
+    return MatchedDevelopmentPlan(
+        protocol_id="test.v1",
+        paper_revision="paper.v1",
+        reference_code_revision="not-used",
+        source_sha256="a" * 64,
+        report_namespace="outputs/test.v1",
+        metric_name="score",
+        control="off",
+        arms=("off", "on"),
+        seeds=seeds,
+        steps=4,
     )
+
+
+def test_report_requires_complete_matched_cross_product() -> None:
+    plan = _plan()
     records = (
         _record("off", 0, 1.0),
         _record("on", 0, 2.0),
@@ -43,26 +58,33 @@ def test_report_requires_complete_matched_cross_product() -> None:
 
 
 def test_report_rejects_observation_or_counter_mismatch() -> None:
-    plan = MatchedDevelopmentPlan(
-        protocol_id="test.v1", control="off", arms=("off", "on"), seeds=(0,), steps=4
-    )
-    bad_hash = _record("on", 0, 2.0)
-    object.__setattr__(bad_hash, "observation_sha256", "f" * 64)
+    plan = _plan(seeds=(0,))
+    bad_hash = replace(_record("on", 0, 2.0), observation_sha256="f" * 64)
     with pytest.raises(ValueError, match="observation identity"):
         build_matched_report(plan, (_record("off", 0, 1.0), bad_hash))
-    bad_steps = _record("on", 0, 2.0)
-    object.__setattr__(bad_steps, "updates", 3)
+    bad_steps = replace(_record("on", 0, 2.0), updates=3)
     with pytest.raises(ValueError, match="matched steps"):
         build_matched_report(plan, (_record("off", 0, 1.0), bad_steps))
 
 
 def test_report_rejects_invalid_transaction_and_incomplete_plan() -> None:
-    plan = MatchedDevelopmentPlan(
-        protocol_id="test.v1", control="off", arms=("off", "on"), seeds=(0,), steps=4
-    )
-    invalid = _record("on", 0, 2.0)
-    object.__setattr__(invalid, "transaction_valid", False)
+    plan = _plan(seeds=(0,))
+    invalid = replace(_record("on", 0, 2.0), transaction_valid=False)
     with pytest.raises(ValueError, match="transaction"):
         build_matched_report(plan, (_record("off", 0, 1.0), invalid))
     with pytest.raises(ValueError, match="complete arm-seed cross product"):
         build_matched_report(plan, (_record("off", 0, 1.0),))
+
+
+def test_plan_and_report_reject_path_escape_and_numeric_overflow() -> None:
+    with pytest.raises(ValueError, match="outputs path"):
+        replace(_plan(), report_namespace="outputs/../escape")
+    plan = _plan(seeds=(0,))
+    with pytest.raises(ValueError, match="paired differences"):
+        build_matched_report(
+            plan,
+            (
+                _record("off", 0, -float.fromhex("0x1.fffffffffffffp+1023")),
+                _record("on", 0, float.fromhex("0x1.fffffffffffffp+1023")),
+            ),
+        )
