@@ -868,9 +868,11 @@ EVIDENCE_SPECS = _validated_evidence_specs(EVIDENCE_SPECS)
 def _artifact_digest(artifact: Mapping[str, object]) -> str | None:
     """Extract a validator-bound scientific/content digest when present."""
 
+    if type(artifact) is not dict:
+        return None
     for key in ("scientific_digest", "content_digest"):
         record = artifact.get(key)
-        if not isinstance(record, Mapping):
+        if type(record) is not dict:
             continue
         value = record.get("sha256")
         if (
@@ -1197,7 +1199,7 @@ def _chain_mapping(
     expected_keys: set[str],
     errors: list[str],
 ) -> Mapping[str, object] | None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{location} must be an object")
         return None
     if set(value) != expected_keys:
@@ -3046,6 +3048,8 @@ def build_evidence_manifest(
 def evidence_manifest_exit_code(manifest: Mapping[str, object]) -> int:
     """Return 0 accepted, 1 not-run/valid rejection, or 2 invalid."""
 
+    if type(manifest) is not dict:
+        return 2
     status = manifest.get("overall_status")
     if status == "accepted":
         return 0
@@ -3057,6 +3061,8 @@ def evidence_manifest_exit_code(manifest: Mapping[str, object]) -> int:
 def evidence_manifest_json(manifest: Mapping[str, object]) -> str:
     """Serialize the claim manifest as strict, stable JSON."""
 
+    if type(manifest) is not dict:
+        raise ValueError("manifest must be an object")
     return (
         json.dumps(
             manifest,
