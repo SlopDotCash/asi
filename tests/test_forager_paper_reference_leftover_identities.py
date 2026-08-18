@@ -7,8 +7,11 @@ import json
 import pytest
 
 from alberta_framework.benchmarks.forager import (
+    ForagerRunResult,
     PaperBaseline,
+    PaperForagerProtocol,
     PaperReferenceTarget,
+    paper_protocol,
     paper_reference_targets,
 )
 
@@ -73,3 +76,100 @@ def test_paper_reference_targets_remain_legal() -> None:
     assert rtu.central_estimate == pytest.approx(1.3)
     dumped = json.dumps(rtu.to_dict(), allow_nan=False)
     assert '"central_estimate": 1.3' in dumped
+
+
+def _legal_run_result(**overrides: object) -> ForagerRunResult:
+    payload: dict[str, object] = {
+        "agent": "toy",
+        "privileged": False,
+        "seed": 0,
+        "steps": 10,
+        "total_reward": 1.0,
+        "mean_reward": 0.1,
+        "final_window_mean_reward": 0.1,
+        "final_ewm_reward": 0.1,
+        "mean_ewm_reward": 0.1,
+        "fov_last_10pct_ema_auc": 0.1,
+        "mean_biome_regret": 0.0,
+        "final_biome_regret": 0.0,
+        "curve_steps": (1, 10),
+        "curve_ewm_reward": (0.1, 0.1),
+        "curve_window_reward": (0.1, 0.1),
+        "duration_s": 1.0,
+        "frames_per_second": 10.0,
+        "environment": {"env_id": "fake"},
+        "metric_contract": {"metric": "mean_reward"},
+        "agent_metadata": {"name": "toy"},
+    }
+    payload.update(overrides)
+    return ForagerRunResult(**payload)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("evaluation_seeds", True),
+        ("evaluation_seeds", False),
+        ("evaluation_seeds", 0),
+        ("final_window_steps", True),
+        ("final_window_steps", 0),
+        ("tuning_seeds", True),
+        ("evaluation_steps", True),
+        ("single_stream", 1),
+        ("confidence", True),
+        ("ewm_decay", True),
+    ],
+)
+def test_paper_forager_protocol_rejects_bool_counts_and_windows(
+    field: str, value: object
+) -> None:
+    legal = paper_protocol()
+    kwargs = {name: getattr(legal, name) for name in legal.__dataclass_fields__}
+    kwargs[field] = value
+    with pytest.raises(ValueError, match=field):
+        PaperForagerProtocol(**kwargs)  # type: ignore[arg-type]
+
+
+def test_paper_forager_protocol_keeps_integer_json_and_seed_range() -> None:
+    protocol = paper_protocol("relearning")
+    dumped = json.dumps(protocol.to_dict(), allow_nan=False)
+    assert '"evaluation_seeds": 30' in dumped
+    assert '"final_window_steps": 100000' in dumped
+    assert '"evaluation_seeds": true' not in dumped
+    assert '"final_window_steps": true' not in dumped
+    seeds = range(
+        protocol.evaluation_seed_start,
+        protocol.evaluation_seed_start + protocol.evaluation_seeds,
+    )
+    assert len(tuple(seeds)) == 30
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("steps", True),
+        ("steps", False),
+        ("steps", 0),
+        ("seed", True),
+        ("seed", -1),
+        ("privileged", 1),
+        ("mean_reward", True),
+        ("duration_s", True),
+        ("duration_s", float("inf")),
+    ],
+)
+def test_forager_run_result_rejects_bool_seed_and_steps(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        _legal_run_result(**{field: value})
+
+
+def test_forager_run_result_keeps_integer_json() -> None:
+    result = _legal_run_result()
+    dumped = json.dumps(result.to_dict(), allow_nan=False)
+    assert '"seed": 0' in dumped
+    assert '"steps": 10' in dumped
+    assert '"seed": true' not in dumped
+    assert '"steps": true' not in dumped
+    assert '"privileged": false' in dumped
