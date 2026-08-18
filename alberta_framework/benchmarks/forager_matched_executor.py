@@ -1215,14 +1215,14 @@ def _validate_complexity(value: Any) -> None:
 
 def decode_strict_json(value: bytes | str) -> Any:
     """Decode bounded duplicate-free UTF-8 JSON with finite numbers."""
-    if isinstance(value, bytes):
+    if type(value) is bytes:
         if len(value) > _MAX_JSON_BYTES:
             raise ForagerMatchedExecutorError("JSON input exceeds the byte bound")
         try:
             text = value.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ForagerMatchedExecutorError("JSON input is not UTF-8") from exc
-    elif isinstance(value, str):
+    elif type(value) is str:
         if len(value.encode("utf-8")) > _MAX_JSON_BYTES:
             raise ForagerMatchedExecutorError("JSON input exceeds the byte bound")
         text = value
@@ -1674,9 +1674,9 @@ def _docker_mount_path(path: Path, label: str) -> str:
 def _decode_mapping(value: Mapping[str, Any] | bytes | str, label: str) -> dict[str, Any]:
     if isinstance(value, Mapping):
         decoded = decode_strict_json(canonical_json_bytes(dict(value)))
-    elif isinstance(value, (bytes, str)):
+    elif type(value) in (bytes, str):
         decoded = decode_strict_json(value)
-        raw = value if isinstance(value, bytes) else value.encode("utf-8")
+        raw = value if type(value) is bytes else value.encode("utf-8")
         mapping = _object(decoded, label)
         if raw != canonical_json_bytes(mapping):
             raise ForagerMatchedExecutorError(f"{label} bytes are not canonical")
@@ -1689,7 +1689,7 @@ def _protocol_instance(
     protocol: ForagerMatchedProtocol | Mapping[str, Any],
 ) -> ForagerMatchedProtocol:
     try:
-        if isinstance(protocol, ForagerMatchedProtocol):
+        if type(protocol) is ForagerMatchedProtocol:
             return parse_forager_matched_protocol(protocol.to_dict())
         return parse_forager_matched_protocol(protocol)
     except ForagerMatchedProtocolError as exc:
@@ -2814,7 +2814,7 @@ def parse_execution_plan(
     )
     if isinstance(value, Mapping):
         payload = _decode_mapping(value, "execution plan")
-    elif isinstance(value, (bytes, str)):
+    elif type(value) in (bytes, str):
         payload = _decode_mapping(value, "execution plan")
     else:
         raise TypeError("execution plan must be a mapping, bytes, or str")
