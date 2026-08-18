@@ -793,6 +793,38 @@ class TestBayesReference:
             np.asarray(base_predictions), np.asarray(transformed)
         )
 
+    def test_bayes_reference_accuracy_is_identical_across_families(self):
+        """The published ceiling must not depend on which family is selected.
+
+        ``test_bayes_rule_invariant_under_regime_transforms`` pins the rule:
+        ``bayes_predict`` is covariant under a permutation and a global scale.
+        It does not pin the composition. ``bayes_reference`` also runs the
+        family branches of :func:`generate_stream`, so a branch that perturbed
+        class geometry — for instance by resampling component means when
+        building a recurrence pool — would move the ceiling while leaving the
+        rule covariant and that test green.
+
+        Every micro-suite result is read against this ceiling, so it is
+        asserted exactly rather than within Monte-Carlo tolerance: the families
+        share one generative geometry per seed, and each reference draws the
+        same samples, so equality is bit-exact and any drift is a real change.
+        """
+        for seed in (0, 1, 2):
+            references = {
+                family: bayes_reference(
+                    MicroStreamConfig(family=family), seed, n_samples=20_000
+                )
+                for family in FAMILIES
+            }
+            accuracies = {
+                family: reference.bayes_accuracy
+                for family, reference in references.items()
+            }
+            assert len(set(accuracies.values())) == 1, accuracies
+
+            chances = {reference.chance for reference in references.values()}
+            assert len(chances) == 1, chances
+
     def test_bayes_predict_avoids_common_offset_cancellation(self):
         component_means = jnp.asarray(
             [[[10_000.0, 10_000.0]], [[10_001.0, 10_001.0]]],
