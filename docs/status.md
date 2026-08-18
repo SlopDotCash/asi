@@ -1,12 +1,13 @@
-# Alberta Plan research status
+# ASI research status
+This document is the compact, human-readable status map for ASI. It separates
+available mechanisms, stored scientific outcomes, whole-agent capabilities,
+and the evidence still required for a continual-learning application.
 
-This document is the compact, human-readable status map for the Alberta
-Framework. It separates available mechanisms, stored scientific outcomes, and
-the evidence still required for a complete continual agent.
-
-**Verdict: in progress.** The package exposes research surfaces related to all
-twelve steps of the Alberta Plan, but no step satisfies this repository's full
-completion rule. There is no accepted end-to-end Alberta Plan completion claim.
+**Verdict: in progress.** No whole-agent L3 protocol or result has been
+completed, and there is no state-of-the-art application or robotics-readiness
+result. The package also exposes research surfaces related to all twelve steps
+of the Alberta Plan, but no Step satisfies this repository's full completion
+rule. The Plan is an inspiration and crosswalk, not ASI's binding roadmap.
 
 This page deliberately does not record a dated live evidence-registry result,
 module count, test count, campaign ranking, or session chronology. Those facts
@@ -16,14 +17,16 @@ change. Run the relevant command or read the primary artifact instead.
 
 Use each record only for the question it owns:
 
-- This page records the stable evidence levels, current Step 1–12 gaps, and
-  completion gates.
+- The [ASI research roadmap](research/asi-roadmap.md) owns the mission,
+  hillclimb loop, application ladder, and whole-life scorecard.
+- This page records the stable capability gaps, evidence levels, Alberta Step
+  1–12 crosswalk, and completion gates.
 - [Evidence methodology](evidence/methodology.md) owns promotion rules,
   property-level evidence, artifact contracts, and scientific limitations.
 - The [negative-results ledger](evidence/negative-results.md) owns rejected,
   bounded, consumed, and closed development results.
 - [`evidence_manifest.py`](../alberta_framework/evaluation/evidence_manifest.py)
-  owns the live five-claim registry, its exact source closures, and exit-code
+  owns the live five-claim registry, its exact registered source sets, and exit-code
   semantics.
 - Versioned JSON artifacts own frozen scientific outcomes. Validators, not
   narrative summaries, decide whether those artifacts match current sources.
@@ -36,41 +39,135 @@ evidence are different kinds of progress. A public class or passing test proves
 that a mechanism exists; it does not by itself prove benefit, retention,
 resource parity, or integration.
 
-## Evidence interpretation
+## Evidence levels
 
-The stable evidence scale is L0 for mechanism contracts, L1 for learning in a
-controlled toy problem, L2 for preregistered matched-resource comparison, and
-L3 for integration across one uninterrupted agent life. The
-[evidence methodology](evidence/methodology.md) defines these levels,
-promotion rules, artifact contracts, registered frozen outcomes, and the two
-narrow historical compatibility routes in detail.
+- **L0 — mechanism:** API, shape, finite-value, serialization, ownership, or
+  local-update contracts pass.
+- **L1 — learning:** a component learns in a controlled toy problem.
+- **L2 — comparison:** a preregistered, multi-seed, matched-resource benchmark
+  establishes the frozen claim against strong baselines.
+- **L3 — integration:** one uninterrupted agent life demonstrates the required
+  interactions, retention, recovery, bounded resources, and causal ablations.
 
 For this repository, a Step is complete only when its defining outcome reaches
 L2 and its required links to earlier Steps are exercised at L3. Missing
-promoting evidence must fail closed; it must not be treated as a skipped test
-or inferred from adjacent results. All twelve public Step modules contain
-mechanism or smoke surfaces. Only the Step 1 and Step 2 smoke probes are
-console scripts; smoke execution is L0 and structurally nonpromoting.
+promoted evidence must fail closed; it must not be treated as a skipped test or
+inferred from adjacent results.
 
-## Live evidence registry
+All twelve public Step modules contain mechanism or smoke surfaces. Only the
+Step 1 and Step 2 smoke probes are console scripts. Smoke execution is L0 and
+is structurally nonpromoting.
 
-The registry is intentionally limited to five narrow claims. Its exact claim
-inventory, source closures, and exit-code semantics live in
-[`evidence_manifest.py`](../alberta_framework/evaluation/evidence_manifest.py),
-while versioned artifacts and their strict validators own frozen outcomes. Run
-the live check from a repository checkout:
+## ASI capability map
+
+This map is primary for the end-to-end application. The Alberta Plan crosswalk
+below supplies a second view over the inherited research program.
+
+| Capability | Current surface | Open application gate |
+|---|---|---|
+| Online adaptation and plasticity | Online learners, adaptive optimizers, normalization, UPGD/CBP mechanisms, and development campaigns | No completed multi-domain comparison establishes sustained plasticity without hidden retention or resource regressions |
+| Learned state and representation | Feature construction, utility, routing, lifecycle, temporal-context, and recurrent-state mechanisms | No autonomous representation lifecycle has a whole-life downstream control result |
+| Prediction, memory, and world modeling | Horde/GVF learners, working and experiential memory, one-step/latent/recurrent models, and dreaming | No reference agent shows that these components causally improve retained control under one owner and budget |
+| Continual control and planning | SARSA, actor-critic, average-reward/off-policy control, options, STOMP/OaK, and bounded planning | No promoted matched-resource continual-control result closes adaptation, retention, and planning-benefit gates |
+| Agent composition | The unfrozen [`preview1` transaction/reducer/CAS ledger](../alberta_framework/reference_agent.py), [primitive exact-dispatch Prototype bridge](../alberta_framework/prototype_reference_adapter.py), aggregate [Prototype + SwitchingTwoState/RiverSwim runner](../alberta_framework/reference_life.py), current-schema [quiescent checkpoint codec](../alberta_framework/reference_life_checkpoint.py), [matched control adapters](../alberta_framework/reference_life_controls.py), and [development scorecard](../alberta_framework/benchmarks/reference_life_scorecard.py) are covered by retained L0 tests. The scorecard plan defines a 144-shard fresh-process schedule over 12 consumed development seeds, two environments, six arms, explicit Threefry roots, finite-horizon privileged normalization, fixed reward lattices, and numeric-payload accounting | No completed scorecard result, frozen/portable checkpoint contract, authenticated execution provenance, qualified timing/resource Pareto gate, in-flight or physical replay, process-death/`BaseException`/durable executor guarantee, independent safety, additional/general environment support, options/rebinding/boundary conformance, robot or Forager adapter, selected `reference-dev`, RiverSwim learning/performance benefit, evidence result, or uninterrupted L3 life exists |
+| Multi-agent learning | Recurring coadaptation surfaces, partner-policy fusion, and an IA intervention protocol | A frozen historical coadaptation outcome is not causal amplification; the frozen historical IA outcome is a valid rejection, while live validity must be checked separately |
+| Scale and operations | Fixed-shape JAX state, artifact tooling, robot-compatible imports, and bounded same-runtime exact checkpoint/recovery gates for one deterministic and one keyed stochastic simulator | Long-horizon compute, memory, latency, numerical stability, checkpoint migration, broader environment recovery, and workload scaling are not jointly established |
+| Robotics and real work | The sibling robot track consumes a continual-RL subset and defines an ASIMOV-1 task sequence plus checkpoint, bridge, and validation plumbing | No ASI reference-life binding or matched full-budget adaptation/retention result closes the control-rate, fault/safety, and guarded-hardware gates |
+
+Implementation presence in the middle column is not a benefit claim. Each open
+gate needs its own matched protocol, and the integrated target needs the
+whole-life dimensions to pass together.
+
+The current primitive Prototype runners bind
+`PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS = 2**31 - 4` and reject a larger
+`max_accepted_events` during construction. That preflight does not establish
+uint64-long-horizon stability, learning, or resource behavior. Every future
+adapter must declare its own non-wrapping capacity and remain part of the
+canonical minimum. The RiverSwim path separately rejects `n_states` outside
+`[2, 12]` before constructing its exponential exact stationary oracle. This is
+a strict resource guard, not a RiverSwim scale or performance result.
+
+The current reference-life hillclimb has implemented a literal-frozen L0 scorecard
+machinery for SwitchingTwoState and RiverSwim. Its 144 fresh-process shards use
+12 consumed development seeds and six controls: Prototype, frozen/no-learning,
+random, finite-horizon privileged dynamic programming, differential SARSA, and
+discounted SARSA. Shards bind their current source identity, and aggregation requires one
+matching current identity. It has not yet established a completed scorecard result. All
+records are permanently nonpromoting; they do not populate `reference-dev` or
+create performance or scientific evidence.
+
+## Registered evidence
+
+The five-claim registry is intentionally narrow. Even an `accepted` overall
+registry result would mean only that every listed narrow gate passed. It would
+not certify the package, complete a Step, or establish Alberta Plan completion.
+
+The immutable stored artifacts record these frozen outcomes:
+
+| Claim ID | Frozen scope | Artifact | Frozen outcome |
+|---|---|---|---|
+| `recurring_pair_features` | Retention and active-bank allocation of supplied pair-product features in a Gaussian/L2 recurring probe | [`evidence.v1.json`](../outputs/recurring_feature/evidence.v1.json) | Accepted, narrow L2 |
+| `scale_robust_pair_features` | Scale-robust selection and structural retention of relevant pair products in a visibly cued regression gauntlet | [`evidence.v2.json`](../outputs/scale_robust_feature/evidence.v2.json) | Accepted, narrow L2 |
+| `ftl_world_model_decision_fidelity` | Low menu regret for a sparse online transition model in one deterministic A–B–A decision-fidelity protocol | [`evidence.v1.json`](../outputs/ftl_decision/evidence.v1.json) | Accepted historical L2 |
+| `recurring_multiagent_coadaptation` | Fixed-memory coadaptation and retention in one visibly cued two-agent A–B–A sanity benchmark | [`evidence.json`](../outputs/continual_multiagent/evidence.json) | Accepted, narrow L2 |
+| `continual_intelligence_amplification` | Causal recommendation-channel uplift in one deterministic hidden-phase micro-MDP | [`evidence.json`](../outputs/continual_ia/evidence.json) | Valid rejection at the frozen L2 gate |
+
+The IA artifact remains a scientifically useful rejection. Its reward uplift
+and augmentation-control checks do not override the failed frozen
+action-changing-intervention gate. The threshold must not be lowered after the
+result.
+
+### Live validation semantics
+
+Run the registry from a repository checkout:
 
 ```bash
 .venv/bin/alberta-evidence-status
 ```
 
-An accepted registry does not certify the package, complete a Step, or
-establish Alberta Plan completion. Source mismatches and invalid artifacts fail
-closed; pinned artifacts must not be edited or repaired. Normal wheel and
-sdist installations exclude `outputs/`, so their registry checks ordinarily
-report artifacts as missing.
+The operational statuses are:
 
-## Alberta Steps 1–12
+- `accepted`: a valid promoting L2/L3 artifact passed its frozen gate;
+- `valid-rejection`: a valid promoting artifact failed at least one gate;
+- `not-run`: a required artifact is absent;
+- `invalid`: schema, provenance, source, integrity, reconstruction, or
+  contract validation failed; and
+- `verified-nonpromoting`: a valid unit or smoke record that cannot promote.
+
+The command exits `0` only when all registered promoting claims are accepted,
+`1` for a missing artifact, valid rejection, or nonpromoting-only result, and
+`2` when any claim is invalid.
+
+Validation hashes each claim's exact registered source paths. Those manually
+enumerated sets are load-bearing, but they are not complete recursive import
+closures. A clean worktree is not required. Changes outside a claim's registered
+source set are recorded as operational provenance but are not independently
+disqualifying. A change to a registered source is a source mismatch and normally
+makes the persisted artifact invalid until a newly authorized frozen protocol
+writes a new artifact that passes its strict validator.
+
+Two historical compatibility routes are deliberately narrower than a general
+source-drift waiver:
+
+- The FTL route is eligible only for its exact v1 contract and prescribed
+  builder-only drift. It reconstructs the historical acceptance and checks an
+  already-consumed-seed replay against unchanged invariant sources. That replay
+  is compatibility evidence, never fresh promotion evidence.
+- The IA route is eligible only for its exact v1 historical-rejection chain.
+  Its archived source snapshot and consumed-seed replay can preserve the
+  original rejection classification, never turn it into current-source
+  acceptance.
+
+Any additional source drift, artifact mutation, schema mismatch, or failed
+reconstruction remains invalid. Pinned artifacts must not be edited, repaired,
+or overwritten. New work writes a new path and, when the contract requires it,
+a new schema version with untouched preregistered seeds.
+
+Normal package installations do not include `outputs/`, so registry execution
+from an installed wheel or sdist normally reports artifacts as missing. Use a
+checkout to inspect the stored evidence chain.
+
+## Alberta Plan crosswalk: Steps 1–12
 
 ### Step 1 — Nonstationary prediction
 
@@ -90,9 +187,11 @@ the later learned-state/control agent satisfy the completion rule.
 utility, and replace features within a fixed budget while retaining recurring
 critical structure.
 
-**Available evidence.** Pair construction, bounded feature banks, utility and
-lifecycle mechanisms exist. The recurring-pair and scale-robust-pair artifacts
-record two accepted but deliberately narrow L2 outcomes.
+**Frozen historical evidence.** Pair construction, bounded feature banks,
+utility and lifecycle mechanisms exist. The recurring-pair and
+scale-robust-pair artifacts record two historically accepted but deliberately
+narrow L2 outcomes. They certify the current tree only when live validation is
+valid.
 
 **Open gate.** The stored protocols begin from constrained pair-product
 families and do not establish autonomous question discovery, general
@@ -168,14 +267,15 @@ under changing dynamics and representations.
 **Required outcome.** Close the perception → world model → feature ranking →
 feature replacement → model-feedback loop.
 
-**Available evidence.** One-step, action-conditioned, shallow, ensemble,
-recurrent, and latent model components exist. The FTL artifact records a
-narrow historical L2 decision-fidelity acceptance for one fixed-shape model
-and protocol.
+**Frozen historical evidence.** One-step, action-conditioned, sparse
+fixed-shape, ensemble, recurrent, and latent model components exist. The FTL
+artifact records a narrow historical L2 decision-fidelity acceptance for one
+fixed-shape model and protocol; live validity is separate.
 
-**Open gate.** The accepted FTL scope does not establish a calibrated general
-world model, learned-target quality, retained planning benefit, partner
-modeling, or the complete feedback loop under one owner and lifetime.
+**Open gate.** That historically accepted FTL scope does not establish a
+calibrated general world model, learned-target quality, retained planning
+benefit, partner modeling, or the complete feedback loop under one owner and
+lifetime.
 
 ### Step 9 — Exploration and search control
 
@@ -219,40 +319,47 @@ Mechanism-level lifecycle receipts do not grant deployment or promotion.
 **Required outcome.** Measurably increase another learning agent's capability
 through a closed, continuing interaction loop.
 
-**Available evidence.** Prediction augmentation, recommendation protocols,
-partner/world models, and two-agent streams exist. The recurring-multiagent
-artifact records one narrow accepted L2 coadaptation result. The frozen IA
-artifact is a valid rejection.
+**Frozen historical evidence.** Prediction augmentation, recommendation
+protocols, partner-policy fusion, generic world models, and two-agent streams
+exist. The recurring-multiagent artifact records one narrow historically
+accepted L2 coadaptation outcome. The frozen IA artifact records a historical
+valid rejection. Neither statement substitutes for live validation.
 
 **Open gate.** Coadaptation is not the same as causal amplification. The IA
 intervention gate remains failed, and there is no L3 partner-benefit result
 under changing reliability, communication cost, retained skills, and bounded
 resources.
 
-No Step currently satisfies the repository completion rule.
+No Step currently satisfies the repository completion rule. Even completing
+all twelve Step gates would be evidence about the Alberta-derived program, not
+automatic proof of ASI's broader application target.
 
 ## Active development campaigns
 
-### IPMNIST screening and confirmation
+### IPMNIST development screening and development confirmation
 
-IPMNIST is the headline optimization/plasticity lane, but it is
-**development-grade and permanently nonpromoting**. Screening, confirmation,
-and publication-run records may support descriptive development conclusions;
-they do not become scientific evidence through replication, more seeds, or
-better performance.
+IPMNIST is the current measured optimization/plasticity subsystem campaign,
+not ASI's top-level reference-life hillclimb. It is
+**development-grade and permanently nonpromoting**. Development-screening,
+development-confirmation, and publication-run records may support descriptive
+development conclusions; they do not become scientific evidence through
+replication, more seeds, or better performance.
 
-Use the primary records rather than copying rankings or means here:
+Use the mutable index to identify the current record rather than copying
+rankings or means here. Output documents are append-only chronological records;
+their historical superlatives and run-status language may have been superseded.
 
+- [current campaign index](research/ipmnist-campaign-index.md);
 - [theory and forward hypotheses](research/ipmnist-theory.md);
-- [campaign runbook](../outputs/ipmnist_screening/RUNBOOK.md);
-- [stored development report](../outputs/ipmnist_screening/FINAL_REPORT.md);
-- [artifact and reproducibility audit](../outputs/ipmnist_screening/AUDIT.md);
-- [publication-run record](../outputs/ipmnist_screening/publication_runs/RESULTS.md);
+- `outputs/ipmnist_screening/summary_*.json` for stored measurement records;
+- [chronological campaign runbook](../outputs/ipmnist_screening/RUNBOOK.md);
+- [historical accumulated report](../outputs/ipmnist_screening/FINAL_REPORT.md);
+- [historical artifact and reproducibility audit](../outputs/ipmnist_screening/AUDIT.md);
   and
-- `outputs/ipmnist_screening/summary_*.json` for the latest stored summaries.
+- [pre-RLS publication-run record](../outputs/ipmnist_screening/publication_runs/RESULTS.md).
 
 Remeasure the intended baseline under the current development protocol before
 any A/B comparison. Do not infer registry acceptance, a promoted
-state-of-the-art claim, or an Alberta Step completion from this lane. Seeds
-used for development or selection cannot later serve as untouched promotion
-seeds.
+state-of-the-art claim, ASI progress at the whole-agent level, robotics
+readiness, or an Alberta Step completion from this lane. Seeds used for
+development or selection cannot later serve as untouched promotion seeds.

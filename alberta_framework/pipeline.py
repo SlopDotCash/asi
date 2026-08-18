@@ -1,9 +1,10 @@
 # mypy: disable-error-code="attr-defined,call-arg,no-any-return,unused-ignore"
-"""End-to-end Alberta Plan Step 1-4 pipeline glue.
+"""Integrated Step 2 featurization, Step 3 prediction, and Step 4 control.
 
-The production pipeline composes the existing packaged pieces conservatively:
+The pipeline composes the existing packaged pieces conservatively:
 
-1. Step 1 enters through the adaptive optimizers used by later learners.
+1. Step 1 optimizer components are reused by later learners; this pipeline
+   does not run the Step 1 prediction benchmark.
 2. Step 2 supplies feature augmentation in one of four modes: the lightweight
    temporal-context featurizer, the packaged nonlinear UPGD learner (whose
    penultimate hidden activations become the feature vector for downstream

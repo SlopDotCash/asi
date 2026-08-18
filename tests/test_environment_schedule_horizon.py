@@ -33,7 +33,6 @@ from alberta_framework.streams.recurring_multiagent import (
 )
 
 INT32_MAX = 2**31 - 1
-UINT32_MAX = 2**32 - 1
 pytestmark = pytest.mark.unit
 
 

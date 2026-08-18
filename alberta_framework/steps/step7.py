@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg,comparison-overlap,redundant-cast,unused-ignore"
-"""Production-facing Step 7 bounded Dyna planning facade.
+"""Public Step 7 bounded Dyna planning facade.
 
 Alberta Plan Step 7 (incremental average-reward planning): each real
 transition first performs the ordinary Step 6 differential-SARSA control

@@ -26,10 +26,6 @@ _BASE_PROTOCOL_ROOT = Path("/protocol-input")
 _PREDECESSOR_PROTOCOL_ROOT = Path("/predecessor-protocol")
 _SCORER_PATH = Path("/harness/scorer.py")
 _REFERENCE_SCORER_PATH = Path("/harness/reference_scorer.py")
-_SUPPORTED_SCHEMAS = {
-    "alberta.forager_fov_baseline_screening.v1",
-    "alberta.forager_fov_stateful_baseline_screening.v1",
-}
 _CPU_SCHEMAS = {
     "alberta.forager_fov_baseline_screening_cpu.v3": (
         "alberta.forager_fov_baseline_screening.v1"

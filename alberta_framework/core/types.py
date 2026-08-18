@@ -1,4 +1,4 @@
-"""Type definitions for the Alberta Framework.
+"""Type definitions for ASI's ``alberta_framework`` compatibility package.
 
 This module defines the core data types used throughout the framework,
 using chex dataclasses for JAX compatibility and jaxtyping for shape annotations.

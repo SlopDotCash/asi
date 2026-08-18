@@ -38,6 +38,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
+import jax
+import jax.numpy as jnp
+import numpy as np
 import orbax.checkpoint as ocp
 
 # Stamped into checkpoint metadata on save, but deliberately NOT validated on
@@ -49,6 +52,38 @@ _FORMAT_VERSION = 2
 
 # Internal metadata key — stripped from user-facing metadata
 _VERSION_KEY = "_format_version"
+
+
+def _is_empty_array(value: object) -> bool:
+    return isinstance(value, (jax.Array, np.ndarray)) and value.size == 0
+
+
+def _orbax_compatible_tree(tree: Any) -> Any:
+    """Represent empty leaves with typed sentinels Orbax can serialize.
+
+    Empty arrays contain no payload bytes. Their exact shapes and dtypes come
+    from the caller's restore template, so a one-element sentinel carries only
+    the leaf type through Orbax without weakening structural restoration.
+    """
+
+    def compatible(leaf: Any) -> Any:
+        if not _is_empty_array(leaf):
+            return leaf
+        if isinstance(leaf, jax.Array):
+            return jnp.zeros((1,), dtype=leaf.dtype)
+        return np.zeros((1,), dtype=leaf.dtype)
+
+    return jax.tree.map(compatible, tree)
+
+
+def _restore_empty_arrays(template: Any, restored: Any) -> Any:
+    """Reinstate exact empty leaves from the structurally matched template."""
+
+    return jax.tree.map(
+        lambda expected, actual: expected if _is_empty_array(expected) else actual,
+        template,
+        restored,
+    )
 
 
 def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
@@ -110,7 +145,7 @@ def save_checkpoint(
         ckptr.save(
             str(path),
             args=ocp.args.Composite(
-                state=ocp.args.StandardSave(state),
+                state=ocp.args.StandardSave(_orbax_compatible_tree(state)),
                 metadata=ocp.args.JsonSave(meta_to_save),
             ),
         )
@@ -146,11 +181,12 @@ def load_checkpoint(
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
     try:
+        compatible_template = _orbax_compatible_tree(state_template)
         with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
             loaded = ckptr.restore(
                 str(path),
                 args=ocp.args.Composite(
-                    state=ocp.args.StandardRestore(state_template),
+                    state=ocp.args.StandardRestore(compatible_template),
                     metadata=ocp.args.JsonRestore(),
                 ),
             )
@@ -165,7 +201,7 @@ def load_checkpoint(
     user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
     user_metadata.pop(_VERSION_KEY, None)
     _require_json_safe_metadata(user_metadata)
-    return loaded.state, user_metadata
+    return _restore_empty_arrays(state_template, loaded.state), user_metadata
 
 
 def load_checkpoint_metadata(path: str | Path) -> dict[str, Any]:

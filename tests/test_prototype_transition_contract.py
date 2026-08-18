@@ -403,8 +403,8 @@ def test_legacy_prototype_wrapper_retains_split_discount_behavior() -> None:
     result = agent.update(state, reward, next_obs)
 
     np.testing.assert_allclose(result.world_model_error, expected_model_error, rtol=1e-6)
-    # The old control path used STOMP.option_gamma independently of the world
-    # model's gamma. Compatibility mode intentionally retains that behavior.
+    # Compatibility mode keeps STOMP.option_gamma independent of the world
+    # model's gamma.
     np.testing.assert_allclose(result.state.oak_state.stomp_state.option_discount, 0.8)
 
 

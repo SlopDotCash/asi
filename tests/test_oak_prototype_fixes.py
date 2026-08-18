@@ -181,9 +181,8 @@ def test_useless_option_evicted_after_guard_and_reward_preserved() -> None:
     assert float(state.utility_ema[0]) > float(state.utility_ema[1])
     pre_avg = float(state.stomp_state.base_average_reward)
 
-    # Present curation with a coherent primitive decision boundary. If the
-    # scan happened to finish inside option 1, the new active-option guard
-    # correctly defers replacement instead.
+    # Present curation with a coherent primitive decision boundary; replacement
+    # is intentionally deferred at an active-option boundary.
     state = state.replace(
         stomp_state=state.stomp_state.replace(
             executing_option=jnp.array(-1, dtype=jnp.int32),

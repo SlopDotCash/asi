@@ -1,7 +1,7 @@
 """Console entry points for the Step 1 and Step 2 smoke kernels.
 
 ``alberta-step1-smoke`` and ``alberta-step2-smoke`` run the seeded Step 1
-(optimizer/normalizer) and Step 2 (UPGD) production kernels for a short
+(optimizer/normalizer) and Step 2 (UPGD) public kernels for a short
 horizon and exit nonzero unless every reported metric is finite; they are
 integration probes, not scientific evidence.
 """
@@ -35,7 +35,12 @@ def step1_smoke_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a Step 1 kernel smoke test.")
     parser.add_argument("--steps", type=int, default=256)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--final-window", type=int, default=64)
+    parser.add_argument(
+        "--final-window",
+        type=int,
+        default=None,
+        help="final averaging window (default: min(64, steps))",
+    )
     parser.add_argument(
         "--optimizer",
         choices=(
@@ -63,7 +68,11 @@ def step1_smoke_main(argv: Sequence[str] | None = None) -> int:
         ),
         steps=args.steps,
         seed=args.seed,
-        final_window=args.final_window,
+        final_window=(
+            args.final_window
+            if args.final_window is not None
+            else max(1, min(64, args.steps))
+        ),
     )
     _print_json(result.to_dict())
     return 0 if result.finite else 1
@@ -73,7 +82,12 @@ def step2_smoke_main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a Step 2 UPGD kernel smoke test.")
     parser.add_argument("--steps", type=int, default=128)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--final-window", type=int, default=32)
+    parser.add_argument(
+        "--final-window",
+        type=int,
+        default=None,
+        help="final averaging window (default: min(32, steps))",
+    )
     parser.add_argument(
         "--stream",
         choices=("polynomial", "frequency", "compositional"),
@@ -90,7 +104,11 @@ def step2_smoke_main(argv: Sequence[str] | None = None) -> int:
         ),
         steps=args.steps,
         seed=args.seed,
-        final_window=args.final_window,
+        final_window=(
+            args.final_window
+            if args.final_window is not None
+            else max(1, min(32, args.steps))
+        ),
     )
     _print_json(result.to_dict())
     return 0 if result.finite else 1

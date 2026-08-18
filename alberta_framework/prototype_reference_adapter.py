@@ -38,6 +38,7 @@ from alberta_framework.reference_agent import (
     DecisionOwnershipError,
     DispatchAuthorization,
     DispatchStatus,
+    ReferenceAgentUpdate,
     SpaceSpec,
     Transaction,
 )
@@ -47,6 +48,7 @@ PROTOTYPE_REFERENCE_IMPLEMENTATION_ID = "asi.prototype_exact_adapter.preview1"
 PROTOTYPE_REFERENCE_STATE_SCHEMA = "asi.prototype_reference_state.preview1"
 PROTOTYPE_OBSERVATION_SEMANTIC_ID = "asi.prototype_raw_observation.preview1"
 PROTOTYPE_ACTION_SEMANTIC_ID = "asi.prototype_primitive_action.preview1"
+PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS = 2**31 - 4
 
 _LIFECYCLE_CODEC = "prototype_uint32x2_hex.preview1"
 _SCALAR_CODEC = "finite_float32_round_to_nearest.preview1"
@@ -116,32 +118,14 @@ class PrototypeReferenceState:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class PrototypeAdapterUpdate:
+class PrototypeAdapterUpdate(ReferenceAgentUpdate):
     """Staged functional result for a host runner to accept or reject."""
 
     state: PrototypeReferenceState
-    next_decision: Decision | None
-    accepted: bool
-    parameters_changed: bool
-    rejection_reason: str | None
-
     def __post_init__(self) -> None:
         if not isinstance(self.state, PrototypeReferenceState):
             raise ValueError("state must be a PrototypeReferenceState")
-        if not isinstance(self.accepted, bool):
-            raise ValueError("accepted must be boolean")
-        if not isinstance(self.parameters_changed, bool):
-            raise ValueError("parameters_changed must be boolean")
-        if self.accepted:
-            if self.rejection_reason is not None:
-                raise ValueError("an accepted update cannot carry a rejection reason")
-        else:
-            if self.parameters_changed:
-                raise ValueError("a rejected update cannot change parameters")
-            if self.next_decision is not None:
-                raise ValueError("a rejected update cannot arm a next decision")
-            if not isinstance(self.rejection_reason, str) or not self.rejection_reason.strip():
-                raise ValueError("a rejected update requires a nonempty reason")
+        ReferenceAgentUpdate.__post_init__(self)
 
 
 def _lifecycle_words(lifecycle_id: str) -> Array:
@@ -331,6 +315,12 @@ class PrototypeReferenceAdapter:
     def config(self) -> PrototypeAgentConfig:
         return self._config
 
+    @property
+    def max_accepted_events(self) -> int:
+        """Maximum continuing events that retain an armed next decision."""
+
+        return PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS
+
     def __reduce__(self) -> Any:
         raise TypeError(
             "Prototype reference adapter is process-local and cannot be serialized; "
@@ -433,6 +423,34 @@ class PrototypeReferenceAdapter:
             proposed_action=prototype_decision.action,
             armed=True,
         )
+
+    def validate_state(self, state: PrototypeReferenceState) -> None:
+        """Validate one adapter-owned state and its currently armed decision."""
+
+        self.current_decision(state)
+
+    def adopt_checkpoint_state(
+        self,
+        *,
+        agent_state: PrototypeAgentState,
+        lifecycle_id: str,
+        decision_index: int,
+        current_observation_id: str,
+    ) -> PrototypeReferenceState:
+        """Bind a validated functional checkpoint state to this fresh adapter."""
+
+        candidate = PrototypeReferenceState(
+            schema=PROTOTYPE_REFERENCE_STATE_SCHEMA,
+            manifest_id=self.manifest.manifest_id,
+            config_sha256=self.manifest.config_sha256,
+            agent_state=agent_state,
+            lifecycle_id=lifecycle_id,
+            decision_index=decision_index,
+            current_observation_id=current_observation_id,
+            _owner_token=self._state_owner_token,
+        )
+        self.validate_state(candidate)
+        return candidate
 
     def _require_current_host_decision(
         self,
@@ -619,6 +637,7 @@ __all__ = [
     "PROTOTYPE_OBSERVATION_SEMANTIC_ID",
     "PROTOTYPE_REFERENCE_ADAPTER_SCHEMA",
     "PROTOTYPE_REFERENCE_IMPLEMENTATION_ID",
+    "PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS",
     "PROTOTYPE_REFERENCE_STATE_SCHEMA",
     "PrototypeAdapterUpdate",
     "PrototypeReferenceAdapter",

@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg"
-"""Production-facing Step 12 Intelligence Amplification facade.
+"""Public Step 12 Intelligence Amplification facade.
 
 Step 12 of the Alberta Plan — "Prototype-IA: Intelligence Amplification" —
 demonstrates that an IA agent can increase the decision-making capacity of a
@@ -62,7 +62,7 @@ from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 @dataclass(frozen=True)
 class Step12IAConfig:
-    """Configuration for the production Step 12 IA facade.
+    """Configuration for the public Step 12 IA facade.
 
     Args:
         n_demons: Number of exo-cerebellum prediction heads.

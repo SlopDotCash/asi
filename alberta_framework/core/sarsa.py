@@ -792,8 +792,13 @@ class SARSAAgent:
 
         # Greedy action with Gumbel tie-breaking
         # Add small noise only to max-valued actions for uniform tie-breaking
-        gumbel_noise = jr.gumbel(noise_key, shape=q_values.shape) * 1e-6
-        greedy_action = jnp.argmax(q_values + gumbel_noise).astype(jnp.int32)
+        maximum = jnp.max(q_values)
+        tie_noise = jnp.where(
+            q_values == maximum,
+            jr.gumbel(noise_key, shape=q_values.shape),
+            -jnp.inf,
+        )
+        greedy_action = jnp.argmax(tie_noise).astype(jnp.int32)
 
         # Random action
         random_action = jr.randint(random_key, (), 0, self._sarsa_config.n_actions).astype(

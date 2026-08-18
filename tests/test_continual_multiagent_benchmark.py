@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pytest
@@ -19,10 +21,12 @@ from alberta_framework.evaluation.continual_multiagent import (
 from alberta_framework.evaluation.continual_multiagent_artifact import (
     PROTOCOL_VERSION,
     SCHEMA_VERSION,
+    artifact_json,
     build_evidence_artifact,
     load_evidence_artifact,
     scientific_content_sha256,
     validate_evidence_artifact,
+    write_evidence_artifact,
 )
 from alberta_framework.evaluation.continual_multiagent_cli import (
     main as evidence_cli_main,
@@ -457,6 +461,46 @@ def test_rehashed_interval_with_wrong_sample_size_fails_closed(
     assert not validation.valid
     assert not validation.accepted
     assert any("sample_size must be 30" in error for error in validation.errors)
+
+
+def test_writer_refuses_to_overwrite_an_existing_artifact(
+    benchmark_report,
+    tmp_path,
+) -> None:
+    path = tmp_path / "existing.json"
+    path.write_text("sentinel\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError):
+        write_evidence_artifact(path, benchmark_report)
+
+    assert path.read_text(encoding="utf-8") == "sentinel\n"
+
+
+def test_writer_allows_only_one_simultaneous_creator(
+    benchmark_report,
+    tmp_path,
+) -> None:
+    path = tmp_path / "raced.json"
+    barrier = threading.Barrier(2)
+
+    def attempt() -> dict[str, object]:
+        barrier.wait()
+        return write_evidence_artifact(path, benchmark_report)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(attempt) for _ in range(2)]
+
+    artifacts: list[dict[str, object]] = []
+    collisions = 0
+    for future in futures:
+        try:
+            artifacts.append(future.result())
+        except FileExistsError:
+            collisions += 1
+
+    assert len(artifacts) == 1
+    assert collisions == 1
+    assert path.read_text(encoding="utf-8") == artifact_json(artifacts[0])
 
 
 def test_cli_writes_and_verifies_accepted_artifact_without_rerun(

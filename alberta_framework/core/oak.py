@@ -2058,7 +2058,6 @@ class OaKAgent:
         if int(state.stomp_state.executing_option) == worst_idx:
             return self, state
 
-        # Pick replacement feature index
         current_feat_indices = {s.feature_index for s in cfg.stomp.subtask_specs}
         obs_dim = cfg.observation_dim
         if available_feature_indices is None:
@@ -2071,7 +2070,6 @@ class OaKAgent:
         key, subkey = jr.split(key)
         new_feat_idx = pool[int(jr.randint(subkey, (), 0, len(pool)))]
 
-        # Build new spec list (preserve threshold / scale / max_steps)
         new_specs = list(cfg.stomp.subtask_specs)
         old = new_specs[worst_idx]
         new_specs[worst_idx] = SubtaskSpec(
@@ -2081,7 +2079,6 @@ class OaKAgent:
             max_option_steps=old.max_option_steps,
         )
 
-        # Reset STOMP state for the replaced option
         idx = worst_idx
         n_prim = cfg.n_primitive_actions
 
@@ -2157,7 +2154,6 @@ class OaKAgent:
             ),
         )
 
-        # Reset utility stats for replaced option
         replace_mask = jnp.arange(cfg.n_options, dtype=jnp.int32) == idx
         new_state = OaKState(
             stomp_state=new_stomp_state,
@@ -2168,7 +2164,6 @@ class OaKAgent:
             step_words=state.step_words,
         )
 
-        # Build new agent with updated config
         new_stomp_cfg = dataclasses.replace(cfg.stomp, subtask_specs=tuple(new_specs))
         new_oak_cfg = dataclasses.replace(cfg, stomp=new_stomp_cfg)
         return OaKAgent(new_oak_cfg), new_state

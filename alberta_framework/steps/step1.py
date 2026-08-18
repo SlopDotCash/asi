@@ -1,4 +1,4 @@
-"""Production Step 1 kernel.
+"""Public Step 1 kernel.
 
 This module wraps the Step 1 research implementation in a narrow, stable API:
 
@@ -244,7 +244,7 @@ def _validate_step1_config(config: Step1KernelConfig) -> None:
 
 @dataclass(frozen=True)
 class Step1KernelConfig:
-    """Config for the production Step 1 kernel.
+    """Config for the public Step 1 kernel.
 
     The default is deliberately conservative for daemon/integration use:
     Autostep plus EMA normalization on the canonical drifting Alberta stream.
@@ -398,7 +398,7 @@ def make_step1_optimizer(config: Step1KernelConfig) -> Any:
     """Construct a public Step 1 optimizer from ``config``.
 
     ``Auto (Degris in prep.)`` is intentionally not accepted: no public update
-    rule is available in the cited sources, so the production package exposes
+    rule is available in the cited sources, so the package exposes
     only reproducible optimizers.
     """
     config = _require_step1_config(config)
@@ -480,7 +480,7 @@ def make_step1_stream(
 
 
 def make_step1_learner(config: Step1KernelConfig | None = None) -> LinearLearner:
-    """Create the production Step 1 learner."""
+    """Create the public Step 1 learner."""
     if config is None:
         cfg = Step1KernelConfig()
     else:
@@ -502,7 +502,7 @@ def run_step1_smoke(
     """Run a tiny deterministic Step 1 integration probe.
 
     The smoke probe is intentionally not a scientific claim.  It verifies that
-    the production kernel can initialize, compile, update online, and return
+    the kernel can initialize, compile, update online, and return
     finite metrics.
     """
     steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)

@@ -1,5 +1,5 @@
 # mypy: disable-error-code="call-arg"
-"""Production Step 3 Horde helpers.
+"""Public Step 3 Horde helpers.
 
 This module packages the stable Step 3 surface for downstream use:
 
@@ -189,7 +189,7 @@ Step3RoutingName = Literal["shared", "independent", "mixed"]
 
 @dataclass(frozen=True)
 class Step3HordeConfig:
-    """Config for the production Step 3 given-feature Horde kernel.
+    """Config for the public Step 3 given-feature Horde kernel.
 
     The default is a compact linear Horde with three prediction demons. Hidden
     layers may be enabled, but shared-trunk trace decay remains head-only via
@@ -348,7 +348,7 @@ class Step3SmokeResult:
 
 @chex.dataclass(frozen=True)
 class Step3OneStepResult:
-    """Result from one production Step 3 transition."""
+    """Result from one Step 3 transition."""
 
     state: MultiHeadMLPState
     predictions: Array
@@ -503,7 +503,7 @@ def make_step3_normalizer(
 
 
 def make_step3_horde_spec(config: Step3HordeConfig | None = None) -> Any:
-    """Create the GVF metadata used by the production Horde."""
+    """Create the GVF metadata used by the Step 3 Horde."""
     cfg = Step3HordeConfig() if config is None else config
     _validate_horde_config(cfg)
     demons = [
@@ -522,7 +522,7 @@ def make_step3_horde_spec(config: Step3HordeConfig | None = None) -> Any:
 def make_step3_horde(
     config: Step3HordeConfig | None = None,
 ) -> HordeLearner | IndependentDemonHorde | MixedHorde:
-    """Create the production Step 3 given-feature Horde learner.
+    """Create the public Step 3 given-feature Horde learner.
 
     Dispatches on ``config.routing``:
 

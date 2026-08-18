@@ -17,8 +17,8 @@ from alberta_framework.core.upgd_memory import (
 )
 
 FD_EPS = 1e-2
-# Float32 central differences carry ~1e-4 relative noise; the pre-fix analytic
-# gradient deviated by 1e-1 or more, so this tolerance separates them cleanly.
+# Float32 central differences carry roughly 1e-4 relative noise, so the
+# tolerance permits numerical error while rejecting materially wrong gradients.
 REL_TOL = 5e-4
 
 

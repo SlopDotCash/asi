@@ -1,5 +1,5 @@
 # mypy: disable-error-code="no-untyped-def"
-"""Production Step 1-4 pipeline tests."""
+"""Integrated Step 2-4 pipeline tests."""
 
 import json
 from fractions import Fraction

@@ -36,11 +36,12 @@ from jax import Array
 
 from alberta_framework._seed_validation import JAX_KEY_SEED_MAX, require_jax_seed
 from alberta_framework.core._float32_scalars import validated_float32_scalar
-from alberta_framework.core.learners import LinearLearner
 from alberta_framework.core.types import LearnerState, TimeStep
 
 if TYPE_CHECKING:
     import gymnasium
+
+    from alberta_framework.core.learners import LinearLearner
 
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
@@ -771,6 +772,7 @@ class TDStream:
         self._feature_dim = feature_dim
 
         self._current_obs: Array | None = None
+        self._current_action: Any | None = None
         self._episode_count = 0
         self._step_count = 0
         self._value_fn: Callable[[Array], float] = lambda x: 0.0
@@ -813,30 +815,28 @@ class TDStream:
         return self
 
     def __next__(self) -> TimeStep:
-        """Generate the next time step with TD target.
-
-        Caveat: with ``include_action_in_features=True`` the bootstrap
-        features pair the *next* observation with the *current* action —
-        Q(s', a) rather than Q(s', a') — because the next action has not
-        been sampled yet.  The target is therefore biased relative to
-        SARSA's ``reward + gamma * Q(s', a')``.
-        """
+        """Generate the next time step with a TD or SARSA-style target."""
         if self._current_obs is None:
             raw_obs, _ = self._env.reset(seed=self._get_reset_seed())
             self._current_obs = _flatten_observation(raw_obs, self._env.observation_space)
+            self._current_action = self._policy(self._current_obs)
 
-        action = self._policy(self._current_obs)
+        action = self._current_action
+        if action is None:
+            raise RuntimeError("TDStream has an observation without an owned action")
         flat_action = _flatten_action(action, self._env.action_space)
 
         raw_next_obs, reward, terminated, truncated, _ = self._env.step(action)
         next_obs = _flatten_observation(raw_next_obs, self._env.observation_space)
 
         features = self._construct_features(self._current_obs, flat_action)
-        next_features = self._construct_features(next_obs, flat_action)
 
         if terminated:
             target = jnp.atleast_1d(jnp.array(reward, dtype=jnp.float32))
         else:
+            next_action = self._policy(next_obs)
+            next_flat_action = _flatten_action(next_action, self._env.action_space)
+            next_features = self._construct_features(next_obs, next_flat_action)
             bootstrap = self._value_fn(next_features)
             target_val = float(reward) + _discounted_bootstrap(self._gamma, float(bootstrap))
             target = jnp.atleast_1d(jnp.array(target_val, dtype=jnp.float32))
@@ -846,8 +846,10 @@ class TDStream:
         if terminated or truncated:
             self._episode_count += 1
             self._current_obs = None
+            self._current_action = None
         else:
             self._current_obs = next_obs
+            self._current_action = next_action
 
         return TimeStep(observation=features, target=target)
 

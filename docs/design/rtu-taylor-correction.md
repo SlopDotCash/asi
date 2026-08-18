@@ -22,7 +22,7 @@ That commit's
 [`rtu.py`](https://github.com/noahfarr/memorax/blob/94dd21dba5ab6eee4a0281066a5f49643d052174/memorax/networks/sequence_models/rtu.py)
 implements only the ordinary local-Jacobian/RTRL recurrence. The exact commit,
 its public `development` branch, and the paper release repository contain no
-Taylor-trace implementation. This Alberta implementation is therefore a
+Taylor-trace implementation. The implementation retained in ASI is therefore a
 derivation from the paper's equations, not a port of undocumented reference
 code.
 

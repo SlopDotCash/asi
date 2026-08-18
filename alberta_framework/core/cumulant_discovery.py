@@ -1,4 +1,4 @@
-"""Surprise-driven cumulant discovery for Horde demons (Step 3 Phase F).
+"""Surprise-driven cumulant discovery for Horde demons.
 
 Background
 ==========
@@ -33,16 +33,15 @@ This is intentionally minimal:
   rho=1) so the candidate predictor has no learned features beyond the
   raw observation.
 - Random projections are the cheapest possible cumulant generator.
-- Retains the K highest-utility candidates; no shadow / promotion logic
-  like Step 2's interaction features. (A future iteration could borrow
-  from ``FixedBudgetInteractionLearner``.)
-- For Veeriah-style meta-gradient discovery (NeurIPS 2019), the cumulant
-  parameters would need to be learned by gradient descent on a downstream
-  task loss. That is the natural follow-up.
+- Retains the K highest-utility candidates; it has no shadow or promotion
+  logic like Step 2's interaction features.
+- It does not implement Veeriah-style meta-gradient discovery: cumulant
+  parameters are not optimized against a downstream task loss.
 
 The output of discovery is a tuple ``(active_cumulants, utilities)`` that
-can be plugged into a downstream Horde -- the surviving demons are the
-GVF cumulants worth predicting.
+can be plugged into a downstream Horde. Survival means only that a candidate
+ranked highly under this module's surprise score; it is not evidence of
+downstream utility.
 
 Reference:
     White, A., Modayil, J., & Sutton, R.S. (2014). "Surprise as an

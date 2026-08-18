@@ -73,7 +73,6 @@ type StepFunction = Callable[
     tuple[RecurringTwoAgentTransition, RecurringTwoAgentState],
 ]
 
-PHASE_NAMES = ("A1-meet", "B-avoid", "A2-meet")
 CONDITION_MASKS: tuple[tuple[ConditionName, tuple[bool, bool]], ...] = (
     ("frozen", (False, False)),
     ("learner_only", (True, False)),

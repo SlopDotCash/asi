@@ -1,5 +1,5 @@
 # mypy: disable-error-code="call-arg"
-"""Production-facing Step 8 one-step world-model facade.
+"""Public Step 8 one-step world-model facade.
 
 Step 8 is the environment-prediction surface of the model-based progression:
 learn a one-step model — expected reward and next observation (or observation
@@ -302,7 +302,7 @@ class Step8EnsemblePrediction:
 def make_step8_world_model(
     config: Step8WorldModelConfig | None = None,
 ) -> OneStepWorldModel:
-    """Create the production Step 8 one-step world model."""
+    """Create the public Step 8 one-step world model."""
     cfg = config or Step8WorldModelConfig()
     return OneStepWorldModel(cfg.to_core_config())
 

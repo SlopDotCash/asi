@@ -1,4 +1,4 @@
-"""Tests for the Step 12 Intelligence Amplification production facade."""
+"""Tests for the public Step 12 intelligence-amplification facade."""
 
 from __future__ import annotations
 
@@ -1022,6 +1022,8 @@ def test_run_step12_smoke_defaults() -> None:
     assert result.steps == 64
     assert result.predictions_shape == (64, 4)  # n_demons=4 default
     assert result.augmented_obs_shape == (64, 8)  # 4 obs + 4 demons
+    assert result.cerebellum_errors_shape == (64, 4)
+    assert result.recommendations_shape == (64,)
 
 
 def test_run_step12_smoke_custom_config() -> None:
@@ -1049,16 +1051,6 @@ def test_run_step12_smoke_to_dict_roundtrip() -> None:
 def test_run_step12_smoke_zero_steps_raises() -> None:
     with pytest.raises(ValueError, match="steps"):
         run_step12_smoke(steps=0)
-
-
-def test_run_step12_smoke_cerebellum_errors_shape() -> None:
-    result = run_step12_smoke(steps=16)
-    assert result.cerebellum_errors_shape == (16, 4)
-
-
-def test_run_step12_smoke_recommendations_shape() -> None:
-    result = run_step12_smoke(steps=16)
-    assert result.recommendations_shape == (16,)
 
 
 # ---------------------------------------------------------------------------

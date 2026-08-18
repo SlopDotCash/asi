@@ -1,5 +1,5 @@
 # mypy: disable-error-code="call-arg"
-"""Production-facing Step 6 average-reward control facade (Control II).
+"""Public Step 6 average-reward control facade (Control II).
 
 Step 6 of the Alberta Plan is continuing control: the agent maximizes the
 long-run reward *rate* rather than a discounted or episodic return.  The
@@ -148,7 +148,7 @@ def _validate_step6_config(config: Step6DifferentialSARSAConfig) -> None:
 
 @dataclass(frozen=True)
 class Step6DifferentialSARSAConfig:
-    """Config for the production Step 6 differential SARSA facade."""
+    """Config for the public Step 6 differential SARSA facade."""
 
     n_actions: int = 2
     q_step_size: float = 0.05
@@ -249,7 +249,7 @@ class Step6SmokeResult:
 def make_step6_differential_sarsa_agent(
     config: Step6DifferentialSARSAConfig | None = None,
 ) -> DifferentialSARSAAgent:
-    """Create the production Step 6 differential SARSA agent."""
+    """Create the public Step 6 differential SARSA agent."""
     if config is None:
         cfg = Step6DifferentialSARSAConfig()
     elif type(config) is Step6DifferentialSARSAConfig:

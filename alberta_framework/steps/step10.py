@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg"
-"""Production-facing Step 10 STOMP facade.
+"""Public Step 10 STOMP facade.
 
 Step 10 of the Alberta Plan introduces the STOMP progression: SubTasks,
 Options, Models, Planning.  This is the first step that enables temporal
@@ -65,7 +65,7 @@ from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 @dataclass(frozen=True)
 class Step10STOMPConfig:
-    """Configuration for the production Step 10 STOMP facade.
+    """Configuration for the public Step 10 STOMP facade.
 
     This thin wrapper around :class:`STOMPConfig` adds standard
     dict serialization consistent with the Step 1–9 facades.

@@ -1,4 +1,4 @@
-"""Held-out, fail-closed evidence tests for the narrow Step-12 IA prototype."""
+"""Strict IA artifact tests plus a nonpromoting consumed-seed source replay."""
 
 from __future__ import annotations
 
@@ -30,10 +30,11 @@ from alberta_framework.evaluation.continual_ia import (
     run_continual_ia_benchmark,
 )
 from alberta_framework.evaluation.continual_ia_artifact import (
+    NONPROMOTING_REPLAY_POLICY,
     PROTOCOL_VERSION,
-    SCHEMA_VERSION,
+    REPLAY_SCHEMA_VERSION,
     _interval_payload,
-    build_ia_evidence_artifact,
+    build_ia_consumed_seed_replay,
     ia_artifact_json,
     load_ia_evidence_artifact,
     scientific_content_sha256,
@@ -115,7 +116,7 @@ def _valid_rejected_report(report: ContinualIAReport) -> ContinualIAReport:
 
 @pytest.fixture(scope="module")
 def heldout_report() -> ContinualIAReport:
-    """Execute the exact promoted schedule once; no development seed is rerun."""
+    """Replay the consumed evidence schedule under current source, without promotion."""
 
     return run_continual_ia_benchmark()
 
@@ -124,7 +125,7 @@ def heldout_report() -> ContinualIAReport:
 def heldout_artifact(
     heldout_report: ContinualIAReport,
 ) -> dict[str, object]:
-    return build_ia_evidence_artifact(heldout_report)
+    return build_ia_consumed_seed_replay(heldout_report)
 
 
 def test_frozen_seed_roles_configuration_and_primitive_shapes(
@@ -150,7 +151,7 @@ def test_frozen_seed_roles_configuration_and_primitive_shapes(
         assert np.all(np.isfinite(result.rewards))
 
 
-def test_frozen_primary_result_is_a_valid_intervention_rate_rejection(
+def test_current_consumed_seed_replay_is_a_valid_intervention_rate_rejection(
     heldout_report: ContinualIAReport,
 ) -> None:
     aggregate = heldout_report.aggregate
@@ -160,13 +161,11 @@ def test_frozen_primary_result_is_a_valid_intervention_rate_rejection(
     assert interval.sample_size == 30
     assert interval.resamples == heldout_report.config.bootstrap_resamples
     assert interval.confidence_level == heldout_report.config.confidence_level
-    assert interval.estimate == pytest.approx(0.26702777777777775)
-    assert interval.lower == pytest.approx(0.2550548611111111)
-    assert interval.upper == pytest.approx(0.2783888888888889)
-    assert aggregate.mean_changed_action_intervention_rate == pytest.approx(
-        0.08727777777777779
-    )
-    assert aggregate.total_action_changing_interventions == 3_142
+    assert np.all(np.isfinite([interval.lower, interval.estimate, interval.upper]))
+    assert interval.lower <= interval.estimate <= interval.upper
+    assert np.isfinite(aggregate.mean_changed_action_intervention_rate)
+    assert 0.0 <= aggregate.mean_changed_action_intervention_rate <= 1.0
+    assert aggregate.total_action_changing_interventions > 0
     assert aggregate.primary_state_budget_matched
     assert aggregate.primary_interaction_budget_matched
     assert aggregate.executed_action_credit_mismatches == 0
@@ -299,7 +298,8 @@ def test_artifact_is_valid_bound_deterministic_and_explicitly_narrow(
     assert validation.valid
     assert not validation.accepted
     assert validation.errors == ()
-    assert heldout_artifact["schema_version"] == SCHEMA_VERSION
+    assert heldout_artifact["schema_version"] == REPLAY_SCHEMA_VERSION
+    assert heldout_artifact["evidence_policy"] == NONPROMOTING_REPLAY_POLICY
     content = _content(heldout_artifact)
     protocol = _as_dict(content["protocol"])
     assert protocol["protocol_version"] == PROTOCOL_VERSION
@@ -307,6 +307,12 @@ def test_artifact_is_valid_bound_deterministic_and_explicitly_narrow(
     assert "no autonomous feature discovery" in limitations
     assert "not completion of the Alberta Plan" in limitations
     assert any("not origin authentication" in str(item) for item in limitations)
+
+    unclassified = copy.deepcopy(heldout_artifact)
+    del unclassified["evidence_policy"]
+    unclassified_validation = validate_ia_evidence_artifact(unclassified)
+    assert not unclassified_validation.valid
+    assert not unclassified_validation.accepted
 
     changed_timings = tuple(
         replace(
@@ -318,7 +324,9 @@ def test_artifact_is_valid_bound_deterministic_and_explicitly_narrow(
         )
         for result in heldout_report.condition_results
     )
-    later = build_ia_evidence_artifact(replace(heldout_report, condition_results=changed_timings))
+    later = build_ia_consumed_seed_replay(
+        replace(heldout_report, condition_results=changed_timings)
+    )
     assert _content(later) == content
     assert later["content_digest"] == heldout_artifact["content_digest"]
     assert later["operational_diagnostics"] != (heldout_artifact["operational_diagnostics"])

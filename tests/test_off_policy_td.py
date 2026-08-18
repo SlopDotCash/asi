@@ -554,7 +554,7 @@ class TestGradientTD:
 # =============================================================================
 
 
-class TestRetraceClip:
+class TestImportanceRatioClip:
     def test_clip_at_one(self) -> None:
         learner = OffPolicyTDLinearLearner(retrace_clip=1.0)
         state = learner.init(3)
@@ -771,7 +771,7 @@ class TestConfig:
 
 
 class TestBairdStyle:
-    """With Retrace clipping (c=1) on a moderate off-policy problem,
+    """With ratio clipping (c=1) on a moderate off-policy problem,
     the algorithm stays finite and bounded. This is NOT a guarantee of
     convergence on Baird's exact counterexample (which requires gradient-
     TD or emphatic methods); it's a sanity check that clipping prevents

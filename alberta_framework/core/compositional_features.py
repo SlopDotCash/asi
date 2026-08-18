@@ -1048,9 +1048,9 @@ def _imprint_candidate_output_weights(
     blow the coefficient up.  Inactive heads already have zero error, so they
     stay zero.
 
-    ``CompositionalFeatureLearner._initial_candidate_output_weights`` is the
-    production call site: it evaluates the candidate's feature value and
-    delegates here with the learner's configured ``candidate_imprint_scale``.
+    ``CompositionalFeatureLearner._initial_candidate_output_weights`` evaluates
+    the candidate's feature value and delegates here with the configured
+    ``candidate_imprint_scale``.
     """
     denom = candidate_value * candidate_value + 1.0
     return scale * errors * candidate_value / (denom * active_count)

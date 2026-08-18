@@ -1,7 +1,7 @@
 # mypy: disable-error-code="attr-defined,call-arg,name-defined"
 """Average-reward prediction and control primitives.
 
-This module covers the first production slice for Alberta Plan Steps 5 and 6:
+This module provides the linear primitives used by the Alberta Plan Step 5 and 6 facades:
 linear differential TD prediction and linear differential SARSA control in a
 continuing, temporally uniform setting.  The algorithms update their value
 weights, traces, policies, and average-reward estimate on every transition.
@@ -657,7 +657,7 @@ class AverageRewardHordeActorCriticAgent:
     score gradient.  In particular, ``epsilon=1`` makes the behavior independent
     of actor parameters, so its actor gradient must be exactly zero.
 
-    The actor deliberately keeps no eligibility trace in this first production
+    The actor deliberately keeps no eligibility trace in this implementation
     slice; every transition still updates the actor, critic, and reward-rate
     baseline.
     """
@@ -2076,8 +2076,13 @@ class DifferentialSARSAAgent:
         """Select an epsilon-greedy action with uniform tie-breaking."""
         key, explore_key, noise_key, random_key = jr.split(state.rng_key, 4)
         q_values = self.q_values(state, observation)
-        greedy_noise = jr.gumbel(noise_key, shape=q_values.shape) * 1e-6
-        greedy_action = jnp.argmax(q_values + greedy_noise).astype(jnp.int32)
+        maximum = jnp.max(q_values)
+        tie_noise = jnp.where(
+            q_values == maximum,
+            jr.gumbel(noise_key, shape=q_values.shape),
+            -jnp.inf,
+        )
+        greedy_action = jnp.argmax(tie_noise).astype(jnp.int32)
         random_action = jr.randint(random_key, (), 0, self._config.n_actions).astype(jnp.int32)
         explore = jr.uniform(explore_key) < state.epsilon
         return jax.lax.select(explore, random_action, greedy_action), key

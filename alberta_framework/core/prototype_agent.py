@@ -177,6 +177,8 @@ from alberta_framework.core.world_model_ensemble import (
 PROTOTYPE_CHECKPOINT_SCHEMA = "alberta.prototype_agent.v3"
 _PROTOTYPE_CHECKPOINT_SCHEMA_V2 = "alberta.prototype_agent.v2"
 _PROTOTYPE_CHECKPOINT_SCHEMA_V1 = "alberta.prototype_agent.v1"
+_PROTOTYPE_EMPTY_ARRAY_CODEC = "alberta.prototype_agent.empty_array_projection.v1"
+_PROTOTYPE_SUPPORTED_PRNG_IMPLS = frozenset({"threefry2x32", "rbg"})
 _DREAM_NEXT_OBSERVATION_STREAM_TAG = 0x44524D4F
 _PROTOTYPE_V2_REPLAY_MIGRATION_TAG = 0x50525632
 _PROTOTYPE_FEATURE_LIFECYCLE_KEY_TAG = 0x50464C43
@@ -5429,8 +5431,7 @@ class PrototypeAgent:
             carry: tuple[OaKState, Array], dream_index: Array
         ) -> tuple[tuple[OaKState, Array], Float[Array, ""]]:
             oak_s, k = carry
-            # Keep this legacy split unchanged so raw and sampled-one-hot
-            # ablations share identical anchor/action key streams.
+            # Both observation ablations use identical anchor/action key streams.
             k, sample_key, action_key = jr.split(k, 3)
             anchor_obs, _ = self._buffer.sample(buf_state, sample_key)
             action = jr.randint(action_key, (), 0, n_prim, dtype=jnp.int32)
@@ -6100,6 +6101,7 @@ class PrototypeAgent:
             transition_diagnostics=diagnostics,
         )
 
+    @functools.partial(jax.jit, static_argnums=(0,))
     def _update_transition_impl(
         self,
         state: PrototypeAgentState,
@@ -6119,7 +6121,7 @@ class PrototypeAgent:
         ),
         partner_policy_fusion_feedback_supplied: Array,
     ) -> PrototypeUpdateResult:
-        """Atomically apply a valid transition or return an exact no-op."""
+        """Atomically apply one normalized transition at a reusable JAX boundary."""
 
         def valid_branch(_: None) -> PrototypeUpdateResult:
             result = self._apply_valid_transition_impl(
@@ -7910,6 +7912,25 @@ def _prototype_config_digest(config: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _prototype_state_prng_impl(state: PrototypeAgentState) -> str:
+    """Return the one supported typed-key implementation used by the state."""
+
+    implementations: set[str] = set()
+    for leaf in jax.tree_util.tree_leaves(state):
+        dtype = getattr(leaf, "dtype", None)
+        if dtype is None or not jax.dtypes.issubdtype(dtype, jax.dtypes.prng_key):
+            continue
+        implementations.add(str(jr.key_impl(leaf)))
+    if len(implementations) != 1:
+        raise ValueError("prototype state must use one typed PRNG implementation")
+    implementation = next(iter(implementations))
+    if implementation not in _PROTOTYPE_SUPPORTED_PRNG_IMPLS:
+        raise ValueError(
+            f"prototype state uses unsupported PRNG implementation {implementation!r}"
+        )
+    return implementation
+
+
 def save_prototype_checkpoint(
     agent: PrototypeAgent,
     state: PrototypeAgentState,
@@ -7926,6 +7947,7 @@ def save_prototype_checkpoint(
         raise ValueError("cannot save an inconsistent PrototypeAgent state")
 
     config = agent.to_config()
+    prng_impl = _prototype_state_prng_impl(state)
     save_checkpoint(
         state,
         path,
@@ -7933,6 +7955,8 @@ def save_prototype_checkpoint(
             "schema": PROTOTYPE_CHECKPOINT_SCHEMA,
             "agent_config": config,
             "config_sha256": _prototype_config_digest(config),
+            "empty_array_codec": _PROTOTYPE_EMPTY_ARRAY_CODEC,
+            "prng_impl": prng_impl,
         },
     )
 
@@ -7966,6 +7990,20 @@ def load_prototype_checkpoint(
         raise ValueError(
             "checkpoint is not an Alberta PrototypeAgent v1/v2/v3 checkpoint"
         )
+    empty_array_codec = metadata.get("empty_array_codec")
+    if empty_array_codec is not None and empty_array_codec != _PROTOTYPE_EMPTY_ARRAY_CODEC:
+        raise ValueError("prototype checkpoint uses an unknown empty-array codec")
+    checkpoint_prng_impl = metadata.get("prng_impl")
+    if checkpoint_prng_impl is not None and checkpoint_prng_impl not in (
+        _PROTOTYPE_SUPPORTED_PRNG_IMPLS
+    ):
+        raise ValueError("prototype checkpoint uses an unsupported PRNG implementation")
+    if empty_array_codec is not None and schema != PROTOTYPE_CHECKPOINT_SCHEMA:
+        raise ValueError("prototype empty-array codec is valid only for v3 checkpoints")
+    if checkpoint_prng_impl is not None and schema != PROTOTYPE_CHECKPOINT_SCHEMA:
+        raise ValueError("prototype PRNG metadata is valid only for v3 checkpoints")
+    if empty_array_codec is not None and checkpoint_prng_impl is None:
+        raise ValueError("prototype checkpoint is missing PRNG implementation metadata")
     config = metadata.get("agent_config")
     if not isinstance(config, dict):
         raise ValueError("prototype checkpoint is missing agent_config")
@@ -7986,7 +8024,16 @@ def load_prototype_checkpoint(
             "prototype_feature_lifecycle is unsupported by legacy v1/v2 "
             "PrototypeAgent checkpoints"
         )
-    key = jr.key(0) if template_key is None else template_key
+    if checkpoint_prng_impl is None:
+        key = jr.key(0) if template_key is None else template_key
+    elif template_key is None:
+        key = jr.key(0, impl=checkpoint_prng_impl)
+    else:
+        if str(jr.key_impl(template_key)) != checkpoint_prng_impl:
+            raise ValueError(
+                "template_key PRNG implementation does not match checkpoint metadata"
+            )
+        key = template_key
     template = agent.init(key)
     if schema == PROTOTYPE_CHECKPOINT_SCHEMA:
         restored, restored_metadata = load_checkpoint(template, path)

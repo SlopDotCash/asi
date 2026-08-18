@@ -193,6 +193,27 @@ class TestSARSAActionSelection:
         # All actions should be the same (greedy)
         assert len(set(actions)) == 1
 
+    def test_greedy_noise_never_overturns_a_unique_near_tie(self):
+        agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+        state = agent.init(feature_dim=2, key=jr.key(42))
+        biases = state.learner_state.head_params.biases
+        state = state.replace(  # type: ignore[attr-defined]
+            learner_state=state.learner_state.replace(  # type: ignore[attr-defined]
+                head_params=state.learner_state.head_params.replace(  # type: ignore[attr-defined]
+                    biases=(
+                        biases[0].at[0].set(jnp.float32(0.0)),
+                        biases[1].at[0].set(jnp.float32(5e-7)),
+                    )
+                )
+            ),
+            epsilon=jnp.asarray(0.0, dtype=jnp.float32),
+        )
+        observation = jnp.zeros(2, dtype=jnp.float32)
+        for _ in range(200):
+            action, key = agent.select_action(state, observation)
+            assert int(action) == 1
+            state = state.replace(rng_key=key)  # type: ignore[attr-defined]
+
     def test_random_when_epsilon_one(self):
         """With epsilon=1, always explores (random actions)."""
         agent = _make_agent(n_actions=4, epsilon_start=1.0)

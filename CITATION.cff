@@ -1,6 +1,8 @@
 cff-version: 1.2.0
-title: "Alberta Framework"
-message: "If you use this software, please cite it using the metadata from this file."
+title: "ASI"
+message: >-
+  This development-tree metadata uses the ASI project name. Cite a tagged
+  release when a released source identity is required.
 type: software
 authors:
   - family-names: Lawson
@@ -12,18 +14,19 @@ version: "0.29.0"
 date-released: "2026-08-14"
 keywords:
   - continual learning
+  - online learning
   - meta-learning
   - reinforcement learning
+  - robotics
   - adaptive step-sizes
   - JAX
   - IDBD
   - Autostep
   - Alberta Plan
 abstract: >-
-  A JAX-based research framework for investigating the Alberta Plan for
-  continual AI. Focuses on adaptive step-size algorithms (IDBD, Autostep,
-  SwiftTD), streaming nonlinear function approximation, GVF/Horde prediction,
-  average-reward control, feature discovery and retention, and fail-closed
-  evidence tooling for non-stationary supervised and reinforcement learning
-  problems, with scan-based learning loops, online normalization, and
-  publication-quality analysis tools.
+  ASI is an evidence-driven JAX research project hillclimbing toward an
+  end-to-end continual-learning agent for ongoing work and robotics. The
+  project is inspired by, but not limited to, the Alberta Plan. It develops
+  online learners, adaptive optimizers, prediction and control agents,
+  learned-state and memory mechanisms, world models, planning components,
+  benchmarks, and fail-closed evidence tooling.

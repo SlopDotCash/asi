@@ -141,7 +141,7 @@ class TestLinearLearner:
 
         result = learner.update(state, sample_observation, sample_target)
 
-        # Metrics are now an array [squared_error, error, mean_step_size]
+        # Metric order: squared error, signed error, mean step size.
         chex.assert_shape(result.metrics, (3,))
         assert result.metrics[0] >= 0  # squared_error
 
@@ -168,7 +168,7 @@ class TestRunLearningLoop:
         num_steps = 100
         _, metrics = run_learning_loop(learner, stream, num_steps, rng_key)
 
-        # Metrics is now an array of shape (num_steps, 3)
+        # Each step reports the learner's three scalar metrics.
         chex.assert_shape(metrics, (num_steps, 3))
 
     def test_returns_valid_final_state(self, rng_key):

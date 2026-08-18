@@ -52,6 +52,30 @@ class _HostileDict(dict[str, object]):
 class TestMultiHeadInit:
     """Tests for MultiHeadMLPLearner.init."""
 
+    @pytest.mark.parametrize("n_heads", [True, 0, 1.5, 2**31])
+    def test_rejects_noncanonical_head_counts(self, n_heads: object):
+        with pytest.raises(ValueError, match="n_heads"):
+            MultiHeadMLPLearner(n_heads=n_heads)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("hidden_sizes", [[8], (True,), (1.5,), (0,), (2**31,)])
+    def test_rejects_noncanonical_hidden_sizes(self, hidden_sizes: object):
+        with pytest.raises(ValueError, match="hidden_sizes"):
+            MultiHeadMLPLearner(
+                n_heads=1,
+                hidden_sizes=hidden_sizes,  # type: ignore[arg-type]
+            )
+
+    @pytest.mark.parametrize(
+        "per_head_decay",
+        [[0.5], (), (True,), (float("nan"),), (-0.1,), (1.1,)],
+    )
+    def test_rejects_invalid_per_head_trace_decay(self, per_head_decay: object):
+        with pytest.raises(ValueError, match="per_head_gamma_lamda"):
+            MultiHeadMLPLearner(
+                n_heads=1,
+                per_head_gamma_lamda=per_head_decay,  # type: ignore[arg-type]
+            )
+
     def test_rejects_optimizers_without_shape_generic_hooks_at_construction(self):
         with pytest.raises(ValueError, match="optimizer.*MLP"):
             MultiHeadMLPLearner(n_heads=2, optimizer=ObGD())

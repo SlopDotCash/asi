@@ -8,9 +8,8 @@ Covers: exact trajectory equivalence with the author's dense reference
 implementation (``SwiftTDNonSparse``), the three headline behaviors
 (step-size optimization, overshoot bounding, step-size decay), and
 learning quality/robustness on ``XDistShiftStream`` -- the input-scale
-shift stream on which the repo's Step 1 replication records fixed and
-IDBD-style step-sizes diverging to NaN (see
-``tests/test_step1_replication.py``).
+shift stream on which the repo's retired Step 1 development lane recorded
+fixed and IDBD-style step-sizes diverging to NaN.
 """
 
 import functools

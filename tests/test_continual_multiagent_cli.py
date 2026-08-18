@@ -17,6 +17,9 @@ from alberta_framework.evaluation import continual_multiagent_cli
 from alberta_framework.evaluation.continual_multiagent import (
     ContinualMultiAgentReport,
 )
+from alberta_framework.evaluation.continual_multiagent_artifact import (
+    ArtifactValidation,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -120,3 +123,97 @@ def test_refusal_happens_before_threshold_and_seed_validation(
 
     assert status == 2
     assert "existing output path" in emitted["errors"][0]
+
+
+@pytest.mark.parametrize(
+    ("validation", "expected_status"),
+    (
+        (
+            ArtifactValidation(
+                valid=True,
+                accepted=False,
+                errors=("frozen gate rejected the artifact",),
+            ),
+            1,
+        ),
+        (
+            ArtifactValidation(
+                valid=False,
+                accepted=False,
+                errors=("artifact integrity validation failed",),
+            ),
+            2,
+        ),
+    ),
+)
+def test_verify_distinguishes_valid_rejection_from_invalid_artifact(
+    validation: ArtifactValidation,
+    expected_status: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact_path = tmp_path / "artifact.json"
+    monkeypatch.setattr(
+        continual_multiagent_cli,
+        "load_evidence_artifact",
+        lambda path: {"loaded_from": str(path)},
+    )
+    monkeypatch.setattr(
+        continual_multiagent_cli,
+        "validate_evidence_artifact",
+        lambda artifact: validation,
+    )
+
+    status = continual_multiagent_cli.main(["--verify", str(artifact_path)])
+    emitted = json.loads(capsys.readouterr().out)
+
+    assert status == expected_status
+    assert emitted["valid"] is validation.valid
+    assert emitted["accepted"] is validation.accepted
+    assert emitted["errors"] == list(validation.errors)
+
+
+def test_verify_reports_missing_artifact_with_status_one(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    missing = tmp_path / "missing.json"
+
+    status = continual_multiagent_cli.main(["--verify", str(missing)])
+    emitted = json.loads(capsys.readouterr().out)
+
+    assert status == 1
+    assert emitted["valid"] is False
+    assert emitted["accepted"] is False
+    assert "No such file or directory" in emitted["errors"][0]
+
+
+def test_verify_treats_missing_validator_dependency_as_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact_path = tmp_path / "artifact.json"
+    monkeypatch.setattr(
+        continual_multiagent_cli,
+        "load_evidence_artifact",
+        lambda path: {"loaded_from": str(path)},
+    )
+
+    def missing_dependency(artifact: object) -> ArtifactValidation:
+        raise FileNotFoundError("registered source dependency is missing")
+
+    monkeypatch.setattr(
+        continual_multiagent_cli,
+        "validate_evidence_artifact",
+        missing_dependency,
+    )
+
+    status = continual_multiagent_cli.main(["--verify", str(artifact_path)])
+    emitted = json.loads(capsys.readouterr().out)
+
+    assert status == 2
+    assert emitted["valid"] is False
+    assert emitted["accepted"] is False
+    assert emitted["errors"] == ["registered source dependency is missing"]

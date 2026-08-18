@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg"
-"""Production-facing Step 9 guarded-dreaming facade.
+"""Public Step 9 guarded-dreaming facade.
 
 Step 9 extends Step 7's one-step Dyna planning to error-gated, real-state-
 anchored multi-step dreaming.  Key additions over Step 7:

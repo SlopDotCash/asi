@@ -23,6 +23,20 @@ from alberta_framework import (
 class TestSaveLoadRoundTrip:
     """Round-trip save/load for different learner state types."""
 
+    def test_zero_sized_array_leaf_round_trips_from_template(self, tmp_path):
+        state = {
+            "empty": jnp.zeros((0, 3), dtype=jnp.float32),
+            "payload": jnp.arange(4, dtype=jnp.int32),
+        }
+
+        save_checkpoint(state, tmp_path / "empty_leaf")
+        loaded, metadata = load_checkpoint(state, tmp_path / "empty_leaf")
+
+        assert loaded["empty"].shape == (0, 3)
+        assert loaded["empty"].dtype == jnp.float32
+        chex.assert_trees_all_equal(loaded["payload"], state["payload"])
+        assert metadata == {}
+
     def test_linear_learner_state(self, tmp_path):
         """LinearLearner state should round-trip correctly."""
         learner = LinearLearner()

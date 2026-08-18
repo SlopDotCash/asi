@@ -50,9 +50,21 @@ from alberta_framework.evaluation.continual_ia import (
 )
 
 SCHEMA_VERSION = "alberta.continual_ia_evidence.v1"
+REPLAY_SCHEMA_VERSION = "alberta.continual_ia_consumed_seed_replay.v1"
 PROTOCOL_VERSION = "step12-hidden-phase-causal-ia.v1"
 DIGEST_SCOPE = "$.content"
 CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan"
+HISTORICAL_CONTENT_SHA256 = (
+    "826889b847aa423d86eac02f7ed754acd0d477c34812795ec7dc99ea2521820e"
+)
+NONPROMOTING_REPLAY_POLICY = {
+    "classification": "consumed-seed-source-replay",
+    "promotion_eligible": False,
+    "reason": (
+        "seeds 30-59 were consumed by the historical v1 evaluation; reruns "
+        "test current-source reproducibility and cannot create scientific evidence"
+    ),
+}
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
     Path("alberta_framework/evaluation/continual_ia.py"),
@@ -279,8 +291,8 @@ def _acceptance_payload(
     }
 
 
-def _protocol_payload() -> dict[str, object]:
-    return {
+def _protocol_payload(*, consumed_seed_replay: bool = False) -> dict[str, object]:
+    payload: dict[str, object] = {
         "protocol_version": PROTOCOL_VERSION,
         "primary_estimand": (
             "paired mean reward of recommendation_p05 minus observe_only; "
@@ -332,6 +344,21 @@ def _protocol_payload() -> dict[str, object]:
             "digest and source hashes provide integrity, not origin authentication",
         ],
     }
+    if consumed_seed_replay:
+        payload["seed_roles"] = {
+            "development_and_calibration": list(range(12)),
+            "consumed_historical_evidence_replay": list(PROMOTED_EVIDENCE_SEEDS),
+            "rule": (
+                "seeds 30-59 were consumed by the historical v1 evaluation; "
+                "current reruns are permanently nonpromoting"
+            ),
+        }
+        payload["supported_claim"] = (
+            "nonpromoting current-source replay on the consumed historical seed schedule"
+        )
+        limitations = cast(list[str], payload["limitations"])
+        limitations.append("consumed-seed replay cannot create or refresh scientific evidence")
+    return payload
 
 
 def _source_provenance() -> dict[str, object]:
@@ -402,15 +429,15 @@ def scientific_content_sha256(content: Mapping[str, object]) -> str:
     return hashlib.sha256(canonical_content_bytes(content)).hexdigest()
 
 
-def build_ia_evidence_artifact(
+def build_ia_consumed_seed_replay(
     report: ContinualIAReport,
 ) -> dict[str, object]:
-    """Build one deterministic-content evidence candidate."""
+    """Build a permanently nonpromoting replay of the consumed v1 seed schedule."""
 
     if tuple(sorted(report.aggregate.seeds)) != report.aggregate.seeds:
         raise ValueError("artifact seeds must be strictly increasing")
     content: dict[str, object] = {
-        "protocol": _protocol_payload(),
+        "protocol": _protocol_payload(consumed_seed_replay=True),
         "configuration": _config_payload(report.config),
         "thresholds": _threshold_payload(report.thresholds),
         "seed_summaries": _seed_payloads(report.condition_results),
@@ -419,7 +446,8 @@ def build_ia_evidence_artifact(
         "source_provenance": _source_provenance(),
     }
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": REPLAY_SCHEMA_VERSION,
+        "evidence_policy": NONPROMOTING_REPLAY_POLICY,
         "content": content,
         "operational_diagnostics": _operational_payload(report),
         "content_digest": {
@@ -478,20 +506,21 @@ def load_ia_evidence_artifact(path: Path) -> dict[str, object]:
     return parsed
 
 
-def write_ia_evidence_artifact(
+def write_ia_consumed_seed_replay(
     path: Path,
     report: ContinualIAReport,
 ) -> dict[str, object]:
-    """Write only an internally valid evidence artifact."""
+    """Exclusively create an internally valid, nonpromoting replay artifact."""
 
-    artifact = build_ia_evidence_artifact(report)
+    artifact = build_ia_consumed_seed_replay(report)
     validation = validate_ia_evidence_artifact(artifact)
     if not validation.valid:
         raise ValueError(
             "refusing to write invalid IA evidence artifact: " + "; ".join(validation.errors)
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(ia_artifact_json(artifact), encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(ia_artifact_json(artifact))
     return artifact
 
 
@@ -1061,19 +1090,30 @@ def _validate_operational(
 
 def validate_ia_evidence_artifact(
     artifact: Mapping[str, object],
+    *,
+    _allow_historical_projection: bool = False,
 ) -> IAArtifactValidation:
-    """Validate digest plus primitive-to-acceptance internal consistency."""
+    """Validate historical v1 evidence or a policy-barred consumed-seed replay."""
 
     errors: list[str] = []
-    if set(artifact) != {
+    schema = artifact.get("schema_version")
+    is_replay = schema == REPLAY_SCHEMA_VERSION
+    expected_top_level = {
         "schema_version",
         "content",
         "operational_diagnostics",
         "content_digest",
-    }:
-        errors.append("artifact top-level keys do not match the v1 schema")
-    if artifact.get("schema_version") != SCHEMA_VERSION:
-        errors.append(f"schema_version must be {SCHEMA_VERSION!r}")
+    }
+    if is_replay:
+        expected_top_level.add("evidence_policy")
+    if set(artifact) != expected_top_level:
+        errors.append("artifact top-level keys do not match its declared schema")
+    if schema not in {SCHEMA_VERSION, REPLAY_SCHEMA_VERSION}:
+        errors.append(
+            f"schema_version must be {SCHEMA_VERSION!r} or {REPLAY_SCHEMA_VERSION!r}"
+        )
+    if is_replay and artifact.get("evidence_policy") != NONPROMOTING_REPLAY_POLICY:
+        errors.append("replay evidence_policy must permanently forbid promotion")
     content = artifact.get("content")
     digest = artifact.get("content_digest")
     operational = artifact.get("operational_diagnostics")
@@ -1097,8 +1137,9 @@ def validate_ia_evidence_artifact(
             "source_provenance",
         }:
             errors.append("content keys do not match the v1 schema")
-        if content.get("protocol") != _protocol_payload():
-            errors.append("content.protocol is not the canonical frozen v1 protocol")
+        expected_protocol = _protocol_payload(consumed_seed_replay=is_replay)
+        if content.get("protocol") != expected_protocol:
+            errors.append("content.protocol is not canonical for the declared schema")
         config = _parse_config(content.get("configuration"), errors)
         thresholds = _parse_thresholds(content.get("thresholds"), errors)
         _validate_provenance(content.get("source_provenance"), errors)
@@ -1150,6 +1191,15 @@ def validate_ia_evidence_artifact(
             errors.append("content_digest.sha256 must be lowercase hexadecimal")
         elif content is not None and recorded != scientific_content_sha256(content):
             errors.append("content_digest.sha256 does not match content")
+        if (
+            not is_replay
+            and isinstance(recorded, str)
+            and recorded != HISTORICAL_CONTENT_SHA256
+            and not _allow_historical_projection
+        ):
+            errors.append(
+                "historical v1 content digest is not the immutable recorded evaluation"
+            )
 
     _validate_operational(
         operational,
@@ -1160,6 +1210,6 @@ def validate_ia_evidence_artifact(
     valid = not errors
     return IAArtifactValidation(
         valid=valid,
-        accepted=valid and expected_acceptance,
+        accepted=valid and expected_acceptance and not is_replay,
         errors=tuple(errors),
     )

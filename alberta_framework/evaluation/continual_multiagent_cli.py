@@ -210,6 +210,28 @@ def _emit(payload: dict[str, object]) -> None:
 def _verify(path: Path) -> int:
     try:
         artifact = load_evidence_artifact(path)
+    except FileNotFoundError as error:
+        _emit(
+            {
+                "accepted": False,
+                "artifact": str(path),
+                "errors": [str(error)],
+                "valid": False,
+            }
+        )
+        return 1
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        _emit(
+            {
+                "accepted": False,
+                "artifact": str(path),
+                "errors": [str(error)],
+                "valid": False,
+            }
+        )
+        return 2
+
+    try:
         validation = validate_evidence_artifact(artifact)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         _emit(
@@ -230,6 +252,8 @@ def _verify(path: Path) -> int:
             "valid": validation.valid,
         }
     )
+    if not validation.valid:
+        return 2
     return 0 if validation.accepted else 1
 
 

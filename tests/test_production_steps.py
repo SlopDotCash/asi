@@ -1,5 +1,5 @@
 # mypy: disable-error-code="untyped-decorator,unused-ignore"
-"""Production-facing Step 1/2 kernel tests."""
+"""Public Step 1/2 kernel contract tests."""
 
 import json
 import tomllib
@@ -1406,6 +1406,18 @@ def test_cli_smoke_entrypoints_return_success(
 
     assert step2_smoke_main(["--steps", "8", "--final-window", "2"]) == 0
     assert '"finite": true' in capsys.readouterr().out
+
+
+def test_cli_short_horizons_do_not_require_a_matching_window_override(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The advertised ``--steps`` option must work below the default window."""
+
+    assert step1_smoke_main(["--steps", "8"]) == 0
+    assert '"steps": 8' in capsys.readouterr().out
+
+    assert step2_smoke_main(["--steps", "8"]) == 0
+    assert '"steps": 8' in capsys.readouterr().out
 
 
 def test_documented_cli_scripts_are_packaged() -> None:

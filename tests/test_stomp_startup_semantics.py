@@ -47,8 +47,8 @@ def test_starting_nonzero_option_dispatches_and_credits_its_own_action() -> None
         )
     )
 
-    # Option 0 prefers primitive 0; option 1 prefers primitive 1. Sampling
-    # from the old idle-clamped option index would therefore be observable.
+    # Option 0 prefers primitive 0 and option 1 prefers primitive 1, making an
+    # incorrect idle-option dispatch observable.
     option_weights = jnp.zeros((2, 2, 2), dtype=jnp.float32)
     option_weights = option_weights.at[0, 0, 0].set(5.0)
     option_weights = option_weights.at[1, 1, 0].set(5.0)

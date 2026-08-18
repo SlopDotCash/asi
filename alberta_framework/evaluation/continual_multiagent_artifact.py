@@ -629,7 +629,7 @@ def write_evidence_artifact(
     path: Path,
     report: ContinualMultiAgentReport,
 ) -> dict[str, object]:
-    """Build, validate, and write an evidence artifact."""
+    """Build, validate, and exclusively create an evidence artifact."""
 
     artifact = build_evidence_artifact(report)
     validation = validate_evidence_artifact(artifact)
@@ -639,7 +639,8 @@ def write_evidence_artifact(
             + "; ".join(validation.errors)
         )
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(artifact_json(artifact), encoding="utf-8")
+    with path.open("x", encoding="utf-8") as handle:
+        handle.write(artifact_json(artifact))
     return artifact
 
 

@@ -20,6 +20,43 @@ _LAZY_SCRIPTS = {
     "alberta-historical-forager": ("alberta_framework.console_entrypoints:historical_forager_main"),
     "alberta-foragax-oci": ("alberta_framework.console_entrypoints:official_foragax_oci_main"),
 }
+_ASI_SCRIPTS = {
+    "asi-reference-life-scorecard": (
+        "alberta_framework.benchmarks.reference_life_scorecard:main"
+    ),
+}
+
+
+def test_package_import_does_not_require_optional_gymnasium() -> None:
+    probe = (
+        "import sys; "
+        "sys.modules['gymnasium'] = None; "
+        "import alberta_framework; "
+        "from alberta_framework.streams import GymnasiumStream"
+    )
+    completed = subprocess.run(
+        (sys.executable, "-c", probe),
+        cwd=_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_package_exports_pipeline_and_dependency_lazy_gymnasium_api() -> None:
+    """Internal import failures must not silently remove advertised APIs."""
+    package = importlib.import_module("alberta_framework")
+    expected = {
+        "AlbertaPipeline",
+        "make_alberta_pipeline",
+        "GymnasiumStream",
+        "make_gymnasium_stream",
+    }
+
+    assert expected <= set(package.__all__)
+    assert all(hasattr(package, name) for name in expected)
 
 
 def test_hard_link_sensitive_scripts_use_lazy_entrypoints() -> None:
@@ -28,6 +65,7 @@ def test_hard_link_sensitive_scripts_use_lazy_entrypoints() -> None:
     scripts = project["project"]["scripts"]
 
     assert {name: scripts[name] for name in _LAZY_SCRIPTS} == _LAZY_SCRIPTS
+    assert {name: scripts[name] for name in _ASI_SCRIPTS} == _ASI_SCRIPTS
 
 
 def test_importing_lazy_entrypoints_does_not_import_scientific_implementations() -> None:

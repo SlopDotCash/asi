@@ -1,4 +1,4 @@
-"""Production-facing kernels for Alberta Plan Steps 1-12.
+"""Public kernels for Alberta Plan Steps 1-12.
 
 The modules in this package intentionally expose a small, stable surface over
 the larger research codebase.  They are the recommended imports for downstream

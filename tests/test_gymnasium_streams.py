@@ -615,6 +615,24 @@ class TestTDStream:
         # At least some should be larger (terminal states will be the same)
         assert sum(targets_with_value) > sum(targets_zero)
 
+    def test_action_value_bootstrap_uses_next_policy_action(self):
+        """Action-value targets should bootstrap from Q(s', a'), not Q(s', a)."""
+        env = gymnasium.make("CartPole-v1")
+        actions = iter((0, 1))
+        stream = TDStream(
+            env,
+            policy=lambda _observation: next(actions),
+            gamma=0.5,
+            include_action_in_features=True,
+            seed=42,
+        )
+        stream.update_value_function(lambda features: float(features[-1]))
+
+        timestep = next(stream)
+
+        assert float(timestep.observation[-1]) == 0.0
+        assert float(timestep.target[0]) == pytest.approx(1.5)
+
     def test_zero_gamma_skips_inf_value_function(self) -> None:
         """gamma=0 times inf V(s') is NaN in TDStream targets.
 

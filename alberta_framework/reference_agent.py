@@ -3,7 +3,8 @@
 This module provides immutable records and an in-process, single-writer
 ownership ledger. It is an L0 interoperability preview only: it does not select
 reference-dev, prove learning benefit, certify safety or robotics readiness, or
-establish exact whole-life checkpoint resume.
+provide standalone checkpointing. The separate reference-life checkpoint codec
+supports its documented quiescent aggregate configurations.
 """
 
 from __future__ import annotations
@@ -684,6 +685,7 @@ class TransactionPhase(enum.Enum):
     ARMED = "armed"
     AUTHORIZED = "authorized"
     SETTLED = "settled"
+    ISSUED = "issued"
     DISPATCHED = "dispatched"
     OUTCOME = "outcome"
     EXHAUSTED = "exhausted"
@@ -790,22 +792,23 @@ class DispatchAck:
         return self.decision.decision_id
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class DispatchReceipt:
-    """Host record of an executor acknowledgement for one settled action."""
+class DispatchCommand:
+    """Pre-execution command binding a settlement to one executor epoch."""
 
     dispatch: DispatchAck
-    receipt_id: str
+    command_id: str
     executor_id: str
+    executor_epoch: str
 
     def __post_init__(self) -> None:
         if not isinstance(self.dispatch, DispatchAck):
-            raise ValueError("receipt requires a DispatchAck")
-        _require_safe_id(self.receipt_id, name="receipt_id")
+            raise ValueError("dispatch command requires a DispatchAck")
+        _require_safe_id(self.command_id, name="command_id")
         _require_safe_id(self.executor_id, name="executor_id")
-        expected_id = f"{self.decision.decision_id}:receipt"
-        if self.receipt_id != expected_id:
-            host_expected = _require_exact_str("expected_id", expected_id)
-            raise ValueError(f"receipt_id must use canonical value '{host_expected}'")
+        _require_safe_id(self.executor_epoch, name="executor_epoch")
+        expected_id = f"{self.decision_id}:command"
+        if self.command_id != expected_id:
+            raise ValueError(f"command_id must use canonical value {expected_id!r}")
 
     @property
     def effective_action(self) -> ArrayValue:
@@ -814,6 +817,90 @@ class DispatchReceipt:
     @property
     def decision(self) -> Decision:
         return self.dispatch.decision
+
+    @property
+    def lifecycle_id(self) -> str:
+        return self.decision.lifecycle_id
+
+    @property
+    def decision_id(self) -> str:
+        return self.decision.decision_id
+
+
+@dataclasses.dataclass(frozen=True, slots=True, init=False)
+class DispatchReceipt:
+    """Post-execution acknowledgement of the action an executor applied.
+
+    The legacy ``dispatch``/``executor_id`` constructor remains available for
+    preview compatibility and creates an explicit legacy executor command.
+    New integrations must pass the command and independently reported action.
+    """
+
+    command: DispatchCommand
+    applied_action: ArrayValue
+    receipt_id: str
+
+    def __init__(
+        self,
+        *,
+        receipt_id: str,
+        command: DispatchCommand | None = None,
+        applied_action: ArrayValue | None = None,
+        dispatch: DispatchAck | None = None,
+        executor_id: str | None = None,
+    ) -> None:
+        if command is None:
+            if not isinstance(dispatch, DispatchAck) or executor_id is None:
+                raise ValueError(
+                    "receipt requires command/applied_action or legacy dispatch/executor_id"
+                )
+            command = DispatchCommand(
+                dispatch=dispatch,
+                command_id=f"{dispatch.decision_id}:command",
+                executor_id=executor_id,
+                executor_epoch="legacy.preview1",
+            )
+            applied_action = dispatch.effective_action
+        elif dispatch is not None:
+            if executor_id is not None:
+                raise ValueError("receipt constructors cannot mix executor_id with command")
+            command = dataclasses.replace(command, dispatch=dispatch)
+        elif executor_id is not None:
+            raise ValueError("receipt constructors cannot mix executor_id with command")
+        if not isinstance(command, DispatchCommand):
+            raise ValueError("receipt requires a DispatchCommand")
+        if not isinstance(applied_action, ArrayValue):
+            raise ValueError("receipt applied_action must be an ArrayValue")
+        object.__setattr__(self, "command", command)
+        object.__setattr__(self, "applied_action", applied_action)
+        object.__setattr__(self, "receipt_id", receipt_id)
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        _require_safe_id(self.receipt_id, name="receipt_id")
+        expected_id = f"{self.decision.decision_id}:receipt"
+        if self.receipt_id != expected_id:
+            raise ValueError(f"receipt_id must use canonical value {expected_id!r}")
+
+    @property
+    def effective_action(self) -> ArrayValue:
+        return self.applied_action
+
+    @property
+    def dispatch(self) -> DispatchAck:
+        return self.command.dispatch
+
+    @property
+    def executor_id(self) -> str:
+        return self.command.executor_id
+
+    @property
+    def executor_epoch(self) -> str:
+        return self.command.executor_epoch
+
+    @property
+    def decision(self) -> Decision:
+        return self.command.decision
 
 
 def _finite_scalar(value: Any, *, name: str) -> float:
@@ -929,6 +1016,33 @@ class Transaction:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class ReferenceAgentUpdate:
+    """State-agnostic staged result returned by a reference-agent adapter."""
+
+    state: Any
+    next_decision: Decision | None
+    accepted: bool
+    parameters_changed: bool
+    rejection_reason: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.accepted, bool):
+            raise ValueError("accepted must be boolean")
+        if not isinstance(self.parameters_changed, bool):
+            raise ValueError("parameters_changed must be boolean")
+        if self.accepted:
+            if self.rejection_reason is not None:
+                raise ValueError("an accepted update cannot carry a rejection reason")
+        else:
+            if self.parameters_changed:
+                raise ValueError("a rejected update cannot change parameters")
+            if self.next_decision is not None:
+                raise ValueError("a rejected update cannot arm a next decision")
+            if not isinstance(self.rejection_reason, str) or not self.rejection_reason.strip():
+                raise ValueError("a rejected update requires a nonempty reason")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class StepResult:
     """Outcome acceptance or fail-closed recovery result."""
 
@@ -1010,6 +1124,7 @@ class ReferenceTransactionState:
     decision: Decision | None = None
     authorization: DispatchAuthorization | None = None
     dispatch: DispatchAck | None = None
+    command: DispatchCommand | None = None
     receipt: DispatchReceipt | None = None
     transaction: Transaction | None = None
     halt_reason: str | None = None
@@ -1042,24 +1157,26 @@ class ReferenceTransactionState:
             self.decision,
             self.authorization,
             self.dispatch,
+            self.command,
             self.receipt,
             self.transaction,
         )
         presence = tuple(record is not None for record in records)
         exact_presence = {
-            TransactionPhase.READY: (False, False, False, False, False),
-            TransactionPhase.ARMED: (True, False, False, False, False),
-            TransactionPhase.AUTHORIZED: (True, True, False, False, False),
-            TransactionPhase.SETTLED: (True, True, True, False, False),
-            TransactionPhase.DISPATCHED: (True, True, True, True, False),
-            TransactionPhase.OUTCOME: (True, True, True, True, True),
-            TransactionPhase.EXHAUSTED: (False, False, False, False, False),
+            TransactionPhase.READY: (False, False, False, False, False, False),
+            TransactionPhase.ARMED: (True, False, False, False, False, False),
+            TransactionPhase.AUTHORIZED: (True, True, False, False, False, False),
+            TransactionPhase.SETTLED: (True, True, True, False, False, False),
+            TransactionPhase.ISSUED: (True, True, True, True, False, False),
+            TransactionPhase.DISPATCHED: (True, True, True, True, True, False),
+            TransactionPhase.OUTCOME: (True, True, True, True, True, True),
+            TransactionPhase.EXHAUSTED: (False, False, False, False, False, False),
         }
         if self.phase in exact_presence and presence != exact_presence[self.phase]:
             raise ValueError(f"{self.phase.value} phase carries inconsistent transaction records")
         if self.phase is TransactionPhase.HALTED:
             depth = sum(presence)
-            if depth == 0 or presence != tuple(index < depth for index in range(5)):
+            if depth == 0 or presence != tuple(index < depth for index in range(6)):
                 raise ValueError("halted phase requires one contiguous transaction record prefix")
 
         if self.phase is TransactionPhase.READY:
@@ -1084,8 +1201,17 @@ class ReferenceTransactionState:
             raise ValueError("authorization decision violates the ownership chain")
         if self.dispatch is not None and self.dispatch.authorization != self.authorization:
             raise ValueError("dispatch authorization violates the ownership chain")
-        if self.receipt is not None and self.receipt.dispatch != self.dispatch:
-            raise ValueError("receipt dispatch violates the ownership chain")
+        if self.command is not None and self.command.dispatch != self.dispatch:
+            raise ValueError("command dispatch violates the ownership chain")
+        if self.receipt is not None and self.receipt.command != self.command:
+            raise ValueError("receipt command violates the ownership chain")
+        if (
+            self.receipt is not None
+            and self.command is not None
+            and self.phase is not TransactionPhase.HALTED
+            and self.receipt.applied_action != self.command.effective_action
+        ):
+            raise ValueError("a non-halted receipt applied action must equal the command")
         if self.transaction is not None and self.transaction.receipt != self.receipt:
             raise ValueError("outcome receipt violates the ownership chain")
         if (
@@ -1094,6 +1220,298 @@ class ReferenceTransactionState:
             and self.phase is not TransactionPhase.HALTED
         ):
             raise ValueError("vetoed authorization is valid only in a halted state")
+
+
+class ReferenceTransactionReducer:
+    """Pure semantic transitions for one manifest-bound transaction state.
+
+    Aggregate runners use this reducer under their own outer commit. The live
+    ledger remains the process-local compatibility/CAS owner.
+    """
+
+    __slots__ = ("_manifest",)
+
+    def __init__(self, manifest: AgentManifest) -> None:
+        if not isinstance(manifest, AgentManifest):
+            raise ValueError("manifest must be an AgentManifest")
+        self._manifest = manifest
+
+    @property
+    def manifest(self) -> AgentManifest:
+        return self._manifest
+
+    def init(self) -> ReferenceTransactionState:
+        return ReferenceTransactionState(
+            schema=REFERENCE_TRANSACTION_STATE_SCHEMA,
+            manifest_id=self.manifest.manifest_id,
+            phase=TransactionPhase.READY,
+            lifecycle_id=None,
+            next_decision_index=0,
+        )
+
+    def _ledger(self, state: ReferenceTransactionState) -> ReferenceTransactionLedger:
+        ledger = ReferenceTransactionLedger(self.manifest)
+        ledger._current_state = state
+        return ledger
+
+    def _validate_state(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        require_current: bool = False,
+    ) -> None:
+        del require_current
+        self._ledger(state)._validate_state(state)
+
+    def validate_state(self, state: ReferenceTransactionState) -> None:
+        self._validate_state(state)
+
+    def _commit(
+        self,
+        previous: ReferenceTransactionState,
+        next_state: ReferenceTransactionState,
+    ) -> ReferenceTransactionState:
+        self._validate_state(previous)
+        self._validate_state(next_state)
+        return next_state
+
+    def _require_phase(
+        self,
+        state: ReferenceTransactionState,
+        expected: TransactionPhase,
+    ) -> None:
+        self._validate_state(state)
+        if state.phase is not expected:
+            raise DecisionOwnershipError(
+                f"transaction phase must be {expected.value}, got {state.phase.value}"
+            )
+
+    def _halt(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        reason: str,
+    ) -> ReferenceTransactionState:
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("halt reason must be nonempty")
+        return self._commit(
+            state,
+            dataclasses.replace(
+                state,
+                phase=TransactionPhase.HALTED,
+                halt_reason=reason,
+            ),
+        )
+
+    def halt(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        reason: str,
+    ) -> ReferenceTransactionState:
+        self._validate_state(state)
+        if state.phase in (TransactionPhase.HALTED, TransactionPhase.EXHAUSTED):
+            raise DecisionOwnershipError(
+                f"cannot halt a transaction already in phase {state.phase.value}"
+            )
+        return self._halt(state, reason=reason)
+
+    def arm(
+        self,
+        state: ReferenceTransactionState,
+        decision: Decision,
+    ) -> ReferenceTransactionState:
+        return self._ledger(state).arm(state, decision)
+
+    def authorize(
+        self,
+        state: ReferenceTransactionState,
+        decision: Decision,
+        *,
+        authorized_action: Any | None,
+        authority_id: str,
+        policy_version: str,
+        authorization_id: str,
+        veto_reason: str | None = None,
+    ) -> tuple[ReferenceTransactionState, DispatchAuthorization]:
+        return self._ledger(state).authorize(
+            state,
+            decision,
+            authorized_action=authorized_action,
+            authority_id=authority_id,
+            policy_version=policy_version,
+            authorization_id=authorization_id,
+            veto_reason=veto_reason,
+        )
+
+    def settle_dispatch(
+        self,
+        state: ReferenceTransactionState,
+        authorization: DispatchAuthorization,
+        *,
+        rebinding_applied: bool,
+        settlement_id: str,
+    ) -> tuple[ReferenceTransactionState, DispatchAck | None]:
+        return self._ledger(state).settle_dispatch(
+            state,
+            authorization,
+            rebinding_applied=rebinding_applied,
+            settlement_id=settlement_id,
+        )
+
+    def issue_dispatch(
+        self,
+        state: ReferenceTransactionState,
+        dispatch: DispatchAck,
+        *,
+        command_id: str,
+        executor_id: str,
+        executor_epoch: str,
+    ) -> tuple[ReferenceTransactionState, DispatchCommand]:
+        self._require_phase(state, TransactionPhase.SETTLED)
+        if state.dispatch != dispatch:
+            raise DecisionOwnershipError("dispatch command does not own the settlement")
+        command = DispatchCommand(
+            dispatch=dispatch,
+            command_id=command_id,
+            executor_id=executor_id,
+            executor_epoch=executor_epoch,
+        )
+        return (
+            self._commit(
+                state,
+                dataclasses.replace(
+                    state,
+                    phase=TransactionPhase.ISSUED,
+                    command=command,
+                ),
+            ),
+            command,
+        )
+
+    def record_dispatch(
+        self,
+        state: ReferenceTransactionState,
+        receipt: DispatchReceipt,
+    ) -> tuple[ReferenceTransactionState, DispatchReceipt]:
+        self._require_phase(state, TransactionPhase.ISSUED)
+        if not isinstance(receipt, DispatchReceipt):
+            raise DecisionOwnershipError("dispatch acknowledgement must be a DispatchReceipt")
+        if state.command != receipt.command:
+            raise DecisionOwnershipError("dispatch receipt does not own the issued command")
+        try:
+            applied_action = self.manifest.action_spec.encode(receipt.applied_action)
+        except (TypeError, ValueError) as exc:
+            return self._halt(
+                state,
+                reason=f"executor applied action violates the manifest codec: {exc}",
+            ), receipt
+        assert state.command is not None
+        if applied_action != state.command.effective_action:
+            return (
+                self._commit(
+                    state,
+                    dataclasses.replace(
+                        state,
+                        phase=TransactionPhase.HALTED,
+                        receipt=receipt,
+                        halt_reason="executor applied action differs from the settled command",
+                    ),
+                ),
+                receipt,
+            )
+        return (
+            self._commit(
+                state,
+                dataclasses.replace(
+                    state,
+                    phase=TransactionPhase.DISPATCHED,
+                    receipt=receipt,
+                ),
+            ),
+            receipt,
+        )
+
+    def halt_after_execution(
+        self,
+        state: ReferenceTransactionState,
+        receipt: DispatchReceipt,
+        *,
+        reason: str,
+    ) -> ReferenceTransactionState:
+        self._require_phase(state, TransactionPhase.ISSUED)
+        if not isinstance(receipt, DispatchReceipt) or state.command != receipt.command:
+            raise DecisionOwnershipError(
+                "post-execution halt receipt does not own the issued command"
+            )
+        try:
+            self.manifest.action_spec.encode(receipt.applied_action)
+        except (TypeError, ValueError) as exc:
+            return self._halt(
+                state,
+                reason=f"{reason}; executor receipt could not be retained: {exc}",
+            )
+        return self._commit(
+            state,
+            dataclasses.replace(
+                state,
+                phase=TransactionPhase.HALTED,
+                receipt=receipt,
+                halt_reason=reason,
+            ),
+        )
+
+    def record_outcome(
+        self,
+        state: ReferenceTransactionState,
+        receipt: DispatchReceipt,
+        **kwargs: Any,
+    ) -> tuple[ReferenceTransactionState, Transaction]:
+        return self._ledger(state).record_outcome(state, receipt, **kwargs)
+
+    def accept(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        next_decision: Decision | None,
+        parameters_changed: bool,
+    ) -> tuple[ReferenceTransactionState, StepResult]:
+        return self._ledger(state).accept(
+            state,
+            next_decision=next_decision,
+            parameters_changed=parameters_changed,
+        )
+
+    def reject(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        reason: str,
+    ) -> tuple[ReferenceTransactionState, StepResult]:
+        return self._ledger(state).reject(state, reason=reason)
+
+    def recover_accept(
+        self,
+        state: ReferenceTransactionState,
+        *,
+        next_decision: Decision | None,
+        parameters_changed: bool,
+    ) -> tuple[ReferenceTransactionState, StepResult]:
+        self._validate_state(state)
+        if state.phase is not TransactionPhase.HALTED or state.transaction is None:
+            raise DecisionOwnershipError(
+                "recovery requires a halted state retaining a complete outcome"
+            )
+        outcome = dataclasses.replace(
+            state,
+            phase=TransactionPhase.OUTCOME,
+            halt_reason=None,
+        )
+        return self.accept(
+            outcome,
+            next_decision=next_decision,
+            parameters_changed=parameters_changed,
+        )
 
 
 class ReferenceTransactionLedger:
@@ -1137,7 +1555,8 @@ class ReferenceTransactionLedger:
     def __reduce__(self) -> Any:
         raise TypeError(
             "live reference transaction ledger cannot be serialized; "
-            "whole-life checkpoint/resume is not implemented"
+            "checkpoint the supported quiescent aggregate through "
+            "reference_life_checkpoint"
         )
 
     def _validate_state(
@@ -1173,6 +1592,10 @@ class ReferenceTransactionLedger:
                 raise DecisionOwnershipError(
                     "rebound settlement is not declared by the agent manifest"
                 )
+        if state.command is not None:
+            self.manifest.action_spec.encode(state.command.effective_action)
+        if state.receipt is not None:
+            self.manifest.action_spec.encode(state.receipt.applied_action)
         if state.transaction is not None:
             self.manifest.observation_spec.encode(state.transaction.bootstrap_observation)
             if state.transaction.next_decision_observation is not None:
@@ -1241,6 +1664,7 @@ class ReferenceTransactionLedger:
             decision=decision,
             authorization=None,
             dispatch=None,
+            command=None,
             receipt=None,
             transaction=None,
             halt_reason=None,
@@ -1370,6 +1794,7 @@ class ReferenceTransactionLedger:
         next_state = dataclasses.replace(
             state,
             phase=TransactionPhase.DISPATCHED,
+            command=receipt.command,
             receipt=receipt,
         )
         return self._commit(state, next_state), receipt
@@ -1448,6 +1873,7 @@ class ReferenceTransactionLedger:
                 decision=None,
                 authorization=None,
                 dispatch=None,
+                command=None,
                 receipt=None,
                 transaction=None,
             )
@@ -1460,6 +1886,7 @@ class ReferenceTransactionLedger:
                 decision=None,
                 authorization=None,
                 dispatch=None,
+                command=None,
                 receipt=None,
                 transaction=None,
             )
@@ -1472,6 +1899,7 @@ class ReferenceTransactionLedger:
                 decision=next_decision,
                 authorization=None,
                 dispatch=None,
+                command=None,
                 receipt=None,
                 transaction=None,
             )
@@ -1509,9 +1937,12 @@ __all__ = [
     "DecisionOwnershipError",
     "DispatchAck",
     "DispatchAuthorization",
+    "DispatchCommand",
     "DispatchReceipt",
     "DispatchStatus",
+    "ReferenceAgentUpdate",
     "ReferenceTransactionLedger",
+    "ReferenceTransactionReducer",
     "ReferenceTransactionState",
     "SpaceSpec",
     "StepResult",

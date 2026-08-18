@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg"
-"""Production-facing Step 11 OaK facade.
+"""Public Step 11 OaK facade.
 
 Step 11 of the Alberta Plan introduces the OaK (Options and Knowledge)
 architecture.  OaK extends the STOMP progression from Step 10 with three
@@ -64,7 +64,7 @@ from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 @dataclass(frozen=True)
 class Step11OaKConfig:
-    """Configuration for the production Step 11 OaK facade.
+    """Configuration for the public Step 11 OaK facade.
 
     Thin wrapper around :class:`~alberta_framework.core.oak.OaKConfig` with
     standard dict serialization consistent with Steps 1–10.

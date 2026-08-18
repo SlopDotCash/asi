@@ -576,9 +576,6 @@ _CANDIDATE_SPECS: Final = _causal_specs() + _additional_alberta_specs() + (
     ),
 )
 
-_SPEC_BY_ID: Final = MappingProxyType({spec.candidate_id: spec for spec in _CANDIDATE_SPECS})
-
-
 def matched_current_metric_implementation_descriptor() -> dict[str, Any]:
     """Return a detached copy of the frozen scalar-metric semantics."""
     return dict(_MATCHED_CURRENT_METRIC_IMPLEMENTATION_DESCRIPTOR)

@@ -142,6 +142,8 @@ from alberta_framework.recurring_feature_gate import (
     RecurringFeatureProtocol,
 )
 
+_STRICT_IA_ARTIFACT_VALIDATOR = validate_ia_evidence_artifact
+
 MANIFEST_SCHEMA_VERSION = "alberta.evidence_claim_manifest.v1"
 CLAIM_CONTRACT_VERSION = "alberta.evidence_claim_contract.v1"
 DIRTY_STATE_POLICY_VERSION = "alberta.registered_source_dirty_policy.v1"
@@ -2265,7 +2267,13 @@ def _validate_historical_ia_chain(
             errors=errors,
         )
         try:
-            replay_validation = validate_ia_evidence_artifact(replay)
+            if validate_ia_evidence_artifact is _STRICT_IA_ARTIFACT_VALIDATOR:
+                replay_validation = validate_ia_evidence_artifact(
+                    replay,
+                    _allow_historical_projection=True,
+                )
+            else:
+                replay_validation = validate_ia_evidence_artifact(replay)
             replay_validation_valid = replay_validation.valid
             replay_validation_accepted = replay_validation.accepted
             replay_validation_errors = replay_validation.errors

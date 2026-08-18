@@ -1,4 +1,4 @@
-"""CLI for the frozen held-out continual-IA evidence protocol.
+"""CLI for validating historical IA evidence and rerunning consumed seeds.
 
 The historical promoted run is pinned immutably at
 ``outputs/continual_ia/evidence.json``.  Rerunning the frozen 30-seed
@@ -28,7 +28,8 @@ from alberta_framework.evaluation.continual_ia import (
     run_continual_ia_benchmark,
 )
 from alberta_framework.evaluation.continual_ia_artifact import (
-    build_ia_evidence_artifact,
+    NONPROMOTING_REPLAY_POLICY,
+    build_ia_consumed_seed_replay,
     ia_artifact_json,
     load_ia_evidence_artifact,
     validate_ia_evidence_artifact,
@@ -59,7 +60,7 @@ def _resolved_new_output(path: Path) -> Path:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=("Run or verify the frozen hidden-phase causal IA evidence gate.")
+        description=("Run a nonpromoting consumed-seed replay or verify an IA artifact.")
     )
     parser.add_argument(
         "--output",
@@ -174,7 +175,7 @@ def main(
             return 2
         evidence_report = report
 
-    artifact = build_ia_evidence_artifact(evidence_report)
+    artifact = build_ia_consumed_seed_replay(evidence_report)
     validation = validate_ia_evidence_artifact(artifact)
     if not validation.valid:
         _emit(
@@ -207,6 +208,7 @@ def main(
             "accepted": validation.accepted,
             "artifact": str(args.output),
             "content_sha256": digest_value,
+            "evidence_policy": NONPROMOTING_REPLAY_POLICY,
             "errors": list(validation.errors),
             "primary_passed": evidence_report.acceptance.primary_passed,
             "schema_version": artifact["schema_version"],

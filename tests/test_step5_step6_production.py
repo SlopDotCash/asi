@@ -770,9 +770,7 @@ def test_step6_smoke_health_gate_reports_any_refused_update(
 
     def _refuse_updates(*args: Any, **kwargs: Any) -> Any:
         result = original_run(*args, **kwargs)
-        return result.replace(
-            updates_applied=result.updates_applied.at[0].set(False)
-        )
+        return result.replace(updates_applied=result.updates_applied.at[0].set(False))
 
     monkeypatch.setattr(
         step6_module,
@@ -952,9 +950,9 @@ def test_step7_scan_is_jittable() -> None:
     rewards = jnp.array([1.0, 0.0], dtype=jnp.float32)
     next_observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
 
-    result = jax.jit(
-        lambda s: run_step7_scan(config, agent, model, s, rewards, next_observations)
-    )(state)
+    result = jax.jit(lambda s: run_step7_scan(config, agent, model, s, rewards, next_observations))(
+        state
+    )
 
     chex.assert_shape(result.real_td_errors, (2,))
     chex.assert_shape(result.planning_td_errors, (2, 2))
@@ -1063,9 +1061,7 @@ def test_step7_planning_records_target_behavior_policy_ratios() -> None:
     )
     assert bool(jnp.all(result.planning_target_probs > 0.0))
     assert bool(jnp.all(result.planning_importance_ratios > 0.0))
-    assert bool(
-        jnp.all(result.planning_importance_ratios <= config.planning_importance_ratio_clip)
-    )
+    assert bool(jnp.all(result.planning_importance_ratios <= config.planning_importance_ratio_clip))
 
 
 def test_step7_importance_correction_scales_imagined_update_delta() -> None:
@@ -1250,18 +1246,28 @@ def test_step7_prioritized_planning_updates_priority_queue() -> None:
         initial_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
     )
     state = state.replace(  # type: ignore[attr-defined]
-        memory_observations=jnp.array(
-            [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
-            dtype=jnp.float32,
+        memory_observations=state.memory_observations.at[:3].set(
+            jnp.array(
+                [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+                dtype=jnp.float32,
+            )
         ),
-        memory_actions=jnp.array([0, 0, 1], dtype=jnp.int32),
-        memory_rewards=jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
-        memory_next_observations=jnp.array(
-            [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
-            dtype=jnp.float32,
+        memory_actions=state.memory_actions.at[:3].set(jnp.array([0, 0, 1], dtype=jnp.int32)),
+        memory_rewards=state.memory_rewards.at[:3].set(
+            jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32)
         ),
-        memory_priorities=jnp.array([0.2, 3.0, 0.4], dtype=jnp.float32),
-        memory_utilities=jnp.array([0.2, 3.0, 0.4], dtype=jnp.float32),
+        memory_next_observations=state.memory_next_observations.at[:3].set(
+            jnp.array(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
+                dtype=jnp.float32,
+            )
+        ),
+        memory_priorities=state.memory_priorities.at[:3].set(
+            jnp.array([0.2, 3.0, 0.4], dtype=jnp.float32)
+        ),
+        memory_utilities=state.memory_utilities.at[:3].set(
+            jnp.array([0.2, 3.0, 0.4], dtype=jnp.float32)
+        ),
         memory_count=jnp.array(3, dtype=jnp.int32),
         memory_position=jnp.array(2, dtype=jnp.int32),
         world_model_state=state.world_model_state.replace(  # type: ignore[attr-defined]
@@ -1311,18 +1317,28 @@ def test_step7_learned_strategy_updates_selected_memory_utility() -> None:
         initial_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
     )
     state = state.replace(  # type: ignore[attr-defined]
-        memory_observations=jnp.array(
-            [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
-            dtype=jnp.float32,
+        memory_observations=state.memory_observations.at[:3].set(
+            jnp.array(
+                [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+                dtype=jnp.float32,
+            )
         ),
-        memory_actions=jnp.array([0, 0, 1], dtype=jnp.int32),
-        memory_rewards=jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
-        memory_next_observations=jnp.array(
-            [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
-            dtype=jnp.float32,
+        memory_actions=state.memory_actions.at[:3].set(jnp.array([0, 0, 1], dtype=jnp.int32)),
+        memory_rewards=state.memory_rewards.at[:3].set(
+            jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32)
         ),
-        memory_priorities=jnp.array([0.1, 0.2, 0.3], dtype=jnp.float32),
-        memory_utilities=jnp.array([0.1, 5.0, 0.3], dtype=jnp.float32),
+        memory_next_observations=state.memory_next_observations.at[:3].set(
+            jnp.array(
+                [[1.0, 0.0], [2.0, 0.0], [3.0, 0.0]],
+                dtype=jnp.float32,
+            )
+        ),
+        memory_priorities=state.memory_priorities.at[:3].set(
+            jnp.array([0.1, 0.2, 0.3], dtype=jnp.float32)
+        ),
+        memory_utilities=state.memory_utilities.at[:3].set(
+            jnp.array([0.1, 5.0, 0.3], dtype=jnp.float32)
+        ),
         memory_count=jnp.array(3, dtype=jnp.int32),
         memory_position=jnp.array(2, dtype=jnp.int32),
         world_model_state=state.world_model_state.replace(  # type: ignore[attr-defined]

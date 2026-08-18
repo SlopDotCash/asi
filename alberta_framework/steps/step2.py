@@ -1,7 +1,7 @@
 # mypy: disable-error-code="call-arg"
-"""Production Step 2 kernel.
+"""Public Step 2 kernel.
 
-The Step 2 production surface exposes the current packaged learner:
+The Step 2 surface exposes the current packaged learner:
 target-structure UPGD.  It is a single learner with online hidden-feature
 utility, low-utility perturbation, ObGD-bounded updates, and vector-output
 heads.  It is not a theorem of universal representation learning; it is the
@@ -456,7 +456,7 @@ def _validate_step2_memory_config(config: Step2MemoryConfig) -> None:
 
 @dataclass(frozen=True)
 class Step2KernelConfig:
-    """Config for the production Step 2 UPGD kernel."""
+    """Config for the public Step 2 UPGD kernel."""
 
     feature_dim: int = 8
     n_heads: int = 3
@@ -542,7 +542,7 @@ class Step2StrictDigitReadoutConfig:
 
 @dataclass(frozen=True)
 class Step2MemoryConfig:
-    """Config for the production Step 2 retained-view memory."""
+    """Config for the public Step 2 retained-view memory."""
 
     feature_dim: int = 784
     n_classes: int = 10
@@ -674,7 +674,7 @@ class Step2AssociativeConfig:
 
 @dataclass(frozen=True)
 class Step2HybridConfig:
-    """Config for the production Step 2 UPGD plus memory learner.
+    """Config for the public Step 2 UPGD plus memory learner.
 
     Fields mirror
     :class:`~alberta_framework.core.upgd_memory.UPGDMemoryConfig`

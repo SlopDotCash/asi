@@ -178,8 +178,8 @@ class SecurityRewardWeights:
 
     Positive components reward correct protection and service restoration.
     Negative components penalize operational disruption and missed threats. The
-    defaults are conservative integration-test baselines; production
-    experiments should record the exact weights in rollout metadata.
+    defaults are conservative integration-test baselines; experiments should
+    record the exact weights in rollout metadata.
     """
 
     threat_blocked: float = 1.0

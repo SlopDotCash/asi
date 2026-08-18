@@ -1,5 +1,5 @@
 # mypy: disable-error-code="attr-defined,call-arg,comparison-overlap,redundant-cast,unused-ignore"
-"""Production-facing Step 5 average-reward prediction facade (Predict II).
+"""Public Step 5 average-reward prediction facade (Predict II).
 
 Step 5 of the Alberta Plan moves prediction to the continuing, average-reward
 setting: no discounting, no episodes.  The learner behind this facade is the
@@ -115,7 +115,7 @@ def _compatible_float32_storage(value: object, narrowed: float) -> float:
 
 @dataclass(frozen=True)
 class Step5AverageRewardTDConfig:
-    """Config for the production Step 5 differential TD facade."""
+    """Config for the public Step 5 differential TD facade."""
 
     step_size: float = 0.05
     average_reward_step_size: float = 0.01
@@ -376,7 +376,7 @@ def _state_feature_dim(state: DifferentialTDState) -> int:
 def make_step5_td_learner(
     config: Step5AverageRewardTDConfig | None = None,
 ) -> DifferentialTDLearner:
-    """Create the production Step 5 differential TD learner."""
+    """Create the public Step 5 differential TD learner."""
     cfg = Step5AverageRewardTDConfig() if config is None else config
     if type(cfg) is not Step5AverageRewardTDConfig:
         raise TypeError("config must be an actual Step5AverageRewardTDConfig")
