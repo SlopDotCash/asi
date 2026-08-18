@@ -65,7 +65,7 @@ jobs:
           name: reference-life-shards-${{ matrix.seed }}
           path: scorecard/shards/*.json
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
 
   aggregate:
     name: aggregate and validate
@@ -107,7 +107,7 @@ jobs:
       - name: Upload complete validated campaign
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: reference-life-scorecard-validated
+          name: reference-life-scorecard-validated-${{ github.sha }}
           path: scorecard
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
