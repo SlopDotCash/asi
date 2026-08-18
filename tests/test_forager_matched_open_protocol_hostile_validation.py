@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
 import pytest
 
 from alberta_framework.benchmarks.forager_matched_open_protocol import (
+    _CANDIDATE_SPECS,
+    MATCHED_CURRENT_HORIZON,
     ForagerMatchedOpenProtocolBuildError,
     MatchedCurrentCandidateQualification,
     MatchedCurrentRuntimeQualification,
+    _CandidateSpec,
 )
 
 
@@ -70,3 +74,57 @@ def test_candidate_qualification_rejects_invalid_types() -> None:
             capability_qualification_receipt_sha256=_digest(b"receipt"),
             resources=None,  # type: ignore[arg-type]
         )
+
+
+def _legal_spec(candidate_id: str = "isolated_ppo") -> _CandidateSpec:
+    return next(spec for spec in _CANDIDATE_SPECS if spec.candidate_id == candidate_id)
+
+
+def test_frozen_candidate_specs_remain_legal() -> None:
+    assert len(_CANDIDATE_SPECS) == 23
+    isolated_ppo = _legal_spec("isolated_ppo")
+    isolated_rtu = _legal_spec("isolated_rtu")
+    oracle = _legal_spec("search_oracle")
+    causal = _legal_spec("causal_e025_q050")
+    assert isolated_ppo.rollout_steps == 2_048
+    assert MATCHED_CURRENT_HORIZON // isolated_ppo.rollout_steps == 244
+    assert isolated_rtu.rollout_steps == 128
+    assert MATCHED_CURRENT_HORIZON // isolated_rtu.rollout_steps == 3_904
+    assert causal.rollout_steps is None
+    assert isolated_ppo.aperture_size == 9
+    assert oracle.aperture_size == -1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rollout_steps", True),
+        ("rollout_steps", False),
+        ("rollout_steps", 0),
+        ("aperture_size", True),
+        ("aperture_size", False),
+        ("aperture_size", 0),
+        ("aperture_size", 8),
+        ("environment_key_shared", 1),
+        ("pairing_eligible", 1),
+        ("seed_transport", "not_a_transport"),
+        ("candidate_id", ""),
+    ],
+)
+def test_candidate_spec_rejects_bool_horizon_identities(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ForagerMatchedOpenProtocolBuildError, match=field):
+        replace(_legal_spec(), **{field: value})
+
+
+def test_candidate_spec_bool_rollout_would_collapse_horizon_identity() -> None:
+    """On origin/main, True constructed and MATCHED_CURRENT_HORIZON // True == 499712."""
+
+    legal = _legal_spec("isolated_ppo")
+    assert MATCHED_CURRENT_HORIZON // legal.rollout_steps == 244
+    assert MATCHED_CURRENT_HORIZON // True == MATCHED_CURRENT_HORIZON
+    with pytest.raises(ForagerMatchedOpenProtocolBuildError, match="rollout_steps"):
+        replace(legal, rollout_steps=True)
+    with pytest.raises(ForagerMatchedOpenProtocolBuildError, match="aperture_size"):
+        replace(legal, aperture_size=True)
