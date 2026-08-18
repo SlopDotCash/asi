@@ -1457,17 +1457,17 @@ def _intentional_updates_hp(value: object) -> dict[str, float]:
         or checked["use_diagonal_normalization"] not in (0.0, 1.0)
         or checked["use_adaptive_clip"] not in (0.0, 1.0)
         or checked["update_features"] not in (0.0, 1.0)
-        or checked["intended_fraction"] <= 0.0
-        or checked["fixed_step_size"] < 0.0
-        or not 0.0 <= checked["beta2"] < 1.0
-        or checked["optimizer_epsilon"] <= 0.0
-        or not 0.0 <= checked["beta_clip"] < 1.0
-        or checked["clip_mult"] <= 0.0
-        or checked["weight_decay"] < 0.0
-        or not 0.0 <= checked["norm_decay"] < 1.0
-        or checked["norm_epsilon"] <= 0.0
+        or checked["intended_fraction"] != 0.5
+        or checked["fixed_step_size"] != 0.01
+        or checked["beta2"] != 0.999
+        or checked["optimizer_epsilon"] != 1e-8
+        or checked["beta_clip"] != 0.9998
+        or checked["clip_mult"] != 20.0
+        or checked["weight_decay"] != 0.0
+        or checked["norm_decay"] != 0.99
+        or checked["norm_epsilon"] != 1e-8
     ):
-        raise ValueError("Intentional Updates hyperparameters violate the frozen bounds")
+        raise ValueError("Intentional Updates hyperparameters drift from the frozen protocol")
     return checked
 
 
@@ -1591,8 +1591,10 @@ def _make_intentional_updates_learner(
             & jnp.all(jnp.isfinite(norm_var))
             & jnp.isfinite(norm_count)
             & (step >= 0)
-            & (clip_step >= 0)
+            & (step < jnp.asarray((1 << 31) - 1, dtype=jnp.int32))
+            & (clip_step == step)
             & (norm_count >= 0.0)
+            & jnp.all(norm_var > 0.0)
             & (checked_y >= 0)
             & (checked_y < checked_params["b3"].shape[0])
         )
@@ -8713,6 +8715,30 @@ def _intentional_updates_persistent_numeric_bytes(
     return parameter_bytes + normalizer_bytes + mechanism_bytes
 
 
+_INTENTIONAL_UPDATES_MAX_PERSISTENT_BYTES = 256 * 1024 * 1024
+
+
+def _canonical_intentional_updates_result(result: object) -> ScreeningRunResult:
+    """Re-run host dataclass gates after possible frozen-object mutation."""
+    if type(result) is not ScreeningRunResult:
+        raise TypeError("result must be an exact ScreeningRunResult")
+    if type(result.config) is not IPMNISTConfig:
+        raise TypeError("result.config must be an exact IPMNISTConfig")
+    return ScreeningRunResult(
+        config_name=result.config_name,
+        base_learner=result.base_learner,
+        hyperparameters=result.hyperparameters,
+        seed=result.seed,
+        config=IPMNISTConfig(**result.config.to_config()),
+        per_task_accuracy=result.per_task_accuracy,
+        per_task_loss=result.per_task_loss,
+        per_task_plasticity=result.per_task_plasticity,
+        wall_clock_seconds=result.wall_clock_seconds,
+        noise_mode=result.noise_mode,
+        noise_pool_steps=result.noise_pool_steps,
+    )
+
+
 def intentional_updates_development_record(
     result: ScreeningRunResult,
 ) -> dict[str, Any]:
@@ -8723,16 +8749,31 @@ def intentional_updates_development_record(
     resource counters requested by issue #1561 without creating or mutating
     anything under ``outputs/``.
     """
-    if type(result) is not ScreeningRunResult:
-        raise TypeError("result must be an exact ScreeningRunResult")
+    result = _canonical_intentional_updates_result(result)
+    if result.noise_mode != "step" or result.noise_pool_steps is not None:
+        raise ValueError("Intentional Updates records require exact-step execution")
     spec = SCREENING_REGISTRY.get(result.config_name)
     if spec is None or spec.mechanism != "intentional_updates":
         raise ValueError("result must use a registered Intentional Updates arm")
-    if result.hyperparameters != spec.hyperparameters:
+    if result.base_learner != spec.base_learner:
+        raise ValueError("result base learner must match the registered arm")
+    if _intentional_updates_hp(result.hyperparameters) != spec.hyperparameters:
         raise ValueError("result hyperparameters must match the registered arm")
     steps = result.config.n_steps
     mechanism_enabled = spec.hyperparameters["intentional_enabled"] == 1.0
     feature_updates = spec.hyperparameters["update_features"] == 1.0
+    persistent_bytes = _intentional_updates_persistent_numeric_bytes(
+        result.config, mechanism_enabled=mechanism_enabled
+    )
+    if steps > ((1 << 31) - 1) // 2:
+        raise ValueError("Intentional Updates model-query budget exceeds signed int32")
+    if persistent_bytes > _INTENTIONAL_UPDATES_MAX_PERSISTENT_BYTES:
+        raise ValueError("Intentional Updates persistent state exceeds 256 MiB")
+    scaled_correct = result.per_task_accuracy * result.config.task_length
+    rounded_correct = np.rint(scaled_correct)
+    if not np.allclose(scaled_correct, rounded_correct, rtol=0.0, atol=1e-5):
+        raise ValueError("per_task_accuracy must derive from integer online-correct counts")
+    per_task_correct = [int(value) for value in rounded_correct]
     return {
         "schema": INTENTIONAL_UPDATES_RECORD_SCHEMA,
         "references": {
@@ -8773,13 +8814,13 @@ def intentional_updates_development_record(
             # value_and_grad performs one pre-update model evaluation and
             # _step_metrics performs the post-update same-example query.
             "model_queries": 2 * steps,
-            "persistent_numeric_bytes": _intentional_updates_persistent_numeric_bytes(
-                result.config, mechanism_enabled=mechanism_enabled
-            ),
+            "persistent_numeric_bytes": persistent_bytes,
             "timing_telemetry_seconds": float(result.wall_clock_seconds),
             "timing_is_selection_metric": False,
         },
         "metrics": {
+            "per_task_correct": per_task_correct,
+            "online_correct": sum(per_task_correct),
             "per_task_accuracy": result.per_task_accuracy.tolist(),
             "per_task_loss": result.per_task_loss.tolist(),
             "per_task_plasticity": result.per_task_plasticity.tolist(),

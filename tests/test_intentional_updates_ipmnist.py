@@ -132,6 +132,11 @@ def test_factory_rejects_hostile_hyperparameter_container_without_hooks() -> Non
         _make_intentional_updates_learner(hostile)
     assert hostile.calls == 0
 
+    drifted = dict(screening_spec("intentional_updates_ipmnist").hyperparameters)
+    drifted["intended_fraction"] = 0.4
+    with pytest.raises(ValueError, match="drift from the frozen protocol"):
+        _make_intentional_updates_learner(drifted)
+
 
 def test_head_only_feature_control_freezes_hidden_parameters() -> None:
     spec = screening_spec("intentional_updates_head_only")
@@ -194,6 +199,9 @@ def test_strict_development_record_binds_resources_gates_and_metrics() -> None:
     assert record["resources"]["backward_passes"] == 8
     assert record["resources"]["model_queries"] == 16
     assert record["resources"]["persistent_numeric_bytes"] > 0
+    assert record["metrics"]["online_correct"] == sum(
+        record["metrics"]["per_task_correct"]
+    )
 
     hostile = copy.deepcopy(record)
     hostile["policy"]["scientific_promotion_allowed"] = True
@@ -209,6 +217,18 @@ def test_strict_development_record_binds_resources_gates_and_metrics() -> None:
     hostile["gates"]["backpropagation"] = False
     with pytest.raises(ValueError, match="frozen protocol"):
         validate_intentional_updates_development_record(hostile)
+
+    mutated = copy.deepcopy(result)
+    object.__setattr__(mutated, "base_learner", "adamw")
+    with pytest.raises(ValueError, match="base learner"):
+        intentional_updates_development_record(mutated)
+
+    nonintegral = copy.deepcopy(result)
+    accuracy = nonintegral.per_task_accuracy.copy()
+    accuracy[0] = 0.125
+    object.__setattr__(nonintegral, "per_task_accuracy", accuracy)
+    with pytest.raises(ValueError, match="integer online-correct"):
+        intentional_updates_development_record(nonintegral)
 
     class HostilePolicy(dict[object, object]):
         calls = 0
