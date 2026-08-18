@@ -40,6 +40,22 @@ _ACTUAL_INT_TYPES = frozenset(
 )
 
 
+def _require_tracking_interval(value: object) -> int:
+    """Reject leftover bool/float identities before they become recording strides."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError("interval must be a non-negative integer")
+    number = operator.index(cast(SupportsIndex, value))
+    if number < 0:
+        raise ValueError("interval must be a non-negative integer")
+    return number
+
+
+def _require_exact_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be an actual bool")
+    return value
+
+
 @chex.dataclass(frozen=True)
 class TimeStep:
     """Single experience from an experience stream.
@@ -277,6 +293,13 @@ class StepSizeTrackingConfig:
     interval: int
     include_bias: bool = True
 
+    def __post_init__(self) -> None:
+        """Reject leftover bool/float identities before they become recording strides."""
+        object.__setattr__(self, "interval", _require_tracking_interval(self.interval))
+        object.__setattr__(
+            self, "include_bias", _require_exact_bool("include_bias", self.include_bias)
+        )
+
 
 @chex.dataclass(frozen=True)
 class StepSizeHistory:
@@ -305,6 +328,10 @@ class NormalizerTrackingConfig:
     """
 
     interval: int
+
+    def __post_init__(self) -> None:
+        """Reject leftover bool/float identities before they become recording strides."""
+        object.__setattr__(self, "interval", _require_tracking_interval(self.interval))
 
 
 @chex.dataclass(frozen=True)
