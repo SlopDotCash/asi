@@ -166,6 +166,8 @@ def _pairing_json(value: Any, *, name: str) -> str:
 
 def _json_mapping_copy(value: Mapping[str, Any], *, name: str) -> dict[str, Any]:
     """Return a detached JSON mapping while rejecting non-finite/unsafe values."""
+    if type(value) is not dict:
+        raise ValueError(f"{name} must be a JSON object")
     try:
         encoded = json.dumps(
             value,
@@ -787,7 +789,7 @@ def _validated_environment_provenance(
                 "the official interpreter"
             )
         return None
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         raise ValueError("environment_provenance must be a mapping")
     provenance = _json_mapping_copy(value, name="environment_provenance")
     if set(provenance) != {"semantic", "implementation"}:
