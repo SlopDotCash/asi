@@ -453,7 +453,8 @@ def test_stomp_closes_float32_schema_and_direct_resource_boundaries() -> None:
         SubtaskSpec(feature_index=0, threshold=1.0e100)
 
     last_legal_observation_dim = (2**29 - 1 - 22) // 4
-    STOMPConfig(observation_dim=last_legal_observation_dim, n_primitive_actions=1)
+    with pytest.raises(ValueError, match="update working set byte count"):
+        STOMPConfig(observation_dim=last_legal_observation_dim, n_primitive_actions=1)
     with pytest.raises(ValueError, match="direct array bytes"):
         STOMPConfig(observation_dim=last_legal_observation_dim + 1, n_primitive_actions=1)
 

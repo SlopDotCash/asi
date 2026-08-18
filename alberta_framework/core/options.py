@@ -118,6 +118,32 @@ def _stomp_direct_array_scalars(config: STOMPConfig) -> int:
     )
 
 
+def _stomp_direct_state_bytes(config: STOMPConfig) -> int:
+    """Named persist already preflighted by ``STOMPConfig.__post_init__``."""
+    return 4 * _stomp_direct_array_scalars(config)
+
+
+def _stomp_update_result_extras_bytes() -> int:
+    """Returned ``STOMPUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published diagnostic, clock-word,
+    and nested-update leaves.
+    """
+    return 64
+
+
+def _stomp_update_working_set_bytes(config: STOMPConfig) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _stomp_direct_state_bytes(config) + _stomp_update_result_extras_bytes()
+
+
+def _preflight_stomp_update_working_set(config: STOMPConfig) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _stomp_update_working_set_bytes(config) > _INT32_MAX:
+        raise ValueError("STOMP update working set byte count must fit signed int32")
+
+
 # ---------------------------------------------------------------------------
 # Subtask specification (Python-level; JAX arrays extracted for scan use)
 # ---------------------------------------------------------------------------
@@ -1549,6 +1575,7 @@ class STOMPConfig:
         direct_scalars = _stomp_direct_array_scalars(self)
         if direct_scalars > _INT32_MAX or 4 * direct_scalars > _INT32_MAX:
             raise ValueError("derived STOMP direct array bytes must fit signed int32")
+        _preflight_stomp_update_working_set(self)
 
     @property
     def n_options(self) -> int:

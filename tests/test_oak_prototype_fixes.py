@@ -373,9 +373,8 @@ def test_oak_and_keyboard_close_schema_float32_and_resource_boundaries() -> None
         )
 
     stomp_only_limit = (2**29 - 1 - 22) // 4
-    stomp = STOMPConfig(observation_dim=stomp_only_limit, n_primitive_actions=1)
-    with pytest.raises(ValueError, match="OaK direct array bytes"):
-        OaKConfig(stomp=stomp)
+    with pytest.raises(ValueError, match="update working set byte count"):
+        STOMPConfig(observation_dim=stomp_only_limit, n_primitive_actions=1)
 
     last_legal_keyboard_options = (2**31 - 1) // 4 - 2
     KeyboardChordLearnerConfig(n_options=last_legal_keyboard_options)
