@@ -93,11 +93,11 @@ def _validate_json_value(value: Any, *, path: str, depth: int = 0) -> None:
         if not math.isfinite(value):
             raise ValueError(f"{path} must contain only finite JSON numbers")
         return
-    if isinstance(value, list):
+    if type(value) is list:
         for index, item in enumerate(value):
             _validate_json_value(item, path=f"{path}[{index}]", depth=depth + 1)
         return
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         for key, item in value.items():
             if type(key) is not str:
                 raise ValueError(f"{path} JSON object keys must be strings")
@@ -107,7 +107,7 @@ def _validate_json_value(value: Any, *, path: str, depth: int = 0) -> None:
 
 
 def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         raise ValueError("config must be a JSON mapping")
     _validate_json_value(value, path="config")
     try:
