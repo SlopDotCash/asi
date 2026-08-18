@@ -37,7 +37,6 @@ Catastrophic Forgetting in Continual Learning." ICLR 2024.
 import functools
 import operator
 import time
-from collections.abc import Mapping
 from fractions import Fraction
 from typing import Any, SupportsIndex, cast
 
@@ -142,7 +141,7 @@ def _require_float32_resource(
 
 
 def _copy_mapping(payload: object, *, name: str) -> dict[str, object]:
-    if not isinstance(payload, Mapping):
+    if type(payload) is not dict:
         raise ValueError(f"{name} payload must be a mapping")
     try:
         data = dict(payload)
