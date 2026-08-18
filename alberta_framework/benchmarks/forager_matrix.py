@@ -916,7 +916,7 @@ def _require_nonnegative_int(value: Any, path: str) -> int:
 
 
 def _require_seed_list(value: Any, path: str) -> tuple[int, ...]:
-    if not isinstance(value, list):
+    if type(value) is not list:
         raise ForagerMatrixManifestError(f"{path} must be a JSON array")
     if not value:
         raise ForagerMatrixManifestError(f"{path} must not be empty")
