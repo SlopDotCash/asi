@@ -106,11 +106,75 @@ def _require_discrete_state_resources(n_actions: int, feature_dim: int) -> None:
         raise ValueError("derived actor-critic state exceeds the signed-int32 budget")
 
 
+def _actor_critic_persistent_bytes(n_actions: int, feature_dim: int) -> int:
+    """Named persist already counted inside ``_require_discrete_state_resources``."""
+    return 8 * n_actions * feature_dim + 12 * feature_dim + 8 * n_actions + 24
+
+
+def _actor_critic_update_result_extras_bytes(n_actions: int) -> int:
+    """Returned ``ActorCriticUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published action, policy, value,
+    next-value, TD-error, bounder, and acceptance leaves.
+    """
+    return 4 * n_actions + 21
+
+
+def _actor_critic_update_working_set_bytes(n_actions: int, feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _actor_critic_persistent_bytes(
+        n_actions, feature_dim
+    ) + _actor_critic_update_result_extras_bytes(n_actions)
+
+
+def _preflight_actor_critic_update_working_set(n_actions: int, feature_dim: int) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _actor_critic_update_working_set_bytes(n_actions, feature_dim) > _INT32_MAX:
+        raise ValueError(
+            "actor-critic update working set byte count must fit signed int32"
+        )
+
+
 def _require_continuous_state_resources(action_dim: int, feature_dim: int) -> None:
     state_scalars = 2 * action_dim * feature_dim + 5 * action_dim + 3 * feature_dim + 5
     state_bytes = 8 * action_dim * feature_dim + 20 * action_dim + 12 * feature_dim + 20
     if state_scalars > _INT32_MAX or state_bytes > _INT32_MAX:
         raise ValueError("derived continuous actor-critic state exceeds the signed-int32 budget")
+
+
+def _continuous_actor_critic_persistent_bytes(action_dim: int, feature_dim: int) -> int:
+    """Named persist already counted inside ``_require_continuous_state_resources``."""
+    return 8 * action_dim * feature_dim + 20 * action_dim + 12 * feature_dim + 20
+
+
+def _continuous_actor_critic_update_result_extras_bytes(action_dim: int) -> int:
+    """Returned ``ContinuousActorCriticUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published action, mean, sigma, value,
+    next-value, TD-error, bounder, and acceptance leaves.
+    """
+    return 12 * action_dim + 17
+
+
+def _continuous_actor_critic_update_working_set_bytes(
+    action_dim: int, feature_dim: int
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _continuous_actor_critic_persistent_bytes(
+        action_dim, feature_dim
+    ) + _continuous_actor_critic_update_result_extras_bytes(action_dim)
+
+
+def _preflight_continuous_actor_critic_update_working_set(
+    action_dim: int, feature_dim: int
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _continuous_actor_critic_update_working_set_bytes(action_dim, feature_dim) > _INT32_MAX:
+        raise ValueError(
+            "continuous actor-critic update working set byte count must fit signed int32"
+        )
 
 
 def _require_discrete_scan_resources(
@@ -511,6 +575,7 @@ class ActorCriticAgent:
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         _require_discrete_state_resources(self._config.n_actions, feature_dim)
+        _preflight_actor_critic_update_working_set(self._config.n_actions, feature_dim)
         key = _require_key(key)
         zeros_actor = jnp.zeros((self._config.n_actions, feature_dim), dtype=jnp.float32)
         zeros_policy_bias = jnp.zeros((self._config.n_actions,), dtype=jnp.float32)
@@ -1287,6 +1352,7 @@ class ContinuousActorCriticAgent:
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         cfg = self._config
         _require_continuous_state_resources(cfg.action_dim, feature_dim)
+        _preflight_continuous_actor_critic_update_working_set(cfg.action_dim, feature_dim)
         key = _require_key(key)
         zeros_mean = jnp.zeros((cfg.action_dim, feature_dim), dtype=jnp.float32)
         zeros_mean_bias = jnp.zeros((cfg.action_dim,), dtype=jnp.float32)
