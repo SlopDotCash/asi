@@ -133,6 +133,26 @@ postmortem.
     6.55-6.82, so the nominal 300 dimensions were under 7. Record:
     [`V4_fingerprints.md`](../../outputs/new_directions/V4_fingerprints.md).
 
+16. **V1's ~2,000-sample identification floor replicates, and a second
+    model-side construction is void.** The #1870 preregistration scored
+    post-shift class-conditional means against two model-side references
+    (weight-path affinity and the mean input-output Jacobian) plus a data-side
+    control. The control crossed 0.90 at `N* = 1978.5` against V1's reported
+    ~2,000, in a different runner and with a stronger post estimator (batch
+    class means rather than a fresh EMA), so V1's floor is confirmed rather
+    than assumed. Both model-side arms failed the oracle gate at 0.248 against
+    0.95 while scoring identically on the no-shift control, so unlike entry 15
+    the failure is not a position confound: the reference lives in weight space
+    ("how does position i drive class c") and the post descriptor in data space
+    ("how bright is position j for class c"), correlated but not commensurable.
+    The reusable point is structural — any model-side quantity is indexed by
+    the pre-shift input layout, so scoring it requires a post-shift content
+    statistic, which is the estimator V1 already showed to be binding. A
+    model-side probe can improve the reference and cannot move the term that
+    binds. Entry 15 stays open: model-side probes remain untested across two
+    constructions, not refuted. Record:
+    [`V5_model_side.md`](../../outputs/new_directions/V5_model_side.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
