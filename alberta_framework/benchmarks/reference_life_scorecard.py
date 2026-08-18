@@ -595,7 +595,7 @@ class StreamingRunSummary:
         late_window: int | None,
         post_switch_window: int | None,
     ) -> None:
-        if environment_kind not in ENVIRONMENT_ROSTER:
+        if type(environment_kind) is not str or environment_kind not in ENVIRONMENT_ROSTER:
             raise ValueError("unsupported streaming-summary environment")
         if type(horizon) is not int or horizon <= 0:
             raise ValueError("horizon must be a positive integer")
