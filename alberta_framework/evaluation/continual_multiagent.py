@@ -36,7 +36,7 @@ import operator
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from time import perf_counter, perf_counter_ns
-from typing import Literal, SupportsIndex, cast
+from typing import Any, Literal, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -109,6 +109,22 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 
 def _require_uint32(name: str, value: object) -> int:
     return _require_int32(name, value, minimum=0, maximum=_UINT32_MAX)
+
+
+def _require_ndarray(
+    name: str,
+    value: object,
+    *,
+    dtype: np.dtype[Any],
+    ndim: int = 1,
+) -> NDArray[Any]:
+    if type(value) is not np.ndarray:
+        raise ValueError(f"{name} must be an exact numpy.ndarray")
+    if value.dtype != dtype:
+        raise ValueError(f"{name} must have dtype {dtype}")
+    if value.ndim != ndim:
+        raise ValueError(f"{name} must be {ndim}-dimensional")
+    return value
 
 
 def _require_seed(value: object) -> int:
@@ -407,6 +423,59 @@ class ConditionResult:
     interference_forgetting: float
     controller_budget: ControllerBudget
     timing: TimingMetrics
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "seed", _require_seed(self.seed))
+        known = tuple(name for name, _mask in CONDITION_MASKS)
+        if type(self.condition) is not str or self.condition not in known:
+            raise ValueError("condition must be a known multiagent condition name")
+        if (
+            type(self.learning_mask) is not tuple
+            or len(self.learning_mask) != 2
+            or any(type(flag) is not bool for flag in self.learning_mask)
+        ):
+            raise ValueError("learning_mask must be a pair of booleans")
+        rewards = _require_ndarray(
+            "online_rewards", self.online_rewards, dtype=np.dtype(np.float64)
+        )
+        if int(rewards.shape[0]) < 1:
+            raise ValueError("online_rewards must contain at least one step")
+        _require_ndarray(
+            "phase_mean_rewards",
+            self.phase_mean_rewards,
+            dtype=np.dtype(np.float64),
+        )
+        _require_ndarray(
+            "performance_matrix",
+            self.performance_matrix,
+            dtype=np.dtype(np.float64),
+            ndim=2,
+        )
+        if not isinstance(self.summary, ContinualLearningSummary):
+            raise ValueError("summary must be a ContinualLearningSummary")
+        _require_ndarray(
+            "recovery_lengths",
+            self.recovery_lengths,
+            dtype=np.dtype(np.int64),
+        )
+        object.__setattr__(
+            self,
+            "recurrence_recovery_steps",
+            _require_int32(
+                "recurrence_recovery_steps",
+                self.recurrence_recovery_steps,
+                minimum=-1,
+            ),
+        )
+        object.__setattr__(
+            self,
+            "interference_forgetting",
+            finite_real("interference_forgetting", self.interference_forgetting),
+        )
+        if not isinstance(self.controller_budget, ControllerBudget):
+            raise ValueError("controller_budget must be a ControllerBudget")
+        if not isinstance(self.timing, TimingMetrics):
+            raise ValueError("timing must be a TimingMetrics")
 
 
 @dataclass(frozen=True)
