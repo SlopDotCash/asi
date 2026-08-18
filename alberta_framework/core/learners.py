@@ -39,6 +39,7 @@ from alberta_framework.core.normalizers import (
     Normalizer,
     StreamingBatchNormalizerState,
     WelfordNormalizerState,
+    _saturating_int32_counter_increment,
 )
 from alberta_framework.core.optimizers import (
     LMS,
@@ -333,7 +334,7 @@ class LinearLearner:
             bias=new_bias,
             optimizer_state=opt_update.new_state,
             normalizer_state=new_normalizer_state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -1470,7 +1471,7 @@ class MLPLearner:
             traces=tuple(new_traces),
             normalizer_state=new_normalizer_state,
             neuron_utility=new_neuron_utility,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -1886,7 +1887,7 @@ class TDLinearLearner:
             weights=new_weights,
             bias=new_bias,
             optimizer_state=opt_update.new_state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -2056,7 +2057,7 @@ class TrueOnlineTDLearner:
             eligibility_traces=stored_traces,
             bias_eligibility_trace=stored_bias_trace,
             v_old=new_v_old,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )

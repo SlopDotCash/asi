@@ -634,7 +634,7 @@ class ForagerFeatureState:
     reward_traces: tuple[float, ...]
 
     def __post_init__(self) -> None:
-        if type(self.last_action) is not int or isinstance(self.last_action, bool):
+        if type(self.last_action) is not int:
             raise ValueError("last_action must be an integer")
         if not isinstance(self.last_reward, (int, float)) or not math.isfinite(self.last_reward):
             raise ValueError("last_reward must be a finite float")
@@ -4504,10 +4504,11 @@ class PaperReferenceTarget:
             val = getattr(self, attr)
             if type(val) is not str or not val:
                 raise ValueError(f"{attr} must be a non-empty string")
-        if not isinstance(self.central_estimate, (int, float)) or not math.isfinite(
-            self.central_estimate
-        ):
-            raise ValueError("central_estimate must be a finite float")
+        object.__setattr__(
+            self,
+            "central_estimate",
+            _require_real(self.central_estimate, name="central_estimate"),
+        )
         if type(self.privileged) is not bool:
             raise ValueError("privileged must be a boolean")
 

@@ -91,6 +91,21 @@ def _require_finite_real(value: Any, path: str) -> float:
     return number
 
 
+def _require_exact_str(value: Any, path: str) -> str:
+    if type(value) is not str or not value:
+        raise ForagerMatchedCandidateUniverseError(f"{path} must be a non-empty string")
+    return value
+
+
+def _require_sha256(value: Any, path: str) -> str:
+    string = _require_exact_str(value, path)
+    if len(string) != 64 or not all(ch in "0123456789abcdef" for ch in string.lower()):
+        raise ForagerMatchedCandidateUniverseError(
+            f"{path} must be a 64-character lowercase hexadecimal SHA-256 digest"
+        )
+    return string.lower()
+
+
 def _require_seed_identities(values: object, *, name: str) -> tuple[int, ...]:
     if type(values) is not tuple or not values:
         raise ForagerMatchedCandidateUniverseError(
@@ -184,6 +199,11 @@ class BoundJsonArtifact:
     path: str
     sha256: str
 
+    def __post_init__(self) -> None:
+        _require_exact_str(self.role, "role")
+        _require_exact_str(self.path, "path")
+        object.__setattr__(self, "sha256", _require_sha256(self.sha256, "sha256"))
+
     def to_dict(self) -> dict[str, str]:
         return {"role": self.role, "path": self.path, "sha256": self.sha256}
 
@@ -229,6 +249,12 @@ class LocalCandidateGenerationBinding:
                 maximum=_MAX_INT32,
             ),
         )
+        if type(self.artifacts) is not tuple or not all(
+            isinstance(a, BoundJsonArtifact) for a in self.artifacts
+        ):
+            raise ForagerMatchedCandidateUniverseError(
+                "artifacts must be a tuple of BoundJsonArtifact instances"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -349,6 +375,19 @@ class CandidateUniverseVerification:
 
     candidate_universe_sha256: str
     verified_json_paths: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "candidate_universe_sha256",
+            _require_sha256(self.candidate_universe_sha256, "candidate_universe_sha256"),
+        )
+        if type(self.verified_json_paths) is not tuple or not all(
+            isinstance(p, str) and p for p in self.verified_json_paths
+        ):
+            raise ForagerMatchedCandidateUniverseError(
+                "verified_json_paths must be a tuple of non-empty strings"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {

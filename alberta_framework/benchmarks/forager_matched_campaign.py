@@ -114,6 +114,51 @@ class CampaignStatus:
     score_evidence_sha256: str | None
     verification_subject_sha256: str | None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_root, Path):
+            raise ForagerMatchedCampaignError("output_root must be a Path")
+        if type(self.state) is not str or not self.state:
+            raise ForagerMatchedCampaignError("state must be a non-empty string")
+        if type(self.completed_cells) is not int or self.completed_cells < 0:
+            raise ForagerMatchedCampaignError("completed_cells must be a non-negative int")
+        if type(self.total_cells) is not int or self.total_cells < 0:
+            raise ForagerMatchedCampaignError("total_cells must be a non-negative int")
+        if self.completed_cells > self.total_cells:
+            raise ForagerMatchedCampaignError("completed_cells cannot exceed total_cells")
+        if self.next_candidate_id is not None and (
+            type(self.next_candidate_id) is not str or not self.next_candidate_id
+        ):
+            raise ForagerMatchedCampaignError(
+                "next_candidate_id must be a non-empty string or None"
+            )
+        if self.next_seed is not None and (
+            type(self.next_seed) is not int or self.next_seed < 0
+        ):
+            raise ForagerMatchedCampaignError("next_seed must be a non-negative int or None")
+        for name in (
+            "protocol_sha256",
+            "qualification_manifest_sha256",
+            "plan_sha256",
+            "live_runtime_identity_sha256",
+        ):
+            val = getattr(self, name)
+            if type(val) is not str or _SHA256_RE.fullmatch(val) is None:
+                raise ForagerMatchedCampaignError(
+                    f"{name} must be a 64-character lowercase SHA-256"
+                )
+        if self.score_evidence_sha256 is not None and (
+            type(self.score_evidence_sha256) is not str
+            or _SHA256_RE.fullmatch(self.score_evidence_sha256) is None
+        ):
+            raise ForagerMatchedCampaignError("score_evidence_sha256 must be a SHA-256 or None")
+        if self.verification_subject_sha256 is not None and (
+            type(self.verification_subject_sha256) is not str
+            or _SHA256_RE.fullmatch(self.verification_subject_sha256) is None
+        ):
+            raise ForagerMatchedCampaignError(
+                "verification_subject_sha256 must be a SHA-256 or None"
+            )
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema_version": "alberta.forager_matched_campaign_status.v2",
@@ -159,6 +204,48 @@ class CompletedCampaignBundle:
     verification_request: executor.VerificationRequest
     completion_summary: Mapping[str, Any]
     final_file_sha256: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.output_root, Path):
+            raise ForagerMatchedCampaignError("output_root must be a Path")
+        if not isinstance(self.protocol, ForagerMatchedProtocol):
+            raise ForagerMatchedCampaignError("protocol must be a ForagerMatchedProtocol")
+        if not isinstance(self.plan, executor.MatchedExecutionPlan):
+            raise ForagerMatchedCampaignError("plan must be a MatchedExecutionPlan")
+        if not isinstance(self.live_runtime, executor.LiveRuntimeIdentity):
+            raise ForagerMatchedCampaignError("live_runtime must be a LiveRuntimeIdentity")
+        if type(self.candidate_ids) is not tuple or not all(
+            isinstance(cid, str) and cid for cid in self.candidate_ids
+        ):
+            raise ForagerMatchedCampaignError(
+                "candidate_ids must be a tuple of non-empty strings"
+            )
+        if type(self.active_seeds) is not tuple or not all(
+            isinstance(s, int) and s >= 0 for s in self.active_seeds
+        ):
+            raise ForagerMatchedCampaignError(
+                "active_seeds must be a tuple of non-negative ints"
+            )
+        if not isinstance(self.schedule, Mapping):
+            raise ForagerMatchedCampaignError("schedule must be a Mapping")
+        if not isinstance(self.seed_artifacts, Mapping):
+            raise ForagerMatchedCampaignError("seed_artifacts must be a Mapping")
+        if not isinstance(
+            self.execution_receipt_index, executor.MatchedExecutionReceiptIndex
+        ):
+            raise ForagerMatchedCampaignError(
+                "execution_receipt_index must be a MatchedExecutionReceiptIndex"
+            )
+        if not isinstance(self.score_evidence, MatchedScoreEvidence):
+            raise ForagerMatchedCampaignError("score_evidence must be a MatchedScoreEvidence")
+        if not isinstance(self.verification_request, executor.VerificationRequest):
+            raise ForagerMatchedCampaignError(
+                "verification_request must be a VerificationRequest"
+            )
+        if not isinstance(self.completion_summary, Mapping):
+            raise ForagerMatchedCampaignError("completion_summary must be a Mapping")
+        if not isinstance(self.final_file_sha256, Mapping):
+            raise ForagerMatchedCampaignError("final_file_sha256 must be a Mapping")
 
 
 @dataclass(frozen=True, slots=True)

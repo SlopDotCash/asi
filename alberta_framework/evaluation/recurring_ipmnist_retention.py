@@ -156,6 +156,21 @@ def _unit_float(value: object, *, name: str, binary: bool = False) -> float:
     return value
 
 
+def _finite_float(value: object, *, name: str) -> float:
+    if type(value) is not float or not math.isfinite(value):
+        raise ValueError(f"{name} must be a finite float")
+    return value
+
+
+def _signed_int(value: object, *, name: str, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be a signed integer in [{-maximum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not -maximum <= canonical <= maximum:
+        raise ValueError(f"{name} must be a signed integer in [{-maximum}, {maximum}]")
+    return canonical
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(
         value,
@@ -624,6 +639,45 @@ class PhaseOnlineSummary:
     online_mistakes: int
     mean_post_update_one_step_plasticity: float
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "phase_index",
+            _nonnegative_int(self.phase_index, name="phase_index"),
+        )
+        _identifier(self.permutation_id, name="permutation_id", versioned=True)
+        object.__setattr__(
+            self,
+            "exposure_index",
+            _nonnegative_int(self.exposure_index, name="exposure_index"),
+        )
+        object.__setattr__(
+            self,
+            "observation_count",
+            _positive_int(self.observation_count, name="observation_count"),
+        )
+        object.__setattr__(
+            self,
+            "mean_pre_update_online_accuracy",
+            _unit_float(
+                self.mean_pre_update_online_accuracy,
+                name="mean_pre_update_online_accuracy",
+            ),
+        )
+        object.__setattr__(
+            self,
+            "online_mistakes",
+            _nonnegative_int(self.online_mistakes, name="online_mistakes"),
+        )
+        object.__setattr__(
+            self,
+            "mean_post_update_one_step_plasticity",
+            _unit_float(
+                self.mean_post_update_one_step_plasticity,
+                name="mean_post_update_one_step_plasticity",
+            ),
+        )
+
     def to_config(self) -> dict[str, object]:
         return dataclasses.asdict(self)
 
@@ -641,6 +695,41 @@ class SentinelProbeScore:
     correct_count: int
     accuracy: float
     learner_state_sha256: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "phase_index",
+            _nonnegative_int(self.phase_index, name="phase_index"),
+        )
+        object.__setattr__(
+            self,
+            "checkpoint_step",
+            _positive_int(self.checkpoint_step, name="checkpoint_step"),
+        )
+        _identifier(self.permutation_id, name="permutation_id", versioned=True)
+        object.__setattr__(
+            self,
+            "exposure_index",
+            _nonnegative_int(self.exposure_index, name="exposure_index"),
+        )
+        _identifier(self.sentinel_set_id, name="sentinel_set_id", versioned=True)
+        object.__setattr__(
+            self,
+            "sentinel_case_count",
+            _positive_int(self.sentinel_case_count, name="sentinel_case_count"),
+        )
+        object.__setattr__(
+            self,
+            "correct_count",
+            _nonnegative_int(self.correct_count, name="correct_count"),
+        )
+        object.__setattr__(
+            self,
+            "accuracy",
+            _unit_float(self.accuracy, name="accuracy"),
+        )
+        _sha256(self.learner_state_sha256, name="learner_state_sha256")
 
     def to_config(self) -> dict[str, object]:
         return dataclasses.asdict(self)
@@ -670,6 +759,52 @@ class RecurrenceRetentionMetrics:
     first_exposure_leading_one_step_plasticity: float
     revisit_leading_one_step_plasticity: float
 
+    def __post_init__(self) -> None:
+        _identifier(self.permutation_id, name="permutation_id", versioned=True)
+        object.__setattr__(
+            self,
+            "first_exposure_index",
+            _nonnegative_int(self.first_exposure_index, name="first_exposure_index"),
+        )
+        object.__setattr__(
+            self,
+            "revisit_exposure_index",
+            _nonnegative_int(self.revisit_exposure_index, name="revisit_exposure_index"),
+        )
+        object.__setattr__(
+            self,
+            "relearning_window",
+            _positive_int(self.relearning_window, name="relearning_window"),
+        )
+        for name in (
+            "acquisition_end_sentinel_accuracy",
+            "peak_before_revisit_sentinel_accuracy",
+            "pre_revisit_sentinel_accuracy",
+            "revisit_end_sentinel_accuracy",
+            "first_exposure_leading_pre_update_accuracy",
+            "revisit_leading_pre_update_accuracy",
+            "first_exposure_leading_one_step_plasticity",
+            "revisit_leading_one_step_plasticity",
+        ):
+            object.__setattr__(self, name, _unit_float(getattr(self, name), name=name))
+        for name in (
+            "retention_change_from_acquisition",
+            "peak_to_revisit_forgetting",
+            "revisit_recovery",
+            "relearning_savings_accuracy",
+        ):
+            object.__setattr__(self, name, _finite_float(getattr(self, name), name=name))
+        for name in (
+            "first_exposure_leading_mistakes",
+            "revisit_leading_mistakes",
+        ):
+            object.__setattr__(self, name, _nonnegative_int(getattr(self, name), name=name))
+        object.__setattr__(
+            self,
+            "relearning_savings_mistakes",
+            _signed_int(self.relearning_savings_mistakes, name="relearning_savings_mistakes"),
+        )
+
     def to_config(self) -> dict[str, object]:
         return dataclasses.asdict(self)
 
@@ -685,6 +820,23 @@ class RecurringIPMNISTRetentionReport:
     phase_summaries: tuple[PhaseOnlineSummary, ...]
     sentinel_scores: tuple[SentinelProbeScore, ...]
     recurrence: RecurrenceRetentionMetrics
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.protocol, RecurringIPMNISTProtocol):
+            raise TypeError("protocol must be a RecurringIPMNISTProtocol")
+        _sha256(self.protocol_sha256, name="protocol_sha256")
+        _sha256(self.trace_sha256, name="trace_sha256")
+        _sha256(self.sentinel_snapshots_sha256, name="sentinel_snapshots_sha256")
+        if type(self.phase_summaries) is not tuple or not all(
+            type(s) is PhaseOnlineSummary for s in self.phase_summaries
+        ):
+            raise TypeError("phase_summaries must be a tuple of PhaseOnlineSummary")
+        if type(self.sentinel_scores) is not tuple or not all(
+            type(s) is SentinelProbeScore for s in self.sentinel_scores
+        ):
+            raise TypeError("sentinel_scores must be a tuple of SentinelProbeScore")
+        if not isinstance(self.recurrence, RecurrenceRetentionMetrics):
+            raise TypeError("recurrence must be a RecurrenceRetentionMetrics")
 
     def to_config(self) -> dict[str, object]:
         return {

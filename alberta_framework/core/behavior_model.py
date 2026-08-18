@@ -100,6 +100,14 @@ def _integer_action_ids(
         raw_shape = tuple(actions.shape)
         raw_dtype = np.dtype(actions.dtype)
     else:
+        actual_type = type(actions)
+        trusted_host = (
+            actual_type is np.ndarray
+            or actual_type in _ACTUAL_INT_TYPES
+            or isinstance(actions, jax.Array)
+        )
+        if not trusted_host:
+            raise TypeError("actions must be a trusted array")
         host_actions = np.asarray(actions)
         raw_shape = tuple(host_actions.shape)
         raw_dtype = host_actions.dtype

@@ -475,6 +475,20 @@ class IAAcceptanceEvidence:
     threshold: float
     detail: str
 
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name:
+            raise ValueError("name must be a non-empty string")
+        if self.scope not in ("primary", "secondary"):
+            raise ValueError("scope must be 'primary' or 'secondary'")
+        if type(self.passed) is not bool:
+            raise ValueError("passed must be a boolean")
+        object.__setattr__(self, "actual", finite_real("actual", self.actual))
+        if type(self.comparator) is not str or not self.comparator:
+            raise ValueError("comparator must be a non-empty string")
+        object.__setattr__(self, "threshold", finite_real("threshold", self.threshold))
+        if type(self.detail) is not str:
+            raise ValueError("detail must be a string")
+
 
 @dataclass(frozen=True)
 class IAAcceptanceResult:
@@ -484,6 +498,18 @@ class IAAcceptanceResult:
     primary_passed: bool
     secondary_passed: bool
     checks: tuple[IAAcceptanceEvidence, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.passed) is not bool:
+            raise ValueError("passed must be a boolean")
+        if type(self.primary_passed) is not bool:
+            raise ValueError("primary_passed must be a boolean")
+        if type(self.secondary_passed) is not bool:
+            raise ValueError("secondary_passed must be a boolean")
+        if not isinstance(self.checks, tuple) or not all(
+            isinstance(c, IAAcceptanceEvidence) for c in self.checks
+        ):
+            raise ValueError("checks must be a tuple of IAAcceptanceEvidence")
 
     @property
     def failures(self) -> tuple[IAAcceptanceEvidence, ...]:

@@ -33,6 +33,7 @@ from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 
 _INT32_MAX = 2**31 - 1
@@ -302,7 +303,7 @@ class AlbertaPlanStep1Stream:
             key=key,
             true_weights=new_weights,
             true_bias=new_bias,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         return timestep, new_state
 
@@ -530,6 +531,6 @@ class XDistShiftStream:
             key=key,
             true_weights=state.true_weights,
             current_scales=new_scales,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         return timestep, new_state

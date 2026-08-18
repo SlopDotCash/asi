@@ -226,6 +226,22 @@ class UPGDIPMNISTValidation:
     development_only: bool = True
     scientific_promotion_allowed: bool = False
 
+    def __post_init__(self) -> None:
+        if type(self.valid) is not bool:
+            raise ValueError("valid must be a boolean")
+        if type(self.errors) is not tuple or not all(isinstance(e, str) for e in self.errors):
+            raise ValueError("errors must be a tuple of strings")
+        if type(self.partial_sha256) is not tuple:
+            raise ValueError("partial_sha256 must be a tuple")
+        if self.artifact_sha256 is not None and type(self.artifact_sha256) is not str:
+            raise ValueError("artifact_sha256 must be a string or None")
+        if type(self.observed_seed_pairs) is not tuple:
+            raise ValueError("observed_seed_pairs must be a tuple")
+        if self.development_only is not True:
+            raise ValueError("development_only must permanently remain True")
+        if self.scientific_promotion_allowed is not False:
+            raise ValueError("scientific_promotion_allowed must permanently remain False")
+
 
 @dataclass(frozen=True)
 class _Shard:
@@ -244,22 +260,33 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
         for key, value in pairs:
-            if key in result:
-                raise ValueError(f"duplicate JSON key: {key!r}")
-            result[key] = value
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
+                raise ValueError("duplicate JSON key")
+            result[host_key] = value
         return result
 
     def reject_constant(value: str) -> object:
-        raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+        _require_exact_str("value", value)
+        raise ValueError("non-finite JSON constant is forbidden")
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
-            raise ValueError(f"non-finite JSON number is forbidden: {value}")
+            raise ValueError("non-finite JSON number is forbidden")
         return parsed
 
     parsed = json.loads(

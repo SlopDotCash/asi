@@ -20,6 +20,7 @@ import difflib
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Any, Final, cast
@@ -69,6 +70,17 @@ class RTUPPORngIsolationError(ValueError):
     """Raised when source identity or derived-runner structure is not exact."""
 
 
+_SHA256_RE: Final = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise RTUPPORngIsolationError("name must be an exact string")
+    if type(value) is not str:
+        raise RTUPPORngIsolationError(f"{name} must be an exact string")
+    return value
+
+
 @dataclasses.dataclass(frozen=True)
 class SourceReplacement:
     """One exact, single-occurrence source transformation."""
@@ -76,6 +88,14 @@ class SourceReplacement:
     replacement_id: str
     before: bytes
     after: bytes
+
+    def __post_init__(self) -> None:
+        if type(self.replacement_id) is not str or not self.replacement_id:
+            raise RTUPPORngIsolationError("replacement_id must be a non-empty string")
+        if type(self.before) is not bytes or not self.before:
+            raise RTUPPORngIsolationError("before must be non-empty bytes")
+        if type(self.after) is not bytes or not self.after:
+            raise RTUPPORngIsolationError("after must be non-empty bytes")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,6 +109,23 @@ class IsolatedRTUPPOSource:
     patch_sha256: str
     descriptor: Mapping[str, Any]
     descriptor_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.source) is not bytes or not self.source:
+            raise RTUPPORngIsolationError("source must be non-empty bytes")
+        if type(self.patch) is not bytes or not self.patch:
+            raise RTUPPORngIsolationError("patch must be non-empty bytes")
+        if not isinstance(self.descriptor, Mapping):
+            raise RTUPPORngIsolationError("descriptor must be a mapping")
+        for name in (
+            "upstream_source_sha256",
+            "source_sha256",
+            "patch_sha256",
+            "descriptor_sha256",
+        ):
+            val = getattr(self, name)
+            if type(val) is not str or _SHA256_RE.fullmatch(val) is None:
+                raise RTUPPORngIsolationError(f"{name} must be a 64-character lowercase SHA-256")
 
 
 _REPLACEMENTS: Final = (
@@ -574,9 +611,9 @@ def derive_isolated_rtu_ppo_source(source: bytes) -> IsolatedRTUPPOSource:
     for replacement in _REPLACEMENTS:
         count = derived.count(replacement.before)
         if count != 1:
+            host_id = _require_exact_str("replacement_id", replacement.replacement_id)
             raise RTUPPORngIsolationError(
-                f"replacement {replacement.replacement_id!r} matched "
-                f"{count} source locations instead of one"
+                f"replacement '{host_id}' matched {count} source locations instead of one"
             )
         derived = derived.replace(
             replacement.before,

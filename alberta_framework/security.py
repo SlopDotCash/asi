@@ -190,6 +190,19 @@ class SecurityRewardWeights:
     compromise_cost: float = -1.0
     recovery: float = 0.5
 
+    def __post_init__(self) -> None:
+        for name in (
+            "threat_blocked",
+            "false_positive",
+            "service_disruption",
+            "alert_cost",
+            "latency_cost",
+            "compromise_cost",
+            "recovery",
+        ):
+            if type(getattr(self, name)) is bool:
+                raise ValueError(f"{name} must be a finite real number")
+
     def to_dict(self) -> dict[str, float]:
         """Return a JSON-serializable weight mapping."""
         payload = dataclasses.asdict(self)

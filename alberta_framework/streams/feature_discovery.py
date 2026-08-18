@@ -30,6 +30,7 @@ from alberta_framework._fixed_count_selection import (
     stable_smallest_mask,
 )
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 
 _INT32_MAX = 2**31 - 1
@@ -453,7 +454,10 @@ class NonlinearFeatureDiscoveryStream:
         target = target + noise
 
         timestep = TimeStep(observation=x, target=target)
-        new_state = state.replace(key=key, step_count=state.step_count + 1)  # type: ignore[attr-defined]
+        new_state = state.replace(  # type: ignore[attr-defined]
+            key=key,
+            step_count=_saturating_int32_counter_increment(state.step_count),
+        )
         return timestep, new_state
 
 
@@ -741,5 +745,8 @@ class InteractionFeatureDiscoveryStream:
         target = target + noise
 
         timestep = TimeStep(observation=x, target=target)
-        new_state = state.replace(key=key, step_count=state.step_count + 1)  # type: ignore[attr-defined]
+        new_state = state.replace(  # type: ignore[attr-defined]
+            key=key,
+            step_count=_saturating_int32_counter_increment(state.step_count),
+        )
         return timestep, new_state

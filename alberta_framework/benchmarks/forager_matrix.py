@@ -342,6 +342,35 @@ class ForagerTuningRule:
     bootstrap_seed: int
     tie_break: Literal["variant_id_ascending"] = "variant_id_ascending"
 
+    def __post_init__(self) -> None:
+        if type(self.metric) is not str or not self.metric:
+            raise ForagerMatrixManifestError("metric must be a non-empty string")
+        if self.direction not in ("maximize", "minimize"):
+            raise ForagerMatrixManifestError("direction must be 'maximize' or 'minimize'")
+        if self.statistic not in ("mean", "median"):
+            raise ForagerMatrixManifestError("statistic must be 'mean' or 'median'")
+        if (
+            isinstance(self.confidence, bool)
+            or not isinstance(self.confidence, (int, float))
+            or not math.isfinite(float(self.confidence))
+            or not 0.0 < float(self.confidence) < 1.0
+        ):
+            raise ForagerMatrixManifestError("confidence must be a finite float in (0.0, 1.0)")
+        if (
+            isinstance(self.bootstrap_resamples, bool)
+            or not isinstance(self.bootstrap_resamples, int)
+            or self.bootstrap_resamples < 1
+        ):
+            raise ForagerMatrixManifestError("bootstrap_resamples must be an integer >= 1")
+        if (
+            isinstance(self.bootstrap_seed, bool)
+            or not isinstance(self.bootstrap_seed, int)
+            or not 0 <= self.bootstrap_seed <= 2**31 - 1
+        ):
+            raise ForagerMatrixManifestError("bootstrap_seed must be an integer in [0, 2**31 - 1]")
+        if self.tie_break != "variant_id_ascending":
+            raise ForagerMatrixManifestError("tie_break must be 'variant_id_ascending'")
+
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON representation."""
         return {
@@ -362,6 +391,10 @@ class ForagerMatrixVariant:
     kind: ForagerVariantKind
     selection_group: str
     config: ForagerVariantConfig
+
+    def __post_init__(self) -> None:
+        if type(self.selection_group) is not str or not self.selection_group:
+            raise ForagerMatrixManifestError("selection_group must be a non-empty string")
 
     def to_dict(self) -> dict[str, Any]:
         """Return the normalized full variant descriptor."""
@@ -396,6 +429,14 @@ class ForagerTuningSelection:
     file_sha256: str
     selected_variants: Mapping[str, str]
 
+    def __post_init__(self) -> None:
+        if type(self.report_path) is not str or not self.report_path:
+            raise ForagerMatrixManifestError("report_path must be a non-empty string")
+        if type(self.file_sha256) is not str or len(self.file_sha256) != 64:
+            raise ForagerMatrixManifestError("file_sha256 must be a 64-character hex string")
+        if not isinstance(self.selected_variants, Mapping):
+            raise ForagerMatrixManifestError("selected_variants must be a mapping")
+
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON representation."""
         return {
@@ -425,6 +466,25 @@ class ForagerMatrixManifest:
     evaluation_seeds: tuple[int, ...] = ()
     tuning_selection: ForagerTuningSelection | None = None
     source_path: Path | None = field(default=None, compare=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.schema_version) is not str or not self.schema_version:
+            raise ValueError("schema_version must be a non-empty string")
+        for attr in ("steps", "jax_chunk_size", "seed_batch_size"):
+            val = getattr(self, attr)
+            if type(val) is not int or isinstance(val, bool) or val <= 0:
+                raise ValueError(f"{attr} must be a positive integer")
+        if type(self.selection_rule) is not ForagerTuningRule:
+            raise TypeError("selection_rule must be a ForagerTuningRule")
+        if not isinstance(self.variants, Mapping):
+            raise TypeError("variants must be a Mapping")
+        if (
+            self.tuning_selection is not None
+            and type(self.tuning_selection) is not ForagerTuningSelection
+        ):
+            raise TypeError(
+                "tuning_selection must be a ForagerTuningSelection or None"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """Return the normalized scientific configuration.

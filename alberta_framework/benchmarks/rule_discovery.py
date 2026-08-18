@@ -786,7 +786,7 @@ def evaluate_population(
     """
     seeds = require_unique_jax_seeds(seeds, name="seeds")
     if type(batch_size) is not int or batch_size < 1:
-        raise ValueError(f"batch_size must be a positive built-in int, got {batch_size!r}")
+        raise ValueError("batch_size must be a positive built-in int")
     genomes = jnp.asarray(genomes, dtype=jnp.float32)
     if genomes.ndim != 2 or genomes.shape[1] != GENOME_SIZE:
         raise ValueError(
@@ -869,8 +869,10 @@ def _require_unique_task_names(task_names: Sequence[str], *, name: str) -> tuple
 
 
 def _require_search_int(name: str, value: object, *, minimum: int) -> int:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
     if type(value) is not int or value < minimum:
-        raise ValueError(f"{name} must be an integer >= {minimum}, got {value!r}")
+        raise ValueError(f"{name} must be an integer >= {minimum}")
     return value
 
 

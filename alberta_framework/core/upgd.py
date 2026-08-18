@@ -57,6 +57,15 @@ from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
 from alberta_framework.core.update_safety import zero_if_collapsed_infinity
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 _INT32_MAX = 2**31 - 1
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
@@ -828,10 +837,14 @@ class UPGDLearner:
             type(meta_plasticity_mode) is not str
             or meta_plasticity_mode not in {"none", "gradient_alignment"}
         ):
-            msg = (
-                "meta_plasticity_mode must be 'none' or 'gradient_alignment', "
-                f"got {meta_plasticity_mode!r}"
-            )
+            if type(meta_plasticity_mode) is str:
+                host_mpm = _require_exact_str("meta_plasticity_mode", meta_plasticity_mode)
+                msg = (
+                    "meta_plasticity_mode must be 'none' or 'gradient_alignment', "
+                    f"got '{host_mpm}'"
+                )
+            else:
+                msg = "meta_plasticity_mode must be 'none' or 'gradient_alignment', got non-string"
             raise ValueError(msg)
         validated_meta_plasticity_step_size = _validated_config_float(
             "meta_plasticity_step_size", meta_plasticity_step_size, lower=0.0
@@ -872,13 +885,23 @@ class UPGDLearner:
             type(readout_mode) is not str
             or readout_mode not in readout_aliases
         ):
-            msg = (
-                "readout_mode must be 'linear_mse', 'softmax_ce', "
-                "'softmax_mse', "
-                "'adaptive_simplex', 'factorized_simplex', or "
-                "'adaptive_factorized_simplex', or 'two_timescale_simplex', "
-                f"got {readout_mode!r}"
-            )
+            if type(readout_mode) is str:
+                host_rm = _require_exact_str("readout_mode", readout_mode)
+                msg = (
+                    "readout_mode must be 'linear_mse', 'softmax_ce', "
+                    "'softmax_mse', "
+                    "'adaptive_simplex', 'factorized_simplex', or "
+                    "'adaptive_factorized_simplex', or 'two_timescale_simplex', "
+                    f"got '{host_rm}'"
+                )
+            else:
+                msg = (
+                    "readout_mode must be 'linear_mse', 'softmax_ce', "
+                    "'softmax_mse', "
+                    "'adaptive_simplex', 'factorized_simplex', or "
+                    "'adaptive_factorized_simplex', or 'two_timescale_simplex', "
+                    "got non-string"
+                )
             raise ValueError(msg)
         default_loss_mode, default_prediction_mode = readout_aliases[readout_mode]
         resolved_readout_loss_mode = (
@@ -897,13 +920,26 @@ class UPGDLearner:
             "gce",
             "adaptive_gce",
         }:
-            msg = (
-                "readout_loss_mode must be 'linear_mse', 'softmax_ce', "
-                "'softmax_mse', "
-                "'adaptive_simplex', 'adaptive_factorized_simplex', "
-                "'two_timescale_simplex', 'gce', or 'adaptive_gce', "
-                f"got {resolved_readout_loss_mode!r}"
-            )
+            if type(resolved_readout_loss_mode) is str:
+                host_rrlm = _require_exact_str(
+                    "resolved_readout_loss_mode",
+                    resolved_readout_loss_mode,
+                )
+                msg = (
+                    "readout_loss_mode must be 'linear_mse', 'softmax_ce', "
+                    "'softmax_mse', "
+                    "'adaptive_simplex', 'adaptive_factorized_simplex', "
+                    "'two_timescale_simplex', 'gce', or 'adaptive_gce', "
+                    f"got '{host_rrlm}'"
+                )
+            else:
+                msg = (
+                    "readout_loss_mode must be 'linear_mse', 'softmax_ce', "
+                    "'softmax_mse', "
+                    "'adaptive_simplex', 'adaptive_factorized_simplex', "
+                    "'two_timescale_simplex', 'gce', or 'adaptive_gce', "
+                    "got non-string"
+                )
             raise ValueError(msg)
         if (
             type(resolved_readout_prediction_mode) is not str
@@ -917,13 +953,26 @@ class UPGDLearner:
                 "unit_clip",
             }
         ):
-            msg = (
-                "readout_prediction_mode must be 'identity', 'softmax', "
-                "'adaptive_simplex', 'factorized_simplex', "
-                "'adaptive_factorized_simplex', 'two_timescale_simplex', "
-                "or 'unit_clip', "
-                f"got {resolved_readout_prediction_mode!r}"
-            )
+            if type(resolved_readout_prediction_mode) is str:
+                host_rrpm = _require_exact_str(
+                    "resolved_readout_prediction_mode",
+                    resolved_readout_prediction_mode,
+                )
+                msg = (
+                    "readout_prediction_mode must be 'identity', 'softmax', "
+                    "'adaptive_simplex', 'factorized_simplex', "
+                    "'adaptive_factorized_simplex', 'two_timescale_simplex', "
+                    "or 'unit_clip', "
+                    f"got '{host_rrpm}'"
+                )
+            else:
+                msg = (
+                    "readout_prediction_mode must be 'identity', 'softmax', "
+                    "'adaptive_simplex', 'factorized_simplex', "
+                    "'adaptive_factorized_simplex', 'two_timescale_simplex', "
+                    "or 'unit_clip', "
+                    "got non-string"
+                )
             raise ValueError(msg)
         validated_readout_robust_q = _validated_config_float(
             "readout_robust_q", readout_robust_q, lower=0.0, upper=1.0, upper_inclusive=True
@@ -1219,10 +1268,17 @@ class UPGDLearner:
             Configured :class:`UPGDLearner`.
         """
         if loss_normalization not in {"target_structure", "target_density"}:
-            msg = (
-                "step2_default loss_normalization must be 'target_structure' "
-                f"or 'target_density', got {loss_normalization!r}"
-            )
+            if type(loss_normalization) is str:
+                host_ln = _require_exact_str("loss_normalization", loss_normalization)
+                msg = (
+                    "step2_default loss_normalization must be 'target_structure' "
+                    f"or 'target_density', got '{host_ln}'"
+                )
+            else:
+                msg = (
+                    "step2_default loss_normalization must be 'target_structure' "
+                    "or 'target_density', got non-string"
+                )
             raise ValueError(msg)
         if readout_mode not in {
             "linear_mse",
@@ -1233,13 +1289,23 @@ class UPGDLearner:
             "adaptive_factorized_simplex",
             "two_timescale_simplex",
         }:
-            msg = (
-                "step2_default readout_mode must be 'linear_mse', "
-                "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
-                "'factorized_simplex', 'adaptive_factorized_simplex', or "
-                "'two_timescale_simplex', "
-                f"got {readout_mode!r}"
-            )
+            if type(readout_mode) is str:
+                host_rm2 = _require_exact_str("readout_mode", readout_mode)
+                msg = (
+                    "step2_default readout_mode must be 'linear_mse', "
+                    "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
+                    "'factorized_simplex', 'adaptive_factorized_simplex', or "
+                    "'two_timescale_simplex', "
+                    f"got '{host_rm2}'"
+                )
+            else:
+                msg = (
+                    "step2_default readout_mode must be 'linear_mse', "
+                    "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
+                    "'factorized_simplex', 'adaptive_factorized_simplex', or "
+                    "'two_timescale_simplex', "
+                    "got non-string"
+                )
             raise ValueError(msg)
         return cls(
             n_heads=n_heads,

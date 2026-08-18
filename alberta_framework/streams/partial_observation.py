@@ -54,6 +54,18 @@ def _require_unit_interval_probability(name: str, value: object) -> float:
     return validated_float32_scalar(name, value, lower=0.0, upper=1.0)
 
 
+def _require_mode(mode: object) -> MaskMode:
+    """Reject leftover string, bool, and int identities for ``mode``.
+
+    Leftover ``"FIXED"`` / ``"fixed"`` compare unequal to
+    ``MaskMode.FIXED``, so the wrapper stored the leftover, skipped the
+    fixed mask, and fell through to the periodic branch (fail-open).
+    """
+    if type(mode) is not MaskMode:
+        raise ValueError("mode must be an exact MaskMode")
+    return mode
+
+
 # =============================================================================
 # State
 # =============================================================================
@@ -86,7 +98,8 @@ class PartialObservationWrapper[InnerStateT]:
     Args:
         inner: The underlying ``ScanStream`` whose observations will be
             partially masked.
-        mode: Masking mode (FIXED / RANDOM / PERIODIC).
+        mode: Exact ``MaskMode`` member (FIXED / RANDOM / PERIODIC).
+            Leftover string, bool, and int identities are rejected.
         fixed_mask: Boolean mask of shape ``(feature_dim,)`` for FIXED.
             ``True`` means VISIBLE; ``False`` means HIDDEN.
         mask_prob: Per-channel KEEP probability for RANDOM. So
@@ -121,6 +134,7 @@ class PartialObservationWrapper[InnerStateT]:
         schedule: tuple[Bool[Array, " feature_dim"], ...] | None = None,
         sentinel: float = 0.0,
     ):
+        mode = _require_mode(mode)
         self._inner = inner
         self._mode = mode
         self._mask_prob = mask_prob

@@ -2553,3 +2553,27 @@ def test_manifest_postpublication_keyboard_interrupt_removes_manifest_and_lock(
         run_official_foragax(request)
     assert not (request.output_dir / "manifest.json").exists()
     assert not (request.output_dir / ".running").exists()
+
+
+def test_agent_access_rejects_nonfinite_channel_priorities() -> None:
+    base = {
+        "agent": "Search-Oracle",
+        "semantic_environment": {
+            "aperture_size": -1,
+            "observation_type": "object",
+        },
+        "registry": {
+            "class": "algorithms.MCTSAgent.MCTSAgent",
+            "module": "algorithms.MCTSAgent",
+        },
+    }
+    for value in (float("nan"), float("inf"), float("-inf"), 10**1000, True):
+        result = official_foragax_module._classify_official_foragax_agent_access(
+            resolved_hyperparameters={
+                "mode": "world",
+                "channel_priorities": {"apple": value},
+            },
+            **base,
+        )
+        assert result["classified"] is False
+        assert result["role"] == "unclassified"

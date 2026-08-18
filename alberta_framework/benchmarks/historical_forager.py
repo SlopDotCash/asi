@@ -914,6 +914,9 @@ class HistoricalForagerRunResult:
         }
 
 
+_SHA256_RE: Final = re.compile(r"\A[0-9a-f]{64}\Z")
+
+
 @dataclass(frozen=True)
 class HistoricalForagerExecution[KernelStateT]:
     """Completed result plus the next kernel state/action for host-side inspection."""
@@ -922,6 +925,19 @@ class HistoricalForagerExecution[KernelStateT]:
     final_kernel_state: KernelStateT = field(repr=False)
     next_action: int
     manifest_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.result) is not HistoricalForagerRunResult:
+            raise HistoricalForagerContractError("result must be a HistoricalForagerRunResult")
+        if type(self.next_action) is not int or isinstance(self.next_action, bool):
+            raise HistoricalForagerContractError("next_action must be an integer")
+        if (
+            type(self.manifest_sha256) is not str
+            or _SHA256_RE.fullmatch(self.manifest_sha256) is None
+        ):
+            raise HistoricalForagerContractError(
+                "manifest_sha256 must be a 64-character lowercase SHA-256"
+            )
 
 
 def _cleanup_incomplete_output(
@@ -1367,6 +1383,47 @@ class HistoricalForagerPairingIdentity:
     semantic_contract_sha256: str
     environment_adapter_mode: AdapterMode
     runtime_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.family_id) is not str or not self.family_id:
+            raise HistoricalForagerContractError("family_id must be a non-empty string")
+        if (
+            type(self.provenance_sha256) is not str
+            or _SHA256_RE.fullmatch(self.provenance_sha256) is None
+        ):
+            raise HistoricalForagerContractError(
+                "provenance_sha256 must be a 64-character lowercase SHA-256"
+            )
+        if type(self.seed) is not int or not 0 <= self.seed <= _MAX_SEED:
+            raise HistoricalForagerContractError(f"seed must lie in [0, {_MAX_SEED}]")
+        if (
+            type(self.aperture_size) is not int
+            or self.aperture_size not in range(1, 16, 2)
+        ):
+            raise HistoricalForagerContractError(
+                "aperture_size must be one of 1, 3, 5, 7, 9, 11, 13, 15"
+            )
+        if type(self.steps) is not int or not 1 <= self.steps <= _MAX_STEPS:
+            raise HistoricalForagerContractError(f"steps must lie in [1, {_MAX_STEPS}]")
+        if (
+            type(self.semantic_contract_sha256) is not str
+            or _SHA256_RE.fullmatch(self.semantic_contract_sha256) is None
+        ):
+            raise HistoricalForagerContractError(
+                "semantic_contract_sha256 must be a 64-character lowercase SHA-256"
+            )
+        if self.environment_adapter_mode not in (
+            "golden_verified_read_only_source",
+            "development_unverified_factory",
+        ):
+            raise HistoricalForagerContractError("environment_adapter_mode is invalid")
+        if (
+            type(self.runtime_sha256) is not str
+            or _SHA256_RE.fullmatch(self.runtime_sha256) is None
+        ):
+            raise HistoricalForagerContractError(
+                "runtime_sha256 must be a 64-character lowercase SHA-256"
+            )
 
 
 def historical_artifact_pairing_identity(

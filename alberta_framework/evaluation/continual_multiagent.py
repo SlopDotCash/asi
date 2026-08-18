@@ -449,6 +449,18 @@ class AcceptanceEvidence:
     threshold: float
     detail: str
 
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name:
+            raise ValueError("name must be a non-empty string")
+        if type(self.passed) is not bool:
+            raise ValueError("passed must be a boolean")
+        object.__setattr__(self, "actual", finite_real("actual", self.actual))
+        if type(self.comparator) is not str or not self.comparator:
+            raise ValueError("comparator must be a non-empty string")
+        object.__setattr__(self, "threshold", finite_real("threshold", self.threshold))
+        if type(self.detail) is not str:
+            raise ValueError("detail must be a string")
+
 
 @dataclass(frozen=True)
 class AcceptanceResult:
@@ -456,6 +468,14 @@ class AcceptanceResult:
 
     passed: bool
     checks: tuple[AcceptanceEvidence, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.passed) is not bool:
+            raise ValueError("passed must be a boolean")
+        if not isinstance(self.checks, tuple) or not all(
+            isinstance(c, AcceptanceEvidence) for c in self.checks
+        ):
+            raise ValueError("checks must be a tuple of AcceptanceEvidence")
 
     @property
     def failures(self) -> tuple[AcceptanceEvidence, ...]:

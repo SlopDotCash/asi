@@ -272,6 +272,10 @@ class EnvironmentRNGContract:
     identity: str
     schedule_sha256: str
 
+    def __post_init__(self) -> None:
+        _require_identifier(self.identity, "environment_rng.identity")
+        _require_sha256(self.schedule_sha256, "environment_rng.schedule_sha256")
+
     def to_dict(self) -> dict[str, Any]:
         return {"identity": self.identity, "schedule_sha256": self.schedule_sha256}
 
@@ -284,6 +288,7 @@ class AgentRNGContract:
     environment_key_shared: bool
 
     def __post_init__(self) -> None:
+        _require_identifier(self.identity, "agent_rng.identity")
         object.__setattr__(
             self,
             "environment_key_shared",
@@ -503,6 +508,7 @@ class SelectionSlot:
     rank: int
 
     def __post_init__(self) -> None:
+        _require_identifier(self.selection_group, "selection_slot.selection_group")
         object.__setattr__(
             self,
             "rank",
@@ -747,6 +753,15 @@ class ResolvedSelectionSlot:
     rank: int
     candidate_id: str
 
+    def __post_init__(self) -> None:
+        _require_identifier(self.selection_group, "resolved_slot.selection_group")
+        object.__setattr__(
+            self,
+            "rank",
+            _require_int(self.rank, "resolved_slot.rank", minimum=1, maximum=_MAX_CANDIDATES),
+        )
+        _require_identifier(self.candidate_id, "resolved_slot.candidate_id")
+
     @property
     def slot(self) -> SelectionSlot:
         return SelectionSlot(self.selection_group, self.rank)
@@ -784,6 +799,18 @@ class RankedSelectionGroup:
     selection_group: str
     ranked_candidate_ids: tuple[str, ...]
     ranking_evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.selection_group, "ranked_selection_group.selection_group")
+        if type(self.ranked_candidate_ids) is not tuple or not all(
+            isinstance(cid, str) and cid for cid in self.ranked_candidate_ids
+        ):
+            raise ForagerMatchedProtocolError(
+                "ranked_candidate_ids must be a tuple of candidate IDs"
+            )
+        _require_sha256(
+            self.ranking_evidence_sha256, "ranked_selection_group.ranking_evidence_sha256"
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -882,6 +909,18 @@ class DescriptiveContext:
     analysis_role: Literal["descriptive_only"]
     selection_eligible: Literal[False]
     pairing_eligible: Literal[False]
+
+    def __post_init__(self) -> None:
+        if type(self.candidate_ids) is not tuple or not all(
+            isinstance(cid, str) and cid for cid in self.candidate_ids
+        ):
+            raise ForagerMatchedProtocolError("candidate_ids must be a tuple of candidate IDs")
+        if self.analysis_role != "descriptive_only":
+            raise ForagerMatchedProtocolError("analysis_role must be 'descriptive_only'")
+        if self.selection_eligible is not False:
+            raise ForagerMatchedProtocolError("selection_eligible must be False")
+        if self.pairing_eligible is not False:
+            raise ForagerMatchedProtocolError("pairing_eligible must be False")
 
     def to_dict(self) -> dict[str, Any]:
         return {
