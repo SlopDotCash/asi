@@ -128,8 +128,8 @@ def test_boolean_fields_require_exact_bool(field: str) -> None:
 def test_persistent_state_resources_are_preflighted_without_allocation() -> None:
     # With one task, no candidates, and no normalizers, state bytes are 45F + 44.
     last_legal = (_INT32_MAX - 44) // 45
-    legal = _construct(n_features=last_legal, n_tasks=1, candidate_count=0)
-    assert legal.n_features == last_legal
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _construct(n_features=last_legal, n_tasks=1, candidate_count=0)
     with pytest.raises(ValueError, match="state byte count"):
         _construct(n_features=last_legal + 1, n_tasks=1, candidate_count=0)
     with pytest.raises(ValueError, match="state (scalar|byte) count"):

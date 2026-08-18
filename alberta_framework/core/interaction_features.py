@@ -119,6 +119,95 @@ def _require_state_resources(
     _require_resource("interaction-feature state", scalars=scalars, nbytes=nbytes)
 
 
+def _interaction_persistent_bytes(
+    *,
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    scale_robust: bool,
+) -> int:
+    """Named persist already preflighted by ``FixedBudgetInteractionLearner``."""
+    normalizer = int(scale_robust)
+    return (
+        8 * n_tasks * n_features
+        + 4 * n_tasks * candidate_count
+        + (37 + 4 * normalizer) * n_features
+        + (33 + 4 * normalizer) * candidate_count
+        + (12 + 4 * normalizer) * n_tasks
+        + 32
+    )
+
+
+def _interaction_update_result_extras_bytes(
+    *,
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    scale_robust: bool,
+) -> int:
+    """Returned ``InteractionFeatureUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. ``pre_curation_state`` and the published diagnostic leaves
+    are extras.
+    """
+    return (
+        _interaction_persistent_bytes(
+            n_features=n_features,
+            n_tasks=n_tasks,
+            candidate_count=candidate_count,
+            scale_robust=scale_robust,
+        )
+        + (7 + 4 * n_tasks) * n_features
+        + 18 * candidate_count
+        + 8 * n_tasks
+        + 98
+    )
+
+
+def _interaction_update_working_set_bytes(
+    *,
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    scale_robust: bool,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _interaction_persistent_bytes(
+        n_features=n_features,
+        n_tasks=n_tasks,
+        candidate_count=candidate_count,
+        scale_robust=scale_robust,
+    ) + _interaction_update_result_extras_bytes(
+        n_features=n_features,
+        n_tasks=n_tasks,
+        candidate_count=candidate_count,
+        scale_robust=scale_robust,
+    )
+
+
+def _preflight_interaction_update_working_set(
+    *,
+    n_features: int,
+    n_tasks: int,
+    candidate_count: int,
+    scale_robust: bool,
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if (
+        _interaction_update_working_set_bytes(
+            n_features=n_features,
+            n_tasks=n_tasks,
+            candidate_count=candidate_count,
+            scale_robust=scale_robust,
+        )
+        > _INT32_MAX
+    ):
+        raise ValueError(
+            "interaction-feature update working set byte count must fit signed int32"
+        )
+
+
 def _require_serialized_scalars(payload: Mapping[str, Any], owner: type[Any]) -> None:
     """Require the canonical JSON scalar types emitted by ``to_config``."""
     annotations = get_type_hints(owner.__init__)
@@ -592,6 +681,12 @@ class FixedBudgetInteractionLearner:
         )
 
         _require_state_resources(
+            n_features=n_features,
+            n_tasks=n_tasks,
+            candidate_count=candidate_count,
+            scale_robust=scale_robust,
+        )
+        _preflight_interaction_update_working_set(
             n_features=n_features,
             n_tasks=n_tasks,
             candidate_count=candidate_count,
