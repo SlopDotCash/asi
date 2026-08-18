@@ -316,6 +316,18 @@ class SecurityRolloutStep:
     truncated: bool = False
     policy_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        """Reject leftover action/reward/termination identities before JSON dump."""
+
+        if type(self.action) is not SecurityAction:
+            raise ValueError("action must be an exact SecurityAction")
+        if type(self.reward) is bool or type(self.reward) not in _ALLOWED_REAL_TYPES:
+            raise ValueError("reward must be a finite real number")
+        if type(self.terminated) is not bool:
+            raise ValueError("terminated must be an exact bool")
+        if type(self.truncated) is not bool:
+            raise ValueError("truncated must be an exact bool")
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable transition mapping."""
         payload = {
