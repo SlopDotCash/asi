@@ -326,6 +326,8 @@ _IA_ATTESTATION_LIMITATIONS = (
 
 EvidenceClass = Literal["unit", "smoke", "scientific"]
 EvidenceLevel = Literal["L0", "L1", "L2", "L3"]
+_EVIDENCE_CLASSES: frozenset[str] = frozenset({"unit", "smoke", "scientific"})
+_EVIDENCE_LEVELS: frozenset[str] = frozenset({"L0", "L1", "L2", "L3"})
 
 DIRTY_STATE_POLICY: Mapping[str, object] = {
     "policy_version": DIRTY_STATE_POLICY_VERSION,
@@ -358,6 +360,54 @@ class ValidationResult(Protocol):
         """Fail-closed validation errors."""
 
 
+def _require_exact_text(name: str, value: object) -> str:
+    if type(value) is not str or not value:
+        raise ValueError(f"{name} must be a non-empty string")
+    return value
+
+
+def _require_exact_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be a boolean")
+    return value
+
+
+def _require_exact_path(name: str, value: object) -> Path:
+    if not isinstance(value, Path) or not value.as_posix():
+        raise ValueError(f"{name} must be a Path")
+    return value
+
+
+def _require_exact_str_tuple(name: str, value: object) -> tuple[str, ...]:
+    if type(value) is not tuple or not value:
+        raise ValueError(f"{name} must be a non-empty tuple of non-empty strings")
+    if not all(type(item) is str and item for item in value):
+        raise ValueError(f"{name} must be a non-empty tuple of non-empty strings")
+    return value
+
+
+def _require_path_tuple(name: str, value: object) -> tuple[Path, ...]:
+    if type(value) is not tuple or not value:
+        raise ValueError(f"{name} must be a non-empty tuple of Path values")
+    if not all(isinstance(item, Path) for item in value):
+        raise ValueError(f"{name} must be a non-empty tuple of Path values")
+    return value
+
+
+def _require_identity_mapping(name: str, value: object) -> dict[str, object]:
+    if type(value) is not dict or not value:
+        raise ValueError(f"{name} must be a non-empty dict with exact string keys")
+    if not all(type(key) is str and key for key in value):
+        raise ValueError(f"{name} must be a non-empty dict with exact string keys")
+    return value
+
+
+def _require_identity_callable(name: str, value: object) -> Callable[..., object]:
+    if not callable(value):
+        raise ValueError(f"{name} must be callable")
+    return value
+
+
 @dataclass(frozen=True)
 class EvidenceSpec:
     """One immutable evidence-claim contract."""
@@ -379,6 +429,27 @@ class EvidenceSpec:
     required_environment_fields: tuple[str, ...]
     loader: Callable[[Path], Mapping[str, object]]
     validator: Callable[[Mapping[str, object]], ValidationResult]
+
+    def __post_init__(self) -> None:
+        _require_exact_text("name", self.name)
+        _require_exact_text("claim_scope", self.claim_scope)
+        if type(self.evidence_class) is not str or self.evidence_class not in _EVIDENCE_CLASSES:
+            raise ValueError("evidence_class must be a known evidence class")
+        if type(self.evidence_level) is not str or self.evidence_level not in _EVIDENCE_LEVELS:
+            raise ValueError("evidence_level must be a known evidence level")
+        _require_exact_bool("promotes_scientific_claim", self.promotes_scientific_claim)
+        _require_exact_path("relative_path", self.relative_path)
+        _require_exact_text("expected_schema", self.expected_schema)
+        _require_exact_str_tuple("command_argv", self.command_argv)
+        _require_identity_mapping("protocol", self.protocol)
+        _require_identity_mapping("configuration", self.configuration)
+        _require_identity_mapping("seeds", self.seeds)
+        _require_identity_mapping("thresholds", self.thresholds)
+        _require_exact_str_tuple("limitations", self.limitations)
+        _require_path_tuple("source_paths", self.source_paths)
+        _require_exact_str_tuple("required_environment_fields", self.required_environment_fields)
+        _require_identity_callable("loader", self.loader)
+        _require_identity_callable("validator", self.validator)
 
 
 @dataclass(frozen=True)
