@@ -1,0 +1,44 @@
+{
+  "cpu_brand": "Apple M1 (Virtual)",
+  "jax_backend": "cpu",
+  "jax_config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+  },
+  "jax_devices": [
+    {
+      "device_kind": "cpu",
+      "id": 0,
+      "platform": "cpu",
+      "process_index": 0
+    }
+  ],
+  "machine": "arm64",
+  "macos_version": "14.8.7",
+  "packages": {
+    "chex": "0.1.92",
+    "jax": "0.11.0",
+    "jaxlib": "0.11.0",
+    "numpy": "2.5.1",
+    "scikit-learn": "1.9.0"
+  },
+  "platform": {
+    "machine": "arm64",
+    "release": "23.6.0",
+    "system": "Darwin"
+  },
+  "python": "3.12.12",
+  "python_optimization_level": 0,
+  "python_optimize_environment": "0",
+  "runner_arch": "ARM64",
+  "runner_environment": "github-hosted",
+  "runner_label": "macos-14",
+  "runner_os": "macOS",
+  "schema": "asi.ipmnist_prereg.runner.v2"
+}
