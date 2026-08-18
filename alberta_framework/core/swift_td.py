@@ -101,6 +101,34 @@ def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
+def _swift_td_persistent_bytes(feature_dim: int) -> int:
+    """Named persist already preflighted by ``SwiftTD.init``."""
+    return 4 * (8 * (feature_dim + 1) + 5)
+
+
+def _swift_td_update_result_extras_bytes(feature_dim: int) -> int:
+    """Returned ``SwiftTDUpdate`` extras excluding persist.
+
+    Nested ``new_state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published weight/bias deltas, metric
+    scalars, and diagnostic leaf.
+    """
+    return 4 * feature_dim + 29
+
+
+def _swift_td_update_working_set_bytes(feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _swift_td_persistent_bytes(
+        feature_dim
+    ) + _swift_td_update_result_extras_bytes(feature_dim)
+
+
+def _preflight_swift_td_update_working_set(feature_dim: int) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _swift_td_update_working_set_bytes(feature_dim) > _INT32_MAX:
+        raise ValueError("SwiftTD update working set byte count must fit signed int32")
+
+
 _DEFAULT_ETA_MIN = math.exp(-15.0)
 
 _SUPPORTED_CONFIG_REAL_TYPES: tuple[type[object], ...] = (
@@ -319,6 +347,7 @@ class SwiftTD:
             "SwiftTD state",
             float32_scalars=8 * aug_dim + 5,
         )
+        _preflight_swift_td_update_working_set(feature_dim)
         # The dense reference implementation clips beta into
         # [ln(eta_min), ln(eta)] on every pass, including the (otherwise
         # trivial) very first one -- so step-sizes are capped BEFORE the
@@ -366,6 +395,7 @@ class SwiftTD:
         if augmented_dim < 2:
             raise ValueError("state vector length must include a positive feature dimension")
         _require_float32_resource("SwiftTD adopted state", float32_scalars=8 * augmented_dim + 5)
+        _preflight_swift_td_update_working_set(augmented_dim - 1)
         for name, value in vectors:
             if not hasattr(value, "shape") or not hasattr(value, "dtype"):
                 raise TypeError(f"{name} must expose array shape and dtype metadata")
