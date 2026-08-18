@@ -412,6 +412,21 @@ class SecurityOracleExperience:
     policy_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     schema: str = "alberta.security_gym.oracle_experience.v1"
 
+    def __post_init__(self) -> None:
+        """Reject leftover action/reward/schema identities before JSON dump."""
+        if type(self.state) is not tuple:
+            raise ValueError("state must be an exact tuple")
+        state = tuple(
+            _require_finite_real(f"state[{index}]", value)
+            for index, value in enumerate(self.state)
+        )
+        if type(self.action) is not SecurityAction:
+            raise ValueError("action must be an exact SecurityAction")
+        reward = _require_finite_real("reward", self.reward)
+        _require_exact_str("schema", self.schema)
+        object.__setattr__(self, "state", state)
+        object.__setattr__(self, "reward", reward)
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable oracle experience mapping."""
         payload = {
