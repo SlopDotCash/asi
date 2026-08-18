@@ -16,9 +16,12 @@ import pytest
 from jax import Array
 
 from alberta_framework.core.representation_gradient_mixer import (
+    _MAX_REPRESENTATION_DIM,
     GradientMixMode,
     RepresentationGradientMixerConfig,
     RepresentationGradientMixResult,
+    _mixer_update_working_set_bytes,
+    _preflight_mixer_update_working_set,
     mix_representation_gradients,
 )
 
@@ -529,23 +532,26 @@ def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
 
 def test_gradient_mixer_allocation_contract_endpoints_are_allocation_free() -> None:
     fixed_output_bytes = 12 * 4 + 12
-    last_legal = ((2**31 - 1) - fixed_output_bytes) // 4
-    config = RepresentationGradientMixerConfig(representation_dim=last_legal)
+    output_last_legal = ((2**31 - 1) - fixed_output_bytes) // 4
+    update_last_legal = 25_565_280
+    with pytest.raises(ValueError, match="update working set byte count"):
+        RepresentationGradientMixerConfig(representation_dim=output_last_legal)
+    config = RepresentationGradientMixerConfig(representation_dim=update_last_legal)
     budget = config.resource_budget
 
-    assert budget.representation_dim == last_legal
+    assert budget.representation_dim == update_last_legal
     assert budget.persistent_state_scalars == 0
     assert budget.persistent_state_bytes == 0
-    assert budget.output_float32_scalars == last_legal + 12
+    assert budget.output_float32_scalars == update_last_legal + 12
     assert budget.output_bool_scalars == 12
-    assert budget.output_scalars == last_legal + 24
-    assert budget.output_nbytes == 4 * (last_legal + 12) + 12
+    assert budget.output_scalars == update_last_legal + 24
+    assert budget.output_nbytes == 4 * (update_last_legal + 12) + 12
     assert budget.output_nbytes <= 2**31 - 1
-    assert 4 * (last_legal + 1 + 12) + 12 > 2**31 - 1
+    assert 4 * (output_last_legal + 1 + 12) + 12 > 2**31 - 1
     json.dumps(budget.to_dict(), allow_nan=False)
 
     with pytest.raises(ValueError, match="representation_dim"):
-        RepresentationGradientMixerConfig(representation_dim=last_legal + 1)
+        RepresentationGradientMixerConfig(representation_dim=output_last_legal + 1)
 
 
 @pytest.mark.parametrize(
@@ -728,3 +734,52 @@ def test_gradient_mixer_resource_budget_is_exported_from_public_packages() -> No
     budget = RepresentationGradientMixerConfig(representation_dim=3).resource_budget
     assert isinstance(budget, RootBudget)
     assert RootBudget is CoreBudget
+
+
+_INT32_MAX = 2**31 - 1
+_INT32_MIN = -(2**31)
+
+
+def test_int32_wrap_forges_a_different_published_byte_identity() -> None:
+    published_bytes = _INT32_MAX + 1
+    wrapped_bytes = int(
+        jnp.asarray(_INT32_MAX, dtype=jnp.int32) + jnp.asarray(1, dtype=jnp.int32)
+    )
+    assert wrapped_bytes == _INT32_MIN
+    assert wrapped_bytes != published_bytes
+
+
+def test_mixer_persist_is_empty_and_output_fits_at_max_dim() -> None:
+    working_set_bytes = _mixer_update_working_set_bytes(_MAX_REPRESENTATION_DIM)
+    output_nbytes = 4 * (_MAX_REPRESENTATION_DIM + 12) + 12
+    assert output_nbytes <= _INT32_MAX
+    assert working_set_bytes > _INT32_MAX
+    with pytest.raises(ValueError, match="update working set byte count"):
+        RepresentationGradientMixerConfig(representation_dim=_MAX_REPRESENTATION_DIM)
+
+
+def test_mixer_last_fit_and_first_overflow_are_adjacent() -> None:
+    last_fit = None
+    first_overflow = None
+    for representation_dim in range(25_565_279, 25_565_283):
+        working_set_bytes = _mixer_update_working_set_bytes(representation_dim)
+        if working_set_bytes <= _INT32_MAX:
+            last_fit = representation_dim
+        elif first_overflow is None:
+            first_overflow = representation_dim
+            break
+    assert last_fit is not None and first_overflow == last_fit + 1
+    config = RepresentationGradientMixerConfig(representation_dim=last_fit)
+    assert config.resource_budget.persistent_state_bytes == 0
+    with pytest.raises(ValueError, match="update working set byte count"):
+        RepresentationGradientMixerConfig(representation_dim=first_overflow)
+
+
+def test_mixer_output_byte_bound_still_fires_first() -> None:
+    with pytest.raises(ValueError, match="representation_dim"):
+        RepresentationGradientMixerConfig(representation_dim=_MAX_REPRESENTATION_DIM + 1)
+
+
+def test_preflight_helper_rejects_the_same_working_set() -> None:
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_mixer_update_working_set(_MAX_REPRESENTATION_DIM)

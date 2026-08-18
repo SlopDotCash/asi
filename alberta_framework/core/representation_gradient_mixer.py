@@ -42,6 +42,10 @@ _DIAGNOSTIC_FLOAT32_SCALARS = 12
 _OUTPUT_BOOL_SCALARS = 12
 _FIXED_OUTPUT_BYTES = 4 * _DIAGNOSTIC_FLOAT32_SCALARS + _OUTPUT_BOOL_SCALARS
 _MAX_REPRESENTATION_DIM = (_INT32_MAX - _FIXED_OUTPUT_BYTES) // 4
+# Raw pair, safe pair, prepared pair, per-source normalize/clip temps,
+# zeros, for-use pair, contribution pair, safe-contribution pair,
+# mixed/unclipped, safe mixed, final candidate, and returned gradient.
+_MIX_WORKING_SET_DIM_VECTORS = 21
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -60,6 +64,28 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _mixer_update_working_set_bytes(representation_dim: int) -> int:
+    """Simultaneous two-source mix working set plus returned-leaf bytes.
+
+    Persist is empty.  ``mix_representation_gradients`` keeps the raw,
+    neutralized, prepared, contribution, and returned dim-vectors live
+    together with the fixed diagnostic/bool result payload.
+    """
+
+    return 4 * _MIX_WORKING_SET_DIM_VECTORS * representation_dim + _FIXED_OUTPUT_BYTES
+
+
+def _preflight_mixer_update_working_set(representation_dim: int) -> None:
+    """Reject a mix envelope the host cannot name in signed int32."""
+
+    working_set_bytes = _mixer_update_working_set_bytes(representation_dim)
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "representation-gradient mixer update working set byte count "
+            "must fit signed int32"
+        )
 
 
 def _strict_float32_scalar(
@@ -124,6 +150,7 @@ class RepresentationGradientMixerConfig:
                 maximum=_MAX_REPRESENTATION_DIM,
             ),
         )
+        _preflight_mixer_update_working_set(self.representation_dim)
         if type(self.mode) is not str or self.mode not in _VALID_MODES:
             raise ValueError(
                 "mode must be full, behavior_only, world_only, or discard"
