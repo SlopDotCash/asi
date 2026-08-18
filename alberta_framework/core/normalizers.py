@@ -1014,6 +1014,8 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     Raises:
         ValueError: If the normalizer type is unknown
     """
+    if type(config) is not dict:
+        raise ValueError("normalizer config must be an exact dict")
     config = dict(config)
     type_name = config.pop("type")
     host_type_name = _require_exact_str("type_name", type_name)

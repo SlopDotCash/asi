@@ -274,5 +274,5 @@ class Timer:
         if not 0.0 <= duration <= _MAX_DURATION_SECONDS:
             raise ValueError("duration is outside the finite telemetry bound")
         if duration > 0:
-            return f"Timer(name='{self.name}', duration={duration:.2f}s)"
-        return f"Timer(name='{self.name}')"
+            return f"Timer(name={repr(self.name)}, duration={duration:.2f}s)"
+        return f"Timer(name={repr(self.name)})"

@@ -741,8 +741,8 @@ class IDBD(Optimizer[IDBDState]):
                 declared domain (``initial_step_size`` positive;
                 ``meta_step_size`` nonnegative).
         """
-        if h_decay_mode not in ("prediction_grads", "loss_grads"):
-            host_mode = _require_exact_str("h_decay_mode", h_decay_mode)
+        host_mode = _require_exact_str("h_decay_mode", h_decay_mode)
+        if host_mode not in ("prediction_grads", "loss_grads"):
             raise ValueError(
                 f"Invalid h_decay_mode: '{host_mode}'. "
                 "Must be 'prediction_grads' or 'loss_grads'."
@@ -751,7 +751,7 @@ class IDBD(Optimizer[IDBDState]):
             "initial_step_size", initial_step_size, positive=True
         )
         self._meta_step_size = _validated_idbd_step_size("meta_step_size", meta_step_size)
-        self._h_decay_mode = h_decay_mode
+        self._h_decay_mode = host_mode
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""

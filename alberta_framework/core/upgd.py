@@ -1267,20 +1267,15 @@ class UPGDLearner:
         Returns:
             Configured :class:`UPGDLearner`.
         """
-        if loss_normalization not in {"target_structure", "target_density"}:
-            if type(loss_normalization) is str:
-                host_ln = _require_exact_str("loss_normalization", loss_normalization)
-                msg = (
-                    "step2_default loss_normalization must be 'target_structure' "
-                    f"or 'target_density', got '{host_ln}'"
-                )
-            else:
-                msg = (
-                    "step2_default loss_normalization must be 'target_structure' "
-                    "or 'target_density', got non-string"
-                )
+        host_loss_normalization = _require_exact_str("loss_normalization", loss_normalization)
+        if host_loss_normalization not in {"target_structure", "target_density"}:
+            msg = (
+                "step2_default loss_normalization must be 'target_structure' "
+                f"or 'target_density', got '{host_loss_normalization}'"
+            )
             raise ValueError(msg)
-        if readout_mode not in {
+        host_readout_mode = _require_exact_str("readout_mode", readout_mode)
+        if host_readout_mode not in {
             "linear_mse",
             "softmax_ce",
             "softmax_mse",
@@ -1289,23 +1284,13 @@ class UPGDLearner:
             "adaptive_factorized_simplex",
             "two_timescale_simplex",
         }:
-            if type(readout_mode) is str:
-                host_rm2 = _require_exact_str("readout_mode", readout_mode)
-                msg = (
-                    "step2_default readout_mode must be 'linear_mse', "
-                    "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
-                    "'factorized_simplex', 'adaptive_factorized_simplex', or "
-                    "'two_timescale_simplex', "
-                    f"got '{host_rm2}'"
-                )
-            else:
-                msg = (
-                    "step2_default readout_mode must be 'linear_mse', "
-                    "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
-                    "'factorized_simplex', 'adaptive_factorized_simplex', or "
-                    "'two_timescale_simplex', "
-                    "got non-string"
-                )
+            msg = (
+                "step2_default readout_mode must be 'linear_mse', "
+                "'softmax_ce', 'softmax_mse', 'adaptive_simplex', "
+                "'factorized_simplex', 'adaptive_factorized_simplex', or "
+                "'two_timescale_simplex', "
+                f"got '{host_readout_mode}'"
+            )
             raise ValueError(msg)
         return cls(
             n_heads=n_heads,
@@ -1319,8 +1304,8 @@ class UPGDLearner:
             utility_decay=0.995,
             perturbation_beta=2.0,
             perturbation_interval=16,
-            loss_normalization=loss_normalization,
-            readout_mode=readout_mode,
+            loss_normalization=host_loss_normalization,
+            readout_mode=host_readout_mode,
             readout_loss_mode=readout_loss_mode,
             readout_prediction_mode=readout_prediction_mode,
             readout_robust_q=readout_robust_q,

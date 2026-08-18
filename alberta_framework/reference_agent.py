@@ -65,7 +65,7 @@ class DecisionOwnershipError(ValueError):
 
 def _require_safe_id(value: str, *, name: str) -> None:
     if (
-        not isinstance(value, str)
+        type(value) is not str
         or not value
         or len(value) > _MAX_ID_LENGTH
         or _SAFE_ID.fullmatch(value) is None
@@ -78,7 +78,7 @@ def _require_safe_id(value: str, *, name: str) -> None:
 
 
 def _require_sha256(value: str, *, name: str) -> None:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+    if type(value) is not str or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{name} must be a lowercase 64-character SHA-256 digest")
 
 
@@ -203,11 +203,8 @@ class ArrayValue:
             raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES or dtype.name != self.dtype:
             raise ValueError("ArrayValue dtype must be a portable canonical numeric dtype")
-        if not isinstance(self.shape, tuple) or any(
-            isinstance(dimension, bool)
-            or not isinstance(dimension, int)
-            or dimension <= 0
-            for dimension in self.shape
+        if type(self.shape) is not tuple or any(
+            type(dimension) is not int or dimension <= 0 for dimension in self.shape
         ):
             raise ValueError("ArrayValue shape must be a tuple of positive dimensions or ()")
         if not isinstance(self.payload, bytes):
@@ -262,11 +259,8 @@ class SpaceSpec:
 
     def __post_init__(self) -> None:
         _require_safe_id(self.semantic_id, name="semantic_id")
-        if not isinstance(self.shape, tuple) or any(
-            isinstance(dimension, bool)
-            or not isinstance(dimension, int)
-            or dimension <= 0
-            for dimension in self.shape
+        if type(self.shape) is not tuple or any(
+            type(dimension) is not int or dimension <= 0 for dimension in self.shape
         ):
             raise ValueError("shape must be a tuple of positive integer dimensions or ()")
         host_dtype = _require_exact_str("dtype", self.dtype)
@@ -284,7 +278,8 @@ class SpaceSpec:
         if _shape_size(self.shape) > _MAX_ARRAY_ELEMENTS:
             raise ValueError(f"space must contain <= {_MAX_ARRAY_ELEMENTS} elements")
 
-        if self.kind == "discrete":
+        host_kind = _require_exact_str("kind", self.kind)
+        if host_kind == "discrete":
             if self.shape != ():
                 raise ValueError("a discrete space must have scalar shape ()")
             if dtype.kind not in {"i", "u"}:
@@ -303,7 +298,7 @@ class SpaceSpec:
                 raise ValueError("a discrete space cannot declare box bounds")
             return
 
-        if self.kind != "box":
+        if host_kind != "box":
             raise ValueError("space kind must be 'discrete' or 'box'")
         if self.cardinality is not None:
             raise ValueError("a box space cannot declare a cardinality")
@@ -457,7 +452,7 @@ class AgentCapabilities:
     dispatch_rebinding: bool = False
 
     def __post_init__(self) -> None:
-        if not isinstance(self.dispatch_rebinding, bool):
+        if type(self.dispatch_rebinding) is not bool:
             raise ValueError("dispatch_rebinding must be boolean")
 
     def _descriptor(self) -> dict[str, Any]:
@@ -502,8 +497,8 @@ class AgentManifest:
     _config_json: str = dataclasses.field(repr=False)
 
     def __post_init__(self) -> None:
-        if self.schema != REFERENCE_AGENT_MANIFEST_SCHEMA:
-            host_schema = _require_exact_str("schema", self.schema)
+        host_schema = _require_exact_str("schema", self.schema)
+        if host_schema != REFERENCE_AGENT_MANIFEST_SCHEMA:
             host_expected = _require_exact_str("expected_schema", REFERENCE_AGENT_MANIFEST_SCHEMA)
             raise ValueError(
                 f"schema must be '{host_expected}', got '{host_schema}'"
@@ -649,8 +644,7 @@ class Decision:
                 f"maximum length is {_MAX_LIFECYCLE_ID_LENGTH}"
             )
         if (
-            isinstance(self.decision_index, bool)
-            or not isinstance(self.decision_index, int)
+            type(self.decision_index) is not int
             or self.decision_index < 0
             or self.decision_index > MAX_DECISION_INDEX
         ):
@@ -658,10 +652,10 @@ class Decision:
                 f"decision_index must be a uint64 integer no greater than {MAX_DECISION_INDEX}"
             )
         expected_id = f"{self.lifecycle_id}:{self.decision_index}"
+        _require_safe_id(self.decision_id, name="decision_id")
         if self.decision_id != expected_id:
             host_expected = _require_exact_str("expected_id", expected_id)
             raise ValueError(f"decision_id must use canonical value '{host_expected}'")
-        _require_safe_id(self.decision_id, name="decision_id")
         _require_safe_id(self.observation_id, name="observation_id")
         if not isinstance(self.observation, ArrayValue):
             raise ValueError("decision observation must be an ArrayValue")

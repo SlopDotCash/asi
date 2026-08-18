@@ -226,6 +226,24 @@ class PavlovianPhase:
     cs_active: tuple[int, ...]
     compound_index: int = -1
 
+    def __post_init__(self) -> None:
+        if type(self.name) is not str or not self.name:
+            raise ValueError("phase name must be a non-empty exact string")
+        _require_builtin_int(self.n_steps, name="n_steps", minimum=1)
+        try:
+            _require_unit_interval(self.cs_us_contingency, name="cs_us_contingency")
+        except ValueError:
+            raise ValueError("cs_us_contingency must be a finite probability in [0, 1]") from None
+        if type(self.cs_active) is not tuple:
+            raise ValueError("cs_active must be an exact tuple")
+        if not self.cs_active:
+            raise ValueError("cs_active must contain at least one CS index")
+        if any(type(index) is not int or index < 0 for index in self.cs_active):
+            raise ValueError("cs_active indices must be non-negative built-in integers")
+        if len(set(self.cs_active)) != len(self.cs_active):
+            raise ValueError("cs_active indices must be unique")
+        _require_builtin_int(self.compound_index, name="compound_index", minimum=-1)
+
 
 @chex.dataclass(frozen=True)
 class PavlovianState:

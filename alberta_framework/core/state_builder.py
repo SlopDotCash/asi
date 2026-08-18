@@ -1990,6 +1990,8 @@ StateBuilderConfig = (
 
 def state_builder_config_from_config(payload: dict[str, Any]) -> StateBuilderConfig:
     """Parse one known state-builder configuration without creating state."""
+    if type(payload) is not dict:
+        raise ValueError("state builder payload must be an exact dict")
     builder_type = payload.get("type")
     host_builder_type = _require_exact_str("payload.type", builder_type)
     if host_builder_type == "IdentityStateBuilder":
