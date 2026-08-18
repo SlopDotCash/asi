@@ -30,6 +30,18 @@ class _StringSubclass(str):
     pass
 
 
+class _HostileComparableStr(str):
+    calls = 0
+
+    def __eq__(self, other: object) -> bool:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("HostileComparableStr.__eq__ must not be called")
+
+    def __hash__(self) -> int:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("HostileComparableStr.__hash__ must not be called")
+
+
 class _HostileInt(int):
     calls = 0
 
@@ -125,6 +137,24 @@ def test_from_config_rejects_evil_schema_without_hooks() -> None:
         normalizer_from_config({"type": "EMANormalizer", "state_schema": evil})
     assert _EvilStr.calls == 0
     assert "!r" not in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("normalizer_type", "field", "value"),
+    [
+        ("EMANormalizer", "state_schema", "bad.schema"),
+        ("WelfordNormalizer", "estimator_schema", "bad.estimator"),
+        ("EMANormalizer", "estimator_semantics", "bad.semantics"),
+    ],
+)
+def test_from_config_gates_strings_before_comparison_or_hashing(
+    normalizer_type: str, field: str, value: str
+) -> None:
+    hostile = _HostileComparableStr(value)
+    _HostileComparableStr.calls = 0
+    with pytest.raises(ValueError, match="exact string"):
+        normalizer_from_config({"type": normalizer_type, field: hostile})
+    assert _HostileComparableStr.calls == 0
 
 
 def test_from_config_sanitized_schema() -> None:

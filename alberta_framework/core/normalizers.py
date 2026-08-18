@@ -1017,17 +1017,28 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     config = dict(config)
     type_name = config.pop("type")
     host_type_name = _require_exact_str("type_name", type_name)
-    state_schema = config.pop("state_schema", NORMALIZER_STATE_SCHEMA)
+    state_schema = _require_exact_str(
+        "state_schema", config.pop("state_schema", NORMALIZER_STATE_SCHEMA)
+    )
     if state_schema != NORMALIZER_STATE_SCHEMA:
-        host_schema = _require_exact_str("state_schema", state_schema)
+        host_schema = state_schema
         raise ValueError(f"Unsupported normalizer state schema: '{host_schema}'")
-    estimator_schema = config.pop("estimator_schema", None)
-    estimator_semantics = config.pop("estimator_semantics", None)
+    raw_estimator_schema = config.pop("estimator_schema", None)
+    estimator_schema = (
+        None
+        if raw_estimator_schema is None
+        else _require_exact_str("estimator_schema", raw_estimator_schema)
+    )
+    raw_estimator_semantics = config.pop("estimator_semantics", None)
+    estimator_semantics = (
+        None
+        if raw_estimator_semantics is None
+        else _require_exact_str("estimator_semantics", raw_estimator_semantics)
+    )
     legacy_estimator_semantics: str | None = None
     if host_type_name == "WelfordNormalizer":
         if estimator_schema not in {None, WELFORD_ESTIMATOR_SCHEMA}:
-            host_est = _require_exact_str("estimator_schema", estimator_schema)
-            raise ValueError(f"Unsupported Welford estimator schema: '{host_est}'")
+            raise ValueError(f"Unsupported Welford estimator schema: '{estimator_schema}'")
         expected_semantics = CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
     elif estimator_schema is not None:
         raise ValueError(f"estimator_schema is not valid for normalizer type '{host_type_name}'")
@@ -1047,25 +1058,13 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     else:
         expected_semantics = None
     if estimator_semantics is not None and (
-        type(estimator_semantics) is not str
-        or (
-            estimator_semantics != expected_semantics
-            and estimator_semantics != legacy_estimator_semantics
-        )
+        estimator_semantics != expected_semantics
+        and estimator_semantics != legacy_estimator_semantics
     ):
-        if type(estimator_semantics) is str:
-            host_est_sem = _require_exact_str("estimator_semantics", estimator_semantics)
-            host_exp = expected_semantics if type(expected_semantics) is str else "None"
-            # expected is internal constant, safe to treat as exact str via host check
-            if type(expected_semantics) is str:
-                host_exp = _require_exact_str("expected_semantics", expected_semantics)
-            raise ValueError(
-                "normalizer estimator_semantics does not match its parameters: "
-                f"expected '{host_exp}', got '{host_est_sem}'"
-            )
+        host_exp = expected_semantics if expected_semantics is not None else "None"
         raise ValueError(
             "normalizer estimator_semantics does not match its parameters: "
-            "expected exact string, got non-string"
+            f"expected '{host_exp}', got '{estimator_semantics}'"
         )
     cls = _NORMALIZER_REGISTRY.get(host_type_name)
     if cls is None:
