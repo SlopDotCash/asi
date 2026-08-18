@@ -1599,14 +1599,14 @@ def load_evidence_artifact(path: Path) -> dict[str, object]:
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is not int and type(value) is not float:
         return None
     numeric = float(value)
     return numeric if math.isfinite(numeric) else None
 
 
 def _strict_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is not int:
         return None
     return value
 
@@ -1617,6 +1617,9 @@ def _exact_keys(
     location: str,
     errors: list[str],
 ) -> None:
+    if type(value) is not dict:
+        errors.append(f"{location} must be an object")
+        return
     actual = set(value)
     missing = sorted(set(expected) - actual)
     unknown = sorted(actual - set(expected))
@@ -1631,19 +1634,19 @@ def _mapping(
     location: str,
     errors: list[str],
 ) -> Mapping[str, object] | None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{location} must be an object")
         return None
     return value
 
 
 def _parsed_pairs(value: object) -> tuple[tuple[int, int], ...] | None:
-    if not isinstance(value, list):
+    if type(value) is not list:
         return None
     pairs: list[tuple[int, int]] = []
     for pair in value:
         if (
-            not isinstance(pair, list)
+            type(pair) is not list
             or len(pair) != 2
             or _strict_int(pair[0]) is None
             or _strict_int(pair[1]) is None
@@ -2192,6 +2195,9 @@ def validate_evidence_artifact(
     """Strictly validate structure, digest, internal bindings, and gate."""
 
     errors: list[str] = []
+    if type(artifact) is not dict:
+        errors.append("artifact must be a mapping with exact dict identities")
+        return ArtifactValidation(valid=False, accepted=False, errors=tuple(errors))
     _exact_keys(
         artifact,
         {
