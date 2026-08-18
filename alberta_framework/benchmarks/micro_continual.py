@@ -178,6 +178,14 @@ def _require_finite_real(value: object, name: str) -> float:
     return number
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 def _freeze_micro_hyperparameters(value: object, *, context: str) -> Mapping[str, float]:
     """Copy one primitive-only hyperparameter mapping behind an immutable view."""
     if not _is_registered_subclass(type(value), Mapping):
@@ -192,7 +200,7 @@ def _freeze_micro_hyperparameters(value: object, *, context: str) -> Mapping[str
     for key, raw_value in items:
         if type(key) is not str or not key:
             raise ValueError(f"{context} keys must be non-empty strings")
-        frozen[key] = _require_finite_real(raw_value, f"{context}[{key!r}]")
+        frozen[key] = _require_finite_real(raw_value, f"{context}['{key}']")
     return MappingProxyType(frozen)
 
 
@@ -939,11 +947,11 @@ MICRO_ARM_REGISTRY: Mapping[str, MicroArmSpec] = MappingProxyType(_build_arm_reg
 
 def micro_arm_spec(name: object) -> MicroArmSpec:
     """Look up one ladder arm; raises ``KeyError`` for unknown names."""
-    if type(name) is not str:
-        raise TypeError("micro arm name must be an exact string")
-    spec = MICRO_ARM_REGISTRY.get(name)
+    host_name = _require_exact_str("name", name)
+    spec = MICRO_ARM_REGISTRY.get(host_name)
     if spec is None:
-        raise KeyError(f"unknown micro arm {name!r}; known: {sorted(MICRO_ARM_REGISTRY)}")
+        _known = ", ".join(f"'{k}'" for k in sorted(MICRO_ARM_REGISTRY))
+        raise KeyError(f"unknown micro arm '{host_name}'; known: [{_known}]")
     return spec
 
 
@@ -1107,9 +1115,10 @@ def micro_shard_path(out_dir: Path | str, family: str, arm_name: str, seed: int)
 
 def micro_shard_payload(result: MicroRunResult) -> dict[str, Any]:
     """Serialize one run to a mergeable shard, recording the spec that actually ran."""
-    if result.arm_name not in MICRO_ARM_REGISTRY:
+    host_arm = _require_exact_str("arm_name", result.arm_name)
+    if host_arm not in MICRO_ARM_REGISTRY:
         raise ValueError(
-            f"arm_name {result.arm_name!r} is not a registered micro arm; "
+            f"arm_name '{host_arm}' is not a registered micro arm; "
             "unregistered results cannot be serialized into the registered-arm shard schema"
         )
     return {
@@ -1197,7 +1206,7 @@ def _validated_curve(
         number = _require_finite_real(entry, f"{context}[{index}]")
         if number < lower or (upper is not None and number > upper):
             domain = f"[{lower}, {upper}]" if upper is not None else f">= {lower}"
-            raise ValueError(f"{context}[{index}] must lie in {domain}, got {number!r}")
+            raise ValueError(f"{context}[{index}] must lie in {domain}, got {number}")
         curve.append(number)
     return curve
 
@@ -1215,19 +1224,21 @@ def load_micro_shard(path: Path | str) -> dict[str, Any]:
         raise ValueError(f"{path}: shard fields do not match the exact schema")
     if type(payload.get("schema")) is not str or payload["schema"] != MICRO_SHARD_SCHEMA:
         raise ValueError(f"{path}: schema mismatch (expected {MICRO_SHARD_SCHEMA})")
-    if (
-        type(payload.get("suite_version")) is not str
-        or payload["suite_version"] != MICRO_GAUSS_SUITE_VERSION
-    ):
+    _raw_suite = payload.get("suite_version")
+    if type(_raw_suite) is not str or _raw_suite != MICRO_GAUSS_SUITE_VERSION:
+        if type(_raw_suite) is str:
+            _got_suite = f"'{_raw_suite}'"
+        else:
+            _got_suite = f"<{type(_raw_suite).__name__}>"
         raise ValueError(
-            f"{path}: suite_version mismatch (expected {MICRO_GAUSS_SUITE_VERSION!r}, "
-            f"got {payload.get('suite_version')!r})"
+            f"{path}: suite_version mismatch (expected '{MICRO_GAUSS_SUITE_VERSION}', "
+            f"got {_got_suite})"
         )
     arm_name = payload.get("arm_name")
     if type(arm_name) is not str:
         raise ValueError(f"{path}: arm_name must be an exact string")
     if arm_name not in MICRO_ARM_REGISTRY:
-        raise ValueError(f"{path}: unknown arm {arm_name!r}")
+        raise ValueError(f"{path}: unknown arm '{arm_name}'")
     arm_spec = MICRO_ARM_REGISTRY[arm_name]
     if type(payload.get("mechanism")) is not str or not payload["mechanism"]:
         raise ValueError(f"{path}: mechanism must be a non-empty string")
@@ -1240,11 +1251,11 @@ def load_micro_shard(path: Path | str) -> dict[str, Any]:
     )
     if payload["mechanism"] != arm_spec.mechanism:
         raise ValueError(
-            f"{path}: mechanism does not match registered arm {arm_spec.name!r}"
+            f"{path}: mechanism does not match registered arm '{arm_spec.name}'"
         )
     if payload["hyperparameters"] != dict(arm_spec.hyperparameters):
         raise ValueError(
-            f"{path}: hyperparameters do not match registered arm {arm_spec.name!r}"
+            f"{path}: hyperparameters do not match registered arm '{arm_spec.name}'"
         )
     environment = payload.get("environment")
     required_environment_fields = ("jax", "numpy", "python", "platform")
@@ -1262,10 +1273,16 @@ def load_micro_shard(path: Path | str) -> dict[str, Any]:
     config = MicroStreamConfig.from_mapping(
         payload.get("stream_config"), source=f"{path}: stream_config"
     )
-    if payload.get("family") != config.family:
+    _raw_family = payload.get("family")
+    _cfg_family = config.family
+    if _raw_family != _cfg_family:
+        if type(_raw_family) is str:
+            _got_family = f"'{_raw_family}'"
+        else:
+            _got_family = f"<{type(_raw_family).__name__}>"
         raise ValueError(
-            f"{path}: family {payload.get('family')!r} does not match "
-            f"stream_config family {config.family!r}"
+            f"{path}: family {_got_family} does not match "
+            f"stream_config family '{_cfg_family}'"
         )
     for fieldname, (lower, upper) in _MICRO_CURVE_DOMAINS.items():
         payload[fieldname] = _validated_curve(
@@ -1360,9 +1377,11 @@ def _validate_micro_arm_contract(
             seed for seed in seeds if per_seed[seed][fieldname] != reference
         ]
         if mismatched:
+            host_arm10 = _require_exact_str("arm_name", arm_name)
+            _ref = f"'{reference}'" if type(reference) is str else str(reference)
             raise ValueError(
-                f"arm {arm_name!r} has inconsistent {fieldname} across seeds: "
-                f"seed {seeds[0]} used {reference!r}, seed(s) {mismatched} used "
+                f"arm '{host_arm10}' has inconsistent {fieldname} across seeds: "
+                f"seed {seeds[0]} used {_ref}, seed(s) {mismatched} used "
                 "different values"
             )
 
@@ -1407,9 +1426,10 @@ def merge_micro_shards(
         all_seeds.update(seeds)
         _validate_micro_arm_contract(arm_name, per_seed)
         wall_clock_values = [per_seed[s]["wall_clock_seconds"] for s in seeds]
+        host_arm11 = _require_exact_str("arm_name", arm_name)
         wall_clock_total = _finite_wall_clock_total(
             wall_clock_values,
-            context=f"arm {arm_name!r}",
+            context=f"arm '{host_arm11}'",
         )
         curves = np.stack(
             [
@@ -2083,7 +2103,7 @@ class MicroStream:
 
 @lru_cache(maxsize=2)
 def _digits_cache(crop: bool) -> tuple[np.ndarray, np.ndarray]:
-    from sklearn.datasets import load_digits  # type: ignore[import-untyped]
+    from sklearn.datasets import load_digits
 
     x_raw, y_raw = load_digits(return_X_y=True)
     x = (np.asarray(x_raw, dtype=np.float32) / 8.0) - 1.0  # 0..16 -> [-1, 1]
