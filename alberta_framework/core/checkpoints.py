@@ -52,6 +52,7 @@ _FORMAT_VERSION = 2
 
 # Internal metadata key — stripped from user-facing metadata
 _VERSION_KEY = "_format_version"
+_EMPTY_ARRAYS_KEY = "_empty_array_leaves"
 
 
 def _is_empty_array(value: object) -> bool:
@@ -76,8 +77,49 @@ def _orbax_compatible_tree(tree: Any) -> Any:
     return jax.tree.map(compatible, tree)
 
 
-def _restore_empty_arrays(template: Any, restored: Any) -> Any:
-    """Reinstate exact empty leaves from the structurally matched template."""
+def _empty_array_manifest(tree: Any) -> list[dict[str, Any] | None] | None:
+    """Describe exact empty leaves so sentinels cannot alias real data."""
+
+    manifest: list[dict[str, Any] | None] = []
+    has_empty = False
+    for leaf in jax.tree.leaves(tree):
+        if not _is_empty_array(leaf):
+            manifest.append(None)
+            continue
+        has_empty = True
+        manifest.append({"shape": list(leaf.shape), "dtype": str(leaf.dtype)})
+    return manifest if has_empty else None
+
+
+def _restore_empty_arrays(template: Any, restored: Any, manifest: object) -> Any:
+    """Validate and reinstate exact empty leaves from checkpoint metadata."""
+
+    template_leaves = jax.tree.leaves(template)
+    if manifest is None:
+        if any(_is_empty_array(leaf) for leaf in template_leaves):
+            raise ValueError("checkpoint does not identify its empty array leaves")
+        return restored
+    if type(manifest) is not list or len(manifest) != len(template_leaves):
+        raise ValueError("checkpoint empty array manifest does not match the state tree")
+
+    for expected, raw_spec in zip(template_leaves, manifest, strict=True):
+        if raw_spec is None:
+            if _is_empty_array(expected):
+                raise ValueError("checkpoint state leaf is nonempty but template leaf is empty")
+            continue
+        if type(raw_spec) is not dict or set(raw_spec) != {"shape", "dtype"}:
+            raise ValueError("checkpoint empty array manifest is invalid")
+        raw_shape = raw_spec["shape"]
+        raw_dtype = raw_spec["dtype"]
+        if (
+            not _is_empty_array(expected)
+            or type(raw_shape) is not list
+            or any(type(dimension) is not int or dimension < 0 for dimension in raw_shape)
+            or type(raw_dtype) is not str
+            or list(expected.shape) != raw_shape
+            or str(expected.dtype) != raw_dtype
+        ):
+            raise ValueError("checkpoint empty array leaf does not match the restore template")
 
     return jax.tree.map(
         lambda expected, actual: expected if _is_empty_array(expected) else actual,
@@ -139,6 +181,9 @@ def save_checkpoint(
         meta_to_save = _copy_mapping(metadata, name="checkpoint metadata")
     _require_json_safe_metadata(meta_to_save)
     meta_to_save[_VERSION_KEY] = _FORMAT_VERSION
+    empty_array_manifest = _empty_array_manifest(state)
+    if empty_array_manifest is not None:
+        meta_to_save[_EMPTY_ARRAYS_KEY] = empty_array_manifest
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
@@ -200,8 +245,12 @@ def load_checkpoint(
     raw_metadata = loaded.metadata
     user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
     user_metadata.pop(_VERSION_KEY, None)
+    empty_array_manifest = user_metadata.pop(_EMPTY_ARRAYS_KEY, None)
     _require_json_safe_metadata(user_metadata)
-    return _restore_empty_arrays(state_template, loaded.state), user_metadata
+    return (
+        _restore_empty_arrays(state_template, loaded.state, empty_array_manifest),
+        user_metadata,
+    )
 
 
 def load_checkpoint_metadata(path: str | Path) -> dict[str, Any]:
@@ -235,6 +284,7 @@ def load_checkpoint_metadata(path: str | Path) -> dict[str, Any]:
     raw_metadata = loaded.metadata
     user_metadata = _copy_mapping(raw_metadata, name="checkpoint metadata")
     user_metadata.pop(_VERSION_KEY, None)
+    user_metadata.pop(_EMPTY_ARRAYS_KEY, None)
     _require_json_safe_metadata(user_metadata)
     return user_metadata
 

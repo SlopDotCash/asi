@@ -37,6 +37,24 @@ class TestSaveLoadRoundTrip:
         chex.assert_trees_all_equal(loaded["payload"], state["payload"])
         assert metadata == {}
 
+    def test_empty_template_cannot_discard_nonempty_saved_array(self, tmp_path):
+        saved = {"x": jnp.array([42.0], dtype=jnp.float32)}
+        template = {"x": jnp.empty((0,), dtype=jnp.float32)}
+
+        save_checkpoint(saved, tmp_path / "nonempty")
+
+        with pytest.raises(ValueError, match="does not identify its empty array leaves"):
+            load_checkpoint(template, tmp_path / "nonempty")
+
+    def test_empty_saved_array_requires_exact_template_shape(self, tmp_path):
+        saved = {"x": jnp.empty((0, 3), dtype=jnp.float32)}
+        template = {"x": jnp.empty((0, 4), dtype=jnp.float32)}
+
+        save_checkpoint(saved, tmp_path / "empty_shape")
+
+        with pytest.raises(ValueError, match="does not match the restore template"):
+            load_checkpoint(template, tmp_path / "empty_shape")
+
     def test_linear_learner_state(self, tmp_path):
         """LinearLearner state should round-trip correctly."""
         learner = LinearLearner()
