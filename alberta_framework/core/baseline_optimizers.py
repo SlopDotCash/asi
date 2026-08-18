@@ -34,10 +34,12 @@ References:
   for AI Research" (arXiv: 2208.11173)
 """
 
-from typing import Any, cast
+import operator
+from typing import Any, SupportsIndex, cast
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
 from jaxtyping import Float
 
@@ -53,6 +55,136 @@ from alberta_framework.core.update_safety import (
     neutralize_metrics,
     select_transaction,
 )
+
+_INT32_MAX = 2_147_483_647
+_ACTUAL_INT_TYPES: tuple[type, ...] = (
+    int,
+    *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")),
+)
+
+
+def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    canonical = operator.index(cast(SupportsIndex, value))
+    if not minimum <= canonical <= maximum:
+        raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
+    return canonical
+
+
+def _require_derived_int32(name: str, value: int, *, minimum: int = 0) -> int:
+    if not minimum <= value <= _INT32_MAX:
+        raise ValueError(f"derived {name} must fit signed int32")
+    return value
+
+
+def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
+    _require_derived_int32(f"{name} scalar count", float32_scalars)
+    if 4 * float32_scalars > _INT32_MAX:
+        raise ValueError(f"derived {name} byte count must fit signed int32")
+
+
+def _require_feature_dim(feature_dim: object) -> int:
+    return _require_int32("feature_dim", feature_dim, minimum=1)
+
+
+def _require_shape_scalars(shape: object) -> int:
+    if type(shape) is not tuple:
+        raise ValueError("shape must be an actual tuple")
+    total = 1
+    for index, dim in enumerate(cast(tuple[object, ...], shape)):
+        dim = _require_int32(f"shape[{index}]", dim, minimum=1)
+        total = _require_derived_int32("shape scalar count", total * dim, minimum=1)
+    return total
+
+
+def _preflight_optimizer_resources(
+    name: str,
+    n: int,
+    *,
+    persistent_vectors: int,
+    persistent_scalars: int,
+    update_vectors: int,
+    update_scalars: int,
+) -> None:
+    """Reject persistent and simultaneous-update working sets this optimizer owns."""
+
+    _require_derived_int32(f"{name} feature dim", n, minimum=1)
+    _require_float32_resource(f"{name} moment bank", float32_scalars=n)
+    _require_float32_resource(
+        f"{name} persistent state",
+        float32_scalars=persistent_vectors * n + persistent_scalars,
+    )
+    _require_float32_resource(
+        f"{name} update working set",
+        float32_scalars=update_vectors * n + update_scalars,
+    )
+
+
+def _preflight_adam_resources(n: int) -> None:
+    # Linear Adam owns two float32 moment banks plus seven named scalars
+    # (bias_m, bias_v, t, step_size, beta1, beta2, eps). t is a float32
+    # lifetime counter, not an int32 word.
+    _preflight_optimizer_resources(
+        "Adam",
+        n,
+        persistent_vectors=2,
+        persistent_scalars=7,
+        # Live during update: observation, g, m, v, new_m, new_v, m_hat,
+        # v_hat, and weight_delta. Remaining scalars cover the bias path
+        # and transaction flags.
+        update_vectors=9,
+        update_scalars=8,
+    )
+
+
+def _preflight_adam_param_resources(n: int) -> None:
+    _preflight_optimizer_resources(
+        "Adam",
+        n,
+        persistent_vectors=2,
+        persistent_scalars=5,
+        update_vectors=9,
+        update_scalars=8,
+    )
+
+
+def _preflight_adagain_resources(n: int) -> None:
+    # AdaGain owns two float32 banks (step_sizes, gradient_trace) plus four
+    # named scalars (bias gain/trace, meta_step_size, forgetting_rate).
+    _preflight_optimizer_resources(
+        "AdaGain",
+        n,
+        persistent_vectors=2,
+        persistent_scalars=4,
+        # Live during update: observation, gradient, step_sizes,
+        # gradient_trace, gain_correlation, meta_delta, new_step_sizes,
+        # weight_delta, and new_gradient_trace.
+        update_vectors=9,
+        update_scalars=8,
+    )
+
+
+def _preflight_rmsprop_resources(n: int) -> None:
+    _preflight_optimizer_resources(
+        "RMSprop",
+        n,
+        persistent_vectors=1,
+        persistent_scalars=4,
+        update_vectors=6,
+        update_scalars=6,
+    )
+
+
+def _preflight_nadaline_resources(n: int) -> None:
+    _preflight_optimizer_resources(
+        "NADALINE",
+        n,
+        persistent_vectors=1,
+        persistent_scalars=3,
+        update_vectors=6,
+        update_scalars=6,
+    )
 
 
 def _skip_zero_scale(configured_scale: float, scale: Array, value: Array) -> Array:
@@ -271,6 +403,8 @@ class AdaGain(Optimizer[Any]):
 
     def init(self, feature_dim: int) -> AdaGainState:
         """Initialize AdaGain state."""
+        feature_dim = _require_feature_dim(feature_dim)
+        _preflight_adagain_resources(feature_dim)
         return AdaGainState(
             step_sizes=jnp.full(
                 feature_dim, self._initial_step_size, dtype=jnp.float32
@@ -457,6 +591,8 @@ class Adam(Optimizer[Any]):
         Returns:
             Adam state with zero-initialized moments and ``t = 0``
         """
+        feature_dim = _require_feature_dim(feature_dim)
+        _preflight_adam_resources(feature_dim)
         return AdamState(
             m=jnp.zeros(feature_dim, dtype=jnp.float32),
             v=jnp.zeros(feature_dim, dtype=jnp.float32),
@@ -478,6 +614,7 @@ class Adam(Optimizer[Any]):
         Returns:
             ``AdamParamState`` with arrays matching the given shape
         """
+        _preflight_adam_param_resources(_require_shape_scalars(shape))
         return AdamParamState(
             m=jnp.zeros(shape, dtype=jnp.float32),
             v=jnp.zeros(shape, dtype=jnp.float32),
@@ -759,6 +896,8 @@ class RMSprop(Optimizer[Any]):
         Returns:
             RMSprop state with zero-initialized squared-gradient EMA
         """
+        feature_dim = _require_feature_dim(feature_dim)
+        _preflight_rmsprop_resources(feature_dim)
         return RMSpropState(
             v=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias_v=jnp.array(0.0, dtype=jnp.float32),
@@ -776,6 +915,14 @@ class RMSprop(Optimizer[Any]):
         Returns:
             ``RMSpropParamState`` with arrays matching the given shape
         """
+        _preflight_optimizer_resources(
+            "RMSprop",
+            _require_shape_scalars(shape),
+            persistent_vectors=1,
+            persistent_scalars=3,
+            update_vectors=6,
+            update_scalars=6,
+        )
         return RMSpropParamState(
             v=jnp.zeros(shape, dtype=jnp.float32),
             step_size=jnp.array(self._step_size, dtype=jnp.float32),
@@ -986,6 +1133,8 @@ class NADALINE(Optimizer[Any]):
         Returns:
             NADALINE state with zero-initialized second-moment EMA
         """
+        feature_dim = _require_feature_dim(feature_dim)
+        _preflight_nadaline_resources(feature_dim)
         return NadalineState(
             feature_second_moment=jnp.zeros(feature_dim, dtype=jnp.float32),
             step_size=jnp.array(self._step_size, dtype=jnp.float32),
