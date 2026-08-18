@@ -66,7 +66,6 @@ from __future__ import annotations
 import functools
 import operator
 import time
-from collections.abc import Mapping
 from fractions import Fraction
 from typing import Any, SupportsIndex, cast
 
@@ -198,7 +197,7 @@ def _validated_config_float(
 
 
 def _copy_mapping(payload: object, *, name: str) -> dict[str, object]:
-    if not isinstance(payload, Mapping):
+    if type(payload) is not dict:
         raise ValueError(f"{name} payload must be a mapping")
     try:
         data = dict(payload)  # type: ignore[arg-type]
