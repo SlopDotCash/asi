@@ -508,7 +508,7 @@ def _verify_installed_forager_source_inventory() -> None:
         raise RuntimeError("historical environment file inventory is malformed")
     expected: dict[str, str] = {}
     for raw_name, raw_digest in raw_files.items():
-        if not isinstance(raw_name, str) or not raw_name.startswith("forager/"):
+        if type(raw_name) is not str or not raw_name.startswith("forager/"):
             continue
         if not isinstance(raw_digest, str):  # pragma: no cover - canonical constant invariant
             raise RuntimeError("historical environment source digest is malformed")
@@ -624,7 +624,7 @@ class HistoricalUpdateKernel[KernelStateT]:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or _KERNEL_NAME.fullmatch(self.name) is None:
+        if type(self.name) is not str or _KERNEL_NAME.fullmatch(self.name) is None:
             raise HistoricalForagerContractError("kernel name is invalid")
         if not callable(self.start_kernel) or not callable(self.update_kernel):
             raise HistoricalForagerContractError("kernel start/update functions must be callable")
@@ -1149,7 +1149,7 @@ def _validate_kernel_manifest(value: Any) -> None:
         raise HistoricalForagerArtifactError("kernel must be an object")
     _require_exact_keys(value, {"name", "privileged", "metadata"}, name="kernel")
     if (
-        not isinstance(value["name"], str)
+        type(value["name"]) is not str
         or _KERNEL_NAME.fullmatch(value["name"]) is None
         or value["privileged"] is not False
         or not isinstance(value["metadata"], Mapping)
