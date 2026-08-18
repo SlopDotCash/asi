@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax import tree_util
 
 
 class _HostileFloat(float):
@@ -26,6 +27,9 @@ try:
     from alberta_framework.core.behavior_model import (
         BehaviorModel,
         BehaviorModelConfig,
+        _behavior_model_update_working_set_bytes,
+        _preflight_behavior_model_update_working_set,
+        _resource_counts,
         action_log_likelihoods,
         clipped_importance_ratios,
         epsilon_greedy_probabilities,
@@ -60,6 +64,13 @@ except ImportError:
     floor_and_renormalize_probabilities = behavior_model_module.floor_and_renormalize_probabilities
     run_behavior_model_from_arrays = behavior_model_module.run_behavior_model_from_arrays
     selected_action_probabilities = behavior_model_module.selected_action_probabilities
+    _behavior_model_update_working_set_bytes = (
+        behavior_model_module._behavior_model_update_working_set_bytes
+    )
+    _preflight_behavior_model_update_working_set = (
+        behavior_model_module._preflight_behavior_model_update_working_set
+    )
+    _resource_counts = behavior_model_module._resource_counts
 
 
 def _assert_behavior_update_finite(result: Any) -> None:
@@ -613,11 +624,14 @@ def test_behavior_model_preflights_resource_bytes_before_allocation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     model = BehaviorModel(BehaviorModelConfig(n_actions=2))
-    max_feature_dim = ((2**31 - 1) - 32) // 8
-    budget = model.resource_budget(max_feature_dim)
-    assert budget.state_nbytes <= 2**31 - 1
+    persist_last_legal = ((2**31 - 1) - 32) // 8
+    update_last_legal = 48_806_441
+    with pytest.raises(ValueError, match="update working set byte count"):
+        model.resource_budget(persist_last_legal)
     with pytest.raises(ValueError, match="state_nbytes"):
-        model.resource_budget(max_feature_dim + 1)
+        model.resource_budget(persist_last_legal + 1)
+    budget = model.resource_budget(update_last_legal)
+    assert budget.state_nbytes <= 2**31 - 1
 
     calls = 0
 
@@ -628,10 +642,13 @@ def test_behavior_model_preflights_resource_bytes_before_allocation(
 
     monkeypatch.setattr("alberta_framework.core.behavior_model.jnp.zeros", forbidden_zeros)
     with pytest.raises(ValueError, match="state_nbytes"):
-        model.init(max_feature_dim + 1, jax.random.key(0))
+        model.init(persist_last_legal + 1, jax.random.key(0))
+    assert calls == 0
+    with pytest.raises(ValueError, match="update working set byte count"):
+        model.init(persist_last_legal, jax.random.key(0))
     assert calls == 0
     with pytest.raises(AssertionError, match="allocator reached"):
-        model.init(max_feature_dim, jax.random.key(0))
+        model.init(update_last_legal, jax.random.key(0))
     assert calls == 1
 
 
@@ -674,3 +691,74 @@ def test_action_ids_still_accept_trusted_hosts_and_tracers() -> None:
         jnp.asarray(3, dtype=jnp.int32)
     )
     chex.assert_tree_all_finite(traced)
+
+
+_INT32_MAX = 2**31 - 1
+_INT32_MIN = -(2**31)
+
+
+def test_int32_wrap_forges_a_different_published_byte_identity() -> None:
+    published_bytes = _INT32_MAX + 1
+    wrapped_bytes = int(
+        jnp.asarray(_INT32_MAX, dtype=jnp.int32) + jnp.asarray(1, dtype=jnp.int32)
+    )
+    assert wrapped_bytes == _INT32_MIN
+    assert wrapped_bytes != published_bytes
+
+
+def test_behavior_model_persist_matches_jit_materialized_leaves() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(4, jax.random.key(0))
+    actual = sum(
+        int(leaf.size) * int(leaf.dtype.itemsize)
+        for leaf in tree_util.tree_leaves(state)
+    )
+    assert actual == model.resource_budget(4).state_nbytes
+    _, persist_bytes = _resource_counts(2, 4)
+    assert actual == persist_bytes
+
+
+def test_behavior_model_persist_fits_while_update_working_set_does_not() -> None:
+    feature_dim = 180_000_000
+    _, persist_bytes = _resource_counts(1, feature_dim)
+    working_set_bytes = _behavior_model_update_working_set_bytes(1, feature_dim)
+    assert persist_bytes <= _INT32_MAX
+    assert working_set_bytes > _INT32_MAX
+    model = BehaviorModel(BehaviorModelConfig(n_actions=1))
+    with pytest.raises(ValueError, match="update working set byte count"):
+        model.resource_budget(feature_dim)
+    with pytest.raises(ValueError, match="update working set byte count"):
+        model.init(feature_dim, jax.random.key(0))
+
+
+def test_behavior_model_last_fit_and_first_overflow_are_adjacent() -> None:
+    last_fit = None
+    first_overflow = None
+    for feature_dim in range(89_478_476, 89_478_480):
+        working_set_bytes = _behavior_model_update_working_set_bytes(1, feature_dim)
+        _, persist_bytes = _resource_counts(1, feature_dim)
+        assert persist_bytes <= _INT32_MAX
+        if working_set_bytes <= _INT32_MAX:
+            last_fit = feature_dim
+        elif first_overflow is None:
+            first_overflow = feature_dim
+            break
+    assert last_fit is not None and first_overflow == last_fit + 1
+    model = BehaviorModel(BehaviorModelConfig(n_actions=1))
+    model.resource_budget(last_fit)
+    with pytest.raises(ValueError, match="update working set byte count"):
+        model.resource_budget(first_overflow)
+
+
+def test_behavior_model_persistent_byte_bound_still_fires_first() -> None:
+    feature_dim = 536_870_905
+    with pytest.raises(ValueError, match="state_nbytes"):
+        _resource_counts(1, feature_dim)
+    model = BehaviorModel(BehaviorModelConfig(n_actions=1))
+    with pytest.raises(ValueError, match="state_nbytes"):
+        model.init(feature_dim, jax.random.key(0))
+
+
+def test_preflight_helper_rejects_the_same_working_set() -> None:
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_behavior_model_update_working_set(1, 180_000_000)

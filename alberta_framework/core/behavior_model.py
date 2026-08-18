@@ -88,6 +88,46 @@ def _resource_counts(n_actions: int, feature_dim: int) -> tuple[int, int]:
     return trainable, state_nbytes
 
 
+def _behavior_model_update_working_set_bytes(n_actions: int, feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras.
+
+    ``update`` keeps the source state, the proposed state, and the
+    transaction-selected result simultaneously live.  The worst-case path
+    also materializes a weight/bias gradient plus an L2 or clip copy,
+    logits / probabilities / one-hot / logit-error, the observation, and
+    neutralized returned logits/probabilities beside the committed state.
+    """
+
+    trainable = n_actions * feature_dim + n_actions
+    persist_scalars = trainable + 6
+    update_scalars = (
+        3 * persist_scalars
+        + 2 * n_actions * feature_dim
+        + 2 * n_actions
+        + 4 * n_actions
+        + feature_dim
+        + 2 * n_actions
+        + 16
+    )
+    return 4 * update_scalars
+
+
+def _preflight_behavior_model_update_working_set(
+    n_actions: int,
+    feature_dim: int,
+) -> None:
+    """Reject an update envelope the behavior model cannot name."""
+
+    working_set_bytes = _behavior_model_update_working_set_bytes(
+        n_actions,
+        feature_dim,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "behavior-model update working set byte count must fit signed int32"
+        )
+
+
 def _saturating_int32_increment(value: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     counter = jnp.asarray(value, dtype=jnp.int32)
@@ -564,6 +604,10 @@ class BehaviorModel:
         """Initialize parameters and diagnostics."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         _resource_counts(self._config.n_actions, feature_dim)
+        _preflight_behavior_model_update_working_set(
+            self._config.n_actions,
+            feature_dim,
+        )
         return BehaviorModelState(
             weights=jnp.zeros(
                 (self._config.n_actions, feature_dim),
@@ -586,6 +630,10 @@ class BehaviorModel:
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         trainable, state_nbytes = _resource_counts(self._config.n_actions, feature_dim)
+        _preflight_behavior_model_update_working_set(
+            self._config.n_actions,
+            feature_dim,
+        )
         diagnostics = 3
         administrative = 1
         rng_words = 2
