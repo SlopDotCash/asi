@@ -317,6 +317,10 @@ def test_output_namespace_is_one_new_development_path() -> None:
         "c5a6b8efb050d3c6c05648a46689ca0903389340764f7c20b589bfc4e8b0c6f2"
     )
     assert invalid[2]["seeds"] == [1711, 1712, 1713]
+    assert invalid[2]["disposition"] == (
+        "invalid_merged_quarantined_consumed_accounting_ambiguous_attempt"
+    )
+    assert "merged quarantined v2 artifact" in invalid[2]["invalid_reasons"][-1]
     assert {
         item["outcome"] for item in invalid[2]["paired_outcomes_exposed"].values()
     } == {"inconclusive"}

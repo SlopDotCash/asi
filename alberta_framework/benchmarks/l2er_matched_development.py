@@ -101,7 +101,9 @@ def _invalid_execution_history() -> list[dict[str, object]]:
             "merge_commit": "ee6d8949fa3ffc267297f2e7ced7f83f589835e1",
             "pull_request": 1753,
             "seeds": [1711, 1712, 1713],
-            "disposition": "invalid_unmerged_consumed_accounting_ambiguous_attempt",
+            "disposition": (
+                "invalid_merged_quarantined_consumed_accounting_ambiguous_attempt"
+            ),
             "paired_outcomes_exposed": {
                 "l2er_l2_only": {
                     "mean_delta": 0.00033333152532577515,
@@ -125,7 +127,8 @@ def _invalid_execution_history() -> list[dict[str, object]]:
             "invalid_reasons": [
                 "the v2 updates field ambiguously combined supervised and auxiliary steps",
                 "all planned 1711-1713 outcomes were exposed before the v3 contract was final",
-                "the unmerged v2 artifact cannot authorize a prospective same-seed v3 rerun",
+                "the merged quarantined v2 artifact cannot authorize a prospective "
+                "same-seed v3 rerun",
             ],
         },
     ]
