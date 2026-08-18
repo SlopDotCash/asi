@@ -53,13 +53,15 @@ def build() -> dict:
                 row["screen_paired_delta_vs_base"] > THRESHOLD
             )
         cshared = sorted(set(confirm) & set(confirm_base))
-        if confirm:
-            row["confirm_mean"] = statistics.mean(confirm.values())
-            row["n_confirm_seeds"] = len(confirm)
-            if cshared:
-                row["confirm_paired_delta_vs_base"] = statistics.mean(
-                    confirm[s] - confirm_base[s] for s in cshared
-                )
+        if cshared:
+            row["confirm_mean"] = statistics.mean(confirm[s] for s in cshared)
+            row["n_confirm_seeds"] = len(cshared)
+            row["confirm_paired_delta_vs_base"] = statistics.mean(
+                confirm[s] - confirm_base[s] for s in cshared
+            )
+        elif confirm:
+            row["n_confirm_seeds"] = 0
+            row["confirm_unpaired_seeds"] = sorted(confirm)
         rows.append(row)
     rows.sort(key=lambda r: -(r.get("screen_mean") or 0.0))
     return {
