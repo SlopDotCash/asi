@@ -131,6 +131,86 @@ def _saturating_int32_increment(value: Array) -> Array:
     return jnp.where(value < maximum, value + jnp.asarray(1, dtype=jnp.int32), maximum)
 
 
+def _latent_direct_state_scalars(
+    *,
+    observation_dim: int,
+    n_actions: int,
+    latent_dim: int,
+    hidden_sizes: tuple[int, ...],
+    include_action_interactions: bool,
+) -> int:
+    """Named persist scalars already preflighted by ``LatentWorldModelConfig``."""
+    input_dim = latent_dim + n_actions
+    if include_action_interactions:
+        input_dim += latent_dim * n_actions
+    layer_sizes = (input_dim, *hidden_sizes)
+    trunk_parameters = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    n_heads = latent_dim + 2
+    head_input = hidden_sizes[-1] if hidden_sizes else input_dim
+    head_parameters = n_heads * (head_input + 1)
+    learner_direct_scalars = (
+        2 * (trunk_parameters + head_parameters) + sum(hidden_sizes) + 3
+    )
+    outer_state_scalars = observation_dim * latent_dim + 3 * latent_dim + 4
+    return learner_direct_scalars + outer_state_scalars
+
+
+def _latent_update_result_extras_bytes(*, latent_dim: int) -> int:
+    """Returned ``LatentWorldModelUpdateResult`` extras excluding persist.
+
+    Nested ``learner_result.state`` is callee persist and is already counted
+    in the simultaneous persist copies.  These extras are the published
+    prediction, target, error, metric, and learner-result diagnostic leaves.
+    """
+    n_heads = latent_dim + 2
+    return 12 * latent_dim + 44 * n_heads + 64
+
+
+def _latent_update_working_set_bytes(
+    *,
+    observation_dim: int,
+    n_actions: int,
+    latent_dim: int,
+    hidden_sizes: tuple[int, ...],
+    include_action_interactions: bool,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    persist_bytes = 4 * _latent_direct_state_scalars(
+        observation_dim=observation_dim,
+        n_actions=n_actions,
+        latent_dim=latent_dim,
+        hidden_sizes=hidden_sizes,
+        include_action_interactions=include_action_interactions,
+    )
+    extras_bytes = _latent_update_result_extras_bytes(latent_dim=latent_dim)
+    return 3 * persist_bytes + extras_bytes
+
+
+def _preflight_latent_update_working_set(
+    *,
+    observation_dim: int,
+    n_actions: int,
+    latent_dim: int,
+    hidden_sizes: tuple[int, ...],
+    include_action_interactions: bool,
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    working_set_bytes = _latent_update_working_set_bytes(
+        observation_dim=observation_dim,
+        n_actions=n_actions,
+        latent_dim=latent_dim,
+        hidden_sizes=hidden_sizes,
+        include_action_interactions=include_action_interactions,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "latent world-model update working set byte count must fit signed int32"
+        )
+
+
 @dataclasses.dataclass(frozen=True)
 class LatentWorldModelConfig:
     """Configuration for :class:`LatentWorldModel`.
@@ -263,25 +343,26 @@ class LatentWorldModelConfig:
             _require_int32_product(f"hidden_layer[{index}]_scalars", fan_in, fan_out)
         head_input = self.hidden_sizes[-1] if self.hidden_sizes else input_dim
         _require_int32_product("head_weight_scalars", n_heads, head_input)
-        layer_sizes = (input_dim, *self.hidden_sizes)
-        trunk_parameters = sum(
-            fan_out * (fan_in + 1)
-            for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+        combined_direct_state_scalars = _latent_direct_state_scalars(
+            observation_dim=self.observation_dim,
+            n_actions=self.n_actions,
+            latent_dim=self.latent_dim,
+            hidden_sizes=self.hidden_sizes,
+            include_action_interactions=self.include_action_interactions,
         )
-        head_parameters = n_heads * (head_input + 1)
-        learner_direct_scalars = (
-            2 * (trunk_parameters + head_parameters) + sum(self.hidden_sizes) + 3
-        )
-        outer_state_scalars = (
-            self.observation_dim * self.latent_dim + 3 * self.latent_dim + 4
-        )
-        combined_direct_state_scalars = learner_direct_scalars + outer_state_scalars
         for name, value in (
             ("combined_direct_state_scalars", combined_direct_state_scalars),
             ("combined_direct_state_bytes", 4 * combined_direct_state_scalars),
         ):
             if value > _INT32_MAX:
                 raise ValueError(f"derived {name} must fit in signed int32")
+        _preflight_latent_update_working_set(
+            observation_dim=self.observation_dim,
+            n_actions=self.n_actions,
+            latent_dim=self.latent_dim,
+            hidden_sizes=self.hidden_sizes,
+            include_action_interactions=self.include_action_interactions,
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to a JSON-compatible dictionary."""
