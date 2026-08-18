@@ -6717,7 +6717,7 @@ def _validated_screening_noise_mode(
 ) -> str:
     """Validate one screening noise mode against the named arm's runner contract."""
     prefix = "" if context is None else f"{context}: "
-    if not isinstance(noise_mode, str) or noise_mode not in ("step", "pool"):
+    if type(noise_mode) is not str or noise_mode not in ("step", "pool"):
         raise ValueError(
             f"{prefix}noise_mode must be 'step' or 'pool', got {noise_mode!r}"
         )
@@ -7969,7 +7969,7 @@ def _require_exact_keys(
 
 
 def _required_nonempty_string(value: object, *, context: str) -> str:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         raise ValueError(f"{context} must be a non-empty string")
     return value
 
@@ -8303,7 +8303,7 @@ def shard_payload(
     dataset_binding = _validated_dataset_provenance(dataset_provenance, context="new shard")
     runtime_binding = _validated_runtime_environment(environment, context="new shard")
     _validate_dataset_config_binding(dataset_binding, result.config, context="new shard")
-    if not isinstance(result.base_learner, str) or not result.base_learner:
+    if type(result.base_learner) is not str or not result.base_learner:
         raise ValueError("new shard base_learner must be a non-empty string")
     curves: dict[str, np.ndarray] = {}
     for field in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
