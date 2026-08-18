@@ -180,6 +180,7 @@ def save_checkpoint(
     else:
         meta_to_save = _copy_mapping(metadata, name="checkpoint metadata")
     _require_json_safe_metadata(meta_to_save)
+    meta_to_save.pop(_EMPTY_ARRAYS_KEY, None)
     meta_to_save[_VERSION_KEY] = _FORMAT_VERSION
     empty_array_manifest = _empty_array_manifest(state)
     if empty_array_manifest is not None:
