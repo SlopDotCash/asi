@@ -19,6 +19,12 @@ import jax.random as jr
 import numpy as np
 from jax import Array, core
 
+_INT32_MAX: Final[int] = (1 << 31) - 1
+_MAX_ARRAY_ELEMENTS: Final[int] = 1_000_000
+_MAX_PERSISTENT_BYTES: Final[int] = 256 * 1024 * 1024
+_MAX_PROTOCOL_STRING_BYTES: Final[int] = 4_096
+_MAX_PROTOCOL_CONTAINER_ITEMS: Final[int] = 4_096
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ComparatorProtocol:
@@ -41,6 +47,12 @@ class ComparatorProtocol:
             value = getattr(self, field)
             if type(value) is not str or not value:
                 raise ValueError(f"{field} must be an exact non-empty string")
+            try:
+                encoded = value.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise ValueError(f"{field} must be valid UTF-8") from error
+            if len(encoded) > _MAX_PROTOCOL_STRING_BYTES or "\x00" in value:
+                raise ValueError(f"{field} exceeds its bounded string domain")
         required_axes = ("seed", "updates", "observations", "example_order")
         if (
             type(self.matched_axes) is not tuple
@@ -50,17 +62,13 @@ class ComparatorProtocol:
         ):
             raise ValueError(f"matched_axes must equal {required_axes!r}")
         for field in ("persistent_bytes", "environment_or_data_steps", "model_queries"):
-            value = getattr(self, field)
-            if type(value) is not int or value < 0:
-                raise ValueError(f"{field} must be a nonnegative exact integer")
+            _exact_int32(field, getattr(self, field))
         try:
             timing = float(self.timing_telemetry_seconds)
         except (OverflowError, TypeError, ValueError):
             timing = math.nan
-        if (
-            type(self.timing_telemetry_seconds) not in (int, float)
-            or not math.isfinite(timing)
-            or timing < 0
+        if type(self.timing_telemetry_seconds) not in (int, float) or not (
+            math.isfinite(timing) and timing >= 0
         ):
             raise ValueError("timing_telemetry_seconds must be finite and nonnegative")
         if self.development_only is not True or self.scientific_promotion_allowed is not False:
@@ -143,6 +151,23 @@ def _finite_scalar(name: str, value: object, *, minimum: float = 0.0) -> float:
     return scalar
 
 
+def _exact_int32(name: str, value: object, *, minimum: int = 0) -> int:
+    if type(value) is not int or not minimum <= value <= _INT32_MAX:
+        raise ValueError(
+            f"{name} must be an exact signed-int32 integer in [{minimum}, {_INT32_MAX}]"
+        )
+    return value
+
+
+def _checked_product(name: str, *factors: int) -> int:
+    product = 1
+    for factor in factors:
+        if factor < 0 or (factor and product > _INT32_MAX // factor):
+            raise ValueError(f"{name} exceeds the signed-int32 resource limit")
+        product *= factor
+    return product
+
+
 def _probability(name: str, value: object, *, include_one: bool = True) -> float:
     scalar = _finite_scalar(name, value)
     if scalar > 1.0 or (not include_one and scalar == 1.0):
@@ -155,7 +180,10 @@ def _array(name: str, value: object) -> Array:
     actual_type = type(value)
     if actual_type is not np.ndarray and not issubclass(actual_type, (Array, core.Tracer)):
         raise ValueError(f"{name} must be a NumPy or JAX array")
-    return jnp.asarray(value)
+    array = jnp.asarray(value)
+    if array.size > _MAX_ARRAY_ELEMENTS:
+        raise ValueError(f"{name} exceeds the {_MAX_ARRAY_ELEMENTS}-element limit")
+    return array
 
 
 def _threefry_key(name: str, value: object) -> Array:
@@ -178,6 +206,24 @@ def _threefry_key(name: str, value: object) -> Array:
     return trusted
 
 
+def _finite_result(candidate: Array, fallback: Array, *, name: str) -> Array:
+    valid = jnp.all(jnp.isfinite(candidate))
+    safe = jnp.where(valid, candidate, fallback)
+    if not isinstance(valid, core.Tracer) and not bool(valid):
+        raise ValueError(f"{name} must produce only finite values")
+    return safe
+
+
+def _floating_array(name: str, value: object, *, nonempty: bool = True) -> Array:
+    array = _array(name, value)
+    if (nonempty and array.size == 0) or not jnp.issubdtype(array.dtype, jnp.floating):
+        qualifier = "non-empty " if nonempty else ""
+        raise ValueError(f"{name} must be a {qualifier}floating array")
+    if not isinstance(array, core.Tracer) and not bool(jnp.all(jnp.isfinite(array))):
+        raise ValueError(f"{name} must contain only finite values")
+    return array
+
+
 def persistent_array_bytes(*arrays: Array | np.ndarray) -> int:
     """Return exact resident numeric payload bytes for comparator-owned arrays."""
     total = 0
@@ -191,13 +237,16 @@ def persistent_array_bytes(*arrays: Array | np.ndarray) -> int:
             raise ValueError("persistent comparator values must be arrays")
         if np.dtype(array.dtype).kind not in "biufc":
             raise ValueError("persistent comparator arrays must be numeric")
-        total += int(array.nbytes)
+        size = int(array.nbytes)
+        if size > _MAX_PERSISTENT_BYTES - total:
+            raise ValueError("persistent comparator bytes exceed the 256 MiB limit")
+        total += size
     return total
 
 
 def effective_rank(features: Array, *, epsilon: float = 1e-12) -> Array:
     """Roy--Vetterli effective rank of a stacked feature matrix."""
-    matrix = _array("features", features)
+    matrix = _floating_array("features", features)
     if matrix.ndim != 2:
         raise ValueError("features must be rank two")
     _finite_scalar("epsilon", epsilon, minimum=np.nextafter(0.0, 1.0))
@@ -208,7 +257,8 @@ def effective_rank(features: Array, *, epsilon: float = 1e-12) -> Array:
     entropy = -jnp.sum(
         jnp.where(probabilities > epsilon, probabilities * jnp.log(safe_probabilities), 0)
     )
-    return jnp.where(total > 0, jnp.exp(entropy), 0.0)
+    candidate = jnp.where(total > 0, jnp.exp(entropy), 0.0)
+    return _finite_result(candidate, jnp.asarray(0.0, dtype=matrix.dtype), name="effective rank")
 
 
 def l2_er_objective(
@@ -220,45 +270,72 @@ def l2_er_objective(
     rank_strength: float,
 ) -> Array:
     """Paper objective: task loss + L2 - mean effective rank."""
+    if type(parameters) is not tuple or type(feature_batches) is not tuple:
+        raise ValueError("parameters and feature_batches must be exact tuples")
     if (
-        type(parameters) is not tuple
-        or type(feature_batches) is not tuple
-        or not parameters
+        not parameters
         or not feature_batches
+        or len(parameters) > _MAX_PROTOCOL_CONTAINER_ITEMS
+        or len(feature_batches) > _MAX_PROTOCOL_CONTAINER_ITEMS
     ):
         raise ValueError("parameters and feature_batches must be non-empty tuples")
     _finite_scalar("l2_strength", l2_strength)
     _finite_scalar("rank_strength", rank_strength)
-    loss = _array("task_loss", task_loss)
+    loss = _floating_array("task_loss", task_loss)
     if loss.ndim != 0:
         raise ValueError("task_loss must be scalar")
-    trusted_parameters = tuple(_array("parameter", value) for value in parameters)
-    l2 = sum((jnp.sum(jnp.square(value)) for value in trusted_parameters), jnp.asarray(0.0))
+    checked_parameters = tuple(
+        _floating_array(f"parameters[{index}]", value)
+        for index, value in enumerate(parameters)
+    )
+    l2 = sum(
+        (jnp.sum(jnp.square(value)) for value in checked_parameters), jnp.asarray(0.0)
+    )
     ranks = jnp.stack(tuple(effective_rank(value) for value in feature_batches))
-    return loss + l2_strength * l2 - rank_strength * jnp.mean(ranks)
+    candidate = loss + l2_strength * l2 - rank_strength * jnp.mean(ranks)
+    return _finite_result(candidate, loss, name="L2-ER objective")
 
 
 def isometry_gradient(weights: Array) -> Array:
     """Gradient of the rectangular Gram-deviation penalty (paper Eq. 16)."""
-    weights = _array("weights", weights)
+    weights = _floating_array("weights", weights)
     if weights.ndim != 2:
         raise ValueError("weights must be rank two")
     rows, columns = weights.shape
+    _checked_product(
+        "isometry Gram bytes",
+        min(rows, columns),
+        min(rows, columns),
+        weights.dtype.itemsize,
+    )
     if rows >= columns:
         gram_error = weights.T @ weights - jnp.eye(columns, dtype=weights.dtype)
-        return 4.0 * weights @ gram_error
+        candidate = 4.0 * weights @ gram_error
+        return _finite_result(candidate, jnp.zeros_like(weights), name="isometry gradient")
     gram_error = weights @ weights.T - jnp.eye(rows, dtype=weights.dtype)
-    return 4.0 * gram_error @ weights
+    candidate = 4.0 * gram_error @ weights
+    return _finite_result(candidate, jnp.zeros_like(weights), name="isometry gradient")
 
 
 def isometry_penalty(weights: Array) -> Array:
     """Squared rectangular Gram deviation used by AdamO Eq. 16."""
-    weights = _array("weights", weights)
+    weights = _floating_array("weights", weights)
     if weights.ndim != 2:
         raise ValueError("weights must be rank two")
     rows, columns = weights.shape
+    _checked_product(
+        "isometry Gram bytes",
+        min(rows, columns),
+        min(rows, columns),
+        weights.dtype.itemsize,
+    )
     gram = weights.T @ weights if rows >= columns else weights @ weights.T
-    return jnp.sum(jnp.square(gram - jnp.eye(min(rows, columns), dtype=weights.dtype)))
+    candidate = jnp.sum(
+        jnp.square(gram - jnp.eye(min(rows, columns), dtype=weights.dtype))
+    )
+    return _finite_result(
+        candidate, jnp.asarray(0.0, dtype=weights.dtype), name="isometry penalty"
+    )
 
 
 def adamo_update(
@@ -275,17 +352,16 @@ def adamo_update(
     epsilon: float = 1e-8,
 ) -> tuple[Array, Array, Array]:
     """AdamO Eq. 19--20; only task gradients enter Adam moments."""
-    if type(step) is not int or step < 1:
-        raise ValueError("step must be a positive exact integer")
+    _exact_int32("step", step, minimum=1)
     _finite_scalar("learning_rate", learning_rate)
     _finite_scalar("isometry_strength", isometry_strength)
     _probability("beta1", beta1, include_one=False)
     _probability("beta2", beta2, include_one=False)
     _finite_scalar("epsilon", epsilon, minimum=np.nextafter(0.0, 1.0))
-    weights = _array("weights", weights)
-    gradient = _array("task_gradient", task_gradient)
-    first_moment = _array("first_moment", first_moment)
-    second_moment = _array("second_moment", second_moment)
+    weights = _floating_array("weights", weights)
+    gradient = _floating_array("task_gradient", task_gradient)
+    first_moment = _floating_array("first_moment", first_moment)
+    second_moment = _floating_array("second_moment", second_moment)
     if (
         weights.ndim != 2
         or gradient.shape != weights.shape
@@ -299,7 +375,20 @@ def adamo_update(
     corrected_variance = variance / (1.0 - beta2**step)
     task_delta = learning_rate * corrected_moment / (jnp.sqrt(corrected_variance) + epsilon)
     iso_delta = learning_rate * isometry_strength * isometry_gradient(weights)
-    return weights - task_delta - iso_delta, moment, variance
+    candidate = weights - task_delta - iso_delta
+    valid = (
+        jnp.all(jnp.isfinite(candidate))
+        & jnp.all(jnp.isfinite(moment))
+        & jnp.all(jnp.isfinite(variance))
+    )
+    safe = (
+        jnp.where(valid, candidate, weights),
+        jnp.where(valid, moment, first_moment),
+        jnp.where(valid, variance, second_moment),
+    )
+    if not isinstance(valid, core.Tracer) and not bool(valid):
+        raise ValueError("AdamO update must produce only finite values")
+    return safe
 
 
 def intentional_td_step_size(
@@ -310,18 +399,21 @@ def intentional_td_step_size(
     epsilon: float = 1e-12,
 ) -> Array:
     """Intentional TD(0) Eq. 7, including optional diagonal scaling."""
-    gradient = _array("gradient", gradient)
+    gradient = _floating_array("gradient", gradient)
     scale = (
         jnp.ones_like(gradient)
         if diagonal_scale is None
-        else _array("diagonal_scale", diagonal_scale)
+        else _floating_array("diagonal_scale", diagonal_scale)
     )
     if gradient.size == 0 or scale.shape != gradient.shape:
         raise ValueError("gradient and diagonal_scale must be matching non-empty arrays")
     _finite_scalar("intended_fraction", intended_fraction, minimum=np.nextafter(0.0, 1.0))
     _finite_scalar("epsilon", epsilon, minimum=np.nextafter(0.0, 1.0))
     denominator = jnp.vdot(gradient, scale * gradient).real
-    return jnp.asarray(intended_fraction) / jnp.maximum(denominator, epsilon)
+    candidate = jnp.asarray(intended_fraction) / jnp.maximum(denominator, epsilon)
+    return _finite_result(
+        candidate, jnp.asarray(0.0, dtype=gradient.dtype), name="intentional TD step size"
+    )
 
 
 def intentional_trace_step_size(
@@ -333,9 +425,9 @@ def intentional_trace_step_size(
     epsilon: float = 1e-12,
 ) -> Array:
     """Conservative Intentional TD(lambda) step size from paper Eq. 12."""
-    trace = _array("trace", trace)
-    diagonal_scale = _array("diagonal_scale", diagonal_scale)
-    energy = _array("discounted_gradient_energy", discounted_gradient_energy)
+    trace = _floating_array("trace", trace)
+    diagonal_scale = _floating_array("diagonal_scale", diagonal_scale)
+    energy = _floating_array("discounted_gradient_energy", discounted_gradient_energy)
     if trace.size == 0 or diagonal_scale.shape != trace.shape or energy.ndim != 0:
         raise ValueError("trace/scale must match and discounted_gradient_energy must be scalar")
     _finite_scalar("intended_fraction", intended_fraction, minimum=np.nextafter(0.0, 1.0))
@@ -343,7 +435,14 @@ def intentional_trace_step_size(
     denominator = energy * jnp.vdot(
         trace, diagonal_scale * trace
     ).real
-    return jnp.asarray(intended_fraction) / jnp.sqrt(jnp.maximum(denominator, epsilon))
+    candidate = jnp.asarray(intended_fraction) / jnp.sqrt(
+        jnp.maximum(denominator, epsilon)
+    )
+    return _finite_result(
+        candidate,
+        jnp.asarray(0.0, dtype=trace.dtype),
+        name="intentional trace step size",
+    )
 
 
 def bounded_elastic_mask(
@@ -362,12 +461,14 @@ def bounded_elastic_mask(
     utilities_np = np.asarray(utilities)
     if active_np.ndim != 1 or utilities_np.shape != active_np.shape:
         raise ValueError("active and utilities must be matching vectors")
+    if active_np.size > _INT32_MAX:
+        raise ValueError("active mask exceeds the signed-int32 element limit")
     if active_np.dtype != np.bool_ or utilities_np.dtype.kind not in "iuf":
         raise ValueError("active must be bool and utilities must be real numeric")
     if not np.isfinite(utilities_np).all():
         raise ValueError("utilities must be finite")
-    if type(grow) is not int or type(prune) is not int or grow < 0 or prune < 0:
-        raise ValueError("grow and prune must be nonnegative exact integers")
+    grow = _exact_int32("grow", grow)
+    prune = _exact_int32("prune", prune)
     initially_inactive = np.flatnonzero(~active_np)
     active_indices = np.flatnonzero(active_np)
     if prune > active_indices.size or grow > initially_inactive.size:
@@ -388,13 +489,14 @@ def utility_scaled_pull(
     mode: Literal["utility", "utility_free", "l2_init", "hard_reset"] = "utility",
 ) -> Array:
     """Continuous partial reset and its utility-free/hard-reset reductions."""
-    weights = _array("weights", weights)
-    initial = _array("initial_weights", initial_weights)
-    utility = _array("utilities", utilities)
+    weights = _floating_array("weights", weights)
+    initial = _floating_array("initial_weights", initial_weights)
+    utility = _floating_array("utilities", utilities)
     if weights.shape != initial.shape or utility.shape != weights.shape:
         raise ValueError("weights, initialization, and utilities must match")
     _probability("strength", strength)
-    if type(mode) is not str:
+    modes = ("utility", "utility_free", "l2_init", "hard_reset")
+    if type(mode) is not str or mode not in modes:
         raise ValueError("unknown utility pull mode")
     if strength == 0:
         return weights
@@ -406,9 +508,8 @@ def utility_scaled_pull(
         rate = jnp.full_like(weights, strength)
     elif mode == "hard_reset":
         rate = jnp.where(utility <= 0, 1.0, 0.0)
-    else:
-        raise ValueError("unknown utility pull mode")
-    return weights + jnp.clip(rate, 0.0, 1.0) * (initial - weights)
+    candidate = weights + jnp.clip(rate, 0.0, 1.0) * (initial - weights)
+    return _finite_result(candidate, weights, name="utility pull")
 
 
 def nap_project(weights: Array, *, initial_norm: float, enabled: bool = True) -> Array:
@@ -416,34 +517,47 @@ def nap_project(weights: Array, *, initial_norm: float, enabled: bool = True) ->
     if type(enabled) is not bool:
         raise ValueError("enabled must be an exact bool")
     _finite_scalar("initial_norm", initial_norm)
-    weights = _array("weights", weights)
+    weights = _floating_array("weights", weights)
     if not enabled:
         return weights
     norm = jnp.linalg.norm(weights)
-    return jnp.where(norm > 0, weights * (initial_norm / norm), weights)
+    candidate = jnp.where(norm > 0, weights * (initial_norm / norm), weights)
+    return _finite_result(candidate, weights, name="NaP projection")
 
 
 def churn_loss(before: Array, after: Array, *, strength: float) -> Array:
     """C-CHAIN Eq. 8 on a caller-owned disjoint reference batch."""
-    before = _array("before", before)
-    after = _array("after", after)
+    before = _floating_array("before", before)
+    after = _floating_array("after", after)
     if before.shape != after.shape:
         raise ValueError("reference predictions must have matching shapes")
     if before.size == 0:
         raise ValueError("reference predictions must be non-empty")
     _finite_scalar("strength", strength)
-    return 0.5 * strength * jnp.mean(jnp.square(after - before))
+    candidate = 0.5 * strength * jnp.mean(jnp.square(after - before))
+    return _finite_result(candidate, jnp.asarray(0.0, dtype=before.dtype), name="churn loss")
 
 
 def ntk_threshold_rank(jacobian: Array, *, threshold: float = 0.99) -> Array:
     """Number of empirical-NTK singular values carrying a target energy fraction."""
-    jacobian = _array("jacobian", jacobian)
+    jacobian = _floating_array("jacobian", jacobian)
     if jacobian.ndim != 2 or not jacobian.size:
         raise ValueError("jacobian must be a non-empty matrix")
+    _checked_product(
+        "empirical NTK bytes",
+        jacobian.shape[0],
+        jacobian.shape[0],
+        jacobian.dtype.itemsize,
+    )
     target = _probability("threshold", threshold)
     if target == 0.0:
         raise ValueError("threshold must lie in (0, 1]")
-    singular = jnp.linalg.svd(jacobian @ jacobian.T, compute_uv=False)
+    gram = jacobian @ jacobian.T
+    gram_valid = jnp.all(jnp.isfinite(gram))
+    safe_gram = jnp.where(gram_valid, gram, jnp.zeros_like(gram))
+    if not isinstance(gram_valid, core.Tracer) and not bool(gram_valid):
+        raise ValueError("empirical NTK must contain only finite values")
+    singular = jnp.linalg.svd(safe_gram, compute_uv=False)
     total = jnp.sum(singular)
     cumulative = jnp.cumsum(singular)
     rank = jnp.searchsorted(cumulative, target * total, side="left") + 1
@@ -452,11 +566,14 @@ def ntk_threshold_rank(jacobian: Array, *, threshold: float = 0.99) -> Array:
 
 def smooth_leaky(value: Array, *, alpha: float, power: float, curvature: float) -> Array:
     """Smooth-Leaky activation from arXiv:2509.22562 Eq. 1."""
-    value = _array("value", value)
+    value = _floating_array("value", value)
     _probability("alpha", alpha)
     _finite_scalar("power", power, minimum=np.nextafter(0.0, 1.0))
     _finite_scalar("curvature", curvature)
-    return alpha * value + (1.0 - alpha) * value * jax_sigmoid(curvature * value / power)
+    candidate = alpha * value + (1.0 - alpha) * value * jax_sigmoid(
+        curvature * value / power
+    )
+    return _finite_result(candidate, jnp.zeros_like(value), name="Smooth-Leaky activation")
 
 
 def jax_sigmoid(value: Array) -> Array:
@@ -481,22 +598,31 @@ def interval_dropout(
         raise ValueError("relu_probability must lie in [0.5, 1]")
     if type(training) is not bool:
         raise ValueError("training must be an exact bool")
-    value = _array("value", value)
+    value = _floating_array("value", value)
     key = _threefry_key("key", key)
     if not training:
-        return jnp.where(value >= 0, probability * value, (1.0 - probability) * value)
+        candidate = jnp.where(
+            value >= 0, probability * value, (1.0 - probability) * value
+        )
+        return _finite_result(candidate, jnp.zeros_like(value), name="AID activation")
     use_relu = jr.bernoulli(key, probability, value.shape)
-    return jnp.where(use_relu, jnp.maximum(value, 0), jnp.minimum(value, 0))
+    candidate = jnp.where(use_relu, jnp.maximum(value, 0), jnp.minimum(value, 0))
+    return _finite_result(candidate, jnp.zeros_like(value), name="AID activation")
 
 
 def deep_fourier_features(value: Array, *, enabled: bool = True) -> Array:
     """Deep Fourier feature map [sin(z), cos(z)]."""
-    value = _array("value", value)
+    value = _floating_array("value", value)
     if type(enabled) is not bool:
         raise ValueError("enabled must be an exact bool")
     if value.ndim == 0:
         raise ValueError("Deep Fourier features require a non-scalar input")
-    return jnp.concatenate((jnp.sin(value), jnp.cos(value)), axis=-1) if enabled else value
+    if enabled:
+        _checked_product("Deep Fourier output bytes", value.size, 2, value.dtype.itemsize)
+    candidate = (
+        jnp.concatenate((jnp.sin(value), jnp.cos(value)), axis=-1) if enabled else value
+    )
+    return _finite_result(candidate, jnp.zeros_like(candidate), name="Deep Fourier features")
 
 
 def noise_curvature_critical_step_size(
@@ -509,8 +635,7 @@ def noise_curvature_critical_step_size(
     safety_margin: float = 0.01,
 ) -> float:
     """Paper Eq. 2 joint gradient-noise/curvature-volatility safe bound."""
-    if type(batch_size) is not int or batch_size < 1:
-        raise ValueError("batch_size must be a positive exact integer")
+    batch_size = _exact_int32("batch_size", batch_size, minimum=1)
     gradient_mean = _finite_scalar("squared_gradient_mean", squared_gradient_mean)
     sampling_variance = _finite_scalar(
         "per_sample_gradient_variance", per_sample_gradient_variance
@@ -523,7 +648,10 @@ def noise_curvature_critical_step_size(
     combined_variance = sampling_variance + inflation * gradient_mean * curvature_variance
     if combined_variance == 0.0:
         return math.inf
-    return (1.0 - margin) * batch_size * gradient_mean / combined_variance
+    result = (1.0 - margin) * batch_size * gradient_mean / combined_variance
+    if not math.isfinite(result):
+        raise ValueError("critical step size overflowed its finite scalar domain")
+    return result
 
 
 def noise_curvature_step_size(

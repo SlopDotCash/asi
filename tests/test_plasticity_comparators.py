@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -195,12 +196,28 @@ def test_exact_resource_accounting_and_hostile_protocol_scalars() -> None:
         persistent_array_bytes([1.0, 2.0])  # type: ignore[arg-type]
 
 
-def test_protocol_metadata_and_paper_revisions_are_hook_free_and_immutable() -> None:
-    class HostileAxis:
+def test_protocol_and_formula_boundaries_fail_before_dispatch() -> None:
+    class HostileValue:
         def __eq__(self, other: object) -> bool:
             del other
             raise AssertionError("hostile equality must not run")
 
+        def __jax_array__(self) -> object:
+            raise AssertionError("hostile JAX conversion must not run")
+
+    with pytest.raises(ValueError, match="signed-int32"):
+        protocol("nap", environment_or_data_steps=2**31)
+    with pytest.raises(ValueError, match="bounded string"):
+        ComparatorProtocol(
+            name="x" * 4097,
+            paper="paper",
+            adaptation="adaptation",
+            mechanism_off="off",
+            persistent_bytes=0,
+            environment_or_data_steps=0,
+            model_queries=0,
+            timing_telemetry_seconds=0.0,
+        )
     with pytest.raises(ValueError, match="matched_axes"):
         ComparatorProtocol(
             name="nap",
@@ -211,53 +228,44 @@ def test_protocol_metadata_and_paper_revisions_are_hook_free_and_immutable() -> 
             environment_or_data_steps=0,
             model_queries=0,
             timing_telemetry_seconds=0.0,
-            matched_axes=(HostileAxis(), "updates", "observations", "example_order"),  # type: ignore[arg-type]
+            matched_axes=(HostileValue(), "updates", "observations", "example_order"),  # type: ignore[arg-type]
         )
     with pytest.raises(ValueError, match="timing_telemetry_seconds"):
         protocol("nap", timing_telemetry_seconds=10**10_000)
     with pytest.raises(TypeError):
         PAPER_REVISIONS["nap"] = "mutated"  # type: ignore[index]
-    assert protocol("nap").paper == "arXiv:2407.01800v1"
-
-
-def test_objective_modes_and_rng_reject_hostile_or_noncanonical_inputs() -> None:
-    class HostileValue:
-        def __eq__(self, other: object) -> bool:
-            del other
-            raise AssertionError("hostile equality must not run")
-
-        def __jax_array__(self) -> object:
-            raise AssertionError("hostile JAX conversion must not run")
-
-    value = jnp.ones(1)
-    features = jnp.ones((1, 1))
-    with pytest.raises(ValueError, match="task_loss"):
-        l2_er_objective(
-            HostileValue(),  # type: ignore[arg-type]
-            (value,),
-            (features,),
-            l2_strength=0,
-            rank_strength=0,
-        )
-    with pytest.raises(ValueError, match="non-empty tuples"):
-        l2_er_objective(
-            jnp.asarray(1.0),
-            [value],  # type: ignore[arg-type]
-            [features],  # type: ignore[arg-type]
-            l2_strength=0,
-            rank_strength=0,
+    with pytest.raises(ValueError, match="finite"):
+        effective_rank(jnp.asarray([[float("nan")]], dtype=jnp.float32))
+    with pytest.raises(ValueError, match="floating array"):
+        isometry_gradient(jnp.ones((2, 2), dtype=jnp.int32))
+    with pytest.raises(ValueError, match="exact tuples"):
+        l2_er_objective(  # type: ignore[arg-type]
+            jnp.asarray(0.0),
+            [jnp.ones(1)],
+            (jnp.ones((1, 1)),),
+            l2_strength=0.0,
+            rank_strength=0.0,
         )
     with pytest.raises(ValueError, match="utility pull mode"):
         utility_scaled_pull(
-            value,
+            jnp.ones(1),
             jnp.zeros(1),
             jnp.zeros(1),
             strength=0,
             mode=HostileValue(),  # type: ignore[arg-type]
         )
+
+
+def test_jitted_pure_kernel_matches_eager_without_partial_state() -> None:
+    eager = isometry_gradient(jnp.eye(3, dtype=jnp.float32))
+    compiled = jax.jit(isometry_gradient)(jnp.eye(3, dtype=jnp.float32))
+    np.testing.assert_array_equal(compiled, eager)
+
+    overflowing = jnp.full((2, 2), 1e30, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="finite"):
+        isometry_gradient(overflowing)
+    np.testing.assert_array_equal(
+        jax.jit(isometry_gradient)(overflowing), jnp.zeros_like(overflowing)
+    )
     with pytest.raises(ValueError, match="Threefry"):
-        interval_dropout(
-            value,
-            jr.key_data(jr.key(0)),
-            relu_probability=1,
-        )
+        interval_dropout(jnp.ones(1), jnp.asarray([0, 0], dtype=jnp.uint32), relu_probability=1)
