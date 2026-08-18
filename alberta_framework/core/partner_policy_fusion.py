@@ -1787,6 +1787,8 @@ class PartnerPolicyFusion:
             "state",
             "state_digest",
         }
+        if type(checkpoint) is not dict:
+            raise ValueError("checkpoint must be an exact dict")
         if set(checkpoint) != expected:
             raise ValueError("checkpoint fields do not match partner-fusion v1")
         if checkpoint.get("schema") != PARTNER_POLICY_FUSION_CHECKPOINT_SCHEMA:
@@ -1797,7 +1799,7 @@ class PartnerPolicyFusion:
             raise ValueError("partner-fusion checkpoint cannot claim promotion")
         construction = checkpoint.get("fusion")
         state_payload = checkpoint.get("state")
-        if not isinstance(construction, Mapping) or not isinstance(state_payload, Mapping):
+        if type(construction) is not dict or type(state_payload) is not dict:
             raise ValueError("checkpoint fusion and state fields must be mappings")
         if checkpoint.get("config_digest") != _payload_digest(construction):
             raise ValueError("partner-fusion checkpoint config digest mismatch")
