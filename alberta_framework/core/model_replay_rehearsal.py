@@ -1262,7 +1262,7 @@ def load_model_replay_rehearsal_checkpoint(
     if not isinstance(config, dict):
         raise ValueError("checkpoint is missing composer_config")
     digest = metadata.get("config_sha256")
-    if not isinstance(digest, str) or digest != _config_digest(config):
+    if type(digest) is not str or digest != _config_digest(config):
         raise ValueError("model replay rehearsal config digest does not match")
     composer = ModelReplayRehearsal.from_config(config)
     if composer.to_config() != config:
