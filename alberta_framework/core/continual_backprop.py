@@ -180,6 +180,7 @@ def _validated_config_float(
     lower: float | None = None,
     upper: float | None = None,
     upper_inclusive: bool = True,
+    positive: bool = False,
 ) -> float:
     if type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be a finite real number")
@@ -189,6 +190,7 @@ def _validated_config_float(
         lower=lower,
         upper=upper,
         upper_inclusive=upper_inclusive,
+        positive=positive,
     )
     if numerator != 0 and abs(numerator) * (1 << 149) <= denominator:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
@@ -882,6 +884,15 @@ class CBPMultiHeadMLPLearner:
             "leaky_relu_slope",
             leaky_relu_slope,
             lower=0.0,
+        )
+        step_size = _validated_config_float("step_size", step_size, positive=True)
+        gamma = _validated_config_float("gamma", gamma, lower=0.0, upper=1.0)
+        lamda = _validated_config_float("lamda", lamda, lower=0.0, upper=1.0)
+        utility_decay = _validated_config_float(
+            "utility_decay",
+            utility_decay,
+            lower=0.0,
+            upper=1.0,
         )
         self._sparsity = sparsity
         self._leaky_relu_slope = leaky_relu_slope

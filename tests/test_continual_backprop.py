@@ -887,6 +887,14 @@ class TestCBPWrapperConstructorIdentities:
             ({"leaky_relu_slope": True}, "leaky_relu_slope"),
             ({"leaky_relu_slope": float("inf")}, "leaky_relu_slope"),
             ({"leaky_relu_slope": -0.1}, "leaky_relu_slope"),
+            ({"step_size": True}, "step_size"),
+            ({"step_size": float("nan")}, "step_size"),
+            ({"step_size": float("inf")}, "step_size"),
+            ({"step_size": 0.0}, "step_size"),
+            ({"step_size": -0.1}, "step_size"),
+            ({"gamma": True}, "gamma"),
+            ({"gamma": float("nan")}, "gamma"),
+            ({"gamma": 1.5}, "gamma"),
         ],
     )
     def test_multihead_rejects_identity_aliases(
@@ -901,6 +909,8 @@ class TestCBPWrapperConstructorIdentities:
             ({"use_layer_norm": 1}, "use_layer_norm"),
             ({"sparsity": True}, "sparsity"),
             ({"leaky_relu_slope": True}, "leaky_relu_slope"),
+            ({"step_size": True}, "step_size"),
+            ({"step_size": float("nan")}, "step_size"),
         ],
     )
     def test_single_head_adapter_rejects_identity_aliases(
