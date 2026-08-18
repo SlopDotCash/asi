@@ -41,6 +41,7 @@ from alberta_framework.core.behavior_model import (
     floor_and_renormalize_probabilities,
     selected_action_probabilities,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelState,
@@ -75,9 +76,7 @@ _ACTUAL_FLOAT_TYPES: frozenset[type] = frozenset(
 _ALLOWED_REAL_TYPES: frozenset[type] = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
 
 
-def _require_int(
-    name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX
-) -> int:
+def _require_int(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
     if type(value) not in _ACTUAL_INT_TYPES:
         raise ValueError(f"{name} must be an integer")
     canonical = operator.index(cast(SupportsIndex, value))
@@ -110,9 +109,7 @@ def _validated_config_float(
     return stored
 
 
-def _require_float32_resource(
-    name: str, *, vector_scalars: int, fixed_scalars: int = 0
-) -> None:
+def _require_float32_resource(name: str, *, vector_scalars: int, fixed_scalars: int = 0) -> None:
     total = vector_scalars + fixed_scalars
     if total > _INT32_MAX:
         raise ValueError(f"{name} scalar count must fit signed int32")
@@ -131,8 +128,6 @@ def _copy_mapping(payload: object, *, name: str) -> dict[str, object]:
         if type(key) is not str:
             raise ValueError(f"{name} payload has exact strings as keys")
     return data
-
-
 
 
 def _require_bool(value: object, name: str) -> bool:
@@ -194,9 +189,7 @@ class DreamingConfig:
             object.__setattr__(
                 self,
                 "max_discount",
-                _validated_config_float(
-                    "max_discount", self.max_discount, lower=0.0
-                ),
+                _validated_config_float("max_discount", self.max_discount, lower=0.0),
             )
         object.__setattr__(
             self,
@@ -291,9 +284,7 @@ class DreamSelectionConfig:
 
     def __post_init__(self) -> None:
         """Validate scalar configuration, rejecting NaN and type stand-ins."""
-        object.__setattr__(
-            self, "max_items", _require_int("max_items", self.max_items, minimum=1)
-        )
+        object.__setattr__(self, "max_items", _require_int("max_items", self.max_items, minimum=1))
         for name in (
             "surprise_weight",
             "utility_weight",
@@ -302,9 +293,7 @@ class DreamSelectionConfig:
             "min_surprise",
             "min_utility",
         ):
-            object.__setattr__(
-                self, name, _validated_config_float(name, getattr(self, name))
-            )
+            object.__setattr__(self, name, _validated_config_float(name, getattr(self, name)))
         for name in ("min_confidence", "max_model_error"):
             object.__setattr__(
                 self,
@@ -324,9 +313,7 @@ class DreamSelectionConfig:
         data = _copy_mapping(config, name="DreamSelectionConfig")
         config_type = data.pop("type", None)
         if type(config_type) is not str or config_type != "DreamSelectionConfig":
-            raise ValueError(
-                "DreamSelectionConfig payload type must be DreamSelectionConfig"
-            )
+            raise ValueError("DreamSelectionConfig payload type must be DreamSelectionConfig")
         allowed = {
             "max_items",
             "surprise_weight",
@@ -371,27 +358,17 @@ class GuardedDreamer:
         # so instances mutated through object.__setattr__ (or crafted subclasses)
         # cannot smuggle NaN or type stand-ins past the guard.
         _require_int("warmup_steps", self._config.warmup_steps, minimum=0)
-        _validated_config_float(
-            "max_model_error_ema", self._config.max_model_error_ema, lower=0.0
-        )
-        _validated_config_float(
-            "max_uncertainty", self._config.max_uncertainty, lower=0.0
-        )
+        _validated_config_float("max_model_error_ema", self._config.max_model_error_ema, lower=0.0)
+        _validated_config_float("max_uncertainty", self._config.max_uncertainty, lower=0.0)
         _validated_config_float("min_discount", self._config.min_discount, lower=0.0)
         if self._config.max_discount is not None:
-            _validated_config_float(
-                "max_discount", self._config.max_discount, lower=0.0
-            )
+            _validated_config_float("max_discount", self._config.max_discount, lower=0.0)
         _require_int("rollout_horizon", self._config.rollout_horizon, minimum=1)
         _validated_config_float(
             "confidence_threshold", self._config.confidence_threshold, lower=0.0
         )
-        _validated_config_float(
-            "max_model_error", self._config.max_model_error, lower=0.0
-        )
-        _validated_config_float(
-            "discount_floor", self._config.discount_floor, lower=0.0
-        )
+        _validated_config_float("max_model_error", self._config.max_model_error, lower=0.0)
+        _validated_config_float("discount_floor", self._config.discount_floor, lower=0.0)
         _require_bool(self._config.stop_on_terminal, "stop_on_terminal")
 
     @property
@@ -436,9 +413,7 @@ class GuardedDreamer:
         uncertainty_arr = jnp.asarray(uncertainty, dtype=jnp.float32)
         prediction = model.predict(model_state, observation, action)
         max_discount = (
-            model.config.gamma
-            if self._config.max_discount is None
-            else self._config.max_discount
+            model.config.gamma if self._config.max_discount is None else self._config.max_discount
         )
         discount = jnp.clip(
             prediction.discount,
@@ -580,6 +555,7 @@ def score_dream_candidates(
         & (confidence_arr >= jnp.asarray(cfg.min_confidence, dtype=jnp.float32))
         & (error_arr <= jnp.asarray(cfg.max_model_error, dtype=jnp.float32))
     )
+
     def weighted_term(weight: float, values: Array) -> Array:
         weight_arr = jnp.asarray(weight, dtype=jnp.float32)
         return jnp.where(
@@ -613,9 +589,7 @@ class RecentObservationBuffer:
     def __init__(self, capacity: int, observation_dim: int):
         """Initialize the buffer shape."""
         self._capacity = _require_int("capacity", capacity, minimum=1)
-        self._observation_dim = _require_int(
-            "observation_dim", observation_dim, minimum=1
-        )
+        self._observation_dim = _require_int("observation_dim", observation_dim, minimum=1)
         _require_float32_resource(
             "RecentObservationBuffer",
             vector_scalars=self._capacity * self._observation_dim,
@@ -653,9 +627,7 @@ class RecentObservationBuffer:
         observation: Array,
     ) -> RecentObservationBufferState:
         """Insert one observation into the ring buffer."""
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape(
-            (self._observation_dim,)
-        )
+        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._observation_dim,))
         next_observations = state.observations.at[state.index].set(obs)
         return RecentObservationBufferState(
             observations=next_observations,
@@ -749,9 +721,7 @@ class DreamRolloutConfig:
         data = _copy_mapping(config, name="DreamRolloutConfig")
         config_type = data.pop("type", None)
         if type(config_type) is not str or config_type != "DreamRolloutConfig":
-            raise ValueError(
-                "DreamRolloutConfig payload type must be DreamRolloutConfig"
-            )
+            raise ValueError("DreamRolloutConfig payload type must be DreamRolloutConfig")
         allowed = {
             "rollout_horizon",
             "confidence_threshold",
@@ -979,7 +949,7 @@ def dream_one_step(
             rollout_state.cumulative_confidence * world_prediction.confidence,
             rollout_state.cumulative_confidence,
         ),
-        step_count=rollout_state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(rollout_state.step_count),
     )
     transition = ImaginedTransition(
         observation=rollout_state.observation,
@@ -1067,9 +1037,7 @@ def imagined_transition_to_supervised_item(
     transition: ImaginedTransition,
     *,
     n_actions: int | None = None,
-    target: Literal["next_observation", "reward", "reward_next_observation"] = (
-        "next_observation"
-    ),
+    target: Literal["next_observation", "reward", "reward_next_observation"] = ("next_observation"),
 ) -> DreamSupervisedTrainingItem:
     """Convert one imagined transition to a supervised model-learning item."""
     inputs = jnp.concatenate(
@@ -1080,9 +1048,7 @@ def imagined_transition_to_supervised_item(
         axis=0,
     )
     reward = jnp.reshape(jnp.asarray(transition.reward, dtype=jnp.float32), (1,))
-    next_observation = jnp.ravel(
-        jnp.asarray(transition.next_observation, dtype=jnp.float32)
-    )
+    next_observation = jnp.ravel(jnp.asarray(transition.next_observation, dtype=jnp.float32))
     if type(target) is not str or target not in {
         "next_observation",
         "reward",
@@ -1138,9 +1104,7 @@ def imagined_rollout_to_gvf_items(
     return DreamGVFTrainingItem(
         observations=_neutralize_invalid(transitions.observation, transitions.valid),
         cumulants=_neutralize_invalid(cumulant_array, transitions.valid),
-        next_observations=_neutralize_invalid(
-            transitions.next_observation, transitions.valid
-        ),
+        next_observations=_neutralize_invalid(transitions.next_observation, transitions.valid),
         discounts=_neutralize_invalid(
             jnp.asarray(transitions.discount, dtype=jnp.float32), transitions.valid
         ),
@@ -1169,9 +1133,7 @@ def imagined_rollout_to_sarsa_items(
         rewards=_neutralize_invalid(
             jnp.asarray(transitions.reward, dtype=jnp.float32), transitions.valid
         ),
-        next_observations=_neutralize_invalid(
-            transitions.next_observation, transitions.valid
-        ),
+        next_observations=_neutralize_invalid(transitions.next_observation, transitions.valid),
         discounts=_neutralize_invalid(
             jnp.asarray(transitions.discount, dtype=jnp.float32), transitions.valid
         ),
