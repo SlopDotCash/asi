@@ -188,6 +188,36 @@ def _preflight_differential_td_state(feature_dim: int) -> None:
     )
 
 
+def _differential_td_persistent_bytes(feature_dim: int) -> int:
+    """Named persist already preflighted by ``DifferentialTDLearner.init``."""
+    return 4 * (2 * feature_dim + 4)
+
+
+def _differential_td_update_result_extras_bytes() -> int:
+    """Returned ``DifferentialTDUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published prediction, TD-error,
+    reward-rate, metric, and diagnostic leaves.
+    """
+    return 33
+
+
+def _differential_td_update_working_set_bytes(feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _differential_td_persistent_bytes(
+        feature_dim
+    ) + _differential_td_update_result_extras_bytes()
+
+
+def _preflight_differential_td_update_working_set(feature_dim: int) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _differential_td_update_working_set_bytes(feature_dim) > _INT32_MAX:
+        raise ValueError(
+            "differential TD update working set byte count must fit signed int32"
+        )
+
+
 def _preflight_differential_gtd_state(feature_dim: int) -> None:
     scalar_count = 3 * feature_dim + 5
     _require_state_resources(
@@ -1417,6 +1447,7 @@ class DifferentialTDLearner:
         """Initialize value weights, traces, and reward-rate estimate."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         _preflight_differential_td_state(feature_dim)
+        _preflight_differential_td_update_working_set(feature_dim)
         average_reward = _validated_float32_scalar_preserving_nonzero(
             "average_reward", average_reward
         )
