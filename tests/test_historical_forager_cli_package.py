@@ -339,6 +339,21 @@ console_scripts = [item for item in entry_points if item.group == "console_scrip
 for entry_point in console_scripts:
     entry_point.load()
 
+scorecard = next(
+    item for item in console_scripts if item.name == "asi-reference-life-scorecard"
+)
+scorecard_plan = install_root / "reference-life-plan.json"
+if scorecard.load()(["plan", "--output", str(scorecard_plan)]) != 0:
+    raise SystemExit("installed reference-life scorecard plan command failed")
+from alberta_framework.reference_life_checkpoint import _source_identity
+
+scorecard_source = _source_identity()
+source_files = scorecard_source["files"]
+if not scorecard_plan.is_file():
+    raise SystemExit("installed reference-life scorecard did not write its plan")
+if "distribution/METADATA" not in source_files or "pyproject.toml" in source_files:
+    raise SystemExit("installed reference-life source identity is not distribution-bound")
+
 official_module = "alberta_framework.benchmarks.official_foragax"
 if official_module in sys.modules:
     raise SystemExit("entry-point loading eagerly imported the official verifier")
@@ -378,6 +393,7 @@ print(
             "historical_family": historical_payload["family_id"],
             "historical_status": historical_status,
             "names": [item.name for item in console_scripts],
+            "scorecard_source_files": len(source_files),
             "strict_failure": strict_failure,
         }
     )
@@ -400,6 +416,7 @@ print(
     assert smoke["historical_status"] == 0
     assert smoke["historical_errors"] == ""
     assert smoke["historical_family"] == HISTORICAL_FORAGER_FAMILY_ID
+    assert smoke["scorecard_source_files"] > 4
     assert smoke["strict_failure"] == {
         "message": (
             "official harness source "

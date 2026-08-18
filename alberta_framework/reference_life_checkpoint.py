@@ -238,19 +238,41 @@ def _repository_root() -> Path:
 
 def _source_identity() -> dict[str, Any]:
     root = _repository_root()
-    paths = [
-        *sorted((root / "alberta_framework").rglob("*.py")),
-        root / "pyproject.toml",
-        root / "uv.lock",
-    ]
-    if len(paths) > _MAX_INVENTORY_FILES:
+    package_paths = sorted((root / "alberta_framework").rglob("*.py"))
+    inventory = [(path.relative_to(root).as_posix(), path) for path in package_paths]
+    checkout_paths = (root / "pyproject.toml", root / "uv.lock")
+    if all(path.is_file() and not path.is_symlink() for path in checkout_paths):
+        inventory.extend((path.relative_to(root).as_posix(), path) for path in checkout_paths)
+    else:
+        try:
+            distribution = importlib.metadata.distribution("alberta-framework")
+            distribution_files = distribution.files
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise ValueError("installed checkpoint source metadata is unavailable") from exc
+        if distribution_files is None:
+            raise ValueError("installed checkpoint source inventory is unavailable")
+        required_names = {"METADATA", "RECORD", "WHEEL", "entry_points.txt"}
+        selected: dict[str, Path] = {}
+        for entry in distribution_files:
+            parts = entry.parts
+            if (
+                len(parts) >= 2
+                and parts[-2].endswith(".dist-info")
+                and parts[-1] in required_names
+            ):
+                selected[parts[-1]] = Path(str(distribution.locate_file(entry)))
+        if set(selected) != required_names:
+            raise ValueError("installed checkpoint distribution metadata is incomplete")
+        inventory.extend(
+            (f"distribution/{name}", selected[name]) for name in sorted(required_names)
+        )
+    if len(inventory) > _MAX_INVENTORY_FILES:
         raise ValueError("checkpoint source inventory exceeds its file-count limit")
     files: dict[str, Any] = {}
-    for path in paths:
+    for relative, path in inventory:
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"checkpoint source inventory entry is unavailable: {path}")
         digest, size = _sha256_file(path, max_bytes=_MAX_JSON_BYTES)
-        relative = path.relative_to(root).as_posix()
         if len(relative.encode("utf-8")) > _MAX_PATH_BYTES:
             raise ValueError("checkpoint source inventory path is too long")
         files[relative] = {"sha256": digest, "size": size}
@@ -1451,7 +1473,36 @@ _PROTOTYPE_METADATA_KEYS = {
     "empty_array_codec",
     "prng_impl",
 }
-_PROTOTYPE_RAW_METADATA_KEYS = {*_PROTOTYPE_METADATA_KEYS, "_format_version"}
+_PROTOTYPE_RAW_METADATA_KEYS = {
+    *_PROTOTYPE_METADATA_KEYS,
+    "_format_version",
+    "_empty_array_leaves",
+}
+
+
+def _validate_prototype_empty_array_manifest(value: object) -> None:
+    """Validate the generic checkpoint codec's internal empty-leaf manifest."""
+
+    if type(value) is not list or not value:
+        _fail("prototype.metadata._empty_array_leaves must be a nonempty array")
+    saw_empty = False
+    for index, raw_spec in enumerate(value):
+        if raw_spec is None:
+            continue
+        saw_empty = True
+        if type(raw_spec) is not dict or set(raw_spec) != {"shape", "dtype"}:
+            _fail(f"prototype.metadata._empty_array_leaves[{index}] is invalid")
+        raw_shape = raw_spec["shape"]
+        raw_dtype = raw_spec["dtype"]
+        if (
+            type(raw_shape) is not list
+            or any(type(dimension) is not int or dimension < 0 for dimension in raw_shape)
+            or type(raw_dtype) is not str
+            or not raw_dtype
+        ):
+            _fail(f"prototype.metadata._empty_array_leaves[{index}] is invalid")
+    if not saw_empty:
+        _fail("prototype.metadata._empty_array_leaves identifies no empty leaf")
 
 
 def _load_raw_prototype_metadata(path: Path) -> dict[str, Any]:
@@ -1475,6 +1526,7 @@ def _load_raw_prototype_metadata(path: Path) -> dict[str, Any]:
         != 2
     ):
         _fail("nested Prototype metadata format version is unsupported")
+    _validate_prototype_empty_array_manifest(data["_empty_array_leaves"])
     if _require_str(data["schema"], path="prototype.metadata.schema") != (
         PROTOTYPE_CHECKPOINT_SCHEMA
     ):
