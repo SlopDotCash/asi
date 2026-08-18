@@ -515,6 +515,11 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
         feature_dim = _require_int(
             "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
         )
+        _preflight_normalizer_update_working_set(
+            "EMANormalizer",
+            normalizer_state_nbytes_formula("EMANormalizer", feature_dim),
+            feature_dim,
+        )
         return EMANormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
@@ -663,6 +668,11 @@ class WelfordNormalizer(Normalizer[WelfordNormalizerState]):
         feature_dim = _require_int(
             "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
         )
+        _preflight_normalizer_update_working_set(
+            "WelfordNormalizer",
+            normalizer_state_nbytes_formula("WelfordNormalizer", feature_dim),
+            feature_dim,
+        )
         return WelfordNormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
@@ -803,6 +813,11 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
         feature_dim = _require_int(
             "feature_dim", feature_dim, minimum=1, maximum=_INT32_MAX
         )
+        _preflight_normalizer_update_working_set(
+            "StreamingBatchNormalizer",
+            normalizer_state_nbytes_formula("StreamingBatchNormalizer", feature_dim),
+            feature_dim,
+        )
         return StreamingBatchNormalizerState(
             mean=jnp.zeros(feature_dim, dtype=jnp.float32),
             var=jnp.ones(feature_dim, dtype=jnp.float32),
@@ -917,6 +932,31 @@ def normalizer_state_nbytes_formula(
     if host_type == "WelfordNormalizer":
         return 12 * feature_dim + 12
     raise ValueError(f"Unknown normalizer type: '{host_type}'")
+
+
+def _normalizer_update_result_extras_bytes(feature_dim: int) -> int:
+    """Returned ``NormalizerUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published normalized observation,
+    sample-count words, and availability leaves.
+    """
+    return 4 * feature_dim + 20
+
+
+def _normalizer_update_working_set_bytes(persist_bytes: int, feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * persist_bytes + _normalizer_update_result_extras_bytes(feature_dim)
+
+
+def _preflight_normalizer_update_working_set(
+    name: str, persist_bytes: int, feature_dim: int
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _normalizer_update_working_set_bytes(persist_bytes, feature_dim) > _INT32_MAX:
+        raise ValueError(
+            f"{name} update working set byte count must fit signed int32"
+        )
 
 
 def measure_normalizer_state_nbytes(state: AnyNormalizerState) -> int:
