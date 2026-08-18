@@ -101,6 +101,45 @@ def _require_pavlovian_resources(
         raise ValueError("Pavlovian persistent byte count must fit signed int32")
 
 
+def _pavlovian_persistent_bytes(
+    *, n_phases: int, n_cs: int, n_distractors: int
+) -> int:
+    """Named persist already counted inside ``_require_pavlovian_resources``."""
+    static_scalars = n_phases * n_cs + 4 * n_phases
+    state_scalars = n_cs + n_distractors + 6
+    return 4 * (static_scalars + state_scalars)
+
+
+def _pavlovian_step_result_extras_bytes(*, n_cs: int, n_distractors: int) -> int:
+    """Returned ``TimeStep`` extras excluding persist.
+
+    Nested persist is already counted in the simultaneous persist copies.
+    These extras are the published observation and target leaves.
+    """
+    return 4 * (n_cs + n_distractors) + 4
+
+
+def _pavlovian_step_working_set_bytes(
+    *, n_phases: int, n_cs: int, n_distractors: int
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _pavlovian_persistent_bytes(
+        n_phases=n_phases, n_cs=n_cs, n_distractors=n_distractors
+    ) + _pavlovian_step_result_extras_bytes(n_cs=n_cs, n_distractors=n_distractors)
+
+
+def _preflight_pavlovian_step_working_set(
+    *, n_phases: int, n_cs: int, n_distractors: int
+) -> None:
+    """Reject a step envelope the host cannot name in signed int32."""
+    if _pavlovian_step_working_set_bytes(
+        n_phases=n_phases, n_cs=n_cs, n_distractors=n_distractors
+    ) > _INT32_MAX:
+        raise ValueError(
+            "Pavlovian step working set byte count must fit signed int32"
+        )
+
+
 def _require_finite_real(
     value: object,
     *,
@@ -456,6 +495,11 @@ class ClassicalConditioningStream:
         if feature_dim > _INT32_MAX:
             raise ValueError("feature_dim must fit signed int32")
         _require_pavlovian_resources(
+            n_phases=len(phases),
+            n_cs=n_cs,
+            n_distractors=n_distractors,
+        )
+        _preflight_pavlovian_step_working_set(
             n_phases=len(phases),
             n_cs=n_cs,
             n_distractors=n_distractors,
