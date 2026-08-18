@@ -219,6 +219,7 @@ jobs:
           "$UV_PATH" sync \
             --locked \
             --python "$PYTHON_PATH" \
+            --extra dev \
             --extra research
           "$UV_PATH" run --no-sync python - \
             "$cpu_brand" "$RUNNER_TEMP/prereg-metadata/runner.json" <<'PY'

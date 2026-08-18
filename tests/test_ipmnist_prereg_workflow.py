@@ -96,6 +96,11 @@ def test_issue184_workflow_pins_every_shell_mapping() -> None:
         < test_index
         < measurement_index
     )
+    sync_step = workflow[sync_index:authorization_index]
+    assert '"$UV_PATH" sync \\' in sync_step
+    assert "--locked" in sync_step
+    assert "--extra research" in sync_step
+    assert "--extra dev" in sync_step
     assert "python3 .github/scripts/ipmnist_prereg.py authorize" in workflow
     assert '"$UV_PATH" run --no-sync python .github/scripts/ipmnist_prereg.py preflight' in workflow
     upload = workflow[workflow.index("- name: Upload 90-day result or partial recovery bundle") :]
