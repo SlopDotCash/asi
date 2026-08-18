@@ -532,7 +532,7 @@ class FeatureBankRouter:
         normalized_axes: list[int] = []
         for index, (leaf, raw_axis) in enumerate(zip(leaves, raw_axes, strict=True)):
             value = jnp.asarray(leaf)
-            if isinstance(raw_axis, bool) or not isinstance(raw_axis, int):
+            if type(raw_axis) is not int:
                 raise TypeError(f"feature axis for consumer leaf {index} must be an integer")
             axis = raw_axis if raw_axis >= 0 else value.ndim + raw_axis
             if axis < 0 or axis >= value.ndim:
