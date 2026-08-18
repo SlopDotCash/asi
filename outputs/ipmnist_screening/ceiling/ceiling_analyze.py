@@ -29,6 +29,21 @@ def smooth(x: np.ndarray, w: int) -> np.ndarray:
     return np.convolve(x, np.ones(w) / w, mode="valid")
 
 
+def across_seed_spread(values: object) -> float:
+    """Sample standard deviation across seeds, matching the campaign convention.
+
+    Issue #33 unified across-seed spread on the sample estimator (``ddof=1``),
+    which the screening merge and ``compute_statistics`` both use. ``np.std``
+    defaults to the population estimator, understating the spread of a seed
+    sample by ``sqrt(n / (n - 1))`` — 22% at n=3, 41% at n=2. A single seed has
+    no spread rather than a zero-width interval implying one.
+    """
+    array = np.asarray(values, dtype=np.float64).ravel()
+    if array.size < 2:
+        return 0.0
+    return float(array.std(ddof=1))
+
+
 def main() -> None:
     report: dict = {}
 
@@ -44,7 +59,7 @@ def main() -> None:
         mc = curves.mean(axis=0)
         late = mc[LATE_LO:LATE_HI].mean()
         print(f"  {spec:20s} avg-online={np.mean(means):.5f} (seeds {sorted(runs)}, "
-              f"sd {np.std(means):.5f})  late-window(4000-5000)={late:.5f}")
+              f"sd {across_seed_spread(means):.5f})  late-window(4000-5000)={late:.5f}")
         bucket_acc = {f"{a}-{b}": round(float(mc[a:b].mean()), 5) for a, b in BUCKETS}
         print(f"      within-task buckets: {bucket_acc}")
         report[f"stationary_{spec}"] = {
@@ -77,7 +92,7 @@ def main() -> None:
               f"t10={pt[:, 9].mean():.4f} t20={pt[:, 19].mean():.4f} "
               f"t40={pt[:, 39].mean():.4f} t60={pt[:, -1].mean():.4f}")
         print(f"      late-task (last 10 tasks) avg-online = {late_tasks.mean():.5f} "
-              f"(sd {late_tasks.std():.5f})")
+              f"(sd {across_seed_spread(late_tasks):.5f})")
         print(f"      late-task late-window (steps 4000-5000) = {last_task_late.mean():.5f}")
         report[f"carried_{spec}"] = {
             "per_task_mean_curve": [round(float(v), 5) for v in pt.mean(axis=0)],
