@@ -6,6 +6,18 @@ import math
 from typing import cast
 
 
+def real_number(name: str, value: object) -> float:
+    """Return a builtin real float, finite or not, without accepting facade identities.
+
+    Acceptance records deliberately represent non-finite observed values as
+    recorded rejections (``passed=False``); only the host type is gated here.
+    """
+
+    if type(value) not in (int, float):
+        raise ValueError(f"{name} must be a real number")
+    return float(cast("int | float", value))
+
+
 def finite_real(name: str, value: object) -> float:
     """Return a finite builtin float without accepting facade identities."""
 

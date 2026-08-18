@@ -267,7 +267,8 @@ class PreparedCandidate:
             "alberta_single_seed_v1",
         ):
             raise ForagerMatchedExecutorError(
-                "invocation_style must be 'module_entrypoint' or 'inline_command'"
+                "invocation_style must be 'official_foragax_continuing_main_v4', "
+                "'official_foragax_ppo_frozen_updates_v1', or 'alberta_single_seed_v1'"
             )
         if self.rng_isolation_patch_sha256 is not None:
             _sha256(self.rng_isolation_patch_sha256, "rng_isolation_patch_sha256")

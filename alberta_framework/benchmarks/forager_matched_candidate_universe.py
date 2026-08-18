@@ -99,11 +99,11 @@ def _require_exact_str(value: Any, path: str) -> str:
 
 def _require_sha256(value: Any, path: str) -> str:
     string = _require_exact_str(value, path)
-    if len(string) != 64 or not all(ch in "0123456789abcdef" for ch in string.lower()):
+    if len(string) != 64 or not all(ch in "0123456789abcdef" for ch in string):
         raise ForagerMatchedCandidateUniverseError(
             f"{path} must be a 64-character lowercase hexadecimal SHA-256 digest"
         )
-    return string.lower()
+    return string
 
 
 def _require_seed_identities(values: object, *, name: str) -> tuple[int, ...]:

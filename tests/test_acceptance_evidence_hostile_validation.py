@@ -97,9 +97,6 @@ def test_acceptance_evidence_rejects_non_boolean_passed(invalid_passed: object) 
 @pytest.mark.parametrize(
     "invalid_actual",
     [
-        float("nan"),
-        float("inf"),
-        float("-inf"),
         True,
         False,
         "0.5",
@@ -108,7 +105,7 @@ def test_acceptance_evidence_rejects_non_boolean_passed(invalid_passed: object) 
     ],
 )
 def test_acceptance_evidence_rejects_invalid_actual(invalid_actual: object) -> None:
-    with pytest.raises(ValueError, match="actual must be a finite real number"):
+    with pytest.raises(ValueError, match="actual must be a real number"):
         AcceptanceEvidence(
             name="check",
             passed=True,
@@ -223,9 +220,6 @@ def test_ia_acceptance_evidence_rejects_invalid_scope(invalid_scope: object) -> 
 @pytest.mark.parametrize(
     "invalid_actual",
     [
-        float("nan"),
-        float("inf"),
-        float("-inf"),
         True,
         False,
         "0.5",
@@ -234,7 +228,7 @@ def test_ia_acceptance_evidence_rejects_invalid_scope(invalid_scope: object) -> 
     ],
 )
 def test_ia_acceptance_evidence_rejects_invalid_actual(invalid_actual: object) -> None:
-    with pytest.raises(ValueError, match="actual must be a finite real number"):
+    with pytest.raises(ValueError, match="actual must be a real number"):
         IAAcceptanceEvidence(
             name="check",
             scope="primary",
@@ -299,3 +293,46 @@ def test_ia_acceptance_result_validation() -> None:
             secondary_passed=True,
             checks=[evidence],  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize("nonfinite_actual", [float("nan"), float("inf"), float("-inf")])
+def test_acceptance_evidence_records_nonfinite_actual(nonfinite_actual: float) -> None:
+    """Non-finite observed values are recorded rejections, never construction crashes."""
+    evidence = AcceptanceEvidence(
+        name="mean_recurrence_recovery_steps",
+        passed=False,
+        actual=nonfinite_actual,
+        comparator="<=",
+        threshold=1.0,
+        detail="non-finite evidence fails the comparison without a skipped state",
+    )
+    assert evidence.passed is False
+    assert evidence.actual != evidence.actual or abs(evidence.actual) == float("inf")
+
+
+@pytest.mark.parametrize("nonfinite_actual", [float("nan"), float("inf"), float("-inf")])
+def test_ia_acceptance_evidence_records_nonfinite_actual(nonfinite_actual: float) -> None:
+    evidence = IAAcceptanceEvidence(
+        name="check",
+        scope="primary",
+        passed=False,
+        actual=nonfinite_actual,
+        comparator=">=",
+        threshold=0.0,
+        detail="recorded rejection",
+    )
+    assert evidence.passed is False
+
+
+def test_minimum_check_records_failed_comparison_for_nonfinite() -> None:
+    """The evaluator's documented contract: no skipped or 'not evaluated' state."""
+    from alberta_framework.evaluation.continual_multiagent import (
+        _maximum_check,
+        _minimum_check,
+    )
+
+    for value in (float("nan"), float("inf"), float("-inf")):
+        low = _minimum_check("check", value, 1.0, "detail")
+        high = _maximum_check("check", value, 1.0, "detail")
+        assert low.passed is False
+        assert high.passed is False

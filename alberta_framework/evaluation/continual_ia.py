@@ -58,6 +58,7 @@ from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.evaluation._measurement_validation import (
     finite_real,
     nonnegative_finite_real,
+    real_number,
     validate_interval_bounds,
 )
 from alberta_framework.streams.closed_loop import (
@@ -482,7 +483,7 @@ class IAAcceptanceEvidence:
             raise ValueError("scope must be 'primary' or 'secondary'")
         if type(self.passed) is not bool:
             raise ValueError("passed must be a boolean")
-        object.__setattr__(self, "actual", finite_real("actual", self.actual))
+        object.__setattr__(self, "actual", real_number("actual", self.actual))
         if type(self.comparator) is not str or not self.comparator:
             raise ValueError("comparator must be a non-empty string")
         object.__setattr__(self, "threshold", finite_real("threshold", self.threshold))
