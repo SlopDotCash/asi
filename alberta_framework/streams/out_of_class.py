@@ -451,7 +451,7 @@ class OutOfClassPolynomialStream:
 
         timestep = TimeStep(observation=x, target=target)
         new_state = state.replace(  # type: ignore[attr-defined]
-            key=key, step_count=state.step_count + 1
+            key=key, step_count=_saturating_step_count(state.step_count)
         )
         return timestep, new_state
 
