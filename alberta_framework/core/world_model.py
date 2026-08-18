@@ -123,14 +123,14 @@ def _checked_product(name: str, left: int, right: int) -> int:
     return left * right
 
 
-def _validate_world_model_resources(
+def _world_model_direct_state_scalars(
     *,
     observation_dim: int,
     action_feature_dim: int,
     hidden_sizes: tuple[int, ...],
     n_heads: int,
     outer_state_scalars: int,
-) -> None:
+) -> int:
     if observation_dim > _INT32_MAX - action_feature_dim:
         raise ValueError("derived input_dim must fit in signed int32")
     input_dim = observation_dim + action_feature_dim
@@ -146,11 +146,88 @@ def _validate_world_model_resources(
         for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
     )
     head_parameters = n_heads * (head_input + 1)
-    direct_scalars = (
+    return (
         2 * (trunk_parameters + head_parameters)
         + sum(hidden_sizes)
         + 3
         + outer_state_scalars
+    )
+
+
+def _world_model_update_result_extras_bytes(*, observation_dim: int, n_heads: int) -> int:
+    """Published ``WorldModelUpdateResult`` extras excluding persistent state.
+
+    The +4 float32 scalars cover JIT-materialized ``birth_timestamp`` and
+    ``uptime_s`` on both the source and proposed learner states. Persistent
+    byte counts omit those host-only leaves; the update working set cannot.
+    """
+    extras_scalars = (
+        2 * observation_dim
+        + 7 * n_heads
+        + 7
+        + 4
+    )
+    extras_bools = 6
+    return 4 * extras_scalars + extras_bools
+
+
+def _world_model_update_working_set_bytes(
+    *,
+    observation_dim: int,
+    action_feature_dim: int,
+    hidden_sizes: tuple[int, ...],
+    n_heads: int,
+    outer_state_scalars: int,
+) -> int:
+    persist_bytes = 4 * _world_model_direct_state_scalars(
+        observation_dim=observation_dim,
+        action_feature_dim=action_feature_dim,
+        hidden_sizes=hidden_sizes,
+        n_heads=n_heads,
+        outer_state_scalars=outer_state_scalars,
+    )
+    extras_bytes = _world_model_update_result_extras_bytes(
+        observation_dim=observation_dim,
+        n_heads=n_heads,
+    )
+    return 2 * persist_bytes + extras_bytes
+
+
+def _preflight_world_model_update_working_set(
+    *,
+    observation_dim: int,
+    action_feature_dim: int,
+    hidden_sizes: tuple[int, ...],
+    n_heads: int,
+    outer_state_scalars: int,
+) -> None:
+    working_set_bytes = _world_model_update_working_set_bytes(
+        observation_dim=observation_dim,
+        action_feature_dim=action_feature_dim,
+        hidden_sizes=hidden_sizes,
+        n_heads=n_heads,
+        outer_state_scalars=outer_state_scalars,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "world-model update working set byte count must fit signed int32"
+        )
+
+
+def _validate_world_model_resources(
+    *,
+    observation_dim: int,
+    action_feature_dim: int,
+    hidden_sizes: tuple[int, ...],
+    n_heads: int,
+    outer_state_scalars: int,
+) -> None:
+    direct_scalars = _world_model_direct_state_scalars(
+        observation_dim=observation_dim,
+        action_feature_dim=action_feature_dim,
+        hidden_sizes=hidden_sizes,
+        n_heads=n_heads,
+        outer_state_scalars=outer_state_scalars,
     )
     for name, value in (
         ("combined_direct_state_scalars", direct_scalars),
@@ -632,6 +709,13 @@ class ActionConditionedWorldModel:
     def init(self, key: Array) -> ActionConditionedWorldModelState:
         """Initialize model state."""
         obs_dim = self._config.observation_dim
+        _preflight_world_model_update_working_set(
+            observation_dim=obs_dim,
+            action_feature_dim=self.input_dim - obs_dim,
+            hidden_sizes=self._config.hidden_sizes,
+            n_heads=self.n_heads,
+            outer_state_scalars=2 * obs_dim + 4,
+        )
         return ActionConditionedWorldModelState(
             learner_state=self._learner.init(self.input_dim, key),
             observation_min=jnp.full((obs_dim,), jnp.inf, dtype=jnp.float32),
@@ -1293,6 +1377,13 @@ class OneStepWorldModel:
 
     def init(self, key: Array) -> WorldModelState:
         """Initialize model state."""
+        _preflight_world_model_update_working_set(
+            observation_dim=self._config.observation_dim,
+            action_feature_dim=self._action_feature_dim,
+            hidden_sizes=self._config.hidden_sizes,
+            n_heads=self._config.observation_dim + 1,
+            outer_state_scalars=1,
+        )
         return WorldModelState(
             learner_state=self._learner.init(self.input_dim, key),
             step_count=jnp.array(0, dtype=jnp.int32),
