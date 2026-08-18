@@ -854,7 +854,7 @@ class RecurrentLatentWorldModelEnsemble:
         if config.get("type") != cls.__name__:
             raise ValueError("unexpected recurrent latent ensemble model type")
         nested = config.get("config")
-        if not isinstance(nested, Mapping):
+        if type(nested) is not dict:
             raise ValueError("model config.config must be a mapping")
         model = cls(RecurrentLatentWorldModelEnsembleConfig.from_config(nested))
         if not _strict_json_equal(dict(config), model.to_config()):
@@ -1787,7 +1787,7 @@ def load_recurrent_latent_world_model_ensemble_checkpoint(
     if metadata.get("schema") != RECURRENT_LATENT_WORLD_MODEL_ENSEMBLE_CHECKPOINT_SCHEMA:
         raise ValueError("checkpoint is not a recurrent latent ensemble v1 checkpoint")
     config = metadata.get("model_config")
-    if not isinstance(config, Mapping):
+    if type(config) is not dict:
         raise ValueError("checkpoint model_config must be a mapping")
     digest = metadata.get("config_sha256")
     if type(digest) is not str or digest != _config_digest(config):
