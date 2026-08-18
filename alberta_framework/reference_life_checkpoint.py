@@ -156,12 +156,21 @@ def _require_digest(value: Any, *, path: str) -> str:
     return digest
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        _fail("name must be an exact string")
+    if type(value) is not str:
+        _fail(f"{name} must be an exact string")
+    return value
+
+
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
-        if key in result:
-            _fail(f"checkpoint JSON contains duplicate key {key!r}")
-        result[key] = value
+        host_key = _require_exact_str("key", key)
+        if host_key in result:
+            _fail(f"checkpoint JSON contains duplicate key '{host_key}'")
+        result[host_key] = value
     return result
 
 
@@ -679,7 +688,7 @@ def _decode_transaction(value: Any, *, path: str) -> ReferenceTransactionState:
     )
     phase = _require_str(data["phase"], path=f"{path}.phase")
     if phase != TransactionPhase.ARMED.value:
-        _fail(f"{path}.phase must be {TransactionPhase.ARMED.value!r}")
+        _fail(f"{path}.phase must be '{TransactionPhase.ARMED.value}'")
     for name in (
         "authorization",
         "dispatch",
@@ -1358,7 +1367,8 @@ def _walk_regular_files(root: Path) -> dict[str, Path]:
                 if len(relative.encode("utf-8")) > _MAX_PATH_BYTES:
                     raise ValueError("checkpoint directory tree contains an overlong path")
                 if entry.is_symlink():
-                    raise ValueError(f"checkpoint cannot contain symlink {relative!r}")
+                    host_relative = _require_exact_str("relative", relative)
+                    raise ValueError(f"checkpoint cannot contain symlink '{host_relative}'")
                 if entry.is_dir(follow_symlinks=False):
                     visit(path, depth=depth + 1)
                 elif entry.is_file(follow_symlinks=False):
@@ -1372,7 +1382,10 @@ def _walk_regular_files(root: Path) -> dict[str, Path]:
                         raise ValueError("checkpoint children exceed their total byte limit")
                     files[relative] = path
                 else:
-                    raise ValueError(f"checkpoint cannot contain non-regular entry {relative!r}")
+                    host_relative = _require_exact_str("relative", relative)
+                    raise ValueError(
+                        f"checkpoint cannot contain non-regular entry '{host_relative}'"
+                    )
 
     visit(root, depth=0)
     return files
@@ -1733,7 +1746,12 @@ def _snapshot_checkpoint(source: Path) -> Path:
                     if len(child_relative.encode("utf-8")) > _MAX_PATH_BYTES:
                         raise ValueError("checkpoint directory tree contains an overlong path")
                     if entry.is_symlink():
-                        raise ValueError(f"checkpoint cannot contain symlink {child_relative!r}")
+                        host_child_relative = _require_exact_str(
+                            "child_relative", child_relative
+                        )
+                        raise ValueError(
+                            f"checkpoint cannot contain symlink '{host_child_relative}'"
+                        )
                     if entry.is_dir(follow_symlinks=False):
                         child_source = os.open(
                             name,
@@ -1762,8 +1780,9 @@ def _snapshot_checkpoint(source: Path) -> Path:
                             os.close(child_destination)
                         continue
                     if not entry.is_file(follow_symlinks=False):
+                        host_child_relative = _require_exact_str("child_relative", child_relative)
                         raise ValueError(
-                            f"checkpoint contains non-regular entry {child_relative!r}"
+                            f"checkpoint contains non-regular entry '{host_child_relative}'"
                         )
                     child_source = os.open(
                         name,
@@ -1773,8 +1792,11 @@ def _snapshot_checkpoint(source: Path) -> Path:
                     try:
                         metadata = os.fstat(child_source)
                         if not stat_module.S_ISREG(metadata.st_mode):
+                            host_child_relative = _require_exact_str(
+                                "child_relative", child_relative
+                            )
                             raise ValueError(
-                                f"checkpoint contains non-regular entry {child_relative!r}"
+                                f"checkpoint contains non-regular entry '{host_child_relative}'"
                             )
                         if metadata.st_size > _MAX_CHILD_FILE_BYTES:
                             raise ValueError(
