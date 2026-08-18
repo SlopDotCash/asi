@@ -651,7 +651,7 @@ def reservoir_selection(
     ``[0, n)`` and the candidate replaces slot ``draw`` iff ``draw < capacity``.
     The caller owns key advancement; this pure calculation does not return a key.
     """
-    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
+    if type(capacity) is not int or capacity < 1:
         raise ValueError("capacity must be a positive integer")
     _require_array(candidate_number, name="candidate_number", shape=(), dtype=jnp.int32)
     candidate_valid = candidate_number >= 1
@@ -2177,8 +2177,7 @@ class DualReplayMemory:
         expected = np.dtype(dtype)
         if np.issubdtype(expected, np.floating):
             if any(
-                isinstance(item, bool) or not isinstance(item, int | float)
-                for item in untyped.flat
+                type(item) not in (int, float) for item in untyped.flat
             ):
                 raise ValueError(f"{name} must contain only JSON real numbers")
             with np.errstate(over="ignore", under="ignore", invalid="ignore"):
@@ -2190,7 +2189,7 @@ class DualReplayMemory:
             if any(not isinstance(item, bool) for item in untyped.flat):
                 raise ValueError(f"{name} must contain only booleans")
             return jnp.asarray(value, dtype=jnp.bool_)
-        if any(isinstance(item, bool) or not isinstance(item, int) for item in untyped.flat):
+        if any(type(item) is not int for item in untyped.flat):
             raise ValueError(f"{name} must contain only JSON integers")
         minimum = 0 if expected == np.dtype(np.uint32) else -_INT32_MAX - 1
         maximum = _UINT32_MAX if expected == np.dtype(np.uint32) else _INT32_MAX
@@ -2201,7 +2200,7 @@ class DualReplayMemory:
 
     @staticmethod
     def _checkpoint_counter(value: object, *, name: str, uint32: bool = False) -> Array:
-        if isinstance(value, bool) or not isinstance(value, int):
+        if type(value) is not int:
             raise ValueError(f"{name} must be a JSON integer")
         maximum = _UINT32_MAX if uint32 else _INT32_MAX
         if not 0 <= value <= maximum:
