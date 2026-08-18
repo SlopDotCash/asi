@@ -686,9 +686,9 @@ class StreamingRunSummary:
     ) -> None:
         if self._accepted_events >= self._horizon:
             raise ValueError("streaming summary already reached its horizon")
-        if isinstance(reward, bool) or not isinstance(reward, (int, float)):
+        if type(reward) not in (int, float):
             raise ValueError("reward must be a finite number")
-        if isinstance(oracle_reward, bool) or not isinstance(oracle_reward, (int, float)):
+        if type(oracle_reward) not in (int, float):
             raise ValueError("oracle_reward must be a finite number")
         reward_value = float(reward)
         oracle_value = float(oracle_reward)
@@ -1005,9 +1005,9 @@ def _reward_sum(record: Mapping[str, Any]) -> float:
     if not isinstance(outcome, Mapping):
         raise ValueError("completed run record lacks an outcome")
     value = outcome.get("reward_sum")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise ValueError("completed run reward_sum must be finite")
-    result = float(value)
+    result = float(value)  # type: ignore[arg-type]
     if not math.isfinite(result):
         raise ValueError("completed run reward_sum must be finite")
     return result
@@ -1679,7 +1679,7 @@ def build_scorecard_artifact(
 
 
 def _require_finite_nonnegative(value: Any, *, path: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise ValueError(f"{path} must be a finite nonnegative number")
     result = float(value)
     if not math.isfinite(result) or result < 0.0:
@@ -1694,7 +1694,7 @@ def _require_nonnegative_int(value: Any, *, path: str) -> int:
 
 
 def _require_finite_number(value: Any, *, path: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) not in (int, float):
         raise ValueError(f"{path} must be a finite number")
     result = float(value)
     if not math.isfinite(result):
