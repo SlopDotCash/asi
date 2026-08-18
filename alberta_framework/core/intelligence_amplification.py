@@ -140,11 +140,13 @@ def _preflight_cerebellum_resources(n_demons: int, obs_dim: int) -> None:
         "exo-cerebellum persistent state",
         float32_scalars=persistent_scalars,
     )
-    # During update, weights, the outer-product delta, and candidate weights
-    # are simultaneously live.  The remaining term conservatively covers the
-    # two raw/safe observations, predictions, targets, errors, neutral result
-    # vectors, lifetime words, and transaction flags.
-    update_scalars = 3 * weight_scalars + 6 * n_demons + 4 * obs_dim + 16
+    # During update, source weights, the outer-product delta, candidate
+    # weights, and the selected result weights are simultaneously live.  The
+    # remaining term covers the retained cumulant indices, predictions,
+    # targets, errors, neutral result vectors, two raw/safe observations,
+    # lifetime words, and transaction predicates. Charging every element as
+    # four bytes conservatively covers int32, uint32, and boolean arrays too.
+    update_scalars = 4 * weight_scalars + 6 * n_demons + 4 * obs_dim + 16
     _require_float32_resource(
         "exo-cerebellum update working set",
         float32_scalars=update_scalars,

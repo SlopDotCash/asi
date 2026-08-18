@@ -47,6 +47,13 @@ def test_cerebellum_config_rejects_simultaneous_update_working_set() -> None:
         ExoCerebellumConfig(n_demons=100_000_000, obs_dim=1)
 
 
+def test_cerebellum_working_set_includes_selected_result_weights() -> None:
+    # The previous three-matrix envelope fit here. Retaining the source,
+    # outer delta, candidate, and selected result matrices does not.
+    with pytest.raises(ValueError, match="update working set byte count"):
+        ExoCerebellumConfig(n_demons=1, obs_dim=70_000_000)
+
+
 def test_ia_config_rejects_overflowing_published_update_width() -> None:
     cortex = _default_oak_config()
     overflowing_demons = _INT32_MAX - cortex.observation_dim + 1
