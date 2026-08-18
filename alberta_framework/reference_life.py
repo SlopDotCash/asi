@@ -2154,9 +2154,9 @@ class ReferenceLifeRunner:
             if metrics_mode != "stationary":
                 raise DecisionOwnershipError("checkpoint RiverSwim metrics mode is invalid")
             oracle_value = environment_config.get("oracle_average_reward")
-            if isinstance(oracle_value, bool) or not isinstance(oracle_value, (int, float)):
+            if type(oracle_value) not in (int, float):
                 raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
-            oracle_reward = float(oracle_value)
+            oracle_reward = float(oracle_value)  # type: ignore[arg-type]
             if not math.isfinite(oracle_reward):
                 raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
             expected_phase_counts = (accepted, 0)
