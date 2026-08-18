@@ -1330,7 +1330,7 @@ def validate_evidence_artifact(
                 "content_digest.canonicalization has an unsupported value"
             )
         recorded = digest.get("sha256")
-        if not isinstance(recorded, str) or len(recorded) != 64:
+        if type(recorded) is not str or len(recorded) != 64:
             errors.append("content_digest.sha256 must be a 64-character string")
         elif content is not None:
             expected = scientific_content_sha256(content)
