@@ -107,6 +107,11 @@ def _preflight_nonlinear_state(*, n_demons: int, hidden_size: int, feature_dim: 
     ):
         if not 1 <= value <= _INT32_MAX:
             raise ValueError(f"derived nonlinear Horde {name} must fit signed int32")
+    update_scalars = (2 * n_demons + 4) * hidden_features + 8
+    if 4 * update_scalars > _INT32_MAX:
+        raise ValueError(
+            "derived nonlinear Horde update working set byte count must fit signed int32"
+        )
 
 
 def _require_typed_threefry_key(name: str, value: object) -> Array:
