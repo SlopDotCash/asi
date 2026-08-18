@@ -137,6 +137,57 @@ def test_zero_gradient_one_class_path_is_finite_and_stationary() -> None:
     )
 
 
+def test_factory_and_state_reject_hostile_structures_without_dispatch() -> None:
+    class HostileMapping:
+        def __iter__(self) -> object:
+            raise AssertionError("hostile mapping hook must not run")
+
+    with pytest.raises(ValueError, match="one exact object"):
+        _make_intentional_updates_learner(HostileMapping())  # type: ignore[arg-type]
+
+    spec = screening_spec("intentional_updates_ipmnist")
+    init_fn, step_fn = spec.factory(spec.hyperparameters)
+    params = init_mlp_params(jr.key(40), SMALL)
+    state = init_fn(params)
+    hostile_state = state.replace(squared_gradient={})
+    with pytest.raises(ValueError, match="exact protocol MLP tree"):
+        step_fn(
+            params,
+            hostile_state,
+            jnp.zeros((SMALL.input_dim,), dtype=jnp.float32),
+            jnp.asarray(0, dtype=jnp.int32),
+            jr.key(41),
+        )
+
+
+@pytest.mark.parametrize("invalid", ["counter", "input"])
+def test_jit_runtime_invalidity_is_finite_and_atomic(invalid: str) -> None:
+    spec = screening_spec("intentional_updates_ipmnist")
+    init_fn, step_fn = spec.factory(spec.hyperparameters)
+    params = init_mlp_params(jr.key(42), SMALL)
+    state = init_fn(params)
+    x = jnp.zeros((SMALL.input_dim,), dtype=jnp.float32)
+    if invalid == "counter":
+        state = state.replace(
+            step=jnp.asarray((1 << 31) - 1, dtype=jnp.int32),
+            clip_step=jnp.asarray((1 << 31) - 1, dtype=jnp.int32),
+        )
+    else:
+        x = jnp.full_like(x, jnp.inf)
+    new_params, new_state, metrics = jax.jit(step_fn)(
+        params, state, x, jnp.asarray(0, dtype=jnp.int32), jr.key(43)
+    )
+    for name in params:
+        np.testing.assert_array_equal(new_params[name], params[name])
+    assert all(
+        bool(jnp.all(jnp.isfinite(value)))
+        for value in jax.tree_util.tree_leaves((new_state, metrics))
+    )
+    if invalid == "counter":
+        assert int(new_state.step) == 0
+        assert int(new_state.clip_step) == 0
+
+
 def test_strict_development_record_binds_resources_gates_and_metrics() -> None:
     x, y = _data()
     result = run_screening_config(
@@ -174,10 +225,44 @@ def test_strict_development_record_binds_resources_gates_and_metrics() -> None:
         validate_intentional_updates_development_record(hostile)
 
     hostile = copy.deepcopy(record)
+    original_accuracy = hostile["metrics"]["per_task_accuracy"][0]
+    hostile["metrics"]["per_task_accuracy"][0] = (
+        0.25 if original_accuracy != 0.25 else 0.5
+    )
+    with pytest.raises(ValueError, match="derive from per_task_correct"):
+        validate_intentional_updates_development_record(hostile)
+
+    class HostileArray:
+        def __array__(self) -> object:
+            raise AssertionError("hostile array hook must not run")
+
+    hostile = copy.deepcopy(record)
+    hostile["metrics"]["per_task_loss"] = HostileArray()
+    with pytest.raises(ValueError, match="one exact bounded list"):
+        validate_intentional_updates_development_record(hostile)
+
+    hostile = copy.deepcopy(record)
+    hostile["gates"]["head_updates"] = 1
+    with pytest.raises(ValueError, match="exact boolean"):
+        validate_intentional_updates_development_record(hostile)
+
+    hostile = copy.deepcopy(record)
     hostile["references"]["official_code"] = "moving-main"
     with pytest.raises(ValueError, match="frozen protocol"):
         validate_intentional_updates_development_record(hostile)
 
+
+def test_record_revalidates_forged_host_dataclasses() -> None:
+    x, y = _data()
+    config = IPMNISTConfig(
+        n_tasks=2, task_length=4, input_dim=6, hidden1=5, hidden2=4, n_classes=3
+    )
+    result = run_screening_config(
+        x, y, screening_spec("intentional_updates_ipmnist"), seed=23, config=config
+    )
+    object.__setattr__(result.config, "n_tasks", True)
+    with pytest.raises(ValueError, match="n_tasks"):
+        intentional_updates_development_record(result)
 
 def test_matched_runs_share_seed_schedule_update_and_observation_budgets() -> None:
     x, y = _data()
