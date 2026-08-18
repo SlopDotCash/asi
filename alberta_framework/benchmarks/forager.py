@@ -316,7 +316,7 @@ def environment_rng_schedule_sha256(
     identity: str = FORAGER_ENVIRONMENT_RNG_SCHEDULE,
 ) -> str:
     """Hash the normalized cross-harness environment RNG schedule identity."""
-    if not isinstance(identity, str) or not identity:
+    if type(identity) is not str or not identity:
         raise ValueError("environment RNG schedule identity must be a non-empty string")
     encoded = json.dumps(
         {
@@ -1837,7 +1837,7 @@ def _run_forager_host(
     """Run a generic policy through the host-driven reference loop."""
     policy_name = policy.name
     policy_privileged = policy.privileged
-    if not isinstance(policy_name, str) or not policy_name:
+    if type(policy_name) is not str or not policy_name:
         raise ValueError("policy.name must be a non-empty string")
     if type(policy_privileged) is not bool:
         raise ValueError("policy.privileged must be a boolean")
@@ -3784,7 +3784,7 @@ def summarize_forager_runs(
         "mean_ewm_reward",
         "fov_last_10pct_ema_auc",
     }
-    if not isinstance(metric, str) or metric not in supported_metrics:
+    if type(metric) is not str or metric not in supported_metrics:
         raise ValueError(f"unsupported Forager summary metric {metric!r}")
     if any(not isinstance(run, ForagerRunResult) for run in runs):
         raise TypeError("runs must contain only ForagerRunResult values")
@@ -3957,7 +3957,7 @@ def compare_forager_agents(
     if config is not None and not isinstance(config, ForagerBenchmarkConfig):
         raise TypeError("config must be a ForagerBenchmarkConfig")
     if any(
-        not isinstance(label, str) or not label or not callable(factory)
+        type(label) is not str or not label or not callable(factory)
         for label, factory in agent_factories.items()
     ):
         raise TypeError(
