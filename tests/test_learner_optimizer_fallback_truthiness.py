@@ -190,6 +190,23 @@ class TestIndependentDemonHordeOptimizerTruthiness:
         assert horde._optimizer is opt
         assert _HostileLMS.calls == 0
 
+    def test_independent_demon_horde_supported_for_mlp_strict_check(self) -> None:
+        spec = _sample_horde_spec()
+        bad_opt = _MockUnsupportedOptimizer(initial_step_size=0.01)
+        with pytest.raises(ValueError, match="does not support the MLP shape-generic"):
+            IndependentDemonHorde(
+                horde_spec=spec,
+                optimizer=bad_opt,  # type: ignore[arg-type]
+            )
+
+        good_opt = LMS(step_size=0.1)
+        with pytest.raises(ValueError, match="head_optimizer.*does not support the MLP"):
+            IndependentDemonHorde(
+                horde_spec=spec,
+                optimizer=good_opt,
+                head_optimizer=bad_opt,  # type: ignore[arg-type]
+            )
+
 
 class TestOffPolicyHordeLearnerOptimizerTruthiness:
     def test_off_policy_horde_preserves_custom_falsy_optimizer(self) -> None:
