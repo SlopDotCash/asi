@@ -582,58 +582,6 @@ class SelectionPlan:
     tie_break: Literal["candidate_id_ascending"]
     groups: tuple[SelectionGroup, ...]
 
-    def __post_init__(self) -> None:
-        if type(self.metric) is not str or not self.metric:
-            raise ForagerMatchedProtocolError("metric must be a non-empty string")
-        _require_sha256(self.metric_implementation_sha256, "metric_implementation_sha256")
-        _require_sha256(self.candidate_universe_sha256, "candidate_universe_sha256")
-        if self.direction != "maximize":
-            raise ForagerMatchedProtocolError("direction must be maximize")
-        if self.statistic not in ("mean", "conservative_ci_endpoint"):
-            raise ForagerMatchedProtocolError("invalid statistic")
-        _require_sha256(
-            self.statistic_implementation_sha256,
-            "statistic_implementation_sha256",
-        )
-        if (
-            not isinstance(self.confidence, (int, float))
-            or isinstance(self.confidence, bool)
-            or not math.isfinite(self.confidence)
-            or not (0.0 < self.confidence < 1.0)
-        ):
-            raise ForagerMatchedProtocolError("confidence must be a float in (0.0, 1.0)")
-        if (
-            type(self.bootstrap_resamples) is not int
-            or isinstance(self.bootstrap_resamples, bool)
-            or self.bootstrap_resamples <= 0
-        ):
-            raise ForagerMatchedProtocolError("bootstrap_resamples must be a positive integer")
-        if type(self.bootstrap_seed) is not int or isinstance(self.bootstrap_seed, bool):
-            raise ForagerMatchedProtocolError("bootstrap_seed must be an integer")
-        if self.bootstrap_rng_identity != "numpy_generator_pcg64":
-            raise ForagerMatchedProtocolError("invalid bootstrap_rng_identity")
-        _require_sha256(
-            self.bootstrap_rng_implementation_sha256,
-            "bootstrap_rng_implementation_sha256",
-        )
-        if self.resampling_unit != "candidate_seed_block":
-            raise ForagerMatchedProtocolError("invalid resampling_unit")
-        if self.quantile_method != "linear":
-            raise ForagerMatchedProtocolError("invalid quantile_method")
-        if self.bootstrap_interval != "two_sided_equal_tail":
-            raise ForagerMatchedProtocolError("invalid bootstrap_interval")
-        if self.conservative_endpoint != "lower":
-            raise ForagerMatchedProtocolError("invalid conservative_endpoint")
-        if self.endpoint_quantile != "(1-confidence)/2":
-            raise ForagerMatchedProtocolError("invalid endpoint_quantile")
-        if self.tie_break != "candidate_id_ascending":
-            raise ForagerMatchedProtocolError("invalid tie_break")
-        if type(self.groups) is not tuple:
-            raise ForagerMatchedProtocolError("groups must be a tuple")
-        for group in self.groups:
-            if not isinstance(group, SelectionGroup):
-                raise ForagerMatchedProtocolError("groups item must be a SelectionGroup")
-
     @property
     def slots(self) -> tuple[SelectionSlot, ...]:
         """Return the stage-invariant ordered winner slots."""
@@ -682,25 +630,6 @@ class EvaluationPanel:
     require_complete_blocks: Literal[True]
     pairing_failure_policy: Literal["fail_closed"]
 
-    def __post_init__(self) -> None:
-        if type(self.selection_slots) is not tuple:
-            raise ForagerMatchedProtocolError("selection_slots must be a tuple")
-        for slot in self.selection_slots:
-            if not isinstance(slot, SelectionSlot):
-                raise ForagerMatchedProtocolError("selection_slots item must be a SelectionSlot")
-        if type(self.fixed_descriptive_candidate_ids) is not tuple:
-            raise ForagerMatchedProtocolError("fixed_descriptive_candidate_ids must be a tuple")
-        if not isinstance(self.alberta_primary_slot, SelectionSlot):
-            raise ForagerMatchedProtocolError("alberta_primary_slot must be a SelectionSlot")
-        if not isinstance(self.primary_nonprivileged_external_baseline_slot, SelectionSlot):
-            raise ForagerMatchedProtocolError(
-                "primary_nonprivileged_external_baseline_slot must be a SelectionSlot"
-            )
-        if self.require_complete_blocks is not True:
-            raise ForagerMatchedProtocolError("require_complete_blocks must be True")
-        if self.pairing_failure_policy != "fail_closed":
-            raise ForagerMatchedProtocolError("pairing_failure_policy must be fail_closed")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "selection_slots": [slot.to_dict() for slot in self.selection_slots],
@@ -726,27 +655,6 @@ class MatchedHypothesis:
     alternative: Literal["greater"]
     difference_order: Literal["intervention_minus_comparator"]
     paired: Literal[True]
-
-    def __post_init__(self) -> None:
-        if type(self.hypothesis_id) is not str or not self.hypothesis_id:
-            raise ForagerMatchedProtocolError("hypothesis_id must be a non-empty string")
-        if not isinstance(self.intervention_slot, SelectionSlot):
-            raise ForagerMatchedProtocolError("intervention_slot must be a SelectionSlot")
-        if not isinstance(self.comparator_slot, SelectionSlot):
-            raise ForagerMatchedProtocolError("comparator_slot must be a SelectionSlot")
-        if self.estimand != "paired_mean_difference":
-            raise ForagerMatchedProtocolError("invalid estimand")
-        if self.method not in (
-            "paired_percentile_bootstrap_lower_bound",
-            "paired_sign_flip",
-        ):
-            raise ForagerMatchedProtocolError("invalid method")
-        if self.alternative != "greater":
-            raise ForagerMatchedProtocolError("invalid alternative")
-        if self.difference_order != "intervention_minus_comparator":
-            raise ForagerMatchedProtocolError("invalid difference_order")
-        if self.paired is not True:
-            raise ForagerMatchedProtocolError("paired must be True")
 
     def to_dict(self) -> dict[str, Any]:
         return {
