@@ -123,6 +123,14 @@ _RESERVED_KERNEL_METADATA = frozenset(
 )
 
 
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 class HistoricalForagerError(RuntimeError):
     """Base error for reconstructed historical execution."""
 
@@ -473,17 +481,20 @@ def _require_loaded_forager_modules_read_only_non_tmp() -> None:
         try:
             source_file = Path(module_file).resolve(strict=True)
         except OSError as exc:
+            host_name = _require_exact_str("name", name)
             raise HistoricalForagerContractError(
-                f"loaded historical dependency module {name!r} has no stable source file"
+                f"loaded historical dependency module '{host_name}' has no stable source file"
             ) from exc
         if source_file == temporary_root or temporary_root in source_file.parents:
+            host_name2 = _require_exact_str("name", name)
             raise HistoricalForagerContractError(
-                f"loaded historical dependency module {name!r} came from temporary storage"
+                f"loaded historical dependency module '{host_name2}' came from temporary storage"
             )
         metadata = source_file.stat()
         if not stat.S_ISREG(metadata.st_mode) or os.access(source_file, os.W_OK):
+            host_name3 = _require_exact_str("name", name)
             raise HistoricalForagerContractError(
-                f"loaded historical dependency module {name!r} must be read-only"
+                f"loaded historical dependency module '{host_name3}' must be read-only"
             )
         checked += 1
     if checked == 0:
@@ -524,8 +535,9 @@ def _verify_installed_forager_source_inventory() -> None:
         name = relative.as_posix()
         metadata = path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or os.access(path, os.W_OK):
+            host_name4 = _require_exact_str("name", name)
             raise HistoricalForagerContractError(
-                f"installed forager source member {name!r} must be read-only and regular"
+                f"installed forager source member '{host_name4}' must be read-only and regular"
             )
         actual.add(name)
     if actual != set(expected):
@@ -534,8 +546,9 @@ def _verify_installed_forager_source_inventory() -> None:
         )
     for name, digest in expected.items():
         if _sha256_file(package_root / name) != digest:
+            host_name5 = _require_exact_str("name", name)
             raise HistoricalForagerContractError(
-                f"installed forager source member {name!r} differs from d140"
+                f"installed forager source member '{host_name5}' differs from d140"
             )
 
 
@@ -1044,36 +1057,41 @@ def _strict_json_object(path: Path) -> tuple[dict[str, Any], bytes]:
     try:
         metadata = path.lstat()
     except OSError as exc:
-        raise HistoricalForagerArtifactError(f"missing artifact file {path.name!r}") from exc
+        host_path_name = _require_exact_str("path.name", path.name)
+        raise HistoricalForagerArtifactError(f"missing artifact file '{host_path_name}'") from exc
     if (
         not stat.S_ISREG(metadata.st_mode)
         or metadata.st_nlink != 1
         or metadata.st_size > _MAX_JSON_BYTES
         or stat.S_IMODE(metadata.st_mode) != 0o444
     ):
-        raise HistoricalForagerArtifactError(f"artifact file {path.name!r} is not canonical")
+        host_path_name2 = _require_exact_str("path.name", path.name)
+        raise HistoricalForagerArtifactError(f"artifact file '{host_path_name2}' is not canonical")
     payload = path.read_bytes()
 
     def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
-            if key in result:
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
                 raise HistoricalForagerArtifactError(
-                    f"artifact contains duplicate JSON key {key!r}"
+                    f"artifact contains duplicate JSON key '{host_key}'"
                 )
-            result[key] = value
+            result[host_key] = value
         return result
 
     def invalid_constant(value: str) -> None:
+        host_value = _require_exact_str("value", value)
         raise HistoricalForagerArtifactError(
-            f"artifact contains non-standard JSON constant {value!r}"
+            f"artifact contains non-standard JSON constant '{host_value}'"
         )
 
     def parse_float(value: str) -> float:
         parsed = float(value)
         if not math.isfinite(parsed):
+            host_value2 = _require_exact_str("value", value)
             raise HistoricalForagerArtifactError(
-                f"artifact contains non-finite JSON number {value!r}"
+                f"artifact contains non-finite JSON number '{host_value2}'"
             )
         return parsed
 
