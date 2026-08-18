@@ -405,6 +405,18 @@ def _saturating_increment(value: Array) -> Array:
     return jnp.where(value < _INT32_MAX, value + jnp.int32(1), value)
 
 
+def _preflight_route_working_set(active_slots: int) -> None:
+    """Reject route tensors the host cannot name. Config persist is unchanged."""
+    persist_bytes = 4 * (2 * active_slots + 2)
+    # Source and proposed router states plus three (slots, slots) bool
+    # compare planes: old-bank duplicates, new-bank duplicates, identity match.
+    update_working_set_bytes = 2 * persist_bytes + 3 * active_slots * active_slots
+    if update_working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "feature-bank router update working set byte count must fit signed int32"
+        )
+
+
 class FeatureBankRouter:
     """Atomic fixed-shape router for every downstream feature consumer."""
 
@@ -442,6 +454,7 @@ class FeatureBankRouter:
         Shape and dtype violations are rejected immediately.
         """
 
+        _preflight_route_working_set(self._config.active_slots)
         if descriptors is None:
             descriptor_array = jnp.tile(
                 jnp.asarray(INACTIVE_DESCRIPTOR, dtype=jnp.int32),
@@ -470,6 +483,7 @@ class FeatureBankRouter:
             active_slots=self._config.active_slots,
             location="descriptors",
         )
+        _preflight_route_working_set(self._config.active_slots)
         return _descriptor_validation(
             descriptor_array,
             base_dim=self._config.base_dim,
@@ -551,6 +565,7 @@ class FeatureBankRouter:
 
         if not isinstance(carry_survivors, bool):
             raise TypeError("carry_survivors must be a Python boolean")
+        _preflight_route_working_set(self._config.active_slots)
         self._require_state_contract(state)
         proposed = _require_descriptor_contract(
             new_descriptors,
