@@ -862,13 +862,14 @@ def test_stacked_horde_from_config_accepts_only_exact_list_or_tuple_sequences() 
 
 def test_stacked_horde_preflights_aggregate_resources_before_allocation() -> None:
     last_feature_dim = (2**31 - 1 - 26) // 8
-    StackedHordeConfig(
-        n_demons=1,
-        feature_dim=last_feature_dim,
-        gammas=(0.9,),
-        lamdas=(0.8,),
-        cumulant_indices=(0,),
-    )
+    with pytest.raises(ValueError, match="update working set byte count"):
+        StackedHordeConfig(
+            n_demons=1,
+            feature_dim=last_feature_dim,
+            gammas=(0.9,),
+            lamdas=(0.8,),
+            cumulant_indices=(0,),
+        )
     with pytest.raises(ValueError, match="aggregate bytes"):
         StackedHordeConfig(
             n_demons=1,

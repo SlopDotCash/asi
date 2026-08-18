@@ -191,6 +191,36 @@ def _preflight_horde_resources(n_demons: int, feature_dim: int) -> None:
         raise ValueError("stacked Horde aggregate bytes must fit signed int32")
 
 
+def _stacked_horde_persistent_bytes(n_demons: int, feature_dim: int) -> int:
+    """Named persist already counted inside ``_preflight_horde_resources``."""
+    return 8 * n_demons * feature_dim + 4
+
+
+def _stacked_horde_update_result_extras_bytes(n_demons: int) -> int:
+    """Returned ``StackedHordeUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published prediction, TD-error,
+    per-head, and diagnostic leaves.
+    """
+    return 9 * n_demons + 1
+
+
+def _stacked_horde_update_working_set_bytes(n_demons: int, feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _stacked_horde_persistent_bytes(
+        n_demons, feature_dim
+    ) + _stacked_horde_update_result_extras_bytes(n_demons)
+
+
+def _preflight_stacked_horde_update_working_set(n_demons: int, feature_dim: int) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _stacked_horde_update_working_set_bytes(n_demons, feature_dim) > _INT32_MAX:
+        raise ValueError(
+            "stacked Horde update working set byte count must fit signed int32"
+        )
+
+
 def _require_scan_result_resources(num_updates: int, n_demons: int) -> None:
     result_scalars = num_updates * n_demons
     if result_scalars > _INT32_MAX or 4 * result_scalars > _INT32_MAX:
@@ -260,6 +290,7 @@ class StackedHordeConfig:
         )
 
         _preflight_horde_resources(n_demons, feature_dim)
+        _preflight_stacked_horde_update_working_set(n_demons, feature_dim)
 
         object.__setattr__(self, "n_demons", n_demons)
         object.__setattr__(self, "feature_dim", feature_dim)
@@ -337,6 +368,7 @@ def nexting_spec(
     if n_demons < 1 or n_demons > _INT32_MAX:
         raise ValueError("derived n_demons must be in the signed int32 domain")
     _preflight_horde_resources(n_demons, feature_dim)
+    _preflight_stacked_horde_update_working_set(n_demons, feature_dim)
     idxs: list[int] = []
     gs: list[float] = []
     for c in canonical_indices:
