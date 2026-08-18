@@ -618,6 +618,40 @@ def test_continuous_actor_critic_rejects_wrong_observation_shapes(
         agent.update(state, jnp.asarray(0.0), malformed)
 
 
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.uint8, jnp.int64])
+def test_run_continuous_actor_critic_from_arrays_rejects_integer_terminated(
+    dtype: object,
+) -> None:
+    agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=2))
+    state = agent.init(2, jr.key(0))
+    observations = jnp.zeros((2, 2), dtype=jnp.float32)
+    rewards = jnp.zeros((2,), dtype=jnp.float32)
+    with pytest.raises(TypeError, match="terminated must have dtype bool or float32"):
+        run_continuous_actor_critic_from_arrays(
+            agent,
+            state,
+            observations,
+            rewards,
+            jnp.array([0, 1], dtype=dtype),
+            observations,
+        )
+
+
+def test_run_continuous_actor_critic_from_arrays_accepts_bool_and_float32_terminated() -> None:
+    agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=2))
+    state = agent.init(2, jr.key(0))
+    observations = jnp.zeros((2, 2), dtype=jnp.float32)
+    rewards = jnp.zeros((2,), dtype=jnp.float32)
+    for flags in (
+        jnp.array([False, True], dtype=jnp.bool_),
+        jnp.array([0.0, 1.0], dtype=jnp.float32),
+    ):
+        result = run_continuous_actor_critic_from_arrays(
+            agent, state, observations, rewards, flags, observations
+        )
+        assert result.td_errors.shape == (2,)
+
+
 def test_continuous_actor_critic_state_contract_and_counter_saturation() -> None:
     agent = ContinuousActorCriticAgent(ContinuousActorCriticConfig(action_dim=2))
     state = agent.init(2, jr.key(0))
