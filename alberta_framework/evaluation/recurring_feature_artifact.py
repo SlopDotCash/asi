@@ -1444,7 +1444,7 @@ def _validate_checks(
         if (
             actual is None
             or threshold is None
-            or not isinstance(comparator, str)
+            or type(comparator) is not str
             or comparator not in {">=", "<=", ">", "=="}
         ):
             computed = False
