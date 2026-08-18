@@ -420,7 +420,7 @@ class ClassicalConditioningStream:
                 )
             except ValueError as error:
                 raise ValueError(
-                    f"phase {phase.name!r} cs_us_contingency must be in [0, 1]"
+                    f"phase '{phase.name}' cs_us_contingency must be in [0, 1]"
                 ) from error
             n_steps = _require_builtin_int(phase.n_steps, name="n_steps", minimum=1)
             compound_index = _require_builtin_int(
@@ -431,15 +431,15 @@ class ClassicalConditioningStream:
             for cs_idx in phase.cs_active:
                 if type(cs_idx) is not int:
                     raise ValueError(
-                        f"phase {phase.name!r} cs_active index must be a built-in integer"
+                        f"phase '{phase.name}' cs_active index must be a built-in integer"
                     )
                 if not (0 <= cs_idx < n_cs):
                     raise ValueError(
-                        f"phase {phase.name!r} references cs_active index out of range"
+                        f"phase '{phase.name}' references cs_active index out of range"
                     )
             if compound_index >= n_cs:
                 raise ValueError(
-                    f"phase {phase.name!r} has compound_index out of range"
+                    f"phase '{phase.name}' has compound_index out of range"
                 )
             canonical_phases.append(
                 PavlovianPhase(
