@@ -7,6 +7,7 @@ import dataclasses
 import jax.random as jr
 import pytest
 
+from alberta_framework import prototype_reference_adapter as adapter
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig
 from alberta_framework.core.prototype_agent import PrototypeAgentConfig
@@ -43,6 +44,23 @@ class _EvilStr(str):
     def __repr__(self) -> str:  # pragma: no cover
         type(self).calls += 1
         raise AssertionError("EvilStr.__repr__ must not be called")
+
+    def strip(self, _chars: str | None = None) -> str:  # pragma: no cover
+        type(self).calls += 1
+        raise AssertionError("EvilStr.strip must not be called")
+
+
+class _ExplodingPattern:
+    calls = 0
+
+    def __init__(self, pattern: object) -> None:
+        self._pattern = pattern
+
+    def fullmatch(self, value: str) -> object:
+        if type(value) is not str:
+            type(self).calls += 1
+            raise AssertionError("pattern matching must follow exact-type validation")
+        return self._pattern.fullmatch(value)  # type: ignore[attr-defined,no-any-return]
 
 
 class _StringSubclass(str):
@@ -104,3 +122,26 @@ def test_require_exact_str_rejects_hostile_name() -> None:
 def test_prototype_state_repr_not_used() -> None:
     state = _valid_state()
     assert isinstance(state, PrototypeReferenceState)
+
+
+def test_state_identity_fields_reject_string_subclasses_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _valid_state()
+    evil = _EvilStr("0" * 64)
+    sha_pattern = _ExplodingPattern(adapter._SHA256_PATTERN)
+    lifecycle_pattern = _ExplodingPattern(adapter._LIFECYCLE_PATTERN)
+    monkeypatch.setattr(adapter, "_SHA256_PATTERN", sha_pattern)
+    monkeypatch.setattr(adapter, "_LIFECYCLE_PATTERN", lifecycle_pattern)
+    _EvilStr.calls = 0
+    _ExplodingPattern.calls = 0
+
+    for field in ("manifest_id", "config_sha256", "lifecycle_id"):
+        with pytest.raises(ValueError, match=field):
+            dataclasses.replace(state, **{field: evil})
+    with pytest.raises(ValueError, match="current_observation_id"):
+        dataclasses.replace(state, current_observation_id=evil)
+    with pytest.raises(ValueError, match="lifecycle_id"):
+        adapter._lifecycle_words(evil)
+
+    assert _EvilStr.calls == _ExplodingPattern.calls == 0
