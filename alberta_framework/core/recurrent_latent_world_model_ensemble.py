@@ -136,15 +136,15 @@ def _finite_float32(
 
 
 def _strict_json_equal(actual: object, expected: object) -> bool:
-    if isinstance(expected, bool):
+    if type(expected) is bool:
         return isinstance(actual, bool) and actual is expected
     if expected is None:
         return actual is None
-    if isinstance(expected, int):
+    if type(expected) is int:
         return type(actual) is int and actual == expected
-    if isinstance(expected, float):
+    if type(expected) is float:
         return type(actual) is float and math.isfinite(actual) and actual == expected
-    if isinstance(expected, str):
+    if type(expected) is str:
         return type(actual) is str and actual == expected
     if isinstance(expected, list):
         return (
