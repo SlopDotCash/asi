@@ -1860,7 +1860,13 @@ class RecurrentTraceActorCriticAgent:
     def init(self, feature_dim: int, key: Array) -> RecurrentTraceActorCriticState:
         """Initialize independent actor/critic parameters and streaming state."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        self._config.state_resource_budget(feature_dim)
+        resources = self._config.state_resource_budget(feature_dim)
+        # Source state and proposed next state are live together in update().
+        update_working_set_bytes = 2 * resources["state_nbytes"]
+        if update_working_set_bytes > _INT32_MAX:
+            raise ValueError(
+                "recurrent-trace actor-critic update working set byte count must fit signed int32"
+            )
         actor_key, critic_key, policy_key = jr.split(key, 3)
         actor_params = initialize_rtu_network_parameters(
             actor_key,
