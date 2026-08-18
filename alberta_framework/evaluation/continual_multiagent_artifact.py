@@ -562,6 +562,8 @@ def _operational_payload(report: ContinualMultiAgentReport) -> dict[str, object]
 def canonical_content_bytes(content: Mapping[str, object]) -> bytes:
     """Return the documented canonical byte representation for digesting."""
 
+    if type(content) is not dict:
+        raise ValueError("content must be an object")
     return json.dumps(
         content,
         sort_keys=True,
@@ -686,14 +688,14 @@ def _required_mapping(
     errors: list[str],
 ) -> Mapping[str, object] | None:
     value = parent.get(key)
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{key} must be an object")
         return None
     return value
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is not int and type(value) is not float:
         return None
     numeric = float(value)
     return numeric if np.isfinite(numeric) else None
@@ -1223,6 +1225,9 @@ def validate_evidence_artifact(
     """Validate schema, required content, digest integrity, and acceptance."""
 
     errors: list[str] = []
+    if type(artifact) is not dict:
+        errors.append("artifact must be an object")
+        return ArtifactValidation(valid=False, accepted=False, errors=tuple(errors))
     if set(artifact) != {
         "schema_version",
         "content",
