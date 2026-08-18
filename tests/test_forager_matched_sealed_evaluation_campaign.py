@@ -39,6 +39,7 @@ from alberta_framework.benchmarks import (
 )
 from alberta_framework.benchmarks import forager_matched_trust as trust
 from tests import test_forager_matched_executor as executor_fixtures
+from tests import test_forager_matched_final_analysis as final_analysis_fixtures
 from tests import test_forager_matched_open_protocol as protocol_fixtures
 
 pytestmark = pytest.mark.integration
@@ -164,15 +165,23 @@ def _sealed_context(tmp_path: Path) -> sealed_campaign._SealedContext:
         )
         for candidate_id in transition.evaluation_candidate_ids
     }
-    plan = executor.build_execution_plan(
+    (
+        plan,
+        live,
+        _seed_artifacts,
+        _receipt_index,
+        sealed_scores,
+        _score_request,
+        _score_bindings,
+    ) = final_analysis_fixtures._panel(
+        tmp_path,
         sealed_protocol,
+        transition.evaluation_candidate_ids,
+        base_plan,
         assets,
+        label="sealed-context",
         qualification_manifest_sha256=qualification_digest,
-        cpu_qualification_root=base_plan.cpu_qualification_root,
-        rng_parity_qualification_root=base_plan.rng_parity_qualification_root,
-        candidate_ids=transition.evaluation_candidate_ids,
     )
-    live = executor_fixtures._runtime(tmp_path / "runtime", plan)
 
     qualification_root = tmp_path / "qualification"
     seal_root = tmp_path / "seal"
@@ -248,12 +257,7 @@ def _sealed_context(tmp_path: Path) -> sealed_campaign._SealedContext:
             },
         },
         open_protocol=open_value,
-        open_score_evidence=cast(
-            Any,
-            SimpleNamespace(
-                qualification_manifest_sha256=qualification_digest,
-            ),
-        ),
+        open_score_evidence=sealed_scores,
         open_verification_request=open_request,
         recorded_bindings_cache={
             "qualification_manifest_sha256": qualification_digest,
@@ -396,13 +400,13 @@ def test_exact_six_by_thirty_manifest_and_initial_inventory(tmp_path: Path) -> N
             "6a9315cb996fe5698e4c1580d30da9b0524e9875ce085d1399bb975cc5b510a8"
         ),
         "execution-plan.json": (
-            "504104d2405b63a62affc3e0bcf216ea59642cbe69913cda6c4004cc0ba1c7e6"
+            "29517b5739c150efff9dfabe09720686520f38ec9f9715cc6b5c50ebf95e26a3"
         ),
         "source-manifest.json": (
             "a1d727703b24ef6f96dc93b4fc306b9426ad2cfd054ba371aa84ac4c14dd7a68"
         ),
         "executor-manifest.json": (
-            "5855358720e964e568374a5048f7efdb198f2fcffeeaa1d5a5090f015dd28283"
+            "e27cf3e16832c903435ef4da15e7e32afa834cab950faaceb6c08d2f9cf15462"
         ),
         "qualification-manifest.json": (
             "d54fb71f96641d8cbe1eb3b78a3ac9aef3e680b4ea4efba14181dd74a5c1332f"
@@ -411,10 +415,10 @@ def test_exact_six_by_thirty_manifest_and_initial_inventory(tmp_path: Path) -> N
             "2859d85fbc9d44960e1b37fedf26589e2f3c5155b9356083ba7b5a427443f58f"
         ),
         "live-runtime.json": (
-            "fde9fccb66ca30c733e65249419af82a6169663c50c26b012fc5a2dcd8b1a9ee"
+            "bd88fbfa40b57023836d05525df429601864686be7446dc8b5116c88594c0421"
         ),
         "campaign.json": (
-            "ac834c518773d95b9876aef24a9b4fef7d74d0fed00173b1245ea3e439bc100f"
+            "c563582c1c40176af9eadf3a98475e99ea2851a36a8aad6ab14571f5198b1cd1"
         ),
     }
     _publish_context(context)
@@ -815,7 +819,7 @@ def test_false_authority_completion_summary_is_rejected_before_persistence(
     )
     assert summary["qualification_manifest_sha256"] == qualification_digest
     assert hashlib.sha256(campaign.canonical_json_bytes(summary)).hexdigest() == (
-        "7c3ef02385117816269644c8872c544c7b40ec68f8da4ec404e0b6231fbeaecd"
+        "23a9c7a3e936fcaaf87cc40cea11a05c236a078022541f057f2ab1a8b05514ae"
     )
     legacy = dict(summary)
     legacy["schema_version"] = "alberta.forager_matched_sealed_evaluation_completion.v1"
