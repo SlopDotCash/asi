@@ -1071,7 +1071,7 @@ def _validate_operational(
             condition = timing.get("condition")
             wall = _number(timing.get("wall_seconds"))
             latency = _number(timing.get("mean_step_latency_ms"))
-            if not isinstance(seed, int) or not isinstance(condition, str):
+            if type(seed) is not int or type(condition) is not str:
                 errors.append(f"condition_timings[{index}] has invalid identity")
             else:
                 observed_pairs.append((seed, condition))
