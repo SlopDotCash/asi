@@ -82,6 +82,15 @@ from alberta_framework.benchmarks.historical_forager_provenance import (
     historical_forager_provenance,
 )
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
 LOGGER = logging.getLogger("alberta.forager")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _HISTORICAL_CLI_SCHEMA = "alberta.historical_numpy_forager.cli.v1"
@@ -483,7 +492,7 @@ def _historical_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
         prog=prog,
         description=(
             "Inspect or verify artifacts from the reconstructed paper-era NumPy "
-            f"Forager family {HISTORICAL_FORAGER_FAMILY_ID!r}. Environment resolution "
+            f"Forager family '{HISTORICAL_FORAGER_FAMILY_ID}'. Environment resolution "
             "is explicitly unattested; this surface never launches a benchmark run."
         ),
     )
@@ -610,7 +619,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for name, config_path in args.reference_config:
         previous = reference_configs.setdefault(name, config_path)
         if previous != config_path:
-            parser.error(f"conflicting --reference-config paths for {name!r}")
+            host_name = _require_exact_str("name", name)
+            parser.error(f"conflicting --reference-config paths for '{host_name}'")
     unknown_reference_configs = reference_configs.keys() - reference_names
     if unknown_reference_configs:
         parser.error(
@@ -791,9 +801,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     environment=environment,
                 )
             else:
+                host_manifest_kind = _require_exact_str(
+                    "manifest_kind", manifest_kind
+                )
                 parser.error(
                     f"--reference-manifest {manifest_path} has unsupported "
-                    f"manifest_kind {manifest_kind!r}"
+                    f"manifest_kind '{host_manifest_kind}'"
                 )
         except (
             official_foragax_module.OfficialForagaxValidationError,
