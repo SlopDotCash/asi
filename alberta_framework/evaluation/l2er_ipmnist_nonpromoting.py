@@ -179,8 +179,8 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
     )
     if n_tasks > _INT32_MAX // task_length:
         raise ValueError("n_tasks * task_length exceeds signed int32")
-    if observations != n_tasks * task_length:
-        raise ValueError("observations must equal n_tasks * task_length")
+    if observations != n_tasks * task_length or updates != observations:
+        raise ValueError("observations and updates must equal n_tasks * task_length")
     boundary = _strings(
         outer["allowed_boundary_information"], context="allowed_boundary_information"
     )
@@ -194,9 +194,6 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
         for key in _HYPERPARAMETER_KEYS
     }
     expected_wd, expected_er_lr, expected_enabled = _ARMS[arm]
-    er_updates = observations // 100 if expected_enabled == 1.0 else 0
-    if updates != observations + er_updates:
-        raise ValueError("updates must include supervised and effective-rank updates")
     expected_hp = {
         "step_size": 1e-3,
         "weight_decay": expected_wd,
@@ -250,6 +247,7 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
         raise ValueError("resources exceed the bounded development protocol")
     if environment_steps != 0 or data_steps != observations:
         raise ValueError("environment_steps/data_steps do not match the supervised protocol")
+    er_updates = observations // 100 if expected_enabled == 1.0 else 0
     if effective_rank_updates != er_updates:
         raise ValueError("effective_rank_updates does not match the executed ER schedule")
     if model_queries != 2 * observations + er_updates:
@@ -336,6 +334,7 @@ def validate_matched_l2er_development_results(
         "hidden2",
         "n_classes",
         "observations",
+        "updates",
         "allowed_boundary_information",
         "allowed_task_information",
     )

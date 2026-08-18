@@ -103,6 +103,33 @@ def test_validator_rejects_hostile_plan_container_without_dispatch(
         matched.validate_report(hostile_runtime, require_current_source=False)
 
 
+def test_builder_revalidates_forged_result_before_field_dispatch() -> None:
+    class HostileInt(int):
+        calls = 0
+
+        def __mul__(self, other: object) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile multiply")
+
+        def __eq__(self, other: object) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile equality")
+
+        def __hash__(self) -> Never:
+            type(self).calls += 1
+            raise AssertionError("hostile hash")
+
+    results = _results()
+    forged_config = matched.IPMNISTConfig(**matched.CONFIG.to_config())
+    object.__setattr__(forged_config, "n_tasks", HostileInt(2))
+    object.__setattr__(results[0], "config", forged_config)
+    with pytest.raises(ValueError, match="n_tasks"):
+        matched.build_report(
+            results, source_provenance={}, dataset_provenance={}, environment={}
+        )
+    assert HostileInt.calls == 0
+
+
 def test_validator_preflights_hostile_dict_keys_before_hash_or_equality(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -178,33 +205,6 @@ def test_report_preflights_nested_receipt_keys_before_hostile_dispatch(
     assert HostileStr.calls == 0
 
 
-def test_builder_revalidates_forged_result_before_field_dispatch() -> None:
-    class HostileInt(int):
-        calls = 0
-
-        def __mul__(self, other: object) -> Never:
-            type(self).calls += 1
-            raise AssertionError("hostile multiply")
-
-        def __eq__(self, other: object) -> Never:
-            type(self).calls += 1
-            raise AssertionError("hostile equality")
-
-        def __hash__(self) -> Never:
-            type(self).calls += 1
-            raise AssertionError("hostile hash")
-
-    results = _results()
-    forged_config = matched.IPMNISTConfig(**matched.CONFIG.to_config())
-    object.__setattr__(forged_config, "n_tasks", HostileInt(2))
-    object.__setattr__(results[0], "config", forged_config)
-    with pytest.raises(ValueError, match="n_tasks"):
-        matched.build_report(
-            results, source_provenance={}, dataset_provenance={}, environment={}
-        )
-    assert HostileInt.calls == 0
-
-
 def test_validator_recomputes_paired_arithmetic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -240,8 +240,10 @@ def test_three_seed_interval_uses_student_t_not_normal_critical_value() -> None:
     assert critical.hex() == "0x1.135ea98e146bbp+2"
 
 
-def test_validator_rejects_obsolete_v1_report_identity(
+@pytest.mark.parametrize("version", ("v1", "v2"))
+def test_validator_rejects_obsolete_report_identity(
     monkeypatch: pytest.MonkeyPatch,
+    version: str,
 ) -> None:
     monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
     monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
@@ -249,7 +251,7 @@ def test_validator_rejects_obsolete_v1_report_identity(
     report = matched.build_report(
         _results(), source_provenance={}, dataset_provenance={}, environment={}
     )
-    report["schema"] = "asi.l2er-ipmnist.matched-development-report.v1"
+    report["schema"] = f"asi.l2er-ipmnist.matched-development-report.{version}"
     with pytest.raises(ValueError, match="schema does not match"):
         matched.validate_report(report, require_current_source=False)
 
@@ -269,16 +271,19 @@ def test_report_revalidates_result_identity_before_reading_metrics(
 
 
 def test_output_namespace_is_one_new_development_path() -> None:
-    assert matched.SCHEMA == "asi.l2er-ipmnist.matched-development-report.v2"
-    assert matched.PLAN_ID == "asi.l2er-ipmnist.cheap-screen.v2"
+    assert matched.SCHEMA == "asi.l2er-ipmnist.matched-development-report.v3"
+    assert matched.PLAN_ID == "asi.l2er-ipmnist.cheap-screen.v3"
     assert matched.OUTPUT_PATH.relative_to(matched._REPO_ROOT).as_posix() == (
-        "outputs/l2er_matched_development/report.v2.json"
+        "outputs/l2er_matched_development/report.v3.json"
     )
-    assert matched.SEEDS == (1721, 1722, 1723)
+    assert matched.SEEDS == (1711, 1712, 1713)
     prior = matched.frozen_plan()["prior_invalid_attempt"]
     assert prior["artifact_sha256"] == (
         "ab7f03b73993b79c53021970926181130980dd84b180e095779e30960953ff86"
     )
+    assert prior["source_commit"] == "f62d157a449c30a79dcf01740ae7f20a6c27e726"
+    assert prior["result_head_commit"] == "1472d7d57bd92f34e4a5b146b8cb524baf25f06e"
+    assert prior["pull_request"] == 1716
     assert prior["seeds"] == [1701, 1702, 1703]
     assert matched.frozen_plan()["development_only"] is True
     assert matched.frozen_plan()["scientific_promotion_allowed"] is False
@@ -294,13 +299,13 @@ def test_output_directory_rejects_symlinked_segments_and_occupied_target(
     monkeypatch.setattr(
         matched,
         "OUTPUT_PATH",
-        tmp_path / "outputs/l2er_matched_development/report.v2.json",
+        tmp_path / "outputs/l2er_matched_development/report.v3.json",
     )
     with pytest.raises(OSError):
         matched._open_output_transaction()
 
     (tmp_path / "outputs").unlink()
-    target = tmp_path / "outputs/l2er_matched_development/report.v2.json"
+    target = tmp_path / "outputs/l2er_matched_development/report.v3.json"
     target.parent.mkdir(parents=True)
     target.write_text("occupied", encoding="utf-8")
     with pytest.raises(FileExistsError, match="refusing to overwrite"):
@@ -314,7 +319,7 @@ def test_output_publication_uses_pinned_dirfd_and_strict_reload(
     monkeypatch.setattr(
         matched,
         "OUTPUT_PATH",
-        tmp_path / "outputs/l2er_matched_development/report.v2.json",
+        tmp_path / "outputs/l2er_matched_development/report.v3.json",
     )
     monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
     monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)

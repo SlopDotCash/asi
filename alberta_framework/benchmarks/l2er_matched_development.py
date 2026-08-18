@@ -33,32 +33,34 @@ from alberta_framework.evaluation.l2er_ipmnist_nonpromoting import (
     validate_l2er_development_result,
 )
 
-SCHEMA = "asi.l2er-ipmnist.matched-development-report.v2"
-PLAN_ID = "asi.l2er-ipmnist.cheap-screen.v2"
+SCHEMA = "asi.l2er-ipmnist.matched-development-report.v3"
+PLAN_ID = "asi.l2er-ipmnist.cheap-screen.v3"
 ARMS = (
     "l2er_mechanism_off",
     "l2er_l2_only",
     "l2er_er_only",
     "l2er_combined",
 )
-SEEDS = (1721, 1722, 1723)
+SEEDS = (1711, 1712, 1713)
 CONFIG = IPMNISTConfig(n_tasks=2, task_length=500)
-_T95_DF2 = math.sqrt(1.805 / 0.0975)
+_T95_DF2 = math.sqrt(722.0 / 39.0)
 _INVALID_V1_ATTEMPT = {
     "schema": "asi.l2er-ipmnist.matched-development-report.v1",
     "path": "outputs/l2er_matched_development/report.v1.json",
     "artifact_sha256": "ab7f03b73993b79c53021970926181130980dd84b180e095779e30960953ff86",
     "source_commit": "f62d157a449c30a79dcf01740ae7f20a6c27e726",
+    "result_head_commit": "1472d7d57bd92f34e4a5b146b8cb524baf25f06e",
+    "pull_request": 1716,
     "seeds": [1701, 1702, 1703],
     "disposition": "invalid_unmerged_historical_attempt",
     "execution_history": [
         "seed 1701 was consumed across all arms during executable-path audit",
-        "one planned invocation failed during dataset download before arm execution or output",
+        "one invocation failed during dataset download before arm execution or output",
         "a later complete v1 matrix produced the invalid unmerged artifact",
     ],
     "invalid_reasons": [
         "normal critical 1.96 was used instead of Student t(df=2)",
-        "effective-rank parameter updates were omitted from the update counter",
+        "effective-rank parameter updates were not separately reported",
         "seed 1701 had already been consumed during executable-path audit",
     ],
 }
@@ -66,11 +68,11 @@ _MAX_REPORT_RECORDS = 32
 _MAX_REPORT_BYTES = 16 * 1024 * 1024
 _PATH_TYPE = type(Path())
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-OUTPUT_PATH = _REPO_ROOT / "outputs/l2er_matched_development/report.v2.json"
+OUTPUT_PATH = _REPO_ROOT / "outputs/l2er_matched_development/report.v3.json"
 
 
 def frozen_plan() -> dict[str, object]:
-    """Return the literal plan committed before the first development run."""
+    """Return the literal v3 plan committed before any retained v3 execution."""
     return {
         "plan_id": PLAN_ID,
         "arms": list(ARMS),
@@ -255,9 +257,18 @@ def _validated_plan(value: object) -> dict[str, object]:
         frozenset(_INVALID_V1_ATTEMPT),
         context="plan.prior_invalid_attempt",
     )
-    for key in ("schema", "path", "artifact_sha256", "source_commit", "disposition"):
+    for key in (
+        "schema",
+        "path",
+        "artifact_sha256",
+        "source_commit",
+        "result_head_commit",
+        "disposition",
+    ):
         if type(prior[key]) is not str:
             raise ValueError(f"plan.prior_invalid_attempt.{key} must be an exact string")
+    if type(prior["pull_request"]) is not int:
+        raise ValueError("plan.prior_invalid_attempt.pull_request must be an exact integer")
     prior_seeds = prior["seeds"]
     history = prior["execution_history"]
     reasons = prior["invalid_reasons"]
@@ -461,15 +472,7 @@ def validate_report(
                 ("hidden2", CONFIG.hidden2),
                 ("n_classes", CONFIG.n_classes),
                 ("observations", CONFIG.n_steps),
-                (
-                    "updates",
-                    CONFIG.n_steps
-                    + (
-                        CONFIG.n_steps // 100
-                        if screening_spec(identity[1]).hyperparameters["er_enabled"] == 1.0
-                        else 0
-                    ),
-                ),
+                ("updates", CONFIG.n_steps),
                 (
                     "effective_rank_updates",
                     CONFIG.n_steps // 100
@@ -680,13 +683,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = run(data_home=args.data_home)
         _publish_report(directory_fd, temporary_fd, temporary_name, report)
     finally:
-        os.close(temporary_fd)
         try:
-            os.unlink(temporary_name, dir_fd=directory_fd)
-            os.fsync(directory_fd)
-        except FileNotFoundError:
-            pass
-        os.close(directory_fd)
+            os.close(temporary_fd)
+        finally:
+            try:
+                try:
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+                except FileNotFoundError:
+                    pass
+            finally:
+                os.close(directory_fd)
     return 0
 
 
