@@ -96,8 +96,34 @@ def _require_id(value: str, *, name: str) -> None:
 
 
 def _require_digest(value: str, *, name: str) -> None:
-    if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+    if type(value) is not str or _SHA256.fullmatch(value) is None:
         raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+
+
+def _require_exact_bool(name: str, value: object) -> bool:
+    """Reject leftover int/string identities before they become a verdict."""
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be an exact bool")
+    return value
+
+
+def _require_regime_id(value: object, *, name: str = "regime_id") -> int:
+    """Reject leftover bool identities that compare equal to 0 or 1."""
+    if type(value) is not int:
+        raise ValueError(f"{name} must be an exact integer")
+    if value not in (0, 1):
+        raise ValueError(f"{name} must be 0 or 1")
+    return value
+
+
+def _require_finite_real(name: str, value: object) -> float:
+    """Reject leftover bool/NaN identities before they become recorded rewards."""
+    if type(value) is bool or type(value) not in (int, float):
+        raise ValueError(f"{name} must be a finite real number")
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite real number")
+    return number
 
 
 def _require_prototype_lifecycle_id(value: str) -> None:
@@ -671,10 +697,9 @@ class ReferenceEnvironmentStart:
     regime_id: int
 
     def __post_init__(self) -> None:
+        _require_regime_id(self.regime_id, name="environment start regime_id")
         if not isinstance(self.observation, ArrayValue):
             raise ValueError("environment start observation must be an ArrayValue")
-        if self.regime_id not in (0, 1):
-            raise ValueError("environment start regime_id must be 0 or 1")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -694,24 +719,24 @@ class ReferenceEnvironmentExecution:
     oracle_reward: float
 
     def __post_init__(self) -> None:
+        reward = _require_finite_real("reward", self.reward)
+        discount = _require_finite_real("discount", self.discount)
+        oracle_reward = _require_finite_real("oracle_reward", self.oracle_reward)
+        if discount < 0.0 or discount > 1.0:
+            raise ValueError("discount must be in [0, 1]")
+        _require_exact_bool("terminated", self.terminated)
+        _require_exact_bool("truncated", self.truncated)
+        _require_exact_bool("autoreset", self.autoreset)
+        _require_regime_id(self.regime_id)
+        object.__setattr__(self, "reward", reward)
+        object.__setattr__(self, "discount", discount)
+        object.__setattr__(self, "oracle_reward", oracle_reward)
         if not isinstance(self.command, DispatchCommand):
             raise ValueError("environment execution requires a DispatchCommand")
         if not isinstance(self.applied_action, ArrayValue):
             raise ValueError("applied_action must be an ArrayValue")
         if not isinstance(self.next_observation, ArrayValue):
             raise ValueError("next_observation must be an ArrayValue")
-        for name in ("reward", "discount", "oracle_reward"):
-            if not math.isfinite(float(getattr(self, name))):
-                raise ValueError(f"{name} must be finite")
-        if self.discount < 0.0 or self.discount > 1.0:
-            raise ValueError("discount must be in [0, 1]")
-        if any(
-            not isinstance(getattr(self, name), bool)
-            for name in ("terminated", "truncated", "autoreset")
-        ):
-            raise ValueError("environment boundary flags must be boolean")
-        if self.regime_id not in (0, 1):
-            raise ValueError("regime_id must be 0 or 1")
 
 
 # Compatibility names retained for the original deterministic slice.
@@ -1554,12 +1579,13 @@ class PendingOutcome:
     oracle_reward: float
 
     def __post_init__(self) -> None:
+        _require_regime_id(self.regime_id, name="pending outcome regime_id")
+        oracle_reward = _require_finite_real(
+            "pending outcome oracle reward", self.oracle_reward
+        )
+        object.__setattr__(self, "oracle_reward", oracle_reward)
         if not isinstance(self.transaction, Transaction):
             raise ValueError("pending outcome requires a Transaction")
-        if self.regime_id not in (0, 1):
-            raise ValueError("pending outcome regime_id must be 0 or 1")
-        if not math.isfinite(self.oracle_reward):
-            raise ValueError("pending outcome oracle reward must be finite")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1652,6 +1678,14 @@ class ReferenceLifeEvent:
     transcript_sha256: str
     recovered: bool
 
+    def __post_init__(self) -> None:
+        """Reject leftover recovered/regime/reward identities before they record."""
+        _require_exact_bool("recovered", self.recovered)
+        _require_regime_id(self.regime_id)
+        oracle_reward = _require_finite_real("oracle_reward", self.oracle_reward)
+        _require_digest(self.transcript_sha256, name="transcript_sha256")
+        object.__setattr__(self, "oracle_reward", oracle_reward)
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReferenceLifeStep:
@@ -1661,8 +1695,7 @@ class ReferenceLifeStep:
     rejection_reason: str | None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.accepted, bool):
-            raise ValueError("accepted must be boolean")
+        _require_exact_bool("accepted", self.accepted)
         if self.accepted and self.rejection_reason is not None:
             raise ValueError("accepted life step cannot carry a rejection reason")
         if not self.accepted and (
