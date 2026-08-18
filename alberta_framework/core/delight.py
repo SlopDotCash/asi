@@ -2116,7 +2116,10 @@ def stratify_delight_outcomes(
     but belong to neither success nor failure stratum.
     """
     advantages = jnp.ravel(jnp.asarray(result.advantage, dtype=jnp.float32))
-    rare = jnp.ravel(jnp.asarray(rare_mask, dtype=jnp.bool_))
+    rare_input = jnp.asarray(rare_mask)
+    if rare_input.dtype != jnp.bool_:
+        raise ValueError("rare_mask must have boolean dtype")
+    rare = jnp.ravel(rare_input)
     if rare.shape != advantages.shape:
         raise ValueError("rare_mask must match the flattened advantage shape")
     common = ~rare

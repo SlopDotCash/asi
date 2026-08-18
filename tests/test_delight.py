@@ -2136,3 +2136,23 @@ def test_paper_specific_dg_rejects_shape_mismatch_and_empty_batches() -> None:
     )
     with pytest.raises(ValueError, match="rare_mask"):
         stratify_delight_outcomes(result, jnp.zeros((3,), dtype=jnp.bool_))
+
+
+@pytest.mark.parametrize(
+    "rare_mask",
+    (
+        jnp.array([0.0, 0.5], dtype=jnp.float32),
+        jnp.array([0.0, jnp.nan], dtype=jnp.float32),
+        jnp.array([0, 1], dtype=jnp.int32),
+    ),
+)
+def test_delight_stratification_rejects_non_boolean_rare_masks(rare_mask: Array) -> None:
+    result = discrete_delightful_policy_gradient(
+        jnp.log(jnp.array([0.5, 0.5], dtype=jnp.float32)),
+        jnp.array([1.0, -1.0], dtype=jnp.float32),
+    )
+
+    with pytest.raises(ValueError, match="rare_mask must have boolean dtype"):
+        stratify_delight_outcomes(result, rare_mask)
+    with pytest.raises(ValueError, match="rare_mask must have boolean dtype"):
+        jax.jit(stratify_delight_outcomes)(result, rare_mask)
