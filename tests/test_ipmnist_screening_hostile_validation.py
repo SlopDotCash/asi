@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from alberta_framework.benchmarks import ipmnist_screening
 from alberta_framework.benchmarks.ipmnist_screening import (
     ScreeningRunResult,
     ScreeningSpec,
@@ -71,3 +72,28 @@ def test_screening_run_result_rejects_invalid_inputs() -> None:
             per_task_plasticity=dummy_arr,
             wall_clock_seconds=float("inf"),
         )
+
+
+def test_screening_string_boundaries_reject_hostile_subclasses_without_hooks() -> None:
+    class HostileStr(str):
+        calls = 0
+
+        def _called(self) -> bool:
+            type(self).calls += 1
+            raise AssertionError("hostile string hook executed")
+
+        __bool__ = _called
+        __eq__ = _called
+        __hash__ = _called
+
+        def __repr__(self) -> str:
+            self._called()
+            return "unreachable"
+
+    hostile = HostileStr("upgd_w_control")
+    with pytest.raises(ValueError, match="exact string"):
+        screening_spec(hostile)
+
+    with pytest.raises(ValueError, match="non-empty string"):
+        ipmnist_screening._required_nonempty_string(hostile, context="config_name")
+    assert HostileStr.calls == 0

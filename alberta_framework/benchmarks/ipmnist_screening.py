@@ -6701,11 +6701,10 @@ SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_regist
 
 def screening_spec(name: str) -> ScreeningSpec:
     """Look up a screening configuration by name."""
+    if type(name) is not str:
+        raise ValueError("screening config name must be an exact string")
     if name not in SCREENING_REGISTRY:
-        raise ValueError(
-            f"unknown screening config {name!r}; expected one of "
-            f"{sorted(SCREENING_REGISTRY)}"
-        )
+        raise ValueError(f"unknown screening config; expected one of {sorted(SCREENING_REGISTRY)}")
     return SCREENING_REGISTRY[name]
 
 
@@ -8418,10 +8417,16 @@ def load_shard(path: Path) -> dict[str, Any]:
         payload.get("wall_clock_seconds"), path
     )
     payload["seed"] = require_jax_seed(payload.get("seed"), name=f"{path}: seed")
-    if payload.get("config_name") not in SCREENING_REGISTRY:
-        raise ValueError(f"{path}: unknown config_name {payload.get('config_name')!r}")
-    spec = SCREENING_REGISTRY[payload["config_name"]]
-    if is_v2 and payload.get("base_learner") != spec.base_learner:
+    config_name = _required_nonempty_string(
+        payload.get("config_name"), context=f"{path}: config_name"
+    )
+    if config_name not in SCREENING_REGISTRY:
+        raise ValueError(f"{path}: unknown config_name")
+    spec = SCREENING_REGISTRY[config_name]
+    base_learner = _required_nonempty_string(
+        payload.get("base_learner"), context=f"{path}: base_learner"
+    )
+    if is_v2 and base_learner != spec.base_learner:
         raise ValueError(
             f"{path}: base_learner must match registered arm {spec.base_learner!r}"
         )
@@ -8440,8 +8445,8 @@ def load_shard(path: Path) -> dict[str, Any]:
     )
     payload["noise_mode"] = noise_mode
     payload["noise_pool_steps"] = noise_pool_steps
-    if type(payload.get("base_learner")) is not str or not payload["base_learner"]:
-        raise ValueError(f"{path}: base_learner must be a non-empty string")
+    payload["config_name"] = config_name
+    payload["base_learner"] = base_learner
     if not isinstance(payload.get("hyperparameters"), dict):
         raise ValueError(f"{path}: hyperparameters must be an object")
     if not is_v2:
