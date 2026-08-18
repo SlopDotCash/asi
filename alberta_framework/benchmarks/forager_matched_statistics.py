@@ -190,6 +190,8 @@ def _float_hex(value: float) -> str:
 
 
 def _canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
+    if type(payload) is not dict:
+        raise MatchedStatisticsError("payload must be an object")
     try:
         text = json.dumps(
             payload,
