@@ -29,7 +29,7 @@ from types import TracebackType
 
 import numpy as np
 
-_ACTUAL_INT_TYPES = frozenset(
+_ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
         np.int8,
@@ -44,7 +44,7 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
-_ACTUAL_FLOAT_TYPES = frozenset(
+_ACTUAL_FLOAT_TYPES: frozenset[type] = frozenset(
     {
         float,
         Fraction,
@@ -54,9 +54,15 @@ _ACTUAL_FLOAT_TYPES = frozenset(
         np.dtype("g").type,
     }
 )
-_ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+_ALLOWED_REAL_TYPES: frozenset[type] = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
 _MAX_DURATION_SECONDS = 1.0e12
 _MAX_TIMER_SAMPLES = 2_147_483_647
+
+
+def _has_exact_type(value: object, allowed: frozenset[type]) -> bool:
+    """Match a concrete type without invoking an untrusted metaclass hook."""
+    actual_type = type(value)
+    return any(actual_type is allowed_type for allowed_type in allowed)
 
 
 def _require_exact_str(name: str, value: object) -> str:
@@ -66,9 +72,9 @@ def _require_exact_str(name: str, value: object) -> str:
 
 
 def _require_finite_real(name: str, value: object) -> float:
-    if type(value) in (bool, np.bool_):
+    if type(value) is bool or type(value) is np.bool_:
         raise ValueError(f"{name} must be a finite real number, not a boolean")
-    if type(value) not in _ALLOWED_REAL_TYPES:
+    if not _has_exact_type(value, _ALLOWED_REAL_TYPES):
         raise ValueError(f"{name} must be a finite real number")
     try:
         number = float(value)  # type: ignore[arg-type]

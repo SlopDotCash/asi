@@ -13,7 +13,8 @@ def real_number(name: str, value: object) -> float:
     recorded rejections (``passed=False``); only the host type is gated here.
     """
 
-    if type(value) not in (int, float):
+    actual_type = type(value)
+    if actual_type is not int and actual_type is not float:
         raise ValueError(f"{name} must be a real number")
     return float(cast("int | float", value))
 
@@ -21,7 +22,8 @@ def real_number(name: str, value: object) -> float:
 def finite_real(name: str, value: object) -> float:
     """Return a finite builtin float without accepting facade identities."""
 
-    if type(value) not in (int, float):
+    actual_type = type(value)
+    if actual_type is not int and actual_type is not float:
         raise ValueError(f"{name} must be a finite real number")
     numeric = float(cast("int | float", value))
     if not math.isfinite(numeric):

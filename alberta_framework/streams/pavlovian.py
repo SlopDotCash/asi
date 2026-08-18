@@ -81,6 +81,12 @@ _ACTUAL_FLOAT_TYPES: frozenset[type] = frozenset(
 _ALLOWED_REAL_TYPES: frozenset[type] = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
 
 
+def _has_exact_type(value: object, allowed: frozenset[type]) -> bool:
+    """Match a concrete type without invoking an untrusted metaclass hook."""
+    actual_type = type(value)
+    return any(actual_type is allowed_type for allowed_type in allowed)
+
+
 def _require_pavlovian_resources(
     *, n_phases: int, n_cs: int, n_distractors: int
 ) -> None:
@@ -104,7 +110,7 @@ def _require_finite_real(
     """Return a finite real, rejecting bools, NaN, and infinities."""
     # Exact-type whitelist prevents ``__class__`` spoofing and hostile
     # ``as_integer_ratio`` subclasses from reaching the narrowing routine.
-    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
+    if type(value) is bool or not _has_exact_type(value, _ALLOWED_REAL_TYPES):
         raise ValueError(f"{name} must be a finite real")
     real_value = cast(Real, value)
     try:
@@ -127,7 +133,7 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
     """
     # Exact-type whitelist rejects hostile subclasses before ``as_integer_ratio``
     # is ever consulted — mirrors the world-model ensemble gate.
-    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
+    if type(value) is bool or not _has_exact_type(value, _ALLOWED_REAL_TYPES):
         raise ValueError(f"{name} must be a non-negative finite real")
     real_value = cast(Real, value)
     try:
@@ -151,7 +157,7 @@ def _require_nonnegative_float32(value: object, *, name: str) -> float:
 
 def _require_unit_interval(value: object, *, name: str) -> float:
     """Return a probability valid in both exact-host and float32 domains."""
-    if issubclass(type(value), bool) or type(value) not in _ALLOWED_REAL_TYPES:
+    if type(value) is bool or not _has_exact_type(value, _ALLOWED_REAL_TYPES):
         raise ValueError(f"{name} must be in [0, 1]")
     try:
         numerator, denominator, narrowed = round_real_to_float32_with_ratio(

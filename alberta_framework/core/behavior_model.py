@@ -55,8 +55,14 @@ _CONFIG_FIELDS = frozenset(
 )
 
 
+def _has_exact_type(value: object, allowed: tuple[type, ...] | frozenset[type]) -> bool:
+    """Match a concrete type without invoking an untrusted metaclass hook."""
+    actual_type = type(value)
+    return any(actual_type is allowed_type for allowed_type in allowed)
+
+
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
-    if type(value) not in _ACTUAL_INT_TYPES:
+    if not _has_exact_type(value, _ACTUAL_INT_TYPES):
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     canonical = operator.index(cast(SupportsIndex, value))
     if not minimum <= canonical <= maximum:
@@ -66,7 +72,7 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 
 def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     """Validate only trusted concrete host scalar types at the float32 sink."""
-    if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
+    if not _has_exact_type(value, _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
     return validated_float32_scalar(name, value, **bounds)
 
@@ -104,7 +110,7 @@ def _integer_action_ids(
     else:
         trusted_host = (
             actual_type is np.ndarray
-            or actual_type in _ACTUAL_INT_TYPES
+            or any(actual_type is allowed_type for allowed_type in _ACTUAL_INT_TYPES)
             or issubclass(actual_type, jax.Array)
         )
         if not trusted_host:

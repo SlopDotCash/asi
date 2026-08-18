@@ -82,7 +82,8 @@ _ACTUAL_INT_TYPES = frozenset(
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int) -> int:
-    if type(value) not in _ACTUAL_INT_TYPES:
+    actual_type = type(value)
+    if not any(actual_type is allowed_type for allowed_type in _ACTUAL_INT_TYPES):
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     canonical = operator.index(cast(SupportsIndex, value))
     if not minimum <= canonical <= maximum:
@@ -284,11 +285,16 @@ class HistoryFeatureExtractor:
     def _require_state_contract(self, state: HistoryFeatureState) -> None:
         if type(state) is not HistoryFeatureState:
             raise TypeError("state must be an exact HistoryFeatureState")
+        traces_type = type(state.traces)
+        if not (
+            issubclass(traces_type, jax.Array)
+            or issubclass(traces_type, jax.core.Tracer)
+        ):
+            raise TypeError("state.traces must be a JAX array")
         expected_shape = (len(self._decay_rates), len(self._channels))
         if state.traces.shape != expected_shape or state.traces.dtype != jnp.float32:
             raise ValueError("state.traces has an invalid shape or dtype")
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def step(
         self,
         state: HistoryFeatureState,
@@ -308,6 +314,18 @@ class HistoryFeatureExtractor:
             - ``new_state`` carries the updated trace values
         """
         self._require_state_contract(state)
+        return cast(
+            tuple[Float[Array, " out_dim"], HistoryFeatureState],
+            self._step_jit(state, observation),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _step_jit(
+        self,
+        state: HistoryFeatureState,
+        observation: Float[Array, " raw_dim"],
+    ) -> tuple[Float[Array, " out_dim"], HistoryFeatureState]:
+        """Execute one validated history update."""
         # Select tracked channels
         channel_indices = jnp.asarray(self._channels, dtype=jnp.int32)
         observation = jnp.asarray(observation, dtype=jnp.float32)

@@ -35,6 +35,7 @@ import dataclasses
 import functools
 import math
 import operator
+from fractions import Fraction
 from numbers import Real
 from typing import Any, SupportsIndex, cast
 
@@ -66,6 +67,15 @@ _ACTUAL_INT_TYPES = frozenset(
         np.ulonglong,
     }
 )
+_ACTUAL_REAL_TYPES: frozenset[type] = _ACTUAL_INT_TYPES | frozenset(
+    {float, Fraction, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
+)
+
+
+def _has_exact_type(value: object, allowed: frozenset[type]) -> bool:
+    """Match a concrete type without invoking an untrusted metaclass hook."""
+    actual_type = type(value)
+    return any(actual_type is allowed_type for allowed_type in allowed)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -74,7 +84,7 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
-    if type(value) not in _ACTUAL_INT_TYPES:
+    if not _has_exact_type(value, _ACTUAL_INT_TYPES):
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     canonical = operator.index(cast(SupportsIndex, value))
     if not minimum <= canonical <= maximum:
@@ -85,8 +95,9 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 def _finite_positive_normal_float32(name: str, value: object) -> float:
     """Return a concrete real after validation in the model's execution dtype."""
     message = f"{name} must be a finite positive normal float32"
-    preserve_builtin_payload = type(value) is int or type(value) is float
-    if isinstance(value, bool) or not isinstance(value, Real):
+    actual_type = type(value)
+    preserve_builtin_payload = actual_type is int or actual_type is float
+    if actual_type is bool or not _has_exact_type(value, _ACTUAL_REAL_TYPES):
         raise ValueError(message)
     try:
         narrowed = round_real_to_float32(value)
@@ -95,7 +106,7 @@ def _finite_positive_normal_float32(name: str, value: object) -> float:
     if not math.isfinite(narrowed) or narrowed < _FLOAT32_TINY:
         raise ValueError(message)
     if preserve_builtin_payload:
-        concrete = float(value)
+        concrete = float(cast(Real, value))
         if round_real_to_float32(cast(Real, concrete)) == narrowed:
             return concrete
     return narrowed
