@@ -416,6 +416,8 @@ def _operational_payload(report: ContinualIAReport) -> dict[str, object]:
 
 
 def canonical_content_bytes(content: Mapping[str, object]) -> bytes:
+    if type(content) is not dict:
+        raise ValueError("content must be an object")
     return json.dumps(
         content,
         sort_keys=True,
@@ -525,7 +527,7 @@ def write_ia_consumed_seed_replay(
 
 
 def _number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
     numeric = float(value)
     return numeric if np.isfinite(numeric) else None
@@ -612,7 +614,7 @@ def _parse_budget(
     location: str,
     errors: list[str],
 ) -> ControllerBudget | None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append(f"{location} must be an object")
         return None
     expected_fields = {
@@ -664,7 +666,7 @@ def _parse_config(
     value: object,
     errors: list[str],
 ) -> ContinualIAConfig | None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append("content.configuration must be an object")
         return None
     canonical_payload = _config_payload(ContinualIAConfig())
@@ -970,7 +972,7 @@ def _parse_results(
 
 
 def _validate_provenance(value: object, errors: list[str]) -> None:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         errors.append("content.source_provenance must be an object")
         return
     try:
@@ -1096,6 +1098,9 @@ def _validate_ia_evidence_artifact(
     """Implement strict validation and the registry's nonpromoting projection."""
 
     errors: list[str] = []
+    if type(artifact) is not dict:
+        errors.append("artifact must be an object")
+        return IAArtifactValidation(valid=False, accepted=False, errors=tuple(errors))
     schema = artifact.get("schema_version")
     is_replay = schema == REPLAY_SCHEMA_VERSION
     expected_top_level = {
