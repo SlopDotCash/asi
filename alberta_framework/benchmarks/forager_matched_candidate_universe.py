@@ -383,7 +383,7 @@ class CandidateUniverseVerification:
             _require_sha256(self.candidate_universe_sha256, "candidate_universe_sha256"),
         )
         if type(self.verified_json_paths) is not tuple or not all(
-            isinstance(p, str) and p for p in self.verified_json_paths
+            type(p) is str and p for p in self.verified_json_paths
         ):
             raise ForagerMatchedCandidateUniverseError(
                 "verified_json_paths must be a tuple of non-empty strings"
@@ -1661,7 +1661,7 @@ def _verify_one_screen(
     if (
         input_snapshot.get("schema_version") != "alberta.foragax_open_screen_inputs.v3"
         or not isinstance(directories, list)
-        or any(not isinstance(item, str) for item in directories)
+        or any(type(item) is not str for item in directories)
         or not isinstance(files, list)
     ):
         raise ForagerMatchedCandidateUniverseError(
@@ -1686,7 +1686,7 @@ def _verify_one_screen(
         path = record.get("path")
         size_bytes = record.get("size_bytes")
         if (
-            not isinstance(path, str)
+            type(path) is not str
             or path in file_records
             or type(size_bytes) is not int
             or size_bytes < 0
@@ -1751,7 +1751,7 @@ def _verify_one_screen(
     if (
         not isinstance(configuration_order, list)
         or len(configuration_order) != binding.candidate_count
-        or any(not isinstance(item, str) for item in configuration_order)
+        or any(type(item) is not str for item in configuration_order)
         or len(set(configuration_order)) != binding.candidate_count
         or set(configuration_order) != expected_configurations
     ):
@@ -1768,7 +1768,7 @@ def _require_mapping(value: Any, context: str) -> Mapping[str, Any]:
 
 def _verified_payload_sha256(value: Mapping[str, Any], context: str) -> str:
     supplied = value.get("payload_sha256")
-    if not isinstance(supplied, str):
+    if type(supplied) is not str:
         raise ForagerMatchedCandidateUniverseError(
             f"{context} payload_sha256 is missing or malformed"
         )
@@ -2279,7 +2279,7 @@ def _verify_rtu_candidate_generation(
             "rtu_schema23_screening_v1 protocol variants must be an array"
         )
     if len(protocol_variants_value) != binding.candidate_count or any(
-        not isinstance(item, Mapping) or not isinstance(item.get("id"), str)
+        not isinstance(item, Mapping) or type(item.get("id")) is not str
         for item in protocol_variants_value
     ):
         raise ForagerMatchedCandidateUniverseError(
