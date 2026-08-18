@@ -8008,7 +8008,7 @@ def load_prototype_checkpoint(
     if not isinstance(config, dict):
         raise ValueError("prototype checkpoint is missing agent_config")
     expected_digest = metadata.get("config_sha256")
-    if not isinstance(expected_digest, str) or expected_digest != (
+    if type(expected_digest) is not str or expected_digest != (
         _prototype_config_digest(config)
     ):
         raise ValueError("prototype checkpoint config digest does not match")
