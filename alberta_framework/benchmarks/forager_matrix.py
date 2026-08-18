@@ -1950,7 +1950,7 @@ def _hashed_payload(value: Mapping[str, Any]) -> dict[str, Any]:
 def _verify_hashed_payload(value: Any, *, description: str) -> Mapping[str, Any]:
     payload = _require_object(value, description)
     supplied = payload.get("payload_sha256")
-    if not isinstance(supplied, str) or _SHA256.fullmatch(supplied) is None:
+    if type(supplied) is not str or _SHA256.fullmatch(supplied) is None:
         raise ForagerMatrixStateError(f"{description} has no valid payload_sha256")
     unhashed = {key: item for key, item in payload.items() if key != "payload_sha256"}
     actual = _json_sha256(unhashed)
@@ -2843,7 +2843,7 @@ def _validate_source_snapshot_bytes(
             raise ForagerMatrixStateError(
                 f"{description} inventory file exceeds the size limit"
             )
-        if not isinstance(digest, str) or _SHA256.fullmatch(digest) is None:
+        if type(digest) is not str or _SHA256.fullmatch(digest) is None:
             raise ForagerMatrixStateError(f"{description} inventory digest is invalid")
         expected_names.append(path)
         normalized_files.append((path, size, digest))
@@ -4441,7 +4441,7 @@ def _validate_execution_manifest(
 
 
 def _validate_utc_timestamp(value: Any, path: str) -> datetime:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         raise ForagerMatrixStateError(f"{path} must be a non-empty UTC timestamp")
     try:
         parsed = datetime.fromisoformat(value)
