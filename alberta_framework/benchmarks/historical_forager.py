@@ -236,9 +236,9 @@ def _distribution_version(name: str) -> str | None:
 def _module_or_distribution_version(module_name: str, distribution_name: str) -> str | None:
     module = sys.modules.get(module_name)
     version = getattr(module, "__version__", None)
-    if isinstance(version, str) and version:
-        return version
-    return _distribution_version(distribution_name)
+    if type(version) is not str or not version:
+        return _distribution_version(distribution_name)
+    return version
 
 
 def historical_forager_runtime_identity() -> dict[str, Any]:
@@ -439,7 +439,7 @@ def _require_read_only_non_tmp_factory_source(
     owner = factory if inspect.isclass(factory) or inspect.isfunction(factory) else type(factory)
     module = inspect.getmodule(owner)
     module_file = getattr(module, "__file__", None)
-    if not isinstance(module_file, str):
+    if type(module_file) is not str:
         raise HistoricalForagerContractError("factory source module has no filesystem identity")
     try:
         source_file = Path(module_file).resolve(strict=True)
