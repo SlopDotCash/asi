@@ -16,8 +16,9 @@ import numpy as np
 from alberta_framework.benchmarks.ipmnist_screening import _atomic_write_json
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
 
-BASE = Path("/home/shaw/milady/research/alberta/outputs/ipmnist_screening")
-OUT = Path("/home/shaw/milady/research/alberta/outputs/rule_discovery/real_screen_v1.json")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+BASE = REPO_ROOT / "outputs" / "ipmnist_screening"
+OUT = REPO_ROOT / "outputs" / "rule_discovery" / "real_screen_v1.json"
 SEEDS = (0, 1, 2)
 
 

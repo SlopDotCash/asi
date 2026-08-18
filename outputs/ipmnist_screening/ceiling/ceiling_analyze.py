@@ -8,8 +8,8 @@ from pathlib import Path
 
 import numpy as np
 
-OUT = Path("/home/shaw/milady/research/alberta/outputs/ipmnist_screening/ceiling")
-CONFIRM = Path("/home/shaw/milady/research/alberta/outputs/ipmnist_screening/confirm_full")
+OUT = Path(__file__).resolve().parent
+CONFIRM = OUT.parent / "confirm_full"
 
 LATE_LO, LATE_HI = 4000, 5000  # within-task plateau window
 BUCKETS = [(0, 50), (50, 100), (100, 250), (250, 500), (500, 1000),

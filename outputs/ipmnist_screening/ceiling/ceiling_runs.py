@@ -41,7 +41,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     load_mnist_train,
 )
 
-OUT = Path("/home/shaw/milady/research/alberta/outputs/ipmnist_screening/ceiling")
+OUT = Path(__file__).resolve().parent
 
 
 def _load_train() -> tuple[np.ndarray, np.ndarray]:
