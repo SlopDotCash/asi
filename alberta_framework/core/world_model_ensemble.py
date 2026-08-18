@@ -156,17 +156,12 @@ def _ensemble_state_resource_counts(
         if not 1 <= value <= _INT32_MAX:
             raise ValueError(f"derived {name} must fit signed int32")
 
-    update_float32_scalars = (
-        2 * ensemble_size * target_dim
-        + 3 * target_dim
-        + ensemble_size * model.observation_dim
-        + 2 * model.observation_dim
-        + 3 * ensemble_size
-        + 13
+    extras_scalars, extras_bytes = _ensemble_update_result_extras(
+        observation_dim=model.observation_dim,
+        ensemble_size=ensemble_size,
     )
-    update_bool_scalars = 2 * ensemble_size + 20
-    update_scalars = logical_scalars + update_float32_scalars + update_bool_scalars
-    update_bytes = logical_bytes + 4 * update_float32_scalars + update_bool_scalars
+    update_scalars = logical_scalars + extras_scalars
+    update_bytes = logical_bytes + extras_bytes
     for name, value in (
         ("ensemble update-result scalars", update_scalars),
         ("ensemble update-result bytes", update_bytes),
@@ -174,6 +169,61 @@ def _ensemble_state_resource_counts(
         if not 1 <= value <= _INT32_MAX:
             raise ValueError(f"derived {name} must fit signed int32")
     return logical_scalars, logical_bytes
+
+
+def _ensemble_update_result_extras(
+    *, observation_dim: int, ensemble_size: int
+) -> tuple[int, int]:
+    """Returned ``WorldModelEnsembleUpdateResult`` extras excluding persist.
+
+    Returns ``(extras_scalars, extras_bytes)``.
+    """
+    target_dim = observation_dim + 2
+    update_float32_scalars = (
+        2 * ensemble_size * target_dim
+        + 3 * target_dim
+        + ensemble_size * observation_dim
+        + 2 * observation_dim
+        + 3 * ensemble_size
+        + 13
+    )
+    update_bool_scalars = 2 * ensemble_size + 20
+    return (
+        update_float32_scalars + update_bool_scalars,
+        4 * update_float32_scalars + update_bool_scalars,
+    )
+
+
+def _ensemble_update_working_set_bytes(
+    *, model: ActionConditionedWorldModelConfig, ensemble_size: int
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras.
+
+    ``update`` keeps the source ensemble state, the candidate persist, and the
+    transaction-selected result live together with the returned prediction,
+    signal, target, and diagnostic leaves.
+    """
+    _, persist_bytes = _ensemble_state_resource_counts(
+        model=model, ensemble_size=ensemble_size
+    )
+    _, extras_bytes = _ensemble_update_result_extras(
+        observation_dim=model.observation_dim,
+        ensemble_size=ensemble_size,
+    )
+    return 3 * persist_bytes + extras_bytes
+
+
+def _preflight_ensemble_update_working_set(
+    *, model: ActionConditionedWorldModelConfig, ensemble_size: int
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    working_set_bytes = _ensemble_update_working_set_bytes(
+        model=model, ensemble_size=ensemble_size
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "world-model ensemble update working set byte count must fit signed int32"
+        )
 
 
 def _safe_mean(values: Array, *, axis: int | None = None) -> Array:
@@ -288,6 +338,9 @@ class WorldModelEnsembleConfig:
         )
         object.__setattr__(self, "residual_variance_floor", residual_variance_floor)
         _ensemble_state_resource_counts(model=self.model, ensemble_size=ensemble_size)
+        _preflight_ensemble_update_working_set(
+            model=self.model, ensemble_size=ensemble_size
+        )
 
     @property
     def target_dim(self) -> int:

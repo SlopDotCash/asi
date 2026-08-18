@@ -766,10 +766,10 @@ def test_checkpoint_rejects_invalid_state(tmp_path: Path) -> None:
 
 
 def test_config_preflights_complete_update_result_at_exact_boundary() -> None:
-    # Linear 2-observation/2-action fixture: 324 * ensemble_size + 196 bytes.
-    last_legal = (2**31 - 1 - 196) // 324
+    # Linear 2-observation/2-action fixture: 864 * ensemble_size + 316 bytes.
+    last_legal = (2**31 - 1 - 316) // 864
     _config(ensemble_size=last_legal)
-    with pytest.raises(ValueError, match="update-result bytes"):
+    with pytest.raises(ValueError, match="update working set byte count"):
         _config(ensemble_size=last_legal + 1)
 
 
