@@ -319,6 +319,24 @@ def _github_json(path: str, *, token: str) -> Any:
         raise RuntimeError(f"GitHub API request failed for {path}: {exc}") from exc
 
 
+class _AuthorizationStrippingRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow GitHub's signed artifact redirect without forwarding its API token."""
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None:
+            redirected.remove_header("Authorization")
+        return redirected
+
+
 def _github_bytes(path: str, *, token: str) -> bytes:
     request = urllib.request.Request(
         f"https://api.github.com{path}",
@@ -329,7 +347,8 @@ def _github_bytes(path: str, *, token: str) -> bytes:
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        opener = urllib.request.build_opener(_AuthorizationStrippingRedirectHandler())
+        with opener.open(request, timeout=30) as response:
             return cast(bytes, response.read())
     except (OSError, urllib.error.HTTPError) as exc:
         raise RuntimeError(f"GitHub API request failed for {path}: {exc}") from exc
@@ -1106,6 +1125,7 @@ def _verify_prerequisite_run_artifact(
     protocol: Protocol,
     source: str,
     run_id: int,
+    run_created_at: str,
     completion_raw: bytes,
     runner_raw: bytes,
     token: str,
@@ -1130,6 +1150,7 @@ def _verify_prerequisite_run_artifact(
     workflow_run = artifact.get("workflow_run")
     created_at = artifact.get("created_at")
     expires_at = artifact.get("expires_at")
+    digest = artifact.get("digest")
     if (
         type(artifact_id) is not int
         or artifact_id <= 0
@@ -1140,9 +1161,17 @@ def _verify_prerequisite_run_artifact(
         or workflow_run.get("head_sha") != source
         or not isinstance(created_at, str)
         or not isinstance(expires_at, str)
+        or not isinstance(digest, str)
     ):
         raise RuntimeError("prerequisite workflow result artifact is not canonical")
-    if _parse_utc(expires_at) - _parse_utc(created_at) != dt.timedelta(days=90):
+    run_created = _parse_utc(run_created_at)
+    artifact_created = _parse_utc(created_at)
+    if artifact_created < run_created:
+        raise RuntimeError("prerequisite workflow artifact was created before the workflow run")
+    retention = _parse_utc(expires_at) - run_created
+    # GitHub's public timestamps are whole-second values; the retention anchor can
+    # therefore appear one second later than the run's displayed creation time.
+    if retention not in {dt.timedelta(days=90), dt.timedelta(days=90, seconds=1)}:
         raise RuntimeError(
             "prerequisite workflow artifact must have the registered 90-day availability window"
         )
@@ -1178,6 +1207,9 @@ def _verify_prerequisite_run_artifact(
             artifact_runner = bundle.read(exact_member("runner.v2.json"))
     except (ValueError, zipfile.BadZipFile, KeyError, OSError) as exc:
         raise RuntimeError("prerequisite workflow result artifact is unreadable") from exc
+    archive_sha256 = hashlib.sha256(archive).hexdigest()
+    if digest != f"sha256:{archive_sha256}":
+        raise RuntimeError("prerequisite workflow artifact digest mismatch")
     if artifact_completion != completion_raw or artifact_runner != runner_raw:
         raise RuntimeError("committed prerequisite receipts differ from the live run artifact")
     return {
@@ -1186,7 +1218,7 @@ def _verify_prerequisite_run_artifact(
         "artifact_created_at": created_at,
         "artifact_expires_at": expires_at,
         "artifact_retention_days": 90,
-        "artifact_archive_sha256": hashlib.sha256(archive).hexdigest(),
+        "artifact_archive_sha256": archive_sha256,
     }
 
 
@@ -1274,6 +1306,7 @@ def _verify_prerequisite_completion(
     if run_url != expected_run_url:
         raise RuntimeError("prerequisite workflow run URL is not canonical")
     run = _github_json(f"/repos/{repository}/actions/runs/{run_id}", token=token)
+    run_created_at = run.get("created_at") if isinstance(run, dict) else None
     if not isinstance(run, dict) or {
         "id": run.get("id"),
         "event": run.get("event"),
@@ -1284,6 +1317,7 @@ def _verify_prerequisite_completion(
         "status": run.get("status"),
         "conclusion": run.get("conclusion"),
         "html_url": run.get("html_url"),
+        "created_at_is_string": isinstance(run_created_at, str),
     } != {
         "id": run_id,
         "event": "workflow_dispatch",
@@ -1294,6 +1328,7 @@ def _verify_prerequisite_completion(
         "status": "completed",
         "conclusion": "success",
         "html_url": expected_run_url,
+        "created_at_is_string": True,
     }:
         raise RuntimeError("prerequisite workflow run is not a canonical successful run")
     issue = _github_json(f"/repos/{repository}/issues/{prerequisite.issue}", token=token)
@@ -1313,6 +1348,7 @@ def _verify_prerequisite_completion(
         protocol=prerequisite,
         source=cast(str, source),
         run_id=run_id,
+        run_created_at=cast(str, run_created_at),
         completion_raw=completion_raw,
         runner_raw=runner_raw,
         token=token,

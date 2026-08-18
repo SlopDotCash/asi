@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import runpy
+import urllib.request
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
@@ -33,6 +34,24 @@ _DRIVER_GLOBALS = cast(dict[str, Any], _verify_launch_authorization.__globals__)
 _WORKFLOW_RUN_GLOBALS = cast(dict[str, Any], _workflow_runs.__globals__)
 _PREREQUISITE_GLOBALS = cast(dict[str, Any], _verify_prerequisite_completion.__globals__)
 _SEAL_GLOBALS = cast(dict[str, Any], _seal_completion_bundle.__globals__)
+
+
+def test_artifact_redirect_does_not_forward_github_api_authorization() -> None:
+    handler = cast(Any, _DRIVER["_AuthorizationStrippingRedirectHandler"])()
+    request = urllib.request.Request(
+        "https://api.github.com/repos/elizaOS/asi/actions/artifacts/1/zip",
+        headers={"Authorization": "Bearer secret"},
+    )
+    redirected = handler.redirect_request(
+        request,
+        None,
+        302,
+        "Found",
+        {},
+        "https://signed-results.example/artifact.zip?signature=opaque",
+    )
+    assert redirected is not None
+    assert redirected.get_header("Authorization") is None
 
 
 def test_prereg_protocols_pin_exact_arms_and_seeds() -> None:
@@ -1132,9 +1151,11 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
         lambda **_kwargs: result,
     )
     artifact_times = {
-        "created_at": "2026-05-18T08:59:00Z",
-        "expires_at": "2026-08-16T08:59:00Z",
+        # GitHub anchors retention to the workflow run, not the later upload.
+        "created_at": "2026-05-18T09:15:00Z",
+        "expires_at": "2026-08-16T08:59:01Z",
     }
+    artifact_digest = {"value": f"sha256:{hashlib.sha256(archive_bytes).hexdigest()}"}
 
     def fake_github_json(path: str, *, token: str) -> dict[str, Any]:
         assert token == "token"
@@ -1149,6 +1170,7 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
                 "status": "completed",
                 "conclusion": "success",
                 "html_url": "https://github.com/elizaOS/asi/actions/runs/123",
+                "created_at": "2026-05-18T08:59:00Z",
                 "updated_at": "2026-08-16T08:59:00Z",
             }
         if path.endswith("/issues/51"):
@@ -1161,6 +1183,7 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
                         "id": 456,
                         "name": f"ipmnist-issue51-{'1' * 40}-123",
                         "expired": False,
+                        "digest": artifact_digest["value"],
                         **artifact_times,
                         "workflow_run": {"id": 123, "head_sha": "1" * 40},
                     }
@@ -1187,7 +1210,7 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
     assert receipt["outcome"] == outcome
     assert receipt["artifact_id"] == 456
     assert receipt["artifact_retention_days"] == 90
-    assert receipt["artifact_expires_at"] == "2026-08-16T08:59:00Z"
+    assert receipt["artifact_expires_at"] == "2026-08-16T08:59:01Z"
     assert receipt["artifact_archive_sha256"] == hashlib.sha256(archive_bytes).hexdigest()
 
     artifact_times["expires_at"] = "2026-08-15T08:59:00Z"
@@ -1199,7 +1222,29 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
             root=tmp_path,
             token="token",
         )
-    artifact_times["expires_at"] = "2026-08-16T08:59:00Z"
+    artifact_times["expires_at"] = "2026-08-16T08:59:01Z"
+
+    artifact_times["created_at"] = "2026-05-18T08:58:59Z"
+    with pytest.raises(RuntimeError, match="created before the workflow run"):
+        _verify_prerequisite_completion(
+            _PROTOCOLS["issue184"],
+            repository="elizaOS/asi",
+            launch_source="5" * 40,
+            root=tmp_path,
+            token="token",
+        )
+    artifact_times["created_at"] = "2026-05-18T09:15:00Z"
+
+    artifact_digest["value"] = f"sha256:{'0' * 64}"
+    with pytest.raises(RuntimeError, match="artifact digest mismatch"):
+        _verify_prerequisite_completion(
+            _PROTOCOLS["issue184"],
+            repository="elizaOS/asi",
+            launch_source="5" * 40,
+            root=tmp_path,
+            token="token",
+        )
+    artifact_digest["value"] = f"sha256:{hashlib.sha256(archive_bytes).hexdigest()}"
 
     tampered_stream = io.BytesIO()
     with zipfile.ZipFile(tampered_stream, "w") as archive:
@@ -1215,6 +1260,9 @@ def test_issue184_prerequisite_requires_eligible_committed_result_live_success_a
         _PREREQUISITE_GLOBALS,
         "_github_bytes",
         lambda path, *, token: tampered_stream.getvalue(),
+    )
+    artifact_digest["value"] = (
+        f"sha256:{hashlib.sha256(tampered_stream.getvalue()).hexdigest()}"
     )
     with pytest.raises(RuntimeError, match="differ"):
         _verify_prerequisite_completion(
