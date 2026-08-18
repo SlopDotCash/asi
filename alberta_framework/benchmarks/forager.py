@@ -421,10 +421,10 @@ class ForagerEnvConfig:
     require_exact_version: bool = True
 
     def __post_init__(self) -> None:
-        if not isinstance(self.preset, str) or self.preset not in _PRESET_ENV_IDS:
+        if type(self.preset) is not str or self.preset not in _PRESET_ENV_IDS:
             raise ValueError(f"unknown Forager preset {self.preset!r}")
         if self.env_id is not None and (
-            not isinstance(self.env_id, str) or not self.env_id
+            type(self.env_id) is not str or not self.env_id
         ):
             raise ValueError("env_id must be a non-empty string when provided")
         if (
@@ -449,14 +449,13 @@ class ForagerEnvConfig:
             name="random_shift_max_steps",
             minimum=0,
         )
-        if self.observation_type is not None and self.observation_type not in (
-            "color",
-            "rgb",
-            "object",
+        if self.observation_type is not None and (
+            type(self.observation_type) is not str
+            or self.observation_type not in ("color", "rgb", "object")
         ):
             raise ValueError(f"unknown observation_type {self.observation_type!r}")
         if not isinstance(self.extra_kwargs, Mapping) or any(
-            not isinstance(key, str) for key in self.extra_kwargs
+            type(key) is not str for key in self.extra_kwargs
         ):
             raise ValueError("extra_kwargs must be a mapping with string keys")
         reserved = {
