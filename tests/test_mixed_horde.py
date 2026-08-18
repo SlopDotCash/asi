@@ -128,6 +128,23 @@ class TestRouting:
 class TestAllSharedEqualsHordeLearner:
     """All-shared MixedHorde matches HordeLearner exactly."""
 
+    def test_update_saturates_step_count_at_int32_max(self) -> None:
+        spec = create_horde_spec([_gamma0_demon("d0", 0)])
+        horde = MixedHorde(horde_spec=spec, hidden_sizes=(4,), sparsity=0.0)
+        state = horde.init(2, jr.key(0)).replace(
+            step_count=jnp.asarray(2**31 - 1, dtype=jnp.int32)
+        )
+
+        result = horde.update(
+            state,
+            jnp.asarray([1.0, 0.0]),
+            jnp.asarray([1.0]),
+            jnp.asarray([0.0, 1.0]),
+        )
+
+        assert bool(result.update_applied)
+        assert int(result.state.step_count) == 2**31 - 1
+
     def test_predictions_match(self) -> None:
         demons = [_gamma0_demon(f"d{i}", i) for i in range(3)]
         spec = create_horde_spec(demons)

@@ -42,6 +42,7 @@ from alberta_framework.core.normalizers import (
     EMANormalizerState,
     Normalizer,
     WelfordNormalizerState,
+    _saturating_int32_counter_increment,
 )
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import HordeSpec, TraceMode
@@ -889,7 +890,7 @@ class MixedHorde:
         proposed_state = MixedHordeState(
             shared_state=new_shared_state,
             independent_state=new_independent_state,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
