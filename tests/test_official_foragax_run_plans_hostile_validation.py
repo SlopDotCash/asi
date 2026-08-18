@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from alberta_framework.benchmarks import official_foragax
 from alberta_framework.benchmarks.official_foragax import (
     OfficialForagaxBatchRunPlan,
     OfficialForagaxBatchRunRequest,
@@ -13,6 +14,30 @@ from alberta_framework.benchmarks.official_foragax import (
     OfficialForagaxRunRequest,
     OfficialForagaxValidationError,
 )
+
+
+class _HostileString(str):
+    calls = 0
+
+    def __bool__(self) -> bool:
+        type(self).calls += 1
+        raise AssertionError("hostile truth hook executed")
+
+    def __eq__(self, other: object) -> bool:
+        type(self).calls += 1
+        raise AssertionError("hostile comparison hook executed")
+
+    def strip(self, chars: object = None) -> str:
+        del chars
+        type(self).calls += 1
+        raise AssertionError("hostile strip hook executed")
+
+    def startswith(self, prefix: object, *args: object) -> bool:
+        del prefix, args
+        type(self).calls += 1
+        raise AssertionError("hostile startswith hook executed")
+
+    __hash__ = str.__hash__
 
 
 @pytest.fixture
@@ -131,3 +156,63 @@ def test_official_foragax_batch_run_plan_rejects_invalid_inputs(
             config_snapshot_bytes="not bytes",  # type: ignore[arg-type]
             execution_config_bytes=b"{}",
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("expected_repository", official_foragax.OFFICIAL_FORAGAX_REPOSITORY, "repository"),
+        ("execution_commit", "a" * 40, "execution_commit"),
+        ("config_commit", "b" * 40, "config_commit"),
+    ],
+)
+def test_run_request_rejects_hostile_string_identities_before_hooks(
+    tmp_path: Path, field: str, value: str, message: str
+) -> None:
+    kwargs = {
+        "repository": tmp_path,
+        "execution_commit": "a" * 40,
+        "config_path": Path("config.json"),
+        "config_commit": "b" * 40,
+        "interpreter": Path("python"),
+        "output_dir": tmp_path / "output",
+        "index": 0,
+        field: _HostileString(value),
+    }
+    _HostileString.calls = 0
+
+    with pytest.raises(OfficialForagaxValidationError, match=message):
+        OfficialForagaxRunRequest(**kwargs)  # type: ignore[arg-type]
+
+    assert _HostileString.calls == 0
+
+
+def test_manifest_identity_helpers_reject_or_normalize_hostile_strings(
+    tmp_path: Path,
+) -> None:
+    hostile = _HostileString("algorithms.registry")
+    registry = {
+        "module": hostile,
+        "class": "algorithms.RandomAgent.RandomAgent",
+        "registry_source_path": "src/algorithms/registry.py",
+        "registry_source_sha256": "a" * 64,
+        "class_source_path": "src/algorithms/RandomAgent.py",
+        "class_source_sha256": "b" * 64,
+    }
+    _HostileString.calls = 0
+    with pytest.raises(OfficialForagaxValidationError, match="registry module"):
+        official_foragax._validated_registry_identity(registry)
+    with pytest.raises(OfficialForagaxValidationError, match="manifest artifact"):
+        official_foragax._manifest_relative_file(
+            tmp_path, _HostileString("artifact.json"), label="artifact"
+        )
+    assert _HostileString.calls == 0
+
+    runtime = {
+        "foragax_implementation": {
+            "direct_url": {"url": _HostileString("file:///host/path")}
+        }
+    }
+    sanitized = official_foragax._sanitized_runtime(runtime)
+    assert sanitized["foragax_implementation"]["direct_url"]["url"] == "<LOCAL_PATH>"
+    assert _HostileString.calls == 0

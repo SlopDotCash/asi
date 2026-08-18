@@ -272,12 +272,16 @@ class OfficialForagaxRunRequest:
             raise OfficialForagaxValidationError(
                 "expected_repository must be a string"
             )
-        if not _COMMIT_PATTERN.fullmatch(self.execution_commit):
+        if (
+            type(self.execution_commit) is not str
+            or _COMMIT_PATTERN.fullmatch(self.execution_commit) is None
+        ):
             raise OfficialForagaxValidationError(
                 "execution_commit must be a full lowercase 40-character Git SHA"
             )
-        if self.config_commit is not None and not _COMMIT_PATTERN.fullmatch(
-            self.config_commit
+        if self.config_commit is not None and (
+            type(self.config_commit) is not str
+            or _COMMIT_PATTERN.fullmatch(self.config_commit) is None
         ):
             raise OfficialForagaxValidationError(
                 "config_commit must be a full lowercase 40-character Git SHA"
@@ -3637,8 +3641,10 @@ def _sanitized_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(direct_url, Mapping):
             normalized_url = dict(direct_url)
             url = normalized_url.get("url")
-            if isinstance(url, str) and url.startswith("file:"):
-                normalized_url["url"] = "<LOCAL_PATH>"
+            if isinstance(url, str):
+                normalized_url["url"] = str.__str__(url)
+                if normalized_url["url"].startswith("file:"):
+                    normalized_url["url"] = "<LOCAL_PATH>"
             normalized["direct_url"] = normalized_url
         result["foragax_implementation"] = normalized
     return result
@@ -3696,8 +3702,10 @@ def _sanitize_package_freeze_line(line: str) -> str:
         return prefix + " ; direct_url=<REDACTED>"
     if isinstance(direct_url, dict):
         url = direct_url.get("url")
-        if isinstance(url, str) and url.startswith("file:"):
-            direct_url["url"] = "<LOCAL_PATH>"
+        if isinstance(url, str):
+            direct_url["url"] = str.__str__(url)
+            if direct_url["url"].startswith("file:"):
+                direct_url["url"] = "<LOCAL_PATH>"
     try:
         encoded = json.dumps(
             direct_url,
@@ -4938,7 +4946,7 @@ def _validated_registry_identity(value: Any) -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for key, item in value.items():
-        if type(item) is not str or not item:
+        if type(key) is not str or type(item) is not str or not item:
             raise OfficialForagaxValidationError(
                 f"official agent registry {key} is invalid"
             )

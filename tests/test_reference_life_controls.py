@@ -110,6 +110,22 @@ def _uniform_switching() -> UniformRandomReferenceAdapter:
     )
 
 
+class _HostileString(str):
+    calls = 0
+
+    def __eq__(self, other: object) -> bool:
+        type(self).calls += 1
+        raise AssertionError("hostile string equality executed")
+
+    def __hash__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("hostile string hashing executed")
+
+    def __len__(self) -> int:
+        type(self).calls += 1
+        raise AssertionError("hostile string length executed")
+
+
 def _differential_switching() -> DifferentialSARSAReferenceAdapter:
     environment = SwitchingTwoStateConfig(phase_length=2)  # type: ignore[call-arg]
     return DifferentialSARSAReferenceAdapter(
@@ -366,6 +382,48 @@ def test_environment_scalar_gate_rejects_non_real_overflow_and_positive_collapse
                 p_right_up=math.nextafter(0.0, 1.0),
             )
         )
+
+
+def test_control_identity_gates_reject_string_subclasses_without_dispatch() -> None:
+    environment = SwitchingTwoStateConfig(phase_length=2)  # type: ignore[call-arg]
+    adapter = _uniform_switching()
+    state = adapter.init(
+        jr.key(7, impl="threefry2x32"),
+        lifecycle_id="control.identity.baseline",
+    )
+    started, _ = adapter.start(
+        state,
+        observation_id="observation.0",
+        observation=np.asarray((1.0, 0.0), dtype=np.float32),
+    )
+    oracle = AnalyticOracleReferenceConfig.for_switching(environment, horizon=2)
+    hostile = _HostileString("switching_two_state")
+
+    rejected = (
+        lambda: UniformRandomReferenceConfig(  # type: ignore[arg-type]
+            environment_kind=hostile,
+            observation_dim=2,
+        ),
+        lambda: dataclasses.replace(oracle, policy_sha256=hostile),
+        lambda: dataclasses.replace(oracle, environment_config_json=hostile),
+        lambda: dataclasses.replace(state, schema=hostile),
+        lambda: dataclasses.replace(state, manifest_id=hostile),
+        lambda: dataclasses.replace(state, config_sha256=hostile),
+        lambda: dataclasses.replace(state, lifecycle_id=hostile),
+        lambda: dataclasses.replace(started, current_observation_id=hostile),
+        lambda: adapter.init(
+            jr.key(8, impl="threefry2x32"),
+            lifecycle_id=hostile,
+        ),
+    )
+    _HostileString.calls = 0
+    for operation in rejected:
+        with pytest.raises(
+            ValueError,
+            match="environment|policy|schema|manifest|config|lifecycle|observation",
+        ):
+            operation()
+    assert _HostileString.calls == 0
 
 
 def test_decay_counts_and_discounted_network_shapes_are_resource_bounded() -> None:

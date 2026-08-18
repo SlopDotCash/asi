@@ -1869,6 +1869,8 @@ class ForagerRunResult:
                 or (not values and not historical_curve)
             ):
                 raise ValueError(f"{name} length must match curve_steps")
+        if not self.curve_ewm_reward and not self.curve_window_reward:
+            raise ValueError("at least one result curve must be available")
         for name in ("duration_s", "frames_per_second"):
             value = getattr(self, name)
             if not math.isnan(value) and value < 0.0:

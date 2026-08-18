@@ -96,7 +96,10 @@ def _require_environment_shape(
     observation_dim: int,
     n_actions: int,
 ) -> None:
-    if environment_kind not in ("switching_two_state", "riverswim"):
+    if type(environment_kind) is not str or environment_kind not in (
+        "switching_two_state",
+        "riverswim",
+    ):
         raise ValueError("environment_kind must be switching_two_state or riverswim")
     if (
         isinstance(observation_dim, bool)
@@ -733,10 +736,12 @@ class AnalyticOracleReferenceConfig:
             self.n_actions,
         )
         horizon = _canonical_oracle_horizon(self.horizon)
-        if not isinstance(self.policy_sha256, str) or _SHA256.fullmatch(
+        if type(self.policy_sha256) is not str or _SHA256.fullmatch(
             self.policy_sha256
         ) is None:
             raise ValueError("oracle policy_sha256 must be a lowercase SHA-256 digest")
+        if type(self.environment_config_json) is not str:
+            raise ValueError("oracle environment config must be canonical JSON")
         try:
             decoded = json.loads(self.environment_config_json)
         except (TypeError, json.JSONDecodeError) as exc:
@@ -907,17 +912,17 @@ class ReferenceLifeControlState:
     _owner_token: object = dataclasses.field(repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if not isinstance(self.schema, str) or _SAFE_ID.fullmatch(self.schema) is None:
+        if type(self.schema) is not str or _SAFE_ID.fullmatch(self.schema) is None:
             raise ValueError("control state schema must be a safe identifier")
-        if not isinstance(self.manifest_id, str) or _SHA256.fullmatch(self.manifest_id) is None:
+        if type(self.manifest_id) is not str or _SHA256.fullmatch(self.manifest_id) is None:
             raise ValueError("control state manifest_id must be a SHA-256 digest")
         if (
-            not isinstance(self.config_sha256, str)
+            type(self.config_sha256) is not str
             or _SHA256.fullmatch(self.config_sha256) is None
         ):
             raise ValueError("control state config_sha256 must be a SHA-256 digest")
         if (
-            not isinstance(self.lifecycle_id, str)
+            type(self.lifecycle_id) is not str
             or len(self.lifecycle_id) > _MAX_ID_LENGTH
             or _SAFE_ID.fullmatch(self.lifecycle_id) is None
         ):
@@ -939,7 +944,7 @@ class ReferenceLifeControlState:
         ):
             raise ValueError("control state decision cache must be wholly fresh or armed")
         if self.current_observation_id is not None and (
-            not isinstance(self.current_observation_id, str)
+            type(self.current_observation_id) is not str
             or _SAFE_ID.fullmatch(self.current_observation_id) is None
         ):
             raise ValueError("current_observation_id must be a safe identifier")
@@ -1346,7 +1351,7 @@ class _BaseReferenceControlAdapter:
     def init(self, key: Array, *, lifecycle_id: str) -> ReferenceLifeControlState:
         _require_prng_key(key, name="initial control key")
         if (
-            not isinstance(lifecycle_id, str)
+            type(lifecycle_id) is not str
             or len(lifecycle_id) > _MAX_ID_LENGTH
             or _SAFE_ID.fullmatch(lifecycle_id) is None
         ):
