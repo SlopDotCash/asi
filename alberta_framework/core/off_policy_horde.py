@@ -991,7 +991,11 @@ class OffPolicyHordeLearner:
         normalizer_cfg = config.pop("normalizer", None)
         normalizer = normalizer_from_config(normalizer_cfg) if normalizer_cfg else None
         head_optimizer_cfg = config.pop("head_optimizer", None)
-        head_optimizer = optimizer_from_config(head_optimizer_cfg) if head_optimizer_cfg else None
+        head_optimizer = (
+            optimizer_from_config(head_optimizer_cfg)
+            if head_optimizer_cfg is not None
+            else None
+        )
         trace_mode = TraceMode(config.pop("trace_mode", TraceMode.ACCUMULATING.value))
 
         return cls(

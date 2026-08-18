@@ -1592,8 +1592,9 @@ class NonlinearHordeActorCriticAgent:
         cfg = dict(cfg)
         cfg.pop("type", None)
         actor_opt: Autostep | None = None
-        if cfg.get("actor_optimizer"):
-            actor_opt = cast(Autostep, optimizer_from_config(cfg["actor_optimizer"]))
+        actor_optimizer_cfg = cfg.get("actor_optimizer")
+        if actor_optimizer_cfg is not None:
+            actor_opt = cast(Autostep, optimizer_from_config(actor_optimizer_cfg))
         return cls(
             config=NonlinearHordeActorCriticConfig.from_config(cfg["config"]),
             critic=HordeLearner.from_config(cfg["critic"]),
@@ -2264,8 +2265,9 @@ class NonlinearQHordeActorCriticAgent:
         payload = dict(config)
         payload.pop("type", None)
         actor_opt: Autostep | None = None
-        if payload.get("actor_optimizer"):
-            actor_opt = cast(Autostep, optimizer_from_config(payload["actor_optimizer"]))
+        actor_optimizer_cfg = payload.get("actor_optimizer")
+        if actor_optimizer_cfg is not None:
+            actor_opt = cast(Autostep, optimizer_from_config(actor_optimizer_cfg))
         return cls(
             config=NonlinearQHordeActorCriticConfig.from_config(payload["config"]),
             critic=HordeLearner.from_config(payload["critic"]),

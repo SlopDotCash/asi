@@ -55,6 +55,27 @@ class _MockFalsySupportedOptimizer(Autostep):
         return 0
 
 
+class _HostileSupportVerdict:
+    calls = 0
+
+    def __bool__(self) -> bool:
+        type(self).calls += 1
+        raise AssertionError("support verdict truth hook executed")
+
+
+class _MockHostileSupportedOptimizer(Autostep):
+    def supported_for_mlp(self) -> object:  # type: ignore[override]
+        return _HostileSupportVerdict()
+
+
+class _HostileOptimizerConfig(dict[str, object]):
+    calls = 0
+
+    def __bool__(self) -> bool:
+        type(self).calls += 1
+        raise AssertionError("optimizer config truth hook executed")
+
+
 def _sample_horde_spec() -> HordeSpec:
     demon = GVFSpec(
         name="d0",
@@ -205,6 +226,21 @@ class TestOffPolicyHordeLearnerOptimizerTruthiness:
         assert horde.to_config()["head_optimizer"] == head_opt.to_config()
         assert _HostileLMS.calls == 0
 
+    def test_off_policy_horde_config_does_not_invoke_truthiness(self) -> None:
+        _HostileOptimizerConfig.calls = 0
+        horde = OffPolicyHordeLearner(
+            horde_spec=_sample_horde_spec(),
+            optimizer=LMS(step_size=0.01),
+            head_optimizer=LMS(step_size=0.02),
+        )
+        payload = horde.to_config()
+        payload["head_optimizer"] = _HostileOptimizerConfig(payload["head_optimizer"])
+
+        restored = OffPolicyHordeLearner.from_config(payload)
+
+        assert restored._head_optimizer is not None
+        assert _HostileOptimizerConfig.calls == 0
+
 
 class TestHordeActorCriticOptimizerSupportedCheck:
     def test_horde_actor_critic_rejects_non_true_supported_for_mlp(self) -> None:
@@ -224,6 +260,35 @@ class TestHordeActorCriticOptimizerSupportedCheck:
                 actor_optimizer=bad_opt,  # type: ignore[arg-type]
             )
 
+    def test_horde_actor_critic_does_not_coerce_support_verdict(self) -> None:
+        from alberta_framework.core.horde import HordeLearner
+
+        _HostileSupportVerdict.calls = 0
+        critic = HordeLearner(horde_spec=_sample_horde_spec())
+        config = NonlinearHordeActorCriticConfig(n_actions=2, value_head_index=0)
+        with pytest.raises(ValueError, match="does not support the MLP shape-generic"):
+            NonlinearHordeActorCriticAgent(
+                config=config,
+                critic=critic,
+                actor_optimizer=_MockHostileSupportedOptimizer(initial_step_size=0.01),  # type: ignore[arg-type]
+            )
+        assert _HostileSupportVerdict.calls == 0
+
+    def test_horde_actor_critic_config_does_not_invoke_optimizer_truthiness(self) -> None:
+        from alberta_framework.core.horde import HordeLearner
+
+        _HostileOptimizerConfig.calls = 0
+        agent = NonlinearHordeActorCriticAgent(
+            config=NonlinearHordeActorCriticConfig(n_actions=2, value_head_index=0),
+            critic=HordeLearner(horde_spec=_sample_horde_spec()),
+        )
+        payload = agent.to_config()
+        payload["actor_optimizer"] = _HostileOptimizerConfig(payload["actor_optimizer"])
+
+        NonlinearHordeActorCriticAgent.from_config(payload)
+
+        assert _HostileOptimizerConfig.calls == 0
+
     def test_q_horde_actor_critic_rejects_non_true_supported_for_mlp(self) -> None:
         from alberta_framework.core.horde import HordeLearner
 
@@ -239,3 +304,18 @@ class TestHordeActorCriticOptimizerSupportedCheck:
                 critic=critic,
                 actor_optimizer=bad_opt,  # type: ignore[arg-type]
             )
+
+    def test_q_horde_actor_critic_config_does_not_invoke_optimizer_truthiness(self) -> None:
+        from alberta_framework.core.horde import HordeLearner
+
+        _HostileOptimizerConfig.calls = 0
+        agent = NonlinearQHordeActorCriticAgent(
+            config=NonlinearQHordeActorCriticConfig(n_actions=1),
+            critic=HordeLearner(horde_spec=_sample_control_horde_spec()),
+        )
+        payload = agent.to_config()
+        payload["actor_optimizer"] = _HostileOptimizerConfig(payload["actor_optimizer"])
+
+        NonlinearQHordeActorCriticAgent.from_config(payload)
+
+        assert _HostileOptimizerConfig.calls == 0
