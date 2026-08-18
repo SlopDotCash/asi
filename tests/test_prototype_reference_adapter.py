@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import pickle
+from typing import NoReturn
 
 import chex
 import jax.numpy as jnp
@@ -16,6 +17,7 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+from alberta_framework import prototype_reference_adapter as adapter_module
 from alberta_framework.core.dreaming import DreamingConfig
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
@@ -53,6 +55,31 @@ pytestmark = pytest.mark.unit
 
 _LIFE_A = "prototype.0000000100000002"
 _LIFE_B = "prototype.0000000300000004"
+
+
+class _HookedString(str):
+    calls: int
+
+    def __new__(cls, value: str) -> _HookedString:
+        instance = super().__new__(cls, value)
+        instance.calls = 0
+        return instance
+
+    def _called(self) -> NoReturn:
+        self.calls += 1
+        raise AssertionError("hostile string hook must not run")
+
+    def __bool__(self) -> bool:
+        return self._called()
+
+    def __eq__(self, other: object) -> bool:
+        return self._called()
+
+    def __hash__(self) -> int:
+        return self._called()
+
+    def strip(self, chars: str | None = None) -> str:
+        return self._called()
 
 
 def _config(*, base_step_size: float = 0.05) -> PrototypeAgentConfig:
@@ -786,3 +813,24 @@ def test_premature_prototype_disarm_discards_the_functional_candidate() -> None:
     assert rejected.rejection_reason is not None
     assert "disarmed" in rejected.rejection_reason or "capacity" in rejected.rejection_reason
     assert int(rejected.state.agent_state.step_count) == np.iinfo(np.int32).max - 1
+
+
+def test_reference_state_rejects_string_subclasses_before_hooks() -> None:
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+    state = adapter.init(jr.key(0), lifecycle_id=_LIFE_A)
+    cases = (
+        ("manifest_id", "a" * 64),
+        ("config_sha256", "b" * 64),
+        ("lifecycle_id", _LIFE_A),
+        ("current_observation_id", "observation:0"),
+    )
+    for field, value in cases:
+        hostile = _HookedString(value)
+        with pytest.raises(ValueError):
+            dataclasses.replace(state, **{field: hostile})
+        assert hostile.calls == 0
+
+    hostile_lifecycle = _HookedString(_LIFE_A)
+    with pytest.raises(ValueError, match="lifecycle"):
+        adapter_module._lifecycle_words(hostile_lifecycle)
+    assert hostile_lifecycle.calls == 0

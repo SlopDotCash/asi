@@ -14,6 +14,7 @@ from alberta_framework.benchmarks.forager_matched_open_protocol import (
     MatchedCurrentCandidateQualification,
     MatchedCurrentRuntimeQualification,
     _CandidateSpec,
+    _require_real_sha256,
 )
 
 
@@ -61,6 +62,27 @@ def test_runtime_qualification_rejects_invalid_inputs() -> None:
             executor_qualification_receipt_sha256=_digest(b"executor"),
             qualification_trust_anchor_identity="",
         )
+
+
+def test_real_digest_rejects_string_subclass_before_hooks() -> None:
+    calls = 0
+
+    class HostileDigest(str):
+        def __bool__(self) -> bool:
+            nonlocal calls
+            calls += 1
+            raise AssertionError("truth hook reached")
+
+        def __eq__(self, other: object) -> bool:
+            nonlocal calls
+            calls += 1
+            raise AssertionError("comparison hook reached")
+
+        __hash__ = str.__hash__
+
+    with pytest.raises(ForagerMatchedOpenProtocolBuildError, match="SHA-256"):
+        _require_real_sha256(HostileDigest(_digest(b"real")), "digest")
+    assert calls == 0
 
 
 def test_candidate_qualification_rejects_invalid_types() -> None:

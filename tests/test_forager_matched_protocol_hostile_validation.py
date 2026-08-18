@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import pytest
 
 from alberta_framework.benchmarks.forager_matched_protocol import (
@@ -12,7 +14,39 @@ from alberta_framework.benchmarks.forager_matched_protocol import (
     RankedSelectionGroup,
     ResolvedSelectionSlot,
     SelectionSlot,
+    _validate_json_complexity,
+    decode_strict_json,
+    parse_forager_matched_protocol,
+    parse_forager_matched_selection_result,
 )
+
+
+class _HookedString(str):
+    calls: int
+
+    def __new__(cls, value: str) -> _HookedString:
+        instance = super().__new__(cls, value)
+        instance.calls = 0
+        return instance
+
+    def _called(self) -> NoReturn:
+        self.calls += 1
+        raise AssertionError("hostile string hook must not run")
+
+    def __bool__(self) -> bool:
+        return self._called()
+
+    def __len__(self) -> int:
+        return self._called()
+
+    def __eq__(self, other: object) -> bool:
+        return self._called()
+
+    def __hash__(self) -> int:
+        return self._called()
+
+    def encode(self, *args: object, **kwargs: object) -> bytes:
+        return self._called()
 
 
 def test_environment_rng_contract_validation() -> None:
@@ -122,3 +156,31 @@ def test_descriptive_context_validation() -> None:
             selection_eligible=False,
             pairing_eligible=True,  # type: ignore[arg-type]
         )
+
+
+def test_protocol_string_subclasses_reject_before_hooks() -> None:
+    for operation in (
+        lambda value: EnvironmentRNGContract(
+            identity=value,
+            schedule_sha256="a" * 64,
+        ),
+        lambda value: RankedSelectionGroup(
+            selection_group="group_a",
+            ranked_candidate_ids=(value,),
+            ranking_evidence_sha256="b" * 64,
+        ),
+        lambda value: DescriptiveContext(
+            candidate_ids=(value,),
+            analysis_role="descriptive_only",
+            selection_eligible=False,
+            pairing_eligible=False,
+        ),
+        lambda value: _validate_json_complexity([value]),
+        lambda value: decode_strict_json(value),
+        lambda value: parse_forager_matched_protocol(value),
+        lambda value: parse_forager_matched_selection_result(value),
+    ):
+        hostile = _HookedString("candidate_a")
+        with pytest.raises(ForagerMatchedProtocolError):
+            operation(hostile)
+        assert hostile.calls == 0
