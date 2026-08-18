@@ -1,0 +1,201 @@
+{
+  "launch_preflight": {
+    "authorization_comment_id": 5322642218,
+    "authorization_comment_url": "https://github.com/elizaOS/asi/issues/51#issuecomment-5322642218",
+    "authorization_created_at": "2026-08-18T02:19:07Z",
+    "authorization_line": "ASI_PREREG_LAUNCH_V1 issue=51 protocol=issue51 source=a0a80db6680f33cb3dbe5aeddcf623a66276c2ec tree=f3903df3de3cee188df20c0c4d6ab02f83454473 uv_lock_sha256=0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7 workflow_blob_sha1=db0e9bf06e84af411efe6a3dd1f9348ffeb306c4 driver_blob_sha1=7665716b515354d9105d13fff3569c347745ebf1 ref=ipmnist-prereg-issue51-a0a80db6-attempt5 runner=github-hosted-macos-14-arm64-apple-m1 seeds=0,1,2 n=3 protocol_approval=approved seed_budget=approved compute=authorized-uncompensated",
+    "authorization_sha256": "41276ac6ed22990dc13c4bfc292cccb786fa92ed1cb667bb8f8140858345a256",
+    "authorization_updated_at": "2026-08-18T02:19:07Z",
+    "driver_blob_sha1": "7665716b515354d9105d13fff3569c347745ebf1",
+    "early_owner_authorization_schema": "asi.ipmnist_prereg.owner_authorization.v1",
+    "early_owner_authorization_sha256": "df34e53bb355c9a6064554b354da77c4e935e2efd18bdb76f793209a3e53ac36",
+    "prerequisite_completion": null,
+    "protocol": {
+      "candidate": "rls_head_resid_l1_preset005",
+      "control": "sigma0_shiftnorm_d099",
+      "issue": 51,
+      "key": "issue51",
+      "namespace": "replication_r1",
+      "prerequisite": null,
+      "prerequisite_artifact_condition": null,
+      "requires_amendment": false,
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "summary_filename": "summary.json"
+    },
+    "ref_name": "ipmnist-prereg-issue51-a0a80db6-attempt5",
+    "registration_amendment_comment_id": null,
+    "registration_amendment_comment_url": null,
+    "registration_amendment_created_at": null,
+    "registration_amendment_line": null,
+    "registration_amendment_sha256": null,
+    "registration_amendment_updated_at": null,
+    "run_attempt": 1,
+    "run_id": 32091411164,
+    "run_url": "https://github.com/elizaOS/asi/actions/runs/32091411164",
+    "runner": "github-hosted-macos-14-arm64-apple-m1",
+    "schema": "asi.ipmnist_prereg.launch_preflight.v3",
+    "source": "a0a80db6680f33cb3dbe5aeddcf623a66276c2ec",
+    "tree": "f3903df3de3cee188df20c0c4d6ab02f83454473",
+    "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+    "workflow_blob_sha1": "db0e9bf06e84af411efe6a3dd1f9348ffeb306c4"
+  },
+  "result_validation": {
+    "dataset_provenance": {
+      "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+      "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+      "source": {
+        "name": "mnist_784",
+        "provider": "openml",
+        "row_start": 0,
+        "row_stop_exclusive": 60000,
+        "version": 1
+      },
+      "x": {
+        "dtype": "<f4",
+        "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+        "shape": [
+          60000,
+          784
+        ]
+      },
+      "y": {
+        "dtype": "<i4",
+        "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+        "shape": [
+          60000
+        ]
+      }
+    },
+    "mean_diff": 0.005439998000000242,
+    "outcome": "replicated",
+    "per_seed_diff": [
+      0.005963,
+      0.005353,
+      0.005003
+    ],
+    "protocol": {
+      "candidate": "rls_head_resid_l1_preset005",
+      "control": "sigma0_shiftnorm_d099",
+      "issue": 51,
+      "key": "issue51",
+      "namespace": "replication_r1",
+      "prerequisite": null,
+      "prerequisite_artifact_condition": null,
+      "requires_amendment": false,
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "summary_filename": "summary.json"
+    },
+    "runner": {
+      "cpu_brand": "Apple M1 (Virtual)",
+      "jax_backend": "cpu",
+      "jax_config": {
+        "jax_default_matmul_precision": null,
+        "jax_default_prng_impl": "threefry2x32",
+        "jax_disable_jit": false,
+        "jax_enable_x64": false,
+        "jax_numpy_dtype_promotion": "standard",
+        "jax_numpy_rank_promotion": "allow",
+        "jax_random_seed_offset": 0,
+        "jax_threefry_partitionable": true
+      },
+      "jax_devices": [
+        {
+          "device_kind": "cpu",
+          "id": 0,
+          "platform": "cpu",
+          "process_index": 0
+        }
+      ],
+      "machine": "arm64",
+      "macos_version": "14.8.7",
+      "packages": {
+        "chex": "0.1.92",
+        "jax": "0.11.0",
+        "jaxlib": "0.11.0",
+        "numpy": "2.5.1",
+        "scikit-learn": "1.9.0"
+      },
+      "platform": {
+        "machine": "arm64",
+        "release": "23.6.0",
+        "system": "Darwin"
+      },
+      "python": "3.12.12",
+      "python_optimization_level": 0,
+      "python_optimize_environment": "0",
+      "runner_arch": "ARM64",
+      "runner_environment": "github-hosted",
+      "runner_label": "macos-14",
+      "runner_os": "macOS",
+      "schema": "asi.ipmnist_prereg.runner.v2"
+    },
+    "runner_receipt_sha256": "9c06667af1169e6343b7a40f2739026bd8100eb1f882203af0f337df312e13ef",
+    "runtime": {
+      "jax": {
+        "backend": "cpu",
+        "config": {
+          "jax_default_matmul_precision": null,
+          "jax_default_prng_impl": "threefry2x32",
+          "jax_disable_jit": false,
+          "jax_enable_x64": false,
+          "jax_numpy_dtype_promotion": "standard",
+          "jax_numpy_rank_promotion": "allow",
+          "jax_random_seed_offset": 0,
+          "jax_threefry_partitionable": true
+        },
+        "devices": [
+          {
+            "device_kind": "cpu",
+            "id": 0,
+            "platform": "cpu",
+            "process_index": 0
+          }
+        ]
+      },
+      "packages": {
+        "chex": "0.1.92",
+        "jax": "0.11.0",
+        "jaxlib": "0.11.0",
+        "numpy": "2.5.1",
+        "scikit-learn": "1.9.0"
+      },
+      "platform": {
+        "machine": "arm64",
+        "release": "23.6.0",
+        "system": "Darwin"
+      },
+      "process_environment": {
+        "CUDA_VISIBLE_DEVICES": "",
+        "JAX_DEFAULT_MATMUL_PRECISION": null,
+        "JAX_ENABLE_X64": "false",
+        "JAX_PLATFORMS": "cpu",
+        "JAX_PLATFORM_NAME": "cpu",
+        "OMP_NUM_THREADS": "1",
+        "XLA_FLAGS": "--xla_force_host_platform_device_count=1"
+      },
+      "python": {
+        "implementation": "CPython",
+        "version": "3.12.12"
+      },
+      "schema": "alberta.ipmnist_screening.runtime.v1"
+    },
+    "schema": "asi.ipmnist_prereg.result_validation.v1",
+    "source": "a0a80db6680f33cb3dbe5aeddcf623a66276c2ec",
+    "stderr_diff": 0.0002804953069540739,
+    "summary": "outputs/ipmnist_screening/replication_r1/summary.json",
+    "summary_sha256": "03de951cd630789620461bd1cab98015a539d5765fe1649e7351228d9f9c1f35",
+    "tree": "f3903df3de3cee188df20c0c4d6ab02f83454473",
+    "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7"
+  },
+  "runner_receipt": "outputs/ipmnist_screening/replication_r1/runner.v2.json",
+  "runner_receipt_sha256": "9c06667af1169e6343b7a40f2739026bd8100eb1f882203af0f337df312e13ef",
+  "schema": "asi.ipmnist_prereg.completion.v1"
+}
