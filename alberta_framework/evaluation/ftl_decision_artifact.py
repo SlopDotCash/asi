@@ -1015,7 +1015,7 @@ def _validate_source_provenance(
         errors.append(f"{location}.repository_subtree is invalid")
     generation_head = value.get("git_head")
     if (
-        not isinstance(generation_head, str)
+        type(generation_head) is not str
         or len(generation_head) != 40
         or any(character not in "0123456789abcdef" for character in generation_head)
     ):
