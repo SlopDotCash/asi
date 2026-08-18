@@ -27,7 +27,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax import Array
-from jaxtyping import Bool, Float
+from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.update_safety import (
@@ -243,7 +243,7 @@ class PrototypeMemoryState:
     """State for :class:`PrototypeMemoryLearner`."""
 
     means: Float[Array, "n_classes slots_per_class feature_dim"]
-    counts: Float[Array, "n_classes slots_per_class"]
+    counts: Int[Array, "n_classes slots_per_class"]
     last_update: Array
     step_count: Array
 
@@ -357,7 +357,7 @@ class PrototypeMemoryLearner:
             state.counts,
             name="state.counts",
             shape=slot_shape,
-            dtype=jnp.float32,
+            dtype=jnp.int32,
         )
         _require_array(
             state.last_update,
@@ -390,7 +390,7 @@ class PrototypeMemoryLearner:
                 (c.n_classes, c.slots_per_class, c.feature_dim),
                 dtype=jnp.float32,
             ),
-            counts=jnp.zeros((c.n_classes, c.slots_per_class), dtype=jnp.float32),
+            counts=jnp.zeros((c.n_classes, c.slots_per_class), dtype=jnp.int32),
             last_update=jnp.zeros((c.n_classes, c.slots_per_class), dtype=jnp.int32),
             step_count=jnp.array(0, dtype=jnp.int32),
         )
@@ -571,7 +571,11 @@ class PrototypeMemoryLearner:
                 safe_observation,
                 old_mean + eta * (safe_observation - old_mean),
             )
-            new_count = jnp.where(novel, 1.0, current.counts[head, slot] + 1.0)
+            new_count = jnp.where(
+                novel,
+                jnp.asarray(1, dtype=jnp.int32),
+                _saturating_increment(current.counts[head, slot]),
+            )
             next_step = _saturating_increment(current.step_count)
             next_state = PrototypeMemoryState(
                 means=current.means.at[head, slot].set(new_mean),

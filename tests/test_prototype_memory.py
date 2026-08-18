@@ -28,6 +28,29 @@ def test_prototype_memory_init_shapes() -> None:
     chex.assert_tree_all_finite(state)
 
 
+def test_prototype_memory_hit_count_is_int32_and_saturates() -> None:
+    """Hit counts must be exact past 2**24 and saturate instead of stalling."""
+
+    config = PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=1)
+    learner = PrototypeMemoryLearner(config)
+    state = learner.init()
+    assert state.counts.dtype == jnp.dtype(jnp.int32)
+    target = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    planted = state.replace(
+        counts=jnp.array([[16777216], [0]], dtype=jnp.int32),
+        means=jnp.array([[[1.0, 1.0]], [[0.0, 0.0]]], dtype=jnp.float32),
+    )
+    result = learner.update(planted, jnp.ones((2,), dtype=jnp.float32), target)
+    assert int(result.state.counts[0, 0]) == 16777217
+
+    exhausted = result.state.replace(
+        counts=result.state.counts.at[0, 0].set(2**31 - 1)
+    )
+    final = learner.update(exhausted, jnp.ones((2,), dtype=jnp.float32), target)
+    assert int(final.state.counts[0, 0]) == 2**31 - 1
+
+
 def test_empty_memory_predicts_uniformly() -> None:
     """With no prototypes, softmax logits should be neutral."""
     learner = PrototypeMemoryLearner(
