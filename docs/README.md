@@ -41,20 +41,22 @@ The package overview and development entry points are in
   validators, and the property map.
 - [`evidence/negative-results.md`](evidence/negative-results.md) — concluded negative and
   bounded results. Check this before opening a new experimental lane.
-- [`audits/repository-larp-audit.md`](audits/repository-larp-audit.md) — dated cleanup audit of
-  unsupported surface, evidence state, and metadata drift. It is a historical snapshot, not
-  the current status authority.
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — experiment proposals, paper reproduction,
+  comparison hygiene, evidence safety, validation, and review requirements.
 - [`research/ipmnist-theory.md`](research/ipmnist-theory.md) — mechanistic interpretation of
   the development-only IPMNIST campaign.
 - [`research/ipmnist-campaign-index.md`](research/ipmnist-campaign-index.md) — mutable pointer
   to the current IPMNIST summary and the supersession status of append-only records.
 - [`research/sota-landscape.md`](research/sota-landscape.md) — current protocol-aware external
   comparison map for IPMNIST, Forager, and the other ASI lanes.
+- [`research/implementation-backlog.json`](research/implementation-backlog.json) — issue-ready,
+  machine-readable implementation and benchmark backlog.
 - [`design/rtu-taylor-correction.md`](design/rtu-taylor-correction.md) — derivation and limits
   of the optional RTU approximation.
 
 ## Runbooks
 
+- [`runbooks/continual-benchmark-suite.md`](runbooks/continual-benchmark-suite.md)
 - [`runbooks/foragax-open-screen.md`](runbooks/foragax-open-screen.md)
 
 Runbooks retain their stated issuance and promotion boundaries. An unissued or

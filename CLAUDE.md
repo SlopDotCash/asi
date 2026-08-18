@@ -96,12 +96,18 @@ ladder or treat its smoke plumbing as performance evidence.
 
 **Current measured subsystem campaign:** IPMNIST development screening and
 development confirmation is one plasticity/conditioning lane, not the
-definition of ASI. It is permanently nonpromoting. Results move; read the
-`summary_*.json` files and `publication_runs/RESULTS.md` under
-`outputs/ipmnist_screening/` instead of copying numbers into overview docs,
-and re-measure the selected control before any A/B. The theory snapshot is
-`docs/research/ipmnist-theory.md`; raw records and audits live beside the
-outputs. Check `docs/evidence/negative-results.md` before retrying an idea.
+definition of ASI. It is permanently nonpromoting. The current stored paired
+200-task record is the protocol-extended `rls_head_resid_l1_preset005` arm at
+0.87114 ± 0.00010 versus 0.86449 ± 0.00009 for its conditioning control over
+20 consumed development seeds, all paired differences positive. This is not a
+scientific or external SOTA claim. Results move; use
+`docs/research/ipmnist-campaign-index.md` and the `summary_*.json` files rather
+than copying rankings into overview docs, and re-measure the selected control
+before any A/B. The theory snapshot is `docs/research/ipmnist-theory.md`; raw
+records and audits live beside the outputs. Use
+`docs/research/sota-landscape.md` for external papers, official projects,
+protocol gaps, and the comparison queue. Check
+`docs/evidence/negative-results.md` before retrying an idea.
 
 ## Research operating loop
 
@@ -172,9 +178,15 @@ Key documents:
   `tests/test_reference_life_scorecard.py`
 - Status & evidence: `docs/status.md` (levels L0–L3, completion gates) ·
   `docs/evidence/methodology.md` (property-by-property map)
-- Active campaign: `docs/research/ipmnist-theory.md` ·
+- Contribution and experiment protocol: `CONTRIBUTING.md`
+- Active campaign: `docs/research/ipmnist-campaign-index.md` ·
+  `docs/research/ipmnist-theory.md` ·
   `outputs/ipmnist_screening/{RUNBOOK,FINAL_REPORT,AUDIT,CEILING_ANALYSIS,SOTA_LANDSCAPE_2026}.md`
-- Current external comparison map: `docs/research/sota-landscape.md`
+- Current external paper/project library and comparison queue:
+  `docs/research/sota-landscape.md`
+- Machine-readable implementation backlog and benchmark setup:
+  `docs/research/implementation-backlog.json` ·
+  `docs/runbooks/continual-benchmark-suite.md` · `asi-benchmark-catalog`
 - Durable records: `docs/archive/forager-comparator-audit.md` ·
   `docs/design/rtu-taylor-correction.md` ·
   `docs/evidence/negative-results.md`
@@ -272,6 +284,13 @@ recorded in the pinned artifacts are:
 No accepted claim establishes an integrated ASI agent, robotics readiness,
 state of the art, or Alberta Plan completion; keep README/status wording narrow
 and honest.
+
+The current-tree audit on 2026-08-17 returns `invalid` (exit 2) for all five
+claims, principally because the registered source hashes have drifted; the IA
+chain also reports current canonical controller-budget payload mismatches.
+Preserve the frozen outcomes above as history, but do not describe them as live
+accepted claims. Do not edit pinned artifacts or weaken validators to repair
+this expected fail-closed state.
 
 ## Files that are load-bearing outside the docs
 

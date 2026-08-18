@@ -3,218 +3,176 @@
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-blue.svg)](pyproject.toml)
 
-ASI is elizaOS's evidence-driven continual-learning research and hillclimbing project. We are
-building one end-to-end agent that can keep learning throughout its operational life: adapt to
-change, retain and reuse useful knowledge, build state and models, plan and act, and remain
-within explicit compute, memory, and latency budgets. The intended application envelope
-includes useful ongoing work and embodied systems such as robotics.
+ASI is elizaOS's evidence-driven continual-learning hillclimb. The objective is one agent that
+keeps learning through an operational life: adapting without whole-agent or task-by-task
+reinitialization, retaining and reusing useful knowledge, predicting and planning, and acting
+within explicit compute, memory, and latency budgets. Robotics is the first demanding
+application direction.
 
-The goal is a state-of-the-art continual-learning application. That is an aspiration and a
-comparative research target, not a claim about the current checkout. ASI does not yet have a
-completed whole-agent L3 protocol or result, state-of-the-art application evidence, or
-robotics readiness.
+State-of-the-art continual learning is the destination, not a claim about this checkout. ASI
+does not yet have a selected integrated `reference-dev` agent, a completed whole-agent L3
+result, a protocol-comparable external SOTA result, or robotics readiness.
 
-The repository provides a JAX package of online learners, adaptive optimizers, prediction and
-control agents, learned-state and memory mechanisms, world models, planning and option
-components, non-stationary streams, benchmarks, and strict evidence validators.
+## The hillclimb
 
-## Research direction
+This repository is organized around a repeated empirical loop:
+
+1. remeasure the current control from the current source;
+2. name one bottleneck and a falsifiable mechanism hypothesis;
+3. implement the smallest end-to-end intervention that can test it;
+4. screen it cheaply with paired schedules and strong controls;
+5. retain or reject it, including its resource cost;
+6. test recurrence, transfer, and downstream control;
+7. advance the permanently nonpromoting development reference only after its regression panel;
+8. freeze a separate protocol with untouched seeds only when a scientific claim is warranted.
+
+The target is not the number of modules, tests, or favorable subsystem scores. A step is uphill
+only when useful lifetime behavior improves without concealing regressions in adaptation,
+retention, stability, autonomy, robustness, compute, memory, or latency.
+
+Start with the [research roadmap](docs/research/asi-roadmap.md), the
+[current status map](docs/status.md), and the
+[protocol-aware SOTA and research library](docs/research/sota-landscape.md). Contributors should
+then follow [CONTRIBUTING.md](CONTRIBUTING.md), which turns an idea or paper into a bounded
+comparison and defines what evidence is required to call it a win.
+
+## Current scoreboard
+
+Different protocols answer different questions. The table deliberately does not combine them
+into one leaderboard.
+
+| Lane | Best truthful statement in this checkout | Status |
+|---|---|---|
+| Reference life | A 144-shard matched scorecard is implemented for SwitchingTwoState and RiverSwim over Prototype, frozen, random, privileged finite-horizon DP, differential SARSA, and discounted SARSA controls. | No completed aggregate result; no `reference-dev` selection; permanently nonpromoting. |
+| IPMNIST plasticity | `rls_head_resid_l1_preset005` records **0.87114 ± 0.00010** whole-stream online accuracy over 20 seeds versus **0.86449 ± 0.00009** for its paired conditioning control; all paired differences are positive. | Stored development result on a protocol-extended readout; selected/inspected seeds and no frozen promotion authority. Not a scientific or external SOTA claim. |
+| Protocol-pure IPMNIST | `adamw_cbp_r3e4` records **0.80126** over 3 development seeds; the stored published-configuration UPGD-W reproduction is **0.77915 ± 0.00006** over 10 seeds. | Development only; seed counts and method classes differ. Remeasure before a new A/B. |
+| Forager | Open-screen infrastructure and development records cover feed-forward, recurrent/stateful, plasticity, PPO, and RTU-family controls. | No paper-length matched-resource ASI-versus-upstream result and no promoted claim. |
+| Evidence registry | Four stored artifacts have narrow accepted outcomes and one has a valid-rejection outcome under their historical contracts. | **Live status on 2026-08-17: invalid (exit 2), all five claims**, principally because registered source hashes have drifted; IA also fails current canonical payload checks. This is fail-closed behavior, not a reason to edit an artifact. |
+
+The current IPMNIST record is in
+[`summary_rls_head_confirm.json`](outputs/ipmnist_screening/summary_rls_head_confirm.json) and is
+explained in the [campaign index](docs/research/ipmnist-campaign-index.md). It is valuable evidence
+for choosing the next experiment, but cannot be promoted retroactively. As of the literature
+audit dated 2026-08-17, no later paper was found reporting a directly comparable number on the
+exact ICLR-2024 IPMNIST protocol. That is a search result, not proof of SOTA; a defensible claim
+still requires an updated systematic search, external implementations under one frozen runner,
+matched resources, and fresh held-out evaluation.
+
+## What to hillclimb now
+
+The highest-leverage work is tied to an existing bottleneck and a downstream consumer:
+
+1. **Run the reference-life scorecard.** Complete the implemented SwitchingTwoState + RiverSwim
+   development comparison, validate every shard, and decide whether any candidate qualifies.
+2. **Challenge the IPMNIST leader.** Reproduce high-priority contemporary controls under the
+   exact stream: L2 plus effective-rank regularization, AdamO/dynamical-isometry regularization,
+   Intentional Updates adapted to supervised prediction, and bounded growing/elastic networks.
+3. **Test whether the IPMNIST mechanism transfers.** Remeasure controls on recurrence,
+   label/output changes, and a continual-control setting. Fast input normalization may erase
+   task-relevant magnitude information; it is not assumed safe for robotics.
+4. **Compare online world models.** Put the existing shallow FTL model against matched online
+   recurrent/latent controls. JEPA-WM, V-JEPA 2-AC, Dreamer-CDP, JEDI, and Dreamer-style systems
+   are research directions, not drop-in claims: replay, pretraining, pixel input, and compute must
+   be declared and charged.
+5. **Close a real control bridge.** Add a reference-life adapter for Forager or the sibling robot
+   path only after action ownership, checkpoint/resume, resource, safety-authority, and metric
+   gates are written down.
+
+The research library records paper links, official code, protocol mismatches, implementation
+state, and a prioritized comparison queue. Check it and the
+[negative-results ledger](docs/evidence/negative-results.md) before opening a new mechanism lane.
+
+## Research position
 
 [The Alberta Plan for AI Research](https://arxiv.org/abs/2208.11173) is a foundational
 inspiration and a useful coverage lens. It is not ASI's specification, mandatory sequence, or
-scope boundary. ASI can reorder, combine, revise, reject, or replace Alberta-derived mechanisms
-and pursue ideas from the wider continual-learning and reinforcement-learning literature when
-measured results justify the move.
+outer boundary. ASI may improve, combine, reorder, or replace Alberta-derived mechanisms when
+stronger evidence wins.
 
-The intended operating loop repeatedly remeasures the current lane-specific control, names a
-falsifiable bottleneck, runs a bounded paired development screen, retains or rejects the idea,
-checks transfer and system regressions, and issues a separate frozen held-out protocol only
-when a scientific claim is warranted. Once a canonical reference life exists, the same loop
-will remeasure its versioned whole-agent baseline. Improvements are judged across online
-utility, adaptation, retention, transfer, stability, compute, memory, latency, and downstream
-control — not one leaderboard number.
+The external comparison set therefore includes:
 
-The durable mission, application ladder, whole-life scorecard, and current program priorities
-are in the [ASI research roadmap](docs/research/asi-roadmap.md).
-The [continual-learning comparison landscape](docs/research/sota-landscape.md) separates current
-local development leaders from protocol-comparable external results and records what is still
-required before any state-of-the-art claim.
+- streaming optimization and loss-of-plasticity methods such as continual backpropagation,
+  UPGD, NaP, SNR, L2-ER, AdamO, Intentional Updates, and growing/elastic networks;
+- replay-free and replay-based continual learning, with memory and task information charged;
+- continual-control benchmarks including RiverSwim, Forager, Continual World, CORA, and COOM;
+- online and latent world models including FTL Online Agent, Dreamer-family systems,
+  reconstruction-free prediction, and JEPA-style physical planning; and
+- standard libraries such as Avalanche and Mammoth as sources of baselines and protocol checks,
+  not as interchangeable scoreboards.
+
+Numbers from different Permuted-MNIST variants are especially easy to misuse. Task count,
+examples per task, batch size, boundary access, replay, pretraining, architecture, evaluation
+time, and whether accuracy is prequential, final, per-task, or last-window all change the
+problem. ASI reports them separately until one runner makes them comparable.
+
+## Implemented reference-life slice
+
+The selected architectural direction is one reference-agent protocol shared by adapters. The
+current `preview1` development slice includes:
+
+- an immutable transaction ledger with authorization, settlement, command, applied-action
+  receipt, outcome, halt/recovery, and process-local lock/CAS semantics;
+- a manifest-bound primitive-action bridge for `PrototypeAgent`;
+- aggregate SwitchingTwoState and RiverSwim lives that own agent, environment, transaction,
+  dispatch, RNG cursor, metrics, counters, recovery state, transcript, and generations;
+- exact validation of RiverSwim's keyed stochastic transition, with `2 <= n_states <= 12` bound
+  before its exponential oracle is built;
+- quiescent whole-life checkpoint and exact-resume gates for both simulators; and
+- matched development controls and a fresh-process scorecard runner.
+
+The relevant implementation and tests are indexed in
+[the protocol ADR](docs/design/asi-reference-agent-protocol.md). These are L0 mechanisms. They do
+not provide portable checkpoint migration, authenticated execution proof, process-death or
+hardware-delivery guarantees, independent safety, options/rebinding/boundaries, general
+environment support, a Forager or robot adapter, or learning-performance evidence.
+
+`PrototypeAgent` remains a candidate composition surface, not the completed ASI agent. API
+presence elsewhere in the package means a mechanism can be researched; it does not establish
+empirical benefit or integration.
 
 ## Identity and compatibility
 
-This repository is [`elizaOS/asi`](https://github.com/elizaOS/asi). It began from
-[`lalalune/alberta`](https://github.com/lalalune/alberta) at fork point `2ac3533` and is now a
-substantially divergent development line. [VENDORING.md](VENDORING.md) records that history.
+This repository is [`elizaOS/asi`](https://github.com/elizaOS/asi), a development fork of
+[`lalalune/alberta`](https://github.com/lalalune/alberta) from commit `2ac3533`.
+[VENDORING.md](VENDORING.md) records the divergence.
 
-ASI is the project identity. The Python namespace `alberta_framework`, distribution name
-`alberta-framework`, `alberta-*` commands, Alberta-specific Step modules, and historical
-`alberta.*` schemas remain stable compatibility or provenance names. The elizaOS robot track
-imports part of that surface in-process, so this rebrand intentionally does not break it. The
-package keeps Python 3.12 compatibility and a NumPy 1.26 floor. The name labels the research
-program; it is not a claim about the current software's level of intelligence.
-
-## Current status
-
-Individual mechanisms range from contract-tested kernels to narrow historical evidence
-packages. The retained `PrototypeAgent` is a candidate composition surface, not a completed
-reference application. Important end-to-end, retention, control-benefit, resource-scaling,
-robustness, and robotics gates remain open.
-
-The selected architectural direction is a shared reference-agent protocol with adapters for the
-retained `PrototypeAgent` and the sibling robot controller. The
-[Proposed protocol ADR](docs/design/asi-reference-agent-protocol.md) specifies state ownership,
-dispatch lineage, an exact-resume acceptance gate, and its ordered implementation sequence. The
-[preview1 L0 transaction contract](alberta_framework/reference_agent.py) and its
-[retained contract tests](tests/test_reference_agent_protocol.py) now cover immutable typed
-payloads, separate authorization, learner settlement, pre-execution command,
-post-execution applied-action receipt, receipt-bound outcome records, and explicit
-bootstrap/reset observation IDs. A pure reducer owns semantic transitions; its process-local
-ledger wrapper uses a lock and current-object identity compare-and-swap to reject stale snapshots
-and repeated initialization inside one live ledger. A rejected event remains unconsumed and
-leaves that ledger halted with recovery required; the final uint64-indexed event is consumed
-before the ledger becomes exhausted.
-
-The development-only
-[Prototype reference adapter](alberta_framework/prototype_reference_adapter.py) and its
-[retained tests](tests/test_prototype_reference_adapter.py) implement a second L0 slice: a
-manifest-bound, primitive-only, exact-dispatch agent transaction bridge for continuing tasks.
-Its immutable envelope binds the Prototype state to the manifest/configuration and owns the
-host lifecycle, decision index, and observation identity. It supports neither options nor action
-replacement/rebinding and rejects boundary transactions.
-
-The development-only [aggregate reference-life runner](alberta_framework/reference_life.py), its
-[base retained tests](tests/test_reference_life.py), and its
-[RiverSwim tests](tests/test_reference_life_riverswim.py) implement primitive Prototype lives for
-SwitchingTwoState and RiverSwim. A canonical immutable life configuration binds the complete
-selected Prototype, environment, exact-dispatch, and metric configurations and rejects
-`max_accepted_events` above the smallest component capacity. One immutable aggregate state owns
-agent, environment, transaction, dispatch, RNG-cursor, metric, counter, pending-outcome, halt,
-commit-generation, and checkpoint-generation state. Under one process-local outer lock, the
-runner derives observation IDs and executes authority, settlement, command, functional
-environment execution, post-execution receipt, outcome, agent update, metrics, and one aggregate
-commit. It also covers horizon completion, phase/reward/oracle/regret metrics, transcript hashing,
-strict action validation, retained post-execution failures, and no-redispatch recovery from a
-complete pending outcome.
-
-The RiverSwim path has a distinct manifest/state discriminator and stationary metrics. It rejects
-configurations outside `2 <= n_states <= 12` before constructing the exponential exact oracle,
-passes the identical runner-derived JAX key to execution and validation, and has the validator
-replay the stochastic transition exactly rather than merely accept any possible next state.
-
-The development-only
-[whole-life checkpoint codec](alberta_framework/reference_life_checkpoint.py), its
-[Switching tests](tests/test_reference_life_checkpoint.py), and its
-[RiverSwim tests](tests/test_reference_life_riverswim_checkpoint.py) close the current-schema
-quiescent checkpoint/exact-resume L0 gate for both supported primitive lives. A successful save
-uses Linux atomic no-replace publication for one immutable generation, advances commit/checkpoint
-generations, nests the complete Prototype v3 checkpoint, binds canonical life state plus current
-source/runtime/dependency identities and consistency hashes, reconstructs fresh components from
-the environment discriminator, and validates exact original-versus-restored continuation from the
-same persisted barrier.
-
-All reference schemas remain unfrozen `preview1`. This is not a portable or migrating checkpoint
-contract, authenticated execution provenance, `reference-dev`, safety conformance, robotics
-readiness, RiverSwim learning or performance benefit, or evidence. Only quiescent pre-completion
-state for the two implemented simulators is supported; no in-flight, halted, pending-outcome,
-completed, or physical state is restored. Reward and discount remain finite scalars, there are no
-protocol sidecars or wire decoder, and the live owners cannot be pickled. The runner's static
-exact authority is not a safety policy. Its ordinary-`Exception` guard provides process-local
-at-most-once submission
-relative to stale snapshots within one live runner; it supplies no process-death,
-`BaseException`, durable/idempotent executor, hardware-delivery, or reconciled-resume guarantee.
-Options, replacement/rebinding, boundaries, wire/durable dispatch replay, independent safety,
-additional/general environments, Forager, and robot adapters remain open. The robot and Forager
-paths do not currently consume `PrototypeAgent`, and Forager still records an unresolved
-extended-action dispatch edge.
-
-The current reference-life hillclimb is implemented as a permanently nonpromoting matched
-development scorecard in
-[`reference_life_controls.py`](alberta_framework/reference_life_controls.py) and
-[`reference_life_scorecard.py`](alberta_framework/benchmarks/reference_life_scorecard.py), with
-retained [control](tests/test_reference_life_controls.py) and
-[artifact/CLI](tests/test_reference_life_scorecard.py) tests. The literal-frozen plan uses 12
-consumed development seeds across SwitchingTwoState and RiverSwim and compares Prototype,
-frozen/no-learning Prototype, uniform random, an environment-bound finite-horizon privileged
-dynamic-programming control, differential SARSA, and discounted SARSA in 144 fresh-process
-shards. Every shard binds its current source identity, and aggregation requires one matching
-current identity. Agent RNG roots use explicit Threefry keys. Records validate fixed reward
-lattices, complete counters, and canonical initial/final numeric payload accounting including
-static oracle policy bytes; timing is telemetry-only. Run it through
-`asi-reference-life-scorecard`. This
-machinery is L0 and permanently nonpromoting: implementation, a valid plan, or passing validators
-does not select `reference-dev`, attest execution, or constitute a completed run, performance
-result, or scientific evidence.
-
-The package also contains inherited surfaces related to all twelve steps of the Alberta Plan.
-That crosswalk is useful for finding gaps, but completing a checklist of Plan mechanisms would
-not by itself establish the ASI north star.
-
-Keep these boundaries in mind:
-
-- Development and screening records are permanently nonpromoting. A distinct run under a
-  separately frozen protocol with untouched seeds may test a newly scoped scientific claim.
-- A passing unit test, smoke run, replay, or benchmark does not promote a scientific claim.
-- Registered evidence claims are narrow. Acceptance of one does not certify the package or
-  establish ASI's whole-agent target, robotics readiness, state of the art, or Alberta Plan
-  completion.
-- Pinned artifacts are immutable historical records. Source drift makes compatibility checks
-  fail closed; it is not repaired by editing the artifact or loosening its validator.
-- Consumed development or evidence seeds cannot be reused as fresh promotion seeds.
-
-See [the research status](docs/status.md) for the current capability and Alberta crosswalk and
-[the evidence methodology](docs/evidence/methodology.md) for promotion rules, artifact
-contracts, and validator semantics.
+ASI is the project identity. The `alberta_framework` Python namespace, `alberta-framework`
+distribution, `alberta-*` commands, historical schemas, and Alberta-specific Step names remain
+compatibility and provenance interfaces. The robot track imports part of this surface in-process,
+so Python 3.12 support, the NumPy 1.26 floor, and existing imports must remain intact.
 
 ## Install
 
-ASI currently requires Python 3.12 or newer. The
-existing `alberta-framework` project on PyPI is a different distribution and does not track this
-fork's version, Python floor, or dependency extras.
-Install ASI from a checkout instead:
+The existing `alberta-framework` project on PyPI is a different distribution and does not track
+this fork. Install from a checkout:
 
 ```bash
 git clone https://github.com/elizaOS/asi.git
 cd asi
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -e .
+.venv/bin/python -m pip install -e '.[dev]'
 ```
 
-Optional dependency groups are available from the same checkout:
+Optional extras:
 
 ```bash
 .venv/bin/python -m pip install -e '.[gymnasium]'  # Gymnasium adapters
 .venv/bin/python -m pip install -e '.[forager]'    # continual-foragax testbed
-.venv/bin/python -m pip install -e '.[research]'   # plots, tables, and dataset loaders
+.venv/bin/python -m pip install -e '.[research]'   # plots, tables, dataset loaders
 .venv/bin/python -m pip install -e '.[gpu]'        # JAX CUDA 12 build
-.venv/bin/python -m pip install -e '.[dev]'        # tests, lint, typing, and research tools
-```
-
-For repository development, install the development extra and use the project virtual
-environment for every command:
-
-```bash
-.venv/bin/python -m pip install -e '.[dev]'
 ```
 
 ## Quick start
 
-This small example runs one online-learning primitive on a drifting synthetic stream. It is
-useful for checking the library surface, not a demonstration of the target end-to-end agent.
-JAX keys are explicit, and the learning loop uses `jax.lax.scan`.
+This is a mechanism smoke example, not the end-to-end target:
 
 ```python
 import jax.random as jr
 
-from alberta_framework import (
-    Autostep,
-    LinearLearner,
-    RandomWalkStream,
-    run_learning_loop,
-)
+from alberta_framework import Autostep, LinearLearner, RandomWalkStream, run_learning_loop
 
 stream = RandomWalkStream(feature_dim=10, drift_rate=0.01)
 learner = LinearLearner(optimizer=Autostep())
-
 state, metrics = run_learning_loop(
     learner,
     stream,
@@ -223,96 +181,75 @@ state, metrics = run_learning_loop(
 )
 ```
 
-The repository also exposes two inherited Alberta Step integration probes:
+Inherited Step probes likewise check execution, not scientific performance:
 
 ```bash
 .venv/bin/alberta-step1-smoke --steps 256 --seed 0
 .venv/bin/alberta-step2-smoke --steps 128 --seed 0
 ```
 
-These commands check that the selected kernel runs and returns finite metrics. They are not
-scientific experiments or evidence gates.
-
-## Command-line interfaces
-
-The console scripts are grouped by responsibility; every command supports `--help`.
+## Commands
 
 | Commands | Purpose |
 |---|---|
-| `alberta-step1-smoke`, `alberta-step2-smoke` | Nonpromoting mechanism smoke checks |
-| `asi-reference-life-scorecard` | Run or validate the permanently nonpromoting reference-life development scorecard |
-| `alberta-evidence-status` | Validate the complete five-claim evidence registry |
-| `alberta-recurring-feature-evidence`, `alberta-scale-robust-evidence`, `alberta-ftl-evidence`, `alberta-multiagent-evidence`, `alberta-ia-evidence` | Validate or build one claim's versioned artifact under its strict protocol |
-| `alberta-forager-benchmark`, `alberta-historical-forager` | Run development Forager comparisons or inspect reconstructed historical families |
-| `alberta-foragax-open-screen`, `alberta-foragax-oci` | Operate the bounded open-screen and qualified OCI workflows |
-| `alberta-forager-matched-campaign`, `alberta-forager-matched-qualification`, `alberta-forager-matched-sealed-evaluation` | Operate the matched-comparison campaign stages |
+| `asi-reference-life-scorecard` | Build, run, aggregate, or validate the permanently nonpromoting reference-life scorecard |
+| `alberta-evidence-status` | Validate the five-claim evidence registry and current source bindings |
+| `alberta-step1-smoke`, `alberta-step2-smoke` | Run inherited nonpromoting mechanism probes |
+| `alberta-forager-benchmark`, `alberta-historical-forager` | Run development comparisons or inspect historical Forager families |
+| `alberta-foragax-open-screen`, `alberta-foragax-oci` | Operate bounded Foragax screening and qualified OCI workflows |
+| `alberta-forager-matched-*` | Operate matched Forager qualification/evaluation campaign stages |
+| `alberta-*-evidence` | Validate or build one versioned narrow evidence artifact under its own contract |
 
-Benchmark commands are not shortcuts around the evidence rules. Read
-[`FORAGER_BENCHMARK.md`](FORAGER_BENCHMARK.md) and the
-[`foragax-open-screen` runbook](docs/runbooks/foragax-open-screen.md) before using them.
+Every command supports `--help`. Benchmark execution belongs in scripts and CLIs, not ordinary
+pytest. Read [FORAGER_BENCHMARK.md](FORAGER_BENCHMARK.md) and the
+[open-screen runbook](docs/runbooks/foragax-open-screen.md) before a Forager run.
 
-## Package layout
+## Package map
 
 ```text
 alberta_framework/
-  core/         online learners, optimizers, control, state, models, memory,
-                planning, options, feature lifecycles, and agent composition
-  streams/      synthetic prediction, closed-loop, Pavlovian, and recurring
-                multi-agent streams
-  evaluation/   evidence schemas, strict validators, registries, and CLIs
-  benchmarks/   IPMNIST and Forager integrations and campaign runners
+  core/         online learners, optimizers, control, state, memory, world models,
+                planning, options, feature lifecycles, and PrototypeAgent
+  streams/      synthetic prediction, closed-loop, Pavlovian, and multi-agent streams
+  evaluation/   evidence schemas, validators, registry, and bounded diagnostics
+  benchmarks/   IPMNIST, Forager, and reference-life campaign runners
   utils/        experiment, metric, statistics, and export helpers
-  steps/        inherited Alberta Step 1-12 mechanism kernels and smoke integration
-tests/          unit, integration, scientific, and replay tests
-outputs/        evidence and campaign artifacts; see the immutability rules
+  steps/        inherited Alberta Step 1-12 kernels and integration surfaces
+tests/          unit, integration, scientific, replay, and package checks
+outputs/        immutable evidence plus append-only development campaign records
 ```
 
-Most numerical state is represented by immutable Chex dataclasses and carried as JAX PyTrees.
-Randomness is passed explicitly. Host orchestration, artifact validation, external benchmark
-loading, and some bounded lifecycle operations remain Python-level by design.
+Most numerical state is represented by immutable Chex dataclasses and JAX PyTrees. Randomness
+uses explicit JAX keys. Host orchestration, strict artifact validation, external benchmark
+loading, and bounded lifecycle operations remain Python-level where appropriate.
 
-The major package surfaces include:
+## Evidence rules
 
-| Area | Examples |
-|---|---|
-| Online prediction | `LinearLearner`, `MLPLearner`, TD learners, Horde |
-| Adaptation | LMS, IDBD, Autostep, SwiftTD, UPGD, normalization, bounding |
-| Control | SARSA, actor-critic, average-reward and off-policy variants |
-| Continual mechanisms | learned state, feature lifecycles, memory, world models |
-| Temporal abstraction | subtasks, STOMP, OaK, option models and bounded planning |
-| Composition | `PrototypeAgent` candidate surface and explicit transition/decision ownership |
-| Evaluation | versioned artifacts, strict validators, evidence registry |
-
-API presence means that a mechanism is available for research. It does not imply empirical
-benefit, calibrated thresholds, autonomous integration, or scientific acceptance.
-
-## Evidence registry
-
-From a repository checkout, inspect every registered claim with:
+The evidence registry contains five narrow historical claim families: recurring pair features,
+scale-robust pair features, FTL world-model decision fidelity, recurring multi-agent
+coadaptation, and continual intelligence amplification. Their stored outcomes are four narrow
+acceptances and one valid rejection. On 2026-08-17 the live current-tree validator classified all
+five as `invalid` and exited `2`, principally due to registered source-hash drift; the IA chain
+also reports current canonical payload mismatches. Preserve both facts: historical frozen outcome
+and current validity are different fields.
 
 ```bash
 .venv/bin/alberta-evidence-status
 ```
 
-The exit-code contract is:
-
-| Code | Meaning |
+| Exit | Meaning |
 |---:|---|
-| `0` | every registered narrow claim is accepted |
-| `1` | at least one artifact is missing or is a valid rejection |
-| `2` | at least one artifact is invalid |
+| `0` | all registered narrow claims are accepted |
+| `1` | an artifact is missing or is a valid rejection |
+| `2` | an artifact or source binding is invalid |
 
-The registry validates artifact schema, protocol metadata, and registered source hashes. It is
-an operational index of narrow claims, not a package-wide evidence score, hillclimb metric, or
-completion certificate.
+Pinned output artifacts are immutable. Never repair, overwrite, or delete one. Registered source
+hash drift invalidates the corresponding persisted claim by design. Development seeds and
+consumed evidence seeds can never become fresh promotion seeds. Passing tests, rerunning a
+screen, or accumulating more inspected seeds does not promote a claim.
 
-Wheels and source distributions intentionally exclude `outputs/`. Consequently, running the
-status command from a normal package installation reports missing artifacts. Use a checkout
-when validating the repository's stored evidence chain.
-
-Do not overwrite, repair, or regenerate a pinned artifact in place. A new run must use a new
-path and, when required by its contract, a new schema version. The full rules are in
-[the evidence methodology](docs/evidence/methodology.md).
+Read the [evidence methodology](docs/evidence/methodology.md) before editing evaluation sources or
+running a claim-bearing protocol.
 
 ## Current measured subsystem campaign
 
@@ -350,81 +287,38 @@ Before repeating a failed or bounded idea, check
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the inbound licensing terms and
 maintainer review policy.
 
-Run targeted tests first, then broaden verification as appropriate:
+Use the project environment for every command. Run targeted tests first, then broaden
+verification as appropriate:
 
 ```bash
 .venv/bin/python -m pytest tests/path/to/test_file.py -q
+.venv/bin/python -m pytest -m "not slow and not package" tests -q
 .venv/bin/python -m pytest tests -q
 .venv/bin/python -m ruff check .
 .venv/bin/python -m mypy
+.venv/bin/asi-benchmark-catalog doctor ipmnist-iclr2024 reference-life
 ```
 
-The repository uses these pytest markers:
-
-- `unit`: fast, isolated behavior or contract tests
-- `integration`: component, persistence, process, or CLI boundaries
-- `scientific`: frozen promoted-evidence protocols
-- `slow`: wall-clock-heavy tests excluded from the fast per-change lane
-- `package`: built-distribution and installed-entry-point contracts run only in the package lane
-
-The fast CI runtime selector is `-m "not slow and not package"`.
-
-Benchmark campaigns run through their scripts or console CLIs, never as ordinary pytest work.
-Keep tests CI-cheap unless the protocol is deliberately registered as scientific evidence.
-
-Library changes should start with a failing test. Preserve immutable state, explicit
-`jax.random` keys, Python 3.12 support, and the NumPy 1.26 minimum. Before editing evaluation
-or benchmark sources, check whether a stored artifact registers their hashes.
-
-Research changes should also start from a freshly measured control and a named integration
-path. Prefer a small falsifiable comparison that can remove an idea over a broad new mechanism
-surface with no whole-agent consumer. Use the process in the
-[ASI research roadmap](docs/research/asi-roadmap.md).
-
-Do not auto-promote results, retune a frozen threshold after seeing held-out data, reuse
-consumed seeds, or modify immutable `outputs/` records. See
-[the evidence methodology](docs/evidence/methodology.md) before changing any evidence lane.
+The pytest lanes are `unit`, `integration`, `scientific`, `slow`, and `package`. A scientific
+marker identifies a frozen evidence protocol; it does not make an arbitrary expensive test into
+evidence. See [CONTRIBUTING.md](CONTRIBUTING.md) for experiment proposals, comparison hygiene,
+artifact rules, documentation expectations, and the pull-request checklist.
 
 ## Documentation
 
-### Mission and strategy
-
-- [ASI research roadmap and whole-life scorecard](docs/research/asi-roadmap.md)
-- [Proposed ASI reference-agent protocol](docs/design/asi-reference-agent-protocol.md)
-
-### Status and evidence
-
-- [Research status and completion gates](docs/status.md)
-- [Evidence methodology and property map](docs/evidence/methodology.md)
+- [Research roadmap and whole-life scorecard](docs/research/asi-roadmap.md)
+- [SOTA landscape, paper library, projects, and comparison backlog](docs/research/sota-landscape.md)
+- [Continual benchmark suite setup](docs/runbooks/continual-benchmark-suite.md)
+- [Current status and Alberta Plan crosswalk](docs/status.md)
+- [Reference-agent protocol ADR](docs/design/asi-reference-agent-protocol.md)
+- [IPMNIST campaign index](docs/research/ipmnist-campaign-index.md)
+- [IPMNIST mechanistic synthesis](docs/research/ipmnist-theory.md)
+- [Evidence methodology](docs/evidence/methodology.md)
 - [Negative and bounded results](docs/evidence/negative-results.md)
-
-### Runbooks
-
-- [Foragax open development screen](docs/runbooks/foragax-open-screen.md)
-
-### Research and historical audits
-
-- [IPMNIST theory](docs/research/ipmnist-theory.md)
-- [Current IPMNIST campaign index](docs/research/ipmnist-campaign-index.md)
-- [RTU Taylor-correction derivation](docs/design/rtu-taylor-correction.md)
-- [Dated repository anti-LARP audit](docs/audits/repository-larp-audit.md)
-- [Forager comparator audit](docs/archive/forager-comparator-audit.md)
-- [Historical Forager reconstruction](docs/archive/historical-forager-reconstruction.md)
-- [OPMNIST closure provenance](outputs/step2_canonical/step2_opmnist_solution_800task_3seed_PROVENANCE.md)
-
-### Repository and benchmark records
-
 - [Forager benchmark](FORAGER_BENCHMARK.md)
-- [Vendoring and fork history](VENDORING.md)
-- [Changelog](CHANGELOG.md)
-- [Citation metadata](CITATION.cff)
+- [Documentation index](docs/README.md)
 
-## Citation
-
-ASI citation metadata is provided in [CITATION.cff](CITATION.cff). Cite the original papers
-for algorithms and benchmarks used in a particular experiment, including the
-[Alberta Plan](https://arxiv.org/abs/2208.11173).
-
-## License
+Citation metadata is in [CITATION.cff](CITATION.cff). Cite the original papers and benchmark
+versions used by each experiment, including the Alberta Plan where applicable.
 
 ASI is licensed under the [Apache License 2.0](LICENSE).

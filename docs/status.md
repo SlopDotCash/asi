@@ -112,6 +112,12 @@ The immutable stored artifacts record these frozen outcomes:
 | `recurring_multiagent_coadaptation` | Fixed-memory coadaptation and retention in one visibly cued two-agent A–B–A sanity benchmark | [`evidence.json`](../outputs/continual_multiagent/evidence.json) | Accepted, narrow L2 |
 | `continual_intelligence_amplification` | Causal recommendation-channel uplift in one deterministic hidden-phase micro-MDP | [`evidence.json`](../outputs/continual_ia/evidence.json) | Valid rejection at the frozen L2 gate |
 
+**Current-tree audit (2026-08-17):** `alberta-evidence-status` exits `2` and
+classifies all five claims as `invalid`. Every claim reports registered source-hash
+drift. The IA chain additionally reports current canonical controller-budget
+payload mismatches. These live failures do not rewrite the frozen historical
+outcomes above, and the artifacts must not be edited to make validation pass.
+
 The IA artifact remains a scientifically useful rejection. Its reward uplift
 and augmentation-control checks do not override the failed frozen
 action-changing-intervention gate. The threshold must not be lowered after the

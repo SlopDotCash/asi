@@ -262,8 +262,12 @@ dimensions. Post-hoc tradeoff weights cannot turn a regression into a win.
    evidence.
 2. **Turn plasticity gains into agent gains.** Use the development-only IPMNIST
    campaign to generate mechanisms, then remeasure controls and test survivors
-   on recurrence, a complementary stream, and continual control. Do not promote
-   or directly ship an inspected campaign winner.
+   on recurrence, a complementary stream, and continual control. The current
+   stored 20-seed leader is a protocol-extended RLS readout/body arm, not a
+   protocol-pure optimizer and not scientific or external SOTA evidence. The
+   next comparator queue prioritizes L2 plus effective-rank regularization,
+   AdamO/dynamical isometry, Intentional Updates, and bounded growing/elastic
+   networks. Do not promote or directly ship an inspected campaign winner.
 3. **Broaden reference-life conformance after the scorecard.** Add no
    environment or mechanism without a named gate. Options/rebinding,
    boundaries, independent safety, Forager, robot adapters, and general
@@ -281,9 +285,15 @@ dimensions. Post-hoc tradeoff weights cannot turn a regression into a win.
    performance and resource use scale.
 6. **Keep the search open.** Regularly compare the current bottleneck with ideas
    inside and outside the Alberta Plan. Prefer causal experiments and portable
-   mechanisms over allegiance to an existing component.
+   mechanisms over allegiance to an existing component. Maintain paper versions,
+   official code, protocol gaps, local implementation state, and the smallest
+   decisive comparison in the [SOTA landscape](sota-landscape.md). JEPA and
+   Dreamer-family world models enter through matched prediction-to-control
+   experiments with replay, pretraining, model queries, memory, and latency
+   charged; representation or rollout quality alone is not an agent win.
 
-The [IPMNIST theory](ipmnist-theory.md) owns its current mechanism hypotheses.
+The [IPMNIST campaign index](ipmnist-campaign-index.md) identifies the current
+record, and the [IPMNIST theory](ipmnist-theory.md) owns its mechanism hypotheses.
 The [negative-results ledger](../evidence/negative-results.md) prevents closed
 ideas from being silently recycled. The [status map](../status.md) records what
 is actually implemented and evidenced; neither this roadmap nor a future plan

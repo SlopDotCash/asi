@@ -76,6 +76,7 @@ Issues = "https://github.com/elizaOS/asi/issues"
 Upstream = "https://github.com/lalalune/alberta"
 
 [project.scripts]
+asi-benchmark-catalog = "alberta_framework.benchmarks.continual_benchmark_catalog:main"
 asi-reference-life-scorecard = "alberta_framework.benchmarks.reference_life_scorecard:main"
 alberta-step1-smoke = "alberta_framework.cli:step1_smoke_main"
 alberta-step2-smoke = "alberta_framework.cli:step2_smoke_main"
@@ -100,6 +101,7 @@ packages = ["alberta_framework"]
 include = [
     "/CHANGELOG.md",
     "/CITATION.cff",
+    "/CONTRIBUTING.md",
     "/LICENSE",
     "/README.md",
     "/FORAGER_BENCHMARK.md",
