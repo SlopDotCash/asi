@@ -598,7 +598,7 @@ class FixedBudgetFeatureLearner:
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> "FixedBudgetFeatureLearner":
         """Reconstruct learner from ``to_config`` output."""
-        if not isinstance(config, Mapping):
+        if type(config) is not dict:
             raise ValueError("config must be a mapping")
         try:
             config = dict(config)
