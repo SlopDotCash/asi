@@ -2022,7 +2022,7 @@ def load_world_model_ensemble_checkpoint(
     if not isinstance(config, dict):
         raise ValueError("ensemble checkpoint is missing ensemble_config")
     digest = metadata.get("config_sha256")
-    if not isinstance(digest, str) or digest != _ensemble_config_digest(config):
+    if type(digest) is not str or digest != _ensemble_config_digest(config):
         raise ValueError("ensemble checkpoint config digest does not match")
     ensemble = WorldModelEnsemble.from_config(config)
     if ensemble.to_config() != config:
