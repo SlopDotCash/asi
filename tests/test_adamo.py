@@ -48,6 +48,18 @@ def test_penalty_preserves_invalidity_in_eager_and_traced_calls(weight: jax.Arra
     assert float(traced) != 0.0
 
 
+@pytest.mark.parametrize("shape", [(2, 2), (2, 3)])
+def test_gradient_preserves_invalidity_in_eager_and_traced_calls(
+    shape: tuple[int, int],
+) -> None:
+    weight = jnp.full(shape, jnp.finfo(jnp.float32).max)
+    with pytest.raises(ValueError, match="isometry gradient must be finite"):
+        isometry_gradient(weight)
+
+    traced = jax.jit(isometry_gradient)(weight)
+    assert bool(jnp.all(jnp.isnan(traced)))
+
+
 def test_zero_strength_reduces_exactly_to_adam_task_step() -> None:
     config = AdamOConfig(
         step_size=1e-3, beta1=0.9, beta2=0.99, eps=1e-8, isometry_strength=0.0

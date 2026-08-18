@@ -171,9 +171,16 @@ def isometry_gradient(weight: Array) -> Array:
     _gram_bytes(rows, columns, matrix.dtype.itemsize)
     if rows >= columns:
         identity = jnp.eye(columns, dtype=matrix.dtype)
-        return 4.0 * matrix @ (matrix.T @ matrix - identity)
-    identity = jnp.eye(rows, dtype=matrix.dtype)
-    return 4.0 * (matrix @ matrix.T - identity) @ matrix
+        candidate = 4.0 * matrix @ (matrix.T @ matrix - identity)
+    else:
+        identity = jnp.eye(rows, dtype=matrix.dtype)
+        candidate = 4.0 * (matrix @ matrix.T - identity) @ matrix
+    valid = jnp.all(jnp.isfinite(candidate))
+    if isinstance(valid, jax.core.Tracer):
+        return jnp.where(valid, candidate, jnp.full_like(candidate, jnp.nan))
+    if not bool(valid):
+        raise ValueError("isometry gradient must be finite")
+    return candidate
 
 
 def state_persistent_bytes(state: AdamOState) -> int:
