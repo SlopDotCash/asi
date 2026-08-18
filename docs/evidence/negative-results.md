@@ -133,6 +133,27 @@ postmortem.
     6.55-6.82, so the nominal 300 dimensions were under 7. Record:
     [`V4_fingerprints.md`](../../outputs/new_directions/V4_fingerprints.md).
 
+16. **Every ladder arm already benefits from recurrence, and conditioning takes
+    most of it.** The #1875 preregistration predicted that no existing arm
+    exploits recurrence, reasoning that none indexes permutations. That is
+    refuted: on the micro suite all six ladder arms score higher on M4
+    (`recurrence`, pool 5 over 100 regimes) than on M1 (`input_permutation`),
+    every seed positive. The prediction conflated *having a recurrence
+    mechanism* with *benefiting from recurrence* — no arm indexes permutations,
+    but persistent weights stay partly fit when a mapping repeats. The
+    structure is the result: unconditioned arms gain +0.3688 mean (`sgd_raw`
+    +0.3869, `adamw` +0.3507) while conditioned arms gain +0.0469 (`gated_norm`
+    +0.0472), a 7.9x difference. Input conditioning already recovers most of
+    what implicit reuse offers, mirroring the campaign's conditioning result on
+    the memory axis. For direction D the reusable number is that 20x reuse is
+    worth only **+0.047** on a champion-like arm, so an explicit
+    recurrence-indexing mechanism must beat that implicit baseline rather than
+    start from zero. This does **not** cap direction D: an explicit mechanism
+    could jump to stored state instead of re-adapting. Bayes accuracy is
+    family-invariant at 0.9833, verified rather than assumed, so the gaps are
+    learning gains and not a ceiling difference. Record:
+    [`V6_recurrence_headroom.md`](../../outputs/new_directions/V6_recurrence_headroom.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

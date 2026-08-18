@@ -1,0 +1,353 @@
+{
+ "control": {
+  "input_permutation": {
+   "distinct_permutations": 100,
+   "n_regimes": 100,
+   "recurrence_pool": 5
+  },
+  "recurrence": {
+   "distinct_permutations": 5,
+   "n_regimes": 100,
+   "recurrence_pool": 5
+  },
+  "separated": true
+ },
+ "evidence_policy": "development_screening_diagnostic; permanently nonpromoting. Micro suite only; no IPMNIST lane, pinned artifact, or registered source.",
+ "outcome": {
+  "any_arm_exploits_recurrence": true,
+  "arms_exploiting_recurrence": [
+   "sgd_raw",
+   "adamw",
+   "upgd_raw",
+   "sgd_norm",
+   "gated_norm",
+   "naive_bayes"
+  ],
+  "best_m4_arm": "gated_norm",
+  "best_m4_mean": 0.738268,
+  "criterion": "mean paired gap > 0 with all seeds positive"
+ },
+ "paired_gaps": [
+  {
+   "all_seeds_positive": true,
+   "arm": "sgd_raw",
+   "exploits_recurrence": true,
+   "m1_mean": 0.28272200000000003,
+   "m4_mean": 0.66959,
+   "mean_gap": 0.386868,
+   "per_seed_gap": [
+    0.37491,
+    0.414778,
+    0.370916
+   ]
+  },
+  {
+   "all_seeds_positive": true,
+   "arm": "adamw",
+   "exploits_recurrence": true,
+   "m1_mean": 0.22813133333333332,
+   "m4_mean": 0.5787873333333333,
+   "mean_gap": 0.350656,
+   "per_seed_gap": [
+    0.340882,
+    0.374018,
+    0.337068
+   ]
+  },
+  {
+   "all_seeds_positive": true,
+   "arm": "upgd_raw",
+   "exploits_recurrence": true,
+   "m1_mean": 0.2797433333333333,
+   "m4_mean": 0.37262533333333336,
+   "mean_gap": 0.09288200000000003,
+   "per_seed_gap": [
+    0.106732,
+    0.094188,
+    0.077726
+   ]
+  },
+  {
+   "all_seeds_positive": true,
+   "arm": "sgd_norm",
+   "exploits_recurrence": true,
+   "m1_mean": 0.6808113333333333,
+   "m4_mean": 0.7269586666666666,
+   "mean_gap": 0.046147333333333394,
+   "per_seed_gap": [
+    0.050968,
+    0.042286,
+    0.045188
+   ]
+  },
+  {
+   "all_seeds_positive": true,
+   "arm": "gated_norm",
+   "exploits_recurrence": true,
+   "m1_mean": 0.6910666666666666,
+   "m4_mean": 0.738268,
+   "mean_gap": 0.047201333333333394,
+   "per_seed_gap": [
+    0.051584,
+    0.042548,
+    0.047472
+   ]
+  },
+  {
+   "all_seeds_positive": true,
+   "arm": "naive_bayes",
+   "exploits_recurrence": true,
+   "m1_mean": 0.6051746666666666,
+   "m4_mean": 0.6525786666666666,
+   "mean_gap": 0.047404,
+   "per_seed_gap": [
+    0.047918,
+    0.043608,
+    0.050686
+   ]
+  }
+ ],
+ "protocol": {
+  "arms": [
+   "sgd_raw",
+   "adamw",
+   "upgd_raw",
+   "sgd_norm",
+   "gated_norm",
+   "naive_bayes"
+  ],
+  "families": [
+   "input_permutation",
+   "recurrence"
+  ],
+  "metric": "overall online accuracy",
+  "recurrence_pool": 5,
+  "runner": "alberta_framework.benchmarks.micro_continual (shipped)",
+  "seeds": [
+   0,
+   1,
+   2
+  ]
+ },
+ "runs": [
+  {
+   "accuracy": 0.27140000000000003,
+   "arm": "sgd_raw",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.282192,
+   "arm": "sgd_raw",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.294574,
+   "arm": "sgd_raw",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.64631,
+   "arm": "sgd_raw",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.6969699999999999,
+   "arm": "sgd_raw",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.66549,
+   "arm": "sgd_raw",
+   "family": "recurrence",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.22279200000000002,
+   "arm": "adamw",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.22395599999999993,
+   "arm": "adamw",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.23764600000000005,
+   "arm": "adamw",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.563674,
+   "arm": "adamw",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.597974,
+   "arm": "adamw",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.574714,
+   "arm": "adamw",
+   "family": "recurrence",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.248382,
+   "arm": "upgd_raw",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.28299599999999997,
+   "arm": "upgd_raw",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.30785199999999996,
+   "arm": "upgd_raw",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.35511400000000004,
+   "arm": "upgd_raw",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.377184,
+   "arm": "upgd_raw",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.385578,
+   "arm": "upgd_raw",
+   "family": "recurrence",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.6618780000000001,
+   "arm": "sgd_norm",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.7134419999999997,
+   "arm": "sgd_norm",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.667114,
+   "arm": "sgd_norm",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.7128459999999999,
+   "arm": "sgd_norm",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.755728,
+   "arm": "sgd_norm",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.7123020000000001,
+   "arm": "sgd_norm",
+   "family": "recurrence",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.672982,
+   "arm": "gated_norm",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.7217579999999998,
+   "arm": "gated_norm",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.6784600000000001,
+   "arm": "gated_norm",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.7245659999999999,
+   "arm": "gated_norm",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.7643060000000002,
+   "arm": "gated_norm",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.7259319999999999,
+   "arm": "gated_norm",
+   "family": "recurrence",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.5867020000000001,
+   "arm": "naive_bayes",
+   "family": "input_permutation",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.633596,
+   "arm": "naive_bayes",
+   "family": "input_permutation",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.5952259999999999,
+   "arm": "naive_bayes",
+   "family": "input_permutation",
+   "seed": 2
+  },
+  {
+   "accuracy": 0.6346200000000001,
+   "arm": "naive_bayes",
+   "family": "recurrence",
+   "seed": 0
+  },
+  {
+   "accuracy": 0.6772040000000001,
+   "arm": "naive_bayes",
+   "family": "recurrence",
+   "seed": 1
+  },
+  {
+   "accuracy": 0.6459119999999998,
+   "arm": "naive_bayes",
+   "family": "recurrence",
+   "seed": 2
+  }
+ ],
+ "schema": "alberta.new_directions.v6_recurrence_headroom.v1",
+ "void": false,
+ "wall_clock_seconds": 1911.6
+}
