@@ -180,6 +180,13 @@ def test_noise_curvature_scheduler_and_off_reduction() -> None:
         early_training=False,
         enabled=False,
     ) == 0.1
+    with pytest.raises(ValueError, match="adjusted step size overflowed"):
+        noise_curvature_step_size(
+            float(np.finfo(np.float64).max),
+            effective_step_size=0.0,
+            safe_bound=1.0,
+            early_training=True,
+        )
 
 
 def test_exact_resource_accounting_and_hostile_protocol_scalars() -> None:

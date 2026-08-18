@@ -683,7 +683,11 @@ def noise_curvature_step_size(
     if not enabled:
         return base
     if effective > bound and effective > 0.12:
-        return base * (1.0 - rate)
-    if early_training and effective < 0.1 * bound:
-        return base * (1.0 + rate)
-    return base
+        result = base * (1.0 - rate)
+    elif early_training and effective < 0.1 * bound:
+        result = base * (1.0 + rate)
+    else:
+        result = base
+    if not math.isfinite(result):
+        raise ValueError("adjusted step size overflowed its finite scalar domain")
+    return result
