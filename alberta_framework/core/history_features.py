@@ -90,6 +90,13 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int) -> i
     return canonical
 
 
+def _require_float32_resource(name: str, *, float32_scalars: int) -> None:
+    if float32_scalars > _INT32_MAX:
+        raise ValueError(f"{name} scalar count must fit signed int32")
+    if 4 * float32_scalars > _INT32_MAX:
+        raise ValueError(f"{name} byte count must fit signed int32")
+
+
 def _require_decay_rates(value: object) -> tuple[float, ...]:
     if type(value) is not tuple:
         raise ValueError("decay_rates must be an actual tuple")
@@ -193,6 +200,10 @@ class HistoryFeatureExtractor:
             raise ValueError(
                 f"feature_dim must be in [1, {_INT32_MAX}], got {feature_dim}"
             )
+        _require_float32_resource(
+            "history-feature traces",
+            float32_scalars=channel_count * len(decay_rates),
+        )
         if canonical_channels is None:
             canonical_channels = tuple(range(raw_dim))
 
