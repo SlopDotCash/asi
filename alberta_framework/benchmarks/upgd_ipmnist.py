@@ -1505,7 +1505,7 @@ def _v2_partial_manifest(paths: Sequence[Path]) -> list[dict[str, object]]:
     """Bind supplied v2 shard bytes to exact learner/seed identities."""
     def identity(entry: Mapping[str, object]) -> tuple[str, int]:
         learner = entry["learner"]
-        if not isinstance(learner, str):
+        if type(learner) is not str:
             raise ValueError("v2 partial manifest contains an invalid identity")
         seed = require_jax_seed(
             entry["seed_id"], name="v2 partial manifest seed_id"
@@ -1520,7 +1520,7 @@ def _v2_partial_manifest(paths: Sequence[Path]) -> list[dict[str, object]]:
         if payload.get("schema") != PARTIAL_SCHEMA:
             raise ValueError(f"{path}: partial manifest accepts only strict v2 shards")
         learner = payload.get("learner")
-        if not isinstance(learner, str):
+        if type(learner) is not str:
             raise ValueError(f"{path}: partial manifest identity is invalid")
         seed = require_jax_seed(
             payload.get("seed_id"), name=f"{path}: partial manifest seed_id"
@@ -1555,14 +1555,14 @@ def _validated_partial_payload(
             raise ValueError(f"{path}: structured deviations do not match the v2 contract")
 
     learner = payload.get("learner")
-    if not isinstance(learner, str) or learner not in _LEARNER_FACTORIES:
+    if type(learner) is not str or learner not in _LEARNER_FACTORIES:
         raise ValueError(f"{path}: unsupported learner")
     hyperparameters = payload.get("hyperparameters")
     if not isinstance(hyperparameters, Mapping) or not hyperparameters:
         raise ValueError(f"{path}: hyperparameters must be a non-empty object")
     for name, value in hyperparameters.items():
         if (
-            not isinstance(name, str)
+            type(name) is not str
             or isinstance(value, bool)
             or not isinstance(value, (int, float))
         ):
