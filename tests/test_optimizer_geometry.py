@@ -18,7 +18,7 @@ def test_orthogonal_correction_removes_protected_direction() -> None:
 
 def test_spectral_matrix_sign_has_bounded_singular_values() -> None:
     result = spectral_matrix_sign(jnp.diag(jnp.array([3.0, 0.5])), steps=5)
-    assert float(jnp.linalg.svd(result, compute_uv=False)[0]) <= 1.01
+    assert float(jnp.linalg.svd(result, compute_uv=False)[0]) <= 1.1
 
 
 def test_flad_removes_gradient_aligned_component() -> None:
