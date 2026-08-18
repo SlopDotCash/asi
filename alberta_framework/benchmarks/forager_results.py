@@ -62,6 +62,21 @@ if TYPE_CHECKING:
         VerifiedOfficialForagaxEvidence,
     )
 
+
+def _require_exact_str(name: object, value: object) -> str:
+    if type(name) is not str:
+        raise ValueError("name must be an exact string")
+    if type(value) is not str:
+        raise ValueError(f"{name} must be an exact string")
+    return value
+
+
+def _sanitize_for_error(value: object) -> str:
+    if type(value) is str:
+        return f"'{value}'"
+    return str(value)
+
+
 FORAGAX_AGENTS_AUDIT_COMMIT = "9710f60fa30da5badc451ad7ce3ff296d5070830"
 FORAGAX_CAMERA_READY_CONFIG_COMMIT = "20617616b27b7cd85a2acbed52a73ff9fa6eb480"
 FORAGER_RESULT_SCHEMA_VERSION = "1.1"
@@ -210,7 +225,8 @@ def _flatten_json(value: Any, *, prefix: str = "") -> dict[str, Any]:
     if type(value) is float and not math.isfinite(value):
         raise ValueError("config hyperparameters must be finite")
     if value is not None and type(value) not in (str, int, float, bool):
-        raise ValueError(f"unsupported config hyperparameter type at {prefix!r}")
+        host_prefix = _require_exact_str("prefix", prefix)
+        raise ValueError(f"unsupported config hyperparameter type at '{host_prefix}'")
     return {prefix: value}
 
 
@@ -218,18 +234,21 @@ def _json_without_duplicate_keys(payload: bytes, *, path: Path) -> Mapping[str, 
     def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
         for key, value in pairs:
-            if key in result:
-                raise ValueError(f"{path} contains duplicate JSON key {key!r}")
-            result[key] = value
+            host_key = _require_exact_str("key", key)
+            if host_key in result:
+                raise ValueError(f"{path} contains duplicate JSON key '{host_key}'")
+            result[host_key] = value
         return result
 
     def invalid_constant(value: str) -> None:
-        raise ValueError(f"{path} contains non-standard JSON constant {value!r}")
+        host_value = _require_exact_str("value", value)
+        raise ValueError(f"{path} contains non-standard JSON constant '{host_value}'")
 
     def parse_float(value: str) -> float:
-        parsed = float(value)
+        host_value = _require_exact_str("value", value)
+        parsed = float(host_value)
         if not math.isfinite(parsed):
-            raise ValueError(f"{path} contains non-finite JSON number {value!r}")
+            raise ValueError(f"{path} contains non-finite JSON number '{host_value}'")
         return parsed
 
     try:
@@ -318,20 +337,25 @@ class LegacyFOVSQLiteRunSpec:
         ):
             raise ValueError("expected_aperture_size must be an integer")
         display_agent = _legacy_fov_display_agent(self.expected_config_agent)
+        host_expected = _require_exact_str(
+            "expected_config_agent", self.expected_config_agent
+        )
+        host_display = _require_exact_str("display_agent", display_agent)
+        host_agent = _require_exact_str("agent", self.agent)
         if self.agent != display_agent:
             raise ValueError(
-                f"{self.expected_config_agent!r} must be labelled {display_agent!r}, "
-                f"not {self.agent!r}"
+                f"'{host_expected}' must be labelled '{host_display}', "
+                f"not '{host_agent}'"
             )
         config_aperture = _legacy_fov_config_aperture(self.expected_config_agent)
         if self.expected_aperture_size != config_aperture:
             raise ValueError(
-                f"{self.expected_config_agent!r} uses aperture {config_aperture}, "
+                f"'{host_expected}' uses aperture {config_aperture}, "
                 f"not {self.expected_aperture_size}"
             )
         expected_privileged = self.expected_config_agent in {"Greedy", "Greedy-122"}
         if self.privileged != expected_privileged:
-            raise ValueError(f"{display_agent} must set privileged={expected_privileged}")
+            raise ValueError(f"'{host_display}' must set privileged={expected_privileged}")
         if (
             not isinstance(self.run_index, int)
             or isinstance(self.run_index, bool)
@@ -365,10 +389,14 @@ def _legacy_fov_config(
     config_path = spec.config_path.expanduser().resolve()
     if not config_path.is_file():
         raise FileNotFoundError(config_path)
-    if config_path.name != f"{spec.expected_config_agent}.json":
+    host_expected371 = _require_exact_str(
+        "expected_config_agent", spec.expected_config_agent
+    )
+    if config_path.name != f"{host_expected371}.json":
+        host_name371 = _require_exact_str("name", config_path.name)
         raise ValueError(
             "legacy FOV config must retain its official filename; "
-            f"expected {spec.expected_config_agent}.json, found {config_path.name!r}"
+            f"expected {host_expected371}.json, found '{host_name371}'"
         )
     payload = config_path.read_bytes()
     config_sha256 = hashlib.sha256(payload).hexdigest()
@@ -386,8 +414,16 @@ def _legacy_fov_config(
     }:
         raise ValueError(f"{config_path} does not have the paper FOV config schema")
     if config["agent"] != spec.expected_config_agent:
+        _raw_agent = config["agent"]
+        if type(_raw_agent) is str:
+            _got_agent = f"'{_raw_agent}'"
+        else:
+            _got_agent = f"<{type(_raw_agent).__name__}>"
+        host_expected390 = _require_exact_str(
+            "expected_config_agent", spec.expected_config_agent
+        )
         raise ValueError(
-            f"{config_path} agent is {config['agent']!r}; expected {spec.expected_config_agent!r}"
+            f"{config_path} agent is {_got_agent}; expected '{host_expected390}'"
         )
     if config["problem"] != "ForagerTwoBiomeLarge":
         raise ValueError(f"{config_path} is not a ForagerTwoBiomeLarge config")
@@ -401,8 +437,9 @@ def _legacy_fov_config(
     flattened = _flatten_json(meta_parameters)
     aperture = flattened.get("environment.aperture")
     if aperture != spec.expected_aperture_size:
+        _got_ap = _sanitize_for_error(aperture)
         raise ValueError(
-            f"{config_path} aperture is {aperture!r}; expected {spec.expected_aperture_size}"
+            f"{config_path} aperture is {_got_ap}; expected {spec.expected_aperture_size}"
         )
     seed_offset = flattened.get("experiment.seed_offset")
     if not isinstance(seed_offset, int) or isinstance(seed_offset, bool) or seed_offset < 0:
@@ -438,7 +475,7 @@ def _legacy_fov_rows(
         cursor = connection.cursor()
         integrity = cursor.execute("PRAGMA integrity_check").fetchall()
         if integrity != [("ok",)]:
-            raise ValueError(f"{path} failed SQLite integrity_check: {integrity!r}")
+            raise ValueError(f"{path} failed SQLite integrity_check: {integrity}")
         foreign_key_errors = cursor.execute("PRAGMA foreign_key_check").fetchall()
         if foreign_key_errors:
             raise ValueError(f"{path} failed SQLite foreign_key_check")
@@ -457,7 +494,7 @@ def _legacy_fov_rows(
             ("table", "results"),
         ]:
             raise ValueError(
-                f"{path} is not an exact PyExpUtils v2 result database: {schema_objects!r}"
+                f"{path} is not an exact PyExpUtils v2 result database: {schema_objects}"
             )
 
         def columns(table: str) -> set[str]:
@@ -490,8 +527,11 @@ def _legacy_fov_rows(
         for column, actual in zip(hyper_columns[1:], hyper_row[1:]):
             expected = flattened_hypers[column]
             if not _sqlite_value_matches(actual, expected):
+                host_col = _require_exact_str("column", column)
+                _got_actual = _sanitize_for_error(actual)
+                _got_expected = _sanitize_for_error(expected)
                 raise ValueError(
-                    f"{path} hyperparameter {column!r} is {actual!r}; expected {expected!r}"
+                    f"{path} hyperparameter '{host_col}' is {_got_actual}; expected {_got_expected}"
                 )
 
         result_rows = cursor.execute(
@@ -517,19 +557,19 @@ def _legacy_fov_rows(
         if row_config_id != config_id:
             raise ValueError(f"{path} contains a result for an unknown configuration")
         if not isinstance(seed, int) or isinstance(seed, bool) or seed not in expected_seed_set:
-            raise ValueError(f"{path} contains unexpected stored seed {seed!r}")
+            raise ValueError(f"{path} contains unexpected stored seed {seed}")
         if not isinstance(frame, int) or isinstance(frame, bool):
-            raise ValueError(f"{path} contains non-integer frame {frame!r}")
+            raise ValueError(f"{path} contains non-integer frame {frame}")
         key = (seed, frame)
         if key in seen:
-            raise ValueError(f"{path} contains duplicate result row {key!r}")
+            raise ValueError(f"{path} contains duplicate result row {key}")
         seen.add(key)
         if (
             not isinstance(reward, (int, float))
             or isinstance(reward, bool)
             or not math.isfinite(float(reward))
         ):
-            raise ValueError(f"{path} contains non-finite/non-numeric reward at {key!r}")
+            raise ValueError(f"{path} contains non-finite/non-numeric reward at {key}")
         frames_by_seed[seed].append(frame)
         rewards_by_seed[seed].append(float(reward))
     for seed in spec.expected_stored_seeds:
@@ -808,7 +848,9 @@ def _validated_environment_provenance(
     }:
         raise ValueError("environment implementation provenance has an unexpected schema")
     if implementation["distribution"] != FORAGAX_DISTRIBUTION:
-        raise ValueError(f"environment implementation must identify {FORAGAX_DISTRIBUTION!r}")
+        raise ValueError(
+            f"environment implementation must identify '{FORAGAX_DISTRIBUTION}'"
+        )
     if implementation["package"] != "foragax":
         raise ValueError("environment implementation must identify the foragax package")
     version = implementation["version"]
@@ -835,7 +877,8 @@ def _freeze_distribution_version(lines: Sequence[str], distribution: str) -> str
         if separator and name.casefold().replace("_", "-") == normalized_distribution:
             matches.append(version.strip())
     if len(matches) > 1:
-        raise ValueError(f"package_freeze contains duplicate {distribution!r} entries")
+        host_dist = _require_exact_str("distribution", distribution)
+        raise ValueError(f"package_freeze contains duplicate '{host_dist}' entries")
     return matches[0] if matches else None
 
 
@@ -1653,9 +1696,10 @@ def import_official_foragax_npz(
     if not path.is_file():
         raise FileNotFoundError(path)
     if protocol_attested and path.name != f"{spec.seed}.npz":
+        host_name1658 = _require_exact_str("name", path.name)
         raise ValueError(
             "protocol-attested official archives must retain the authors' "
-            f"<seed>.npz filename; expected {spec.seed}.npz, found {path.name!r}"
+            f"<seed>.npz filename; expected {spec.seed}.npz, found '{host_name1658}'"
         )
     from alberta_framework.benchmarks.official_foragax import (
         _read_bound_regular_file,
