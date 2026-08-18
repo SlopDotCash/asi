@@ -156,18 +156,17 @@ def _compositional_update_working_set_bytes(
     candidate_count: int,
     generator_resource_contexts: int,
 ) -> int:
-    """Source persist, proposed persist, and returned non-state result bytes."""
+    """Source persist, returned persist, and returned non-state result bytes."""
     persist_bytes = _compositional_state_nbytes(
         n_features,
         n_tasks,
         candidate_count,
         generator_resource_contexts,
     )
-    # predictions/errors, metrics, two slot ids, applied flag, plus the
-    # published curation-trace banks that ride with one update result.
-    result_extras = (
-        227 + 31 * n_features + 8 * n_tasks + 32 * candidate_count
-    )
+    # JIT materializes the state's two host telemetry floats as returned
+    # float32 leaves.  The rest is predictions/errors, metrics, two slot ids,
+    # the applied flag, and the published curation-trace banks.
+    result_extras = 235 + 31 * n_features + 8 * n_tasks + 32 * candidate_count
     return 2 * persist_bytes + result_extras
 
 
