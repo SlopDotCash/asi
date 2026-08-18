@@ -1,5 +1,8 @@
 """Tests for LMS, IDBD, Autostep, and ObGD optimizers."""
 
+from collections.abc import Callable
+from typing import NoReturn
+
 import chex
 import jax
 import jax.numpy as jnp
@@ -18,6 +21,64 @@ from alberta_framework import (
 from alberta_framework.core.optimizers import TDIDBD, AutoTDIDBD
 
 _INT32_MAX = 2**31 - 1
+
+
+class _HostileScalar:
+    calls = 0
+
+    def _explode(self) -> NoReturn:
+        type(self).calls += 1
+        raise AssertionError("hostile scalar hook executed")
+
+    def __float__(self) -> float:
+        self._explode()
+
+    def __eq__(self, other: object) -> bool:
+        self._explode()
+
+    def __lt__(self, other: object) -> bool:
+        self._explode()
+
+
+@pytest.mark.parametrize(
+    ("factory", "field"),
+    [
+        (lambda value: LMS(step_size=value), "step_size"),
+        (lambda value: Autostep(initial_step_size=value), "initial_step_size"),
+        (lambda value: Autostep(meta_step_size=value), "meta_step_size"),
+        (lambda value: Autostep(tau=value), "tau"),
+        (lambda value: ObGD(step_size=value), "step_size"),
+        (lambda value: ObGD(kappa=value), "kappa"),
+        (lambda value: ObGD(gamma=value), "gamma"),
+        (lambda value: ObGD(lamda=value), "lamda"),
+    ],
+)
+def test_optimizer_constructors_reject_hostile_scalars_without_hooks(
+    factory: Callable[[object], object], field: str
+) -> None:
+    hostile = _HostileScalar()
+    _HostileScalar.calls = 0
+    with pytest.raises(ValueError, match=field):
+        factory(hostile)
+    assert _HostileScalar.calls == 0
+
+
+def test_optimizer_constructors_accept_canonical_numpy_scalars() -> None:
+    lms = LMS(step_size=np.float32(0.0))
+    autostep = Autostep(
+        initial_step_size=np.float64(0.01),
+        meta_step_size=np.int32(0),
+        tau=np.float32(2.0),
+    )
+    obgd = ObGD(
+        step_size=np.float32(0.5),
+        kappa=np.int32(0),
+        gamma=np.float64(1.0),
+        lamda=np.float32(0.0),
+    )
+    assert lms.init(1).step_size == 0.0
+    assert autostep.init(1).tau == 2.0
+    assert obgd.init(1).gamma == 1.0
 
 
 class TestLMS:
@@ -53,10 +114,15 @@ class TestLMS:
 
         assert result.new_state.step_size == state.step_size
 
-    @pytest.mark.parametrize("step_size", [float("nan"), float("inf"), 0.0, -0.1, True, False])
+    @pytest.mark.parametrize("step_size", [float("nan"), float("inf"), -0.1, True, False])
     def test_rejects_illegal_step_size(self, step_size: object) -> None:
         with pytest.raises(ValueError, match="step_size"):
             LMS(step_size=step_size)  # type: ignore[arg-type]
+
+    def test_zero_step_size_remains_a_supported_frozen_weight_control(self) -> None:
+        optimizer = LMS(step_size=0.0)
+        assert optimizer.to_config()["step_size"] == 0.0
+        assert optimizer.init(1).step_size == 0.0
 
 
 class TestIDBD:
@@ -238,6 +304,11 @@ class TestAutostep:
     def test_rejects_illegal_meta_step_size(self, meta_step_size: object) -> None:
         with pytest.raises(ValueError, match="meta_step_size"):
             Autostep(meta_step_size=meta_step_size)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("tau", [float("nan"), float("inf"), 0.0, -0.1, True, False])
+    def test_rejects_illegal_tau(self, tau: object) -> None:
+        with pytest.raises(ValueError, match="tau"):
+            Autostep(tau=tau)  # type: ignore[arg-type]
 
     def test_update_returns_correct_shapes(self, sample_observation):
         """Autostep update should return correctly shaped deltas."""
@@ -675,8 +746,14 @@ class TestObGD:
         "field,value",
         [
             ("gamma", float("nan")),
+            ("gamma", float("inf")),
+            ("gamma", -0.1),
+            ("gamma", 1.1),
             ("gamma", True),
             ("lamda", float("nan")),
+            ("lamda", float("inf")),
+            ("lamda", -0.1),
+            ("lamda", 1.1),
             ("lamda", True),
         ],
     )

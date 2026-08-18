@@ -591,10 +591,10 @@ class LMS(Optimizer[LMSState]):
             step_size: Fixed learning rate
 
         Raises:
-            ValueError: If ``step_size`` is not a finite non-bool positive real.
+            ValueError: If ``step_size`` is not a finite non-bool nonnegative real.
         """
         self._step_size = validated_float32_scalar(
-            "step_size", step_size, positive=True
+            "step_size", step_size, lower=0.0
         )
 
     def to_config(self) -> dict[str, Any]:
@@ -1112,7 +1112,8 @@ class Autostep(Optimizer[AutostepState]):
         Raises:
             ValueError: If ``initial_step_size`` is not a finite non-bool
                 positive real, or ``meta_step_size`` is not a finite non-bool
-                nonnegative real.
+                nonnegative real, or ``tau`` is not a finite non-bool positive
+                real.
         """
         self._initial_step_size = validated_float32_scalar(
             "initial_step_size", initial_step_size, positive=True
@@ -1120,7 +1121,7 @@ class Autostep(Optimizer[AutostepState]):
         self._meta_step_size = validated_float32_scalar(
             "meta_step_size", meta_step_size, lower=0.0
         )
-        self._tau = tau
+        self._tau = validated_float32_scalar("tau", tau, positive=True)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
