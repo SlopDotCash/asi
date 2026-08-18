@@ -1836,7 +1836,7 @@ def _validate_source_provenance(
         errors.append("source_provenance.repository_subtree is inconsistent")
     git_head = source.get("git_head")
     if (
-        not isinstance(git_head, str)
+        type(git_head) is not str
         or len(git_head) != 40
         or any(character not in "0123456789abcdef" for character in git_head)
     ):
@@ -1856,7 +1856,7 @@ def _validate_source_provenance(
         )
         for path, digest in hashes.items():
             if (
-                not isinstance(digest, str)
+                type(digest) is not str
                 or len(digest) != 64
                 or any(character not in "0123456789abcdef" for character in digest)
             ):
