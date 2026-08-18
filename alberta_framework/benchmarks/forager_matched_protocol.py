@@ -144,14 +144,6 @@ class AllowedTransform:
     value_type: Literal["string", "integer", "number", "boolean", "null"]
     value: TransformValue
 
-    def __post_init__(self) -> None:
-        if type(self.transform_type) is not str or not self.transform_type:
-            raise ForagerMatchedProtocolError("transform_type must be a non-empty string")
-        if type(self.target) is not str or not self.target:
-            raise ForagerMatchedProtocolError("target must be a non-empty string")
-        if self.value_type not in ("string", "integer", "number", "boolean", "null"):
-            raise ForagerMatchedProtocolError("invalid value_type")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "transform_type": self.transform_type,
@@ -181,18 +173,6 @@ class SourceBinding:
     inventory_sha256: str
     snapshot_descriptor_sha256: str | None
 
-    def __post_init__(self) -> None:
-        if self.provenance_kind not in ("git_tree", "reviewed_snapshot"):
-            raise ForagerMatchedProtocolError(
-                "provenance_kind must be git_tree or reviewed_snapshot"
-            )
-        if type(self.repository) is not str or not self.repository:
-            raise ForagerMatchedProtocolError("repository must be a non-empty string")
-        _require_sha256(self.archive_sha256, "archive_sha256")
-        _require_sha256(self.inventory_sha256, "inventory_sha256")
-        if self.snapshot_descriptor_sha256 is not None:
-            _require_sha256(self.snapshot_descriptor_sha256, "snapshot_descriptor_sha256")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "provenance_kind": self.provenance_kind,
@@ -213,19 +193,6 @@ class ConfigurationBinding:
     original_sha256: str
     derived_sha256: str
     allowed_transforms: tuple[AllowedTransform, ...]
-
-    def __post_init__(self) -> None:
-        if type(self.original_path) is not str or not self.original_path:
-            raise ForagerMatchedProtocolError("original_path must be a non-empty string")
-        _require_sha256(self.original_sha256, "original_sha256")
-        _require_sha256(self.derived_sha256, "derived_sha256")
-        if type(self.allowed_transforms) is not tuple:
-            raise ForagerMatchedProtocolError("allowed_transforms must be a tuple")
-        for item in self.allowed_transforms:
-            if not isinstance(item, AllowedTransform):
-                raise ForagerMatchedProtocolError(
-                    "allowed_transforms item must be an AllowedTransform"
-                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -250,20 +217,6 @@ class SeedContract:
     effective_seed_expression: Literal["active_seed", "active_seed_plus_offset"]
     effective_seed_proof_sha256: str
 
-    def __post_init__(self) -> None:
-        if self.transport not in (
-            "direct",
-            "top_level_seed",
-            "nested_experiment_seed_offset",
-            "adapter_injected",
-        ):
-            raise ForagerMatchedProtocolError("invalid transport")
-        if type(self.offset) is not int or isinstance(self.offset, bool):
-            raise ForagerMatchedProtocolError("offset must be an integer")
-        if self.effective_seed_expression not in ("active_seed", "active_seed_plus_offset"):
-            raise ForagerMatchedProtocolError("invalid effective_seed_expression")
-        _require_sha256(self.effective_seed_proof_sha256, "effective_seed_proof_sha256")
-
     def to_dict(self) -> dict[str, Any]:
         return {
             "transport": self.transport,
@@ -280,22 +233,6 @@ class ExecutionSemantics:
     rollout_steps: int | None
     num_rollouts: int | None
     update_semantics: str
-
-    def __post_init__(self) -> None:
-        if self.rollout_steps is not None and (
-            type(self.rollout_steps) is not int
-            or isinstance(self.rollout_steps, bool)
-            or self.rollout_steps <= 0
-        ):
-            raise ForagerMatchedProtocolError("rollout_steps must be positive integer or None")
-        if self.num_rollouts is not None and (
-            type(self.num_rollouts) is not int
-            or isinstance(self.num_rollouts, bool)
-            or self.num_rollouts <= 0
-        ):
-            raise ForagerMatchedProtocolError("num_rollouts must be positive integer or None")
-        if type(self.update_semantics) is not str or not self.update_semantics:
-            raise ForagerMatchedProtocolError("update_semantics must be a non-empty string")
 
     def to_dict(self) -> dict[str, Any]:
         return {
