@@ -131,7 +131,10 @@ def _preflight_nonlinear_state(*, n_demons: int, hidden_size: int, feature_dim: 
         3 * logical_scalars
         + parameter_scalars
         + 3 * one_gradient_scalars
-        + 2 * feature_dim
+        # Current observation, next observation, and the finite-safe next copy.
+        + 3 * feature_dim
+        # Current/next hidden activations and their two tanh-derivative vectors.
+        + 4 * hidden_size
         + 24 * n_demons
         + 32
     )

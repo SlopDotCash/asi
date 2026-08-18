@@ -25,9 +25,12 @@ def _working_scalars(config: SparseFTLWorldModelConfig) -> int:
         + 2 * feature_dim * feature_dim
         + 4 * feature_dim * config.observation_dim
         + feature_dim
-        + 2 * active_dim * active_dim
-        + 4 * active_dim * config.observation_dim
+        + 4 * active_dim * active_dim
+        + 8 * active_dim * config.observation_dim
+        + active_dim * feature_dim
         + 2 * active_dim
+        + config.input_dim
+        + 8 * config.projection_dim
         + 6 * config.observation_dim
         + config.action_dim
         + 8
@@ -57,15 +60,28 @@ def test_ftl_one_bank_and_persistent_fit_while_update_working_set_does_not() -> 
     config = SparseFTLWorldModelConfig(
         observation_dim=1,
         action_dim=1,
-        projection_dim=_WORKING_SET_OVERFLOW,
+        projection_dim=4_500,
         bins=2,
     )
     feature_dim = config.feature_dim
     one_bank_bytes = 4 * (feature_dim * feature_dim)
     persistent_bytes = SparseFTLWorldModel(config).state_nbytes
+    contributor_formula = (
+        config.projection_dim * config.input_dim
+        + 2 * feature_dim * feature_dim
+        + 4 * feature_dim * config.observation_dim
+        + feature_dim
+        + 2 * config.active_feature_count**2
+        + 4 * config.active_feature_count * config.observation_dim
+        + 2 * config.active_feature_count
+        + 6 * config.observation_dim
+        + config.action_dim
+        + 8
+    )
     update_bytes = 4 * _working_scalars(config)
     assert one_bank_bytes <= _INT32_MAX
     assert persistent_bytes <= _INT32_MAX
+    assert 4 * contributor_formula <= _INT32_MAX
     assert update_bytes > _INT32_MAX
     with pytest.raises(ValueError, match="update working set byte count"):
         SparseFTLWorldModel(config).init(jr.key(0))

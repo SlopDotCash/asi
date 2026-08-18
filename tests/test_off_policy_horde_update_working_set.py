@@ -66,7 +66,8 @@ def test_nonlinear_horde_one_bank_and_persistent_fit_while_update_working_set_do
         3 * logical_scalars
         + parameter_scalars
         + 3 * one_gradient_scalars
-        + 2 * fd
+        + 3 * fd
+        + 4 * _HIDDEN
         + 24 * _N_DEMONS
         + 32
     )
@@ -109,9 +110,9 @@ def test_legal_nonlinear_horde_update_identity_is_unchanged() -> None:
 
 
 def test_nonlinear_horde_update_working_set_has_exact_adjacent_byte_boundary() -> None:
-    # For D=H=1, the complete formula reduces exactly to 13*feature_dim+98.
+    # For D=H=1, the complete formula reduces exactly to 14*feature_dim+102.
     max_scalars = _INT32_MAX // 4
-    last_legal = (max_scalars - 98) // 13
+    last_legal = (max_scalars - 102) // 14
     first_overflowing = last_legal + 1
     learner = NonlinearSharedGTDHordeLearner(
         create_horde_spec(
@@ -134,6 +135,8 @@ def test_nonlinear_horde_update_working_set_has_exact_adjacent_byte_boundary() -
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_nonlinear_state(n_demons=1, hidden_size=1, feature_dim=first_overflowing)
 
-    assert 4 * (13 * last_legal + 98) <= _INT32_MAX
-    assert 4 * (13 * first_overflowing + 98) > _INT32_MAX
+    contributor_scalars = 13 * first_overflowing + 98
+    assert 4 * contributor_scalars <= _INT32_MAX
+    assert 4 * (14 * last_legal + 102) <= _INT32_MAX
+    assert 4 * (14 * first_overflowing + 102) > _INT32_MAX
     assert learner.n_demons == 1

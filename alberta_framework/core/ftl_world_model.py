@@ -146,9 +146,16 @@ def _preflight_update_working_set(
         + 2 * feature_dim * feature_dim  # stored and proposed Grams
         + 4 * feature_dim * observation_dim  # stored/proposed cross and weights
         + feature_dim  # dense sparse-feature materialization
-        + 2 * active_dim * active_dim  # active Gram and ridge system
-        + 4 * active_dim * observation_dim  # active solve/cross/weight intermediates
+        # Sparse outer product, active Gram, ridge identity, and ridge system.
+        + 4 * active_dim * active_dim
+        # Prediction gather plus active cross, gathers/products, RHS, and solve.
+        + 8 * active_dim * observation_dim
+        + active_dim * feature_dim  # selected Gram rows used by the dense product
         + 2 * active_dim  # sparse indices and values
+        + input_dim  # concatenated observation-action input
+        # Projection, bin location/lower/fraction/offset/index, and complement
+        # vectors retained while the final sparse indices and values form.
+        + 8 * projection_dim
         + 6 * observation_dim  # observation/prediction/target/error vectors
         + action_dim
         + 8  # scalar statistics, counters, and update outputs
