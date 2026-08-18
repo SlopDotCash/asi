@@ -322,6 +322,44 @@ def _require_float32_resource(
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
+def _gru_perception_persistent_bytes(observation_dim: int, hidden_dim: int) -> int:
+    """Named persist already preflighted by ``GRUPerceptionConfig``."""
+    return 4 * (
+        3 * hidden_dim * observation_dim + 3 * hidden_dim * hidden_dim + 4 * hidden_dim
+    )
+
+
+def _gru_perception_update_result_extras_bytes(
+    observation_dim: int, hidden_dim: int
+) -> int:
+    """Returned ``_gru_step`` extras excluding persist.
+
+    Nested new ``GRUPerceptionState`` is persist and is already counted in the
+    simultaneous persist copies. These extras are the published augmented
+    observation ``[obs, new_hidden]``.
+    """
+    return 4 * (observation_dim + hidden_dim)
+
+
+def _gru_perception_update_working_set_bytes(
+    observation_dim: int, hidden_dim: int
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _gru_perception_persistent_bytes(
+        observation_dim, hidden_dim
+    ) + _gru_perception_update_result_extras_bytes(observation_dim, hidden_dim)
+
+
+def _preflight_gru_perception_update_working_set(
+    observation_dim: int, hidden_dim: int
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    if _gru_perception_update_working_set_bytes(observation_dim, hidden_dim) > _INT32_MAX:
+        raise ValueError(
+            "GRUPerception update working set byte count must fit signed int32"
+        )
+
+
 def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
     if not issubclass(type(payload), Mapping):
         raise ValueError(f"{name} payload must be a mapping")
@@ -383,6 +421,7 @@ class GRUPerceptionConfig:
             vector_scalars=3 * h * obs + 3 * h * h,
             fixed_scalars=4 * h,
         )
+        _preflight_gru_perception_update_working_set(obs, h)
 
     def augmented_dim(self) -> int:
         """Return ``observation_dim + hidden_dim``."""
