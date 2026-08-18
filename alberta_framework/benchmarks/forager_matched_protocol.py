@@ -1086,7 +1086,7 @@ def _validate_json_complexity(value: Any) -> None:
             raise ForagerMatchedProtocolError("protocol exceeds the JSON node limit")
         if depth > _MAX_JSON_NESTING:
             raise ForagerMatchedProtocolError("protocol exceeds the JSON nesting limit")
-        if isinstance(item, Mapping):
+        if type(item) is dict:
             for key in item:
                 if type(key) is not str:
                     raise ForagerMatchedProtocolError("JSON object keys must be strings")
@@ -1097,7 +1097,7 @@ def _validate_json_complexity(value: Any) -> None:
                         "JSON object keys must contain valid Unicode"
                     ) from exc
             pending.extend((child, depth + 1) for child in item.values())
-        elif isinstance(item, list):
+        elif type(item) is list:
             pending.extend((child, depth + 1) for child in item)
         elif type(item) is str:
             try:
@@ -1147,7 +1147,7 @@ def decode_strict_json(data: bytes | str) -> Any:
 
 
 def _require_object(value: Any, path: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
+    if type(value) is not dict:
         raise ForagerMatchedProtocolError(f"{path} must be a JSON object")
     if any(type(key) is not str for key in value):
         raise ForagerMatchedProtocolError(f"{path} keys must be strings")
@@ -1155,7 +1155,7 @@ def _require_object(value: Any, path: str) -> Mapping[str, Any]:
 
 
 def _require_array(value: Any, path: str) -> list[Any]:
-    if not isinstance(value, list):
+    if type(value) is not list:
         raise ForagerMatchedProtocolError(f"{path} must be a JSON array")
     return value
 
