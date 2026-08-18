@@ -235,9 +235,14 @@ class TestMultiHeadInit:
             linear.init(2**30, jr.key(0))
         assert calls == 0
 
+        overflow = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1,))
+        with pytest.raises(ValueError, match="update working set byte count"):
+            overflow.init(268_435_450, jr.key(0))
+        assert calls == 0
+
         boundary = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1,))
         with pytest.raises(AssertionError, match="allocator reached"):
-            boundary.init(268_435_450, jr.key(0))
+            boundary.init(89_478_436, jr.key(0))
         assert calls == 1
 
     def test_aggregate_direct_state_resources_fail_before_allocation(self):

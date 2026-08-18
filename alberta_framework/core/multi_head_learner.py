@@ -177,6 +177,58 @@ def _validate_direct_state_resources(
             raise ValueError(f"derived {name} must be at most {_INT32_MAX}")
 
 
+def _direct_state_bytes(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> int:
+    """Named persist already preflighted by ``_validate_direct_state_resources``."""
+    layer_sizes = (feature_dim, *hidden_sizes)
+    trunk_parameter_count = sum(
+        fan_out * (fan_in + 1)
+        for fan_in, fan_out in zip(layer_sizes, layer_sizes[1:], strict=False)
+    )
+    final_width = hidden_sizes[-1] if hidden_sizes else feature_dim
+    head_parameter_count = n_heads * (final_width + 1)
+    return 4 * (2 * (trunk_parameter_count + head_parameter_count) + sum(hidden_sizes) + 3)
+
+
+def _multi_head_update_result_extras_bytes(n_heads: int) -> int:
+    """Returned ``MultiHeadMLPUpdateResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published prediction, error, metric,
+    clock-word, and diagnostic leaves.
+    """
+    return 20 * n_heads + 25
+
+
+def _multi_head_update_working_set_bytes(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * _direct_state_bytes(
+        n_heads, hidden_sizes, feature_dim
+    ) + _multi_head_update_result_extras_bytes(n_heads)
+
+
+def _preflight_multi_head_update_working_set(
+    n_heads: int,
+    hidden_sizes: tuple[int, ...],
+    feature_dim: int,
+) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    working_set_bytes = _multi_head_update_working_set_bytes(
+        n_heads, hidden_sizes, feature_dim
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "multi-head learner update working set byte count must fit signed int32"
+        )
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Return 0 when ``scale`` is 0 so IEEE ``0 * inf`` does not become NaN."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -491,6 +543,7 @@ class MultiHeadMLPLearner:
         if hidden_sizes:
             _require_int32_product("head_weight_scalars", n_heads, hidden_sizes[-1])
         _validate_direct_state_resources(n_heads, hidden_sizes, feature_dim=1)
+        _preflight_multi_head_update_working_set(n_heads, hidden_sizes, feature_dim=1)
         if per_head_gamma_lamda is not None and type(per_head_gamma_lamda) is not tuple:
             raise ValueError(
                 "per_head_gamma_lamda must be an actual tuple when constructed directly"
@@ -723,6 +776,9 @@ class MultiHeadMLPLearner:
         else:
             _require_int32_product("linear_head_weight_scalars", self._n_heads, feature_dim)
         _validate_direct_state_resources(self._n_heads, self._hidden_sizes, feature_dim)
+        _preflight_multi_head_update_working_set(
+            self._n_heads, self._hidden_sizes, feature_dim
+        )
         # Trunk: [feature_dim, *hidden_sizes] — all hidden layers
         trunk_layer_sizes = [feature_dim, *self._hidden_sizes]
 
