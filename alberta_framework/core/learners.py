@@ -284,7 +284,9 @@ class LinearLearner:
             optimizer: Optimizer for weight updates. Defaults to LMS(0.01)
             normalizer: Optional feature normalizer (e.g. EMANormalizer, WelfordNormalizer)
         """
-        self._optimizer: AnyOptimizer = optimizer or LMS(step_size=0.01)
+        self._optimizer: AnyOptimizer = (
+            optimizer if optimizer is not None else LMS(step_size=0.01)
+        )
         self._normalizer = normalizer
 
     @property
@@ -1908,7 +1910,9 @@ class TDLinearLearner:
         Args:
             optimizer: TD optimizer for weight updates. Defaults to TDIDBD()
         """
-        self._optimizer: AnyTDOptimizer = optimizer or TDIDBD()
+        self._optimizer: AnyTDOptimizer = (
+            optimizer if optimizer is not None else TDIDBD()
+        )
 
     def init(self, feature_dim: int) -> TDLearnerState:
         """Initialize TD learner state.

@@ -516,14 +516,19 @@ class MultiHeadMLPLearner:
 
         self._n_heads = n_heads
         self._hidden_sizes = hidden_sizes
-        self._optimizer: AnyOptimizer = optimizer or LMS(step_size=step_size)
+        self._optimizer: AnyOptimizer = (
+            optimizer if optimizer is not None else LMS(step_size=step_size)
+        )
         self._head_optimizer: AnyOptimizer | None = head_optimizer
-        if not self._optimizer.supported_for_mlp():
+        if self._optimizer.supported_for_mlp() is not True:
             raise ValueError(
                 f"optimizer {type(self._optimizer).__name__} does not support the MLP "
                 "shape-generic update API"
             )
-        if self._head_optimizer is not None and not self._head_optimizer.supported_for_mlp():
+        if (
+            self._head_optimizer is not None
+            and self._head_optimizer.supported_for_mlp() is not True
+        ):
             raise ValueError(
                 f"head_optimizer {type(self._head_optimizer).__name__} does not support the MLP "
                 "shape-generic update API"

@@ -350,7 +350,9 @@ class IndependentDemonHorde:
             raise ValueError("trace_mode must be a TraceMode")
         self._horde_spec = horde_spec
         self._hidden_sizes = hidden_sizes
-        self._optimizer: AnyOptimizer = optimizer or LMS(step_size=step_size)
+        self._optimizer: AnyOptimizer = (
+            optimizer if optimizer is not None else LMS(step_size=step_size)
+        )
         self._head_optimizer: AnyOptimizer | None = head_optimizer
         self._step_size = step_size
         self._bounder = bounder
