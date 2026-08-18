@@ -10,6 +10,7 @@ from alberta_framework.streams.synthetic import (
     HiddenStateAR2Stream,
     ScaleDriftStream,
     SuttonExperiment1Stream,
+    _require_float32_resource,
     make_scale_range,
 )
 
@@ -170,15 +171,27 @@ def test_make_scale_range_rejects_invalid_feature_dim_hostile() -> None:
 def test_hidden_and_scale_streams_preflight_state_bytes_without_allocation() -> None:
     last_legal = (2**29 - 1 - 3) // 2
 
-    DynamicScaleShiftStream(feature_dim=last_legal)
-    ScaleDriftStream(feature_dim=last_legal)
+    _require_float32_resource(
+        "DynamicScaleShiftStream state",
+        vector_scalars=2 * last_legal,
+        fixed_scalars=3,
+    )
+    _require_float32_resource(
+        "ScaleDriftStream state",
+        vector_scalars=2 * last_legal,
+        fixed_scalars=3,
+    )
     with pytest.raises(ValueError, match="byte count"):
         DynamicScaleShiftStream(feature_dim=last_legal + 1)
     with pytest.raises(ValueError, match="byte count"):
         ScaleDriftStream(feature_dim=last_legal + 1)
 
     hidden_last_legal = (2**29 - 1 - 2) // 2
-    HiddenStateAR2Stream(feature_dim=hidden_last_legal, visible_dim=2)
+    _require_float32_resource(
+        "HiddenStateAR2Stream state",
+        vector_scalars=2 * hidden_last_legal,
+        fixed_scalars=2,
+    )
     with pytest.raises(ValueError, match="byte count"):
         HiddenStateAR2Stream(feature_dim=hidden_last_legal + 1, visible_dim=2)
 
@@ -186,7 +199,11 @@ def test_hidden_and_scale_streams_preflight_state_bytes_without_allocation() -> 
 def test_sutton_stream_preflights_derived_feature_and_state_bytes() -> None:
     last_legal_total = 2**29 - 1 - 3
 
-    SuttonExperiment1Stream(num_relevant=1, num_irrelevant=last_legal_total - 1)
+    _require_float32_resource(
+        "SuttonExperiment1Stream state",
+        vector_scalars=last_legal_total,
+        fixed_scalars=3,
+    )
     with pytest.raises(ValueError, match="byte count"):
         SuttonExperiment1Stream(num_relevant=1, num_irrelevant=last_legal_total)
     with pytest.raises(ValueError, match="feature_dim"):

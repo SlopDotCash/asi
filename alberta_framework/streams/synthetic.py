@@ -78,6 +78,43 @@ def _require_float32_resource(
         raise ValueError(f"{name} byte count must fit signed int32")
 
 
+def _hidden_state_ar2_persistent_bytes(feature_dim: int) -> int:
+    """Named persist already counted inside ``_require_float32_resource``."""
+    return 4 * (2 * feature_dim + 2)
+
+
+def _sutton_experiment1_persistent_bytes(feature_dim: int) -> int:
+    """Named persist already counted inside ``_require_float32_resource``."""
+    return 4 * (feature_dim + 3)
+
+
+def _scale_stream_persistent_bytes(feature_dim: int) -> int:
+    """Named persist already counted inside ``_require_float32_resource``."""
+    return 4 * (2 * feature_dim + 3)
+
+
+def _synthetic_step_result_extras_bytes(feature_dim: int) -> int:
+    """Returned ``TimeStep`` extras excluding persist.
+
+    Nested persist is already counted in the simultaneous persist copies.
+    These extras are the published observation and target leaves.
+    """
+    return 4 * feature_dim + 4
+
+
+def _synthetic_step_working_set_bytes(persist_bytes: int, feature_dim: int) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    return 3 * persist_bytes + _synthetic_step_result_extras_bytes(feature_dim)
+
+
+def _preflight_synthetic_step_working_set(
+    name: str, persist_bytes: int, feature_dim: int
+) -> None:
+    """Reject a step envelope the host cannot name in signed int32."""
+    if _synthetic_step_working_set_bytes(persist_bytes, feature_dim) > _INT32_MAX:
+        raise ValueError(f"{name} step working set byte count must fit signed int32")
+
+
 def _narrow_real_to_float32(name: str, value: object, message: str) -> tuple[int, int, float]:
     """Return one trusted exact ratio together with its binary32 rounding."""
     actual_type = type(value)
@@ -280,6 +317,11 @@ class HiddenStateAR2Stream:
             "HiddenStateAR2Stream state",
             vector_scalars=2 * feature_dim,
             fixed_scalars=2,
+        )
+        _preflight_synthetic_step_working_set(
+            "HiddenStateAR2Stream",
+            _hidden_state_ar2_persistent_bytes(feature_dim),
+            feature_dim,
         )
         phi1 = _require_finite_float32("phi1", phi1)
         phi2 = _require_finite_float32("phi2", phi2)
@@ -531,6 +573,11 @@ class SuttonExperiment1Stream:
             "SuttonExperiment1Stream state",
             vector_scalars=feature_dim,
             fixed_scalars=3,
+        )
+        _preflight_synthetic_step_working_set(
+            "SuttonExperiment1Stream",
+            _sutton_experiment1_persistent_bytes(feature_dim),
+            feature_dim,
         )
         self._change_interval = _require_positive_int("change_interval", change_interval)
         self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
@@ -1082,6 +1129,11 @@ class DynamicScaleShiftStream:
             vector_scalars=2 * self._feature_dim,
             fixed_scalars=3,
         )
+        _preflight_synthetic_step_working_set(
+            "DynamicScaleShiftStream",
+            _scale_stream_persistent_bytes(self._feature_dim),
+            self._feature_dim,
+        )
         self._scale_change_interval = _require_positive_int(
             "scale_change_interval", scale_change_interval
         )
@@ -1237,6 +1289,11 @@ class ScaleDriftStream:
             "ScaleDriftStream state",
             vector_scalars=2 * self._feature_dim,
             fixed_scalars=3,
+        )
+        _preflight_synthetic_step_working_set(
+            "ScaleDriftStream",
+            _scale_stream_persistent_bytes(self._feature_dim),
+            self._feature_dim,
         )
         self._weight_drift_rate = _require_finite_nonnegative_float32(
             "weight_drift_rate", weight_drift_rate
