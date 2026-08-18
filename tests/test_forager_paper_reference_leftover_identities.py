@@ -177,6 +177,27 @@ def test_forager_run_result_keeps_integer_json() -> None:
     assert '"privileged": false' in dumped
 
 
+def test_forager_run_result_preserves_zero_based_historical_curve_grid() -> None:
+    result = _legal_run_result(
+        curve_steps=(0, 10),
+        curve_window_reward=(),
+        environment={
+            "runtime": "historical_numpy_forager",
+            "pairable_with_current_foragax": False,
+        },
+        metric_contract={
+            "stored_curve": "unadjusted_ema_then_subsample",
+            "raw_reward_metrics_available": False,
+        },
+        agent_metadata={
+            "result_source": "official_fov_sqlite",
+            "raw_rewards_available": False,
+        },
+    )
+    assert result.curve_steps == (0, 10)
+    assert result.curve_window_reward == ()
+
+
 def test_run_result_rejects_hostile_scalar_subclasses_before_hooks() -> None:
     calls = 0
 
@@ -203,10 +224,13 @@ def test_run_result_rejects_hostile_scalar_subclasses_before_hooks() -> None:
     "overrides",
     [
         {"curve_steps": ()},
+        {"curve_steps": (-1, 10)},
+        {"curve_steps": (0, 10)},
         {"curve_steps": (1, 1)},
         {"curve_steps": (1, 11)},
         {"curve_ewm_reward": (0.1,)},
         {"curve_window_reward": (0.1,)},
+        {"curve_ewm_reward": (), "curve_window_reward": ()},
         {"duration_s": -1.0},
         {"frames_per_second": -1.0},
     ],

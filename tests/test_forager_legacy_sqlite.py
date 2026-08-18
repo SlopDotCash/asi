@@ -17,7 +17,6 @@ from alberta_framework.benchmarks.forager_results import (
     LEGACY_FOV_FRAMES,
     LegacyFOVSQLiteRunSpec,
     import_legacy_fov_sqlite,
-    paired_forager_comparison,
 )
 
 pytestmark = pytest.mark.integration
@@ -241,15 +240,10 @@ def test_rejects_dishonest_labels_and_current_foragax_pairing(tmp_path: Path) ->
 
     database_path, config_path = _write_artifacts(tmp_path)
     legacy = import_legacy_fov_sqlite(_spec(database_path, config_path))
-    current = dataclasses.replace(
-        legacy,
-        agent="alberta_horde_ac",
-        environment={"runtime": "foragax"},
-        agent_metadata={"seed": legacy.seed, "result_source": "in_tree"},
-    )
-    with pytest.raises(ValueError, match="unpaired orientation evidence"):
-        paired_forager_comparison(
-            [current],
-            [legacy],
-            metric="fov_last_10pct_ema_auc",
+    with pytest.raises(ValueError, match="curve_steps"):
+        dataclasses.replace(
+            legacy,
+            agent="alberta_horde_ac",
+            environment={"runtime": "foragax"},
+            agent_metadata={"seed": legacy.seed, "result_source": "in_tree"},
         )

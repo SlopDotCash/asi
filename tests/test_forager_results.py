@@ -58,7 +58,7 @@ def test_pairing_identity_rejects_unsupported_values_without_string_hooks() -> N
         def items(self):  # type: ignore[no-untyped-def, override]
             raise AssertionError("pairing identity must not invoke mapping hooks")
 
-    with pytest.raises(ValueError, match="finite JSON"):
+    with pytest.raises(ValueError, match="plain dict"):
         _environment_signature(_run(environment=HostileMapping(kind="toy")))
 
     with pytest.raises(ValueError, match="environment pairing identity"):

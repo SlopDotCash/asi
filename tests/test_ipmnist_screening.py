@@ -915,11 +915,11 @@ class TestCBPReplacement:
 class TestWeightClipping:
     """UPGD-W + weight clipping (Elsayed et al., RLC 2024)."""
 
-    def test_kappa_inf_reduces_exactly_to_control(self, small_data):
-        """With kappa=inf the clip is a no-op: bit-exact control trajectory."""
+    def test_max_finite_kappa_reduces_exactly_to_control(self, small_data):
+        """With max-finite kappa the clip is a no-op: bit-exact control trajectory."""
         x, y = small_data
         hp = dict(UPGD_W_PROTOCOL_HYPERPARAMETERS)
-        hp["clip_kappa"] = math.inf
+        hp["clip_kappa"] = float(np.finfo(np.float32).max)
         spec = ScreeningSpec(
             name="upgd_w_control",  # reuse control identity for shard plumbing
             base_learner="upgd_w",
@@ -2061,22 +2061,20 @@ class TestPoolConfirmation:
         self, noise_pool_steps: object
     ) -> None:
         spec = screening_spec("upgd_w_control")
-        result = ipmnist_screening.ScreeningRunResult(
-            config_name=spec.name,
-            base_learner=spec.base_learner,
-            hyperparameters=dict(spec.hyperparameters),
-            seed=0,
-            config=SMALL,
-            per_task_accuracy=np.zeros(SMALL.n_tasks),
-            per_task_loss=np.zeros(SMALL.n_tasks),
-            per_task_plasticity=np.zeros(SMALL.n_tasks),
-            wall_clock_seconds=0.0,
-            noise_mode="pool",
-            noise_pool_steps=noise_pool_steps,  # type: ignore[arg-type]
-        )
-
         with pytest.raises(ValueError, match="noise_pool_steps"):
-            _bound_shard_payload(result)
+            ipmnist_screening.ScreeningRunResult(
+                config_name=spec.name,
+                base_learner=spec.base_learner,
+                hyperparameters=dict(spec.hyperparameters),
+                seed=0,
+                config=SMALL,
+                per_task_accuracy=np.zeros(SMALL.n_tasks),
+                per_task_loss=np.zeros(SMALL.n_tasks),
+                per_task_plasticity=np.zeros(SMALL.n_tasks),
+                wall_clock_seconds=0.0,
+                noise_mode="pool",
+                noise_pool_steps=noise_pool_steps,  # type: ignore[arg-type]
+            )
 
     def test_pool_control_matches_run_ipmnist_pool(self, small_data):
         """Control arm under pool mode reproduces run_ipmnist's pool chain."""
@@ -4293,15 +4291,18 @@ class TestComparisonArms:
             factory=factory,
         )
 
-    def test_wclip_kappa_inf_reduces_to_sgd_base_bitwise(self, small_data):
-        """clip_kappa=inf makes the clip a no-op: bit-exact sgd_ema_norm_d099."""
+    def test_wclip_max_finite_kappa_reduces_to_sgd_base_bitwise(self, small_data):
+        """Max-finite clip_kappa is a no-op: bit-exact sgd_ema_norm_d099."""
         x, y = small_data
         ref_spec = screening_spec("sgd_ema_norm_d099")
         ours = run_screening_config(
             x, y,
             self._cloned(
                 "sgd_ema_norm_d099", _make_wclip_ema_norm_learner,
-                {**ref_spec.hyperparameters, "clip_kappa": math.inf},
+                {
+                    **ref_spec.hyperparameters,
+                    "clip_kappa": float(np.finfo(np.float32).max),
+                },
             ),
             seed=5, config=SMALL,
         )
@@ -4329,7 +4330,7 @@ class TestComparisonArms:
             assert np.all(values >= -bound - 1e-7), n
 
     def test_fade_lambda_zero_reduces_to_sgd_base_bitwise(self, small_data):
-        """theta=0 and gamma0=-inf (lambda=0) pin the head to the plain SGD
+        """theta=0 and a min-finite gamma0 (lambda=0) pin the head to the plain SGD
         step, so the whole arm equals the wd=0 normalized-SGD base."""
         x, y = small_data
         base_hp = {**self.BASE, "weight_decay": 0.0}
@@ -4340,7 +4341,7 @@ class TestComparisonArms:
                 {
                     **base_hp,
                     "fade_alpha": 0.005,
-                    "fade_gamma0": -math.inf,
+                    "fade_gamma0": -float(np.finfo(np.float32).max),
                     "fade_theta_lambda": 0.0,
                 },
             ),

@@ -1821,6 +1821,22 @@ class ForagerRunResult:
                 name,
                 _require_result_scalar(getattr(self, name), name=name),
             )
+        for name in ("environment", "metric_contract", "agent_metadata"):
+            value = getattr(self, name)
+            if type(value) is not dict:
+                raise ValueError(f"{name} must be a plain dict")
+            object.__setattr__(self, name, dict(value))
+        historical_curve = (
+            type(self.environment.get("runtime")) is str
+            and self.environment["runtime"] == "historical_numpy_forager"
+            and self.environment.get("pairable_with_current_foragax") is False
+            and type(self.metric_contract.get("stored_curve")) is str
+            and self.metric_contract["stored_curve"] == "unadjusted_ema_then_subsample"
+            and self.metric_contract.get("raw_reward_metrics_available") is False
+            and type(self.agent_metadata.get("result_source")) is str
+            and self.agent_metadata["result_source"] == "official_fov_sqlite"
+            and self.agent_metadata.get("raw_rewards_available") is False
+        )
         if type(self.curve_steps) is not tuple:
             raise ValueError("curve_steps must be a tuple of integers")
         curve_steps = tuple(
@@ -1829,11 +1845,13 @@ class ForagerRunResult:
         )
         if (
             not curve_steps
-            or curve_steps[0] < 1
+            or (curve_steps[0] == 0 and not historical_curve)
             or curve_steps[-1] > steps
             or any(left >= right for left, right in zip(curve_steps, curve_steps[1:]))
         ):
-            raise ValueError("curve_steps must be nonempty, increasing, and within steps")
+            raise ValueError(
+                "curve_steps must be nonempty, increasing, and within [0, steps]"
+            )
         object.__setattr__(self, "curve_steps", curve_steps)
         for name in ("curve_ewm_reward", "curve_window_reward"):
             values = getattr(self, name)
@@ -1844,15 +1862,17 @@ class ForagerRunResult:
                 name,
                 tuple(_require_result_scalar(value, name=name) for value in values),
             )
-            if len(values) != len(curve_steps):
+            if name == "curve_ewm_reward" and len(values) != len(curve_steps):
+                raise ValueError(f"{name} length must match curve_steps")
+            if name == "curve_window_reward" and (
+                (values and len(values) != len(curve_steps))
+                or (not values and not historical_curve)
+            ):
                 raise ValueError(f"{name} length must match curve_steps")
         for name in ("duration_s", "frames_per_second"):
             value = getattr(self, name)
             if not math.isnan(value) and value < 0.0:
                 raise ValueError(f"{name} must be nonnegative or NaN")
-        for name in ("environment", "metric_contract", "agent_metadata"):
-            if not isinstance(getattr(self, name), Mapping):
-                raise ValueError(f"{name} must be a mapping")
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-compatible result."""
