@@ -17,7 +17,12 @@ def test_bimu_update_matches_equations_six_and_seven() -> None:
     prior = jnp.zeros(2, dtype=jnp.float32)
     gradient = jnp.array([2.0, -0.5], dtype=jnp.float32)
     updated = bimu_update(state, gradient, prior, memory_window=10, alpha_max=1.0)
-    reciprocal = 1.0 / jnp.cosh(state) ** 2 + 2.0 * jnp.tanh(state) * gradient + 1.0 + 2.0 * jnp.abs(gradient)
+    reciprocal = (
+        1.0 / jnp.cosh(state) ** 2
+        + 2.0 * jnp.tanh(state) * gradient
+        + 1.0
+        + 2.0 * jnp.abs(gradient)
+    )
     eta = 1.0 / reciprocal
     expected = state - eta * (gradient + (state - prior) / (10 * jnp.cosh(state) ** 2))
     np.testing.assert_allclose(updated, expected, rtol=1e-6)
