@@ -6,8 +6,9 @@ effect sizes, and multiple comparison corrections.
 
 import operator
 from collections.abc import Mapping
+from dataclasses import asdict, dataclass, replace
 from fractions import Fraction
-from typing import TYPE_CHECKING, NamedTuple, SupportsIndex, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, SupportsIndex, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -45,6 +46,12 @@ def _require_exact_str(name: str, value: object) -> str:
     return value
 
 
+def _require_exact_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be an exact bool")
+    return value
+
+
 class StatisticalSummary(NamedTuple):
     """Summary statistics for a set of values.
 
@@ -69,7 +76,8 @@ class StatisticalSummary(NamedTuple):
     n_seeds: int
 
 
-class SignificanceResult(NamedTuple):
+@dataclass(frozen=True, slots=True)
+class SignificanceResult:
     """Result of a statistical significance test.
 
     Attributes:
@@ -91,6 +99,19 @@ class SignificanceResult(NamedTuple):
     effect_size: float
     method_a: str
     method_b: str
+
+    def __post_init__(self) -> None:
+        """Reject leftover bool/int/string identities before they become a verdict."""
+        _require_exact_str("test_name", self.test_name)
+        _require_exact_bool("significant", self.significant)
+        _require_exact_str("method_a", self.method_a)
+        _require_exact_str("method_b", self.method_b)
+
+    def _asdict(self) -> dict[str, object]:
+        return asdict(self)
+
+    def _replace(self, **changes: Any) -> "SignificanceResult":
+        return replace(self, **changes)
 
 
 def _validate_confidence_level(confidence_level: object) -> None:
