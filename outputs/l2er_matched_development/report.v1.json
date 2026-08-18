@@ -1,0 +1,718 @@
+{
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-28-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": null,
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "paired_comparisons": {
+  "l2er_combined": {
+   "ci95_lower": -0.05989182955969023,
+   "ci95_upper": -0.020108173619224155,
+   "deltas": [
+    -0.027000002562999725,
+    -0.032999999821186066,
+    -0.06000000238418579
+   ],
+   "mean_delta": -0.04000000158945719,
+   "outcome": "rejected"
+  },
+  "l2er_er_only": {
+   "ci95_lower": -0.05900940819065517,
+   "ci95_upper": -0.01965725895284866,
+   "deltas": [
+    -0.026000000536441803,
+    -0.032999999821186066,
+    -0.05900000035762787
+   ],
+   "mean_delta": -0.039333333571751915,
+   "outcome": "rejected"
+  },
+  "l2er_l2_only": {
+   "ci95_lower": 0.0,
+   "ci95_upper": 0.0,
+   "deltas": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "mean_delta": 0.0,
+   "outcome": "rejected"
+  }
+ },
+ "plan": {
+  "allowed_boundary_information": [],
+  "allowed_task_information": [
+   "current_example_label"
+  ],
+  "arms": [
+   "l2er_mechanism_off",
+   "l2er_l2_only",
+   "l2er_er_only",
+   "l2er_combined"
+  ],
+  "confidence_z": 1.96,
+  "config": {
+   "hidden1": 300,
+   "hidden2": 150,
+   "input_dim": 784,
+   "n_classes": 10,
+   "n_tasks": 2,
+   "task_length": 500
+  },
+  "control_arm": "l2er_mechanism_off",
+  "development_only": true,
+  "null_delta": 0.0,
+  "outcome_retention_required": true,
+  "paired_direction": "higher_is_better",
+  "plan_id": "asi.l2er-ipmnist.cheap-screen.v1",
+  "primary_metric": "mean_online_accuracy",
+  "scientific_promotion_allowed": false,
+  "seeds": [
+   1701,
+   1702,
+   1703
+  ]
+ },
+ "policy": {
+  "development_only": true,
+  "outcome_retained": true,
+  "scientific_promotion_allowed": false,
+  "timing_is_telemetry_only": true
+ },
+ "records": [
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_mechanism_off",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2603085041046143,
+    "mean_online_accuracy": 0.1810000091791153,
+    "mean_plasticity": 0.012861459515988827
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "inconclusive",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.4413924499967834
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1701,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_l2_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.260317802429199,
+    "mean_online_accuracy": 0.1810000091791153,
+    "mean_plasticity": 0.012859744019806385
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.4638149219972547
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1701,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_er_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2858095169067383,
+    "mean_online_accuracy": 0.1550000086426735,
+    "mean_plasticity": 0.007423669332638383
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 5.42806137399748
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1701,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_combined",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2857524156570435,
+    "mean_online_accuracy": 0.15400000661611557,
+    "mean_plasticity": 0.007484524976462126
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 7.4034075800009305
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1701,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_mechanism_off",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2390819787979126,
+    "mean_online_accuracy": 0.2200000137090683,
+    "mean_plasticity": 0.016483387909829617
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "inconclusive",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.165095206000842
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1702,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_l2_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2390938997268677,
+    "mean_online_accuracy": 0.2200000137090683,
+    "mean_plasticity": 0.016479989048093557
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.378976206004154
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1702,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_er_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2779507637023926,
+    "mean_online_accuracy": 0.18700001388788223,
+    "mean_plasticity": 0.008627200266346335
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 6.722973030002322
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1702,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_combined",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.27787709236145,
+    "mean_online_accuracy": 0.18700001388788223,
+    "mean_plasticity": 0.008647155249491334
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 6.850596866002888
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1702,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_mechanism_off",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.251906156539917,
+    "mean_online_accuracy": 0.21900001168251038,
+    "mean_plasticity": 0.014651557430624962
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "inconclusive",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.3393024039978627
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1703,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_l2_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 0.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.0,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.25197172164917,
+    "mean_online_accuracy": 0.21900001168251038,
+    "mean_plasticity": 0.01466407859697938
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2000,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 3.8257558420009445
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1703,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_er_only",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2854565382003784,
+    "mean_online_accuracy": 0.1600000113248825,
+    "mean_plasticity": 0.007825784385204315
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 5.930611664996832
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1703,
+   "task_length": 500,
+   "updates": 1000
+  },
+  {
+   "allowed_boundary_information": [],
+   "allowed_task_information": [
+    "current_example_label"
+   ],
+   "arm": "l2er_combined",
+   "comparison_id": "asi.l2er-ipmnist.current-runner.v1",
+   "development_only": true,
+   "hidden1": 300,
+   "hidden2": 150,
+   "hyperparameters": {
+    "er_batch_size": 100.0,
+    "er_enabled": 1.0,
+    "er_epsilon": 1e-08,
+    "er_step_size": 0.001,
+    "er_steps_per_batch": 1.0,
+    "step_size": 0.001,
+    "weight_decay": 0.0001
+   },
+   "input_dim": 784,
+   "metrics": {
+    "mean_loss": 2.2854849100112915,
+    "mean_online_accuracy": 0.15900000929832458,
+    "mean_plasticity": 0.00782596762292087
+   },
+   "n_classes": 10,
+   "n_tasks": 2,
+   "observations": 1000,
+   "official_commit": "52ae3eb0702a9e6923f252c1f7cb29340eb5b3d5",
+   "outcome": "rejected",
+   "outcome_retained": true,
+   "paper_revision": "arXiv:2509.22335v3",
+   "resources": {
+    "data_steps": 1000,
+    "environment_steps": 0,
+    "model_queries": 2010,
+    "persistent_bytes": 1442245,
+    "timing_is_telemetry_only": true,
+    "timing_seconds": 6.667670782990172
+   },
+   "schema": "asi.l2er-ipmnist.development-result.v1",
+   "scientific_promotion_allowed": false,
+   "seed": 1703,
+   "task_length": 500,
+   "updates": 1000
+  }
+ ],
+ "schema": "asi.l2er-ipmnist.matched-development-report.v1",
+ "source_provenance": {
+  "git_commit": "f62d157a449c30a79dcf01740ae7f20a6c27e726",
+  "git_object_format": "sha1",
+  "git_tree": "265941a7c4c5b311f9f289c226f7c4e5edab4e51",
+  "relevant_source_file_count": 194,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "d124776c77f0cb60d386a42215b5eccf9c45c81eb48a11c4e5f1af9207db45de",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}
