@@ -67,6 +67,7 @@ from alberta_framework.core.checkpoints import (
     load_checkpoint_metadata,
     save_checkpoint,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -419,7 +420,7 @@ class GauntletStream:
         )
         new_state = GauntletState(
             key=key,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             drift_weights=new_drift,
             w_a=state.w_a,
             w_c=state.w_c,
