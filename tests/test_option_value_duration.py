@@ -642,3 +642,66 @@ def test_option_duration_array_runner_requires_exact_shapes() -> None:
             jnp.ones((2, 2), dtype=jnp.float32),
             jnp.zeros((2,), dtype=jnp.float32),
         )
+
+
+def test_array_runner_rejects_untrusted_inputs_without_running_conversion_hooks() -> None:
+    """The array runner must gate on array metadata before any conversion.
+
+    ``_require_array`` reached ``jnp.asarray(value)`` before validating
+    anything, so an untrusted ``__array__`` hook executed ahead of the shape
+    and dtype checks and chose the value they then saw. The public ``update``
+    path is gated by an outer contract check; the array runner called the
+    helper directly.
+    """
+
+    class _HostileArray:
+        def __array__(self, dtype: object = None, copy: object = None) -> np.ndarray:
+            raise AssertionError("array hook must not run")
+
+    learner = OptionValueDurationLearner(3, OptionValueDurationConfig())
+    state = learner.init(2)
+    steps = 2
+    observations = jnp.zeros((steps, 2), dtype=jnp.float32)
+    next_observations = jnp.zeros((steps, 2), dtype=jnp.float32)
+    rewards = jnp.zeros((steps,), dtype=jnp.float32)
+    discounts = jnp.zeros((steps,), dtype=jnp.float32)
+    option_indices = jnp.zeros((steps,), dtype=jnp.int32)
+
+    with pytest.raises(TypeError, match="shape and dtype metadata"):
+        run_option_value_duration_from_arrays(
+            learner,
+            state,
+            observations,
+            _HostileArray(),
+            rewards,
+            next_observations,
+            discounts,
+        )
+
+    with pytest.raises(TypeError, match="shape and dtype metadata"):
+        run_option_value_duration_from_arrays(
+            learner,
+            state,
+            observations,
+            option_indices,
+            _HostileArray(),
+            next_observations,
+            discounts,
+        )
+
+
+def test_array_runner_still_accepts_trusted_arrays() -> None:
+    """The metadata gate must not reject the arrays the runner already supports."""
+    learner = OptionValueDurationLearner(3, OptionValueDurationConfig())
+    state = learner.init(2)
+    steps = 2
+    result = run_option_value_duration_from_arrays(
+        learner,
+        state,
+        jnp.zeros((steps, 2), dtype=jnp.float32),
+        np.zeros((steps,), dtype=np.int32),
+        jnp.zeros((steps,), dtype=jnp.float32),
+        jnp.zeros((steps, 2), dtype=jnp.float32),
+        jnp.zeros((steps,), dtype=jnp.float32),
+    )
+    chex.assert_tree_all_finite(result.predictions)
