@@ -1562,7 +1562,7 @@ class LifeHalt:
             raise ValueError("halt stage must be a HaltStage")
         if not isinstance(self.recovery_mode, RecoveryMode):
             raise ValueError("recovery_mode must be a RecoveryMode")
-        if not isinstance(self.reason, str) or not self.reason.strip():
+        if type(self.reason) is not str or not self.reason.strip():
             raise ValueError("halt reason must be nonempty")
         if (
             isinstance(self.recovery_attempts, bool)
@@ -3268,7 +3268,7 @@ class ReferenceLifeRunner:
     ) -> ReferenceLifeState:
         """Terminate the current life without relabelling an unconsumed event."""
 
-        if not isinstance(reason, str) or not reason.strip():
+        if type(reason) is not str or not reason.strip():
             raise ValueError("abort reason must be nonempty")
         with self._lock:
             self._require_current_locked(state)
