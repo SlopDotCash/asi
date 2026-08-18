@@ -2120,7 +2120,7 @@ def validate_parity_result(
     self-hash; callers needing identity must supply an independently obtained
     expected hash and replay the probe in the pinned OCI image.
     """
-    if isinstance(value, (bytes, str)):
+    if type(value) in (bytes, str):
         decoded = decode_strict_json(value)
     else:
         decoded = decode_strict_json(canonical_json_bytes(value))
@@ -2220,7 +2220,7 @@ def validate_collector_result(
     expected_payload_sha256: str | None = None,
 ) -> ParityCollectorResult:
     """Validate one hash-only collector payload without claiming execution authenticity."""
-    if isinstance(value, (bytes, str)):
+    if type(value) in (bytes, str):
         decoded = decode_strict_json(value)
     else:
         decoded = decode_strict_json(canonical_json_bytes(value))

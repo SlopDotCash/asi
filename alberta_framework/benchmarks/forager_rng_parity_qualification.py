@@ -309,7 +309,7 @@ def validate_host_qualification_receipt(
     try:
         decoded = (
             parity.decode_strict_json(value)
-            if isinstance(value, (bytes, str))
+            if type(value) in (bytes, str)
             else parity.decode_strict_json(parity.canonical_json_bytes(value))
         )
     except parity.ForagerRngParityError as exc:
