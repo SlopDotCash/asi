@@ -65,6 +65,16 @@ def _preflight_state_resources(feature_dim: int) -> None:
         raise ValueError("reward-model state bytes must fit signed int32")
 
 
+def _preflight_update_working_set(feature_dim: int) -> None:
+    # Covariance, proposed covariance, and the outer-product rank-one term,
+    # plus the live feature-width vectors (x, weights, Px, gain, next weights).
+    update_scalars = 3 * feature_dim * feature_dim + 5 * feature_dim + 8
+    if 4 * update_scalars > _INT32_MAX:
+        raise ValueError(
+            "reward-model update working set byte count must fit signed int32"
+        )
+
+
 def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
@@ -208,6 +218,7 @@ class RLSRewardModel:
     def init(self) -> RLSRewardModelState:
         """Initialize model state."""
         feature_dim = self._config.feature_dim
+        _preflight_update_working_set(feature_dim)
         return RLSRewardModelState(
             weights=jnp.zeros((feature_dim,), dtype=jnp.float32),
             covariance=(jnp.eye(feature_dim, dtype=jnp.float32) / self._config.ridge),
