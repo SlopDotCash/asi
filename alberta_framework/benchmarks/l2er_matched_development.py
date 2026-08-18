@@ -44,7 +44,7 @@ ARMS = (
 SEEDS = (1711, 1712, 1713)
 CONFIG = IPMNISTConfig(n_tasks=2, task_length=500)
 CONSUMED_AUDIT_SEEDS = (1701,)
-_T95_DF2 = 4.302652729696142
+_T95_DF2 = math.sqrt(1.805 / 0.0975)
 _MAX_REPORT_RECORDS = 32
 _MAX_REPORT_BYTES = 16 * 1024 * 1024
 _PATH_TYPE = type(Path())
@@ -116,6 +116,9 @@ def frozen_plan() -> dict[str, object]:
         "confidence_level": 0.95,
         "confidence_degrees_of_freedom": 2,
         "confidence_critical": _T95_DF2,
+        "statistical_correction_seed_policy": (
+            "a pre-execution statistical correction does not authorize seed churn"
+        ),
         "allowed_boundary_information": [],
         "allowed_task_information": ["current_example_label"],
         "development_only": True,
@@ -246,6 +249,7 @@ def _validated_plan(value: object) -> dict[str, object]:
         "control_arm",
         "paired_direction",
         "confidence_method",
+        "statistical_correction_seed_policy",
         "consumed_preplan_audit_note",
         "arm_specific_charged_axis",
     ):
