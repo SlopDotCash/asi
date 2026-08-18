@@ -6,12 +6,12 @@ Pre-registered in [elizaOS/asi#1311](https://github.com/elizaOS/asi/issues/1311)
 
 ## Verdict: REFUTED — and the floor moves the wrong way
 
-No fingerprint reaches the pre-registered bar (>90% of relevant `var > 0.01`
-pixels within <=500 samples, min over the 9 seed x boundary cells). The
-secondary measurement is the one that carries the result:
+No control-valid fingerprint reaches the pre-registered bar (>90% of relevant
+`var > 0.01` pixels within <=500 samples, min over the 9 seed x boundary
+cells). The secondary measurement is the one that carries the F3 result:
 
 **`N*` — smallest N where mean relevant-pixel accuracy crosses 0.90 —
-is `> 2000` for every fingerprint and both solvers.**
+is `> 2000` for every control-valid F3 fingerprint and both solvers.**
 
 V1 measured `N* ~= 2000` for its best estimator. V4's second-order
 fingerprints do not beat that floor; they do not reach it.
@@ -58,8 +58,9 @@ this budget** — not unusable in principle.
 F4a and F4b **failed the pre-registered oracle gate** (0.002 / 0.000 against a
 0.95 bar). Per the pre-registration this makes them mis-implemented rather
 than uninformative, so their online numbers are recorded in the artifact,
-marked `void` in `control_verdict`, and are **not** reported as evidence about
-model-side probes.
+marked `void` in `control_verdict`, and have `N*` marked `void` rather than a
+sample-floor result. They are **not** reported as evidence about model-side
+probes.
 
 The two controls together diagnose the fault exactly:
 
@@ -104,6 +105,13 @@ Both controls use exact full-dataset statistics. They are pipeline-correctness
 checks, so running them at the online checkpoints would conflate estimator
 noise with an implementation fault — an error in the first draft of the
 runner, corrected before any headline number existed.
+
+The shipped runner computed the first seed/boundary's online diagnostic rows
+before computing its controls, rather than literally running the controls
+first as the preregistration required. The F3 controls passed, so this ordering
+does not change its deterministic measurements, but it is an execution-order
+deviation. The F4 controls failed and those arms remain void regardless of
+their recorded online rows.
 
 ## Consequence for the chain
 

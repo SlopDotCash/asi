@@ -413,7 +413,6 @@ def main() -> int:
         schedule = build_schedule(jr.key(np.uint32(seed)), config, x.shape[0])
         for boundary in args.boundaries:
             params = train_reference_network(seed, boundary, x, y, schedule)
-            cells.extend(run_cell(seed, boundary, x, y, schedule, params))
 
             if not args.skip_controls and seed == args.seeds[0] and boundary == args.boundaries[0]:
                 controls["exact_statistic_oracle"] = run_cell(
@@ -422,6 +421,7 @@ def main() -> int:
                 controls["no_shift"] = run_cell(
                     seed, boundary, x, y, schedule, params, no_shift=True
                 )
+            cells.extend(run_cell(seed, boundary, x, y, schedule, params))
 
     # Pre-registered control gates decide which fingerprints carry a result at
     # all: a family that misses the oracle bar is mis-implemented, not
@@ -454,8 +454,15 @@ def main() -> int:
         }
 
     aggregates = aggregate(cells)
+    # A fingerprint that failed a preregistered correctness control has no
+    # licensed online result.  Preserve its raw diagnostic rows, but do not
+    # turn them into the protocol's secondary N* measurement.
     floors = {
-        f"{fingerprint}/{solver}": sample_floor(aggregates, fingerprint, solver)
+        f"{fingerprint}/{solver}": (
+            "void"
+            if verdict[fingerprint]["void"]
+            else sample_floor(aggregates, fingerprint, solver)
+        )
         for fingerprint in FINGERPRINTS
         for solver in SOLVERS
     }
