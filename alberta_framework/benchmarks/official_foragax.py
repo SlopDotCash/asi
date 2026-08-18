@@ -268,7 +268,7 @@ class OfficialForagaxRunRequest:
             raise OfficialForagaxValidationError("config_path must not be empty")
         if not isinstance(self.gpu, bool):
             raise OfficialForagaxValidationError("gpu must be a boolean")
-        if not isinstance(self.expected_repository, str):
+        if type(self.expected_repository) is not str:
             raise OfficialForagaxValidationError(
                 "expected_repository must be a string"
             )
@@ -5213,7 +5213,7 @@ def _verified_agent_access_sections(
             "official manifest agent registry hash does not verify"
         )
     agent = run.get("agent")
-    if not isinstance(agent, str) or not agent:
+    if type(agent) is not str or not agent:
         raise OfficialForagaxValidationError(
             "official manifest agent identity is invalid"
         )
@@ -5427,7 +5427,7 @@ def prepare_official_foragax_run(
     problem = config_data.get("problem")
     configured_env_steps = config_data.get("total_steps")
     meta_parameters = config_data.get("metaParameters")
-    if not isinstance(agent, str) or not agent.strip():
+    if type(agent) is not str or not agent.strip():
         raise OfficialForagaxValidationError("official config has no non-empty agent")
     if problem != "Foragax":
         raise OfficialForagaxValidationError(
