@@ -2484,9 +2484,11 @@ def causal_map_state_from_dict(
     }
     if set(payload) != expected_top_level:
         raise ValueError("serialized state top-level fields do not match the schema")
-    if payload.get("schema") != CAUSAL_MAP_STATE_SCHEMA:
+    raw_schema = payload.get("schema")
+    if type(raw_schema) is not str or raw_schema != CAUSAL_MAP_STATE_SCHEMA:
         raise ValueError("unsupported causal-map state schema")
-    if payload.get("prng_impl") != _CAUSAL_MAP_PRNG_IMPL:
+    raw_prng_impl = payload.get("prng_impl")
+    if type(raw_prng_impl) is not str or raw_prng_impl != _CAUSAL_MAP_PRNG_IMPL:
         raise ValueError("serialized state PRNG implementation does not match")
     checkpoint_partitionable = payload.get("jax_threefry_partitionable")
     if type(checkpoint_partitionable) is not bool:
@@ -2526,7 +2528,11 @@ def causal_map_state_from_dict(
     except (TypeError, ValueError) as exc:
         raise ValueError("serialized state config is not canonical JSON") from exc
     declared_config_sha256 = hashlib.sha256(declared_config.encode()).hexdigest()
-    declared_hash_matches = payload.get("config_sha256") == declared_config_sha256
+    raw_config_sha256 = payload.get("config_sha256")
+    declared_hash_matches = (
+        type(raw_config_sha256) is str
+        and raw_config_sha256 == declared_config_sha256
+    )
     current_config_matches = (
         declared_config == expected_config
         and declared_config_sha256 == config.fingerprint()
