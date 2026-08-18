@@ -86,6 +86,32 @@ _STEP3_CONFIG_FIELDS = frozenset(
 )
 
 
+def _exact_builtin_tree_equal(observed: object, expected: object) -> bool:
+    """Compare one JSON-like tree without invoking hooks on foreign types."""
+
+    if type(observed) is not type(expected):
+        return False
+    if type(expected) is dict:
+        observed_dict = cast(dict[object, object], observed)
+        expected_dict = cast(dict[object, object], expected)
+        if any(type(key) is not str for key in observed_dict):
+            return False
+        if set(observed_dict) != set(expected_dict):
+            return False
+        return all(
+            _exact_builtin_tree_equal(observed_dict[key], value)
+            for key, value in expected_dict.items()
+        )
+    if type(expected) is list:
+        observed_list = cast(list[object], observed)
+        expected_list = cast(list[object], expected)
+        return len(observed_list) == len(expected_list) and all(
+            _exact_builtin_tree_equal(left, right)
+            for left, right in zip(observed_list, expected_list, strict=True)
+        )
+    return observed == expected
+
+
 def _require_exact_str(name: str, value: object) -> str:
     if type(value) is not str:
         raise ValueError(f"{name} must be an exact string")
@@ -353,10 +379,22 @@ class Step3SmokeResult:
         object.__setattr__(self, "finite", _require_bool("finite", self.finite))
         if type(self.handoff) is not Step3HandoffArrays:
             raise TypeError("handoff must be an exact Step3HandoffArrays")
+        if self.handoff.observations.shape[0] != self.steps:
+            raise ValueError("handoff row count must equal steps")
+        if self.handoff.n_demons != self.config.n_demons:
+            raise ValueError("handoff demon count must equal config.n_demons")
+        expected_metrics_shape = (self.steps, self.config.n_demons, 3)
+        if self.per_demon_metrics_shape != expected_metrics_shape:
+            raise ValueError("per_demon_metrics_shape does not match the smoke contract")
+        if self.td_errors_shape != (self.steps, self.config.n_demons):
+            raise ValueError("td_errors_shape does not match the smoke contract")
         if type(self.horde_config) is not dict or any(
             type(key) is not str for key in self.horde_config
         ):
             raise ValueError("horde_config must be an exact dict with exact string keys")
+        expected_horde_config = make_step3_horde(self.config).to_config()
+        if not _exact_builtin_tree_equal(self.horde_config, expected_horde_config):
+            raise ValueError("horde_config does not match config and routing")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
