@@ -291,6 +291,78 @@ def _require_float32_allocation(name: str, scalars: int) -> None:
         raise ValueError(f"{name} scalar and byte counts must fit signed int32")
 
 
+def _experiential_persistent_bytes(
+    *,
+    capacity: int,
+    observation_dim: int,
+    key_dim: int,
+    action_dim: int,
+    outcome_dim: int,
+) -> int:
+    """Named persist already preflighted by ``_validate_config``."""
+    vector_values = observation_dim + key_dim + action_dim + outcome_dim
+    return capacity * (4 * (vector_values + 11) + 4) + 32
+
+
+def _experiential_step_result_extras_bytes(
+    *,
+    observation_dim: int,
+    action_dim: int,
+    outcome_dim: int,
+    top_k: int,
+) -> int:
+    """Returned ``ExperientialMemoryStepResult`` extras excluding persist.
+
+    Nested ``state`` is persist and is already counted in the simultaneous
+    persist copies. These extras are the published retrieval and write
+    diagnostic leaves.
+    """
+    payload_values = observation_dim + action_dim + outcome_dim
+    return 36 + 4 * payload_values + 25 * top_k
+
+
+def _experiential_update_working_set_bytes(
+    *,
+    capacity: int,
+    observation_dim: int,
+    key_dim: int,
+    action_dim: int,
+    outcome_dim: int,
+    top_k: int,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras."""
+    persist_bytes = _experiential_persistent_bytes(
+        capacity=capacity,
+        observation_dim=observation_dim,
+        key_dim=key_dim,
+        action_dim=action_dim,
+        outcome_dim=outcome_dim,
+    )
+    extras_bytes = _experiential_step_result_extras_bytes(
+        observation_dim=observation_dim,
+        action_dim=action_dim,
+        outcome_dim=outcome_dim,
+        top_k=top_k,
+    )
+    return 3 * persist_bytes + extras_bytes
+
+
+def _preflight_experiential_update_working_set(config: ExperientialMemoryConfig) -> None:
+    """Reject an update envelope the host cannot name in signed int32."""
+    working_set_bytes = _experiential_update_working_set_bytes(
+        capacity=config.capacity,
+        observation_dim=config.observation_dim,
+        key_dim=config.key_dim,
+        action_dim=config.action_dim,
+        outcome_dim=config.outcome_dim,
+        top_k=config.top_k,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "experiential memory update working set byte count must fit signed int32"
+        )
+
+
 def _validate_config(config: ExperientialMemoryConfig) -> None:
     for name in (
         "capacity",
@@ -356,6 +428,7 @@ def _validate_config(config: ExperientialMemoryConfig) -> None:
             "ExperientialMemoryConfig aggregate query working-set bytes "
             "must fit signed int32"
         )
+    _preflight_experiential_update_working_set(config)
 
     object.__setattr__(
         config,
