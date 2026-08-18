@@ -1396,6 +1396,115 @@ class TestResetDormantOptimizerState:
         assert mse_last < mse_first
 
 
+class TestMLPLearnerConstructorScalars:
+    """Leftover constructor scalars must not sit on the single-head MLP host."""
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("sparsity", True),
+            ("sparsity", False),
+            ("sparsity", float("nan")),
+            ("sparsity", float("inf")),
+            ("sparsity", 1.5),
+            ("gamma", True),
+            ("gamma", float("nan")),
+            ("lamda", True),
+            ("lamda", float("nan")),
+            ("leaky_relu_slope", True),
+            ("leaky_relu_slope", float("nan")),
+            ("step_size", True),
+            ("step_size", False),
+            ("step_size", float("nan")),
+            ("step_size", 0.0),
+            ("neuron_utility_decay", True),
+            ("neuron_utility_decay", float("nan")),
+            ("neuron_utility_decay", 1.0),
+        ],
+    )
+    def test_rejects_leftover_constructor_scalars(self, field: str, value: object) -> None:
+        kwargs: dict[str, object] = {"hidden_sizes": (8,), "sparsity": 0.0}
+        kwargs[field] = value
+        with pytest.raises(ValueError, match=field):
+            MLPLearner(**kwargs)  # type: ignore[arg-type]
+
+    def test_true_sparsity_does_not_serialize_as_full_mask(self) -> None:
+        with pytest.raises(ValueError, match="sparsity"):
+            MLPLearner(hidden_sizes=(8,), sparsity=True)
+
+    def test_true_gamma_does_not_store_as_undiscounted_one(self) -> None:
+        with pytest.raises(ValueError, match="gamma"):
+            MLPLearner(hidden_sizes=(8,), gamma=True, lamda=0.0)
+
+    def test_bool_flags_require_exact_bool(self) -> None:
+        with pytest.raises(ValueError, match="use_layer_norm"):
+            MLPLearner(hidden_sizes=(8,), use_layer_norm=1)  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="track_neuron_utility"):
+            MLPLearner(hidden_sizes=(8,), track_neuron_utility=1)  # type: ignore[arg-type]
+
+    def test_from_config_rejects_nan_sparsity_and_bool_gamma(self) -> None:
+        config = MLPLearner(hidden_sizes=(8,), sparsity=0.0).to_config()
+        poisoned = dict(config)
+        poisoned["sparsity"] = float("nan")
+        with pytest.raises(ValueError, match="sparsity"):
+            MLPLearner.from_config(poisoned)
+        poisoned = dict(config)
+        poisoned["gamma"] = True
+        with pytest.raises(ValueError, match="gamma"):
+            MLPLearner.from_config(poisoned)
+
+    def test_rejects_class_spoofed_sparsity_without_invoking_float(self) -> None:
+        class Spoof:
+            @property
+            def __class__(self) -> type[float]:  # type: ignore[override]
+                return float
+
+            def __float__(self) -> float:
+                raise RuntimeError("must not run")
+
+        with pytest.raises(ValueError, match="sparsity"):
+            MLPLearner(hidden_sizes=(8,), sparsity=Spoof())  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"sparsity": 2.0**-150},
+            {"leaky_relu_slope": 5e-324},
+            {"gamma": 2.0**-150},
+            {"lamda": 2.0**-150},
+            {"neuron_utility_decay": 5e-324},
+        ],
+    )
+    def test_rejects_nonzero_float32_underflow(self, kwargs: dict[str, object]) -> None:
+        with pytest.raises(ValueError, match="must remain nonzero"):
+            MLPLearner(hidden_sizes=(8,), **kwargs)  # type: ignore[arg-type]
+
+    def test_rejects_trace_product_that_underflows_float32(self) -> None:
+        with pytest.raises(ValueError, match=r"gamma \* lamda must remain nonzero"):
+            MLPLearner(hidden_sizes=(), gamma=2.0**-100, lamda=2.0**-100)
+
+    def test_legal_zeros_and_exact_bools_still_construct(self) -> None:
+        smallest_float32 = 2.0**-149
+        learner = MLPLearner(
+            hidden_sizes=(8,),
+            sparsity=0.0,
+            leaky_relu_slope=0.0,
+            gamma=0.0,
+            lamda=smallest_float32,
+            use_layer_norm=False,
+            track_neuron_utility=True,
+            neuron_utility_decay=0.0,
+            step_size=0.1,
+        )
+        config = learner.to_config()
+        assert config["sparsity"] == 0.0
+        assert config["leaky_relu_slope"] == 0.0
+        assert config["lamda"] == smallest_float32
+        assert config["use_layer_norm"] is False
+        assert config["track_neuron_utility"] is True
+        assert config["neuron_utility_decay"] == 0.0
+
+
 def test_mlp_dimensions_are_exact_canonical_and_preflighted() -> None:
     for invalid in ([8], (True,), (0,), (2**31,)):
         with pytest.raises(ValueError, match="hidden_sizes"):

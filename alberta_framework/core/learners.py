@@ -32,7 +32,10 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float
 
-from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core._float32_scalars import (
+    validated_float32_scalar,
+    validated_float32_scalar_with_ratio,
+)
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.normalizers import (
     EMANormalizerState,
@@ -81,6 +84,7 @@ from alberta_framework.streams.base import ScanStream
 
 _INT32_MAX = 2**31 - 1
 _MAX_RESOURCE_BYTES = 256 * 1024 * 1024
+_FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -115,6 +119,35 @@ def _require_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
         _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
         for index, width in enumerate(hidden_sizes)
     )
+
+
+def _validated_nonnegative_float32_scalar(
+    name: str,
+    value: object,
+    *,
+    upper: float | None = None,
+    upper_inclusive: bool = True,
+) -> float:
+    """Validate a nonnegative float32 sink without erasing a nonzero."""
+    stored, numerator, denominator = validated_float32_scalar_with_ratio(
+        name,
+        value,
+        lower=0.0,
+        upper=upper,
+        upper_inclusive=upper_inclusive,
+    )
+    if (
+        numerator != 0
+        and numerator * _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR <= denominator
+    ):
+        raise ValueError(f"{name} must remain nonzero once narrowed to float32")
+    return stored
+
+
+def _require_exact_bool(name: str, value: object) -> bool:
+    if type(value) is not bool:
+        raise ValueError(f"{name} must be an exact bool")
+    return value
 
 
 def _preflight_float32_resources(name: str, scalar_count: int) -> None:
@@ -996,6 +1029,31 @@ class MLPLearner:
                 Higher values track slower, smoother utility signals.
         """
         self._hidden_sizes = _require_hidden_sizes(hidden_sizes)
+        step_size = validated_float32_scalar("step_size", step_size, positive=True)
+        sparsity = _validated_nonnegative_float32_scalar(
+            "sparsity", sparsity, upper=1.0
+        )
+        leaky_relu_slope = _validated_nonnegative_float32_scalar(
+            "leaky_relu_slope", leaky_relu_slope
+        )
+        gamma = _validated_nonnegative_float32_scalar("gamma", gamma, upper=1.0)
+        lamda = _validated_nonnegative_float32_scalar("lamda", lamda, upper=1.0)
+        if gamma != 0.0 and lamda != 0.0:
+            _validated_nonnegative_float32_scalar(
+                "gamma * lamda",
+                gamma * lamda,
+                upper=1.0,
+            )
+        neuron_utility_decay = _validated_nonnegative_float32_scalar(
+            "neuron_utility_decay",
+            neuron_utility_decay,
+            upper=1.0,
+            upper_inclusive=False,
+        )
+        use_layer_norm = _require_exact_bool("use_layer_norm", use_layer_norm)
+        track_neuron_utility = _require_exact_bool(
+            "track_neuron_utility", track_neuron_utility
+        )
         self._optimizer: AnyOptimizer = optimizer or LMS(step_size=step_size)
         self._head_optimizer: AnyOptimizer | None = head_optimizer
         if not self._optimizer.supported_for_mlp():
