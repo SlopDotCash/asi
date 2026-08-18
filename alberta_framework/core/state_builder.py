@@ -1280,6 +1280,61 @@ class FixedTraceStateBuilder:
         return self.commit_learning_update(state, proposal)
 
 
+def _online_gated_update_working_set_bytes(
+    observation_dim: int,
+    n_actions: int,
+    hidden_dim: int,
+    *,
+    include_raw_observation: bool,
+) -> int:
+    """Source persist, candidate persist, selected persist, and returned extras.
+
+    ``update`` keeps the source state, the candidate state, and the
+    transaction-selected result simultaneously live.  ``jax.jacfwd``
+    materializes another sensitivity matrix, the proposed sensitivity is
+    live before it is stored, and the caller-visible representation plus
+    its neutralized NaN copy are returned beside the selected state.
+    Event / safe-event / gate temporaries are charged as well.
+    """
+
+    event_dim = observation_dim + n_actions + 2
+    feature_dim = hidden_dim + (observation_dim if include_raw_observation else 0)
+    parameter_count = 2 * hidden_dim * (event_dim + 1)
+    persist_scalars = (
+        parameter_count + hidden_dim + hidden_dim * parameter_count + 3
+    )
+    update_scalars = (
+        3 * persist_scalars
+        + 2 * hidden_dim * parameter_count
+        + 2 * feature_dim
+        + 2 * event_dim
+        + hidden_dim
+        + 16
+    )
+    return 4 * update_scalars
+
+
+def _preflight_online_gated_update_working_set(
+    observation_dim: int,
+    n_actions: int,
+    hidden_dim: int,
+    *,
+    include_raw_observation: bool,
+) -> None:
+    """Reject an update envelope the online-gated builder cannot name."""
+
+    working_set_bytes = _online_gated_update_working_set_bytes(
+        observation_dim,
+        n_actions,
+        hidden_dim,
+        include_raw_observation=include_raw_observation,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "online-gated update working set byte count must fit signed int32"
+        )
+
+
 @dataclass(frozen=True)
 class OnlineGatedStateBuilderConfig:
     """Configuration for the online learnable write/hold state builder."""
@@ -1349,6 +1404,12 @@ class OnlineGatedStateBuilderConfig:
         _require_derived_int32("parameter_count", parameter_count, minimum=1)
         _require_derived_int32("state_scalars", state_scalars, minimum=1)
         _require_derived_int32("state_bytes", 4 * state_scalars, minimum=1)
+        _preflight_online_gated_update_working_set(
+            self.observation_dim,
+            self.n_actions,
+            self.hidden_dim,
+            include_raw_observation=self.include_raw_observation,
+        )
 
     def event_dim(self) -> int:
         """Return observation + one-hot action + reward + discount width."""
