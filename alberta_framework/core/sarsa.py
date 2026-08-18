@@ -213,12 +213,17 @@ def _preflight_sarsa_direct_state(
     # last_observation, last_action, epsilon, step_count, and the two-word
     # Threefry key are all four-byte public-state leaves.
     aggregate_scalars = horde_direct_scalars + feature_dim + 5
+    persist_bytes = 4 * aggregate_scalars
     for name, value in (
         ("aggregate_direct_state_scalars", aggregate_scalars),
-        ("aggregate_direct_state_bytes", 4 * aggregate_scalars),
+        ("aggregate_direct_state_bytes", persist_bytes),
     ):
         if not 1 <= value <= _INT32_MAX:
             raise ValueError(f"derived SARSA {name} must be at most {_INT32_MAX}")
+    # Source persist, proposed persist, and returned action/Q/td/reward extras.
+    update_working_set_bytes = 2 * persist_bytes + 12 + 4 * n_heads
+    if update_working_set_bytes > _INT32_MAX:
+        raise ValueError("SARSA update working set byte count must fit signed int32")
 
 
 @chex.dataclass(frozen=True)
