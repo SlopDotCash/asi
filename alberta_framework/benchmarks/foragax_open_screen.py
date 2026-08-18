@@ -451,7 +451,7 @@ def _read_stable_regular_file(
 
 
 def _normalized_relative_path(value: Any, label: str) -> str:
-    if not isinstance(value, str) or not value:
+    if type(value) is not str or not value:
         raise ScreenError(f"{label} must be a non-empty relative path")
     path = PurePosixPath(value)
     if path.is_absolute() or "." in path.parts or ".." in path.parts:
@@ -1292,7 +1292,7 @@ def _run_preflight(protocol: FrozenProtocol, docker: str) -> tuple[dict[str, Any
             or item.get("num_permutations") != 1
             or item.get("stored_seeds") != list(protocol.seeds)
             or item.get("effective_seeds") != list(protocol.seeds)
-            or not isinstance(item.get("result_root"), str)
+            or type(item.get("result_root")) is not str
             or not isinstance(item.get("metadata_contract"), dict)
         ):
             raise ScreenError(f"OCI preflight configuration binding drift: {config.path}")
@@ -1348,7 +1348,7 @@ def _run_preflight(protocol: FrozenProtocol, docker: str) -> tuple[dict[str, Any
         or runtime.get("continual_foragax_version") != "0.55.0"
         or runtime.get("jax_default_backend") != "cpu"
         or not devices
-        or any(not isinstance(device, str) or not device.startswith("cpu:") for device in devices)
+        or any(type(device) is not str or not device.startswith("cpu:") for device in devices)
         or runtime.get("jax_platform_name") != "cpu"
         or runtime.get("jax_platforms") != "cpu"
         or runtime.get("nvidia_visible_devices") != "void"
@@ -2434,7 +2434,7 @@ def validate_reward_archives(
             )
             or _SHA256_RE.fullmatch(cast(str, record.get("reward_trace_sha256", "")))
             is None
-            or not isinstance(record.get("reward_dtype"), str)
+            or type(record.get("reward_dtype")) is not str
         ):
             raise ScreenError("pinned scorer record does not bind the exact NPZ and metric")
         results.append(record)
