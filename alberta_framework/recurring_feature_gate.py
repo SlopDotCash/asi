@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 from jax import Array
 
-from alberta_framework._seed_validation import require_unique_jax_seeds
+from alberta_framework._seed_validation import require_jax_seed, require_unique_jax_seeds
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.interaction_features import (
     FixedBudgetInteractionLearner,
@@ -87,6 +87,32 @@ def _require_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be boolean")
     return value
+
+
+def _require_real(name: str, value: object) -> float:
+    if type(value) is not int and type(value) is not float:
+        raise ValueError(f"{name} must be a real number")
+    return float(value)
+
+
+def _require_task(name: str, value: object) -> TaskName:
+    if type(value) is not str or value not in TASK_NAMES:
+        raise ValueError(f"{name} must be an exact task name")
+    return value
+
+
+def _require_optional_int(name: str, value: object) -> int | None:
+    if value is None:
+        return None
+    return _require_builtin_int(name, value, minimum=0)
+
+
+def _require_pair(name: str, value: object) -> Pair:
+    if type(value) is not tuple or len(value) != 2:
+        raise ValueError(f"{name} must be an exact pair")
+    left = _require_builtin_int(f"{name}[0]", value[0], minimum=0)
+    right = _require_builtin_int(f"{name}[1]", value[1], minimum=0)
+    return (left, right)
 
 
 def _preflight_seed_array_resources(
@@ -276,6 +302,22 @@ class PhaseEvidence:
     prequential_nmse: float
     recovery_steps: int | None
 
+    def __post_init__(self) -> None:
+        """Reject leftover phase/task/nmse identities before they become evidence."""
+        object.__setattr__(
+            self, "phase_index", _require_builtin_int("phase_index", self.phase_index, minimum=0)
+        )
+        object.__setattr__(self, "task", _require_task("task", self.task))
+        object.__setattr__(
+            self, "occurrence", _require_builtin_int("occurrence", self.occurrence, minimum=1)
+        )
+        object.__setattr__(
+            self, "prequential_nmse", _require_real("prequential_nmse", self.prequential_nmse)
+        )
+        object.__setattr__(
+            self, "recovery_steps", _require_optional_int("recovery_steps", self.recovery_steps)
+        )
+
 
 @dataclass(frozen=True, slots=True)
 class TaskRecoveryEvidence:
@@ -284,6 +326,25 @@ class TaskRecoveryEvidence:
     task: TaskName
     acquisition_steps: int | None
     recurrence_steps: tuple[int | None, ...]
+
+    def __post_init__(self) -> None:
+        """Reject leftover task/recovery-step identities before they become evidence."""
+        object.__setattr__(self, "task", _require_task("task", self.task))
+        object.__setattr__(
+            self,
+            "acquisition_steps",
+            _require_optional_int("acquisition_steps", self.acquisition_steps),
+        )
+        if type(self.recurrence_steps) is not tuple:
+            raise ValueError("recurrence_steps must be an exact tuple")
+        object.__setattr__(
+            self,
+            "recurrence_steps",
+            tuple(
+                _require_optional_int(f"recurrence_steps[{index}]", step)
+                for index, step in enumerate(self.recurrence_steps)
+            ),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +358,51 @@ class RecurringFeatureSeedEvidence:
     phase_evidence: tuple[PhaseEvidence, ...]
     task_recovery: tuple[TaskRecoveryEvidence, ...]
     steps_seen: int
+
+    def __post_init__(self) -> None:
+        """Reject leftover seed/nmse/pair identities before they become evidence."""
+        object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        if type(self.final_heldout_nmse) is not tuple or not self.final_heldout_nmse:
+            raise ValueError("final_heldout_nmse must be a non-empty exact tuple")
+        object.__setattr__(
+            self,
+            "final_heldout_nmse",
+            tuple(
+                _require_real(f"final_heldout_nmse[{index}]", value)
+                for index, value in enumerate(self.final_heldout_nmse)
+            ),
+        )
+        if type(self.active_pairs) is not tuple:
+            raise ValueError("active_pairs must be an exact tuple")
+        object.__setattr__(
+            self,
+            "active_pairs",
+            tuple(
+                _require_pair(f"active_pairs[{index}]", pair)
+                for index, pair in enumerate(self.active_pairs)
+            ),
+        )
+        if type(self.candidate_pairs) is not tuple:
+            raise ValueError("candidate_pairs must be an exact tuple")
+        object.__setattr__(
+            self,
+            "candidate_pairs",
+            tuple(
+                _require_pair(f"candidate_pairs[{index}]", pair)
+                for index, pair in enumerate(self.candidate_pairs)
+            ),
+        )
+        if type(self.phase_evidence) is not tuple or not all(
+            type(item) is PhaseEvidence for item in self.phase_evidence
+        ):
+            raise ValueError("phase_evidence must be a tuple of PhaseEvidence")
+        if type(self.task_recovery) is not tuple or not all(
+            type(item) is TaskRecoveryEvidence for item in self.task_recovery
+        ):
+            raise ValueError("task_recovery must be a tuple of TaskRecoveryEvidence")
+        object.__setattr__(
+            self, "steps_seen", _require_builtin_int("steps_seen", self.steps_seen, minimum=0)
+        )
 
     @property
     def critical_pairs_retained(self) -> tuple[bool, bool, bool]:
@@ -322,6 +428,21 @@ class RecurringFeatureVariantEvidence:
     name: VariantName
     utility_retention_decay: float | None
     seeds: tuple[RecurringFeatureSeedEvidence, ...]
+
+    def __post_init__(self) -> None:
+        """Reject leftover variant/decay identities before they become evidence."""
+        if type(self.name) is not str or self.name not in ("retained", "no_retention"):
+            raise ValueError("name must be an exact variant name")
+        decay: float | None
+        if self.utility_retention_decay is None:
+            decay = None
+        else:
+            decay = _require_real("utility_retention_decay", self.utility_retention_decay)
+        object.__setattr__(self, "utility_retention_decay", decay)
+        if type(self.seeds) is not tuple or not all(
+            type(item) is RecurringFeatureSeedEvidence for item in self.seeds
+        ):
+            raise ValueError("seeds must be a tuple of RecurringFeatureSeedEvidence")
 
     @property
     def all_critical_retention_rate(self) -> float:
@@ -509,6 +630,19 @@ class RecurringFeatureGateResult:
     retained: RecurringFeatureVariantEvidence
     no_retention: RecurringFeatureVariantEvidence
     scope: str = PAIRWISE_PROBE_SCOPE
+
+    def __post_init__(self) -> None:
+        """Reject leftover scope identities before they become a public result."""
+        if type(self.protocol) is not RecurringFeatureProtocol:
+            raise ValueError("protocol must be a RecurringFeatureProtocol")
+        if type(self.memory_budget) is not FeatureMemoryBudget:
+            raise ValueError("memory_budget must be a FeatureMemoryBudget")
+        if type(self.retained) is not RecurringFeatureVariantEvidence:
+            raise ValueError("retained must be RecurringFeatureVariantEvidence")
+        if type(self.no_retention) is not RecurringFeatureVariantEvidence:
+            raise ValueError("no_retention must be RecurringFeatureVariantEvidence")
+        if type(self.scope) is not str or not self.scope:
+            raise ValueError("scope must be a non-empty exact string")
 
     def decision(
         self,
