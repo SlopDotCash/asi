@@ -138,6 +138,12 @@ def _preflight_model_replay_state_resources(config: ModelReplayRehearsalConfig) 
     persistent_bytes = ensemble_bytes + replay_bytes + 7 * 4
     if persistent_bytes > _INT32_MAX:
         raise ValueError("model replay rehearsal state byte count must fit signed int32")
+    # Source ensemble, proposed real-update ensemble, and committed replay.
+    update_working_set_bytes = 2 * ensemble_bytes + replay_bytes
+    if update_working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "model replay rehearsal update working set byte count must fit signed int32"
+        )
 
 
 ReplayActionEncoding = Literal["scalar_index", "one_hot"]
