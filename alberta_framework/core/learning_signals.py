@@ -84,6 +84,46 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _learning_signal_observe_working_set_bytes(
+    ensemble_size: int,
+    target_dim: int,
+) -> int:
+    """Source persist, proposed persist, inputs, sanitized copies, and returned leaves.
+
+    ``observe`` keeps the source state, the valid-path proposal, and the
+    invalid-path proposal live together with the raw ensemble inputs, their
+    sanitized copies, member residual squares, per-dimension temps, and the
+    returned signal / availability leaves.
+    """
+
+    persist_scalars = 9
+    input_scalars = 2 * ensemble_size * target_dim + target_dim + 1
+    observe_scalars = (
+        3 * persist_scalars
+        + 2 * input_scalars
+        + ensemble_size * target_dim
+        + 5 * target_dim
+        + 16
+    )
+    return 4 * observe_scalars
+
+
+def _preflight_learning_signal_observe_working_set(
+    ensemble_size: int,
+    target_dim: int,
+) -> None:
+    """Reject an observe envelope the estimator cannot name."""
+
+    working_set_bytes = _learning_signal_observe_working_set_bytes(
+        ensemble_size,
+        target_dim,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "learning-signal observe working set byte count must fit signed int32"
+        )
+
+
 def _ratio_less(left: tuple[int, int], right: tuple[int, int]) -> bool:
     return left[0] * right[1] < right[0] * left[1]
 
@@ -164,6 +204,10 @@ class LearningSignalEstimatorConfig:
             raise ValueError(
                 "ensemble_size and target_dim input resource budget must fit signed int32"
             )
+        _preflight_learning_signal_observe_working_set(
+            self.ensemble_size,
+            self.target_dim,
+        )
         object.__setattr__(
             self,
             "progress_warmup_steps",
