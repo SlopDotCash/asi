@@ -85,6 +85,16 @@ local same-runner development ranking, not a paper-level SOTA claim.
   (2026)](https://arxiv.org/abs/2607.24996) reports utility-scaled partial
   resets on Continual MetaWorld, Continual MinAtar, and SlipperyAnt. Both are
   candidates for causal ablations, not IPMNIST results.
+- [Intentional Updates](https://arxiv.org/abs/2604.19033v1) reports strong
+  fully streaming reinforcement-learning results by solving for step sizes in
+  prediction or policy units. ASI pins paper v1 and official code commit
+  `e86e26fd8613ac212e9a52c3fed8a01d0a31f685`. The registered
+  `intentional_updates_*` IPMNIST arms are a supervised protocol extension of
+  Eq. 5, not a reproduction of the paper: they control current-example
+  correct-class log probability, omit RL eligibility traces, and include
+  diagonal-normalization, clipping, fixed-step, and head-only feature
+  controls. The implementation and its tests are development infrastructure;
+  no screening result exists until a matched campaign is run.
 - [Optimization Readiness](https://arxiv.org/abs/2605.09044v1) evaluates whether
   a checkpoint diagnostic prospectively ranks future relative loss reduction.
   Its empirical estimator uses a full-validation-set gradient for gradient
