@@ -687,6 +687,8 @@ def rng_contract_descriptor() -> dict[str, Any]:
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], path: str) -> None:
+    if type(value) is not dict:
+        raise ForagerRngParityError(f"{path} must be a JSON object")
     actual = set(value)
     missing = sorted(expected - actual)
     unknown = sorted(actual - expected)
@@ -697,8 +699,10 @@ def _require_exact_keys(value: Mapping[str, Any], expected: set[str], path: str)
 
 
 def _require_object(value: Any, path: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or any(type(key) is not str for key in value):
+    if type(value) is not dict:
         raise ForagerRngParityError(f"{path} must be a JSON object")
+    if any(type(key) is not str for key in value):
+        raise ForagerRngParityError(f"{path} keys must be strings")
     return cast(Mapping[str, Any], value)
 
 
