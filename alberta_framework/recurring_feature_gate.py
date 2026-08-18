@@ -30,7 +30,7 @@ import numpy as np
 import numpy.typing as npt
 from jax import Array
 
-from alberta_framework._seed_validation import require_unique_jax_seeds
+from alberta_framework._seed_validation import require_jax_seed, require_unique_jax_seeds
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.interaction_features import (
     FixedBudgetInteractionLearner,
@@ -87,6 +87,44 @@ def _require_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be boolean")
     return value
+
+
+def _require_task_name(name: str, value: object) -> TaskName:
+    if type(value) is not str or value not in TASK_NAMES:
+        raise ValueError(f"{name} must be an exact registered task name")
+    return value
+
+
+def _require_nmse(name: str, value: object) -> float:
+    """Accept nonnegative exact floats, retaining ``inf`` as unrecovered evidence."""
+    if type(value) is not float or math.isnan(value) or value < 0.0:
+        raise ValueError(f"{name} must be a nonnegative exact float or positive infinity")
+    return value
+
+
+def _require_recovery_steps(name: str, value: object) -> int | None:
+    if value is None:
+        return None
+    return _require_builtin_int(name, value, minimum=0, maximum=2**31 - 1)
+
+
+def _require_pairs(name: str, value: object) -> tuple[Pair, ...]:
+    if type(value) is not tuple or len(value) > 4096:
+        raise ValueError(f"{name} must be a bounded exact tuple of pairs")
+    pairs: list[Pair] = []
+    for index, raw_pair in enumerate(value):
+        if type(raw_pair) is not tuple or len(raw_pair) != 2:
+            raise ValueError(f"{name}[{index}] must be an exact pair")
+        left = _require_builtin_int(
+            f"{name}[{index}][0]", raw_pair[0], minimum=0, maximum=2**31 - 1
+        )
+        right = _require_builtin_int(
+            f"{name}[{index}][1]", raw_pair[1], minimum=0, maximum=2**31 - 1
+        )
+        if left >= right:
+            raise ValueError(f"{name}[{index}] must be in increasing index order")
+        pairs.append((left, right))
+    return tuple(pairs)
 
 
 def _preflight_seed_array_resources(
@@ -276,6 +314,14 @@ class PhaseEvidence:
     prequential_nmse: float
     recovery_steps: int | None
 
+    def __post_init__(self) -> None:
+        """Reject leftover scalar identities before phase records are traversed."""
+        _require_builtin_int("phase_index", self.phase_index, minimum=0, maximum=2**31 - 1)
+        _require_task_name("task", self.task)
+        _require_builtin_int("occurrence", self.occurrence, minimum=1, maximum=2**31 - 1)
+        _require_nmse("prequential_nmse", self.prequential_nmse)
+        _require_recovery_steps("recovery_steps", self.recovery_steps)
+
 
 @dataclass(frozen=True, slots=True)
 class TaskRecoveryEvidence:
@@ -284,6 +330,15 @@ class TaskRecoveryEvidence:
     task: TaskName
     acquisition_steps: int | None
     recurrence_steps: tuple[int | None, ...]
+
+    def __post_init__(self) -> None:
+        """Validate exact task and recovery identities at construction."""
+        _require_task_name("task", self.task)
+        _require_recovery_steps("acquisition_steps", self.acquisition_steps)
+        if type(self.recurrence_steps) is not tuple or len(self.recurrence_steps) > 4096:
+            raise ValueError("recurrence_steps must be a bounded exact tuple")
+        for index, value in enumerate(self.recurrence_steps):
+            _require_recovery_steps(f"recurrence_steps[{index}]", value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +352,29 @@ class RecurringFeatureSeedEvidence:
     phase_evidence: tuple[PhaseEvidence, ...]
     task_recovery: tuple[TaskRecoveryEvidence, ...]
     steps_seen: int
+
+    def __post_init__(self) -> None:
+        """Validate exact nested evidence before set/statistics consumers see it."""
+        require_jax_seed(self.seed)
+        if (
+            type(self.final_heldout_nmse) is not tuple
+            or not self.final_heldout_nmse
+            or len(self.final_heldout_nmse) > 4096
+        ):
+            raise ValueError("final_heldout_nmse must be a bounded non-empty exact tuple")
+        for index, value in enumerate(self.final_heldout_nmse):
+            _require_nmse(f"final_heldout_nmse[{index}]", value)
+        _require_pairs("active_pairs", self.active_pairs)
+        _require_pairs("candidate_pairs", self.candidate_pairs)
+        if type(self.phase_evidence) is not tuple or len(self.phase_evidence) > 4096:
+            raise ValueError("phase_evidence must be a bounded exact tuple")
+        if any(type(item) is not PhaseEvidence for item in self.phase_evidence):
+            raise ValueError("phase_evidence must contain exact PhaseEvidence records")
+        if type(self.task_recovery) is not tuple or len(self.task_recovery) > 4096:
+            raise ValueError("task_recovery must be a bounded exact tuple")
+        if any(type(item) is not TaskRecoveryEvidence for item in self.task_recovery):
+            raise ValueError("task_recovery must contain exact TaskRecoveryEvidence records")
+        _require_builtin_int("steps_seen", self.steps_seen, minimum=0, maximum=2**31 - 1)
 
     @property
     def critical_pairs_retained(self) -> tuple[bool, bool, bool]:
@@ -322,6 +400,19 @@ class RecurringFeatureVariantEvidence:
     name: VariantName
     utility_retention_decay: float | None
     seeds: tuple[RecurringFeatureSeedEvidence, ...]
+
+    def __post_init__(self) -> None:
+        """Validate exact variant metadata and bounded seed records."""
+        if type(self.name) is not str or self.name not in {"retained", "no_retention"}:
+            raise ValueError("name must be an exact registered variant name")
+        if self.utility_retention_decay is not None:
+            value = self.utility_retention_decay
+            if type(value) is not float or not math.isfinite(value) or not 0.0 <= value < 1.0:
+                raise ValueError("utility_retention_decay must be an exact float in [0,1)")
+        if type(self.seeds) is not tuple or len(self.seeds) > 4096:
+            raise ValueError("seeds must be a bounded exact tuple")
+        if any(type(item) is not RecurringFeatureSeedEvidence for item in self.seeds):
+            raise ValueError("seeds must contain exact RecurringFeatureSeedEvidence records")
 
     @property
     def all_critical_retention_rate(self) -> float:
@@ -509,6 +600,21 @@ class RecurringFeatureGateResult:
     retained: RecurringFeatureVariantEvidence
     no_retention: RecurringFeatureVariantEvidence
     scope: str = PAIRWISE_PROBE_SCOPE
+
+    def __post_init__(self) -> None:
+        """Reject leftover container/string identities at the public result boundary."""
+        if type(self.protocol) is not RecurringFeatureProtocol:
+            raise ValueError("protocol must be an exact RecurringFeatureProtocol")
+        if type(self.memory_budget) is not FeatureMemoryBudget:
+            raise ValueError("memory_budget must be an exact FeatureMemoryBudget")
+        if type(self.retained) is not RecurringFeatureVariantEvidence:
+            raise ValueError("retained must be an exact RecurringFeatureVariantEvidence")
+        if type(self.no_retention) is not RecurringFeatureVariantEvidence:
+            raise ValueError("no_retention must be an exact RecurringFeatureVariantEvidence")
+        if self.retained.name != "retained" or self.no_retention.name != "no_retention":
+            raise ValueError("variant records must occupy their declared result roles")
+        if type(self.scope) is not str or self.scope != PAIRWISE_PROBE_SCOPE:
+            raise ValueError("scope must be the exact pairwise probe scope")
 
     def decision(
         self,
