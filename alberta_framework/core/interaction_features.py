@@ -1207,7 +1207,7 @@ class FixedBudgetInteractionLearner:
         to ``conditional_v1`` because the dormant fixed-shape probe has no
         behavioral effect.
         """
-        if not isinstance(config, Mapping):
+        if type(config) is not dict:
             raise ValueError("interaction-feature config must be a mapping")
         try:
             payload = dict(config)
