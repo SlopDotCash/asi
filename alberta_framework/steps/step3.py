@@ -47,6 +47,7 @@ from alberta_framework.steps._float32_validation import (
     canonical_float32_storage,
     finite_real_and_float32,
 )
+from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 Step3NormalizerName = Literal["none", "ema"]
 Step3TraceModeName = Literal["accumulating", "replacing"]
@@ -330,6 +331,32 @@ class Step3SmokeResult:
     finite: bool
     handoff: Step3HandoffArrays
     horde_config: dict[str, Any]
+
+    def __post_init__(self) -> None:
+        if type(self.config) is not Step3HordeConfig:
+            raise TypeError("config must be an exact Step3HordeConfig")
+        object.__setattr__(
+            self, "steps", _require_int("steps", self.steps, minimum=1, maximum=_INT32_MAX)
+        )
+        object.__setattr__(self, "seed", require_jax_seed(self.seed, name="seed"))
+        object.__setattr__(
+            self,
+            "final_window_mse",
+            _require_nonnegative_real("final_window_mse", self.final_window_mse),
+        )
+        for name in ("per_demon_metrics_shape", "td_errors_shape"):
+            object.__setattr__(
+                self,
+                name,
+                require_step_shape(name, getattr(self, name), steps=self.steps),
+            )
+        object.__setattr__(self, "finite", _require_bool("finite", self.finite))
+        if type(self.handoff) is not Step3HandoffArrays:
+            raise TypeError("handoff must be an exact Step3HandoffArrays")
+        if type(self.horde_config) is not dict or any(
+            type(key) is not str for key in self.horde_config
+        ):
+            raise ValueError("horde_config must be an exact dict with exact string keys")
 
     def to_dict(self) -> dict[str, object]:
         """Return a JSON-serializable representation."""
