@@ -537,6 +537,63 @@ def _allocation_sizes(config: DualReplayConfig) -> tuple[int, int]:
     return slot_bytes, persistent_bytes
 
 
+def _dual_replay_record_extras_bytes(observation_dim: int, action_dim: int) -> int:
+    """Prediction, outcome, and ``ReplayWriteResult`` extras excluding persist."""
+    prediction_bytes = 4 * observation_dim + 4 * action_dim + 38
+    outcome_bytes = 4 * observation_dim + 21
+    write_result_extras = 55
+    return prediction_bytes + outcome_bytes + write_result_extras
+
+
+def _dual_replay_sample_extras_bytes(batch_size: int, slot_bytes: int) -> int:
+    """Returned ``ReplaySampleResult`` extras excluding persist."""
+    return batch_size * (slot_bytes + 13) + 28
+
+
+def _dual_replay_update_working_set_bytes(
+    *,
+    total_capacity: int,
+    observation_dim: int,
+    action_dim: int,
+    batch_size: int,
+) -> int:
+    """Source persist, proposed persist, committed persist, and returned extras.
+
+    ``record`` keeps the source state, the candidate persist, and the
+    transaction-selected result live together with the prediction, outcome, and
+    write-result extras.  ``sample`` keeps the same three persist copies live
+    with the returned batch and sample diagnostics.  The host names the larger
+    envelope.
+    """
+    slot_bytes = 4 * (2 * observation_dim + action_dim + 14) + 11
+    persist_bytes = total_capacity * slot_bytes + 60
+    extras = max(
+        _dual_replay_record_extras_bytes(observation_dim, action_dim),
+        _dual_replay_sample_extras_bytes(batch_size, slot_bytes),
+    )
+    return 3 * persist_bytes + extras
+
+
+def _preflight_dual_replay_update_working_set(
+    *,
+    total_capacity: int,
+    observation_dim: int,
+    action_dim: int,
+    batch_size: int,
+) -> None:
+    """Reject a record/sample envelope the host cannot name in signed int32."""
+    working_set_bytes = _dual_replay_update_working_set_bytes(
+        total_capacity=total_capacity,
+        observation_dim=observation_dim,
+        action_dim=action_dim,
+        batch_size=batch_size,
+    )
+    if working_set_bytes > _INT32_MAX:
+        raise ValueError(
+            "dual replay update working set byte count must fit signed int32"
+        )
+
+
 def _validate_config(config: DualReplayConfig) -> None:
     for name in (
         "total_capacity",
@@ -594,6 +651,12 @@ def _validate_config(config: DualReplayConfig) -> None:
             ),
         )
     _allocation_sizes(config)
+    _preflight_dual_replay_update_working_set(
+        total_capacity=config.total_capacity,
+        observation_dim=config.observation_dim,
+        action_dim=config.action_dim,
+        batch_size=config.batch_size,
+    )
 
 
 def _require_array(
