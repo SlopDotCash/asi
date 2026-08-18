@@ -5421,6 +5421,12 @@
    }
   ]
  },
+ "deviations": [
+  "controls were computed after the first online cell in the shipped execution rather than before all online rows",
+  "the control implementation was changed from online-checkpoint to exact full-dataset statistics after the first runner draft",
+  "F3 reference correlation descriptors use batch statistics over the 5000 pre-shift examples; the inherited EMA statistics supply the relevance mask, not the correlation descriptor",
+  "F4b uses batch gradient-activation correlation rather than the preregistered EMA and is void because its oracle gate failed"
+ ],
  "evidence_policy": "development_screening_diagnostic; permanently nonpromoting. No frozen protocol, no held-out seed, no registered source edited.",
  "promotion": {
   "best_configuration": {
@@ -5460,7 +5466,8 @@
   ],
   "permutations": "build_schedule per-seed protocol permutations",
   "post_shift": "fresh statistics from stream start",
-  "reference": "annealed fast-EMA (decay 0.99) over 5000 samples",
+  "fingerprint_reference_statistics": "batch descriptors over the 5000 pre-shift examples",
+  "reference_relevance_statistics": "annealed fast-EMA mean/variance (decay 0.99) over 5000 samples",
   "reference_arm": "sigma0_ndecay099",
   "relevance_thresholds_on_reference_var": [
    0.001,
