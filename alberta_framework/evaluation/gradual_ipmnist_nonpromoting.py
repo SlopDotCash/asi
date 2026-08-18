@@ -14,6 +14,7 @@ from pathlib import Path, PosixPath
 from typing import cast
 
 import jax
+import jax.random as jr
 import numpy as np
 
 from alberta_framework._seed_validation import require_jax_seed
@@ -22,7 +23,11 @@ from alberta_framework.benchmarks.ipmnist_gradual import (
     GradualInputPairResult,
     run_gradual_input_pair,
 )
-from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig, validated_ipmnist_data
+from alberta_framework.benchmarks.upgd_ipmnist import (
+    IPMNISTConfig,
+    build_schedule,
+    validated_ipmnist_data,
+)
 
 RESULT_SCHEMA = "asi.ipmnist.gradual-input.development-result.v1"
 _MAX_RESULT_BYTES = 4 * 1024 * 1024
@@ -237,6 +242,7 @@ def _plan_payload(plan: GradualInputDevelopmentPlan) -> dict[str, object]:
         "expected_model_queries": 2 * horizon,
         "learner_observes_transition_alpha": False,
         "learner_observes_task_boundary": False,
+        "outcome_rule": "descriptive_sign_of_paired_mean_no_claim_threshold",
     }
 
 
@@ -361,6 +367,25 @@ def _outcome(delta: float) -> str:
     return "improved" if delta > 0.0 else "worse" if delta < 0.0 else "tied"
 
 
+def _schedule_identities(seed: int, config: IPMNISTConfig, n_train: int) -> tuple[str, str]:
+    _, key_schedule, _ = jr.split(jr.key(np.uint32(seed)), 3)
+    schedule = build_schedule(key_schedule, config, n_train)
+
+    def digest(domain: bytes, value: jax.Array) -> str:
+        raw = np.asarray(jax.device_get(value))
+        value_digest = hashlib.sha256()
+        value_digest.update(domain)
+        value_digest.update(raw.dtype.str.encode("ascii"))
+        value_digest.update(str(raw.shape).encode("ascii"))
+        value_digest.update(raw.tobytes(order="C"))
+        return f"sha256:{value_digest.hexdigest()}"
+
+    return (
+        digest(b"asi.ipmnist.gradual.permutations.v1\0", schedule.permutations),
+        digest(b"asi.ipmnist.gradual.example-order.v1\0", schedule.example_indices),
+    )
+
+
 def build_gradual_input_development_report(
     plan: GradualInputDevelopmentPlan,
     runs: tuple[GradualInputPairResult, ...],
@@ -380,6 +405,9 @@ def build_gradual_input_development_report(
         raise ValueError("runs must contain one exact receipt per planned seed")
     records = []
     deltas = []
+    arm_accuracies: list[list[float]] = [[], []]
+    arm_persistent_bytes: list[list[int]] = [[], []]
+    arm_timing_ns: list[list[int]] = [[], []]
     horizon = checked_plan.config.n_steps
     for seed, raw_run in zip(checked_plan.seeds, runs, strict=True):
         run = _validated_run(raw_run, checked_plan, seed)
@@ -390,6 +418,9 @@ def build_gradual_input_development_report(
             loss_sum = float(run.loss_sums[index].sum())
             accuracy = correct / horizon
             accuracies.append(accuracy)
+            arm_accuracies[index].append(accuracy)
+            arm_persistent_bytes[index].append(int(run.persistent_numeric_bytes[index]))
+            arm_timing_ns[index].append(int(run.timing_ns[index]))
             arms.append(
                 {
                     "arm": arm,
@@ -429,6 +460,28 @@ def build_gradual_input_development_report(
         )
     mean_delta = float(np.mean(np.asarray(deltas, dtype=np.float64)))
     stderr = 0.0 if len(deltas) == 1 else float(np.std(deltas, ddof=1) / math.sqrt(len(deltas)))
+    arm_summaries = []
+    for index, arm in enumerate(_ARMS):
+        values = np.asarray(arm_accuracies[index], dtype=np.float64)
+        arm_summaries.append(
+            {
+                "arm": arm,
+                "online_accuracy_mean": float(np.mean(values)),
+                "online_accuracy_stderr": (
+                    0.0
+                    if len(values) == 1
+                    else float(np.std(values, ddof=1) / math.sqrt(len(values)))
+                ),
+                "total_observations": horizon * len(values),
+                "total_updates": horizon * len(values),
+                "total_data_steps": horizon * len(values),
+                "total_environment_steps": 0,
+                "total_model_queries": 2 * horizon * len(values),
+                "persistent_numeric_bytes_max": max(arm_persistent_bytes[index]),
+                "timing_ns_total_telemetry": sum(arm_timing_ns[index]),
+                "timing_qualified": False,
+            }
+        )
     sources = _source_identity()
     runtime = _runtime_identity()
     plan_payload = _plan_payload(checked_plan)
@@ -456,6 +509,7 @@ def build_gradual_input_development_report(
             "paired_accuracy_delta_stderr": stderr,
             "n": len(deltas),
             "outcome": _outcome(mean_delta),
+            "arms": arm_summaries,
         },
         "policy": {
             "status": "development-only-nonpromoting",
@@ -526,6 +580,7 @@ def validate_gradual_input_development_report(
             "expected_model_queries",
             "learner_observes_transition_alpha",
             "learner_observes_task_boundary",
+            "outcome_rule",
         ),
         name="plan",
     )
@@ -576,12 +631,16 @@ def validate_gradual_input_development_report(
         },
     ):
         raise ValueError("identity does not match current source/runtime/plan")
-    if not _same(root["dataset"], _dataset_identity(data_x, data_y, plan.config)):
+    expected_dataset = _dataset_identity(data_x, data_y, plan.config)
+    if not _same(root["dataset"], expected_dataset):
         raise ValueError("dataset identity does not match supplied materialization")
     records = root["records"]
     if type(records) is not list or len(records) != len(plan.seeds):
         raise ValueError("records must contain one canonical seed record")
     deltas = []
+    aggregate_accuracies: list[list[float]] = [[], []]
+    aggregate_persistent_bytes: list[list[int]] = [[], []]
+    aggregate_timing_ns: list[list[int]] = [[], []]
     for index, (record_raw, seed) in enumerate(zip(records, plan.seeds, strict=True)):
         record = _fields(
             record_raw,
@@ -590,6 +649,9 @@ def validate_gradual_input_development_report(
         )
         if record["seed"] != seed:
             raise ValueError("record ordering does not match the plan")
+        expected_schedule = _schedule_identities(
+            seed, plan.config, cast(int, expected_dataset["rows"])
+        )
         for identity_name in ("schedule_sha256", "example_order_sha256"):
             schedule_identity = record[identity_name]
             if (
@@ -599,10 +661,16 @@ def validate_gradual_input_development_report(
                 or any(character not in "0123456789abcdef" for character in schedule_identity[7:])
             ):
                 raise ValueError("record schedule identity is invalid")
+        if (
+            record["schedule_sha256"],
+            record["example_order_sha256"],
+        ) != expected_schedule:
+            raise ValueError("record schedule identity does not derive from seed and dataset")
         arms = record["arms"]
         if type(arms) is not list or len(arms) != 2:
             raise ValueError("record arms are invalid")
         accuracies = []
+        arm_resources: list[dict[str, object]] = []
         for arm_index, (arm_raw, arm_name) in enumerate(zip(arms, _ARMS, strict=True)):
             arm = _fields(arm_raw, ("arm", "metrics", "resources"), name="arm")
             if arm["arm"] != arm_name:
@@ -630,6 +698,7 @@ def validate_gradual_input_development_report(
             ):
                 raise ValueError("metrics are not derived from exact numerators")
             accuracies.append(expected_accuracy)
+            aggregate_accuracies[arm_index].append(expected_accuracy)
             resources = _fields(
                 arm["resources"],
                 (
@@ -671,6 +740,21 @@ def validate_gradual_input_development_report(
                 or resources["timing_qualified"] is not False
             ):
                 raise ValueError("resource receipt is invalid")
+            arm_resources.append(resources)
+            aggregate_persistent_bytes[arm_index].append(
+                resources["persistent_numeric_bytes"]
+            )
+            aggregate_timing_ns[arm_index].append(resources["timing_ns"])
+        for resource_name in (
+            "observations",
+            "updates",
+            "data_steps",
+            "environment_steps",
+            "model_queries",
+            "persistent_numeric_bytes",
+        ):
+            if arm_resources[0][resource_name] != arm_resources[1][resource_name]:
+                raise ValueError("matched arm resource receipts are not paired")
         delta = accuracies[1] - accuracies[0]
         deltas.append(delta)
         expected_comparison = {
@@ -683,11 +767,34 @@ def validate_gradual_input_development_report(
             raise ValueError("comparison is not derived from arm metrics")
     mean_delta = float(np.mean(np.asarray(deltas, dtype=np.float64)))
     stderr = 0.0 if len(deltas) == 1 else float(np.std(deltas, ddof=1) / math.sqrt(len(deltas)))
+    expected_arm_summaries = []
+    for arm_index, arm_name in enumerate(_ARMS):
+        values = np.asarray(aggregate_accuracies[arm_index], dtype=np.float64)
+        expected_arm_summaries.append(
+            {
+                "arm": arm_name,
+                "online_accuracy_mean": float(np.mean(values)),
+                "online_accuracy_stderr": (
+                    0.0
+                    if len(values) == 1
+                    else float(np.std(values, ddof=1) / math.sqrt(len(values)))
+                ),
+                "total_observations": plan.config.n_steps * len(values),
+                "total_updates": plan.config.n_steps * len(values),
+                "total_data_steps": plan.config.n_steps * len(values),
+                "total_environment_steps": 0,
+                "total_model_queries": 2 * plan.config.n_steps * len(values),
+                "persistent_numeric_bytes_max": max(aggregate_persistent_bytes[arm_index]),
+                "timing_ns_total_telemetry": sum(aggregate_timing_ns[arm_index]),
+                "timing_qualified": False,
+            }
+        )
     expected_aggregate = {
         "paired_accuracy_delta_mean": mean_delta,
         "paired_accuracy_delta_stderr": stderr,
         "n": len(deltas),
         "outcome": _outcome(mean_delta),
+        "arms": expected_arm_summaries,
     }
     if not _same(root["aggregate"], expected_aggregate):
         raise ValueError("aggregate is not derived from paired records")
