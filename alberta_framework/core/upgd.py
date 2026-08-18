@@ -53,6 +53,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar_with_ratio,
 )
 from alberta_framework.core.initializers import sparse_init
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
 from alberta_framework.core.update_safety import zero_if_collapsed_infinity
@@ -3327,7 +3328,7 @@ class UPGDLearner:
             previous_head_weight_grads=next_previous_head_weight_grads,
             previous_head_bias_grads=next_previous_head_bias_grads,
             key=new_key,
-            step_count=state.step_count + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
