@@ -128,7 +128,7 @@ class _ParameterResources:
 
 def _copy_config_mapping(name: str, config: object) -> dict[str, Any]:
     """Copy a legacy-compatible mapping while normalizing hostile hooks."""
-    if not isinstance(config, Mapping):
+    if type(config) is not dict:
         raise ValueError(f"{name} must be a mapping")
     try:
         payload = dict(config)
