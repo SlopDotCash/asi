@@ -217,14 +217,14 @@ def _validate_json_complexity(value: Any) -> None:
 
 def decode_strict_json(raw: bytes | str) -> Any:
     """Decode bounded duplicate-free JSON with finite numeric values."""
-    if isinstance(raw, bytes):
+    if type(raw) is bytes:
         if len(raw) > _MAX_JSON_BYTES:
             raise ForagerMatchedEvidenceError("score evidence exceeds the byte bound")
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ForagerMatchedEvidenceError("score evidence is not UTF-8") from exc
-    elif isinstance(raw, str):
+    elif type(raw) is str:
         try:
             encoded = raw.encode("utf-8")
         except UnicodeEncodeError as exc:
@@ -842,9 +842,9 @@ def _parse_matched_selection_report_structure(
         )
     except ForagerMatchedProtocolError as exc:
         raise ForagerMatchedEvidenceError(f"selection result is invalid: {exc}") from exc
-    if isinstance(value, (bytes, str)):
+    if type(value) in (bytes, str):
         decoded = decode_strict_json(value)
-        if isinstance(value, bytes):
+        if type(value) is bytes:
             input_bytes = value
         else:
             try:
@@ -1177,10 +1177,10 @@ def parse_matched_score_evidence(
     expected_payload_sha256: str | None = None,
 ) -> MatchedScoreEvidence:
     """Parse and self-verify one canonical score-evidence bundle."""
-    if isinstance(value, (bytes, str)):
+    if type(value) in (bytes, str):
         raw = value
         decoded = decode_strict_json(raw)
-        input_bytes = raw if isinstance(raw, bytes) else raw.encode("utf-8")
+        input_bytes = raw if type(raw) is bytes else raw.encode("utf-8")
         canonical_input = True
     elif isinstance(value, Mapping):
         decoded = decode_strict_json(_canonical_json_bytes(dict(value)))
