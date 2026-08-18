@@ -429,7 +429,7 @@ def _freeze_json(value: Any) -> Any:
 
 
 def _thaw_json(value: Any) -> Any:
-    if isinstance(value, Mapping):
+    if type(value) is dict:
         result: dict[str, Any] = {}
         for key, item in value.items():
             if type(key) is not str:
@@ -854,7 +854,7 @@ def _parse_matched_selection_report_structure(
                     "selection report contains invalid Unicode"
                 ) from exc
         canonical_input = True
-    elif isinstance(value, Mapping):
+    elif type(value) is dict:
         try:
             thawed = cast(dict[str, Any], _thaw_json(value))
         except ForagerMatchedEvidenceError:
@@ -1182,7 +1182,7 @@ def parse_matched_score_evidence(
         decoded = decode_strict_json(cast(bytes | str, raw))
         input_bytes = raw if type(raw) is bytes else cast(str, raw).encode("utf-8")
         canonical_input = True
-    elif isinstance(value, Mapping):
+    elif type(value) is dict:
         decoded = decode_strict_json(_canonical_json_bytes(dict(value)))
         canonical_input = False
         input_bytes = b""
