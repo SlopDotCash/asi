@@ -72,7 +72,6 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from functools import lru_cache
-from numbers import Real
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, SupportsIndex, cast
@@ -167,7 +166,7 @@ def _require_finite_real(value: object, name: str) -> float:
     while ``BaseException`` (e.g. ``KeyboardInterrupt``) still propagates.
     """
     message = f"{name} must be a finite real number"
-    if type(value) is bool or not _is_registered_subclass(type(value), Real):
+    if type(value) is bool or (type(value) is not int and type(value) is not float):
         raise ValueError(message)
     try:
         number = float(cast(Any, value))
