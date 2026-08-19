@@ -44,6 +44,13 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+# Matches the documented learning-loop step ceiling established for
+# scan-driven array loops elsewhere in the codebase (see
+# ``horde._HORDE_SEQUENCE_MAX_STEPS``, ``learners._LEARNING_LOOP_MAX_STEPS``,
+# and ``sarsa._SARSA_SEQUENCE_MAX_STEPS``).  ``run_off_policy_horde_learning_loop``
+# hands its caller-supplied step arrays straight to ``jax.lax.scan`` with no
+# other cap on the scanned sequence length.
+_OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -156,6 +163,33 @@ def _require_typed_threefry_key(name: str, value: object) -> Array:
     if implementation != "threefry2x32" or tuple(words.shape) != (2,):
         raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
     return value
+
+
+def _require_off_policy_horde_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    ``run_off_policy_horde_learning_loop`` hands its step arrays straight to
+    ``jax.lax.scan`` with no bound on the leading (step) dimension. A hostile
+    or mistaken caller supplying a huge array can force JAX to trace/compile a
+    scan of that length, hanging the process well before any step executes.
+    """
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(value.shape[0])
+    if length < 1 or length > _OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
+
+
+def _require_off_policy_horde_matching_length(name: str, value: object, *, expected: int) -> None:
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1 or int(value.shape[0]) != expected:
+        raise ValueError(f"{name} must share the same leading length as observations")
 
 
 def _stable_l2_norm(*values: Array) -> Array:
@@ -1505,9 +1539,24 @@ def run_off_policy_horde_learning_loop(
     rhos: Array,
     discounts: Array | None = None,
 ) -> OffPolicyHordeLearningResult:
-    """Run an off-policy Horde scan over transition arrays."""
+    """Run an off-policy Horde scan over transition arrays.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS``), or
+            the other step arrays do not share its leading length.
+    """
+    num_steps = _require_off_policy_horde_sequence_length("observations", observations)
+    _require_off_policy_horde_matching_length("cumulants", cumulants, expected=num_steps)
+    _require_off_policy_horde_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
+    _require_off_policy_horde_matching_length("rhos", rhos, expected=num_steps)
     if discounts is None:
         discounts = jnp.broadcast_to(learner.horde_spec.gammas, cumulants.shape)
+    else:
+        _require_off_policy_horde_matching_length("discounts", discounts, expected=num_steps)
 
     def step_fn(
         carry: MultiHeadMLPState,
