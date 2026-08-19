@@ -255,6 +255,89 @@ def test_collect_preflights_output_resource_total() -> None:
         collect_feature_discovery_stream(stream, _INT32_MAX, jr.key(0))
 
 
+# =============================================================================
+# collect_feature_discovery_stream scan-length ceiling (hang guard)
+# =============================================================================
+#
+# ``collect_feature_discovery_stream`` hands ``num_steps`` straight to
+# ``jnp.arange``/``jax.lax.scan`` bounded only by ``_INT32_MAX``. A caller
+# supplying a long-but-narrow stream (small row width) can pass the int32
+# overflow preflight above while still forcing JAX to trace/compile a scan of
+# hundreds of millions of steps, hanging the process well before any step
+# executes -- the same hang class fixed this session for other scan-driven
+# array/loop runners in ``steps/step9.py``, ``streams/gauntlet.py``,
+# ``core/sarsa.py``, ``core/average_reward.py``, and
+# ``core/horde_actor_critic.py``.
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        seen.append(int(xs.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={xs.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.streams.feature_discovery.jax.lax.scan", spy)
+    return seen
+
+
+def test_feature_discovery_loop_ceiling_is_documented() -> None:
+    from alberta_framework.streams.feature_discovery import (
+        _FEATURE_DISCOVERY_LOOP_MAX_STEPS,
+    )
+
+    assert _FEATURE_DISCOVERY_LOOP_MAX_STEPS == 10_000
+
+
+def test_collect_rejects_narrow_overflow_length_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long-but-narrow request that would clear the int32 resource
+    preflight is still rejected before ``jax.lax.scan`` ever runs."""
+    from alberta_framework.streams.feature_discovery import (
+        _FEATURE_DISCOVERY_LOOP_MAX_STEPS,
+        collect_feature_discovery_stream,
+    )
+
+    seen = _spy_scan(monkeypatch)
+    stream = NonlinearFeatureDiscoveryStream(feature_dim=1, n_tasks=1, n_latents=1)
+    with pytest.raises(
+        ValueError, match=rf"num_steps must be <= {_FEATURE_DISCOVERY_LOOP_MAX_STEPS}"
+    ):
+        collect_feature_discovery_stream(
+            stream, _FEATURE_DISCOVERY_LOOP_MAX_STEPS + 1, jr.key(0)
+        )
+    assert seen == []
+
+
+def test_collect_rejects_origin_hang_class_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A far larger narrow request -- the actual hang class, still well
+    under the int32 resource preflight -- is also rejected before scan."""
+    from alberta_framework.streams.feature_discovery import collect_feature_discovery_stream
+
+    seen = _spy_scan(monkeypatch)
+    stream = NonlinearFeatureDiscoveryStream(feature_dim=1, n_tasks=1, n_latents=1)
+    with pytest.raises(ValueError, match="num_steps must be <="):
+        collect_feature_discovery_stream(stream, 50_000_000, jr.key(0))
+    assert seen == []
+
+
+def test_collect_ceiling_length_still_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    from alberta_framework.streams.feature_discovery import (
+        _FEATURE_DISCOVERY_LOOP_MAX_STEPS,
+        collect_feature_discovery_stream,
+    )
+
+    stream = NonlinearFeatureDiscoveryStream(feature_dim=2, n_tasks=1, n_latents=1)
+    observations, targets = collect_feature_discovery_stream(
+        stream, _FEATURE_DISCOVERY_LOOP_MAX_STEPS, jr.key(0)
+    )
+    assert observations.shape[0] == _FEATURE_DISCOVERY_LOOP_MAX_STEPS
+    assert targets.shape[0] == _FEATURE_DISCOVERY_LOOP_MAX_STEPS
+
+
 @pytest.mark.parametrize(
     "factory", [NonlinearFeatureDiscoveryStream, InteractionFeatureDiscoveryStream]
 )

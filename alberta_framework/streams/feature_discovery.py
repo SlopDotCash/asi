@@ -34,6 +34,17 @@ from alberta_framework.core.normalizers import _saturating_int32_counter_increme
 from alberta_framework.core.types import TimeStep
 
 _INT32_MAX = 2**31 - 1
+# ``collect_feature_discovery_stream`` hands ``num_steps`` straight to
+# ``jnp.arange``/``jax.lax.scan`` with no bound tighter than ``_INT32_MAX``.
+# Bounding only by ``_INT32_MAX`` still lets a caller force JAX to
+# trace/compile a scan of up to ~2 billion steps (or, for narrow streams,
+# hundreds of millions -- the int32-overflow resource preflight below only
+# catches wide rows, not long-but-narrow ones), hanging the process well
+# before any step executes. Matches the ceiling convention adopted this
+# session for sibling scan-driven array loops (``steps.step9``,
+# ``streams.gauntlet``, ``core.sarsa``, ``core.average_reward``,
+# ``core.horde_actor_critic``).
+_FEATURE_DISCOVERY_LOOP_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -471,6 +482,12 @@ def collect_feature_discovery_stream(
     This helper is for controlled experiments where multiple learners should
     see the exact same stream.  It still uses the one-step stream interface and
     ``jax.lax.scan``; it does not imply experience replay inside a learner.
+
+    Raises:
+        ValueError: If ``num_steps`` is out of range, the output resource
+            total would overflow signed int32, or ``num_steps`` exceeds the
+            documented scan-length ceiling
+            (``_FEATURE_DISCOVERY_LOOP_MAX_STEPS``).
     """
     num_steps = _require_int("num_steps", num_steps, minimum=1, maximum=_INT32_MAX)
     if type(stream) not in (NonlinearFeatureDiscoveryStream, InteractionFeatureDiscoveryStream):
@@ -484,6 +501,10 @@ def collect_feature_discovery_stream(
         _checked_sum("collected row width", stream.feature_dim, stream.target_dim),
     )
     _checked_product("collected feature-discovery output bytes", 4, output_cells)
+    if num_steps > _FEATURE_DISCOVERY_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"num_steps must be <= {_FEATURE_DISCOVERY_LOOP_MAX_STEPS}"
+        )
 
     state = stream.init(key)
 
