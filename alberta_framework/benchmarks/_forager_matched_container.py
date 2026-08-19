@@ -709,7 +709,8 @@ def _run(args: argparse.Namespace) -> None:
 
 def _safe_extract(raw_archive: Path, expected_sha256: str) -> None:
     if (
-        len(expected_sha256) != 64
+        type(expected_sha256) is not str
+        or len(expected_sha256) != 64
         or any(character not in "0123456789abcdef" for character in expected_sha256)
     ):
         raise ContainerError("expected raw archive SHA-256 is invalid")
