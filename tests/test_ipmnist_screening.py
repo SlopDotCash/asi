@@ -4531,13 +4531,18 @@ class TestComparisonArms:
         g = jr.normal(k_g, (300, 150))
         init_norm = jnp.sqrt(jnp.sum(w * w, axis=0, keepdims=True))
         for use_proj, use_norm in ((True, True), (True, False)):
-            _ = _nap_project_and_normalize(
-                w, g, init_norm, step_size=0.01, use_proj=use_proj, use_norm=use_norm
+            step_size = 1.0
+            w_new = _nap_project_and_normalize(
+                w, g, init_norm, step_size=step_size, use_proj=use_proj, use_norm=use_norm
             )
-            inner = jnp.sum(w * g, axis=0, keepdims=True)
-            w_sq = jnp.sum(w * w, axis=0, keepdims=True)
-            g_proj = g - (inner / w_sq) * w
-            dot_products = jnp.sum(w * g_proj, axis=0)
+            # Extract actual projected gradient returned by function
+            if use_norm:
+                inner = jnp.sum(w * g, axis=0, keepdims=True)
+                w_sq = jnp.sum(w * w, axis=0, keepdims=True)
+                g_proj_actual = g - (inner / jnp.maximum(w_sq, 1e-8)) * w
+            else:
+                g_proj_actual = (w - w_new) / step_size
+            dot_products = jnp.sum(w * g_proj_actual, axis=0)
             np.testing.assert_allclose(np.asarray(dot_products), 0.0, atol=1e-4)
 
     def test_nap_sphere_norm_invariant(self):

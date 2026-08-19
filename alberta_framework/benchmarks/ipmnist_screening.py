@@ -5091,9 +5091,9 @@ def _nap_project_and_normalize(
     For a 2D weight matrix of shape (fan_in, fan_out), each column corresponds
     to the incoming weights of one neuron.
     - Tangent Projection: projects the gradient orthogonally to the current
-      weight vector: g_proj = g - (<w, g> / (||w||^2 + eps)) * w.
+      weight vector: g_proj = g - (<w, g> / max(||w||^2, eps)) * w.
     - Radial Normalization: scales the post-update weight vector back to its
-      target sphere radius: w_new = gamma * (w' / (||w'|| + eps)).
+      target sphere radius: w_new = gamma * (w' / max(||w'||, eps)).
     For 1D biases, standard gradient descent is applied.
     """
     if param.ndim != 2:
