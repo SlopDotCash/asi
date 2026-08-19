@@ -389,8 +389,7 @@ def run_step8_smoke(
     seed: int = 0,
 ) -> Step8SmokeResult:
     """Run a tiny deterministic Step 8 environment-prediction probe."""
-    if steps < 1:
-        raise ValueError("steps must be positive")
+    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
 
     cfg = config or Step8WorldModelConfig()
     if cfg.n_actions is None:
