@@ -1,3 +1,4 @@
+# mypy: disable-error-code="call-arg,misc,no-untyped-def,unused-ignore"
 """Tests for GVF types: DemonType, GVFSpec, HordeSpec, create_horde_spec."""
 
 from fractions import Fraction
@@ -515,3 +516,119 @@ class TestGVFSpecRemainingFields:
     def test_from_config_rejects_empty_horde(self):
         with pytest.raises(ValueError, match="nonempty"):
             HordeSpec.from_config({"demons": []})
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            "not a dict",
+            123,
+            [
+                ("name", "d0"),
+                ("demon_type", "prediction"),
+                ("gamma", 0.0),
+                ("lamda", 0.0),
+                ("cumulant_index", 0),
+                ("terminal_reward", 0.0),
+            ],
+            (1, 2, 3),
+        ],
+    )
+    def test_gvf_spec_from_config_rejects_non_dict(self, payload):
+        with pytest.raises(ValueError, match="GVFSpec config must be an exact dict"):
+            GVFSpec.from_config(payload)
+
+    def test_gvf_spec_from_config_rejects_non_string_keys(self):
+        payload = {
+            1: "d0",
+            "demon_type": "prediction",
+            "gamma": 0.0,
+            "lamda": 0.0,
+            "cumulant_index": 0,
+            "terminal_reward": 0.0,
+        }
+        with pytest.raises(ValueError, match="keys must be exact strings"):
+            GVFSpec.from_config(payload)
+
+    @pytest.mark.parametrize(
+        "missing_key",
+        ["name", "demon_type", "gamma", "lamda", "cumulant_index", "terminal_reward"],
+    )
+    def test_gvf_spec_from_config_rejects_missing_fields(self, missing_key):
+        payload = {
+            "name": "d0",
+            "demon_type": "prediction",
+            "gamma": 0.0,
+            "lamda": 0.0,
+            "cumulant_index": 0,
+            "terminal_reward": 0.0,
+        }
+        del payload[missing_key]
+        with pytest.raises(ValueError, match="fields do not match the serialized schema"):
+            GVFSpec.from_config(payload)
+
+    def test_gvf_spec_from_config_rejects_extra_fields(self):
+        payload = {
+            "name": "d0",
+            "demon_type": "prediction",
+            "gamma": 0.0,
+            "lamda": 0.0,
+            "cumulant_index": 0,
+            "terminal_reward": 0.0,
+            "extra_field": 42,
+        }
+        with pytest.raises(ValueError, match="fields do not match the serialized schema"):
+            GVFSpec.from_config(payload)
+
+    @pytest.mark.parametrize(
+        "invalid_demon_type", [123, True, None, "unsupported_type", []]
+    )
+    def test_gvf_spec_from_config_rejects_invalid_demon_type(
+        self, invalid_demon_type
+    ):
+        payload = {
+            "name": "d0",
+            "demon_type": invalid_demon_type,
+            "gamma": 0.0,
+            "lamda": 0.0,
+            "cumulant_index": 0,
+            "terminal_reward": 0.0,
+        }
+        with pytest.raises(
+            ValueError, match="demon_type must be a valid DemonType string"
+        ):
+            GVFSpec.from_config(payload)
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            None,
+            "not a dict",
+            123,
+            [{"demons": []}],
+        ],
+    )
+    def test_horde_spec_from_config_rejects_non_dict(self, payload):
+        with pytest.raises(ValueError, match="HordeSpec config must be an exact dict"):
+            HordeSpec.from_config(payload)
+
+    def test_horde_spec_from_config_rejects_non_string_keys(self):
+        with pytest.raises(ValueError, match="keys must be exact strings"):
+            HordeSpec.from_config({42: []})
+
+    def test_horde_spec_from_config_rejects_extra_fields(self):
+        spec = GVFSpec(
+            name="d0",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=0,
+        )
+        payload = {"demons": [spec.to_config()], "extra": 1}
+        with pytest.raises(ValueError, match="fields do not match the serialized schema"):
+            HordeSpec.from_config(payload)
+
+    @pytest.mark.parametrize("invalid_demons", ["not a list", 123, None, {"a": 1}])
+    def test_horde_spec_from_config_rejects_non_list_demons(self, invalid_demons):
+        with pytest.raises(ValueError, match="HordeSpec demons must be an exact list"):
+            HordeSpec.from_config({"demons": invalid_demons})

@@ -1,3 +1,4 @@
+# mypy: disable-error-code="arg-type,no-untyped-call,unused-ignore"
 """Tests for the sparse lifetime-statistics FTL world model."""
 
 from __future__ import annotations
@@ -745,3 +746,143 @@ def test_zero_error_decay_replaces_infinite_prior_ema_without_nan() -> None:
 
     assert jnp.isfinite(result.squared_error)
     assert result.state.prediction_error_ema == result.squared_error
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "not a dict",
+        123,
+        [("type", "SparseFTLWorldModelConfig")],
+        (1, 2, 3),
+    ],
+)
+def test_sparse_ftl_config_from_config_rejects_non_dict(payload: object) -> None:
+    with pytest.raises(
+        ValueError, match="SparseFTLWorldModelConfig payload must be an exact dict"
+    ):
+        SparseFTLWorldModelConfig.from_config(payload)  # type: ignore[arg-type]
+
+
+def test_sparse_ftl_config_from_config_rejects_non_string_keys() -> None:
+    config = SparseFTLWorldModelConfig(observation_dim=1, action_dim=1)
+    payload = dict(config.to_config())
+    payload[42] = "invalid"  # type: ignore[index]
+    del payload["type"]
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        SparseFTLWorldModelConfig.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    "missing_key",
+    [
+        "type",
+        "observation_dim",
+        "action_dim",
+        "projection_dim",
+        "bins",
+        "ridge",
+        "statistics_decay",
+        "prediction_clip",
+        "error_decay",
+    ],
+)
+def test_sparse_ftl_config_from_config_rejects_missing_fields(
+    missing_key: str,
+) -> None:
+    config = SparseFTLWorldModelConfig(observation_dim=1, action_dim=1)
+    payload = dict(config.to_config())
+    del payload[missing_key]
+    with pytest.raises(
+        ValueError, match="fields do not match the serialized schema"
+    ):
+        SparseFTLWorldModelConfig.from_config(payload)
+
+
+def test_sparse_ftl_config_from_config_rejects_extra_fields() -> None:
+    config = SparseFTLWorldModelConfig(observation_dim=1, action_dim=1)
+    payload = dict(config.to_config())
+    payload["extra_field"] = 123
+    with pytest.raises(
+        ValueError, match="fields do not match the serialized schema"
+    ):
+        SparseFTLWorldModelConfig.from_config(payload)
+
+
+@pytest.mark.parametrize("invalid_type", ["WrongType", 123, True, None])
+def test_sparse_ftl_config_from_config_rejects_invalid_type_tag(
+    invalid_type: object,
+) -> None:
+    config = SparseFTLWorldModelConfig(observation_dim=1, action_dim=1)
+    payload = dict(config.to_config())
+    payload["type"] = invalid_type
+    with pytest.raises(
+        ValueError,
+        match="SparseFTLWorldModelConfig payload type must be 'SparseFTLWorldModelConfig'",
+    ):
+        SparseFTLWorldModelConfig.from_config(payload)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        "not a dict",
+        123,
+        [{"type": "SparseFTLWorldModel"}],
+    ],
+)
+def test_sparse_ftl_world_model_from_config_rejects_non_dict(
+    payload: object,
+) -> None:
+    with pytest.raises(
+        ValueError, match="SparseFTLWorldModel payload must be an exact dict"
+    ):
+        SparseFTLWorldModel.from_config(payload)  # type: ignore[arg-type]
+
+
+def test_sparse_ftl_world_model_from_config_rejects_non_string_keys() -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=1, action_dim=1))
+    payload = dict(model.to_config())
+    payload[42] = "invalid"  # type: ignore[index]
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        SparseFTLWorldModel.from_config(payload)
+
+
+def test_sparse_ftl_world_model_from_config_rejects_extra_fields() -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=1, action_dim=1))
+    payload = dict(model.to_config())
+    payload["extra"] = 1
+    with pytest.raises(
+        ValueError, match="fields do not match the serialized schema"
+    ):
+        SparseFTLWorldModel.from_config(payload)
+
+
+@pytest.mark.parametrize("invalid_type", ["WrongModel", 123, False, None])
+def test_sparse_ftl_world_model_from_config_rejects_invalid_type_tag(
+    invalid_type: object,
+) -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(observation_dim=1, action_dim=1))
+    payload = dict(model.to_config())
+    payload["type"] = invalid_type
+    with pytest.raises(
+        ValueError,
+        match="SparseFTLWorldModel payload type must be 'SparseFTLWorldModel'",
+    ):
+        SparseFTLWorldModel.from_config(payload)
+
+
+@pytest.mark.parametrize("invalid_cfg", ["not a dict", 123, None, []])
+def test_sparse_ftl_world_model_from_config_rejects_non_dict_config(
+    invalid_cfg: object,
+) -> None:
+    payload = {
+        "type": "SparseFTLWorldModel",
+        "config": invalid_cfg,
+    }
+    with pytest.raises(
+        ValueError, match="SparseFTLWorldModel config payload must be an exact dict"
+    ):
+        SparseFTLWorldModel.from_config(payload)

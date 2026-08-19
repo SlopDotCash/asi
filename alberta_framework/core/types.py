@@ -738,6 +738,35 @@ def _require_gvf_cumulant_index(value: object) -> int:
     return number
 
 
+_GVF_SPEC_FIELDS: frozenset[str] = frozenset(
+    {
+        "name",
+        "demon_type",
+        "gamma",
+        "lamda",
+        "cumulant_index",
+        "terminal_reward",
+    }
+)
+_HORDE_SPEC_FIELDS: frozenset[str] = frozenset({"demons"})
+
+
+def _require_payload(
+    payload: object,
+    *,
+    name: str,
+    fields: frozenset[str],
+) -> dict[str, Any]:
+    if type(payload) is not dict:
+        raise ValueError(f"{name} must be an exact dict")
+    data = cast(dict[object, Any], payload)
+    if any(type(key) is not str for key in data):
+        raise ValueError(f"{name} keys must be exact strings")
+    if set(data) != fields:
+        raise ValueError(f"{name} fields do not match the serialized schema")
+    return dict(cast(dict[str, Any], data))
+
+
 def _validated_gvf_reward(value: object) -> float:
     """Validate a float32 reward without silently erasing an exact nonzero."""
     if type(value) not in _ACTUAL_REAL_SCALAR_TYPES and type(value) not in _ACTUAL_INT_TYPES:
@@ -811,7 +840,7 @@ class GVFSpec:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "GVFSpec":
+    def from_config(cls, config: object) -> "GVFSpec":
         """Reconstruct from config dict.
 
         Args:
@@ -820,9 +849,20 @@ class GVFSpec:
         Returns:
             Reconstructed GVFSpec
         """
-        config = dict(config)
-        config["demon_type"] = DemonType(config["demon_type"])
-        return cls(**config)
+        payload = _require_payload(
+            config,
+            name="GVFSpec config",
+            fields=_GVF_SPEC_FIELDS,
+        )
+        demon_type_raw = payload["demon_type"]
+        if type(demon_type_raw) is not str:
+            raise ValueError("demon_type must be a valid DemonType string")
+        try:
+            demon_type = DemonType(demon_type_raw)
+        except ValueError as exc:
+            raise ValueError("demon_type must be a valid DemonType string") from exc
+        payload["demon_type"] = demon_type
+        return cls(**payload)
 
 
 @chex.dataclass(frozen=True)
@@ -857,7 +897,7 @@ class HordeSpec:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> "HordeSpec":
+    def from_config(cls, config: object) -> "HordeSpec":
         """Reconstruct from config dict.
 
         Args:
@@ -866,7 +906,15 @@ class HordeSpec:
         Returns:
             Reconstructed HordeSpec via ``create_horde_spec``
         """
-        demons = [GVFSpec.from_config(d) for d in config["demons"]]
+        payload = _require_payload(
+            config,
+            name="HordeSpec config",
+            fields=_HORDE_SPEC_FIELDS,
+        )
+        raw_demons = payload["demons"]
+        if type(raw_demons) is not list:
+            raise ValueError("HordeSpec demons must be an exact list")
+        demons = [GVFSpec.from_config(d) for d in raw_demons]
         return create_horde_spec(demons)
 
 

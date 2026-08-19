@@ -166,6 +166,38 @@ def _preflight_update_working_set(
         )
 
 
+_SPARSE_FTL_CONFIG_FIELDS: frozenset[str] = frozenset(
+    {
+        "type",
+        "observation_dim",
+        "action_dim",
+        "projection_dim",
+        "bins",
+        "ridge",
+        "statistics_decay",
+        "prediction_clip",
+        "error_decay",
+    }
+)
+_SPARSE_FTL_MODEL_FIELDS: frozenset[str] = frozenset({"type", "config"})
+
+
+def _require_payload(
+    payload: object,
+    *,
+    name: str,
+    fields: frozenset[str],
+) -> dict[str, Any]:
+    if type(payload) is not dict:
+        raise ValueError(f"{name} must be an exact dict")
+    data = cast(dict[object, Any], payload)
+    if any(type(key) is not str for key in data):
+        raise ValueError(f"{name} keys must be exact strings")
+    if set(data) != fields:
+        raise ValueError(f"{name} fields do not match the serialized schema")
+    return dict(cast(dict[str, Any], data))
+
+
 @dataclasses.dataclass(frozen=True)
 class SparseFTLWorldModelConfig:
     """Configuration for :class:`SparseFTLWorldModel`.
@@ -281,10 +313,18 @@ class SparseFTLWorldModelConfig:
         return payload
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> SparseFTLWorldModelConfig:
+    def from_config(cls, config: object) -> SparseFTLWorldModelConfig:
         """Reconstruct a configuration from :meth:`to_config`."""
-        payload = dict(config)
-        payload.pop("type", None)
+        payload = _require_payload(
+            config,
+            name="SparseFTLWorldModelConfig payload",
+            fields=_SPARSE_FTL_CONFIG_FIELDS,
+        )
+        if type(payload["type"]) is not str or payload["type"] != "SparseFTLWorldModelConfig":
+            raise ValueError(
+                "SparseFTLWorldModelConfig payload type must be 'SparseFTLWorldModelConfig'"
+            )
+        payload.pop("type")
         return cls(**payload)
 
 
@@ -370,10 +410,17 @@ class SparseFTLWorldModel:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> SparseFTLWorldModel:
+    def from_config(cls, config: object) -> SparseFTLWorldModel:
         """Reconstruct from :meth:`to_config`."""
-        payload = dict(config)
-        payload.pop("type", None)
+        payload = _require_payload(
+            config,
+            name="SparseFTLWorldModel payload",
+            fields=_SPARSE_FTL_MODEL_FIELDS,
+        )
+        if type(payload["type"]) is not str or payload["type"] != "SparseFTLWorldModel":
+            raise ValueError("SparseFTLWorldModel payload type must be 'SparseFTLWorldModel'")
+        if type(payload["config"]) is not dict:
+            raise ValueError("SparseFTLWorldModel config payload must be an exact dict")
         return cls(SparseFTLWorldModelConfig.from_config(payload["config"]))
 
     def init(self, key: Array) -> SparseFTLWorldModelState:
