@@ -84,6 +84,11 @@ from alberta_framework.streams.base import ScanStream
 
 _INT32_MAX = 2**31 - 1
 _MAX_RESOURCE_BYTES = 256 * 1024 * 1024
+# Documented public protocol: README / package ``__init__`` / loop docstrings
+# last-fit ``num_steps=10_000`` and batched ``30`` seeds. Not an INT32 cap.
+_LEARNING_LOOP_MAX_STEPS = 10_000
+_LEARNING_LOOP_MAX_SEEDS = 30
+_LEARNING_LOOP_MAX_SEED_STEPS = _LEARNING_LOOP_MAX_SEEDS * _LEARNING_LOOP_MAX_STEPS
 _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _MLP_CONFIG_FIELDS = frozenset(
     {
@@ -127,6 +132,33 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     if not minimum <= canonical <= _INT32_MAX:
         raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
     return canonical
+
+
+def _require_learning_loop_steps(name: str, value: object) -> int:
+    if type(value) is not int or value < 1 or value > _LEARNING_LOOP_MAX_STEPS:
+        raise ValueError(f"{name} must be an integer in [1, {_LEARNING_LOOP_MAX_STEPS}]")
+    return value
+
+
+def _require_learning_loop_keys(keys: object) -> int:
+    if not isinstance(keys, jax.Array):
+        raise TypeError("keys must be a JAX array")
+    if keys.ndim not in (1, 2):
+        raise ValueError("keys must have shape (num_seeds,) or (num_seeds, 2)")
+    num_seeds = int(keys.shape[0])
+    if num_seeds < 1 or num_seeds > _LEARNING_LOOP_MAX_SEEDS:
+        raise ValueError(
+            f"keys must cover an integer seed count in [1, {_LEARNING_LOOP_MAX_SEEDS}]"
+        )
+    return num_seeds
+
+
+def _require_learning_loop_seed_steps(num_steps: int, num_seeds: int) -> None:
+    if num_seeds * num_steps > _LEARNING_LOOP_MAX_SEED_STEPS:
+        raise ValueError(
+            "learning-loop seed-steps exceed the documented protocol budget "
+            f"({_LEARNING_LOOP_MAX_SEED_STEPS})"
+        )
 
 
 def _require_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
@@ -522,8 +554,10 @@ def run_learning_loop[StreamStateT](
             Tuple of (final_state, metrics_array, step_size_history, normalizer_history)
 
     Raises:
-        ValueError: If tracking interval is invalid
+        ValueError: If tracking interval is invalid or ``num_steps`` exceeds
+            the documented protocol ceiling (``10_000``)
     """
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
     # Validate tracking configs
     if step_size_tracking is not None:
         if step_size_tracking.interval < 1:
@@ -837,6 +871,9 @@ def run_learning_loop_batched[StreamStateT](
     mean_error = result.metrics[:, :, 0].mean(axis=0)  # Average over seeds
     ```
     """
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
+    num_seeds = _require_learning_loop_keys(keys)
+    _require_learning_loop_seed_steps(num_steps, num_seeds)
 
     # Define single-seed function that returns consistent structure
     def single_seed_run(
@@ -1671,8 +1708,10 @@ def run_mlp_learning_loop[StreamStateT](
             Tuple of (final_state, metrics_array, normalizer_history)
 
     Raises:
-        ValueError: If normalizer_tracking.interval is invalid
+        ValueError: If normalizer_tracking.interval is invalid or ``num_steps``
+            exceeds the documented protocol ceiling (``10_000``)
     """
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
     # Validate tracking config
     if normalizer_tracking is not None:
         if normalizer_tracking.interval < 1:
@@ -1823,6 +1862,9 @@ def run_mlp_learning_loop_batched[StreamStateT](
     mean_error = result.metrics[:, :, 0].mean(axis=0)  # Average over seeds
     ```
     """
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
+    num_seeds = _require_learning_loop_keys(keys)
+    _require_learning_loop_seed_steps(num_steps, num_seeds)
 
     def single_seed_run(
         key: Array,
@@ -2275,6 +2317,7 @@ def run_td_learning_loop[StreamStateT](
         (num_steps, 4) with columns [squared_td_error, td_error, mean_step_size,
         mean_eligibility_trace]
     """
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
     # Initialize states
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim)
@@ -2312,6 +2355,7 @@ def run_true_online_td_loop[StreamStateT](
     learner_state: TrueOnlineTDState | None = None,
 ) -> tuple[TrueOnlineTDState, Array]:
     """Run True Online TD(lambda) over a TD stream with ``jax.lax.scan``."""
+    num_steps = _require_learning_loop_steps("num_steps", num_steps)
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim)
     stream_state = stream.init(key)
