@@ -1196,29 +1196,36 @@ def _resolved_suite(
                     else micro_config.task_length
                 ),
             )
-    suite: dict[str, EvalConfig]
     if suite_kind == "gauss":
-        suite = dict(gauss_suite(n_tasks if n_tasks is not None else GAUSS_SEARCH_REGIMES))
-        if task_length is not None:
-            for name, config in suite.items():
-                assert isinstance(config, MicroStreamConfig)
-                pool = min(config.recurrence_pool, max(2, config.n_regimes))
-                suite[name] = dataclasses.replace(
-                    config, regime_length=task_length, recurrence_pool=pool
-                )
-        return suite
-    suite = dict(MICRO_SUITE)
-    if n_tasks is not None or task_length is not None:
-        for name, config in suite.items():
-            assert isinstance(config, MicroTaskConfig)
-            suite[name] = dataclasses.replace(
-                config,
-                n_tasks=n_tasks if n_tasks is not None else config.n_tasks,
-                task_length=(
-                    task_length if task_length is not None else config.task_length
-                ),
+        gauss: dict[str, EvalConfig] = dict(
+            gauss_suite(n_tasks if n_tasks is not None else GAUSS_SEARCH_REGIMES)
+        )
+        if task_length is None:
+            return gauss
+        replaced_gauss: dict[str, EvalConfig] = {}
+        for name, config in gauss.items():
+            if not isinstance(config, MicroStreamConfig):
+                raise TypeError("gauss suite entry must be MicroStreamConfig")
+            pool = min(config.recurrence_pool, max(2, config.n_regimes))
+            replaced_gauss[name] = dataclasses.replace(
+                config, regime_length=task_length, recurrence_pool=pool
             )
-    return suite
+        return replaced_gauss
+    digits: dict[str, EvalConfig] = dict(MICRO_SUITE)
+    if n_tasks is None and task_length is None:
+        return digits
+    replaced_digits: dict[str, EvalConfig] = {}
+    for name, config in digits.items():
+        if not isinstance(config, MicroTaskConfig):
+            raise TypeError("digits suite entry must be MicroTaskConfig")
+        replaced_digits[name] = dataclasses.replace(
+            config,
+            n_tasks=n_tasks if n_tasks is not None else config.n_tasks,
+            task_length=(
+                task_length if task_length is not None else config.task_length
+            ),
+        )
+    return replaced_digits
 
 
 def tune_champion_baseline(
