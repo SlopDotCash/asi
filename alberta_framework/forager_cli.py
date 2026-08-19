@@ -286,11 +286,11 @@ def _protocol_evaluation_seeds(protocol: Any) -> tuple[int, ...]:
     start = protocol.evaluation_seed_start
     count = protocol.evaluation_seeds
     if (
-        isinstance(start, bool)
-        or not isinstance(start, int)
+        type(start) is bool
+        or type(start) is not int
         or start < 0
-        or isinstance(count, bool)
-        or not isinstance(count, int)
+        or type(count) is bool
+        or type(count) is not int
         or count < 1
     ):
         raise ValueError("paper protocol declares an invalid evaluation seed interval")

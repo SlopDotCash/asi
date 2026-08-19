@@ -941,7 +941,7 @@ def _extract_seed_metrics(
         if set(raw_summary) != {"seed", "retained", "no_retention"}:
             errors.append(f"{location} keys do not match the v1 schema")
         seed = raw_summary.get("seed")
-        if isinstance(seed, bool) or not isinstance(seed, int):
+        if type(seed) is bool or type(seed) is not int:
             errors.append(f"{location}.seed must be an integer")
             continue
         seeds.append(seed)

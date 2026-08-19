@@ -817,7 +817,7 @@ def _validate_seed_and_aggregate_consistency(
             errors.append(f"{location} must be an object")
             continue
         seed = raw_seed.get("seed")
-        if isinstance(seed, bool) or not isinstance(seed, int):
+        if type(seed) is bool or type(seed) is not int:
             errors.append(f"{location}.seed must be an integer")
         else:
             observed_seeds.append(seed)

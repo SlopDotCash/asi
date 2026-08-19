@@ -18,6 +18,21 @@ def test_protocol_evaluation_seeds_respect_synthetic_nonzero_start() -> None:
     assert forager_cli._protocol_evaluation_seeds(protocol) == (100, 101, 102)
 
 
+def test_protocol_evaluation_seeds_reject_bool_subclass_and_negative() -> None:
+    good = SimpleNamespace(evaluation_seed_start=0, evaluation_seeds=3)
+    assert forager_cli._protocol_evaluation_seeds(good) == (0, 1, 2)
+    for bad_start in (True, False, -1):
+        with pytest.raises(ValueError, match="paper protocol declares an invalid evaluation seed interval"):
+            forager_cli._protocol_evaluation_seeds(
+                SimpleNamespace(evaluation_seed_start=bad_start, evaluation_seeds=3)
+            )
+    for bad_count in (True, False, 3.0):
+        with pytest.raises(ValueError, match="paper protocol declares an invalid evaluation seed interval"):
+            forager_cli._protocol_evaluation_seeds(
+                SimpleNamespace(evaluation_seed_start=0, evaluation_seeds=bad_count)
+            )
+
+
 def test_stable_runtime_provenance_records_matching_start_hash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
