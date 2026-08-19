@@ -1,0 +1,204 @@
+{
+ "arms": {
+  "adamw": {
+   "first_regime_mean": 0.2534666666666667,
+   "first_window_mean": 0.23761066666666666,
+   "late_window_mean": 0.22021599999999997,
+   "late_window_slope_mean": -0.0005293333333333332,
+   "overall_mean": 0.22818933333333333,
+   "per_seed_overall": [
+    0.222154,
+    0.22463,
+    0.237784
+   ]
+  },
+  "gated_norm": {
+   "first_regime_mean": 0.34113333333333334,
+   "first_window_mean": 0.6804293333333332,
+   "late_window_mean": 0.6928613333333334,
+   "late_window_slope_mean": -1.9846153846154e-05,
+   "overall_mean": 0.691108,
+   "per_seed_overall": [
+    0.67293,
+    0.721774,
+    0.67862
+   ]
+  },
+  "naive_bayes": {
+   "first_regime_mean": 0.6149333333333332,
+   "first_window_mean": 0.607464,
+   "late_window_mean": 0.6017279999999999,
+   "late_window_slope_mean": -0.00011682051282051344,
+   "overall_mean": 0.6051746666666666,
+   "per_seed_overall": [
+    0.586702,
+    0.633596,
+    0.595226
+   ]
+  },
+  "sgd_norm": {
+   "first_regime_mean": 0.6258,
+   "first_window_mean": 0.6843946666666666,
+   "late_window_mean": 0.6796586666666666,
+   "late_window_slope_mean": 0.00010994871794871727,
+   "overall_mean": 0.6808833333333334,
+   "per_seed_overall": [
+    0.661298,
+    0.71407,
+    0.667282
+   ]
+  },
+  "sgd_raw": {
+   "first_regime_mean": 0.3011333333333333,
+   "first_window_mean": 0.33935200000000004,
+   "late_window_mean": 0.2443546666666667,
+   "late_window_slope_mean": -0.00013082051282051294,
+   "overall_mean": 0.27695200000000003,
+   "per_seed_overall": [
+    0.266498,
+    0.276956,
+    0.287402
+   ]
+  },
+  "upgd_raw": {
+   "first_regime_mean": 0.1464,
+   "first_window_mean": 0.26072266666666666,
+   "late_window_mean": 0.28605866666666663,
+   "late_window_slope_mean": 3.6717948717949335e-05,
+   "overall_mean": 0.2801173333333334,
+   "per_seed_overall": [
+    0.248292,
+    0.283586,
+    0.308474
+   ]
+  }
+ },
+ "checks": [
+  {
+   "campaign_reference": "full protocol: conditioning +0.061 vs gate +0.011 (docs/research/ipmnist-theory.md decomposition)",
+   "name": "conditioning_dominates",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "conditioning_delta_mean": 0.4007660000000001,
+    "gate_delta_mean": 0.010224666666666585,
+    "per_seed_conditioning_delta": [
+     0.413006,
+     0.430484,
+     0.358808
+    ]
+   }
+  },
+  {
+   "campaign_reference": "full protocol: gate +0.011, an order below conditioning +0.061",
+   "name": "gate_small_positive",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "all_seeds_positive": true,
+    "gate_delta_mean": 0.010224666666666585,
+    "per_seed_gate_delta": [
+     0.011632,
+     0.007704,
+     0.011338
+    ]
+   }
+  },
+  {
+   "campaign_reference": "full protocol: AdamW window means 0.7803 -> 0.7375, late slope -0.00184/task (accumulating Mode-2 damage)",
+   "name": "adam_decays",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "first_window_mean": 0.23761066666666666,
+    "late_window_mean": 0.22021599999999997,
+    "late_window_slope_mean": -0.0005293333333333332
+   }
+  },
+  {
+   "campaign_reference": "full protocol at 200 tasks: AdamW ~0.68 < UPGD-W 0.779",
+   "name": "adam_below_upgd_raw",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "adamw_overall_mean": 0.22818933333333333,
+    "upgd_raw_overall_mean": 0.2801173333333334
+   }
+  },
+  {
+   "campaign_reference": "full protocol task 1: AdamW 0.7694 > UPGD-W 0.6928 (+0.077)",
+   "name": "adam_fast_early",
+   "passed": true,
+   "primary": false,
+   "values": {
+    "adamw_first_regime_mean": 0.2534666666666667,
+    "upgd_raw_first_regime_mean": 0.1464
+   }
+  },
+  {
+   "campaign_reference": "V3 development validation: naive Bayes 0.7851 beats published UPGD-W 0.7778 but stays below conditioned SGD 0.8399",
+   "name": "naive_bayes_placement",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "naive_bayes_overall_mean": 0.6051746666666666,
+    "sgd_norm_overall_mean": 0.6808833333333334,
+    "upgd_raw_overall_mean": 0.2801173333333334
+   }
+  },
+  {
+   "campaign_reference": "campaign champion sigma0_shiftnorm_d099 0.86449 (n=20) tops the ladder",
+   "name": "champion_top",
+   "passed": true,
+   "primary": true,
+   "values": {
+    "best_arm": "gated_norm",
+    "gated_norm_overall_mean": 0.691108
+   }
+  }
+ ],
+ "created_unix": 1787124271.1221738,
+ "environment": {
+  "jax": "0.11.0",
+  "numpy": "2.5.2",
+  "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "family": "input_permutation",
+ "hidden1": 75,
+ "hidden2": 38,
+ "n_regimes": 100,
+ "quarter_window": 25,
+ "schema": "alberta.micro_continual.transfer_validation.v1",
+ "secondary_all_passed": true,
+ "seeds": [
+  0,
+  1,
+  2
+ ],
+ "stream_config": {
+  "class_sparsity": 0.2,
+  "component_scale": 1.2,
+  "component_sparsity": 10,
+  "dim": 256,
+  "family": "input_permutation",
+  "mean_separation": 0.4,
+  "n_classes": 10,
+  "n_components": 6,
+  "n_regimes": 100,
+  "noise_scale": 1.0,
+  "offset_scale": 1.0,
+  "recurrence_pool": 5,
+  "regime_length": 5000,
+  "scale_shift_max": 4.0,
+  "scale_shift_min": 0.25,
+  "spectrum_decades": 2.0
+ },
+ "suite_version": "gauss-v1",
+ "transfer_valid": true
+}

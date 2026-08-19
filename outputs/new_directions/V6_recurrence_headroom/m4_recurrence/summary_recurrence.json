@@ -1,0 +1,237 @@
+{
+ "bayes_reference": {
+  "bayes_accuracy_mean": 0.9843116666666667,
+  "chance": 0.1,
+  "n_samples": 200000,
+  "per_seed_bayes_accuracy": [
+   0.98335,
+   0.98817,
+   0.981415
+  ],
+  "per_seed_mc_sem": [
+   0.00028612,
+   0.00024176,
+   0.00030199
+  ],
+  "seeds": [
+   0,
+   1,
+   2
+  ]
+ },
+ "created_unix": 1787124270.689037,
+ "environment": {
+  "jax": "0.11.0",
+  "numpy": "2.5.2",
+  "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.39",
+  "python": "3.12.3"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "family": "recurrence",
+ "hidden1": 75,
+ "hidden2": 38,
+ "n_shards": 18,
+ "quarter_window": 25,
+ "results": [
+  {
+   "arm_name": "gated_norm",
+   "average_online_accuracy_mean": 0.738266,
+   "average_online_accuracy_stderr": 0.01303658702779735,
+   "first_regime_accuracy_mean": 0.3227333333333333,
+   "first_window_accuracy_mean": 0.7171066666666667,
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_accuracy_mean": 0.7368773333333334,
+   "late_window_slope_mean": 0.00030574358974358906,
+   "mechanism": "conditioned_utility_gate",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.724574,
+    0.764328,
+    0.725896
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 26.459,
+   "wall_clock_seconds_total": 79.376
+  },
+  {
+   "arm_name": "sgd_norm",
+   "average_online_accuracy_mean": 0.7277179999999999,
+   "average_online_accuracy_stderr": 0.01428720084551203,
+   "first_regime_accuracy_mean": 0.6232666666666667,
+   "first_window_accuracy_mean": 0.7256986666666666,
+   "hyperparameters": {
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "step_size": 0.01,
+    "weight_decay": 0.01
+   },
+   "late_window_accuracy_mean": 0.7250506666666666,
+   "late_window_slope_mean": 0.0008604102564102566,
+   "mechanism": "input_conditioning",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.712708,
+    0.75628,
+    0.714166
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 5.43,
+   "wall_clock_seconds_total": 16.291
+  },
+  {
+   "arm_name": "sgd_raw",
+   "average_online_accuracy_mean": 0.6685280000000001,
+   "average_online_accuracy_stderr": 0.014034805164304949,
+   "first_regime_accuracy_mean": 0.2908,
+   "first_window_accuracy_mean": 0.5652160000000002,
+   "hyperparameters": {
+    "step_size": 0.01,
+    "weight_decay": 0.0
+   },
+   "late_window_accuracy_mean": 0.7350853333333333,
+   "late_window_slope_mean": 0.0011098974358974359,
+   "mechanism": "baseline",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.644946,
+    0.693504,
+    0.667134
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 6.457,
+   "wall_clock_seconds_total": 19.372
+  },
+  {
+   "arm_name": "naive_bayes",
+   "average_online_accuracy_mean": 0.6525786666666666,
+   "average_online_accuracy_stderr": 0.012736857243623544,
+   "first_regime_accuracy_mean": 0.6149333333333332,
+   "first_window_accuracy_mean": 0.6364186666666667,
+   "hyperparameters": {
+    "nb_decay": 0.98,
+    "nb_var_epsilon": 0.0001
+   },
+   "late_window_accuracy_mean": 0.6409893333333334,
+   "late_window_slope_mean": -6.661538461538372e-05,
+   "mechanism": "streaming_generative_classifier",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.63462,
+    0.677204,
+    0.645912
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 4.699,
+   "wall_clock_seconds_total": 14.098
+  },
+  {
+   "arm_name": "adamw",
+   "average_online_accuracy_mean": 0.5782959999999999,
+   "average_online_accuracy_stderr": 0.010262033391747125,
+   "first_regime_accuracy_mean": 0.23893333333333333,
+   "first_window_accuracy_mean": 0.4465973333333334,
+   "hyperparameters": {
+    "beta1": 0.0,
+    "beta2": 0.99,
+    "eps": 1e-08,
+    "step_size": 0.0001,
+    "weight_decay": 0.0
+   },
+   "late_window_accuracy_mean": 0.6774826666666667,
+   "late_window_slope_mean": 0.003306205128205127,
+   "mechanism": "adaptive_rate",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.563062,
+    0.597824,
+    0.574002
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 133.884,
+   "wall_clock_seconds_total": 401.653
+  },
+  {
+   "arm_name": "upgd_raw",
+   "average_online_accuracy_mean": 0.37417799999999996,
+   "average_online_accuracy_stderr": 0.010069617867625346,
+   "first_regime_accuracy_mean": 0.14546666666666666,
+   "first_window_accuracy_mean": 0.31617333333333325,
+   "hyperparameters": {
+    "noise_std": 0.1,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_accuracy_mean": 0.397848,
+   "late_window_slope_mean": 0.0007339999999999998,
+   "mechanism": "utility_gated_perturbation",
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.355224,
+    0.38955,
+    0.37776
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_mean": 204.667,
+   "wall_clock_seconds_total": 614.0
+  }
+ ],
+ "schema": "alberta.micro_continual.summary.v1",
+ "stream_config": {
+  "class_sparsity": 0.2,
+  "component_scale": 1.2,
+  "component_sparsity": 10,
+  "dim": 256,
+  "family": "recurrence",
+  "mean_separation": 0.4,
+  "n_classes": 10,
+  "n_components": 6,
+  "n_regimes": 100,
+  "noise_scale": 1.0,
+  "offset_scale": 1.0,
+  "recurrence_pool": 5,
+  "regime_length": 5000,
+  "scale_shift_max": 4.0,
+  "scale_shift_min": 0.25,
+  "spectrum_decades": 2.0
+ },
+ "suite_version": "gauss-v1"
+}

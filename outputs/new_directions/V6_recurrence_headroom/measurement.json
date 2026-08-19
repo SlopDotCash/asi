@@ -1,0 +1,175 @@
+{
+  "arms": [
+    {
+      "arm": "gated_norm",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.691108,
+      "m4_recurrence_mean": 0.738266,
+      "paired_delta_mean": 0.047158,
+      "paired_delta_per_seed": [
+        0.051644,
+        0.042554,
+        0.047276
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "arm": "sgd_norm",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.6808833333333334,
+      "m4_recurrence_mean": 0.7277179999999999,
+      "paired_delta_mean": 0.046835,
+      "paired_delta_per_seed": [
+        0.05141,
+        0.04221,
+        0.046884
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "arm": "sgd_raw",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.27695200000000003,
+      "m4_recurrence_mean": 0.6685280000000001,
+      "paired_delta_mean": 0.391576,
+      "paired_delta_per_seed": [
+        0.378448,
+        0.416548,
+        0.379732
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "arm": "naive_bayes",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.6051746666666666,
+      "m4_recurrence_mean": 0.6525786666666666,
+      "paired_delta_mean": 0.047404,
+      "paired_delta_per_seed": [
+        0.047918,
+        0.043608,
+        0.050686
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "arm": "adamw",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.22818933333333333,
+      "m4_recurrence_mean": 0.5782959999999999,
+      "paired_delta_mean": 0.350107,
+      "paired_delta_per_seed": [
+        0.340908,
+        0.373194,
+        0.336218
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "arm": "upgd_raw",
+      "exploits_recurrence": true,
+      "m1_input_permutation_mean": 0.2801173333333334,
+      "m4_recurrence_mean": 0.37417799999999996,
+      "paired_delta_mean": 0.094061,
+      "paired_delta_per_seed": [
+        0.106932,
+        0.105964,
+        0.069286
+      ],
+      "seeds": [
+        0,
+        1,
+        2
+      ]
+    }
+  ],
+  "bayes_reference": {
+    "mean_accuracy": 0.9843116666666667,
+    "n_samples": 200000,
+    "per_seed": [
+      0.98335,
+      0.98817,
+      0.981415
+    ]
+  },
+  "created_unix": 1787124356.6123426,
+  "families": {
+    "m1": {
+      "name": "input_permutation",
+      "note": "fresh coordinate permutation per regime"
+    },
+    "m4": {
+      "name": "recurrence",
+      "note": "permutations drawn from a small pool",
+      "recurrence_pool": 5
+    }
+  },
+  "m1_summary": "outputs/new_directions/V6_recurrence_headroom/m1_permutation/summary_input_permutation.json",
+  "m1_transfer_receipt": {
+    "path": "outputs/new_directions/V6_recurrence_headroom/m1_permutation/transfer_input_permutation.json",
+    "transfer_valid": true
+  },
+  "m4_summary": "outputs/new_directions/V6_recurrence_headroom/m4_recurrence/summary_recurrence.json",
+  "n_shards": {
+    "m1": 18,
+    "m4": 18
+  },
+  "policy": {
+    "development_only": true,
+    "evidence_class": "development_screening_diagnostic",
+    "scientific_promotion_allowed": false
+  },
+  "primary_measurement": "paired delta D = M4 - M1 per seed; an arm exploits recurrence only if paired mean D > 0 with all three seeds positive",
+  "protocol": "https://github.com/elizaOS/asi/issues/1875",
+  "protocol_issue": 1875,
+  "result": {
+    "all_arms_exploit_recurrence": true,
+    "h0_rejected": true,
+    "summary": "Every one of the six LADDER_ARMS scores materially better on M4 than M1 with all three seeds positive. Recurrence is not unexploited headroom; existing mechanisms already capture it. The gap between the best arm (gated_norm, 0.7383) and the micro Bayes ceiling (0.9843) remains large but is no longer attributable to recurrence per se."
+  },
+  "runner": "alberta_framework.benchmarks.micro_continual ladder",
+  "schema": "v6_recurrence_headroom_measurement",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "stream_config": {
+    "class_sparsity": 0.2,
+    "component_scale": 1.2,
+    "component_sparsity": 10,
+    "dim": 256,
+    "family": "input_permutation",
+    "mean_separation": 0.4,
+    "n_classes": 10,
+    "n_components": 6,
+    "n_regimes": 100,
+    "noise_scale": 1.0,
+    "offset_scale": 1.0,
+    "recurrence_pool": 5,
+    "regime_length": 5000,
+    "scale_shift_max": 4.0,
+    "scale_shift_min": 0.25,
+    "spectrum_decades": 2.0
+  }
+}
