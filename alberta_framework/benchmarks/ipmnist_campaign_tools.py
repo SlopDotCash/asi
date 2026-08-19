@@ -87,8 +87,22 @@ def across_seed_spread(values: Sequence[float] | np.ndarray[Any, Any]) -> float:
     return float(array.std(ddof=1))
 
 
+def _object_without_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key {key!r} is forbidden")
+        result[key] = value
+    return result
+
+
 def _json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(
+        path.read_text(encoding="utf-8"),
+        object_pairs_hook=_object_without_duplicate_keys,
+    )
     if type(payload) is not dict:
         raise ValueError(f"{path} must contain a JSON object")
     return cast(dict[str, Any], payload)

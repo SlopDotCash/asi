@@ -16,6 +16,7 @@ from alberta_framework.benchmarks.ipmnist_campaign_tools import (
     across_seed_spread,
     build_ceiling_summary,
     build_frontier,
+    seed_means,
     validate_confirm_alignment,
 )
 from alberta_framework.benchmarks.ipmnist_ceiling import (
@@ -191,6 +192,18 @@ def test_frontier_seed_filename_must_bind_payload_seed(tmp_path: Path) -> None:
     _shard(screen / "base_seed0.json", seed=1, accuracy=0.8)
     with pytest.raises(ValueError, match="filename disagrees"):
         build_frontier(screen, confirm, base="base", arms=("candidate",))
+
+
+def test_seed_means_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    path = tmp_path / "base_seed0.json"
+    path.write_text(
+        '{"seed":0,"per_task_accuracy":[0.1,0.1],'
+        '"per_task_accuracy":[0.9,0.9]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
+        seed_means(tmp_path, "base")
 
 
 def test_campaign_cli_uses_strict_json_serialization(
