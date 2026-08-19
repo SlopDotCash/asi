@@ -3015,12 +3015,7 @@ def _run_bounded_process(
     maximum_stderr_bytes: int,
 ) -> ProcessResult:
     """Drain both child pipes concurrently into actively bounded file sinks."""
-    if (
-        not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
-        or not math.isfinite(float(timeout))
-        or timeout <= 0
-    ):
+    if type(timeout) not in (int, float) or not math.isfinite(float(timeout)) or timeout <= 0:
         raise ValueError("bounded process timeout must be finite and positive")
     if any(
         type(limit) is not int or limit < 0

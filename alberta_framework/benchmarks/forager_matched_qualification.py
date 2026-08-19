@@ -3024,12 +3024,7 @@ def _run_bounded_process(
     environment: Mapping[str, str] | None = None,
 ) -> QualificationProcessResult:
     """Drain both pipes into bounded memory or a caller-owned stdout sink."""
-    if (
-        not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
-        or not math.isfinite(float(timeout))
-        or timeout <= 0
-    ):
+    if type(timeout) not in (int, float) or not math.isfinite(float(timeout)) or timeout <= 0:
         raise ValueError("bounded process timeout must be finite and positive")
     if any(
         type(limit) is not int or limit < 0
