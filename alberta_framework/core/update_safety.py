@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from typing import SupportsIndex, cast
+from typing import Any, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -27,6 +27,8 @@ _ACTUAL_INT_TYPES = frozenset(
     }
 )
 _INT32_MAX = int(np.iinfo(np.int32).max)
+# Origin ``jax.tree.leaves`` still returns at depth 8000 and SystemErrors at 10_000.
+_MAX_PYTREE_NESTING_DEPTH = 4096
 
 
 def _require_exact_bool(name: str, value: object) -> bool:
@@ -121,11 +123,66 @@ def checked_integer_action_array(
     return safe, valid
 
 
+def _pytree_container_children(node: object) -> tuple[object, ...] | None:
+    node_type = type(node)
+    if node_type is dict:
+        return tuple(cast(dict[Any, Any], node).values())
+    if node_type is list:
+        return tuple(cast(list[Any], node))
+    if node_type is tuple:
+        return cast(tuple[object, ...], node)
+    if isinstance(node, tuple) and getattr(node_type, "_fields", None) is not None:
+        return tuple(node)
+    return None
+
+
+def _require_pytree_nesting(tree: object, *, name: str = "tree") -> None:
+    """Reject cycles and nesting that SystemError ``jax.tree.leaves``."""
+    children = _pytree_container_children(tree)
+    if children is None:
+        return
+    frames: list[tuple[object, tuple[object, ...], int, int]] = [
+        (tree, children, 1, 0)
+    ]
+    ancestors = {id(tree)}
+    while frames:
+        node, kids, depth, index = frames[-1]
+        if depth > _MAX_PYTREE_NESTING_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum pytree nesting depth")
+        if index >= len(kids):
+            frames.pop()
+            ancestors.discard(id(node))
+            continue
+        child = kids[index]
+        frames[-1] = (node, kids, depth, index + 1)
+        child_kids = _pytree_container_children(child)
+        if child_kids is None:
+            continue
+        child_id = id(child)
+        if child_id in ancestors:
+            raise ValueError(f"{name} contains a cyclic pytree")
+        child_depth = depth + 1
+        if child_depth > _MAX_PYTREE_NESTING_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum pytree nesting depth")
+        ancestors.add(child_id)
+        frames.append((child, child_kids, child_depth, 0))
+
+
+def _tree_leaves(tree: object) -> list[Any]:
+    _require_pytree_nesting(tree, name="tree")
+    try:
+        return jax.tree.leaves(tree)
+    except RecursionError as exc:
+        raise ValueError("tree exceeds the maximum pytree nesting depth") from exc
+    except SystemError as exc:
+        raise ValueError("tree exceeds the maximum pytree nesting depth") from exc
+
+
 def floating_tree_is_finite(tree: object) -> Bool[Array, ""]:
     """Return whether every floating or complex leaf in ``tree`` is finite."""
 
     valid = jnp.asarray(True, dtype=jnp.bool_)
-    for leaf in jax.tree.leaves(tree):
+    for leaf in _tree_leaves(tree):
         array = jnp.asarray(leaf)
         if jnp.issubdtype(array.dtype, jnp.inexact):
             valid = valid & jnp.all(jnp.isfinite(array))
