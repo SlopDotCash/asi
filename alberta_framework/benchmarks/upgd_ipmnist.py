@@ -162,6 +162,10 @@ def atomic_write_new(path: Path, data: bytes) -> Path:
         return destination
     finally:
         if temporary_path is not None:
+            try:
+                temporary_path.chmod(0o666)
+            except OSError:
+                pass
             temporary_path.unlink(missing_ok=True)
 
 

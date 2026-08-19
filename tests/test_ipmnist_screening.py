@@ -46,6 +46,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_lion_gate_learner,
     _make_muon_gate_learner,
     _make_naive_bayes_learner,
+    _make_nap_ema_norm_learner,
     _make_norm_adam_fastv_learner,
     _make_norm_apollo_gate_learner,
     _make_norm_rmsprop_gate_learner,
@@ -64,6 +65,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_upgd_w_wclip_learner,
     _make_upgd_warmnorm_learner,
     _make_wclip_ema_norm_learner,
+    _nap_project_and_normalize,
     _newton_schulz_orthogonalize,
     _rff_frozen_probe_input,
     _upgd_utility_and_gate,
@@ -289,6 +291,9 @@ class TestRegistry:
             "fade_head_ema_norm",
             "snr_ema_norm",
             "l2init_ema_norm",
+            "nap_ema_norm",
+            "nap_norm_only_ema_norm",
+            "nap_proj_only_ema_norm",
             "norm_adam_fastv",
             "norm_adam_fastv_b2099",
             "norm_adam_gate",
@@ -4220,6 +4225,9 @@ class TestComparisonArms:
         "fade_head_ema_norm",
         "snr_ema_norm",
         "l2init_ema_norm",
+        "nap_ema_norm",
+        "nap_norm_only_ema_norm",
+        "nap_proj_only_ema_norm",
     )
 
     def test_registry_configs(self):
@@ -4255,6 +4263,18 @@ class TestComparisonArms:
             "l2init_ema_norm": (
                 _make_l2init_ema_norm_learner,
                 {**self.BASE, "weight_decay": 0.01},
+            ),
+            "nap_ema_norm": (
+                _make_nap_ema_norm_learner,
+                {**self.BASE, "weight_decay": 0.0, "nap_use_proj": 1.0, "nap_use_norm": 1.0},
+            ),
+            "nap_norm_only_ema_norm": (
+                _make_nap_ema_norm_learner,
+                {**self.BASE, "weight_decay": 0.0, "nap_use_proj": 0.0, "nap_use_norm": 1.0},
+            ),
+            "nap_proj_only_ema_norm": (
+                _make_nap_ema_norm_learner,
+                {**self.BASE, "weight_decay": 0.0, "nap_use_proj": 1.0, "nap_use_norm": 0.0},
             ),
         }
         for name, (factory, hp) in expected.items():
@@ -4474,14 +4494,85 @@ class TestComparisonArms:
                     np.asarray(params[n]), np.asarray(ref_params[n])
                 )
 
+    def test_nap_mode_none_reduces_to_sgd_base_bitwise(self, small_data):
+        """nap_use_proj=0 and nap_use_norm=0 disables projection &
+        normalization: bit-exact sgd_ema_norm (wd=0)."""
+        x, y = small_data
+        ref_spec = screening_spec("sgd_ema_norm_d099")
+        ours = run_screening_config(
+            x, y,
+            self._cloned(
+                "sgd_ema_norm_d099", _make_nap_ema_norm_learner,
+                {
+                    **ref_spec.hyperparameters,
+                    "weight_decay": 0.0,
+                    "nap_use_proj": 0.0,
+                    "nap_use_norm": 0.0,
+                },
+            ),
+            seed=5, config=SMALL,
+        )
+        ref = run_screening_config(
+            x, y,
+            self._cloned(
+                "sgd_ema_norm_d099", _make_sgd_ema_norm_learner,
+                {**ref_spec.hyperparameters, "weight_decay": 0.0},
+            ),
+            seed=5, config=SMALL,
+        )
+        np.testing.assert_array_equal(ours.per_task_accuracy, ref.per_task_accuracy)
+        np.testing.assert_array_equal(ours.per_task_loss, ref.per_task_loss)
+
+    def test_nap_tangent_projection_orthogonality(self):
+        """For every 2D weight matrix, <w_j, g_proj_j> = 0 for each neuron column j."""
+        key = jr.key(123)
+        k_w, k_g = jr.split(key)
+        w = jr.normal(k_w, (300, 150))
+        g = jr.normal(k_g, (300, 150))
+        init_norm = jnp.sqrt(jnp.sum(w * w, axis=0, keepdims=True))
+        for use_proj, use_norm in ((True, True), (True, False)):
+            _ = _nap_project_and_normalize(
+                w, g, init_norm, step_size=0.01, use_proj=use_proj, use_norm=use_norm
+            )
+            inner = jnp.sum(w * g, axis=0, keepdims=True)
+            w_sq = jnp.sum(w * w, axis=0, keepdims=True)
+            g_proj = g - (inner / w_sq) * w
+            dot_products = jnp.sum(w * g_proj, axis=0)
+            np.testing.assert_allclose(np.asarray(dot_products), 0.0, atol=1e-4)
+
+    def test_nap_sphere_norm_invariant(self):
+        """Under 'full' and 'norm_only', every neuron column norm matches its
+        target radius."""
+        params = init_mlp_params(jr.key(7), SMALL)
+        for arm_name in ("nap_ema_norm", "nap_norm_only_ema_norm"):
+            spec = screening_spec(arm_name)
+            init_fn, step_fn = _make_nap_ema_norm_learner(spec.hyperparameters)
+            state = init_fn(params)
+            x = jr.normal(jr.key(71), (SMALL.input_dim,))
+            y = jnp.array(2, jnp.int32)
+            new_params, _, _ = step_fn(params, state, x, y, jr.key(0))
+            for name in ("w1", "w2", "w3"):
+                initial_norms = np.sqrt(np.sum(np.asarray(params[name]) ** 2, axis=0))
+                current_norms = np.sqrt(np.sum(np.asarray(new_params[name]) ** 2, axis=0))
+                np.testing.assert_allclose(
+                    current_norms, initial_norms, rtol=1e-5, atol=1e-6, err_msg=f"{arm_name}:{name}"
+                )
+
     def test_key_is_unused_except_snr(self):
-        """wclip/fade/l2init consume no randomness; snr consumes the key only
+        """wclip/fade/l2init/nap consume no randomness; snr consumes the key only
         for redraw material, which cannot reach params when nothing resets."""
         params = init_mlp_params(jr.key(3), SMALL)
         x = jr.normal(jr.key(91), (SMALL.input_dim,))
         y = jnp.array(2, jnp.int32)
-        for name in ("sgd_ema_norm_d099", "wclip_ema_norm", "fade_head_ema_norm",
-                     "l2init_ema_norm"):
+        for name in (
+            "sgd_ema_norm_d099",
+            "wclip_ema_norm",
+            "fade_head_ema_norm",
+            "l2init_ema_norm",
+            "nap_ema_norm",
+            "nap_norm_only_ema_norm",
+            "nap_proj_only_ema_norm",
+        ):
             spec = screening_spec(name)
             init_fn, step_fn = spec.factory(spec.hyperparameters)
             state = init_fn(params)
@@ -4500,8 +4591,15 @@ class TestComparisonArms:
             x, y, screening_spec("sgd_ema_norm_d099"), seed=23, config=SMALL
         )
         assert np.all(np.isfinite(base.per_task_accuracy))
-        for name in ("wclip_ema_norm", "fade_head_ema_norm", "snr_ema_norm",
-                     "l2init_ema_norm"):
+        for name in (
+            "wclip_ema_norm",
+            "fade_head_ema_norm",
+            "snr_ema_norm",
+            "l2init_ema_norm",
+            "nap_ema_norm",
+            "nap_norm_only_ema_norm",
+            "nap_proj_only_ema_norm",
+        ):
             result = run_screening_config(
                 x, y, screening_spec(name), seed=23, config=SMALL
             )

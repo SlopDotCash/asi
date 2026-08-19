@@ -107,11 +107,12 @@ identical seeds):
   benchmark measures tracking rather than learning. Sentinel probes fail
   closed (there is no trained protocol MLP to probe).
 - ``sgd_ema_norm_d099`` / ``wclip_ema_norm`` / ``fade_head_ema_norm`` /
-  ``snr_ema_norm`` / ``l2init_ema_norm``: the reviewer comparison rows —
+  ``snr_ema_norm`` / ``l2init_ema_norm`` / ``nap_ema_norm``: the reviewer comparison rows —
   the strongest published plasticity mechanisms (per-layer weight clipping,
   Elsayed et al. RLC 2024; FADE meta-learned head decay, arXiv 2604.27063;
   SNR hypothesis-test neuron resets, Farias & Jozefiak arXiv 2410.20098;
-  L2-Init, Kumar et al.) re-implemented from their papers and run behind
+  L2-Init, Kumar et al.; Normalization and Projection / NaP, Lyle et al.
+  NeurIPS 2024) re-implemented from their papers and run behind
   the champion's EMA input conditioning (decay 0.99) on a plain-SGD base:
   our conditioning + THEIR mechanism vs our conditioning + our gate, with
   ``sgd_ema_norm_d099`` the mechanism-free floor. Each factory reduces to
@@ -5069,6 +5070,123 @@ def _make_l2init_ema_norm_learner(
 
 
 @chex.dataclass(frozen=True)
+class NaPNormState:
+    """Initial neuron row/column norms and input normalizer state for NaP."""
+
+    init_norms: dict[str, Array]
+    norm: EMANormState
+
+
+def _nap_project_and_normalize(
+    param: Array,
+    grad: Array,
+    init_norm: Array,
+    step_size: float,
+    use_proj: bool,
+    use_norm: bool,
+    eps: float = 1e-8,
+) -> Array:
+    """Apply NaP (Normalization and Projection, Lyle et al., NeurIPS 2024).
+
+    For a 2D weight matrix of shape (fan_in, fan_out), each column corresponds
+    to the incoming weights of one neuron.
+    - Tangent Projection: projects the gradient orthogonally to the current
+      weight vector: g_proj = g - (<w, g> / (||w||^2 + eps)) * w.
+    - Radial Normalization: scales the post-update weight vector back to its
+      target sphere radius: w_new = gamma * (w' / (||w'|| + eps)).
+    For 1D biases, standard gradient descent is applied.
+    """
+    if param.ndim != 2:
+        return param - step_size * grad
+
+    if use_proj:
+        inner = jnp.sum(param * grad, axis=0, keepdims=True)
+        w_sq = jnp.sum(param * param, axis=0, keepdims=True)
+        grad_proj = grad - (inner / jnp.maximum(w_sq, eps)) * param
+    else:
+        grad_proj = grad
+
+    param_step = param - step_size * grad_proj
+
+    if use_norm:
+        step_norm = jnp.sqrt(jnp.sum(param_step * param_step, axis=0, keepdims=True))
+        new_param = param_step * (init_norm / jnp.maximum(step_norm, eps))
+    else:
+        new_param = param_step
+
+    return new_param
+
+
+def _make_nap_ema_norm_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Normalization and Projection (NaP, Lyle et al., NeurIPS 2024,
+    arXiv:2407.01800) behind the champion's EMA input normalizer on the
+    plain-SGD comparison base.
+
+    Applies per-neuron incoming weight tangent projection and/or spherical
+    normalization:
+    - ``nap_use_proj = 1.0, nap_use_norm = 1.0``: full NaP.
+    - ``nap_use_proj = 0.0, nap_use_norm = 1.0``: normalization-only ablation.
+    - ``nap_use_proj = 1.0, nap_use_norm = 0.0``: projection-only ablation.
+    - ``nap_use_proj = 0.0, nap_use_norm = 0.0``: mechanism-off reduction.
+
+    No utility gate, no perturbation; the RNG key is deliberately unused.
+    With ``nap_use_proj = 0.0, nap_use_norm = 0.0`` the trajectory is bit-exact
+    against the plain normalized-SGD base at the same hyperparameters (pinned by
+    a unit test).
+    """
+    step_size = hp["step_size"]
+    norm_decay = hp["norm_decay"]
+    epsilon = hp["norm_epsilon"]
+    use_proj = bool(hp.get("nap_use_proj", 1.0) > 0.5)
+    use_norm = bool(hp.get("nap_use_norm", 1.0) > 0.5)
+
+    def init_fn(params: dict[str, Array]) -> NaPNormState:
+        init_norms = {
+            name: jnp.sqrt(jnp.sum(val * val, axis=0, keepdims=True))
+            if val.ndim == 2
+            else jnp.ones_like(val)
+            for name, val in params.items()
+        }
+        return NaPNormState(  # type: ignore[call-arg]
+            init_norms=init_norms,
+            norm=_init_input_norm_state(params),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: NaPNormState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], NaPNormState, StepMetrics]:
+        del key  # no perturbation: the step consumes no randomness
+        x_norm, new_norm = ema_normalize(state.norm, x, norm_decay, epsilon)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        new_params = {
+            name: _nap_project_and_normalize(
+                params[name],
+                grads[name],
+                state.init_norms[name],
+                step_size,
+                use_proj,
+                use_norm,
+            )
+            for name in params
+        }
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return new_params, NaPNormState(  # type: ignore[call-arg]
+            init_norms=state.init_norms, norm=new_norm
+        ), metrics
+
+    return init_fn, full_step
+
+
+
+@chex.dataclass(frozen=True)
 class UPGDGatedL2InitNormState:
     """Lean-UPGD utility EMA/clock, a frozen copy of the initial parameters,
     and the EMA input-normalizer state (see
@@ -6661,7 +6779,69 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             ),
         )
     )
+    specs.append(
+        ScreeningSpec(
+            name="nap_ema_norm",
+            base_learner="upgd_w",
+            mechanism="normalization_and_projection",
+            hyperparameters={
+                **comparison_base,
+                "weight_decay": 0.0,
+                "nap_use_proj": 1.0,
+                "nap_use_norm": 1.0,
+            },
+            factory=_make_nap_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "Normalization and Projection (NaP, Lyle et al., NeurIPS 2024, "
+                "arXiv:2407.01800) behind the champion's EMA normalizer on plain "
+                "SGD: per-neuron tangent gradient projection and spherical "
+                "normalization to initialization radius."
+            ),
+        )
+    )
+    specs.append(
+        ScreeningSpec(
+            name="nap_norm_only_ema_norm",
+            base_learner="upgd_w",
+            mechanism="normalization_only_ablation",
+            hyperparameters={
+                **comparison_base,
+                "weight_decay": 0.0,
+                "nap_use_proj": 0.0,
+                "nap_use_norm": 1.0,
+            },
+            factory=_make_nap_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "NaP normalization-only ablation behind the champion's EMA "
+                "normalizer on plain SGD: per-neuron spherical weight "
+                "normalization without tangent gradient projection."
+            ),
+        )
+    )
+    specs.append(
+        ScreeningSpec(
+            name="nap_proj_only_ema_norm",
+            base_learner="upgd_w",
+            mechanism="projection_only_ablation",
+            hyperparameters={
+                **comparison_base,
+                "weight_decay": 0.0,
+                "nap_use_proj": 1.0,
+                "nap_use_norm": 0.0,
+            },
+            factory=_make_nap_ema_norm_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "NaP projection-only ablation behind the champion's EMA "
+                "normalizer on plain SGD: per-neuron tangent gradient "
+                "projection without spherical weight normalization."
+            ),
+        )
+    )
     return {spec.name: spec for spec in specs}
+
 
 
 SCREENING_REGISTRY: Mapping[str, ScreeningSpec] = MappingProxyType(_build_registry())
