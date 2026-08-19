@@ -7,7 +7,10 @@ from typing import Any
 
 import pytest
 
-from alberta_framework.streams.pavlovian import PavlovianPhase
+from alberta_framework.streams.pavlovian import (
+    PavlovianPhase,
+    partial_reinforcement_scenario,
+)
 
 
 def _phase(**overrides: Any) -> PavlovianPhase:
@@ -57,3 +60,28 @@ def test_phase_preserves_supported_exact_fraction_probability() -> None:
 def test_phase_rejects_noncanonical_fields(field: str, value: object) -> None:
     with pytest.raises(ValueError):
         _phase(**{field: value})
+
+
+class _HostileFormatReal:
+    """A ``numbers.Real`` registrant whose format/str hooks must never run.
+
+    ``partial_reinforcement_scenario`` rejects this in
+    ``_require_unit_interval`` (it is not an exact allow-listed real type),
+    which itself never touches the value in its error message. The
+    surrounding ``except ValueError`` handler must preserve that guarantee
+    instead of re-interpolating the still-untrusted original object.
+    """
+
+    def __format__(self, spec: str) -> str:  # pragma: no cover
+        raise AssertionError("hostile __format__ must not run")
+
+    def __str__(self) -> str:  # pragma: no cover
+        raise AssertionError("hostile __str__ must not run")
+
+    def __repr__(self) -> str:  # pragma: no cover
+        raise AssertionError("hostile __repr__ must not run")
+
+
+def test_partial_reinforcement_scenario_rejects_hostile_p_without_format_hook() -> None:
+    with pytest.raises(ValueError, match=r"p must be in \[0, 1\]"):
+        partial_reinforcement_scenario(p=_HostileFormatReal())

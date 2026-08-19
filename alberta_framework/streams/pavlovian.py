@@ -1083,7 +1083,11 @@ def partial_reinforcement_scenario(
     try:
         p = _require_unit_interval(p, name="p")
     except ValueError as error:
-        raise ValueError(f"p must be in [0, 1], got {p}") from error
+        # ``_require_unit_interval`` never touches ``p`` in its own message
+        # (it is exact-type-gated before any format/str hook could run) —
+        # do not undo that guarantee by re-interpolating the still-untrusted
+        # original object here.
+        raise ValueError("p must be in [0, 1]") from error
     phases = (
         PavlovianPhase(
             name="partial_reinforcement",
