@@ -77,6 +77,47 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+# Matches the class of ceiling already established for other scan-driven
+# array-loop runners in ``core`` (e.g. ``sarsa._SARSA_SEQUENCE_MAX_STEPS``,
+# ``learners._LEARNING_LOOP_MAX_STEPS``). Set with headroom above this
+# module's largest exercised sequence (20,000 steps, see
+# ``test_differential_gtd_scan_learns_average_reward_cycle``) while still
+# bounding the leading axis that every ``run_*_from_arrays`` runner below
+# hands straight to ``jax.lax.scan``.
+_AVERAGE_REWARD_SEQUENCE_MAX_STEPS = 50_000
+
+
+def _require_avg_reward_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    The array-loop runners in this module (``run_differential_td_from_arrays``,
+    ``run_differential_gtd_from_arrays``, ``run_differential_sarsa_from_arrays``,
+    ``run_average_reward_horde_actor_critic_from_arrays``) hand their step
+    arrays straight to ``jax.lax.scan`` with no bound on the leading (step)
+    axis. A hostile or mistaken caller supplying a huge leading length forces
+    JAX to materialize per-step outputs (and, for large enough arrays, the
+    inputs) at that length, exhausting memory or hanging the process well
+    before any step executes.
+    """
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(value.shape[0])
+    if length < 1 or length > _AVERAGE_REWARD_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_AVERAGE_REWARD_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
+
+
+def _require_avg_reward_matching_length(name: str, value: object, *, expected: int) -> None:
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1 or int(value.shape[0]) != expected:
+        raise ValueError(f"{name} must share the same leading length as the primary sequence")
+
+
 def _validate_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
     if type(hidden_sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
@@ -1563,7 +1604,19 @@ def run_differential_td_from_arrays(
     rewards: Float[Array, " num_steps"],
     next_observations: Float[Array, "num_steps feature_dim"],
 ) -> DifferentialTDArrayResult:
-    """Run differential TD updates over transition arrays with ``lax.scan``."""
+    """Run differential TD updates over transition arrays with ``lax.scan``.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_AVERAGE_REWARD_SEQUENCE_MAX_STEPS``), or
+            the other step arrays do not share its leading length.
+    """
+    num_steps = _require_avg_reward_sequence_length("observations", observations)
+    _require_avg_reward_matching_length("rewards", rewards, expected=num_steps)
+    _require_avg_reward_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
     start = time.time()
 
     def _scan_fn(
@@ -1605,7 +1658,20 @@ def run_differential_gtd_from_arrays(
     next_observations: Float[Array, "num_steps feature_dim"],
     rhos: Float[Array, " num_steps"],
 ) -> DifferentialGTDArrayResult:
-    """Run differential GTD/TDC updates over transition arrays with ``lax.scan``."""
+    """Run differential GTD/TDC updates over transition arrays with ``lax.scan``.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_AVERAGE_REWARD_SEQUENCE_MAX_STEPS``), or
+            the other step arrays do not share its leading length.
+    """
+    num_steps = _require_avg_reward_sequence_length("observations", observations)
+    _require_avg_reward_matching_length("rewards", rewards, expected=num_steps)
+    _require_avg_reward_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
+    _require_avg_reward_matching_length("rhos", rhos, expected=num_steps)
     start = time.time()
 
     def _scan_fn(
@@ -1684,6 +1750,12 @@ def run_average_reward_horde_from_arrays(
         raise ValueError(
             f"cumulants must have shape {expected_cumulant_shape}, got {cumulants.shape}"
         )
+    num_steps = observations.shape[0]
+    if num_steps < 1 or num_steps > _AVERAGE_REWARD_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            "observations length must be an integer in "
+            f"[1, {_AVERAGE_REWARD_SEQUENCE_MAX_STEPS}]"
+        )
     start = time.time()
 
     def _scan_fn(
@@ -1732,7 +1804,18 @@ def run_average_reward_horde_actor_critic_from_arrays(
     rewards: Float[Array, " num_steps"],
     next_observations: Float[Array, "num_steps observation_dim"],
 ) -> AverageRewardHordeActorCriticArrayResult:
-    """Run average-reward Horde actor-critic over transition arrays."""
+    """Run average-reward Horde actor-critic over transition arrays.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``rewards`` is empty, exceeds the documented
+            scan-length ceiling (``_AVERAGE_REWARD_SEQUENCE_MAX_STEPS``), or
+            ``next_observations`` does not share its leading length.
+    """
+    num_steps = _require_avg_reward_sequence_length("rewards", rewards)
+    _require_avg_reward_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
     start = time.time()
 
     def _scan_fn(
@@ -2364,7 +2447,20 @@ def run_differential_sarsa_from_arrays(
     transitions from the stored `(S_t, A_t)` to each ``next_observations[t]``.
     When ``discounts`` is omitted, every transition uses ``1.0`` for backward
     compatibility with the original continuing-task runner.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``rewards`` is empty, exceeds the documented
+            scan-length ceiling (``_AVERAGE_REWARD_SEQUENCE_MAX_STEPS``), or
+            ``next_observations``/``discounts`` do not share its leading
+            length.
     """
+    num_steps = _require_avg_reward_sequence_length("rewards", rewards)
+    _require_avg_reward_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
+    if discounts is not None:
+        _require_avg_reward_matching_length("discounts", discounts, expected=num_steps)
     start = time.time()
     if discounts is None:
         discounts = jnp.ones_like(rewards, dtype=jnp.float32)

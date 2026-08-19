@@ -12,6 +12,7 @@ from alberta_framework import (
 )
 from alberta_framework.core import DifferentialTDLearner as CoreDifferentialTDLearner
 from alberta_framework.core.average_reward import (
+    _AVERAGE_REWARD_SEQUENCE_MAX_STEPS,
     AverageRewardHordeActorCriticAgent,
     AverageRewardHordeActorCriticConfig,
     AverageRewardHordeLearner,
@@ -21,6 +22,8 @@ from alberta_framework.core.average_reward import (
     DifferentialSARSAConfig,
     DifferentialTDConfig,
     DifferentialTDLearner,
+    _require_avg_reward_matching_length,
+    _require_avg_reward_sequence_length,
     run_average_reward_horde_actor_critic_from_arrays,
     run_average_reward_horde_from_arrays,
     run_differential_gtd_from_arrays,
@@ -1159,3 +1162,207 @@ def test_differential_td_and_gtd_configs_reject_invalid_scalars() -> None:
         AverageRewardHordeLearner(1, sparsity=float("nan"))
     with pytest.raises(ValueError, match="use_layer_norm"):
         AverageRewardHordeLearner(1, use_layer_norm=1)  # type: ignore[arg-type]
+
+
+# =============================================================================
+# Scan sequence-length ceiling (hang guard)
+# =============================================================================
+#
+# ``run_differential_td_from_arrays``, ``run_differential_gtd_from_arrays``,
+# ``run_average_reward_horde_from_arrays``,
+# ``run_average_reward_horde_actor_critic_from_arrays``, and
+# ``run_differential_sarsa_from_arrays`` hand their step arrays straight to
+# ``jax.lax.scan`` with no bound on the leading (step) axis. A hostile or
+# mistaken caller supplying a huge array forces JAX to materialize per-step
+# outputs at that length, hanging the process well before any step executes
+# -- the same hang class already fixed for other scan-driven array loops in
+# ``core`` and ``utils``.
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        first = xs[0] if isinstance(xs, tuple) else xs
+        seen.append(int(first.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={first.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.core.average_reward.jax.lax.scan", spy)
+    return seen
+
+
+class TestAverageRewardSequenceCeiling:
+    def test_documented_protocol_ceiling(self) -> None:
+        assert _AVERAGE_REWARD_SEQUENCE_MAX_STEPS == 50_000
+
+    def test_last_fit_length_is_accepted(self) -> None:
+        vector = jnp.zeros((_AVERAGE_REWARD_SEQUENCE_MAX_STEPS,))
+        assert (
+            _require_avg_reward_sequence_length("rewards", vector)
+            == _AVERAGE_REWARD_SEQUENCE_MAX_STEPS
+        )
+
+    def test_first_overflow_length_is_rejected(self) -> None:
+        vector = jnp.zeros((_AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1,))
+        with pytest.raises(
+            ValueError, match=r"rewards length must be an integer in \[1, 50000\]"
+        ):
+            _require_avg_reward_sequence_length("rewards", vector)
+
+    def test_empty_length_is_rejected(self) -> None:
+        vector = jnp.zeros((0,))
+        with pytest.raises(ValueError, match=r"rewards length must be an integer in"):
+            _require_avg_reward_sequence_length("rewards", vector)
+
+    def test_scalar_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="leading step axis"):
+            _require_avg_reward_sequence_length("rewards", jnp.array(1.0))
+
+    def test_non_array_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="must be a JAX array"):
+            _require_avg_reward_sequence_length("rewards", [1.0, 2.0, 3.0])
+
+        class _HostileArrayLike:
+            shape = (3,)
+            ndim = 1
+
+        with pytest.raises(TypeError, match="must be a JAX array"):
+            _require_avg_reward_sequence_length("rewards", _HostileArrayLike())
+
+    def test_mismatched_length_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="same leading length"):
+            _require_avg_reward_matching_length("rewards", jnp.zeros((3,)), expected=4)
+
+    def test_matching_length_non_array_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="must be a JAX array"):
+            _require_avg_reward_matching_length("rewards", [1.0, 2.0], expected=2)
+
+    def test_run_differential_td_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        learner = DifferentialTDLearner(DifferentialTDConfig())
+        state = learner.init(2)
+        n = _AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1
+        observations = jnp.ones((n, 2), dtype=jnp.float32)
+        rewards = jnp.ones((n,), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_differential_td_from_arrays(
+                learner, state, observations, rewards, next_observations
+            )
+        assert seen == []
+
+    def test_run_differential_td_from_arrays_rejects_mismatched_length_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        learner = DifferentialTDLearner(DifferentialTDConfig())
+        state = learner.init(2)
+        observations = jnp.ones((10, 2), dtype=jnp.float32)
+        rewards = jnp.ones((5,), dtype=jnp.float32)
+        next_observations = jnp.ones((10, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="same leading length"):
+            run_differential_td_from_arrays(
+                learner, state, observations, rewards, next_observations
+            )
+        assert seen == []
+
+    def test_run_differential_gtd_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        learner = DifferentialGTDLearner(DifferentialGTDConfig())
+        state = learner.init(2)
+        n = _AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1
+        observations = jnp.ones((n, 2), dtype=jnp.float32)
+        rewards = jnp.ones((n,), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        rhos = jnp.ones((n,), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_differential_gtd_from_arrays(
+                learner, state, observations, rewards, next_observations, rhos
+            )
+        assert seen == []
+
+    def test_run_average_reward_horde_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        learner = AverageRewardHordeLearner(n_demons=1, hidden_sizes=())
+        state = learner.init(2, jr.key(0))
+        n = _AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1
+        observations = jnp.ones((n, 2), dtype=jnp.float32)
+        cumulants = jnp.ones((n, 1), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_average_reward_horde_from_arrays(
+                learner, state, observations, cumulants, next_observations
+            )
+        assert seen == []
+
+    def test_run_average_reward_horde_actor_critic_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent = AverageRewardHordeActorCriticAgent(
+            AverageRewardHordeActorCriticConfig(n_actions=2, hidden_sizes=())
+        )
+        state = agent.init(2, jr.key(0))
+        state, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+        n = _AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1
+        rewards = jnp.ones((n,), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="rewards length must be an integer in"):
+            run_average_reward_horde_actor_critic_from_arrays(
+                agent, state, rewards, next_observations
+            )
+        assert seen == []
+
+    def test_run_differential_sarsa_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+        state = agent.init(2, jr.key(0))
+        state, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+        n = _AVERAGE_REWARD_SEQUENCE_MAX_STEPS + 1
+        rewards = jnp.ones((n,), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="rewards length must be an integer in"):
+            run_differential_sarsa_from_arrays(agent, state, rewards, next_observations)
+        assert seen == []
+
+    def test_run_differential_sarsa_from_arrays_rejects_mismatched_discounts_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+        state = agent.init(2, jr.key(0))
+        state, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+        rewards = jnp.ones((5,), dtype=jnp.float32)
+        next_observations = jnp.ones((5, 2), dtype=jnp.float32)
+        discounts = jnp.ones((3,), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="same leading length"):
+            run_differential_sarsa_from_arrays(
+                agent, state, rewards, next_observations, discounts
+            )
+        assert seen == []
+
+    def test_origin_hang_class_is_rejected_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A far larger sequence length -- the actual hang class -- is also
+        rejected before ``jax.lax.scan`` is ever called."""
+        seen = _spy_scan(monkeypatch)
+        learner = DifferentialTDLearner(DifferentialTDConfig())
+        state = learner.init(2)
+        n = 2_000_000
+        observations = jnp.ones((n, 2), dtype=jnp.float32)
+        rewards = jnp.ones((n,), dtype=jnp.float32)
+        next_observations = jnp.ones((n, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_differential_td_from_arrays(
+                learner, state, observations, rewards, next_observations
+            )
+        assert seen == []
