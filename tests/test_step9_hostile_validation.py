@@ -3,12 +3,19 @@
 from fractions import Fraction
 from typing import Any, cast
 
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 
 from alberta_framework.steps.step9 import (
+    _STEP9_SEQUENCE_MAX_STEPS,
     Step9DreamingConfig,
+    _require_step9_trusted_array,
+    init_step9_state,
     make_step9_components,
+    run_step9_scan,
     run_step9_smoke,
 )
 
@@ -244,3 +251,161 @@ def test_runtime_entry_points_require_exact_config_without_truthiness_hooks() ->
 def test_smoke_preflights_complete_output_shape_before_allocation() -> None:
     with pytest.raises(ValueError, match="observation row count"):
         run_step9_smoke(steps=2**31 - 1)
+
+
+# =============================================================================
+# run_step9_scan sequence-length ceiling (hang guard)
+# =============================================================================
+#
+# ``run_step9_scan`` hands ``rewards``/``next_observations`` straight to
+# ``jax.lax.scan`` with no bound on the leading (step) axis. A hostile or
+# mistaken caller supplying a huge array forces JAX to trace/compile a scan
+# of that length, hanging the process well before any step executes -- the
+# same hang class fixed this session for other scan-driven array loops in
+# ``core/sarsa.py``, ``core/average_reward.py``, and
+# ``core/horde_actor_critic.py``.
+
+
+def _step9_scan_components(
+    steps: int,
+) -> tuple[Step9DreamingConfig, Any, Any, Any, Any, jax.Array, jax.Array]:
+    cfg = Step9DreamingConfig(
+        observation_dim=3,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=0,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    state = init_step9_state(
+        agent,
+        model,
+        buffer,
+        key=jr.key(0),
+        initial_observation=jnp.zeros((3,), dtype=jnp.float32),
+    )
+    rewards = jnp.zeros((steps,), dtype=jnp.float32)
+    next_observations = jnp.zeros((steps, 3), dtype=jnp.float32)
+    return cfg, agent, model, buffer, state, rewards, next_observations
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        first = xs[0] if isinstance(xs, tuple) else xs
+        seen.append(int(first.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={first.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.steps.step9.jax.lax.scan", spy)
+    return seen
+
+
+def test_step9_sequence_ceiling_is_documented() -> None:
+    assert _STEP9_SEQUENCE_MAX_STEPS == 10_000
+
+
+def test_step9_ceiling_length_array_still_passes_the_trusted_array_gate() -> None:
+    rewards = jnp.zeros((_STEP9_SEQUENCE_MAX_STEPS,), dtype=jnp.float32)
+    checked = _require_step9_trusted_array(
+        "rewards", rewards, shape=(_STEP9_SEQUENCE_MAX_STEPS,), dtype=jnp.float32
+    )
+    assert checked.shape == (_STEP9_SEQUENCE_MAX_STEPS,)
+
+
+def test_run_step9_scan_rejects_overflow_length_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    cfg, agent, model, buffer, state, rewards, next_observations = _step9_scan_components(
+        _STEP9_SEQUENCE_MAX_STEPS + 1
+    )
+    with pytest.raises(ValueError, match=r"rewards length must be an integer in \[1, 10000\]"):
+        run_step9_scan(cfg, agent, model, buffer, state, rewards, next_observations)
+    assert seen == []
+
+
+def test_run_step9_scan_rejects_origin_hang_class_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A far larger sequence length -- the actual hang class -- is also
+    rejected before ``jax.lax.scan`` is ever called."""
+    seen = _spy_scan(monkeypatch)
+    cfg, agent, model, buffer, state, rewards, next_observations = _step9_scan_components(
+        200_000
+    )
+    with pytest.raises(ValueError, match="rewards length must be an integer in"):
+        run_step9_scan(cfg, agent, model, buffer, state, rewards, next_observations)
+    assert seen == []
+
+
+def test_run_step9_scan_rejects_mismatched_next_observations_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    cfg, agent, model, buffer, state, rewards, _next_observations = _step9_scan_components(5)
+    mismatched = jnp.zeros((6, 3), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="next_observations must have shape"):
+        run_step9_scan(cfg, agent, model, buffer, state, rewards, mismatched)
+    assert seen == []
+
+
+def test_run_step9_scan_rejects_non_config_type_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    _cfg, agent, model, buffer, state, rewards, next_observations = _step9_scan_components(5)
+    with pytest.raises(TypeError, match="actual Step9DreamingConfig"):
+        run_step9_scan(
+            cast(Any, object()), agent, model, buffer, state, rewards, next_observations
+        )
+    assert seen == []
+
+
+def test_run_step9_scan_rejects_wrong_dtype_rewards_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    cfg, agent, model, buffer, state, _rewards, next_observations = _step9_scan_components(5)
+    int_rewards = jnp.zeros((5,), dtype=jnp.int32)
+    with pytest.raises(TypeError, match="rewards must have dtype"):
+        run_step9_scan(cfg, agent, model, buffer, state, int_rewards, next_observations)
+    assert seen == []
+
+
+class _HostileArray:
+    """Duck-types ``.shape``/``.dtype`` but is not a trusted array type."""
+
+    calls = 0
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        type(self).calls += 1
+        raise AssertionError("shape hook must not run")
+
+    @property
+    def dtype(self) -> np.dtype[Any]:
+        type(self).calls += 1
+        raise AssertionError("dtype hook must not run")
+
+
+def test_run_step9_scan_rejects_hostile_rewards_without_touching_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    cfg, agent, model, buffer, state, _rewards, next_observations = _step9_scan_components(5)
+    _HostileArray.calls = 0
+    with pytest.raises(TypeError, match="rewards must be a trusted array"):
+        run_step9_scan(
+            cfg, agent, model, buffer, state, cast(Any, _HostileArray()), next_observations
+        )
+    assert _HostileArray.calls == 0
+    assert seen == []
+
+
+def test_run_step9_scan_accepts_a_small_in_bounds_sequence() -> None:
+    cfg, agent, model, buffer, state, rewards, next_observations = _step9_scan_components(4)
+    result = run_step9_scan(cfg, agent, model, buffer, state, rewards, next_observations)
+    assert result.real_td_errors.shape == (4,)

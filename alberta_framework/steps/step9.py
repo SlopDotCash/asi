@@ -73,6 +73,17 @@ from alberta_framework.steps.step6 import (
 _INT32_MAX = 2**31 - 1
 _MAX_CONFIG_SEQUENCE_LENGTH = 4_096
 _MAX_DREAM_WORK_PER_REAL_STEP = 4_096
+# Matches the established ceiling for other scan-driven array-loop runners
+# fixed this session (``core.sarsa._SARSA_SEQUENCE_MAX_STEPS``,
+# ``core.average_reward._AVERAGE_REWARD_SEQUENCE_MAX_STEPS``,
+# ``core.horde_actor_critic._HORDE_AC_SEQUENCE_MAX_STEPS``). ``run_step9_scan``
+# hands ``rewards``/``next_observations`` straight to ``jax.lax.scan`` with no
+# bound on the leading (step) axis; bounding only by ``_INT32_MAX`` still
+# permits a caller to force JAX to trace/compile a scan of ~2 billion steps,
+# hanging the process well before any step executes. Step 9's per-step work
+# additionally includes model-based dreaming rollouts, so this module is at
+# least as exposed to the hang as its siblings.
+_STEP9_SEQUENCE_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -916,6 +927,36 @@ def step9_update(
     )
 
 
+def _has_step9_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    )
+
+
+def _require_step9_trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    if not _has_step9_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        actual_shape = tuple(value.shape)
+        actual_dtype = jnp.dtype(value.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != jnp.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {jnp.dtype(dtype)}")
+    return cast(Array, value)
+
+
 def run_step9_scan(
     config: Step9DreamingConfig,
     agent: DifferentialSARSAAgent,
@@ -925,7 +966,35 @@ def run_step9_scan(
     rewards: Array,
     next_observations: Array,
 ) -> Step9ArrayResult:
-    """Run Step 9 dreaming over real continuing transition arrays."""
+    """Run Step 9 dreaming over real continuing transition arrays.
+
+    Raises:
+        TypeError: If ``config`` is not an actual :class:`Step9DreamingConfig`,
+            or ``rewards``/``next_observations`` are not trusted arrays with
+            the expected dtype.
+        ValueError: If ``rewards`` is empty, exceeds the documented
+            scan-length ceiling (``_STEP9_SEQUENCE_MAX_STEPS``), or
+            ``next_observations`` does not share its leading length.
+    """
+    if type(config) is not Step9DreamingConfig:
+        raise TypeError("config must be an actual Step9DreamingConfig")
+    if not _has_step9_trusted_array_type(rewards):
+        raise TypeError("rewards must be a trusted array")
+    try:
+        steps = int(rewards.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("rewards must expose trusted shape metadata") from error
+    if not 1 <= steps <= _STEP9_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"rewards length must be an integer in [1, {_STEP9_SEQUENCE_MAX_STEPS}]"
+        )
+    rewards = _require_step9_trusted_array("rewards", rewards, shape=(steps,), dtype=jnp.float32)
+    next_observations = _require_step9_trusted_array(
+        "next_observations",
+        next_observations,
+        shape=(steps, config.observation_dim),
+        dtype=jnp.float32,
+    )
 
     def scan_step(
         carry: Step9DreamingState,
