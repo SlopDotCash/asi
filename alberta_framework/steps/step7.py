@@ -103,7 +103,9 @@ class Step7DynaConfig:
     fixed number of model-generated one-step backups, gated by model warmup.
     """
 
-    control: Step6DifferentialSARSAConfig = field(default_factory=Step6DifferentialSARSAConfig)
+    control: Step6DifferentialSARSAConfig = field(
+        default_factory=Step6DifferentialSARSAConfig
+    )
     world_model: Step8WorldModelConfig = field(default_factory=Step8WorldModelConfig)
     planning_steps: int = 1
     planning_rollout_depth: int = 1
@@ -342,7 +344,9 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
     ):
         raise ValueError("derived Step 7 planning output bytes must fit signed int32")
     memory_scalars = (
-        2 * planning_memory_size * config.world_model.observation_dim + 4 * planning_memory_size + 3
+        2 * planning_memory_size * config.world_model.observation_dim
+        + 4 * planning_memory_size
+        + 3
     )
     if memory_scalars > _INT32_MAX or 4 * memory_scalars > _INT32_MAX:
         raise ValueError("derived Step 7 planning-memory bytes must fit signed int32")
@@ -492,8 +496,12 @@ class Step7SmokeResult:
         payload["real_td_errors_shape"] = list(self.real_td_errors_shape)
         payload["planning_td_errors_shape"] = list(self.planning_td_errors_shape)
         payload["planning_priorities_shape"] = list(self.planning_priorities_shape)
-        payload["planning_anchor_indices_shape"] = list(self.planning_anchor_indices_shape)
-        payload["planning_importance_ratios_shape"] = list(self.planning_importance_ratios_shape)
+        payload["planning_anchor_indices_shape"] = list(
+            self.planning_anchor_indices_shape
+        )
+        payload["planning_importance_ratios_shape"] = list(
+            self.planning_importance_ratios_shape
+        )
         payload["actions_shape"] = list(self.actions_shape)
         return payload
 
@@ -619,7 +627,9 @@ def init_step7_state(
         raise TypeError("agent must be an actual DifferentialSARSAAgent")
     if type(model) is not OneStepWorldModel:
         raise TypeError("model must be an actual OneStepWorldModel")
-    memory_size = _require_int("memory_size", memory_size, minimum=1, maximum=_INT32_MAX - 1)
+    memory_size = _require_int(
+        "memory_size", memory_size, minimum=1, maximum=_INT32_MAX - 1
+    )
     feature_dim = model.config.observation_dim
     if model.config.n_actions != agent.config.n_actions:
         raise ValueError("model and agent action counts must match")
@@ -716,7 +726,11 @@ def _score_planning_actions(
             jnp.mean((prediction.next_observation - anchor_observation) ** 2)
         )
         reward_priority = jnp.abs(prediction.reward)
-        return reward_priority if strategy == "reward" else reward_priority + transition_magnitude
+        return (
+            reward_priority
+            if strategy == "reward"
+            else reward_priority + transition_magnitude
+        )
 
     priorities = jax.vmap(predict_action)(actions)
     selected = jnp.argmax(priorities).astype(jnp.int32)
@@ -735,7 +749,9 @@ def _store_real_transition(
     index = state.memory_position
     memory_size = state.memory_actions.shape[0]
     observations = state.memory_observations.at[index].set(
-        jnp.asarray(observation, dtype=jnp.float32).reshape((state.memory_observations.shape[1],))
+        jnp.asarray(observation, dtype=jnp.float32).reshape(
+            (state.memory_observations.shape[1],)
+        )
     )
     actions = state.memory_actions.at[index].set(action.astype(jnp.int32))
     rewards = state.memory_rewards.at[index].set(jnp.asarray(reward, dtype=jnp.float32))
@@ -744,8 +760,12 @@ def _store_real_transition(
             (state.memory_next_observations.shape[1],)
         )
     )
-    priorities = state.memory_priorities.at[index].set(jnp.asarray(priority, dtype=jnp.float32))
-    utilities = state.memory_utilities.at[index].set(jnp.asarray(priority, dtype=jnp.float32))
+    priorities = state.memory_priorities.at[index].set(
+        jnp.asarray(priority, dtype=jnp.float32)
+    )
+    utilities = state.memory_utilities.at[index].set(
+        jnp.asarray(priority, dtype=jnp.float32)
+    )
     count = jnp.minimum(state.memory_count + 1, memory_size)
     position = (state.memory_position + 1) % memory_size
     return (
@@ -914,7 +934,8 @@ def _apply_planning_importance_correction(
     return cast(
         DifferentialSARSAState,
         planned_state.replace(  # type: ignore[attr-defined]
-            q_weights=old_state.q_weights + rho * (planned_state.q_weights - old_state.q_weights),
+            q_weights=old_state.q_weights
+            + rho * (planned_state.q_weights - old_state.q_weights),
             q_bias=old_state.q_bias + rho * (planned_state.q_bias - old_state.q_bias),
             q_trace_weights=old_state.q_trace_weights
             + rho * (planned_state.q_trace_weights - old_state.q_trace_weights),
@@ -1043,7 +1064,9 @@ def step7_update(
             model,
             model_state,
             anchor_observation,
-            config.planning_strategy if config.planning_strategy != "random" else "surprise",
+            config.planning_strategy
+            if config.planning_strategy != "random"
+            else "surprise",
             config.control.n_actions,
         )
         action = jnp.where(
@@ -1074,12 +1097,13 @@ def step7_update(
             anchor_priority,
             anchor_priority + priority,
         )
-
         def rollout_step(
             rollout_carry: tuple[DifferentialSARSAState, Array, Array, Array],
             _: Array,
         ) -> tuple[tuple[DifferentialSARSAState, Array, Array, Array], tuple[Array, Array]]:
-            rollout_state, rollout_observation, rollout_action, rollout_key = rollout_carry
+            rollout_state, rollout_observation, rollout_action, rollout_key = (
+                rollout_carry
+            )
             prediction = model.predict(
                 model_state,
                 rollout_observation,
@@ -1286,23 +1310,20 @@ def run_step7_scan(
             result.planning_accepted,
         )
 
-    (
-        final_state,
-        (
-            real_td_errors,
-            average_rewards,
-            actions,
-            model_reward_errors,
-            model_next_observation_errors,
-            model_updates_applied,
-            planning_td_errors,
-            planning_priorities,
-            planning_anchor_indices,
-            planning_behavior_probs,
-            planning_target_probs,
-            planning_importance_ratios,
-            planning_accepted,
-        ),
+    final_state, (
+        real_td_errors,
+        average_rewards,
+        actions,
+        model_reward_errors,
+        model_next_observation_errors,
+        model_updates_applied,
+        planning_td_errors,
+        planning_priorities,
+        planning_anchor_indices,
+        planning_behavior_probs,
+        planning_target_probs,
+        planning_importance_ratios,
+        planning_accepted,
     ) = jax.lax.scan(scan_step, state, (rewards, next_observations))
     return Step7DynaArrayResult(
         state=final_state,
@@ -1343,7 +1364,9 @@ def run_step7_smoke(
     real_output_bytes = steps * (17 + 4 * observation_dim)
     planning_output_bytes = steps * cfg.planning_steps * 25
     memory_scalars = (
-        2 * cfg.planning_memory_size * observation_dim + 4 * cfg.planning_memory_size + 3
+        2 * cfg.planning_memory_size * observation_dim
+        + 4 * cfg.planning_memory_size
+        + 3
     )
     memory_bytes = 4 * memory_scalars
     total_bytes = input_bytes + real_output_bytes + planning_output_bytes + memory_bytes
@@ -1393,7 +1416,9 @@ def run_step7_smoke(
         seed=seed,
         real_td_errors_shape=tuple(int(dim) for dim in result.real_td_errors.shape),
         planning_td_errors_shape=tuple(int(dim) for dim in result.planning_td_errors.shape),
-        planning_priorities_shape=tuple(int(dim) for dim in result.planning_priorities.shape),
+        planning_priorities_shape=tuple(
+            int(dim) for dim in result.planning_priorities.shape
+        ),
         planning_anchor_indices_shape=tuple(
             int(dim) for dim in result.planning_anchor_indices.shape
         ),
