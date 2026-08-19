@@ -18,27 +18,27 @@ pytestmark = pytest.mark.unit
 class _HostileStr(str):
     calls = 0
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         type(self).calls += 1
         raise AssertionError("hostile eq must not run")
 
-    def __hash__(self) -> int:  # type: ignore[override]
+    def __hash__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile hash must not run")
 
-    def __bool__(self) -> bool:  # type: ignore[override]
+    def __bool__(self) -> bool:
         type(self).calls += 1
         raise AssertionError("hostile bool must not run")
 
-    def __len__(self) -> int:  # type: ignore[override]
+    def __len__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile len must not run")
 
-    def __str__(self) -> str:  # type: ignore[override]
+    def __str__(self) -> str:
         type(self).calls += 1
         raise AssertionError("hostile str must not run")
 
-    def __repr__(self) -> str:  # type: ignore[override]
+    def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("hostile repr must not run")
 
@@ -128,8 +128,8 @@ def _artifact_with_digest_hostile(hostile: object) -> dict[str, object]:
 def test_recurring_provenance_head_rejects_hostile_before_len() -> None:
     hostile = _HostileStr("a" * 40)
     _HostileStr.calls = 0
-    artifact = _artifact_with_provenance_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_recurring_feature_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_provenance_hostile(hostile)
+    validation = validate_recurring_feature_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
     for err in validation.errors:
@@ -140,8 +140,8 @@ def test_recurring_provenance_head_rejects_hostile_before_len() -> None:
 def test_recurring_provenance_head_rejects_hostile_short_before_len() -> None:
     hostile = _HostileStr("short")
     _HostileStr.calls = 0
-    artifact = _artifact_with_provenance_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_recurring_feature_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_provenance_hostile(hostile)
+    validation = validate_recurring_feature_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
@@ -149,8 +149,8 @@ def test_recurring_provenance_head_rejects_hostile_short_before_len() -> None:
 def test_recurring_digest_sha_rejects_hostile_before_len() -> None:
     hostile = _HostileStr("a" * 64)
     _HostileStr.calls = 0
-    artifact = _artifact_with_digest_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_recurring_feature_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_digest_hostile(hostile)
+    validation = validate_recurring_feature_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
     for err in validation.errors:
@@ -160,27 +160,27 @@ def test_recurring_digest_sha_rejects_hostile_before_len() -> None:
 def test_recurring_digest_sha_rejects_hostile_short_before_len() -> None:
     hostile = _HostileStr("short")
     _HostileStr.calls = 0
-    artifact = _artifact_with_digest_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_recurring_feature_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_digest_hostile(hostile)
+    validation = validate_recurring_feature_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
 
 def test_recurring_provenance_and_digest_benign_still_validates() -> None:
-    artifact_bad = _artifact_with_provenance_hostile("short")  # type: ignore[dict-item]
-    validation_bad = validate_recurring_feature_artifact(artifact_bad)  # type: ignore[arg-type]
+    artifact_bad = _artifact_with_provenance_hostile("short")
+    validation_bad = validate_recurring_feature_artifact(artifact_bad)
     assert validation_bad.valid is False
-    artifact_bad2 = _artifact_with_digest_hostile("short")  # type: ignore[dict-item]
-    validation_bad2 = validate_recurring_feature_artifact(artifact_bad2)  # type: ignore[arg-type]
+    artifact_bad2 = _artifact_with_digest_hostile("short")
+    validation_bad2 = validate_recurring_feature_artifact(artifact_bad2)
     assert validation_bad2.valid is False
     assert _HostileStr.calls == 0
 
 
 def test_recurring_non_string_types_rejected() -> None:
     for bad in [123, None, 12.34, b"bytes", ["a"], True]:
-        artifact = _artifact_with_provenance_hostile(bad)  # type: ignore[dict-item]
-        validation = validate_recurring_feature_artifact(artifact)  # type: ignore[arg-type]
+        artifact = _artifact_with_provenance_hostile(bad)
+        validation = validate_recurring_feature_artifact(artifact)
         assert validation.valid is False
-        artifact2 = _artifact_with_digest_hostile(bad)  # type: ignore[dict-item]
-        validation2 = validate_recurring_feature_artifact(artifact2)  # type: ignore[arg-type]
+        artifact2 = _artifact_with_digest_hostile(bad)
+        validation2 = validate_recurring_feature_artifact(artifact2)
         assert validation2.valid is False
