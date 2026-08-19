@@ -1416,7 +1416,7 @@ def _validate_checks(
         }:
             errors.append(f"{location} keys do not match the v1 schema")
         name = raw_check.get("name")
-        if not isinstance(name, str) or not name:
+        if type(name) is not str or not name:
             errors.append(f"{location}.name must be a non-empty string")
             all_passed = False
             continue
@@ -1431,7 +1431,7 @@ def _validate_checks(
         comparator = raw_check.get("comparator")
         declared = raw_check.get("passed")
         detail = raw_check.get("detail")
-        if not isinstance(detail, str) or not detail:
+        if type(detail) is not str or not detail:
             errors.append(f"{location}.detail must be a non-empty string")
         expected_actual = expected_actuals.get(name)
         if expected_actual is not None and actual != expected_actual:
