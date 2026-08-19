@@ -672,21 +672,55 @@ def run_prototype_memory_arrays(
     valid_update, allocated``.
     """
     if type(learner) is not PrototypeMemoryLearner:
-        raise TypeError("learner must be a PrototypeMemoryLearner")
+        raise TypeError("learner must be an actual PrototypeMemoryLearner")
+    if state is not None and type(state) is not PrototypeMemoryState:
+        raise TypeError("state must be an actual PrototypeMemoryState")
+    actual_obs_type = type(cast(object, observations))
+    if not (
+        actual_obs_type is np.ndarray
+        or isinstance(observations, (jax.Array, jax.core.Tracer))
+        or actual_obs_type is jax.ShapeDtypeStruct
+        or issubclass(actual_obs_type, jax.core.ShapedArray)
+        or (hasattr(observations, "shape") and hasattr(observations, "dtype"))
+    ):
+        raise TypeError("observations must be a trusted array")
+    actual_tgt_type = type(cast(object, targets))
+    if not (
+        actual_tgt_type is np.ndarray
+        or isinstance(targets, (jax.Array, jax.core.Tracer))
+        or actual_tgt_type is jax.ShapeDtypeStruct
+        or issubclass(actual_tgt_type, jax.core.ShapedArray)
+        or (hasattr(targets, "shape") and hasattr(targets, "dtype"))
+    ):
+        raise TypeError("targets must be a trusted array")
+    if getattr(observations, "ndim", len(getattr(observations, "shape", ()))) != 2:
+        raise ValueError("observations must be 2-dimensional (steps, feature_dim)")
+    if getattr(targets, "ndim", len(getattr(targets, "shape", ()))) != 2:
+        raise ValueError("targets must be 2-dimensional (steps, n_classes)")
     try:
-        observation_shape = tuple(observations.shape)
-        target_shape = tuple(targets.shape)
-    except Exception as error:
-        raise TypeError("observations and targets must expose array metadata") from error
-    if len(observation_shape) != 2 or observation_shape[1] != learner.config.feature_dim:
-        raise ValueError("observations have an invalid shape")
-    if len(target_shape) != 2 or target_shape[1] != learner.config.n_classes:
-        raise ValueError("targets have an invalid shape")
-    if observation_shape[0] != target_shape[0]:
+        steps = int(observations.shape[0])
+        feature_dim = int(observations.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+    try:
+        target_steps = int(targets.shape[0])
+        n_classes = int(targets.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("targets must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("prototype memory step count must be between 1 and signed-int32 steps")
+    if feature_dim != learner.config.feature_dim:
+        raise ValueError(
+            f"observations feature_dim ({feature_dim}) must match "
+            f"config feature_dim ({learner.config.feature_dim})"
+        )
+    if target_steps != steps:
         raise ValueError("observations and targets must have the same step count")
-    steps = observation_shape[0]
-    if type(steps) is not int or steps < 0:
-        raise ValueError("prototype memory step count must be a non-negative integer")
+    if n_classes != learner.config.n_classes:
+        raise ValueError(
+            f"targets n_classes ({n_classes}) must match "
+            f"config n_classes ({learner.config.n_classes})"
+        )
     _require_sequence_resource(
         "prototype memory scan outputs",
         float32_scalars=steps * (learner.config.n_classes + 6),

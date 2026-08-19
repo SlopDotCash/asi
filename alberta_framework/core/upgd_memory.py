@@ -1187,7 +1187,9 @@ def run_upgd_memory_arrays(
     memory_conf``.
     """
     if type(learner) is not UPGDMemoryLearner:
-        raise TypeError("learner must be a UPGDMemoryLearner")
+        raise TypeError("learner must be an actual UPGDMemoryLearner")
+    if type(state) is not UPGDMemoryState:
+        raise TypeError("state must be an actual UPGDMemoryState")
     learner._validate_state_static_contract(state)  # noqa: SLF001
     observation_shape, observation_dtype = _trusted_array_metadata(
         "observations", observations
@@ -1199,7 +1201,7 @@ def run_upgd_memory_arrays(
         raise ValueError(
             f"observations must have shape (steps, {learner.config.feature_dim})"
         )
-    steps = _require_int("steps", observation_shape[0], minimum=0, maximum=_INT32_MAX)
+    steps = _require_int("steps", observation_shape[0], minimum=1, maximum=_INT32_MAX)
     if target_shape != (steps, learner.config.n_heads):
         raise ValueError(f"targets must have shape ({steps}, {learner.config.n_heads})")
     if observation_dtype != jnp.dtype(jnp.float32):

@@ -1210,23 +1210,52 @@ def run_associative_memory_arrays(
 ) -> AssociativeMemoryLearningResult:
     """Run a scan-compatible online associative learner over arrays."""
     if type(learner) is not AssociativeMemoryLearner:
-        raise TypeError("learner must be an AssociativeMemoryLearner")
+        raise TypeError("learner must be an actual AssociativeMemoryLearner")
+    if type(state) is not AssociativeMemoryState:
+        raise TypeError("state must be an actual AssociativeMemoryState")
     learner._validate_state_static_contract(state)
     c = learner.config
+    actual_context_type = type(cast(object, contexts))
+    if not (
+        actual_context_type is np.ndarray
+        or isinstance(contexts, (jax.Array, jax.core.Tracer))
+        or actual_context_type is jax.ShapeDtypeStruct
+        or issubclass(actual_context_type, jax.core.ShapedArray)
+        or (hasattr(contexts, "shape") and hasattr(contexts, "dtype"))
+    ):
+        raise TypeError("contexts must be a trusted array")
+    actual_label_type = type(cast(object, labels))
+    if not (
+        actual_label_type is np.ndarray
+        or isinstance(labels, (jax.Array, jax.core.Tracer))
+        or actual_label_type is jax.ShapeDtypeStruct
+        or issubclass(actual_label_type, jax.core.ShapedArray)
+        or (hasattr(labels, "shape") and hasattr(labels, "dtype"))
+    ):
+        raise TypeError("labels must be a trusted array")
+    if getattr(contexts, "ndim", len(getattr(contexts, "shape", ()))) != 2:
+        raise ValueError("contexts must be 2-dimensional (steps, block_size)")
+    if getattr(labels, "ndim", len(getattr(labels, "shape", ()))) != 1:
+        raise ValueError("labels must be 1-dimensional (steps,)")
     try:
-        context_shape = tuple(contexts.shape)
-        label_shape = tuple(labels.shape)
-    except Exception as error:
-        raise TypeError("contexts and labels must expose array metadata") from error
-    if len(context_shape) != 2 or context_shape[1] != c.block_size:
-        raise ValueError("contexts have an invalid shape")
-    steps = context_shape[0]
-    if type(steps) is not int or steps < 0:
-        raise ValueError("associative memory step count must be a non-negative integer")
-    if label_shape != (steps,):
-        raise ValueError("labels have an invalid shape")
-    _require_array("contexts", contexts, shape=(steps, c.block_size), dtype=jnp.int32)
-    _require_array("labels", labels, shape=(steps,), dtype=jnp.int32)
+        steps = int(contexts.shape[0])
+        block_size = int(contexts.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("contexts must expose trusted shape metadata") from error
+    try:
+        label_steps = int(labels.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("labels must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("associative memory step count must be between 1 and signed-int32 steps")
+    if block_size != c.block_size:
+        raise ValueError(
+            f"contexts block_size ({block_size}) must match config block_size ({c.block_size})"
+        )
+    if label_steps != steps:
+        raise ValueError(
+            f"labels step count ({label_steps}) must match contexts step count ({steps})"
+        )
     _, _, _, query_scalars, update_scalars = _associative_resource_counts(
         vocab_size=c.vocab_size,
         block_size=c.block_size,

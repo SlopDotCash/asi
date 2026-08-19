@@ -788,8 +788,43 @@ def transform_working_memory_arrays(
 ) -> WorkingMemoryArrayResult:
     """Transform arrays and expose one checked transaction mask per event."""
     if type(featurizer) is not WorkingMemoryFeaturizer:
-        raise TypeError("featurizer must be a WorkingMemoryFeaturizer")
+        raise TypeError("featurizer must be an actual WorkingMemoryFeaturizer")
+    if state is not None and type(state) is not WorkingMemoryState:
+        raise TypeError("state must be an actual WorkingMemoryState")
     cfg = featurizer.config
+    for name, arr in (("observations", observations), ("actions", actions), ("rewards", rewards)):
+        actual_type = type(cast(object, arr))
+        if not (
+            actual_type is np.ndarray
+            or isinstance(arr, (jax.Array, jax.core.Tracer))
+            or actual_type is jax.ShapeDtypeStruct
+            or issubclass(actual_type, jax.core.ShapedArray)
+            or (hasattr(arr, "shape") and hasattr(arr, "dtype"))
+        ):
+            raise TypeError(f"{name} must be a trusted array")
+    if external_gates is not None:
+        actual_gate_type = type(cast(object, external_gates))
+        if not (
+            actual_gate_type is np.ndarray
+            or isinstance(external_gates, (jax.Array, jax.core.Tracer))
+            or actual_gate_type is jax.ShapeDtypeStruct
+            or issubclass(actual_gate_type, jax.core.ShapedArray)
+            or (hasattr(external_gates, "shape") and hasattr(external_gates, "dtype"))
+        ):
+            raise TypeError("external_gates must be a trusted array")
+
+    if getattr(observations, "ndim", len(getattr(observations, "shape", ()))) != 2:
+        raise ValueError("observations must be 2-dimensional (steps, observation_dim)")
+    if getattr(actions, "ndim", len(getattr(actions, "shape", ()))) != 2:
+        raise ValueError("actions must be 2-dimensional (steps, action_dim)")
+    if getattr(rewards, "ndim", len(getattr(rewards, "shape", ()))) != 2:
+        raise ValueError("rewards must be 2-dimensional (steps, reward_dim)")
+    if (
+        external_gates is not None
+        and getattr(external_gates, "ndim", len(getattr(external_gates, "shape", ()))) != 1
+    ):
+        raise ValueError("external_gates must be 1-dimensional (steps,)")
+
     try:
         observation_shape = tuple(observations.shape)
         action_shape = tuple(actions.shape)
@@ -799,12 +834,19 @@ def transform_working_memory_arrays(
     if len(observation_shape) != 2 or observation_shape[1] != cfg.observation_dim:
         raise ValueError("observations have an invalid shape")
     steps = observation_shape[0]
-    if type(steps) is not int or steps < 0:
-        raise ValueError("transform step count must be a non-negative integer")
+    if type(steps) is not int or not 1 <= steps <= _INT32_MAX:
+        raise ValueError("transform step count must be between 1 and signed-int32 steps")
     if action_shape != (steps, cfg.action_dim):
         raise ValueError("actions have an invalid shape")
     if reward_shape != (steps, cfg.reward_dim):
         raise ValueError("rewards have an invalid shape")
+    if external_gates is not None:
+        try:
+            gate_shape = tuple(external_gates.shape)
+        except Exception as error:
+            raise TypeError("external_gates must expose array metadata") from error
+        if gate_shape != (steps,):
+            raise ValueError("external_gates have an invalid shape")
     _require_sequence_resource(
         "working memory transform outputs",
         float32_scalars=steps * cfg.feature_dim(),
