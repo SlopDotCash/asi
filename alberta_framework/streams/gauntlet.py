@@ -72,6 +72,9 @@ from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
 NUM_SEGMENTS = 9
+# Documented last-fit is the default nine-segment program
+# (``segment_length=3000``). Origin handed ``10**12`` to ``jnp.arange``.
+_GAUNTLET_LOOP_MAX_STEPS = NUM_SEGMENTS * 3000
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
@@ -98,6 +101,13 @@ def _require_int(
         raise ValueError(f"{name} must be an integer")
     if value < minimum or value > maximum:
         raise ValueError(f"{name} must lie in [{minimum}, {maximum}]")
+    return value
+
+
+def _require_gauntlet_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the documented program before ``jnp.arange``."""
+    if type(value) is not int or value < 1 or value > _GAUNTLET_LOOP_MAX_STEPS:
+        raise ValueError(f"{name} must be an integer in [1, {_GAUNTLET_LOOP_MAX_STEPS}]")
     return value
 
 
@@ -1113,7 +1123,12 @@ def run_gauntlet(
     Returns:
         ``(final_learner_state, squared_errors)`` with squared_errors of
         shape ``(num_steps,)``.
+
+    Raises:
+        ValueError: If ``num_steps`` exceeds the documented program ceiling
+            (``27_000``).
     """
+    num_steps = _require_gauntlet_loop_steps("num_steps", num_steps)
     if reinit_each_segment and segment_length is None:
         raise ValueError("segment_length is required when reinit_each_segment=True")
     resolved_segment_length = 1 if segment_length is None else segment_length
@@ -1167,6 +1182,7 @@ def run_gauntlet_batched(
     Returns:
         Squared errors of shape ``(n_seeds, num_steps)``.
     """
+    num_steps = _require_gauntlet_loop_steps("num_steps", num_steps)
 
     def one_seed(key: Array) -> Array:
         _, sq = run_gauntlet(
