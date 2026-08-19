@@ -168,6 +168,13 @@ def _canonical_two_state_payoffs(
         payoff_shape = tuple(np.shape(cast(Any, raw_payoff)))
     except Exception as error:
         raise ValueError(f"{name} shape must be readable") from error
+    # Exact-type gate every dimension before comparing: a hostile ``.shape``
+    # property (np.shape() returns it verbatim, unconverted) could otherwise
+    # run an attacker-controlled ``__eq__``/``__ne__`` via
+    # ``payoff_shape != (...)`` below, before any dimension's type has been
+    # confirmed safe. Same defect class as PR #1219/#1994/#1995/#1998.
+    if any(type(dimension) is not int for dimension in payoff_shape):
+        raise ValueError(f"{name} shape metadata must be built-in integers")
     if payoff_shape != (_TWO_STATE_N, _TWO_STATE_ACTIONS):
         raise ValueError(f"{name} must be 2x2 (state x action)")
     try:
