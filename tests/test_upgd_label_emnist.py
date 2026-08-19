@@ -641,6 +641,31 @@ class TestPlanShardMergeAccounting:
         assert loaded["plan"]["planned_shard_count"] == 4
         assert loaded["plan_sha256"] == payload["plan_sha256"]
 
+    @pytest.mark.parametrize(
+        "omitted",
+        ["n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes"],
+    )
+    def test_load_plan_rejects_config_missing_a_protocol_field(self, tmp_path, omitted):
+        """Every LabelEMNISTConfig field is defaulted to the published
+        configuration, so a plan omitting one reconstructs at that default
+        instead of what the plan states -- and plan_sha256 then seals the
+        under-specified document rather than detecting it."""
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        payload = self._plan()
+        del payload["plan"]["config"][omitted]
+        # Re-seal so the truncation is challenged by the config-field contract
+        # rather than by the hash: any producer writing a plan this way would
+        # emit a matching plan_sha256.
+        payload["plan_sha256"] = upgd_label_emnist.canonical_json_sha256(
+            payload["plan"]
+        )
+        path = tmp_path / "plan.json"
+        atomic_write_new_json(path, payload)
+
+        with pytest.raises(ValueError, match=r"plan config fields do not match"):
+            load_plan(path)
+
     def test_plan_rejects_bad_seed_lists(self):
         with pytest.raises(ValueError, match="unique"):
             build_plan_payload(TINY, [1, 1], DATASET_META)

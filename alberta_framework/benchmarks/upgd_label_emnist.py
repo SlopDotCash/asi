@@ -96,7 +96,7 @@ import math
 import platform
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -395,6 +395,13 @@ class LabelEMNISTConfig:
             "hidden2": self.hidden2,
             "n_classes": self.n_classes,
         }
+
+
+# Derived from the dataclass rather than from to_config() so a new protocol
+# field joins this contract automatically: every LabelEMNISTConfig field is
+# defaulted to the published ICLR-2024 configuration, so a plan that omits one
+# would otherwise reconstruct at that default instead of what the plan states.
+_LABEL_EMNIST_CONFIG_FIELDS = frozenset(field.name for field in fields(LabelEMNISTConfig))
 
 
 @chex.dataclass(frozen=True)
@@ -1104,6 +1111,13 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: plan benchmark is not {BENCHMARK}")
     config_payload = dict(body["config"])
     n_steps = config_payload.pop("n_steps", None)
+    if set(config_payload) != _LABEL_EMNIST_CONFIG_FIELDS:
+        missing = sorted(_LABEL_EMNIST_CONFIG_FIELDS - set(config_payload))
+        unexpected = sorted(set(config_payload) - _LABEL_EMNIST_CONFIG_FIELDS)
+        raise ValueError(
+            f"{path}: plan config fields do not match the protocol contract "
+            f"(missing {missing}; unexpected {unexpected})"
+        )
     config = LabelEMNISTConfig(**config_payload)
     if n_steps != config.n_steps:
         raise ValueError(f"{path}: plan n_steps is inconsistent with config")
