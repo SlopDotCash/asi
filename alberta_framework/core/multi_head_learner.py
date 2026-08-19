@@ -1593,6 +1593,56 @@ def run_multi_head_learning_loop(
         ``MultiHeadLearningResult`` with final state and per-head metrics
         of shape ``(num_steps, n_heads, 3)``
     """
+    if type(learner) is not MultiHeadMLPLearner:
+        raise TypeError("learner must be an actual MultiHeadMLPLearner")
+    if type(state) is not MultiHeadMLPState:
+        raise TypeError("state must be an actual MultiHeadMLPState")
+    actual_obs_type = type(cast(object, observations))
+    if not (
+        actual_obs_type is np.ndarray
+        or isinstance(observations, (jax.Array, jax.core.Tracer))
+        or actual_obs_type is jax.ShapeDtypeStruct
+        or issubclass(actual_obs_type, jax.core.ShapedArray)
+    ):
+        raise TypeError("observations must be a trusted array")
+    actual_tgt_type = type(cast(object, targets))
+    if not (
+        actual_tgt_type is np.ndarray
+        or isinstance(targets, (jax.Array, jax.core.Tracer))
+        or actual_tgt_type is jax.ShapeDtypeStruct
+        or issubclass(actual_tgt_type, jax.core.ShapedArray)
+    ):
+        raise TypeError("targets must be a trusted array")
+
+    if observations.ndim != 2:
+        raise ValueError("observations must be 2-dimensional (num_steps, feature_dim)")
+    if targets.ndim != 2:
+        raise ValueError("targets must be 2-dimensional (num_steps, n_heads)")
+
+    try:
+        num_steps = int(observations.shape[0])
+        feature_dim = int(observations.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+
+    try:
+        targets_steps = int(targets.shape[0])
+        n_heads = int(targets.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("targets must expose trusted shape metadata") from error
+
+    if not 1 <= num_steps <= _INT32_MAX:
+        raise ValueError("observations must contain between 1 and signed-int32 steps")
+    if not 1 <= feature_dim <= _INT32_MAX:
+        raise ValueError("observations feature_dim must be positive and at most signed-int32")
+    if targets_steps != num_steps:
+        raise ValueError(
+            f"targets step count ({targets_steps}) must match observations ({num_steps})"
+        )
+    if n_heads != learner.n_heads:
+        raise ValueError(
+            f"targets head count ({n_heads}) must match learner.n_heads ({learner.n_heads})"
+        )
 
     def step_fn(
         carry: MultiHeadMLPState, inputs: tuple[Array, Array]
@@ -1639,7 +1689,71 @@ def run_multi_head_learning_loop_batched(
         ``BatchedMultiHeadResult`` with batched states and per-head metrics
         of shape ``(n_seeds, num_steps, n_heads, 3)``
     """
-    feature_dim = observations.shape[1]
+    if type(learner) is not MultiHeadMLPLearner:
+        raise TypeError("learner must be an actual MultiHeadMLPLearner")
+    actual_obs_type = type(cast(object, observations))
+    if not (
+        actual_obs_type is np.ndarray
+        or isinstance(observations, (jax.Array, jax.core.Tracer))
+        or actual_obs_type is jax.ShapeDtypeStruct
+        or issubclass(actual_obs_type, jax.core.ShapedArray)
+    ):
+        raise TypeError("observations must be a trusted array")
+    actual_tgt_type = type(cast(object, targets))
+    if not (
+        actual_tgt_type is np.ndarray
+        or isinstance(targets, (jax.Array, jax.core.Tracer))
+        or actual_tgt_type is jax.ShapeDtypeStruct
+        or issubclass(actual_tgt_type, jax.core.ShapedArray)
+    ):
+        raise TypeError("targets must be a trusted array")
+    actual_keys_type = type(cast(object, keys))
+    if not (
+        actual_keys_type is np.ndarray
+        or isinstance(keys, (jax.Array, jax.core.Tracer))
+        or actual_keys_type is jax.ShapeDtypeStruct
+        or issubclass(actual_keys_type, jax.core.ShapedArray)
+    ):
+        raise TypeError("keys must be a trusted array")
+
+    if observations.ndim != 2:
+        raise ValueError("observations must be 2-dimensional (num_steps, feature_dim)")
+    if targets.ndim != 2:
+        raise ValueError("targets must be 2-dimensional (num_steps, n_heads)")
+
+    try:
+        num_steps = int(observations.shape[0])
+        feature_dim = int(observations.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+
+    try:
+        targets_steps = int(targets.shape[0])
+        n_heads = int(targets.shape[1])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("targets must expose trusted shape metadata") from error
+
+    if not 1 <= num_steps <= _INT32_MAX:
+        raise ValueError("observations must contain between 1 and signed-int32 steps")
+    if not 1 <= feature_dim <= _INT32_MAX:
+        raise ValueError("observations feature_dim must be positive and at most signed-int32")
+    if targets_steps != num_steps:
+        raise ValueError(
+            f"targets step count ({targets_steps}) must match observations ({num_steps})"
+        )
+    if n_heads != learner.n_heads:
+        raise ValueError(
+            f"targets head count ({n_heads}) must match learner.n_heads ({learner.n_heads})"
+        )
+
+    if keys.ndim not in (1, 2):
+        raise ValueError("keys must be rank-1 or rank-2 array of keys")
+    try:
+        n_seeds = int(keys.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("keys must expose trusted shape metadata") from error
+    if not 1 <= n_seeds <= _INT32_MAX:
+        raise ValueError("keys must contain between 1 and signed-int32 seeds")
 
     def single_run(key: Array) -> tuple[MultiHeadMLPState, Array, Array]:
         init_state = learner.init(feature_dim, key)

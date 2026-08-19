@@ -125,6 +125,8 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 
+_INT32_MAX = 2**31 - 1
+
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
@@ -429,6 +431,12 @@ def build_schedule(key: Array, config: LabelEMNISTConfig, n_train: int) -> Label
         The schedule; task ``t`` is exactly steps
         ``[t * task_length, (t + 1) * task_length)``.
     """
+    if type(config) is not LabelEMNISTConfig:
+        raise TypeError("config must be an exact LabelEMNISTConfig")
+    if type(n_train) is not int:
+        raise TypeError("n_train must be an exact built-in int")
+    if not 1 <= n_train <= _INT32_MAX:
+        raise ValueError("n_train must be positive and at most signed-int32")
     if n_train < config.task_length:
         raise ValueError(
             f"n_train={n_train} is smaller than task_length={config.task_length}; "
@@ -646,6 +654,10 @@ def run_label_emnist(
     Returns:
         Host-side result arrays; see :class:`LabelEMNISTRunResult`.
     """
+    if config is not None and type(config) is not LabelEMNISTConfig:
+        raise TypeError("config must be an exact LabelEMNISTConfig or None")
+    if type(return_per_step) is not bool:
+        raise TypeError("return_per_step must be a boolean")
     if progress_every is not None and (
         type(progress_every) is not int or progress_every <= 0
     ):
