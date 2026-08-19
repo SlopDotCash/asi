@@ -167,3 +167,19 @@ def test_float_subclass_with_lying_ratio_is_rejected() -> None:
     with pytest.raises(ValueError, match="must be finite"):
         Step8WorldModelConfig(step_size=RatioFloat(0.05))
     assert RatioFloat.calls == 0
+
+
+def test_from_dict_rejects_hostile_mapping_and_keys() -> None:
+    class _HostileDict(dict[str, object]):
+        pass
+
+    with pytest.raises(ValueError, match="must be an exact dictionary"):
+        Step8WorldModelConfig.from_dict(_HostileDict())
+
+    payload = Step8WorldModelConfig().to_dict()
+    bad_keys: dict[Any, Any] = dict(payload)
+    bad_keys[_EvilStr("extra")] = 1
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        Step8WorldModelConfig.from_dict(cast(Any, bad_keys))
+
+

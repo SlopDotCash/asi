@@ -26,7 +26,7 @@ via Disagreement."
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from numbers import Integral
 from typing import Any, cast
 
@@ -87,10 +87,18 @@ class Step8WorldModelConfig:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> Step8WorldModelConfig:
         """Reconstruct from :meth:`to_dict` output."""
-        data = dict(payload)
-        hidden_sizes = data.get("hidden_sizes", (64,))
-        if isinstance(hidden_sizes, list):
-            data["hidden_sizes"] = tuple(hidden_sizes)
+        if type(payload) is not dict:
+            raise ValueError("Step8WorldModelConfig payload must be an exact dictionary")
+        raw = cast(dict[object, object], payload)
+        if any(type(key) is not str for key in raw):
+            raise ValueError("Step8WorldModelConfig payload keys must be exact strings")
+        expected = {field.name for field in fields(cls)}
+        if set(raw) != expected:
+            raise ValueError("Step8WorldModelConfig payload fields do not match the schema")
+        if type(raw["hidden_sizes"]) is not list:
+            raise ValueError("hidden_sizes must be an exact list")
+        data = dict(raw)
+        data["hidden_sizes"] = tuple(cast(list[object], data["hidden_sizes"]))
         return cls(**cast(Any, data))
 
     def to_core_config(self) -> WorldModelConfig:

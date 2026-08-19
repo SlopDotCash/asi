@@ -6,7 +6,7 @@ the facade rejects them. Legal endpoints stay constructible.
 """
 
 import json
-from typing import Any
+from typing import Any, cast
 
 import chex
 import jax.numpy as jnp
@@ -378,3 +378,34 @@ def test_step4_smoke_result_rejects_leftover_identities() -> None:
     assert '"steps": true' not in dumped
     assert '"seed": true' not in dumped
     assert '"finite": 1' not in dumped
+
+
+def test_step4_from_dict_schema_validation() -> None:
+    config = Step4SARSAConfig()
+    payload = config.to_dict()
+
+    with pytest.raises(ValueError, match="must be an exact dictionary"):
+        Step4SARSAConfig.from_dict(["not", "a", "dict"])  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        bad_keys: dict[Any, Any] = dict(payload)
+        bad_keys[1] = "bad"
+        Step4SARSAConfig.from_dict(cast(Any, bad_keys))
+
+    for key in payload:
+        missing = dict(payload)
+        del missing[key]
+        with pytest.raises(ValueError, match="fields do not match the schema"):
+            Step4SARSAConfig.from_dict(missing)
+
+    extra = dict(payload)
+    extra["unexpected_field"] = 123
+    with pytest.raises(ValueError, match="fields do not match the schema"):
+        Step4SARSAConfig.from_dict(extra)
+
+    bad_hidden = dict(payload)
+    bad_hidden["hidden_sizes"] = (16,)
+    with pytest.raises(ValueError, match="hidden_sizes must be an exact list"):
+        Step4SARSAConfig.from_dict(bad_hidden)
+
+

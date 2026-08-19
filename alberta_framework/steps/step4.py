@@ -21,7 +21,7 @@ References:
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from numbers import Integral
 from typing import Any, Literal, cast
 
@@ -108,8 +108,18 @@ class Step4SARSAConfig:
     @classmethod
     def from_dict(cls, payload: dict[str, object]) -> Step4SARSAConfig:
         """Reconstruct from :meth:`to_dict` output."""
-        config = dict(payload)
-        config["hidden_sizes"] = tuple(cast(list[int], config["hidden_sizes"]))
+        if type(payload) is not dict:
+            raise ValueError("Step4SARSAConfig payload must be an exact dictionary")
+        raw = cast(dict[object, object], payload)
+        if any(type(key) is not str for key in raw):
+            raise ValueError("Step4SARSAConfig payload keys must be exact strings")
+        expected = {field.name for field in fields(cls)}
+        if set(raw) != expected:
+            raise ValueError("Step4SARSAConfig payload fields do not match the schema")
+        if type(raw["hidden_sizes"]) is not list:
+            raise ValueError("hidden_sizes must be an exact list")
+        config = dict(raw)
+        config["hidden_sizes"] = tuple(cast(list[object], config["hidden_sizes"]))
         return cls(**cast(Any, config))
 
     def to_sarsa_config(self) -> SARSAConfig:
