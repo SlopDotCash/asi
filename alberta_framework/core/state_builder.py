@@ -138,6 +138,22 @@ def _require_derived_int32(name: str, value: int, *, minimum: int = 0) -> int:
     return value
 
 
+def _require_payload(
+    payload: object,
+    *,
+    name: str,
+    expected_fields: frozenset[str],
+) -> dict[str, Any]:
+    if type(payload) is not dict:
+        raise ValueError(f"{name} payload must be an exact dictionary")
+    raw = cast(dict[object, object], payload)
+    if any(type(key) is not str for key in raw):
+        raise ValueError(f"{name} payload keys must be exact strings")
+    if cast(set[str], set(raw)) != expected_fields:
+        raise ValueError(f"{name} payload fields do not match the schema")
+    return cast(dict[str, Any], dict(raw))
+
+
 _FLOAT32_MAX = 3.4028234663852886e38
 
 
@@ -708,6 +724,9 @@ def _fixed_learning_commit_diagnostics(
     )
 
 
+_IDENTITY_CONFIG_FIELDS = frozenset({"type", "observation_dim"})
+
+
 @dataclass(frozen=True)
 class IdentityStateBuilderConfig:
     """Configuration for the observation-only state baseline."""
@@ -731,8 +750,15 @@ class IdentityStateBuilderConfig:
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> IdentityStateBuilderConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _require_payload(
+            payload,
+            name="IdentityStateBuilderConfig",
+            expected_fields=_IDENTITY_CONFIG_FIELDS,
+        )
+        if type(data["type"]) is not str or data["type"] != "IdentityStateBuilder":
+            raise ValueError(
+                "IdentityStateBuilderConfig payload type must be 'IdentityStateBuilder'"
+            )
         return cls(observation_dim=data["observation_dim"])
 
 
@@ -998,16 +1024,45 @@ class FixedTraceStateBuilderConfig:
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> FixedTraceStateBuilderConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _require_payload(
+            payload,
+            name="FixedTraceStateBuilderConfig",
+            expected_fields=_FIXED_TRACE_CONFIG_FIELDS,
+        )
+        if type(data["type"]) is not str or data["type"] != "FixedTraceStateBuilder":
+            raise ValueError(
+                "FixedTraceStateBuilderConfig payload type must be 'FixedTraceStateBuilder'"
+            )
+        obs_decays = data["observation_decay_rates"]
+        act_decays = data["action_decay_rates"]
+        out_decays = data["outcome_decay_rates"]
+        if (
+            not isinstance(obs_decays, (list, tuple))
+            or not isinstance(act_decays, (list, tuple))
+            or not isinstance(out_decays, (list, tuple))
+        ):
+            raise ValueError("decay rates must be lists or tuples")
         return cls(
             observation_dim=data["observation_dim"],
-            n_actions=data.get("n_actions", 0),
-            observation_decay_rates=tuple(data.get("observation_decay_rates", ())),
-            action_decay_rates=tuple(data.get("action_decay_rates", ())),
-            outcome_decay_rates=tuple(data.get("outcome_decay_rates", ())),
-            include_raw_observation=data.get("include_raw_observation", True),
+            n_actions=data["n_actions"],
+            observation_decay_rates=tuple(obs_decays),
+            action_decay_rates=tuple(act_decays),
+            outcome_decay_rates=tuple(out_decays),
+            include_raw_observation=data["include_raw_observation"],
         )
+
+
+_FIXED_TRACE_CONFIG_FIELDS = frozenset(
+    {
+        "type",
+        "observation_dim",
+        "n_actions",
+        "observation_decay_rates",
+        "action_decay_rates",
+        "outcome_decay_rates",
+        "include_raw_observation",
+    }
+)
 
 
 class FixedTraceStateBuilder:
@@ -1432,9 +1487,22 @@ class OnlineGatedStateBuilderConfig:
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> OnlineGatedStateBuilderConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _require_payload(
+            payload,
+            name="OnlineGatedStateBuilderConfig",
+            expected_fields=_ONLINE_GATED_CONFIG_FIELDS,
+        )
+        if type(data["type"]) is not str or data["type"] != "OnlineGatedStateBuilder":
+            raise ValueError(
+                "OnlineGatedStateBuilderConfig payload type must be 'OnlineGatedStateBuilder'"
+            )
+        data.pop("type")
         return cls(**data)
+
+
+_ONLINE_GATED_CONFIG_FIELDS = frozenset(
+    {"type", *OnlineGatedStateBuilderConfig.__dataclass_fields__}
+)
 
 
 @chex.dataclass(frozen=True)
@@ -2053,6 +2121,8 @@ def state_builder_config_from_config(payload: dict[str, Any]) -> StateBuilderCon
     """Parse one known state-builder configuration without creating state."""
     if type(payload) is not dict:
         raise ValueError("state builder payload must be an exact dict")
+    if any(type(key) is not str for key in payload):
+        raise ValueError("state builder payload keys must be exact strings")
     builder_type = payload.get("type")
     host_builder_type = _require_exact_str("payload.type", builder_type)
     if host_builder_type == "IdentityStateBuilder":

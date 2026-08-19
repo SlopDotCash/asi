@@ -1065,7 +1065,7 @@ def test_state_builder_checkpoint_config_digest_rejects_behavior_tampering(
     noncanonical_path = tmp_path / "noncanonical"
     save_checkpoint(identity_state, noncanonical_path, metadata=noncanonical_metadata)
 
-    with pytest.raises(ValueError, match="config is not canonical"):
+    with pytest.raises(ValueError, match="config is not canonical|fields do not match the schema"):
         load_state_builder_checkpoint(noncanonical_path)
 
 
