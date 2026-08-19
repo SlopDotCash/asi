@@ -18,27 +18,27 @@ pytestmark = pytest.mark.unit
 class _HostileStr(str):
     calls = 0
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         type(self).calls += 1
         raise AssertionError("hostile eq must not run")
 
-    def __hash__(self) -> int:  # type: ignore[override]
+    def __hash__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile hash must not run")
 
-    def __bool__(self) -> bool:  # type: ignore[override]
+    def __bool__(self) -> bool:
         type(self).calls += 1
         raise AssertionError("hostile bool must not run")
 
-    def __len__(self) -> int:  # type: ignore[override]
+    def __len__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile len must not run")
 
-    def __str__(self) -> str:  # type: ignore[override]
+    def __str__(self) -> str:
         type(self).calls += 1
         raise AssertionError("hostile str must not run")
 
-    def __repr__(self) -> str:  # type: ignore[override]
+    def __repr__(self) -> str:
         type(self).calls += 1
         raise AssertionError("hostile repr must not run")
 
@@ -114,8 +114,8 @@ def _artifact_with_digest_hostile(hostile: object) -> dict[str, object]:
 def test_ftl_git_worktree_rejects_hostile_before_len() -> None:
     hostile = _HostileStr("a" * 40)
     _HostileStr.calls = 0
-    artifact = _artifact_with_git_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_ftl_decision_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_git_hostile(hostile)
+    validation = validate_ftl_decision_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
@@ -123,8 +123,8 @@ def test_ftl_git_worktree_rejects_hostile_before_len() -> None:
 def test_ftl_git_worktree_rejects_hostile_short_before_len() -> None:
     hostile = _HostileStr("short")
     _HostileStr.calls = 0
-    artifact = _artifact_with_git_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_ftl_decision_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_git_hostile(hostile)
+    validation = validate_ftl_decision_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
@@ -132,8 +132,8 @@ def test_ftl_git_worktree_rejects_hostile_short_before_len() -> None:
 def test_ftl_digest_rejects_hostile_before_len() -> None:
     hostile = _HostileStr("a" * 64)
     _HostileStr.calls = 0
-    artifact = _artifact_with_digest_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_ftl_decision_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_digest_hostile(hostile)
+    validation = validate_ftl_decision_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
@@ -141,17 +141,27 @@ def test_ftl_digest_rejects_hostile_before_len() -> None:
 def test_ftl_digest_rejects_hostile_short_before_len() -> None:
     hostile = _HostileStr("short")
     _HostileStr.calls = 0
-    artifact = _artifact_with_digest_hostile(hostile)  # type: ignore[dict-item]
-    validation = validate_ftl_decision_artifact(artifact)  # type: ignore[arg-type]
+    artifact = _artifact_with_digest_hostile(hostile)
+    validation = validate_ftl_decision_artifact(artifact)
     assert _HostileStr.calls == 0
     assert validation.valid is False
 
 
 def test_ftl_benign_still_validates() -> None:
-    artifact_bad = _artifact_with_git_hostile("short")  # type: ignore[dict-item]
-    validation_bad = validate_ftl_decision_artifact(artifact_bad)  # type: ignore[arg-type]
+    artifact_bad = _artifact_with_git_hostile("short")
+    validation_bad = validate_ftl_decision_artifact(artifact_bad)
     assert validation_bad.valid is False
-    artifact_bad2 = _artifact_with_digest_hostile("short")  # type: ignore[dict-item]
-    validation_bad2 = validate_ftl_decision_artifact(artifact_bad2)  # type: ignore[arg-type]
+    artifact_bad2 = _artifact_with_digest_hostile("short")
+    validation_bad2 = validate_ftl_decision_artifact(artifact_bad2)
     assert validation_bad2.valid is False
     assert _HostileStr.calls == 0
+
+
+def test_ftl_non_string_types_rejected() -> None:
+    for bad in [123, None, True, b"bytes", ["a" * 40]]:
+        artifact = _artifact_with_git_hostile(bad)
+        validation = validate_ftl_decision_artifact(artifact)
+        assert validation.valid is False
+        artifact2 = _artifact_with_digest_hostile(bad)
+        validation2 = validate_ftl_decision_artifact(artifact2)
+        assert validation2.valid is False
