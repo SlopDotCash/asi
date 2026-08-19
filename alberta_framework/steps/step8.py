@@ -30,6 +30,7 @@ from dataclasses import asdict, dataclass
 from numbers import Integral
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -363,6 +364,49 @@ def step8_ensemble_predict(
     )
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any = None,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if dtype is not None:
+        if actual_dtype != np.dtype(dtype):
+            raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    else:
+        if actual_dtype.kind not in "biuf":
+            raise TypeError(f"{name} must have numeric dtype")
+    return trusted
+
+
 def run_step8_scan(
     model: OneStepWorldModel,
     state: WorldModelState,
@@ -372,13 +416,41 @@ def run_step8_scan(
     next_observations: Array,
 ) -> WorldModelLearningResult:
     """Run Step 8 world-model learning over transition arrays."""
+    if type(model) is not OneStepWorldModel:
+        raise TypeError("model must be an exact OneStepWorldModel")
+    if type(state) is not WorldModelState:
+        raise TypeError("state must be an exact WorldModelState")
+
+    if not _has_trusted_array_type(observations):
+        raise TypeError("observations must be a trusted array")
+    try:
+        steps = int(observations.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("observations must contain between 1 and signed-int32 steps")
+
+    obs_dim = model.config.observation_dim
+    action_shape = (
+        (steps,) if model.config.n_actions is not None else (steps, model.config.action_dim)
+    )
+
+    checked_obs = _trusted_array(
+        "observations", observations, shape=(steps, obs_dim), dtype=jnp.float32
+    )
+    checked_actions = _trusted_array("actions", actions, shape=action_shape)
+    checked_rewards = _trusted_array("rewards", rewards, shape=(steps,), dtype=jnp.float32)
+    checked_next_obs = _trusted_array(
+        "next_observations", next_observations, shape=(steps, obs_dim), dtype=jnp.float32
+    )
+
     return run_world_model_learning_loop(
         model,
         state,
-        observations,
-        actions,
-        rewards,
-        next_observations,
+        checked_obs,
+        checked_actions,
+        checked_rewards,
+        checked_next_obs,
     )
 
 

@@ -41,6 +41,7 @@ from fractions import Fraction
 from numbers import Integral
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -621,6 +622,45 @@ def step10_update(
     return cast(STOMPUpdateResult, agent.update(state, env_reward, next_observation))
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def run_step10_scan(
     agent: STOMPAgent,
     state: STOMPState,
@@ -640,7 +680,28 @@ def run_step10_scan(
     Returns:
         :class:`STOMPArrayResult` with per-step diagnostics arrays.
     """
-    return agent.scan(state, rewards, next_observations)
+    if type(agent) is not STOMPAgent:
+        raise TypeError("agent must be an exact STOMPAgent")
+    if type(state) is not STOMPState:
+        raise TypeError("state must be an exact STOMPState")
+
+    if not _has_trusted_array_type(rewards):
+        raise TypeError("rewards must be a trusted array")
+    try:
+        steps = int(rewards.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("rewards must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("rewards must contain between 1 and signed-int32 steps")
+
+    checked_rewards = _trusted_array("rewards", rewards, shape=(steps,), dtype=jnp.float32)
+    checked_next_obs = _trusted_array(
+        "next_observations",
+        next_observations,
+        shape=(steps, agent.config.observation_dim),
+        dtype=jnp.float32,
+    )
+    return agent.scan(state, checked_rewards, checked_next_obs)
 
 
 def run_step10_smoke(

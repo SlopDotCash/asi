@@ -3348,6 +3348,45 @@ class UPGDLearner:
 # =============================================================================
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def run_upgd_arrays(
     learner: UPGDLearner,
     state: UPGDState,
@@ -3367,6 +3406,36 @@ def run_upgd_arrays(
         :class:`UPGDLearningResult` with the final state and the per-step
         4-column metrics array.
     """
+    if type(learner) is not UPGDLearner:
+        raise TypeError("learner must be an exact UPGDLearner")
+    if type(state) is not UPGDState:
+        raise TypeError("state must be an exact UPGDState")
+
+    if not _has_trusted_array_type(observations):
+        raise TypeError("observations must be a trusted array")
+    try:
+        obs_shape = tuple(int(dim) for dim in observations.shape)
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+    if len(obs_shape) != 2:
+        raise ValueError("observations must have shape (num_steps, feature_dim)")
+    num_steps = obs_shape[0]
+    if not 1 <= num_steps <= _INT32_MAX:
+        raise ValueError("observations must contain between 1 and signed-int32 steps")
+
+    feature_dim = (
+        state.trunk_params.weights[0].shape[1]
+        if state.trunk_params.weights
+        else state.head_params.weights[0].shape[1]
+    )
+    checked_obs = _trusted_array(
+        "observations", observations, shape=(num_steps, feature_dim), dtype=jnp.float32
+    )
+    checked_targets = _trusted_array(
+        "targets", targets, shape=(num_steps, learner.n_heads), dtype=jnp.float32
+    )
+
+    _require_float32_resource("upgd array metrics", vector_scalars=4 * num_steps)
 
     def step_fn(carry: UPGDState, inputs: tuple[Array, Array]) -> tuple[UPGDState, Array]:
         obs, tgt = inputs
@@ -3374,7 +3443,7 @@ def run_upgd_arrays(
         return result.state, result.metrics
 
     t0 = time.time()
-    final_state, metrics = jax.lax.scan(step_fn, state, (observations, targets))
+    final_state, metrics = jax.lax.scan(step_fn, state, (checked_obs, checked_targets))
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
     return UPGDLearningResult(state=final_state, metrics=metrics)  # type: ignore[call-arg]
@@ -3406,6 +3475,13 @@ def run_upgd_loop[StreamStateT](
         :class:`UPGDLearningResult` with the final state and the per-step
         4-column metrics array.
     """
+    if type(learner) is not UPGDLearner:
+        raise TypeError("learner must be an exact UPGDLearner")
+    if learner_state is not None and type(learner_state) is not UPGDState:
+        raise TypeError("learner_state must be an exact UPGDState")
+    num_steps = _require_int("num_steps", num_steps, minimum=1, maximum=_INT32_MAX)
+    _require_float32_resource("upgd loop metrics", vector_scalars=4 * num_steps)
+
     stream_key, init_key = jax.random.split(key)
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim, init_key)

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from numbers import Integral
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -599,6 +600,45 @@ def step12_update(
     return agent.update(state, partner_obs, partner_reward, partner_next_obs)
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def run_step12_scan(
     agent: IAAgent,
     state: IAState,
@@ -618,7 +658,31 @@ def run_step12_scan(
     Returns:
         :class:`IAArrayResult` with per-step diagnostics.
     """
-    return agent.scan(state, partner_obs, partner_rewards, partner_next_obs)
+    if type(agent) is not IAAgent:
+        raise TypeError("agent must be an exact IAAgent")
+    if type(state) is not IAState:
+        raise TypeError("state must be an exact IAState")
+
+    if not _has_trusted_array_type(partner_rewards):
+        raise TypeError("partner_rewards must be a trusted array")
+    try:
+        steps = int(partner_rewards.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("partner_rewards must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("partner_rewards must contain between 1 and signed-int32 steps")
+
+    obs_dim = agent.config.cerebellum.obs_dim
+    checked_partner_obs = _trusted_array(
+        "partner_obs", partner_obs, shape=(steps, obs_dim), dtype=jnp.float32
+    )
+    checked_partner_rewards = _trusted_array(
+        "partner_rewards", partner_rewards, shape=(steps,), dtype=jnp.float32
+    )
+    checked_partner_next_obs = _trusted_array(
+        "partner_next_obs", partner_next_obs, shape=(steps, obs_dim), dtype=jnp.float32
+    )
+    return agent.scan(state, checked_partner_obs, checked_partner_rewards, checked_partner_next_obs)
 
 
 def run_step12_smoke(

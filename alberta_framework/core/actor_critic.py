@@ -257,18 +257,33 @@ def _array(name: str, value: object, shape: tuple[int, ...], dtype: Any) -> Arra
 
 
 def _trusted_shape(name: str, value: object) -> tuple[int, ...]:
-    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+    actual_type = type(value)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (jax.Array, jax.core.Tracer, jax.ShapeDtypeStruct, jax.core.ShapedArray),
+        )
+    ):
         raise ValueError(f"{name} must expose trusted array metadata")
-    return tuple(value.shape)
+    return tuple(cast(Array, value).shape)
 
 
 def _checked_terminated(name: str, value: object) -> Array:
     """Validate a ``terminated`` flag array dtype before boolean coercion."""
-    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+    actual_type = type(value)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (jax.Array, jax.core.Tracer, jax.ShapeDtypeStruct, jax.core.ShapedArray),
+        )
+    ):
         raise ValueError(f"{name} must expose trusted array metadata")
-    if value.dtype not in (jnp.dtype(jnp.bool_), jnp.dtype(jnp.float32)):
+    trusted = cast(Array, value)
+    if trusted.dtype not in (jnp.dtype(jnp.bool_), jnp.dtype(jnp.float32)):
         raise TypeError(f"{name} must have dtype bool or float32")
-    return cast(Array, value)
+    return trusted
 
 
 def _validated_bounder_result(
@@ -941,9 +956,14 @@ def run_actor_critic_from_arrays(
     Returns:
         ``ActorCriticArrayResult`` with final state and per-step metrics.
     """
+    if type(agent) is not ActorCriticAgent:
+        raise TypeError("agent must be an exact ActorCriticAgent")
+    if type(state) is not ActorCriticState:
+        raise TypeError("state must be an exact ActorCriticState")
+
     feature_dim = agent._feature_dim(state)
     observations_shape = _trusted_shape("observations", observations)
-    if len(observations_shape) != 2 or observations_shape[0] < 1:
+    if len(observations_shape) != 2 or not 1 <= observations_shape[0] <= _INT32_MAX:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
     num_steps = observations_shape[0]
     expected_observations_shape = (num_steps, feature_dim)
@@ -1765,9 +1785,14 @@ def run_continuous_actor_critic_from_arrays(
     Returns:
         ``ContinuousActorCriticArrayResult`` with final state and per-step metrics.
     """
+    if type(agent) is not ContinuousActorCriticAgent:
+        raise TypeError("agent must be an exact ContinuousActorCriticAgent")
+    if type(state) is not ContinuousActorCriticState:
+        raise TypeError("state must be an exact ContinuousActorCriticState")
+
     feature_dim = agent._feature_dim(state)
     observations_shape = _trusted_shape("observations", observations)
-    if len(observations_shape) != 2 or observations_shape[0] < 1:
+    if len(observations_shape) != 2 or not 1 <= observations_shape[0] <= _INT32_MAX:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
     num_steps = observations_shape[0]
     expected_observations_shape = (num_steps, feature_dim)

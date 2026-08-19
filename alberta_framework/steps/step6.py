@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from numbers import Integral
 from typing import Any, cast
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -318,6 +319,45 @@ def init_step6_state(
     return cast(DifferentialSARSAState, state)
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def step6_update(
     agent: DifferentialSARSAAgent,
     state: DifferentialSARSAState,
@@ -335,7 +375,33 @@ def run_step6_scan(
     next_features: Array,
 ) -> DifferentialSARSAArrayResult:
     """Run Step 6 differential SARSA over pre-collected transition arrays."""
-    return run_differential_sarsa_from_arrays(agent, state, rewards, next_features)
+    if type(agent) is not DifferentialSARSAAgent:
+        raise TypeError("agent must be an exact DifferentialSARSAAgent")
+    if type(state) is not DifferentialSARSAState:
+        raise TypeError("state must be an exact DifferentialSARSAState")
+
+    if not _has_trusted_array_type(rewards):
+        raise TypeError("rewards must be a trusted array")
+    try:
+        steps = int(rewards.shape[0])
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("rewards must expose trusted shape metadata") from error
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("rewards must contain between 1 and signed-int32 steps")
+
+    feature_dim = state.q_weights.shape[1]
+    checked_rewards = _trusted_array("rewards", rewards, shape=(steps,), dtype=jnp.float32)
+    checked_next_features = _trusted_array(
+        "next_features", next_features, shape=(steps, feature_dim), dtype=jnp.float32
+    )
+
+    _checked_sum(
+        "Step 6 scan output bytes",
+        _checked_product("q_values bytes", 4, steps, agent.config.n_actions),
+        _checked_product("scalar output bytes", 17, steps),
+    )
+
+    return run_differential_sarsa_from_arrays(agent, state, checked_rewards, checked_next_features)
 
 
 def run_step6_smoke(

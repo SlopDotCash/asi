@@ -623,6 +623,45 @@ class StackedLinearHorde:
         )
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def run_stacked_horde_scan(
     horde: StackedLinearHorde,
     state: StackedHordeState,
@@ -648,31 +687,54 @@ def run_stacked_horde_scan(
         ``(final_state, td_errors)`` with td_errors of shape
         ``(num_steps - 1, n_demons)``.
     """
-    if features.ndim != 2:
+    if type(horde) is not StackedLinearHorde:
+        raise TypeError("horde must be an exact StackedLinearHorde")
+    if type(state) is not StackedHordeState:
+        raise TypeError("state must be an exact StackedHordeState")
+
+    if not _has_trusted_array_type(features):
+        raise TypeError("features must be a trusted array")
+    try:
+        features_shape = tuple(int(dim) for dim in features.shape)
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("features must expose trusted shape metadata") from error
+    if len(features_shape) != 2:
         raise ValueError("features must be rank-two")
-    if features.dtype != jnp.dtype(jnp.float32):
-        raise TypeError("features must have dtype float32")
-    if features.shape[1] != horde.config.feature_dim:
-        raise ValueError("features must match configured feature_dim")
-    sources_shape = jnp.shape(cumulant_sources)
+    num_steps = features_shape[0]
+    if not 2 <= num_steps <= _INT32_MAX:
+        raise ValueError("features must contain between 2 and signed-int32 steps")
+    _require_scan_result_resources(num_steps - 1, horde.config.n_demons)
+
+    checked_features = _trusted_array(
+        "features", features, shape=(num_steps, horde.config.feature_dim), dtype=jnp.float32
+    )
+
+    if not _has_trusted_array_type(cumulant_sources):
+        raise TypeError("cumulant_sources must be a trusted array")
+    try:
+        sources_shape = tuple(int(dim) for dim in cumulant_sources.shape)
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("cumulant_sources must expose trusted shape metadata") from error
     if len(sources_shape) != 2:
         raise ValueError(f"cumulant_sources must be rank-two, got shape {sources_shape}")
+    if sources_shape[0] != num_steps:
+        raise ValueError("features and cumulant_sources must have the same number of rows")
     max_index = max(horde.config.cumulant_indices)
     if sources_shape[-1] <= max_index:
         raise ValueError(
             f"cumulant_sources has {sources_shape[-1]} channels but "
             f"config.cumulant_indices requires index {max_index}"
         )
-    num_steps = features.shape[0]
-    if sources_shape[0] != num_steps:
-        raise ValueError("features and cumulant_sources must have the same number of rows")
-    if cumulant_sources.dtype != jnp.dtype(jnp.float32):
-        raise TypeError("cumulant_sources must have dtype float32")
-    _require_scan_result_resources(max(num_steps - 1, 0), horde.config.n_demons)
+    checked_sources = _trusted_array(
+        "cumulant_sources", cumulant_sources, shape=sources_shape, dtype=jnp.float32
+    )
+
     if rhos is None:
-        rhos = jnp.ones((num_steps,), dtype=jnp.float32)
-    elif rhos.shape != (num_steps,):
-        raise ValueError("rhos must have shape (num_steps,)")
+        checked_rhos = jnp.ones((num_steps,), dtype=jnp.float32)
+    else:
+        checked_rhos = _trusted_array(
+            "rhos", rhos, shape=(num_steps,), dtype=jnp.float32
+        )
 
     def step_fn(
         carry: StackedHordeState,
@@ -685,6 +747,6 @@ def run_stacked_horde_scan(
     final_state, td_errors = jax.lax.scan(
         step_fn,
         state,
-        (features[:-1], features[1:], cumulant_sources[:-1], rhos[:-1]),
+        (checked_features[:-1], checked_features[1:], checked_sources[:-1], checked_rhos[:-1]),
     )
     return final_state, td_errors

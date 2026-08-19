@@ -147,22 +147,71 @@ def _require_loop_output_resources(num_steps: int, n_demons: int, n_seeds: int =
         raise ValueError("derived learning-loop outputs exceed the signed-int32 budget")
 
 
+def _has_trusted_array_type(value: object) -> bool:
+    actual_type = type(value)
+    return (
+        actual_type is np.ndarray
+        or issubclass(
+            actual_type,
+            (
+                jax.Array,
+                jax.core.Tracer,
+                jax.ShapeDtypeStruct,
+                jax.core.ShapedArray,
+            ),
+        )
+    )
+
+
+def _trusted_array(
+    name: str,
+    value: object,
+    *,
+    shape: tuple[int, ...],
+    dtype: Any,
+) -> Array:
+    """Validate static array metadata without dispatching on hostile objects."""
+    if not _has_trusted_array_type(value):
+        raise TypeError(f"{name} must be a trusted array")
+    trusted = cast(Array, value)
+    try:
+        actual_shape = tuple(trusted.shape)
+        actual_dtype = np.dtype(trusted.dtype)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape and dtype metadata") from error
+    if actual_shape != shape:
+        raise ValueError(f"{name} must have shape {shape}")
+    if actual_dtype != np.dtype(dtype):
+        raise TypeError(f"{name} must have dtype {np.dtype(dtype)}")
+    return trusted
+
+
 def _require_learning_arrays(
     observations: object,
     cumulants: object,
     next_observations: object,
     n_demons: int,
 ) -> tuple[Array, Array, Array, int, int]:
-    obs = jnp.asarray(observations, dtype=jnp.float32)
-    cums = jnp.asarray(cumulants, dtype=jnp.float32)
-    next_obs = jnp.asarray(next_observations, dtype=jnp.float32)
-    if obs.ndim != 2 or obs.shape[0] < 1 or obs.shape[1] < 1:
+    if not _has_trusted_array_type(observations):
+        raise TypeError("observations must be a trusted array")
+    try:
+        obs_shape = tuple(int(dim) for dim in cast(Any, observations).shape)
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError("observations must expose trusted shape metadata") from error
+    if len(obs_shape) != 2 or obs_shape[0] < 1 or obs_shape[1] < 1:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
-    if next_obs.shape != obs.shape:
-        raise ValueError("next_observations must match observations shape")
-    if cums.shape != (obs.shape[0], n_demons):
-        raise ValueError("cumulants must have shape (num_steps, n_demons)")
-    return obs, cums, next_obs, obs.shape[0], obs.shape[1]
+    num_steps, feature_dim = obs_shape
+    if not 1 <= num_steps <= _INT32_MAX or not 1 <= feature_dim <= _INT32_MAX:
+        raise ValueError("observations must contain between 1 and signed-int32 dimensions")
+
+    obs = _trusted_array("observations", observations, shape=obs_shape, dtype=jnp.float32)
+    next_obs = _trusted_array(
+        "next_observations", next_observations, shape=obs_shape, dtype=jnp.float32
+    )
+    cums = _trusted_array(
+        "cumulants", cumulants, shape=(num_steps, n_demons), dtype=jnp.float32
+    )
+    return obs, cums, next_obs, num_steps, feature_dim
 
 
 @chex.dataclass(frozen=True)
@@ -1082,6 +1131,10 @@ def run_independent_horde_learning_loop(
         ``IndependentDemonHordeLearningResult`` with final state,
         per-demon metrics, and TD errors over time.
     """
+    if type(horde) is not IndependentDemonHorde:
+        raise TypeError("horde must be an exact IndependentDemonHorde")
+    if type(state) is not IndependentDemonHordeState:
+        raise TypeError("state must be an exact IndependentDemonHordeState")
 
     observations, cumulants, next_observations, num_steps, feature_dim = (
         _require_learning_arrays(observations, cumulants, next_observations, horde.n_demons)
@@ -1150,6 +1203,8 @@ def run_independent_horde_learning_loop_batched(
         ``BatchedIndependentDemonHordeResult`` with batched states,
         per-demon metrics, and TD errors.
     """
+    if type(horde) is not IndependentDemonHorde:
+        raise TypeError("horde must be an exact IndependentDemonHorde")
     observations, cumulants, next_observations, num_steps, feature_dim = (
         _require_learning_arrays(observations, cumulants, next_observations, horde.n_demons)
     )
