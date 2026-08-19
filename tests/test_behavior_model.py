@@ -25,10 +25,12 @@ class _HostileDict(dict[str, Any]):
 
 try:
     from alberta_framework.core.behavior_model import (
+        _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS,
         BehaviorModel,
         BehaviorModelConfig,
         _behavior_model_update_working_set_bytes,
         _preflight_behavior_model_update_working_set,
+        _require_behavior_model_sequence_length,
         _resource_counts,
         action_log_likelihoods,
         clipped_importance_ratios,
@@ -71,6 +73,12 @@ except ImportError:
         behavior_model_module._preflight_behavior_model_update_working_set
     )
     _resource_counts = behavior_model_module._resource_counts
+    _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS = (
+        behavior_model_module._BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS
+    )
+    _require_behavior_model_sequence_length = (
+        behavior_model_module._require_behavior_model_sequence_length
+    )
 
 
 def _assert_behavior_update_finite(result: Any) -> None:
@@ -762,3 +770,101 @@ def test_behavior_model_persistent_byte_bound_still_fires_first() -> None:
 def test_preflight_helper_rejects_the_same_working_set() -> None:
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_behavior_model_update_working_set(1, 180_000_000)
+
+
+# =============================================================================
+# Scan sequence-length ceiling (hang guard)
+# =============================================================================
+#
+# ``run_behavior_model_from_arrays`` hands ``observations``/``actions``
+# straight to ``jax.lax.scan`` with no bound on the leading (step) axis. A
+# hostile or mistaken caller supplying a huge array forces JAX to materialize
+# per-step outputs at that length, hanging the process well before any step
+# executes -- the same hang class already fixed for other scan-driven array
+# loops in ``core`` and ``utils`` (e.g. ``core/sarsa.py``,
+# ``core/average_reward.py``, ``core/learners.py``, ``utils/nexting.py``).
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        first = xs[0] if isinstance(xs, tuple) else xs
+        seen.append(int(first.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={first.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.core.behavior_model.jax.lax.scan", spy)
+    return seen
+
+
+class TestBehaviorModelSequenceCeiling:
+    def test_documented_protocol_ceiling(self) -> None:
+        assert _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS == 50_000
+
+    def test_last_fit_length_is_accepted(self) -> None:
+        matrix = jnp.zeros((_BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS, 2))
+        assert (
+            _require_behavior_model_sequence_length("observations", matrix)
+            == _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS
+        )
+
+    def test_first_overflow_length_is_rejected(self) -> None:
+        matrix = jnp.zeros((_BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS + 1, 2))
+        with pytest.raises(
+            ValueError, match=r"observations length must be an integer in \[1, 50000\]"
+        ):
+            _require_behavior_model_sequence_length("observations", matrix)
+
+    def test_empty_length_is_rejected(self) -> None:
+        matrix = jnp.zeros((0, 2))
+        with pytest.raises(ValueError, match=r"observations length must be an integer in"):
+            _require_behavior_model_sequence_length("observations", matrix)
+
+    def test_scalar_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="leading step axis"):
+            _require_behavior_model_sequence_length("observations", jnp.array(1.0))
+
+    def test_non_array_is_rejected(self) -> None:
+        with pytest.raises(TypeError, match="must be a trusted array"):
+            _require_behavior_model_sequence_length("observations", [[1.0, 2.0]])
+
+        class _HostileArrayLike:
+            shape = (3, 2)
+            ndim = 2
+
+        with pytest.raises(TypeError, match="must be a trusted array"):
+            _require_behavior_model_sequence_length("observations", _HostileArrayLike())
+
+    def test_run_behavior_model_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.05))
+        state = model.init(feature_dim=3, key=jax.random.key(5))
+        n = _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS + 1
+        observations = jnp.zeros((n, 3), dtype=jnp.float32)
+        actions = jnp.zeros((n,), dtype=jnp.int32)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_behavior_model_from_arrays(model, state, observations, actions)
+        assert seen == []
+
+    def test_run_behavior_model_from_arrays_rejects_mismatched_actions_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.05))
+        state = model.init(feature_dim=3, key=jax.random.key(6))
+        observations = jnp.zeros((5, 3), dtype=jnp.float32)
+        actions = jnp.zeros((4,), dtype=jnp.int32)
+        with pytest.raises(ValueError, match="actions must broadcast"):
+            run_behavior_model_from_arrays(model, state, observations, actions)
+        assert seen == []
+
+    def test_run_behavior_model_from_arrays_still_runs_inside_the_ceiling(self) -> None:
+        model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.05))
+        state = model.init(feature_dim=3, key=jax.random.key(7))
+        observations = jnp.eye(3, dtype=jnp.float32).repeat(4, axis=0)
+        actions = jnp.array([0, 1, 2] * 4, dtype=jnp.int32)
+        result = run_behavior_model_from_arrays(model, state, observations, actions)
+        chex.assert_shape(result.probabilities, (12, 3))
+        assert int(result.state.step_count) == 12

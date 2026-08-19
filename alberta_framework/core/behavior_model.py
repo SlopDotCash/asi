@@ -88,6 +88,39 @@ def _resource_counts(n_actions: int, feature_dim: int) -> tuple[int, int]:
     return trainable, state_nbytes
 
 
+# Matches the class of ceiling already established for other scan-driven
+# array-loop runners in ``core`` (e.g. ``average_reward._AVERAGE_REWARD_SEQUENCE_MAX_STEPS``,
+# ``learners._LEARNING_LOOP_MAX_STEPS``). Set with generous headroom above
+# this module's largest exercised sequence (12 steps, see
+# ``test_scan_loop_and_jit_compatibility``) while still bounding the leading
+# axis that ``run_behavior_model_from_arrays`` hands straight to
+# ``jax.lax.scan``.
+_BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS = 50_000
+
+
+def _require_behavior_model_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    ``run_behavior_model_from_arrays`` hands ``observations`` straight to
+    ``jax.lax.scan`` with no bound on the leading (step) axis. A hostile or
+    mistaken caller supplying a huge leading length forces JAX to materialize
+    per-step outputs (and, for large enough arrays, the inputs) at that
+    length, exhausting memory or hanging the process well before any step
+    executes.
+    """
+    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+        raise TypeError(f"{name} must be a trusted array")
+    array = np.asarray(value) if type(value) is np.ndarray else value
+    if array.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(array.shape[0])
+    if length < 1 or length > _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
+
+
 def _behavior_model_update_working_set_bytes(n_actions: int, feature_dim: int) -> int:
     """Source persist, proposed persist, committed persist, and returned extras.
 
@@ -981,10 +1014,19 @@ def run_behavior_model_from_arrays(
     observations: Float[Array, "num_steps feature_dim"],
     actions: Int[Array, " num_steps"],
 ) -> BehaviorModelArrayResult:
-    """Run online behavior prediction over arrays with ``jax.lax.scan``."""
+    """Run online behavior prediction over arrays with ``jax.lax.scan``.
+
+    Raises:
+        TypeError: If ``observations`` is not a trusted array.
+        ValueError: If ``observations`` does not have shape
+            ``(num_steps, feature_dim)``, is empty, or its leading (step)
+            length exceeds the documented scan-length ceiling
+            (``_BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS``).
+    """
 
     if len(observations.shape) != 2:
         raise ValueError("observations must have shape (num_steps, feature_dim)")
+    _require_behavior_model_sequence_length("observations", observations)
     _, _ = _integer_action_ids(
         actions,
         n_actions=model.config.n_actions,
