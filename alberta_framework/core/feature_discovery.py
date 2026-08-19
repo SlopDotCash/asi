@@ -53,6 +53,9 @@ from alberta_framework.core.update_safety import (
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _MAX_STATE_NBYTES = 256 * 1024 * 1024
+# README / package-init public scan last-fit. Origin handed ``10**12`` to
+# ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
+_FEATURE_DISCOVERY_LOOP_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -78,6 +81,15 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     if not minimum <= canonical <= _INT32_MAX:
         raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
     return canonical
+
+
+def _require_feature_discovery_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jnp.arange``."""
+    if type(value) is not int or value < 1 or value > _FEATURE_DISCOVERY_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_FEATURE_DISCOVERY_LOOP_MAX_STEPS}]"
+        )
+    return value
 
 
 def _saturating_int32_increment(value: Array) -> Array:
@@ -1978,6 +1990,7 @@ def run_feature_discovery_loop(
     learner_state: FeatureDiscoveryState | None = None,
 ) -> FeatureDiscoveryLearningResult:
     """Run feature discovery directly from a scan-compatible stream."""
+    num_steps = _require_feature_discovery_loop_steps("num_steps", num_steps)
     stream_key, learner_key = jr.split(key)
     stream_state = stream.init(stream_key)
     if learner_state is None:
