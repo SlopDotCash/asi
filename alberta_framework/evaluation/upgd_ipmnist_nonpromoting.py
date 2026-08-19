@@ -942,7 +942,7 @@ def validate_upgd_ipmnist_v2_artifact(
     elif any(type(value) is not str or not value for value in environment.values()):
         errors.append("v2 artifact environment values must be non-empty strings")
     notes = artifact.get("notes")
-    if not isinstance(notes, list) or any(type(note) is not str for note in notes):
+    if type(notes) is not list or any(type(note) is not str for note in notes):
         errors.append("v2 artifact notes must be a list of strings")
 
     if partial_validation.valid:
