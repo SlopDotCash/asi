@@ -924,13 +924,16 @@ class LearningSignalEstimator:
         observed_losses: Array,
     ) -> tuple[LearningSignalEstimatorState, TypedLearningSignals]:
         """Process a fixed-shape sequence with :func:`jax.lax.scan`."""
+        self._validate_state_shapes(state)
         means = jnp.asarray(member_means)
         variances = jnp.asarray(predicted_aleatoric_variances)
         targets = jnp.asarray(observed_targets)
         losses = jnp.asarray(observed_losses)
         if means.ndim != 3:
             raise ValueError("member_means sequence must have rank 3")
-        num_steps = means.shape[0]
+        if means.shape[0] < 1:
+            raise ValueError("member_means sequence must be non-empty")
+        num_steps = _require_int32("scan sequence length", means.shape[0], minimum=1)
         expected_ensemble_shape = (
             num_steps,
             self._config.ensemble_size,

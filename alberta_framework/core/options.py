@@ -3081,38 +3081,56 @@ class STOMPAgent:
                 result.update_applied,
             )
 
+        scan_env_rewards = jnp.asarray(env_rewards)
+        if scan_env_rewards.ndim != 1 or scan_env_rewards.shape[0] < 1:
+            raise ValueError("env_rewards must have shape (num_steps,)")
+        num_steps = _require_int32("scan sequence length", scan_env_rewards.shape[0], minimum=1)
+        scan_next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
+        if scan_next_observations.shape != (num_steps, self._config.observation_dim):
+            raise ValueError(
+                "next_observations must have shape "
+                f"({num_steps}, {self._config.observation_dim})"
+            )
         if discounts is None:
-            scan_discounts = jnp.ones_like(env_rewards, dtype=jnp.float32)
+            scan_discounts = jnp.ones_like(scan_env_rewards, dtype=jnp.float32)
         else:
             scan_discounts = jnp.asarray(discounts, dtype=jnp.float32)
-        scan_decision_observations = (
-            next_observations
-            if decision_observations is None
-            else jnp.asarray(decision_observations, dtype=jnp.float32)
-        )
-        scan_execution_boundaries = (
-            jnp.zeros_like(env_rewards, dtype=jnp.bool_)
-            if execution_boundaries is None
-            else jnp.asarray(execution_boundaries, dtype=jnp.bool_)
-        )
-        scan_extended_action_masks = (
-            jnp.ones(
-                (env_rewards.shape[0], self._config.n_total_actions),
+            if scan_discounts.shape != (num_steps,):
+                raise ValueError(f"discounts must have shape ({num_steps},)")
+        if decision_observations is None:
+            scan_decision_observations = scan_next_observations
+        else:
+            scan_decision_observations = jnp.asarray(decision_observations, dtype=jnp.float32)
+            if scan_decision_observations.shape != (num_steps, self._config.observation_dim):
+                raise ValueError(
+                    "decision_observations must have shape "
+                    f"({num_steps}, {self._config.observation_dim})"
+                )
+        if execution_boundaries is None:
+            scan_execution_boundaries = jnp.zeros_like(scan_env_rewards, dtype=jnp.bool_)
+        else:
+            scan_execution_boundaries = jnp.asarray(execution_boundaries)
+            if scan_execution_boundaries.shape != (num_steps,):
+                raise ValueError(f"execution_boundaries must have shape ({num_steps},)")
+            if scan_execution_boundaries.dtype != jnp.bool_:
+                raise TypeError("execution_boundaries must have dtype bool")
+        if extended_action_masks is None:
+            scan_extended_action_masks = jnp.ones(
+                (num_steps, self._config.n_total_actions),
                 dtype=jnp.bool_,
             )
-            if extended_action_masks is None
-            else jnp.asarray(extended_action_masks)
-        )
-        if scan_extended_action_masks.shape != (
-            env_rewards.shape[0],
-            self._config.n_total_actions,
-        ):
-            raise ValueError(
-                "extended_action_masks must have shape "
-                f"({env_rewards.shape[0]}, {self._config.n_total_actions})"
-            )
-        if scan_extended_action_masks.dtype != jnp.bool_:
-            raise TypeError("extended_action_masks must have dtype bool")
+        else:
+            scan_extended_action_masks = jnp.asarray(extended_action_masks)
+            if scan_extended_action_masks.shape != (
+                num_steps,
+                self._config.n_total_actions,
+            ):
+                raise ValueError(
+                    "extended_action_masks must have shape "
+                    f"({num_steps}, {self._config.n_total_actions})"
+                )
+            if scan_extended_action_masks.dtype != jnp.bool_:
+                raise TypeError("extended_action_masks must have dtype bool")
 
         (
             final_state,
@@ -3142,8 +3160,8 @@ class STOMPAgent:
             step_fn,
             state,
             (
-                env_rewards,
-                next_observations,
+                scan_env_rewards,
+                scan_next_observations,
                 scan_discounts,
                 scan_decision_observations,
                 scan_execution_boundaries,

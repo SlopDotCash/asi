@@ -1404,10 +1404,22 @@ class IAAgent:
                 result.update_applied,
             )
 
-        partner_rewards_shape = tuple(partner_rewards.shape)
-        if len(partner_rewards_shape) != 1 or partner_rewards_shape[0] < 1:
+        partner_rewards_arr = jnp.asarray(partner_rewards)
+        if partner_rewards_arr.ndim != 1 or partner_rewards_arr.shape[0] < 1:
             raise ValueError("partner_rewards must have shape (num_steps,)")
-        num_steps = partner_rewards_shape[0]
+        num_steps = _require_int32("scan sequence length", partner_rewards_arr.shape[0], minimum=1)
+        scan_partner_obs = jnp.asarray(partner_obs, dtype=jnp.float32)
+        if scan_partner_obs.shape != (num_steps, self._config.cortex.observation_dim):
+            raise ValueError(
+                "partner_obs must have shape "
+                f"({num_steps}, {self._config.cortex.observation_dim})"
+            )
+        scan_partner_next_obs = jnp.asarray(partner_next_obs, dtype=jnp.float32)
+        if scan_partner_next_obs.shape != (num_steps, self._config.cortex.observation_dim):
+            raise ValueError(
+                "partner_next_obs must have shape "
+                f"({num_steps}, {self._config.cortex.observation_dim})"
+            )
         if partner_actions is not None:
             _, _ = checked_integer_action_array(
                 partner_actions,
@@ -1422,25 +1434,33 @@ class IAAgent:
             scan_actions = jnp.asarray(partner_actions)
         else:
             scan_actions = jnp.zeros((num_steps,), dtype=jnp.int32)
-        scan_discounts = (
-            jnp.asarray(discounts, dtype=jnp.float32)
-            if discounts is not None
-            else jnp.ones((num_steps,), dtype=jnp.float32)
-        )
-        scan_decision_observations = (
-            jnp.asarray(partner_next_obs, dtype=jnp.float32)
-            if partner_decision_obs is None
-            else jnp.asarray(partner_decision_obs, dtype=jnp.float32)
-        )
-        scan_execution_boundaries = (
-            jnp.zeros((num_steps,), dtype=jnp.bool_)
-            if execution_boundaries is None
-            else jnp.asarray(execution_boundaries, dtype=jnp.bool_)
-        )
+        if discounts is not None:
+            scan_discounts = jnp.asarray(discounts, dtype=jnp.float32)
+            if scan_discounts.shape != (num_steps,):
+                raise ValueError(f"discounts must have shape ({num_steps},)")
+        else:
+            scan_discounts = jnp.ones((num_steps,), dtype=jnp.float32)
+        if partner_decision_obs is not None:
+            scan_decision_observations = jnp.asarray(partner_decision_obs, dtype=jnp.float32)
+            if scan_decision_observations.shape != (num_steps, self._config.cortex.observation_dim):
+                raise ValueError(
+                    "partner_decision_obs must have shape "
+                    f"({num_steps}, {self._config.cortex.observation_dim})"
+                )
+        else:
+            scan_decision_observations = scan_partner_next_obs
+        if execution_boundaries is not None:
+            scan_execution_boundaries = jnp.asarray(execution_boundaries)
+            if scan_execution_boundaries.shape != (num_steps,):
+                raise ValueError(f"execution_boundaries must have shape ({num_steps},)")
+            if scan_execution_boundaries.dtype != jnp.bool_:
+                raise TypeError("execution_boundaries must have dtype bool")
+        else:
+            scan_execution_boundaries = jnp.zeros((num_steps,), dtype=jnp.bool_)
         xs: tuple[Array, ...] = (
-            partner_obs,
-            partner_rewards,
-            partner_next_obs,
+            scan_partner_obs,
+            partner_rewards_arr,
+            scan_partner_next_obs,
             scan_decision_observations,
             scan_actions,
             scan_discounts,
