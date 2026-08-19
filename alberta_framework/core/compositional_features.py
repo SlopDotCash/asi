@@ -1486,12 +1486,12 @@ class CompositionalFeatureLearner:
         )
         if not 0.0 <= promotion_blend <= 1.0:
             raise ValueError("promotion_blend must be in [0, 1]")
-        if promotion_output_mode not in {
+        if type(promotion_output_mode) is not str or promotion_output_mode not in {
             PROMOTION_SCALED_CANDIDATE,
             PROMOTION_BLEND,
         }:
             raise ValueError("promotion_output_mode must be 'scaled_candidate' or 'blend'")
-        if generation_strategy not in {
+        if type(generation_strategy) is not str or generation_strategy not in {
             GENERATION_UNIFORM,
             GENERATION_UTILITY,
             GENERATION_MUTATION,
@@ -1522,9 +1522,12 @@ class CompositionalFeatureLearner:
             raise ValueError("future_utility_mix must be in [0, 1]")
         if not 0.0 <= future_utility_trace_decay < 1.0:
             raise ValueError("future_utility_trace_decay must be in [0, 1)")
-        if future_utility_trace_mode not in {"contribution", "marginal"}:
+        if type(future_utility_trace_mode) is not str or future_utility_trace_mode not in {
+            "contribution",
+            "marginal",
+        }:
             raise ValueError("future_utility_trace_mode must be 'contribution' or 'marginal'")
-        if future_utility_normalization not in {
+        if type(future_utility_normalization) is not str or future_utility_normalization not in {
             "none",
             "age",
             "uncertainty",
