@@ -453,6 +453,62 @@ def test_run_search_rejects_invalid_search_identities_before_genome_generation(
         run_search(**payload)  # type: ignore[arg-type]
 
 
+def test_run_search_rejects_population_larger_than_seeded_initial_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_generation(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("invalid population reached genome generation")
+
+    monkeypatch.setattr(rule_discovery, "seed_genomes", unexpected_generation)
+    monkeypatch.setattr(rule_discovery, "random_genomes", unexpected_generation)
+    with pytest.raises(ValueError, match="initial candidate pool"):
+        run_search(
+            n_random=0,
+            population=20,
+            generations=1,
+            elite=1,
+            eval_seeds=(0,),
+            holdout_seeds=(101,),
+            top_k=1,
+            batch_size=2,
+        )
+
+
+def test_run_search_nonzero_generation_reaches_child_evaluation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ChildEvaluationReachedError(Exception):
+        pass
+
+    calls = 0
+
+    def fake_evaluate_suite(
+        genomes: object, *args: object, **kwargs: object
+    ) -> tuple[np.ndarray, dict[str, np.ndarray]]:
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        if calls == 2:
+            raise ChildEvaluationReachedError
+        shape = getattr(genomes, "shape")
+        return np.ones((int(shape[0]),), dtype=np.float64), {}
+
+    monkeypatch.setattr(rule_discovery, "evaluate_suite", fake_evaluate_suite)
+    with pytest.raises(ChildEvaluationReachedError):
+        run_search(
+            n_random=19,
+            population=2,
+            generations=1,
+            elite=1,
+            eval_seeds=(0,),
+            holdout_seeds=(101,),
+            top_k=1,
+            batch_size=2,
+        )
+    assert calls == 2
+
+
 @pytest.mark.parametrize("n_tasks", [True, 0, -1, 1.5])
 def test_resolved_suite_rejects_invalid_n_tasks_identities(n_tasks: object) -> None:
     with pytest.raises(ValueError, match="n_tasks"):

@@ -311,6 +311,9 @@ def champion_form_genome() -> np.ndarray:
     return genome_from_config(_CHAMPION_CONFIG)
 
 
+_SEEDED_GENOME_COUNT = 19
+
+
 def seed_genomes() -> Array:
     """Hand-designed seeds injected into the initial search population.
 
@@ -351,6 +354,8 @@ def seed_genomes() -> Array:
             variant = dict(base)
             variant.update(extra)
             rows.append(genome_from_config(variant))
+    if len(rows) != _SEEDED_GENOME_COUNT:
+        raise RuntimeError("seeded genome count drifted from the search preflight")
     return jnp.asarray(np.stack(rows), dtype=jnp.float32)
 
 
@@ -790,12 +795,15 @@ def evaluate_population(
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("batch_size must be a positive built-in int")
     batch_size = _require_search_int("batch_size", batch_size, minimum=1)
-    genomes = _require_trusted_genomes(genomes)
-    if genomes.ndim != 2 or genomes.shape[1] != GENOME_SIZE:
+    trusted_genomes = _require_trusted_genomes(genomes)
+    if trusted_genomes.ndim != 2 or trusted_genomes.shape[1] != GENOME_SIZE:
         raise ValueError(
-            f"genomes must have shape (n_genomes, {GENOME_SIZE}), got {tuple(genomes.shape)}"
+            "genomes must have shape "
+            f"(n_genomes, {GENOME_SIZE}), got {tuple(trusted_genomes.shape)}"
         )
-    n_peek = _require_search_int("n_random", int(genomes.shape[0]), minimum=0)
+    n_peek = _require_search_int(
+        "n_random", int(trusted_genomes.shape[0]), minimum=0
+    )
     n_tasks, task_length = _eval_stream_bounds(config)
     _require_search_work_unit(
         n_random=n_peek,
@@ -803,7 +811,7 @@ def evaluate_population(
         task_length=task_length,
         n_seeds=len(seeds),
     )
-    genomes = jnp.asarray(genomes, dtype=jnp.float32)
+    genomes = jnp.asarray(trusted_genomes, dtype=jnp.float32)
     if not bool(jnp.all(jnp.isfinite(genomes))):
         raise ValueError("genomes must contain only finite values")
     n_genomes = int(genomes.shape[0])
@@ -1178,12 +1186,14 @@ def _resolved_suite(
             task_length=task_length if task_length is not None else 5000,
         )
     elif n_tasks is not None or task_length is not None:
-        for config in MICRO_SUITE.values():
+        for micro_config in MICRO_SUITE.values():
             _require_search_work_unit(
                 n_random=0,
-                n_tasks=n_tasks if n_tasks is not None else config.n_tasks,
+                n_tasks=n_tasks if n_tasks is not None else micro_config.n_tasks,
                 task_length=(
-                    task_length if task_length is not None else config.task_length
+                    task_length
+                    if task_length is not None
+                    else micro_config.task_length
                 ),
             )
     suite: dict[str, EvalConfig]
@@ -1329,21 +1339,24 @@ def run_search(
     if set(eval_seeds) & set(holdout_seeds):
         raise ValueError("search seeds and holdout seeds must be disjoint")
     registry = dict(MICRO_SUITE if suite is None else suite)
-    children = population - elite
+    initial_candidates = max(n_random, _SEEDED_GENOME_COUNT)
+    if population > initial_candidates:
+        raise ValueError("population must not exceed the initial candidate pool")
+    children_per_generation = population - elite
     search_steps = _selected_stream_steps(registry, task_names)
     holdout_steps = _selected_stream_steps(registry, holdout_names)
     _require_search_work_unit(
-        n_random=n_random,
+        n_random=initial_candidates,
         population=population,
         generations=generations,
-        children=children,
+        children=children_per_generation,
     )
     _require_search_protocol_work(
         search_evals=_search_candidate_evals(
-            n_random=n_random,
+            n_random=initial_candidates,
             population=population,
             generations=generations,
-            children=children,
+            children=children_per_generation,
         ),
         search_steps=search_steps,
         n_eval_seeds=len(eval_seeds),
