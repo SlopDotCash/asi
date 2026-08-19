@@ -46,6 +46,8 @@ DURATION_HEAD = 1
 N_HEADS = 2
 _INT32_MAX = 2_147_483_647
 _MAX_PERSISTENT_STATE_BYTES = 256 * 1024 * 1024
+# README / package-init public scan last-fit. Origin scanned T with no reject.
+_OPTION_DURATION_SCAN_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {int, *(np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"))}
 )
@@ -56,6 +58,23 @@ def _require_int32(name: str, value: object, *, minimum: int = 1) -> int:
     canonical = operator.index(cast(SupportsIndex, value))
     if not minimum <= canonical <= _INT32_MAX:
         raise ValueError(f"{name} must be an integer in [{minimum}, {_INT32_MAX}]")
+    return canonical
+
+
+def _require_option_duration_scan_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jax.lax.scan``."""
+    if type(value) is int:
+        canonical = value
+    elif type(value) in _ACTUAL_INT_TYPES:
+        canonical = operator.index(cast(SupportsIndex, value))
+    else:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_OPTION_DURATION_SCAN_MAX_STEPS}]"
+        )
+    if not 1 <= canonical <= _OPTION_DURATION_SCAN_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_OPTION_DURATION_SCAN_MAX_STEPS}]"
+        )
     return canonical
 
 
@@ -575,7 +594,9 @@ def run_option_value_duration_from_arrays(
         raise ValueError("observations have an incompatible shape")
     if observations.dtype != jnp.float32:
         raise ValueError("observations must have dtype float32")
-    num_steps = observations.shape[0]
+    num_steps = _require_option_duration_scan_steps(
+        "num_steps", observations.shape[0]
+    )
     next_observations = learner._require_array(
         "next_observations",
         next_observations,
