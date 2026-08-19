@@ -30,6 +30,7 @@ from jax import Array
 from jaxtyping import Bool, PRNGKeyArray
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -212,7 +213,7 @@ class PartialObservationWrapper[InnerStateT]:
         else:  # PERIODIC
             assert self._schedule is not None
             mask = self._schedule[state.period_index % self._schedule.shape[0]]
-            new_period_index = state.period_index + 1
+            new_period_index = _saturating_int32_counter_increment(state.period_index)
 
         masked_obs = jnp.where(
             mask,
