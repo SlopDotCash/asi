@@ -221,6 +221,29 @@ def test_across_seed_spread_uses_sample_estimator() -> None:
     assert across_seed_spread([0.5]) == 0.0
 
 
+def test_frontier_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    screen.mkdir(parents=True, exist_ok=True)
+    confirm.mkdir(parents=True, exist_ok=True)
+    (screen / "base_seed0.json").write_text(
+        '{"seed":0,"per_task_accuracy":[0.1,0.1],"per_task_accuracy":[0.9,0.9]}',
+        encoding="utf-8",
+    )
+    _shard(screen / "candidate_seed0.json", seed=0, accuracy=0.81)
+    _shard(confirm / "base_seed0.json", seed=0, accuracy=0.80)
+    _shard(confirm / "candidate_seed0.json", seed=0, accuracy=0.82)
+
+    with pytest.raises(ValueError, match="duplicate"):
+        build_frontier(
+            screen,
+            confirm,
+            base="base",
+            arms=["candidate"],
+            created_unix=0.0,
+        )
+
+
 def test_frontier_requires_and_uses_exact_paired_seed_sets(tmp_path: Path) -> None:
     screen = tmp_path / "screen"
     confirm = tmp_path / "confirm"
