@@ -1191,6 +1191,8 @@ def _parse_variant(
     path: str,
     schema_version: str,
 ) -> ForagerMatrixVariant:
+    if type(schema_version) is not str:
+        raise ForagerMatrixManifestError("matrix schema is invalid")
     payload = _require_object(value, path)
     _require_exact_keys(
         payload,
@@ -2138,6 +2140,8 @@ def _open_bound_directory(path: Path, *, create: bool) -> _BoundDirectory:
 
 
 def _safe_artifact_parts(relative_path: str) -> tuple[str, ...]:
+    if type(relative_path) is not str:
+        raise ForagerMatrixStateError("artifact path must be an exact string")
     candidate = PurePosixPath(relative_path)
     if (
         not relative_path
@@ -3058,6 +3062,8 @@ def _environment_spec(config: ForagerBenchmarkConfig) -> dict[str, Any]:
 def _matrix_rng_contract(
     schema_version: str = FORAGER_MATRIX_SCHEMA_VERSION,
 ) -> dict[str, Any]:
+    if type(schema_version) is not str:
+        raise ForagerMatrixError("matrix schema is invalid")
     rng_contract = forager_rng_contract()
     rng_contract["agent_isolation"]["causal_map"] = dict(
         _FROZEN_CAUSAL_MAP_MATRIX_RNG_CONTRACT
