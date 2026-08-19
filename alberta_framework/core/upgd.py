@@ -68,6 +68,9 @@ def _require_exact_str(name: object, value: object) -> str:
 
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is 5_000 array steps / 50 stream steps. Origin handed
+# ``10**12`` to ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
+_UPGD_LOOP_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
@@ -100,6 +103,29 @@ def _require_int(name: str, value: object, *, minimum: int, maximum: int = _INT3
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer")
     return canonical
+
+
+def _require_upgd_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jnp.arange``."""
+    if type(value) is not int or value < 1 or value > _UPGD_LOOP_MAX_STEPS:
+        raise ValueError(f"{name} must be an integer in [1, {_UPGD_LOOP_MAX_STEPS}]")
+    return value
+
+
+def _require_upgd_array_steps(observations: object, targets: object) -> int:
+    """Reject pre-collected scan lengths above the public last-fit before scan."""
+    if not isinstance(observations, jax.Array) or not isinstance(targets, jax.Array):
+        raise TypeError("observations and targets must be JAX arrays")
+    if observations.ndim != 2 or targets.ndim != 2:
+        raise ValueError("observations and targets must be rank-2")
+    num_steps = observations.shape[0]
+    if type(num_steps) is not int or num_steps < 1 or num_steps > _UPGD_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"observations num_steps must be an integer in [1, {_UPGD_LOOP_MAX_STEPS}]"
+        )
+    if targets.shape[0] != num_steps:
+        raise ValueError("observations and targets must share num_steps")
+    return num_steps
 
 
 def _require_choice(name: str, value: object, choices: frozenset[str]) -> str:
@@ -3366,7 +3392,13 @@ def run_upgd_arrays(
     Returns:
         :class:`UPGDLearningResult` with the final state and the per-step
         4-column metrics array.
+
+    Raises:
+        TypeError: If ``observations`` or ``targets`` is not a JAX array.
+        ValueError: If ``num_steps`` is not an exact integer in
+            ``[1, 10_000]``.
     """
+    _require_upgd_array_steps(observations, targets)
 
     def step_fn(carry: UPGDState, inputs: tuple[Array, Array]) -> tuple[UPGDState, Array]:
         obs, tgt = inputs
@@ -3405,7 +3437,12 @@ def run_upgd_loop[StreamStateT](
     Returns:
         :class:`UPGDLearningResult` with the final state and the per-step
         4-column metrics array.
+
+    Raises:
+        ValueError: If ``num_steps`` exceeds the documented protocol ceiling
+            (``10_000``).
     """
+    num_steps = _require_upgd_loop_steps("num_steps", num_steps)
     stream_key, init_key = jax.random.split(key)
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim, init_key)
