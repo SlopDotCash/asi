@@ -133,6 +133,20 @@ postmortem.
     6.55-6.82, so the nominal 300 dimensions were under 7. Record:
     [`V4_fingerprints.md`](../../outputs/new_directions/V4_fingerprints.md).
 
+16. **The champion's RLS residual-body gate is not load-bearing at 60 tasks,
+    and gate removal did not clear the escalation bar.** A pre-registered
+    n=10 paired screen (issue #1937, both arms remeasured on one runner, seeds
+    0-9) measured `rls_head_resid_l1_preset005_nogate` at
+    +0.001712 ± 0.000174 over `rls_head_resid_l1_preset005` with all ten
+    per-seed diffs positive (9.84x stderr), consistent with the earlier n=3
+    result in issue #52 but below the frozen +0.002 win bar. The ambiguous-band
+    rule therefore applied: no 200-task confirmation, no evaluation-seed touch,
+    no threshold move. The recorded fact is that gate removal is a consistently
+    not-worse, 2.9x cheaper mechanism at 60 tasks (about 129 s vs about 375 s
+    per shard on CPU), not a promoted result. Records:
+    `outputs/ipmnist_screening/gate_ablation_r2/` (20 v2 shards, `summary.json`,
+    per-shard logs).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

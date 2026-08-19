@@ -322,3 +322,22 @@ distinct EMA-prior semantics labels; the loader continues to accept the older
 generic labels for compatibility and canonicalizes them when re-serialized.
 As always, do not rewrite these development artifacts, and bind any later run
 to its exact source revision.
+
+## Gate-ablation r2 (2026-08-19)
+
+Pre-registered n=10 paired screen resolving the issue #52 ambiguous band:
+`rls_head_resid_l1_preset005` vs `rls_head_resid_l1_preset005_nogate`, both
+arms remeasured on one CPU runner (HEAD `cc877f785666`), seeds 0-9, 60 tasks
+x 5000, step noise. Pre-registration: issue #1937 (evaluation seeds 10-19
+held out, frozen decision rule, win bar +0.002).
+
+Result: paired +0.001712 ± 0.000174 (stderr_diff), all ten per-seed diffs
+positive (9.84x stderr), control 0.869634 ± 0.000250, candidate
+0.871345 ± 0.000250. Below the +0.002 win bar, so the ambiguous-band rule
+applied: reported plainly, no 200-task confirmation, no evaluation-seed
+touch, no threshold move. Recorded fact: gate removal is consistently
+not-worse and 2.9x cheaper (about 129 s vs about 375 s per shard on CPU).
+Remeasured control seeds 0-2 track the archived n=3 within the run-to-run
+jitter class. Artifacts: `gate_ablation_r2/shards/` (20 v2 shards),
+`gate_ablation_r2/summary.json` (control `rls_head_resid_l1_preset005`),
+per-shard logs. Ledger entry 16.
