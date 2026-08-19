@@ -1450,7 +1450,10 @@ def emit_launch_command(
         raise OfficialForagaxOciError(
             "launch image must be a sha256 image-config digest"
         )
-    if entrypoint not in {"src/continuing_main.py", "src/rtu_ppo.py"}:
+    if type(entrypoint) is not str or entrypoint not in {
+        "src/continuing_main.py",
+        "src/rtu_ppo.py",
+    }:
         raise OfficialForagaxOciError("launch entrypoint is not allowlisted")
     config = PurePosixPath(config_path)
     if (
@@ -2996,7 +2999,7 @@ def qualify_v4_runs(
     environment_profile_sha256: str,
 ) -> dict[str, Any]:
     """Seal exact two-run deterministic evidence without granting endorsement."""
-    if backend not in {"cpu", "gpu"}:
+    if type(backend) is not str or backend not in {"cpu", "gpu"}:
         raise OfficialForagaxOciError(
             "qualification backend must be exactly cpu or gpu"
         )

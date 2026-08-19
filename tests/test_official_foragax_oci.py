@@ -995,3 +995,81 @@ def test_gpu_launch_uses_explicit_devices_and_read_only_driver_bind() -> None:
         "--env=XLA_FLAGS=--xla_gpu_enable_triton_gemm=false "
         "--xla_gpu_deterministic_ops=true"
     ) in command
+
+
+class _HostileStr(str):
+    """A str subclass whose dunders raise, to prove they never run."""
+
+    calls = 0
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile eq must not run")
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile hash must not run")
+
+    def __bool__(self) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile bool must not run")
+
+    def __str__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile str must not run")
+
+    def __repr__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile repr must not run")
+
+
+def test_emit_launch_command_rejects_hostile_entrypoint_before_membership() -> None:
+    """A hostile str-subclass entrypoint must not run its __eq__/__hash__ hooks.
+
+    ``emit_launch_command`` gates its entrypoint allowlist with
+    ``entrypoint not in {...}`` against an untrusted ``entrypoint: str``
+    parameter. Before the fix, a hostile object reached that membership test
+    before its type was confirmed, letting a hostile ``__eq__``/``__hash__``
+    run.
+    """
+    hostile = _HostileStr("src/continuing_main.py")
+    _HostileStr.calls = 0
+    with pytest.raises(oci.OfficialForagaxOciError, match="entrypoint is not allowlisted"):
+        oci.emit_launch_command(
+            image_id="sha256:" + "1" * 64,
+            entrypoint=hostile,  # type: ignore[arg-type]
+            config_path="/opt/continual-foragax-agents/config.json",
+            index_expression="0",
+            gpu=False,
+        )
+    assert _HostileStr.calls == 0
+
+
+def test_qualify_v4_runs_rejects_hostile_backend_before_membership(tmp_path: Path) -> None:
+    """A hostile str-subclass backend must not run its __eq__/__hash__ hooks.
+
+    ``qualify_v4_runs`` gates its backend allowlist with
+    ``backend not in {...}`` as the very first check, before either archive
+    is touched. Before the fix, a hostile object reached that membership test
+    before its type was confirmed, letting a hostile ``__eq__``/``__hash__``
+    run.
+    """
+    hostile = _HostileStr("cpu")
+    _HostileStr.calls = 0
+    with pytest.raises(
+        oci.OfficialForagaxOciError, match="backend must be exactly cpu or gpu"
+    ):
+        oci.qualify_v4_runs(
+            tmp_path / "first.tar",
+            tmp_path / "second.tar",
+            backend=hostile,  # type: ignore[arg-type]
+            image_id="sha256:" + "1" * 64,
+            runtime_profile_id="fixture",
+            effective_seed=7,
+            steps=12,
+            config_sha256="2" * 64,
+            source_archive_sha256="3" * 64,
+            workload_identity={},
+            environment_profile_sha256="5" * 64,
+        )
+    assert _HostileStr.calls == 0
