@@ -43,7 +43,7 @@ not "implements a recurrence mechanism".**
 
 Arms that are *bad* on fresh permutations gain enormously from repetition; arms
 that are *good* on fresh permutations gain almost nothing. Input conditioning
-already recovers most of what implicit reuse would give a learner — a
+captures most of the measured recurrence benefit in this configuration — a
 conditioned arm re-adapts fast enough that a repeat is barely cheaper than a
 fresh permutation, while an unconditioned arm re-adapts slowly and a repeat
 saves most of that cost.
@@ -54,8 +54,8 @@ input-shift axis.
 
 ## What this does and does not bound for direction D
 
-**Measured.** With perfect recurrence structure — 5 permutations across 100
-regimes, 20x reuse — a champion-like conditioned arm gains **+0.047**. That is
+**Measured.** With 5 permutations across 100 regimes (20x reuse), a
+champion-like conditioned arm gains **+0.047**. That is
 what implicit weight retention already captures, and it is the baseline any
 explicit recurrence-indexing mechanism must beat rather than a starting point
 of zero.
@@ -67,10 +67,10 @@ distance from the best M4 arm to the Bayes ceiling is `0.9833 - 0.7383 =
 0.2450`, but most of that is ordinary online estimation cost rather than
 recurrence-specific headroom, so it is an upper bound only in the loosest sense.
 
-The honest scoping statement: **the easy part of recurrence is already taken by
-conditioning; a direction-D proposal needs to argue it beats a +0.047 implicit
-baseline on conditioned arms, and this experiment does not tell us whether it
-can.**
+The honest scoping statement: **under this development configuration,
+conditioning captures a +0.047 implicit recurrence baseline; a direction-D
+proposal needs to compare against it, and this experiment does not tell us
+whether it can beat it or transfer beyond these three seeds.**
 
 ## Control
 

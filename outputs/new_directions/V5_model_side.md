@@ -12,12 +12,12 @@ Two separable outcomes:
    arm crosses 0.90 at **`N* = 1978.5`**, against V1's reported "~2,000-sample
    information floor" — measured in a different runner, with a stronger
    post-shift estimator.
-2. **The model-side arms are VOID again** — for a different reason than V4, and
-   the reason is structural rather than an implementation slip.
+2. **The model-side arms are VOID again** — for a different reason than V4:
+   these reference and post-shift descriptors are not commensurable.
 
 Ledger entry 15 therefore stays open as *untested*, not closed. This run does
-not refute model-side probes; it records a second failed attempt to construct
-one, and a structural argument for why the construction is hard.
+not refute model-side probes; it records a second failed construction and a
+constraint that future constructions must address.
 
 ## F5c — data-side control (passed both controls)
 
@@ -65,7 +65,7 @@ permutation**, so position is not the confound. The descriptors simply do not
 identify pixels: 0.248 of relevant pixels with *exact* statistics on both
 sides, well above chance (~0.002) but far below the gate.
 
-### The structural reason
+### Why these descriptors are not commensurable
 
 The reference descriptor is the model's per-position class affinity — a
 quantity in **weight space**, "how does input position `i` drive class `c`".
@@ -75,19 +75,18 @@ trained network these correlate, which is why 0.248 is not chance, but they are
 not the same object and their standardized distance is not a reliable identity
 score.
 
-This generalizes, and it is the reusable finding:
+The reusable constraint for a follow-up is narrower than a family-level
+conclusion:
 
-> Any model-side quantity is indexed by the model's **input position**, which
-> is the pre-shift layout. To score it against post-shift evidence you need a
-> post-shift quantity, and the only permutation-invariant post-shift quantity
-> available is a **content statistic** — which is exactly what V1 measured.
+> These model-side quantities are indexed by the model's **input position**,
+> which is the pre-shift layout. Scoring them against post-shift evidence needs
+> a commensurable post-shift quantity; the content statistic used here is not
+> commensurable with either weight-space descriptor.
 
-So the model side can only ever improve the **reference** estimate. V1 already
-established that the reference is not the binding constraint; the post-shift
-estimator is, because class-conditional statistics see ~N/10 samples per class
-regardless of how good the reference gets. A model-side probe cannot move that
-term, which is why the pre-registered prediction was H0 and why F5c's floor
-lands where V1's did.
+For this construction, improving the model-side **reference** does not change
+the post-shift estimator, which still sees roughly N/10 samples per class. That
+explains the registered H0 and why F5c's floor lands where V1's did, but it does
+not establish that every possible model-side probe must use the same estimator.
 
 ## Controls
 
@@ -107,8 +106,8 @@ class-conditional oracle exactly.
 ## Consequence for the chain
 
 - **Ledger entry 15 stays open.** Model-side probes remain untested, now across
-  two independent constructions. This run adds a structural reason they are
-  hard to construct, not a refutation.
+  two independent constructions. This run identifies a commensurability
+  requirement for the next construction, not a refutation.
 - **V1's floor is confirmed at `N* = 1978.5`** in an independent runner with a
   stronger post estimator.
 - **V2 remains gated out.** No identification step has been promoted.

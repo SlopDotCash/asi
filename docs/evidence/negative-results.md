@@ -161,9 +161,9 @@ postmortem.
     but persistent weights stay partly fit when a mapping repeats. The
     structure is the result: unconditioned arms gain +0.3688 mean (`sgd_raw`
     +0.3869, `adamw` +0.3507) while conditioned arms gain +0.0469 (`gated_norm`
-    +0.0472), a 7.9x difference. Input conditioning already recovers most of
-    what implicit reuse offers, mirroring the campaign's conditioning result on
-    the memory axis. For direction D the reusable number is that 20x reuse is
+    +0.0472), a 7.9x difference. Under this three-seed development
+    configuration, input conditioning captures most of the measured recurrence
+    benefit. For direction D the reusable number is that 20x reuse is
     worth only **+0.047** on a champion-like arm, so an explicit
     recurrence-indexing mechanism must beat that implicit baseline rather than
     start from zero. This does **not** cap direction D: an explicit mechanism
