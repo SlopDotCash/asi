@@ -73,6 +73,23 @@ RECURRING_TWO_AGENT_CHECKPOINT_SCHEMA = "alberta.recurring-two-agent-checkpoint.
 _LEGACY_RECURRING_TWO_AGENT_CHECKPOINT_SCHEMA = "alberta.recurring-two-agent-checkpoint.v1"
 RECURRING_TWO_AGENT_CLOCK_NBYTES = 12
 RECURRING_TWO_AGENT_CLOCK_DELTA_NBYTES = 8
+_RECURRING_TWO_AGENT_CONFIG_FIELDS = frozenset(
+    {
+        "type",
+        "config_schema",
+        "state_schema",
+        "context_length",
+        "nuisance_dim",
+        "nuisance_scale",
+        "world_limit",
+        "damping",
+        "acceleration",
+        "time_delta",
+        "max_speed",
+        "initial_positions",
+        "partner_policy",
+    }
+)
 
 type PartnerPolicy = Callable[[Array, Array], Array]
 
@@ -522,21 +539,33 @@ class RecurringTwoAgentWorld:
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> RecurringTwoAgentWorld:
         """Strictly reconstruct a default-policy v2 environment."""
+        if type(config) is not dict:
+            raise ValueError("recurring two-agent config must be an exact dictionary")
+        if any(type(key) is not str for key in config):
+            raise ValueError("recurring two-agent config keys must be exact strings")
         values = dict(config)
-        expected = set(cls().to_config())
-        if set(values) != expected:
+        if set(values) != _RECURRING_TWO_AGENT_CONFIG_FIELDS:
             raise ValueError("recurring two-agent config fields are invalid")
-        if values.pop("type") != cls.__name__:
+        type_name = values.pop("type")
+        if type(type_name) is not str or type_name != cls.__name__:
             raise ValueError("recurring two-agent config type is unsupported")
-        if values.pop("config_schema") != RECURRING_TWO_AGENT_CONFIG_SCHEMA:
+        config_schema = values.pop("config_schema")
+        if type(config_schema) is not str or config_schema != RECURRING_TWO_AGENT_CONFIG_SCHEMA:
             raise ValueError("recurring two-agent config schema is unsupported")
-        if values.pop("state_schema") != RECURRING_TWO_AGENT_STATE_SCHEMA:
+        state_schema = values.pop("state_schema")
+        if type(state_schema) is not str or state_schema != RECURRING_TWO_AGENT_STATE_SCHEMA:
             raise ValueError("recurring two-agent state schema is unsupported")
-        if values.pop("partner_policy") != "scripted_meet_avoid_partner_policy":
+        partner_policy = values.pop("partner_policy")
+        if (
+            type(partner_policy) is not str
+            or partner_policy != "scripted_meet_avoid_partner_policy"
+        ):
             raise ValueError("recurring two-agent partner policy is unsupported")
         initial = values.pop("initial_positions")
-        if not isinstance(initial, (list, tuple)):
-            raise ValueError("recurring two-agent initial_positions is invalid")
+        if type(initial) is not list:
+            raise ValueError("recurring two-agent initial_positions must be an exact list")
+        if len(initial) != N_AGENTS:
+            raise ValueError(f"recurring two-agent initial_positions must have length {N_AGENTS}")
         return cls(initial_positions=tuple(initial), **values)
 
     def _require_state_contract(self, state: RecurringTwoAgentState) -> None:

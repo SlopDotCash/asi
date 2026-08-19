@@ -82,6 +82,27 @@ LIFETIME_GAUNTLET_CHECKPOINT_SCHEMA = "alberta.lifetime-gauntlet-checkpoint.v2"
 _LEGACY_LIFETIME_GAUNTLET_CHECKPOINT_SCHEMA = "alberta.lifetime-gauntlet-checkpoint.v1"
 LIFETIME_GAUNTLET_CLOCK_NBYTES = 12
 LIFETIME_GAUNTLET_CLOCK_DELTA_NBYTES = 8
+_LIFETIME_GAUNTLET_CONFIG_FIELDS = frozenset(
+    {
+        "type",
+        "config_schema",
+        "state_schema",
+        "gauntlet_config",
+        "scale_cycle_period",
+    }
+)
+_GAUNTLET_CONFIG_FIELDS = frozenset(
+    {
+        "relevant_dim",
+        "irrelevant_dim",
+        "segment_length",
+        "noise_std",
+        "feature_std",
+        "scale_factor",
+        "drift_rate",
+        "context_noise_std",
+    }
+)
 
 
 def _require_int(
@@ -714,28 +735,32 @@ class LifetimeGauntletStream:
     @classmethod
     def from_config(cls, config: Mapping[str, Any]) -> LifetimeGauntletStream:
         """Strictly reconstruct a v2 lifetime stream."""
+        if type(config) is not dict:
+            raise ValueError("lifetime-gauntlet config must be an exact dictionary")
+        if any(type(key) is not str for key in config):
+            raise ValueError("lifetime-gauntlet config keys must be exact strings")
         values = dict(config)
-        expected = {
-            "type",
-            "config_schema",
-            "state_schema",
-            "gauntlet_config",
-            "scale_cycle_period",
-        }
-        if set(values) != expected:
+        if set(values) != _LIFETIME_GAUNTLET_CONFIG_FIELDS:
             raise ValueError("lifetime-gauntlet config fields are invalid")
-        if values.pop("type") != cls.__name__:
+        type_name = values.pop("type")
+        if type(type_name) is not str or type_name != cls.__name__:
             raise ValueError("lifetime-gauntlet config type is unsupported")
-        if values.pop("config_schema") != LIFETIME_GAUNTLET_CONFIG_SCHEMA:
+        config_schema = values.pop("config_schema")
+        if type(config_schema) is not str or config_schema != LIFETIME_GAUNTLET_CONFIG_SCHEMA:
             raise ValueError("lifetime-gauntlet config schema is unsupported")
-        if values.pop("state_schema") != LIFETIME_GAUNTLET_STATE_SCHEMA:
+        state_schema = values.pop("state_schema")
+        if type(state_schema) is not str or state_schema != LIFETIME_GAUNTLET_STATE_SCHEMA:
             raise ValueError("lifetime-gauntlet state schema is unsupported")
         raw_gauntlet = values.pop("gauntlet_config")
-        if not isinstance(raw_gauntlet, Mapping):
-            raise ValueError("lifetime-gauntlet nested config is invalid")
-        gauntlet_fields = {field.name for field in dataclasses.fields(GauntletConfig)}
-        if set(raw_gauntlet) != gauntlet_fields:
+        if type(raw_gauntlet) is not dict:
+            raise ValueError("lifetime-gauntlet nested config must be an exact dictionary")
+        if any(type(key) is not str for key in raw_gauntlet):
+            raise ValueError("lifetime-gauntlet nested config keys must be exact strings")
+        if set(raw_gauntlet) != _GAUNTLET_CONFIG_FIELDS:
             raise ValueError("lifetime-gauntlet nested config fields are invalid")
+        scale_period = values.get("scale_cycle_period")
+        if type(scale_period) is bool or type(scale_period) is not int:
+            raise ValueError("scale_cycle_period must be an exact integer")
         return cls(GauntletConfig(**dict(raw_gauntlet)), **values)
 
     def _require_state_contract(self, state: LifetimeState) -> None:

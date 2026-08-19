@@ -1,6 +1,6 @@
-"""Hostile int/float gate for RecurringTwoAgentWorld before range/float."""
-
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
@@ -100,3 +100,65 @@ def test_recurring_world_hostile_not_in_repr() -> None:
         assert _HostileInt.calls == 0
     else:
         raise AssertionError("should have raised")
+
+
+def test_recurring_world_from_config_roundtrip() -> None:
+    world = RecurringTwoAgentWorld(
+        context_length=32,
+        nuisance_dim=2,
+        nuisance_scale=0.5,
+        initial_positions=(-0.25, 0.25),
+    )
+    cfg = world.to_config()
+    restored = RecurringTwoAgentWorld.from_config(cfg)
+    assert restored._context_length == 32
+    assert restored._nuisance_dim == 2
+    assert restored._nuisance_scale == 0.5
+    assert restored._initial_positions_tuple == (-0.25, 0.25)
+
+
+def test_recurring_world_from_config_rejects_invalid_containers() -> None:
+    with pytest.raises(ValueError, match="exact dictionary"):
+        RecurringTwoAgentWorld.from_config([("type", "RecurringTwoAgentWorld")])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="exact dictionary"):
+        RecurringTwoAgentWorld.from_config("not_a_dict")  # type: ignore[arg-type]
+
+
+def test_recurring_world_from_config_rejects_non_string_keys() -> None:
+    valid = RecurringTwoAgentWorld().to_config()
+    bad_keys: dict[Any, Any] = dict(valid)
+    bad_keys[123] = "invalid_key"
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        RecurringTwoAgentWorld.from_config(bad_keys)  # type: ignore[arg-type]
+
+
+def test_recurring_world_from_config_rejects_invalid_schema_fields() -> None:
+    valid = RecurringTwoAgentWorld().to_config()
+    with pytest.raises(ValueError, match="fields are invalid"):
+        RecurringTwoAgentWorld.from_config({**valid, "extra_field": 1})
+    missing = dict(valid)
+    del missing["context_length"]
+    with pytest.raises(ValueError, match="fields are invalid"):
+        RecurringTwoAgentWorld.from_config(missing)
+
+
+def test_recurring_world_from_config_rejects_unsupported_type_or_schema_or_policy() -> None:
+    valid = RecurringTwoAgentWorld().to_config()
+    with pytest.raises(ValueError, match="type is unsupported"):
+        RecurringTwoAgentWorld.from_config({**valid, "type": "WrongWorld"})
+    with pytest.raises(ValueError, match="config schema is unsupported"):
+        RecurringTwoAgentWorld.from_config({**valid, "config_schema": "wrong.schema"})
+    with pytest.raises(ValueError, match="state schema is unsupported"):
+        RecurringTwoAgentWorld.from_config({**valid, "state_schema": "wrong.schema"})
+    with pytest.raises(ValueError, match="partner policy is unsupported"):
+        RecurringTwoAgentWorld.from_config({**valid, "partner_policy": "custom_policy"})
+
+
+def test_recurring_world_from_config_rejects_invalid_initial_positions() -> None:
+    valid = RecurringTwoAgentWorld().to_config()
+    with pytest.raises(ValueError, match="initial_positions must be an exact list"):
+        RecurringTwoAgentWorld.from_config({**valid, "initial_positions": (-0.5, 0.5)})
+    with pytest.raises(ValueError, match="initial_positions must have length 2"):
+        RecurringTwoAgentWorld.from_config({**valid, "initial_positions": [-0.5]})
+    with pytest.raises(ValueError, match="initial_positions must have length 2"):
+        RecurringTwoAgentWorld.from_config({**valid, "initial_positions": [-0.5, 0.0, 0.5]})

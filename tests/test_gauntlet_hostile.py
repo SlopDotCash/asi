@@ -1,10 +1,13 @@
-"""Hostile int/float gate for GauntletConfig before float/range."""
-
 from __future__ import annotations
+
+from typing import Any
 
 import pytest
 
-from alberta_framework.streams.gauntlet import GauntletConfig
+from alberta_framework.streams.gauntlet import (
+    GauntletConfig,
+    LifetimeGauntletStream,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -116,3 +119,70 @@ def test_gauntlet_hostile_not_in_repr() -> None:
         assert _HostileInt.calls == 0
     else:
         raise AssertionError("should have raised")
+
+
+def test_lifetime_gauntlet_from_config_roundtrip() -> None:
+    stream = LifetimeGauntletStream(scale_cycle_period=4)
+    cfg = stream.to_config()
+    restored = LifetimeGauntletStream.from_config(cfg)
+    assert restored.scale_cycle_period == 4
+    assert restored.config.relevant_dim == stream.config.relevant_dim
+    assert restored.config.noise_std == stream.config.noise_std
+
+
+def test_lifetime_gauntlet_from_config_rejects_invalid_containers() -> None:
+    with pytest.raises(ValueError, match="exact dictionary"):
+        LifetimeGauntletStream.from_config([("type", "LifetimeGauntletStream")])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="exact dictionary"):
+        LifetimeGauntletStream.from_config("not_a_dict")  # type: ignore[arg-type]
+
+
+def test_lifetime_gauntlet_from_config_rejects_non_string_keys() -> None:
+    valid = LifetimeGauntletStream().to_config()
+    bad_keys: dict[Any, Any] = dict(valid)
+    bad_keys[123] = "invalid_key"
+    with pytest.raises(ValueError, match="keys must be exact strings"):
+        LifetimeGauntletStream.from_config(bad_keys)  # type: ignore[arg-type]
+
+
+def test_lifetime_gauntlet_from_config_rejects_invalid_schema_fields() -> None:
+    valid = LifetimeGauntletStream().to_config()
+    with pytest.raises(ValueError, match="fields are invalid"):
+        LifetimeGauntletStream.from_config({**valid, "extra": 1})
+    missing = dict(valid)
+    del missing["scale_cycle_period"]
+    with pytest.raises(ValueError, match="fields are invalid"):
+        LifetimeGauntletStream.from_config(missing)
+
+
+def test_lifetime_gauntlet_from_config_rejects_unsupported_type_or_schema() -> None:
+    valid = LifetimeGauntletStream().to_config()
+    with pytest.raises(ValueError, match="type is unsupported"):
+        LifetimeGauntletStream.from_config({**valid, "type": "WrongStream"})
+    with pytest.raises(ValueError, match="config schema is unsupported"):
+        LifetimeGauntletStream.from_config({**valid, "config_schema": "wrong.schema"})
+    with pytest.raises(ValueError, match="state schema is unsupported"):
+        LifetimeGauntletStream.from_config({**valid, "state_schema": "wrong.schema"})
+
+
+def test_lifetime_gauntlet_from_config_rejects_invalid_nested_gauntlet_config() -> None:
+    valid = LifetimeGauntletStream().to_config()
+    with pytest.raises(ValueError, match="nested config must be an exact dictionary"):
+        LifetimeGauntletStream.from_config({**valid, "gauntlet_config": "not_a_dict"})
+    raw_gauntlet = dict(valid["gauntlet_config"])
+    raw_gauntlet_bad_keys: dict[Any, Any] = dict(raw_gauntlet)
+    raw_gauntlet_bad_keys[123] = "bad"
+    with pytest.raises(ValueError, match="nested config keys must be exact strings"):
+        LifetimeGauntletStream.from_config({**valid, "gauntlet_config": raw_gauntlet_bad_keys})
+    with pytest.raises(ValueError, match="nested config fields are invalid"):
+        LifetimeGauntletStream.from_config(
+            {**valid, "gauntlet_config": {**raw_gauntlet, "extra": 1}}
+        )
+
+
+def test_lifetime_gauntlet_from_config_rejects_invalid_scale_period_type() -> None:
+    valid = LifetimeGauntletStream().to_config()
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream.from_config({**valid, "scale_cycle_period": True})
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream.from_config({**valid, "scale_cycle_period": 3.0})
