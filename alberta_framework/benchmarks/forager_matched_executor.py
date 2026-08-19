@@ -3016,8 +3016,8 @@ def _run_bounded_process(
 ) -> ProcessResult:
     """Drain both child pipes concurrently into actively bounded file sinks."""
     if (
-        not isinstance(timeout, (int, float))
-        or isinstance(timeout, bool)
+        type(timeout) is bool
+        or (type(timeout) is not int and type(timeout) is not float)
         or not math.isfinite(float(timeout))
         or timeout <= 0
     ):
