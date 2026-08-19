@@ -59,6 +59,50 @@ class _HostileString(str):
     __hash__ = str.__hash__
 
 
+class _HostileFloat(float):
+    """A float facade whose dunders must not run during trusted validation."""
+
+    calls = 0
+
+    def __float__(self) -> float:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __float__ hook executed")
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __eq__ hook executed")
+
+    def __bool__(self) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __bool__ hook executed")
+
+    def __repr__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __repr__ hook executed")
+
+
+class _HostileInt(int):
+    """An int facade whose dunders must not run during trusted validation."""
+
+    calls = 0
+
+    def __float__(self) -> float:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __float__ hook executed")
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __eq__ hook executed")
+
+    def __bool__(self) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __bool__ hook executed")
+
+    def __repr__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("untrusted __repr__ hook executed")
+
+
 def _synthetic_dataset(
     seed: int, n_train: int, input_dim: int, n_classes: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -1060,6 +1104,65 @@ class TestPartialMerge:
             )
 
         assert _HostileString.calls == 0
+
+    def test_partial_validation_rejects_hostile_hyperparameter_number_before_float(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = self._minimal_v2_payload()
+        payload["hyperparameters"] = {"step_size": _HostileFloat(0.001)}
+        _HostileFloat.calls = 0
+        monkeypatch.setattr(upgd_ipmnist, "_strict_json_object", lambda _path: payload)
+
+        with pytest.raises(ValueError, match="hyperparameters"):
+            upgd_ipmnist._validated_partial_payload(
+                tmp_path / "hostile.json", schema=PARTIAL_SCHEMA, seed_field="seed_id"
+            )
+
+        assert _HostileFloat.calls == 0
+
+    def test_partial_validation_rejects_hostile_hyperparameter_int_before_float(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = self._minimal_v2_payload()
+        payload["hyperparameters"] = {"step_size": _HostileInt(1)}
+        _HostileInt.calls = 0
+        monkeypatch.setattr(upgd_ipmnist, "_strict_json_object", lambda _path: payload)
+
+        with pytest.raises(ValueError, match="hyperparameters"):
+            upgd_ipmnist._validated_partial_payload(
+                tmp_path / "hostile.json", schema=PARTIAL_SCHEMA, seed_field="seed_id"
+            )
+
+        assert _HostileInt.calls == 0
+
+    def test_partial_validation_rejects_hostile_wall_clock_before_float(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        payload = self._minimal_v2_payload()
+        payload["hyperparameters"] = dict(upgd_ipmnist.ADAMW_PROTOCOL_HYPERPARAMETERS)
+        config = upgd_ipmnist.IPMNISTConfig()
+        payload["config"] = dict(config.to_config())
+        payload["matches_selected_publication_configuration"] = (
+            config.matches_selected_publication_configuration
+        )
+        payload["selected_publication_configuration_match_scope"] = (
+            "network_task_shape_and_horizon_only"
+        )
+        payload["seed_id"] = 7
+        payload["seed_count"] = 1
+        payload["per_task_accuracy"] = [[0.5] * config.n_tasks]
+        payload["per_task_loss"] = [[1e-6] * config.n_tasks]
+        payload["per_task_plasticity"] = [[0.5] * config.n_tasks]
+        payload["wall_clock_seconds"] = _HostileFloat(1.0)
+        _HostileFloat.calls = 0
+        monkeypatch.setattr(upgd_ipmnist, "_strict_json_object", lambda _path: payload)
+
+        with pytest.raises(ValueError, match="wall_clock_seconds"):
+            upgd_ipmnist._validated_partial_payload(
+                tmp_path / "hostile.json", schema=PARTIAL_SCHEMA, seed_field="seed_id"
+            )
+
+        assert _HostileFloat.calls == 0
 
     def test_v2_partial_manifest_binds_identity_and_digest_to_one_read(
         self, tmp_path, monkeypatch

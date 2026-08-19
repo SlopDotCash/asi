@@ -1591,8 +1591,8 @@ def _validated_partial_payload(
     for name, value in hyperparameters.items():
         if (
             type(name) is not str
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
+            or type(value) is bool
+            or (type(value) is not int and type(value) is not float)
         ):
             raise ValueError(f"{path}: hyperparameters must be finite named numbers")
         if not math.isfinite(float(value)):
@@ -1664,8 +1664,8 @@ def _validated_partial_payload(
             raise ValueError(f"{path}: {field} values are outside the allowed range")
     wall_clock = payload.get("wall_clock_seconds")
     if (
-        isinstance(wall_clock, bool)
-        or not isinstance(wall_clock, (int, float))
+        type(wall_clock) is bool
+        or (type(wall_clock) is not int and type(wall_clock) is not float)
         or not math.isfinite(float(wall_clock))
         or float(wall_clock) <= 0.0
     ):
