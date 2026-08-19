@@ -1413,6 +1413,17 @@ class RiverSwimReferenceEnvironment:
             )
 
 
+def _validate_riverswim_oracle(oracle_value: object) -> float:
+    if type(oracle_value) is bool or (
+        type(oracle_value) is not int and type(oracle_value) is not float
+    ):
+        raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
+    oracle_reward = float(oracle_value)
+    if not math.isfinite(oracle_reward):
+        raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
+    return oracle_reward
+
+
 def _agent_descriptor(
     manifest: AgentManifest,
     *,
@@ -2154,11 +2165,7 @@ class ReferenceLifeRunner:
             if metrics_mode != "stationary":
                 raise DecisionOwnershipError("checkpoint RiverSwim metrics mode is invalid")
             oracle_value = environment_config.get("oracle_average_reward")
-            if isinstance(oracle_value, bool) or not isinstance(oracle_value, (int, float)):
-                raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
-            oracle_reward = float(oracle_value)
-            if not math.isfinite(oracle_reward):
-                raise DecisionOwnershipError("checkpoint RiverSwim oracle is invalid")
+            oracle_reward = _validate_riverswim_oracle(oracle_value)
             expected_phase_counts = (accepted, 0)
             expected_current_phase = 0
             expected_phase_switches = 0
