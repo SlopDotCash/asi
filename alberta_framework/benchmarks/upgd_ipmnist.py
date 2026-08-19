@@ -1589,11 +1589,7 @@ def _validated_partial_payload(
     if type(hyperparameters) is not dict or not hyperparameters:
         raise ValueError(f"{path}: hyperparameters must be a non-empty object")
     for name, value in hyperparameters.items():
-        if (
-            type(name) is not str
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-        ):
+        if type(name) is not str or type(value) not in (int, float):
             raise ValueError(f"{path}: hyperparameters must be finite named numbers")
         if not math.isfinite(float(value)):
             raise ValueError(f"{path}: hyperparameters must be finite named numbers")
@@ -1664,8 +1660,7 @@ def _validated_partial_payload(
             raise ValueError(f"{path}: {field} values are outside the allowed range")
     wall_clock = payload.get("wall_clock_seconds")
     if (
-        isinstance(wall_clock, bool)
-        or not isinstance(wall_clock, (int, float))
+        type(wall_clock) not in (int, float)
         or not math.isfinite(float(wall_clock))
         or float(wall_clock) <= 0.0
     ):
