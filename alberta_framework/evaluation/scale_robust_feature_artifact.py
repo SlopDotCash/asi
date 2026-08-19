@@ -1599,14 +1599,14 @@ def load_evidence_artifact(path: Path) -> dict[str, object]:
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
     numeric = float(value)
     return numeric if math.isfinite(numeric) else None
 
 
 def _strict_int(value: object) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is bool or type(value) is not int:
         return None
     return value
 
