@@ -41,6 +41,7 @@ _MAX_LIFECYCLE_ID_LENGTH = _MAX_ID_LENGTH - len(
     f":{MAX_DECISION_INDEX}:authorization"
 )
 _MAX_CONFIG_BYTES = 1 << 20
+_MAX_JSON_NESTING_DEPTH = 64
 _MAX_ARRAY_RANK = 8
 _MAX_ARRAY_ELEMENTS = 1 << 20
 _SUPPORTED_DTYPES = frozenset(
@@ -83,8 +84,52 @@ def _require_sha256(value: str, *, name: str) -> None:
         raise ValueError(f"{name} must be a lowercase 64-character SHA-256 digest")
 
 
+def _require_json_text_nesting(raw: str, *, name: str) -> None:
+    """Reject nesting that would RecursionError ``json.loads`` before it runs."""
+    if type(raw) is not str:
+        raise ValueError(f"{name} must be canonical JSON")
+    encoded_len = len(raw.encode("utf-8"))
+    if encoded_len > _MAX_CONFIG_BYTES:
+        raise ValueError(f"{name} exceeds {_MAX_CONFIG_BYTES} bytes")
+    depth = 0
+    in_string = False
+    escape = False
+    for character in raw:
+        if in_string:
+            if escape:
+                escape = False
+            elif character == "\\":
+                escape = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+            continue
+        if character in "{[":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError(
+                    f"{name} exceeds the maximum canonical JSON nesting depth"
+                )
+        elif character in "}]":
+            depth -= 1
+
+
+def _load_manifest_config_json(raw: str) -> Any:
+    _require_json_text_nesting(raw, name="manifest config")
+    try:
+        return json.loads(raw)
+    except RecursionError as exc:
+        raise ValueError(
+            "manifest config exceeds the maximum canonical JSON nesting depth"
+        ) from exc
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("manifest config must be canonical JSON") from exc
+
+
 def _validate_json_value(value: Any, *, path: str, depth: int = 0) -> None:
-    if depth > 64:
+    if depth > _MAX_JSON_NESTING_DEPTH:
         raise ValueError(f"{path} exceeds the maximum canonical JSON nesting depth")
     value_type = type(value)
     if value is None or value_type is str or value_type is bool or value_type is int:
@@ -514,10 +559,7 @@ class AgentManifest:
             raise ValueError("action_spec must be a SpaceSpec")
         if not isinstance(self.capabilities, AgentCapabilities):
             raise ValueError("capabilities must be AgentCapabilities")
-        try:
-            config = json.loads(self._config_json)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("manifest config must be canonical JSON") from exc
+        config = _load_manifest_config_json(self._config_json)
         if not isinstance(config, dict):
             raise ValueError("manifest config must be a JSON object")
         if _canonical_json_bytes(config).decode("utf-8") != self._config_json:
@@ -573,7 +615,7 @@ class AgentManifest:
 
     @property
     def config(self) -> dict[str, Any]:
-        config = json.loads(self._config_json)
+        config = _load_manifest_config_json(self._config_json)
         assert isinstance(config, dict)
         return config
 
