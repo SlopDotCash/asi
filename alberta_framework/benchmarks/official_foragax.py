@@ -1702,7 +1702,7 @@ def _qualification_workload_projection(
     backend: str,
 ) -> dict[str, Any]:
     """Project one trust entry into the reviewable qualifier workload schema."""
-    if backend not in {"cpu", "gpu"}:
+    if type(backend) is not str or backend not in {"cpu", "gpu"}:
         raise OfficialForagaxValidationError(
             "qualification workload backend is invalid"
         )
