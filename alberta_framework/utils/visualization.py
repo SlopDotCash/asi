@@ -292,8 +292,10 @@ def plot_final_performance_bars(
     # Add significance markers if provided
     if show_significance and significance_results:
         best_name = names[best_idx]
-        y_max = max(m + s for m, s in zip(means, stds, strict=False))
-        y_offset = y_max * 0.05
+        y_top = max(m + s for m, s in zip(means, stds, strict=False))
+        y_bot = min(min(0.0, m - s) for m, s in zip(means, stds, strict=False))
+        y_span = max(y_top - y_bot, max(abs(y_top), 1.0))
+        y_offset = max(y_span * 0.05, 1e-4)
 
         for i, name in enumerate(names):
             if name == best_name:
@@ -357,7 +359,7 @@ def plot_hyperparameter_heatmap(
     for i, p1 in enumerate(param1_values):
         for j, p2 in enumerate(param2_values):
             name = name_pattern.format(p1=p1, p2=p2)
-            if name in results:
+            if name in results and metric in results[name].summary:
                 data[i, j] = results[name].summary[metric].mean
             else:
                 data[i, j] = np.nan

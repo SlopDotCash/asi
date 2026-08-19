@@ -395,3 +395,69 @@ def test_set_publication_style_keeps_legal_hosts() -> None:
         assert plt.rcParams["text.usetex"] is False
     finally:
         plt.rcParams.update(before)
+
+
+def test_plot_final_performance_bars_significance_offset_on_negative_metrics() -> None:
+    """Significance markers must sit strictly above the error bar for negative metrics."""
+    from alberta_framework.utils.statistics import SignificanceResult
+
+    results = {
+        "best": _aggregated_from_error("best", np.full((2, 4), -100.0)),
+        "suboptimal": _aggregated_from_error("suboptimal", np.full((2, 4), -150.0)),
+    }
+    # For squared_error, override the summary with negative means and positive stds
+    summary_best = MetricSummary(
+        mean=-100.0, std=5.0, min=-110.0, max=-90.0, n_seeds=2, values=np.array([-105.0, -95.0])
+    )
+    summary_sub = MetricSummary(
+        mean=-150.0, std=10.0, min=-165.0, max=-135.0, n_seeds=2, values=np.array([-160.0, -140.0])
+    )
+    results["best"] = results["best"]._replace(summary={"squared_error": summary_best})
+    results["suboptimal"] = results["suboptimal"]._replace(summary={"squared_error": summary_sub})
+
+    sig_results = {
+        ("suboptimal", "best"): SignificanceResult(
+            test_name="t_test",
+            statistic=-5.0,
+            p_value=0.0005,
+            significant=True,
+            alpha=0.05,
+            effect_size=2.0,
+            method_a="suboptimal",
+            method_b="best",
+        )
+    }
+
+    fig, ax = plot_final_performance_bars(
+        results,
+        metric="squared_error",
+        show_significance=True,
+        significance_results=sig_results,
+        lower_is_better=False,  # -100 is better than -150
+    )
+    assert isinstance(fig, plt.Figure)
+    annotations = [t for t in ax.texts if t.get_text() == "***"]
+    assert len(annotations) == 1
+    ann = annotations[0]
+    # Bar top + std for suboptimal is -150.0 + 10.0 = -140.0.
+    # The annotation position y must be strictly above -140.0.
+    bar_top = -150.0 + 10.0
+    ann_x, ann_y = ann.xy
+    assert ann_x == 1  # suboptimal is second bar
+    assert ann_y > bar_top, f"Annotation y ({ann_y}) must be above bar top ({bar_top})"
+
+
+def test_plot_hyperparameter_heatmap_handles_missing_metric_in_summary(results) -> None:
+    """Heatmap sets nan without KeyError when requested metric is missing in summary."""
+    fig, ax = plot_hyperparameter_heatmap(
+        results,
+        param1_name="optimizer",
+        param1_values=["lms", "idbd"],
+        param2_name="suffix",
+        param2_values=[""],
+        name_pattern="{p1}{p2}",
+        metric="nonexistent_metric",
+    )
+    assert isinstance(fig, plt.Figure)
+    data = np.ma.filled(np.asarray(ax.images[0].get_array(), dtype=float), np.nan)
+    assert np.isnan(data).all()
