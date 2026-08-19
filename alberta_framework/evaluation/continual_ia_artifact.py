@@ -1184,7 +1184,7 @@ def _validate_ia_evidence_artifact(
             errors.append("content_digest canonicalization is unsupported")
         recorded = digest.get("sha256")
         if (
-            not isinstance(recorded, str)
+            type(recorded) is not str
             or len(recorded) != 64
             or any(character not in "0123456789abcdef" for character in recorded)
         ):
