@@ -64,6 +64,9 @@ _FUSION_TYPE = "PartnerPolicyFusion"
 _INT32_MAX = 2_147_483_647
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
 _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+# Largest non-INT32 constructor bound in this L0 module (`max_partners`).
+# Sequence T is the remaining unbounded scan axis on origin.
+_FUSION_SEQUENCE_MAX_STEPS = 1_024
 
 
 _ACTUAL_INT_TYPES = frozenset(
@@ -102,6 +105,19 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_fusion_sequence_vector(name: str, value: object) -> int:
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim != 1:
+        raise ValueError(f"{name} must be rank one")
+    length = int(value.shape[0])
+    if length < 1 or length > _FUSION_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_FUSION_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
 
 
 def _strict_float32(
@@ -1608,9 +1624,7 @@ class PartnerPolicyFusion:
     ) -> tuple[PartnerPolicyFusionState, PartnerFusionDecision]:
         """Run a fixed-length uninterrupted decision sequence with ``lax.scan``."""
 
-        if decision_ids.ndim != 1:
-            raise ValueError("decision_ids must be rank one")
-        length = decision_ids.shape[0]
+        length = _require_fusion_sequence_vector("decision_ids", decision_ids)
         if (
             decision_ids.dtype != jnp.int32
             or event_ids.shape != (length,)
@@ -1684,8 +1698,7 @@ class PartnerPolicyFusion:
     ) -> tuple[PartnerPolicyFusionState, PartnerFusionFeedbackResult]:
         """Run a fixed-length feedback sequence with :func:`jax.lax.scan`."""
 
-        if feedback.available.ndim != 1:
-            raise ValueError("feedback sequence leaves must be rank one")
+        _require_fusion_sequence_vector("feedback.available", feedback.available)
 
         def step(
             carry: PartnerPolicyFusionState,
