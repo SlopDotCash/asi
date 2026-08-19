@@ -9316,6 +9316,8 @@ def _is_finite_json_number(value: object) -> bool:
 def _require_screening_curve_domain(
     values: np.ndarray, field: str, *, context: str
 ) -> None:
+    if type(field) is not str:
+        raise ValueError(f"{context}: field must be an exact string")
     if field in {"per_task_accuracy", "per_task_plasticity"}:
         if np.any(values < 0.0) or np.any(values > 1.0):
             raise ValueError(f"{context}: {field} values must be in [0, 1]")
@@ -9973,6 +9975,8 @@ def merge_shards(
     and every comparison against the control are therefore computed over the
     same paired runs; an incomplete worker batch is rejected before ranking.
     """
+    if type(control_name) is not str:
+        raise ValueError("control is invalid")
     normalized_paths = [Path(path) for path in paths]
     input_bindings = _artifact_file_bindings(
         normalized_paths, context="screening shard input"
