@@ -214,6 +214,14 @@ def _require_runtime_shape(name: str, value: object, expected: tuple[int, ...]) 
         actual = tuple(metadata) if metadata is not None else tuple(np.shape(cast(Any, value)))
     except Exception as error:
         raise ValueError(f"{name} shape metadata could not be read") from error
+    # Exact-type gate every dimension before comparing or formatting: a
+    # hostile ``.shape`` property (or an object whose ``np.shape`` fallback
+    # yields hostile elements) could otherwise run an attacker-controlled
+    # ``__eq__``/``__ne__`` via ``actual != expected`` below, or
+    # ``__repr__``/``__format__`` via the f-string, before any dimension's
+    # type has been confirmed safe. Same defect class as PR #1219/#1994/#1995.
+    if any(type(dimension) is not int for dimension in actual):
+        raise ValueError(f"{name} shape metadata must be built-in integers")
     if actual != expected:
         raise ValueError(f"{name} must have declared shape {expected}; got {actual}")
 
