@@ -244,6 +244,108 @@ def test_run_horde_actor_critic_from_arrays_scan() -> None:
     chex.assert_tree_all_finite((result.policies, result.values, result.td_errors))
 
 
+# =============================================================================
+# Scan sequence-length ceiling (hang guard)
+# =============================================================================
+#
+# ``run_horde_actor_critic_from_arrays`` and
+# ``run_nonlinear_horde_actor_critic_from_arrays`` hand their step arrays
+# straight to ``jax.lax.scan`` with no bound on the leading (step) axis. A
+# hostile or mistaken caller supplying a huge array forces JAX to
+# trace/compile a scan of that length, hanging the process well before any
+# step executes -- the same hang class fixed for other scan-driven array
+# loops elsewhere in ``core`` (``sarsa``, ``average_reward``, ``learners``,
+# ``partner_policy_fusion``).
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        first = xs[0] if isinstance(xs, tuple) else xs
+        seen.append(int(first.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={first.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.core.horde_actor_critic.jax.lax.scan", spy)
+    return seen
+
+
+class TestHordeActorCriticScanLengthCeiling:
+    def test_oversized_rewards_rejected_before_scan_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from alberta_framework.core.horde_actor_critic import (
+            _HORDE_AC_SEQUENCE_MAX_STEPS,
+            run_horde_actor_critic_from_arrays,
+        )
+
+        seen = _spy_scan(monkeypatch)
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        n_steps = _HORDE_AC_SEQUENCE_MAX_STEPS + 1
+        obs = jnp.zeros((n_steps, 2), dtype=jnp.float32)
+        rewards = jnp.zeros(n_steps, dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="rewards length must be an integer"):
+            run_horde_actor_critic_from_arrays(agent, state, obs, rewards, obs)
+        assert seen == []
+
+    def test_empty_rewards_rejected(self) -> None:
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        obs = jnp.zeros((0, 2), dtype=jnp.float32)
+        rewards = jnp.zeros(0, dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="rewards length must be an integer"):
+            run_horde_actor_critic_from_arrays(agent, state, obs, rewards, obs)
+
+    def test_rewards_wrong_type_rejected(self) -> None:
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        obs = jnp.zeros((2, 2), dtype=jnp.float32)
+
+        with pytest.raises(TypeError, match="rewards must be a JAX or NumPy array"):
+            run_horde_actor_critic_from_arrays(
+                agent, state, obs, [0.0, 0.0], obs  # type: ignore[arg-type]
+            )
+
+    def test_mismatched_next_observations_length_rejected(self) -> None:
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        obs = jnp.zeros((3, 2), dtype=jnp.float32)
+        rewards = jnp.zeros(3, dtype=jnp.float32)
+        short_next_obs = jnp.zeros((2, 2), dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="must share the same leading length"):
+            run_horde_actor_critic_from_arrays(agent, state, obs, rewards, short_next_obs)
+
+    def test_mismatched_discounts_length_rejected(self) -> None:
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        obs = jnp.zeros((3, 2), dtype=jnp.float32)
+        rewards = jnp.zeros(3, dtype=jnp.float32)
+        short_discounts = jnp.zeros(2, dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="must share the same leading length"):
+            run_horde_actor_critic_from_arrays(
+                agent, state, obs, rewards, obs, discounts=short_discounts
+            )
+
+    def test_max_boundary_steps_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from alberta_framework.core.horde_actor_critic import (
+            run_horde_actor_critic_from_arrays,
+        )
+
+        agent = _make_agent()
+        state = agent.init(feature_dim=2, key=jr.key(0))
+        n_steps = 5
+        obs = jnp.zeros((n_steps, 2), dtype=jnp.float32)
+        rewards = jnp.zeros(n_steps, dtype=jnp.float32)
+
+        result = run_horde_actor_critic_from_arrays(agent, state, obs, rewards, obs)
+        assert int(result.state.step_count) == n_steps
+
+
 def test_horde_actor_critic_explicit_discount_controls_value_target() -> None:
     agent = _make_agent(n_demons=1)
     state = agent.init(feature_dim=2, key=jr.key(4)).replace(  # type: ignore[attr-defined]
@@ -1225,6 +1327,67 @@ class TestNonlinearHordeActorCriticScan:
             agent, state, obs, jnp.ones(n_steps), obs, auxiliary_cumulants=aux
         )
         chex.assert_shape(result.critic_td_errors, (n_steps, 3))
+
+
+class TestNonlinearHordeActorCriticScanLengthCeiling:
+    def test_oversized_rewards_rejected_before_scan_runs(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from alberta_framework.core.horde_actor_critic import (
+            _HORDE_AC_SEQUENCE_MAX_STEPS,
+        )
+
+        seen = _spy_scan(monkeypatch)
+        agent = _make_nlhac_agent()
+        state = _init_nlhac(agent)
+        n_steps = _HORDE_AC_SEQUENCE_MAX_STEPS + 1
+        obs = jnp.zeros((n_steps, OBS_DIM))
+        rewards = jnp.zeros(n_steps)
+
+        with pytest.raises(ValueError, match="rewards length must be an integer"):
+            run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rewards, obs)
+        assert seen == []
+
+    def test_empty_rewards_rejected(self) -> None:
+        agent = _make_nlhac_agent()
+        state = _init_nlhac(agent)
+        obs = jnp.zeros((0, OBS_DIM))
+        rewards = jnp.zeros(0)
+
+        with pytest.raises(ValueError, match="rewards length must be an integer"):
+            run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rewards, obs)
+
+    def test_rewards_wrong_type_rejected(self) -> None:
+        agent = _make_nlhac_agent()
+        state = _init_nlhac(agent)
+        obs = jnp.zeros((2, OBS_DIM))
+
+        with pytest.raises(TypeError, match="rewards must be a JAX or NumPy array"):
+            run_nonlinear_horde_actor_critic_from_arrays(
+                agent, state, obs, [0.0, 0.0], obs  # type: ignore[arg-type]
+            )
+
+    def test_mismatched_next_observations_length_rejected(self) -> None:
+        agent = _make_nlhac_agent()
+        state = _init_nlhac(agent)
+        obs = jnp.zeros((3, OBS_DIM))
+        rewards = jnp.zeros(3)
+        short_next_obs = jnp.zeros((2, OBS_DIM))
+
+        with pytest.raises(ValueError, match="must share the same leading length"):
+            run_nonlinear_horde_actor_critic_from_arrays(agent, state, obs, rewards, short_next_obs)
+
+    def test_mismatched_auxiliary_cumulants_length_rejected(self) -> None:
+        agent = _make_nlhac_agent(n_aux=1)
+        state = _init_nlhac(agent)
+        obs = jnp.zeros((3, OBS_DIM))
+        rewards = jnp.zeros(3)
+        short_aux = jnp.zeros((2, 1))
+
+        with pytest.raises(ValueError, match="must share the same leading length"):
+            run_nonlinear_horde_actor_critic_from_arrays(
+                agent, state, obs, rewards, obs, auxiliary_cumulants=short_aux
+            )
 
 
 class TestNonlinearHordeActorCriticExport:

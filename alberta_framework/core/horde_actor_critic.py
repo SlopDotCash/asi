@@ -125,6 +125,45 @@ def _check_actor_resources(resources: dict[str, int]) -> dict[str, int]:
     return resources
 
 
+# Matches the class of ceiling already established for other scan-driven
+# array-loop runners in ``core`` (e.g. ``sarsa._SARSA_SEQUENCE_MAX_STEPS``,
+# ``average_reward._AVERAGE_REWARD_SEQUENCE_MAX_STEPS``,
+# ``learners._LEARNING_LOOP_MAX_STEPS``). Set with headroom above this
+# module's largest exercised sequence (200 steps, see
+# ``TestNonlinearHordeActorCriticScan.test_200_step_fineness``) while still
+# bounding the leading axis that ``run_horde_actor_critic_from_arrays`` and
+# ``run_nonlinear_horde_actor_critic_from_arrays`` hand straight to
+# ``jax.lax.scan``.
+_HORDE_AC_SEQUENCE_MAX_STEPS = 10_000
+
+
+def _require_horde_ac_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    ``run_horde_actor_critic_from_arrays`` and
+    ``run_nonlinear_horde_actor_critic_from_arrays`` hand their step arrays
+    straight to ``jax.lax.scan`` with no bound on the leading (step)
+    dimension. A hostile or mistaken caller supplying a huge leading length
+    forces JAX to trace/compile a scan of that length, hanging the process
+    well before any step executes.
+    """
+    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+        raise TypeError(f"{name} must be a JAX or NumPy array")
+    if value.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(value.shape[0])
+    if length < 1 or length > _HORDE_AC_SEQUENCE_MAX_STEPS:
+        raise ValueError(f"{name} length must be an integer in [1, {_HORDE_AC_SEQUENCE_MAX_STEPS}]")
+    return length
+
+
+def _require_horde_ac_matching_length(name: str, value: object, *, expected: int) -> None:
+    if not (type(value) is np.ndarray or isinstance(value, jax.Array)):
+        raise TypeError(f"{name} must be a JAX or NumPy array")
+    if value.ndim < 1 or int(value.shape[0]) != expected:
+        raise ValueError(f"{name} must share the same leading length as rewards")
+
+
 def _linear_actor_resources(n_actions: int, feature_dim: object) -> dict[str, int]:
     width = _require_int32("feature_dim", feature_dim, minimum=1)
     parameters = n_actions * (width + 1)
@@ -1091,11 +1130,22 @@ def run_horde_actor_critic_from_arrays(
     This loop is scan-compatible for fixed-shape arrays. It uses the Horde's
     fixed per-head ``gamma`` values; variable per-transition discounts remain a
     future extension to ``HordeLearner.update`` itself.
+
+    Raises:
+        TypeError: If an input is not a JAX or NumPy array.
+        ValueError: If ``rewards`` is empty, exceeds the documented
+            scan-length ceiling (``_HORDE_AC_SEQUENCE_MAX_STEPS``), or the
+            other step arrays do not share its leading length.
     """
-    rewards_shape = tuple(rewards.shape)
-    if len(rewards_shape) != 1 or rewards_shape[0] < 1:
-        raise ValueError("rewards must have shape (num_steps,)")
-    num_steps = rewards_shape[0]
+    num_steps = _require_horde_ac_sequence_length("rewards", rewards)
+    _require_horde_ac_matching_length("observations", observations, expected=num_steps)
+    _require_horde_ac_matching_length("next_observations", next_observations, expected=num_steps)
+    if auxiliary_cumulants is not None:
+        _require_horde_ac_matching_length(
+            "auxiliary_cumulants", auxiliary_cumulants, expected=num_steps
+        )
+    if discounts is not None:
+        _require_horde_ac_matching_length("discounts", discounts, expected=num_steps)
     if actions is None:
         actions = jnp.full_like(rewards, -1, dtype=jnp.int32)
         actions_valid = jnp.ones((num_steps,), dtype=jnp.bool_)
@@ -1999,7 +2049,22 @@ def run_nonlinear_horde_actor_critic_from_arrays(
 
     Returns:
         :class:`NonlinearHordeActorCriticArrayResult`.
+
+    Raises:
+        TypeError: If an input is not a JAX or NumPy array.
+        ValueError: If ``rewards`` is empty, exceeds the documented
+            scan-length ceiling (``_HORDE_AC_SEQUENCE_MAX_STEPS``), or the
+            other step arrays do not share its leading length.
     """
+    num_steps = _require_horde_ac_sequence_length("rewards", rewards)
+    _require_horde_ac_matching_length("observations", observations, expected=num_steps)
+    _require_horde_ac_matching_length("next_observations", next_observations, expected=num_steps)
+    if auxiliary_cumulants is not None:
+        _require_horde_ac_matching_length(
+            "auxiliary_cumulants", auxiliary_cumulants, expected=num_steps
+        )
+    if discounts is not None:
+        _require_horde_ac_matching_length("discounts", discounts, expected=num_steps)
     if auxiliary_cumulants is None:
         auxiliary_cumulants = jnp.zeros(
             (rewards.shape[0], agent.critic.n_demons - 1), dtype=jnp.float32
