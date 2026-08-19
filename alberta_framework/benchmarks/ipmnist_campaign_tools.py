@@ -15,7 +15,7 @@ import statistics
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import numpy as np
 
@@ -91,6 +91,55 @@ def _json_object(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if type(payload) is not dict:
         raise ValueError(f"{path} must contain a JSON object")
+    return cast(dict[str, Any], payload)
+
+
+_MAX_METADATA_JSON_BYTES = 16 * 1024 * 1024
+
+
+def _reject_duplicate_metadata_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    parsed: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in parsed:
+            raise ValueError(f"duplicate JSON object key {key!r} in npz metadata")
+        parsed[key] = value
+    return parsed
+
+
+def _reject_nonstandard_metadata_constant(token: str) -> NoReturn:
+    if type(token) is not str:
+        raise ValueError("non-standard JSON numeric constant must be an exact string")
+    raise ValueError("non-standard JSON numeric constant is forbidden in npz metadata")
+
+
+def _parse_finite_metadata_float(token: str) -> float:
+    parsed = float(token)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number is forbidden in npz metadata")
+    return parsed
+
+
+def _strict_metadata_object(raw: object, *, path: Path) -> dict[str, Any]:
+    """Decode one duplicate-free finite JSON object embedded in an ``.npz`` archive.
+
+    ``np.load`` already materializes the metadata string in memory, so this
+    bounds only the cost of the JSON parse itself: an oversized payload is
+    refused before ``json.loads`` walks it, and every object key resolves to
+    exactly one declared value instead of silently keeping whichever
+    duplicate a parser visits last.
+    """
+    if type(raw) is not str:
+        raise ValueError(f"{path} metadata must be an exact string")
+    if len(raw.encode("utf-8")) > _MAX_METADATA_JSON_BYTES:
+        raise ValueError(f"{path} metadata exceeds the byte limit")
+    payload = json.loads(
+        raw,
+        object_pairs_hook=_reject_duplicate_metadata_keys,
+        parse_constant=_reject_nonstandard_metadata_constant,
+        parse_float=_parse_finite_metadata_float,
+    )
+    if type(payload) is not dict:
+        raise ValueError(f"{path} metadata must contain a JSON object")
     return cast(dict[str, Any], payload)
 
 
@@ -240,10 +289,8 @@ def _ceiling_runs(
         runs[seed] = payload
     for path in sorted(ceiling_dir.glob(f"{prefix}_seed*.npz")):
         with np.load(path, allow_pickle=False) as archive:
-            payload = json.loads(str(archive["metadata"].item()))
+            payload = _strict_metadata_object(archive["metadata"].item(), path=path)
             per_step = np.asarray(archive["per_step"])
-        if type(payload) is not dict:
-            raise ValueError(f"{path} metadata must be a JSON object")
         if payload.get("schema") != "asi.ipmnist_ceiling.run.v2":
             raise ValueError(f"{path} has an unsupported maintained run schema")
         if (

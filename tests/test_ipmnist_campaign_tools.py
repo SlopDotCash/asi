@@ -193,6 +193,45 @@ def test_frontier_seed_filename_must_bind_payload_seed(tmp_path: Path) -> None:
         build_frontier(screen, confirm, base="base", arms=("candidate",))
 
 
+def test_ceiling_npz_metadata_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    """The ``.npz`` ceiling-run metadata path must reject duplicate keys too.
+
+    ``_ceiling_runs`` decodes ``.json`` shards through the strict loader but
+    used to decode ``.npz`` embedded metadata with plain ``json.loads``, so the
+    same ambiguity reached ceiling summaries through a second, unguarded path.
+    """
+    ceiling = tmp_path / "ceiling"
+    ceiling.mkdir()
+    valid_payload: dict[str, object] = {
+        "schema": "asi.ipmnist_ceiling.run.v2",
+        "evidence_class": "development_screening_diagnostic",
+        "development_only": True,
+        "scientific_promotion_allowed": False,
+        "tag": "stationary_sigma0_ndecay099",
+        "spec_name": "sigma0_ndecay099",
+        "seed": 0,
+        "perm_mode": "identity",
+        "n_tasks": 1,
+        "task_length": 5000,
+        "per_task_accuracy": [1.0],
+        "mean_accuracy": 1.0,
+        "wall_clock_seconds": 1.0,
+        "provenance": {"schema": "asi.ipmnist.ceiling_run_provenance.v1"},
+    }
+    serialized = json.dumps(valid_payload)
+    # Inject a bogus leading declaration of an already-present key: a real
+    # duplicate-key object, still parseable, whose first (wrong) value a
+    # last-value-wins parser would silently discard.
+    hostile_metadata = serialized.replace("{", '{"evidence_class":"bogus",', 1)
+    np.savez_compressed(
+        ceiling / "stationary_sigma0_ndecay099_seed0.npz",
+        metadata=np.asarray(hostile_metadata),
+        per_step=np.ones((1, 5000), dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        build_ceiling_summary(ceiling, tmp_path / "confirm")
+
+
 def test_campaign_cli_uses_strict_json_serialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -670,6 +709,28 @@ def test_rule_summary_rejects_invalid_accuracy_payloads(
         json.dumps({"seed": 0, "per_task_accuracy": accuracy}), encoding="utf-8"
     )
     with pytest.raises(ValueError):
+        build_legacy_rule_discovery_summary(
+            screen, tmp_path / "confirm", seeds=(0,)
+        )
+
+
+def test_rule_summary_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    """The rule-discovery arm loader shares the campaign-tools duplicate-key hole.
+
+    Every other arm gets a valid shard, so only a genuine duplicate-key
+    rejection — not an unrelated missing-file error — can make this pass.
+    Both are maintained campaign score readers, so both must refuse a shard
+    whose JSON declares the same key twice rather than silently keeping one.
+    """
+    screen = tmp_path / "screen"
+    screen.mkdir(parents=True)
+    for name in SCREEN_ARMS[1:]:
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=0.8)
+    (screen / f"{SCREEN_ARMS[0]}_seed0.json").write_text(
+        '{"seed":0,"per_task_accuracy":[0.1],"per_task_accuracy":[0.9]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
         build_legacy_rule_discovery_summary(
             screen, tmp_path / "confirm", seeds=(0,)
         )

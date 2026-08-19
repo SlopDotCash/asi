@@ -13,6 +13,7 @@ import numpy as np
 
 import alberta_framework.benchmarks.rule_discovery as rule_discovery_module
 from alberta_framework._seed_validation import require_jax_seed, require_unique_jax_seeds
+from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
 
@@ -42,7 +43,7 @@ def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
         path = directory / f"{name}_seed{seed}.json"
         if not path.exists():
             raise ValueError(f"{name} is missing seed {seed} in {directory}")
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = load_strict_json_object(path)
         if (
             type(payload) is not dict
             or type(payload.get("per_task_accuracy")) is not list
