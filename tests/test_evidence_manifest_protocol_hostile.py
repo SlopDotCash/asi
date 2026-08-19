@@ -12,28 +12,29 @@ pytestmark = pytest.mark.unit
 class _HostileStr(str):
     calls = 0
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         type(self).calls += 1
         raise AssertionError("hostile eq")
 
-    def __hash__(self) -> int:  # type: ignore[override]
+    def __hash__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile hash")
 
-    def __len__(self) -> int:  # type: ignore[override]
+    def __len__(self) -> int:
         type(self).calls += 1
         raise AssertionError("hostile len")
 
-    def __str__(self) -> str:  # type: ignore[override]
+    def __str__(self) -> str:
         type(self).calls += 1
         raise AssertionError("hostile str")
 
 
-def _hostile_spec_with_protocol_version(value):
+def _hostile_spec_with_protocol_version(value: object) -> EvidenceSpec:
     # Bypass frozen dataclass __post_init__ validation to test _validate_spec directly
     spec = object.__new__(EvidenceSpec)
     # minimal valid fields, using real spec as template then override protocol
     from alberta_framework.evaluation.evidence_manifest import EVIDENCE_SPECS
+
     base = EVIDENCE_SPECS[0]
     object.__setattr__(spec, "name", base.name)
     object.__setattr__(spec, "claim_scope", base.claim_scope)
@@ -70,6 +71,7 @@ def test_protocol_version_benign_still_passes() -> None:
 
 
 def test_protocol_version_non_str_rejected() -> None:
-    spec = _hostile_spec_with_protocol_version(123)  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="protocol must carry"):
-        _validate_spec(spec)
+    for bad in [123, None, True, b"bytes", ["1.0"]]:
+        spec = _hostile_spec_with_protocol_version(bad)
+        with pytest.raises(ValueError, match="protocol must carry"):
+            _validate_spec(spec)
