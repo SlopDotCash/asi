@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -180,6 +182,31 @@ def test_noise_curvature_scheduler_and_off_reduction() -> None:
         early_training=False,
         enabled=False,
     ) == 0.1
+
+
+def test_noise_curvature_step_size_fails_closed_on_warming_overflow() -> None:
+    base = float("1.79e308")
+    with pytest.raises(ValueError, match="overflowed its finite scalar domain"):
+        noise_curvature_step_size(
+            base,
+            effective_step_size=0.01,
+            safe_bound=1.0,
+            early_training=True,
+        )
+    unchanged = noise_curvature_step_size(
+        base,
+        effective_step_size=0.5,
+        safe_bound=1.0,
+        early_training=True,
+    )
+    assert unchanged == base
+    cooled = noise_curvature_step_size(
+        base,
+        effective_step_size=0.2,
+        safe_bound=0.15,
+        early_training=False,
+    )
+    assert math.isfinite(cooled)
 
 
 def test_exact_resource_accounting_and_hostile_protocol_scalars() -> None:
