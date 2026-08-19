@@ -167,8 +167,6 @@ def _positive_float32_scalar(name: str, value: object) -> float:
     if isinstance(value, bool) or not isinstance(value, Real):
         raise ValueError(message)
     try:
-        if value <= 0:
-            raise ValueError
         narrowed = round_real_to_float32(value)
     except (FloatingPointError, OverflowError, TypeError, ValueError) as error:
         raise ValueError(message) from error
