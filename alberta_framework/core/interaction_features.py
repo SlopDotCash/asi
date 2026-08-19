@@ -692,11 +692,22 @@ class FixedBudgetInteractionLearner:
             candidate_count=candidate_count,
             scale_robust=scale_robust,
         )
-        if candidate_strategy not in {"random", "all_pairs"}:
+        if type(candidate_strategy) is not str or candidate_strategy not in {
+            "random",
+            "all_pairs",
+        }:
             raise ValueError("candidate_strategy must be 'random' or 'all_pairs'")
-        if utility_aggregation not in {"mean", "max", "topk"}:
+        if type(utility_aggregation) is not str or utility_aggregation not in {
+            "mean",
+            "max",
+            "topk",
+        }:
             raise ValueError("utility_aggregation must be 'mean', 'max', or 'topk'")
-        if utility_task_balancing not in {"none", "active", "active_inverse_frequency"}:
+        if type(utility_task_balancing) is not str or utility_task_balancing not in {
+            "none",
+            "active",
+            "active_inverse_frequency",
+        }:
             raise ValueError(
                 "utility_task_balancing must be 'none', 'active', or 'active_inverse_frequency'"
             )
@@ -772,7 +783,7 @@ class FixedBudgetInteractionLearner:
         if not isinstance(independent_relevance_probe, bool):
             raise ValueError("independent_relevance_probe must be boolean")
         if (
-            not isinstance(relevance_probe_mode, str)
+            type(relevance_probe_mode) is not str
             or relevance_probe_mode not in RELEVANCE_PROBE_MODES
         ):
             raise ValueError("relevance_probe_mode must be 'conditional_v1' or 'target_only_v1'")
