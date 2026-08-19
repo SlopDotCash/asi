@@ -3814,8 +3814,7 @@ def save_interaction_feature_checkpoint(
     feature_dim: int,
 ) -> None:
     """Persist state with its explicit probe semantics and resource contract."""
-    if isinstance(feature_dim, bool) or not isinstance(feature_dim, int) or feature_dim < 1:
-        raise ValueError("feature_dim must be a positive integer")
+    feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
     learner._require_state_contract(state, feature_dim=feature_dim)
     if not bool(_lifetime_counter_valid(state.step_words, state.step_count)):
         raise ValueError("interaction-feature checkpoint lifetime counter is invalid")
@@ -3861,9 +3860,10 @@ def load_interaction_feature_checkpoint(
     if not isinstance(config, dict):
         raise ValueError("interaction-feature checkpoint is missing learner_config")
     learner = FixedBudgetInteractionLearner.from_config(config)
-    feature_dim = metadata.get("feature_dim")
-    if isinstance(feature_dim, bool) or not isinstance(feature_dim, int) or feature_dim < 1:
-        raise ValueError("interaction-feature checkpoint feature_dim is invalid")
+    try:
+        feature_dim = _require_int32("feature_dim", metadata.get("feature_dim"), minimum=1)
+    except ValueError as error:
+        raise ValueError("interaction-feature checkpoint feature_dim is invalid") from error
     template = learner.init(feature_dim=feature_dim, key=jr.key(0))
     restored, restored_metadata = load_checkpoint(template, path)
     if restored_metadata != metadata:
