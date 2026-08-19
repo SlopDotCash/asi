@@ -177,6 +177,8 @@ def _canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
             ).encode("ascii")
             + b"\n"
         )
+    except RecursionError as exc:
+        raise ValueError("checkpoint value exceeds the JSON nesting limit") from exc
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint value is not canonical finite JSON") from exc
 
@@ -200,10 +202,42 @@ def _read_bounded_json_file(path: Path) -> bytes:
     return raw
 
 
+def _require_json_text_depth(raw: bytes, *, name: str) -> None:
+    """Reject JSON nests deeper than ``_MAX_TREE_DEPTH`` before RecursionError."""
+
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{name} is not canonical JSON") from exc
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_TREE_DEPTH:
+                raise ValueError(f"{name} exceeds the JSON nesting limit")
+        elif character in "]}":
+            depth -= 1
+
+
 def _load_canonical_json(path: Path) -> dict[str, Any]:
     raw = _read_bounded_json_file(path)
     try:
+        _require_json_text_depth(raw, name=path.name)
         value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except RecursionError as exc:
+        raise ValueError(f"{path.name} exceeds the JSON nesting limit") from exc
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"{path.name} is not canonical JSON") from exc
     if type(value) is not dict or raw != _canonical_json_bytes(value):
@@ -1514,8 +1548,11 @@ def _load_raw_prototype_metadata(path: Path) -> dict[str, Any]:
 
     raw = _read_bounded_json_file(path)
     try:
+        _require_json_text_depth(raw, name="prototype.metadata")
         value = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
+    except RecursionError as exc:
+        raise ValueError("prototype.metadata exceeds the JSON nesting limit") from exc
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("nested Prototype metadata is not valid bounded JSON") from exc
     data = _require_keys(
         value,
