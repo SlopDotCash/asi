@@ -40,6 +40,12 @@ import numpy as np
 from jax import Array
 from jaxtyping import Float
 
+# Documented public trajectory last-fit (README / package ``__init__`` 10_000).
+# Origin reverse-scanned T=20_000 with no reject.
+_NEXTING_MAX_STEPS = 10_000
+_NEXTING_MAX_HORIZONS = 16
+_NEXTING_MAX_CHANNELS = 8
+
 
 def _is_bool(value: object) -> bool:
     return type(value) is bool or type(value) is np.bool_
@@ -85,6 +91,30 @@ def _require_host_discount[T](name: str, value: T, *, ndim: int) -> T:
     return value
 
 
+def _require_leading_length(
+    name: str,
+    value: object,
+    *,
+    ndim: int,
+    maximum: int,
+) -> None:
+    if isinstance(value, jax.core.Tracer):
+        if value.ndim != ndim:
+            raise ValueError(f"{name} must be {ndim}-dimensional")
+        return
+    if isinstance(value, jax.Array):
+        if value.ndim != ndim:
+            raise ValueError(f"{name} must be {ndim}-dimensional")
+        length = int(value.shape[0])
+    else:
+        array = _concrete_numeric_array(name, value, ndim=ndim)
+        if array is None:
+            return
+        length = int(array.shape[0])
+    if length < 1 or length > maximum:
+        raise ValueError(f"{name} length must be an integer in [1, {maximum}]")
+
+
 def _require_host_finite_real[T](name: str, value: T) -> T:
     """Reject boolean / non-finite host scalars before they become 0/1 bootstraps."""
     if _is_bool(value):
@@ -122,6 +152,9 @@ def forward_view_returns(
     """
     gamma = _require_host_discount("gamma", gamma, ndim=0)
     terminal_value = _require_host_finite_real("terminal_value", terminal_value)
+    _require_leading_length(
+        "cumulants", cumulants, ndim=1, maximum=_NEXTING_MAX_STEPS
+    )
     gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
     init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
 
@@ -156,6 +189,10 @@ def multi_horizon_returns(
     """
     gammas = _require_host_discount("gammas", gammas, ndim=1)
     terminal_value = _require_host_finite_real("terminal_value", terminal_value)
+    _require_leading_length(
+        "cumulants", cumulants, ndim=1, maximum=_NEXTING_MAX_STEPS
+    )
+    _require_leading_length("gammas", gammas, ndim=1, maximum=_NEXTING_MAX_HORIZONS)
 
     def per_gamma(g: Array) -> Array:
         return forward_view_returns(cumulants, g, terminal_value=terminal_value)
@@ -178,6 +215,17 @@ def multi_channel_horizon_returns(
     Returns:
         Array of shape ``(T, C, H)`` of forward-view returns.
     """
+    _require_leading_length(
+        "cumulants", cumulants, ndim=2, maximum=_NEXTING_MAX_STEPS
+    )
+    if isinstance(cumulants, jax.Array) and not isinstance(cumulants, jax.core.Tracer):
+        channel_count = int(cumulants.shape[1])
+        if channel_count < 1 or channel_count > _NEXTING_MAX_CHANNELS:
+            raise ValueError(
+                "cumulants channel count must be an integer in "
+                f"[1, {_NEXTING_MAX_CHANNELS}]"
+            )
+    _require_leading_length("gammas", gammas, ndim=1, maximum=_NEXTING_MAX_HORIZONS)
     # Vmap over channels: for each channel apply multi_horizon_returns
     def per_channel(c_series: Array) -> Array:
         return multi_horizon_returns(c_series, gammas, terminal_value=terminal_value)
