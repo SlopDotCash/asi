@@ -593,6 +593,8 @@ def _metric_history_values(
     *,
     name: str,
 ) -> NDArray[np.float64]:
+    if type(key) is not str:
+        raise ValueError(f"{name} metric key must be an exact string")
     if type(metrics_history) is not list:
         raise ValueError(f"{name} must be an exact list")
     values: list[float] = []
