@@ -45,6 +45,13 @@ def test_action_conditioned_lane_pins_official_dreamer_cdp_source() -> None:
     assert "isolated_runtime_locked" in plan.blockers
 
 
+def test_loss_of_plasticity_lane_preserves_protocol_and_cost_blockers() -> None:
+    plan = qualification_plan(1583)
+    assert "input_permutation_not_misreported_as_random_labels" in plan.blockers
+    assert "postpublication_code_changes_and_rl_step_mismatch_reviewed" in plan.blockers
+    assert "costly_imagenet_and_rl_lanes_separately_registered" in plan.blockers
+
+
 def test_completed_r0_plan_still_cannot_authorize_external_execution() -> None:
     revision = ExternalCodeRevision("https://github.com/org/repo.git", "a" * 40)
     plan = ExternalQualificationPlan(

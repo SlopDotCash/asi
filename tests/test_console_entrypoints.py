@@ -21,6 +21,13 @@ _LAZY_SCRIPTS = {
     "alberta-foragax-oci": ("alberta_framework.console_entrypoints:official_foragax_oci_main"),
 }
 _ASI_SCRIPTS = {
+    "asi-nap-ipmnist": ("alberta_framework.benchmarks.nap_ipmnist:main"),
+    "asi-native-supervised-catalog": (
+        "alberta_framework.benchmarks.native_supervised_suite:main"
+    ),
+    "asi-plasticity-diagnostic": (
+        "alberta_framework.benchmarks.plasticity_diagnostics:main"
+    ),
     "asi-reference-life-scorecard": (
         "alberta_framework.benchmarks.reference_life_scorecard:main"
     ),

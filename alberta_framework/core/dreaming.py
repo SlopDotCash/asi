@@ -41,6 +41,7 @@ from alberta_framework.core.behavior_model import (
     floor_and_renormalize_probabilities,
     selected_action_probabilities,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelState,
@@ -979,7 +980,7 @@ def dream_one_step(
             rollout_state.cumulative_confidence * world_prediction.confidence,
             rollout_state.cumulative_confidence,
         ),
-        step_count=rollout_state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(rollout_state.step_count),
     )
     transition = ImaginedTransition(
         observation=rollout_state.observation,

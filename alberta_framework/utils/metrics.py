@@ -1,7 +1,9 @@
 """Metrics and analysis utilities for continual learning experiments.
 
 Provides functions for computing tracking error, learning curves,
-and other metrics useful for evaluating continual learners.
+and other metrics useful for evaluating continual learners. Nested
+boolean-trace walks stop at ``_BOOLEAN_TRACE_MAX_DEPTH`` so a hostile nest
+raises ``ValueError`` instead of ``RecursionError``.
 
 The task-matrix metrics in this module use a common convention: rows are
 evaluation checkpoints and columns are tasks or regimes. ``first_exposure[j]``
@@ -25,6 +27,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 _INT32_MAX: int = 2**31 - 1
+# Same ceiling as security._JSON_MAX_DEPTH. An unbounded list/tuple walk
+# RecursionErrors on a ~1200-deep nest and cannot reject the boolean.
+_BOOLEAN_TRACE_MAX_DEPTH: int = 32
 
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -90,7 +95,11 @@ def _require_finite_real(name: str, value: object) -> float:
     return number
 
 
-def _reject_boolean_numeric_trace(values: object, *, name: str) -> None:
+def _reject_boolean_numeric_trace(
+    values: object, *, name: str, depth: int = 0
+) -> None:
+    if depth > _BOOLEAN_TRACE_MAX_DEPTH:
+        raise ValueError(f"{name} exceeds the boolean-trace depth limit")
     if _is_bool(values):
         raise ValueError(f"{name} must not be a boolean")
     if type(values) in _ALLOWED_REAL_TYPES:
@@ -98,14 +107,18 @@ def _reject_boolean_numeric_trace(values: object, *, name: str) -> None:
     if type(values) in (list, tuple):
         sequence = cast(list[object] | tuple[object, ...], values)
         for index, item in enumerate(sequence):
-            _reject_boolean_numeric_trace(item, name=f"{name}[{index}]")
+            _reject_boolean_numeric_trace(
+                item, name=f"{name}[{index}]", depth=depth + 1
+            )
         return
     if type(values) is np.ndarray:
         if values.dtype.kind == "b":
             raise ValueError(f"{name} must not be a boolean array")
         if values.dtype.kind == "O":
             for index, item in enumerate(values.flat):
-                _reject_boolean_numeric_trace(item, name=f"{name}[{index}]")
+                _reject_boolean_numeric_trace(
+                    item, name=f"{name}[{index}]", depth=depth + 1
+                )
         elif values.dtype.kind not in "iuf":
             raise ValueError(f"{name} must contain real numeric values")
         return

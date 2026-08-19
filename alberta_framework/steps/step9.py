@@ -53,6 +53,7 @@ from alberta_framework.core.dreaming import (
     RecentObservationBufferState,
     score_dream_candidates,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelConfig,
@@ -904,7 +905,7 @@ def step9_update(
         world_model_state=model_state,
         behavior_model_state=final_behavior,
         buffer_state=buffer_state,
-        step_count=state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(state.step_count),
     )
     return Step9DreamingUpdateResult(
         state=new_state,

@@ -143,7 +143,7 @@ import platform
 import subprocess
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from types import FunctionType, MappingProxyType
 from typing import Any, cast
@@ -9251,6 +9251,12 @@ def run_screening_config(
 # =============================================================================
 
 
+# Derived from the dataclass itself so a new protocol field cannot silently
+# reopen the gap this closes: every IPMNISTConfig field has a published
+# default, so a shard whose config omits one reconstructs at that default
+# instead of what actually ran.
+_IPMNIST_CONFIG_FIELDS = frozenset(field.name for field in fields(IPMNISTConfig))
+
 _V2_SHARD_FIELDS = frozenset(
     {
         "schema",
@@ -9717,6 +9723,9 @@ def load_shard(
         payload["environment"] = _validated_runtime_environment(
             payload["environment"], context=str(path)
         )
+    _require_exact_keys(
+        payload["config"], _IPMNIST_CONFIG_FIELDS, context=f"{path}: config"
+    )
     config = IPMNISTConfig(**payload["config"])
     if is_v2:
         _validate_dataset_config_binding(

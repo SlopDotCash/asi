@@ -1,4 +1,8 @@
-"""Hostile-safe validation for metrics utilities."""
+"""Hostile-safe validation for metrics utilities.
+
+Includes the boolean-trace depth ceiling: a 2000-deep nest must raise
+ValueError rather than RecursionError.
+"""
 
 from __future__ import annotations
 
@@ -85,6 +89,14 @@ def test_rejects_hostile_int_change_points() -> None:
 def test_rejects_bool_threshold() -> None:
     with pytest.raises(ValueError, match="threshold"):
         compute_recovery_lengths([0.1, 0.9], [0], True, window_size=1)
+
+
+def test_rejects_deeply_nested_boolean_trace_without_recursion_error() -> None:
+    nest: object = True
+    for _ in range(2000):
+        nest = [nest]
+    with pytest.raises(ValueError, match="depth"):
+        compute_stability_gap(nest, 0.0)  # type: ignore[arg-type]
 
 
 def test_rejects_hostile_float_reference_performance() -> None:

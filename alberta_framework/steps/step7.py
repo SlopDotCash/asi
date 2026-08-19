@@ -65,6 +65,7 @@ from alberta_framework.core.average_reward import (
     DifferentialSARSAState,
     DifferentialSARSAUpdateResult,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.world_model import (
     OneStepWorldModel,
     WorldModelState,
@@ -1235,7 +1236,7 @@ def step7_update(
         memory_utilities=planned_memory_utilities,
         memory_count=memory_count,
         memory_position=memory_position,
-        step_count=state.step_count + 1,
+        step_count=_saturating_int32_counter_increment(state.step_count),
     )
     return Step7DynaUpdateResult(
         state=new_state,

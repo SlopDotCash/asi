@@ -1134,6 +1134,25 @@ class TestShardsAndMerge:
         with pytest.raises(ValueError, match="seed.*uint32"):
             load_shard(path)
 
+    @pytest.mark.parametrize(
+        "omitted", ["hidden1", "hidden2", "task_length", "input_dim", "n_classes"]
+    )
+    def test_load_shard_rejects_config_missing_a_protocol_field(
+        self, tmp_path, small_data, omitted: str
+    ) -> None:
+        """Every IPMNISTConfig field carries a published default, so a shard
+        whose config omits one reconstructs at that default instead of what
+        actually ran -- silently misreporting the protocol the curves came
+        from. The top-level payload already gets _require_exact_keys; the
+        nested config dict must too."""
+        path = self._make_shard(tmp_path, small_data, "upgd_w_control", 0)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["config"][omitted]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=rf"config: missing field\(s\) \['{omitted}'\]"):
+            load_shard(path)
+
     @pytest.mark.parametrize("location", ["top-level", "nested"])
     def test_load_shard_rejects_duplicate_top_level_and_nested_keys(
         self, tmp_path: Path, location: str

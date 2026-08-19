@@ -793,6 +793,42 @@ class TestBayesReference:
             np.asarray(base_predictions), np.asarray(transformed)
         )
 
+    def test_materialized_family_composition_matches_bayes_reference(self):
+        """Every consumed family stream must share the reference distribution.
+
+        The family branches run only inside ``generate_stream``.  Pin their
+        materialized base draws and returned geometry, then pin the published
+        reference computed for each family.  A branch that resamples geometry
+        or rewrites the pre-transform population now fails even if
+        ``bayes_predict`` remains covariant under the resulting transform.
+        """
+        seed = 7
+        baseline_config = tiny(FAMILIES[0])
+        baseline_stream = generate_stream(baseline_config, seed)
+        baseline_reference = bayes_reference(
+            baseline_config, seed, n_samples=20_000
+        )
+
+        for family in FAMILIES[1:]:
+            config = tiny(family)
+            stream = generate_stream(config, seed)
+            reference = bayes_reference(config, seed, n_samples=20_000)
+
+            np.testing.assert_array_equal(
+                np.asarray(stream.component_means),
+                np.asarray(baseline_stream.component_means),
+            )
+            np.testing.assert_array_equal(
+                np.asarray(stream.dim_sigma), np.asarray(baseline_stream.dim_sigma)
+            )
+            np.testing.assert_array_equal(
+                np.asarray(stream.base_x), np.asarray(baseline_stream.base_x)
+            )
+            np.testing.assert_array_equal(
+                np.asarray(stream.base_y), np.asarray(baseline_stream.base_y)
+            )
+            assert reference == baseline_reference
+
     def test_bayes_predict_avoids_common_offset_cancellation(self):
         component_means = jnp.asarray(
             [[[10_000.0, 10_000.0]], [[10_001.0, 10_001.0]]],

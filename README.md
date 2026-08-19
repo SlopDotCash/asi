@@ -240,6 +240,7 @@ The console scripts are grouped by responsibility; every command supports `--hel
 | Commands | Purpose |
 |---|---|
 | `alberta-step1-smoke`, `alberta-step2-smoke` | Nonpromoting mechanism smoke checks |
+| `asi-native-supervised-catalog`, `asi-plasticity-diagnostic` | Inspect or run bounded, permanently nonpromoting supervised diagnostics |
 | `asi-reference-life-scorecard` | Run or validate the permanently nonpromoting reference-life development scorecard |
 | `asi-ipmnist-ceiling` | Produce new, atomic no-replace stationary/carried/full or batch ceiling diagnostics |
 | `asi-ipmnist-campaign` | Recompute paired frontiers or ceiling summaries from explicit input directories |
@@ -256,7 +257,9 @@ Benchmark commands are not shortcuts around the evidence rules. Read
 Use the [maintained IPMNIST campaign tools](docs/runbooks/ipmnist-maintained-tools.md) for
 ceiling, frontier, and rule-discovery reproduction. Programs stored under `outputs/` remain
 historical provenance, not the maintained implementation; existing bytes follow their pinned
-immutable or active-campaign append-only policy.
+immutable or active-campaign append-only policy. The loss-of-plasticity lane has separate
+protocol and cost gates in the
+[`plasticity diagnostics` runbook](docs/research/plasticity-diagnostics.md).
 
 ## Package layout
 

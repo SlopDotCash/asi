@@ -79,6 +79,13 @@ local same-runner development ranking, not a paper-level SOTA claim.
   (ICLR 2025)](https://openreview.net/forum?id=G82uQztzxl) are strong modern
   plasticity comparators. Their reported task variants must be ported into the
   exact ASI runner before numerical ranking.
+- [Normalize-and-Project (NeurIPS 2024)](https://proceedings.neurips.cc/paper_files/paper/2024/file/c04d37be05ba74419d2d5705972a9d64-Paper-Conference.pdf)
+  combines pre-nonlinearity normalization with hidden-weight projection. ASI's
+  [bounded comparator](nap-qualification.md) is an input-permuted-MNIST causal
+  development lane, not the paper's random-label CIFAR or sequential ALE result.
+  The paper discloses DQN Zoo only as its Rainbow baseline; no method-specific
+  official NaP repository was located, and Plasticine is recorded as a pinned
+  non-official secondary implementation.
 - [C-CHAIN (ICML 2025)](https://openreview.net/forum?id=EkoFXfSauv) links
   plasticity loss to output churn and NTK-rank decline across several continual
   RL suites. [Calibrated Partial Resets

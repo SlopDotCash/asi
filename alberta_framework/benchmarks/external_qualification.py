@@ -275,7 +275,12 @@ EXTERNAL_QUALIFICATION_PLANS: tuple[ExternalQualificationPlan, ...] = (
                 "a6b79580d85f3025bdb601566d3627c5f489f13b",
             ),
         ),
-        COMMON_GATES + ("costly_imagenet_and_rl_lanes_separately_registered",),
+        COMMON_GATES
+        + (
+            "costly_imagenet_and_rl_lanes_separately_registered",
+            "input_permutation_not_misreported_as_random_labels",
+            "postpublication_code_changes_and_rl_step_mismatch_reviewed",
+        ),
     ),
 )
 
