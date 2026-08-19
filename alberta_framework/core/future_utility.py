@@ -479,7 +479,8 @@ def normalize_future_utility_signal(
         _skip_zero_scale(decay, second_moment) + (1.0 - decay) * signal**2
     )
     normalized = signal
-
+    if type(mode) is not str:
+        raise ValueError("mode must be an exact string")
     if mode in {"uncertainty", "uncertainty_age"}:
         normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
 
@@ -501,6 +502,8 @@ def bias_correct_future_utility(
     checkpoint schemas.  Age-zero slots have no observations and retain their
     raw value (normally zero).
     """
+    if type(mode) is not str:
+        raise ValueError("mode must be an exact string")
     if mode not in {"age", "uncertainty_age"}:
         return utilities
 
