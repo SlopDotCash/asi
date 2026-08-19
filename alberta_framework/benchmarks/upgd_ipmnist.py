@@ -1591,11 +1591,9 @@ def _validated_partial_payload(
     for name, value in hyperparameters.items():
         if (
             type(name) is not str
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
+            or (type(value) is not int and type(value) is not float)
+            or not math.isfinite(float(value))
         ):
-            raise ValueError(f"{path}: hyperparameters must be finite named numbers")
-        if not math.isfinite(float(value)):
             raise ValueError(f"{path}: hyperparameters must be finite named numbers")
     try:
         resolved_hyperparameters = resolve_hyperparameters(
@@ -1662,14 +1660,13 @@ def _validated_partial_payload(
         lower_ok = matrix >= lower if inclusive else matrix > lower
         if not bool(np.all(lower_ok)) or (upper is not None and not bool(np.all(matrix <= upper))):
             raise ValueError(f"{path}: {field} values are outside the allowed range")
-    wall_clock = payload.get("wall_clock_seconds")
-    if (
-        isinstance(wall_clock, bool)
-        or not isinstance(wall_clock, (int, float))
-        or not math.isfinite(float(wall_clock))
-        or float(wall_clock) <= 0.0
-    ):
+    try:
+        wall_clock = _require_finite_real("wall_clock_seconds", payload.get("wall_clock_seconds"))
+    except ValueError as exc:
+        raise ValueError(f"{path}: wall_clock_seconds must be finite and positive") from exc
+    if wall_clock <= 0.0:
         raise ValueError(f"{path}: wall_clock_seconds must be finite and positive")
+    payload["wall_clock_seconds"] = wall_clock
     return payload
 
 

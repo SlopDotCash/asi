@@ -1061,6 +1061,81 @@ class TestPartialMerge:
 
         assert _HostileString.calls == 0
 
+    def test_partial_validation_rejects_hostile_hyperparameter_value_before_float_hook(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hostile int/float subclass hyperparameter value must be rejected by an
+        exact-type check before its ``__float__`` hook ever runs, matching the
+        already-hardened ``IPMNISTRunResult.__post_init__`` convention in this module.
+        """
+
+        class HostileFloat(float):
+            def __float__(self) -> float:
+                raise AssertionError("hostile float conversion must not run")
+
+        payload = self._minimal_v2_payload()
+        payload["hyperparameters"] = {"step_size": HostileFloat(0.001)}
+        monkeypatch.setattr(upgd_ipmnist, "_strict_json_object", lambda _path: payload)
+
+        with pytest.raises(ValueError, match="finite named numbers"):
+            upgd_ipmnist._validated_partial_payload(
+                tmp_path / "hostile.json", schema=PARTIAL_SCHEMA, seed_field="seed_id"
+            )
+
+    def test_partial_validation_rejects_hostile_wall_clock_before_float_hook(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hostile int/float subclass ``wall_clock_seconds`` must be rejected before
+        its ``__float__``/``__add__`` hooks run; otherwise it survives validation and
+        ``_merge_partial_results`` later calls the unguarded builtin ``sum()`` over it.
+
+        Uses a fully valid shard payload (from a real run) so the function actually
+        reaches the ``wall_clock_seconds`` gate instead of failing earlier on the
+        deliberately-incomplete minimal fixture's hyperparameters.
+        """
+
+        class HostileFloat(float):
+            def __float__(self) -> float:
+                raise AssertionError("hostile float conversion must not run")
+
+            def __add__(self, other: object) -> float:
+                raise AssertionError("hostile addition must not run")
+
+            __radd__ = __add__
+
+        data_x, data_y = _synthetic_dataset(6, N_TRAIN, TINY.input_dim, TINY.n_classes)
+        shard = run_ipmnist(data_x, data_y, "upgd_w", seeds=(0,), config=TINY)
+        payload = partial_payload(shard)
+        payload["wall_clock_seconds"] = HostileFloat(1.0)
+        monkeypatch.setattr(upgd_ipmnist, "_strict_json_object", lambda _path: payload)
+
+        with pytest.raises(ValueError, match="wall_clock_seconds"):
+            upgd_ipmnist._validated_partial_payload(
+                tmp_path / "hostile.json", schema=PARTIAL_SCHEMA, seed_field="seed_id"
+            )
+
+    def test_partial_validation_normalizes_integer_wall_clock_seconds(
+        self, tmp_path: Path
+    ) -> None:
+        """An integer ``wall_clock_seconds`` is a legitimate finite real value (the
+        v1 legacy schema and hand-built shards may supply one) and must be accepted
+        and coerced to a builtin ``float`` via ``_require_finite_real``, matching the
+        already-hardened convention used for the live-run result dataclass.
+        """
+        data_x, data_y = _synthetic_dataset(6, N_TRAIN, TINY.input_dim, TINY.n_classes)
+        shard = run_ipmnist(data_x, data_y, "upgd_w", seeds=(0,), config=TINY)
+        payload = partial_payload(shard)
+        payload["wall_clock_seconds"] = 3
+        path = tmp_path / "integer-wall-clock.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        validated = upgd_ipmnist._validated_partial_payload(
+            path, schema=PARTIAL_SCHEMA, seed_field="seed_id"
+        )
+
+        assert validated["wall_clock_seconds"] == 3.0
+        assert type(validated["wall_clock_seconds"]) is float
+
     def test_v2_partial_manifest_binds_identity_and_digest_to_one_read(
         self, tmp_path, monkeypatch
     ):
