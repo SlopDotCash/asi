@@ -1178,7 +1178,7 @@ def _validate_checks(
             errors.append(f"{check_location} keys do not match the v1 schema")
             all_passed = False
         name = raw_check.get("name")
-        if not isinstance(name, str) or not name:
+        if type(name) is not str or not name:
             errors.append(f"{check_location}.name must be a non-empty string")
             all_passed = False
             continue
