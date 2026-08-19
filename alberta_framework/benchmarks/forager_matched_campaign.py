@@ -599,6 +599,8 @@ def _link_anonymous_no_replace(
     exists, preserving write-once artifact semantics.  Python's ``os.link``
     does not expose ``AT_EMPTY_PATH``, hence the direct ``libc`` call.
     """
+    if type(destination_name) is not str:
+        raise ForagerMatchedCampaignError("anonymous publication name is unsafe")
     if (
         not destination_name
         or destination_name in {".", ".."}
