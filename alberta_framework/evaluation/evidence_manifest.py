@@ -1107,7 +1107,7 @@ def _validate_spec(spec: EvidenceSpec) -> None:
         raise ValueError(f"{spec.name}: expected schema must be versioned")
     if not spec.command_argv or any(not argument for argument in spec.command_argv):
         raise ValueError(f"{spec.name}: exact command argv must be non-empty")
-    if not spec.protocol or not isinstance(spec.protocol.get("protocol_version"), str):
+    if not spec.protocol or type(spec.protocol.get("protocol_version")) is not str:
         raise ValueError(f"{spec.name}: protocol must carry a protocol_version")
     if not spec.configuration:
         raise ValueError(f"{spec.name}: configuration must be non-empty")
