@@ -50,6 +50,9 @@ from alberta_framework.core.future_utility import one_step_output_loss_reduction
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
+# README / package-init public scan last-fit. Origin handed ``10**12`` to
+# ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
+_INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -81,6 +84,15 @@ def _require_int32(
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_interaction_feature_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jnp.arange``."""
+    if type(value) is not int or value < 1 or value > _INTERACTION_FEATURE_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_INTERACTION_FEATURE_LOOP_MAX_STEPS}]"
+        )
+    return value
 
 
 def _require_resource(name: str, *, scalars: int, nbytes: int) -> None:
@@ -3892,7 +3904,13 @@ def run_interaction_feature_loop(
     key: Array,
     learner_state: InteractionFeatureState | None = None,
 ) -> InteractionFeatureLearningResult:
-    """Run interaction feature discovery directly from a scan-compatible stream."""
+    """Run interaction feature discovery directly from a scan-compatible stream.
+
+    Raises:
+        ValueError: If ``num_steps`` exceeds the documented protocol ceiling
+            (``10_000``).
+    """
+    num_steps = _require_interaction_feature_loop_steps("num_steps", num_steps)
     stream_key, learner_key = jr.split(key)
     stream_state = stream.init(stream_key)
     if learner_state is None:
