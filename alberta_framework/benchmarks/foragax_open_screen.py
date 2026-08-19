@@ -2314,7 +2314,10 @@ def _validate_payload_components(
     result_root: str,
     metadata_contract: Mapping[str, Any],
 ) -> list[Path]:
-    if entrypoint not in {"src/continuing_main.py", "src/rtu_ppo.py"}:
+    if type(entrypoint) is not str or entrypoint not in {
+        "src/continuing_main.py",
+        "src/rtu_ppo.py",
+    }:
         raise ScreenError("payload validation entrypoint is unsupported")
     files = _payload_files(payload)
     canonical_root = _result_root(result_root)
