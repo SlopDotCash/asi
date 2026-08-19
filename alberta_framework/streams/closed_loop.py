@@ -457,8 +457,15 @@ class SwitchingTwoStateMDP:
         return float(self._phase_payoff_np(phase).mean())
 
     def _phase_payoff_np(self, phase: int) -> np.ndarray:
+        # Exact-type gate first: an arbitrary object's ``__eq__`` could run
+        # side effects under ``phase not in (...)``, and interpolating the
+        # still-untrusted object into the message below (as this used to do)
+        # would invoke its ``__format__``/``__str__`` before its type is
+        # confirmed safe. Same defect class as PR #1219/#1994.
+        if type(phase) not in _ACTUAL_INT_TYPES:
+            raise ValueError("phase must be PHASE_A (0) or PHASE_B (1)")
         if phase not in (PHASE_A, PHASE_B):
-            raise ValueError(f"phase must be PHASE_A (0) or PHASE_B (1), got {phase}")
+            raise ValueError("phase must be PHASE_A (0) or PHASE_B (1)")
         return np.asarray(self._payoffs_np[phase], dtype=np.float32)
 
 

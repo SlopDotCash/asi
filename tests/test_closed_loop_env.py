@@ -280,6 +280,40 @@ class TestSwitchingAnalyticHelpers:
         with pytest.raises(ValueError, match="phase"):
             env.optimal_average_reward(2)
 
+    def test_hostile_phase_rejected_without_invoking_untrusted_hooks(self) -> None:
+        """A non-int phase is rejected before ``==``/format/str/repr can run.
+
+        Same defect class as PR #1219/#1994: the original code compared the
+        raw ``phase`` against ``(PHASE_A, PHASE_B)`` and then re-interpolated
+        the still-untrusted, not-yet-type-confirmed value into the error
+        message. Either step could hand a hostile object's dunder hook
+        control before its type was ever verified safe.
+        """
+
+        class HostilePhase:
+            def __eq__(self, other: object) -> bool:
+                raise AssertionError("untrusted eq hook executed")
+
+            def __hash__(self) -> int:
+                raise AssertionError("untrusted hash hook executed")
+
+            def __format__(self, spec: str) -> str:
+                raise AssertionError("untrusted format hook executed")
+
+            def __str__(self) -> str:
+                raise AssertionError("untrusted str hook executed")
+
+            def __repr__(self) -> str:
+                raise AssertionError("untrusted repr hook executed")
+
+        env = SwitchingTwoStateMDP()
+        with pytest.raises(ValueError, match=r"^phase must be PHASE_A \(0\) or PHASE_B \(1\)$"):
+            env.optimal_average_reward(HostilePhase())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match=r"^phase must be PHASE_A \(0\) or PHASE_B \(1\)$"):
+            env.uniform_random_average_reward(HostilePhase())  # type: ignore[arg-type]
+        with pytest.raises(ValueError, match="phase must be PHASE_A"):
+            env.optimal_average_reward(True)  # bool is not an actual int here
+
 
 # =============================================================================
 # Switching two-state MDP: scan compatibility
