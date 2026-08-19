@@ -9,6 +9,7 @@ out-of-class structural properties that motivate each stream.
 
 import json
 import math
+import time
 from decimal import Decimal
 from fractions import Fraction
 from numbers import Real
@@ -1289,6 +1290,19 @@ class TestCompositionalStream:
 @pytest.mark.parametrize(
     "stream",
     [
+        OutOfClassPolynomialStream(
+            feature_dim=6,
+            n_tasks=3,
+            n_contexts=2,
+            active_triples_per_context=4,
+        ),
+        OutOfClassPolynomialStream(
+            feature_dim=6,
+            n_tasks=3,
+            n_contexts=2,
+            active_triples_per_context=4,
+            include_squares=True,
+        ),
         FrequencyMismatchStream(
             feature_dim=3,
             n_tasks=2,
@@ -1328,6 +1342,36 @@ def test_out_of_class_derived_state_budgets_fail_at_construction() -> None:
             outer_components=100,
             n_contexts=1,
         )
+    with pytest.raises(ValueError, match="out-of-class-polynomial.*64 MiB"):
+        OutOfClassPolynomialStream(
+            feature_dim=274,
+            n_tasks=1,
+            n_contexts=2,
+            active_triples_per_context=1,
+        )
+
+
+def test_out_of_class_polynomial_rejects_hang_inducing_feature_dim_before_enumeration() -> None:
+    """A ``feature_dim`` well inside the int32 domain must not reach ``_triples()``.
+
+    ``_triples()`` enumerates all oracle triples in plain Python --
+    O(feature_dim ** 3) work -- before any JAX array is built. Before this
+    fix, ``feature_dim`` was only bounded by int32 max, so a caller-supplied
+    value of a few thousand (let alone 100_000) would hang the process for an
+    effectively unbounded amount of time; independently timed, the pure
+    enumeration alone already takes several seconds at ``feature_dim=500``
+    and grows cubically from there. The analytic ``math.comb`` precheck in
+    ``_polynomial_state_budget`` must reject this immediately, without ever
+    calling ``_triples()``.
+    """
+    start = time.monotonic()
+    with pytest.raises(ValueError, match="out-of-class-polynomial"):
+        OutOfClassPolynomialStream(feature_dim=100_000, n_tasks=3, n_contexts=4)
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, (
+        f"rejection took {elapsed:.3f}s; expected an O(1) analytic precheck, "
+        "not an attempt to enumerate feature_dim**3 triples"
+    )
 
 
 @pytest.mark.parametrize(

@@ -26,6 +26,7 @@ or tanh feature bank:
   compositional DAG that builds features-of-features can.
 """
 
+import math
 from fractions import Fraction
 from numbers import Real
 from typing import cast
@@ -105,6 +106,43 @@ def _compositional_state_budget(
         "component_scalars": component_scalars,
         **budget,
     }
+
+
+def _polynomial_state_budget(
+    *,
+    feature_dim: int,
+    n_contexts: int,
+    n_tasks: int,
+    include_squares: bool,
+) -> dict[str, int]:
+    """Preflight the oracle-triple enumeration before it ever runs.
+
+    ``OutOfClassPolynomialStream._triples()`` enumerates all (i, j, l) triples
+    in plain Python -- O(feature_dim ** 3) work and memory for the strict
+    ``i < j < l`` case (``i <= j <= l`` with ``include_squares`` is the same
+    order). A caller-supplied ``feature_dim`` well inside the int32 domain
+    (e.g. a few thousand) already makes that enumeration run for an
+    unbounded amount of time before any JAX array exists, let alone before
+    the sibling classes' own ``_require_state_budget`` gate would catch the
+    resulting tensor size. Compute the exact triple count analytically via
+    ``math.comb`` -- O(1), no enumeration -- and apply the same 64 MiB
+    resident-state budget the sibling ``FrequencyMismatchStream`` and
+    ``CompositionalStream`` constructors already enforce, before
+    ``_triples()`` is ever invoked from ``init()``.
+    """
+    n_triples = math.comb(feature_dim + 2, 3) if include_squares else math.comb(feature_dim, 3)
+    tensor_scalars = n_contexts * n_tasks * n_triples
+    # Resident OutOfClassPolynomialState holds one (n_contexts, n_tasks,
+    # n_triples) ``context_weights`` tensor, 3 * n_triples int32 indices
+    # (triples_left/middle/right), n_tasks * feature_dim ``linear_weights``
+    # scalars, and a scalar step_count; ``_require_state_budget`` adds the
+    # 2-word PRNG key. ``init()`` also transiently allocates a same-shaped
+    # ``dense_context_weights``/``mask_scores``/``mask`` working set, which
+    # is smaller than or comparable to this resident bound and is caught by
+    # the same gate in practice.
+    state_scalars = tensor_scalars + 3 * n_triples + n_tasks * feature_dim + 1
+    budget = _require_state_budget("out-of-class-polynomial", state_scalars)
+    return {"n_triples": n_triples, "tensor_scalars": tensor_scalars, **budget}
 
 
 def _saturating_step_count(step_count: Array) -> Array:
@@ -325,6 +363,12 @@ class OutOfClassPolynomialStream:
         )
         if type(include_squares) is not bool:
             raise ValueError("include_squares must be a built-in bool")
+        resource_budget = _polynomial_state_budget(
+            feature_dim=feature_dim,
+            n_contexts=n_contexts,
+            n_tasks=n_tasks,
+            include_squares=include_squares,
+        )
 
         self._feature_dim = feature_dim
         self._n_tasks = n_tasks
@@ -335,11 +379,17 @@ class OutOfClassPolynomialStream:
         self._linear_scale = linear_scale
         self._noise_std = noise_std
         self._include_squares = include_squares
+        self._resource_budget = resource_budget
 
     @property
     def feature_dim(self) -> int:
         """Return the raw observation dimension."""
         return self._feature_dim
+
+    @property
+    def resource_budget(self) -> dict[str, int]:
+        """Complete resident state payload accounting."""
+        return dict(self._resource_budget)
 
     @property
     def target_dim(self) -> int:
