@@ -51,6 +51,13 @@ _ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLq
 _ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
     {float, *(np.dtype(code).type for code in "efdg")}
 )
+# Matches the documented learning-loop step ceiling established for
+# scan-driven array loops elsewhere in the codebase (see
+# ``learners._LEARNING_LOOP_MAX_STEPS`` and ``sarsa._SARSA_SEQUENCE_MAX_STEPS``).
+# The Horde learning loops below hand caller-supplied ``observations``,
+# ``cumulants``, and ``next_observations`` straight to ``jax.lax.scan`` with
+# no other cap on the scanned sequence length.
+_HORDE_SEQUENCE_MAX_STEPS = 10_000
 
 
 def _require_float32(
@@ -69,6 +76,34 @@ def _require_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be an exact bool")
     return value
+
+
+def _require_horde_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    ``run_horde_learning_loop``, ``run_mixed_horde_learning_loop``, and
+    ``run_horde_learning_loop_final_state`` hand their step arrays straight to
+    ``jax.lax.scan`` with no bound on the leading (step) dimension. A hostile
+    or mistaken caller supplying a huge array can force JAX to trace/compile a
+    scan of that length, hanging the process well before any step executes.
+    """
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(value.shape[0])
+    if length < 1 or length > _HORDE_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_HORDE_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
+
+
+def _require_horde_matching_length(name: str, value: object, *, expected: int) -> None:
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1 or int(value.shape[0]) != expected:
+        raise ValueError(f"{name} must share the same leading length as observations")
 
 
 def _require_exact_str(name: object, value: object) -> str:
@@ -941,7 +976,18 @@ def run_horde_learning_loop(
 
     Returns:
         HordeLearningResult with final state, per-demon metrics, and TD errors
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_HORDE_SEQUENCE_MAX_STEPS``), or the other
+            step arrays do not share its leading length.
     """
+    num_steps = _require_horde_sequence_length("observations", observations)
+    _require_horde_matching_length("cumulants", cumulants, expected=num_steps)
+    _require_horde_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
 
     def step_fn(
         carry: MultiHeadMLPState,
@@ -983,7 +1029,19 @@ def run_mixed_horde_learning_loop(
     cumulants: Array,
     next_observations: Array,
 ) -> MixedHordeLearningResult:
-    """Run a mixed Horde learning loop using ``jax.lax.scan``."""
+    """Run a mixed Horde learning loop using ``jax.lax.scan``.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_HORDE_SEQUENCE_MAX_STEPS``), or the other
+            step arrays do not share its leading length.
+    """
+    num_steps = _require_horde_sequence_length("observations", observations)
+    _require_horde_matching_length("cumulants", cumulants, expected=num_steps)
+    _require_horde_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
 
     def step_fn(
         carry: MixedHordeState,
@@ -1029,7 +1087,18 @@ def run_horde_learning_loop_final_state(
 
     Throughput benchmarks use this helper to avoid materializing the full
     metrics trace when only the final state is needed.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_HORDE_SEQUENCE_MAX_STEPS``), or the other
+            step arrays do not share its leading length.
     """
+    num_steps = _require_horde_sequence_length("observations", observations)
+    _require_horde_matching_length("cumulants", cumulants, expected=num_steps)
+    _require_horde_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
 
     def step_fn(
         carry: MultiHeadMLPState,
