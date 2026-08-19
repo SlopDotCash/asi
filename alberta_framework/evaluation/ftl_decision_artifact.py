@@ -173,7 +173,7 @@ def _finite_float(value: float) -> float | None:
 
 
 def _finite_number(value: object) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+    if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
     numeric = float(value)
     return numeric if math.isfinite(numeric) else None

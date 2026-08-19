@@ -600,7 +600,7 @@ def _integer(
     location: str,
     errors: list[str],
 ) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int):
+    if type(value) is bool or type(value) is not int:
         errors.append(f"{location} must be an integer")
         return None
     return value
