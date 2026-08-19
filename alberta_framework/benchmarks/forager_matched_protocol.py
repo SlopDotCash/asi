@@ -1109,7 +1109,7 @@ def _validate_json_complexity(value: Any) -> None:
         elif isinstance(item, float):
             if not math.isfinite(item):
                 raise ForagerMatchedProtocolError("non-finite JSON numbers are forbidden")
-        elif item is not None and not isinstance(item, (bool, int)):
+        elif item is not None and type(item) not in (bool, int, float, str, dict, list):
             raise ForagerMatchedProtocolError(
                 f"protocol contains a non-JSON value of type {type(item).__name__}"
             )
