@@ -1252,7 +1252,7 @@ def _validate_operational(
             errors.append("operational_metadata.git_worktree.dirty must be boolean")
         recorded_head = git_worktree.get("head")
         if (
-            not isinstance(recorded_head, str)
+            type(recorded_head) is not str
             or len(recorded_head) != 40
             or any(character not in "0123456789abcdef" for character in recorded_head)
         ):
@@ -1386,7 +1386,7 @@ def validate_ftl_decision_artifact(
             errors.append("scientific_digest canonicalization is unsupported")
         recorded = digest.get("sha256")
         if (
-            not isinstance(recorded, str)
+            type(recorded) is not str
             or len(recorded) != 64
             or any(character not in "0123456789abcdef" for character in recorded)
         ):
