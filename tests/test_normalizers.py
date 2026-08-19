@@ -1,5 +1,7 @@
 """Tests for online feature normalization."""
 
+import numbers
+
 import chex
 import jax.numpy as jnp
 import numpy as np
@@ -693,6 +695,86 @@ class TestNormalizerScalarSpoofRejection:
         """A real (non-spoofed) int must remain accepted and coerced to float."""
         normalizer = StreamingBatchNormalizer(momentum=1)
         assert normalizer._momentum == 1.0
+
+
+class _UnstableReal:
+    """A genuinely ``Real``-registered scalar whose ``__float__`` is not
+    idempotent: it reports one value on its first call and a different,
+    out-of-contract value on every call after that.
+
+    Unlike ``_FloatSpoof`` above (which lies about its *class* via a
+    ``__class__`` property but always converts to the same constant), this
+    object is a real ``numbers.Real`` registrant that lies about its *value*
+    across repeated conversions. A validator that calls ``float(value)``
+    once to check finiteness/range and again, separately, to obtain the
+    value it stores is trusting this object to answer consistently; nothing
+    enforces that.
+    """
+
+    def __init__(self, first_value: float, later_value: float) -> None:
+        self._first_value = first_value
+        self._later_value = later_value
+        self.calls = 0
+
+    def __float__(self) -> float:
+        self.calls += 1
+        return self._first_value if self.calls == 1 else self._later_value
+
+    # Full comparison protocol, delegating to __float__, so a validator
+    # that checks this object with ordinary comparisons (rather than an
+    # eager float() call) still drives it through the same divergent path.
+    def __le__(self, other: object) -> bool:
+        return float(self) <= other  # type: ignore[operator]
+
+    def __ge__(self, other: object) -> bool:
+        return float(self) >= other  # type: ignore[operator]
+
+    def __lt__(self, other: object) -> bool:
+        return float(self) < other  # type: ignore[operator]
+
+    def __gt__(self, other: object) -> bool:
+        return float(self) > other  # type: ignore[operator]
+
+    def __eq__(self, other: object) -> bool:
+        return float(self) == other
+
+    def __hash__(self) -> int:
+        return hash(float(self))
+
+
+numbers.Real.register(_UnstableReal)
+
+
+class TestNormalizerScalarSingleConversion:
+    """``epsilon``/``decay``/``momentum`` must be converted exactly once.
+
+    Regression for the gap left by ``TestNormalizerScalarSpoofRejection``
+    above: that class closed ``__class__``-property spoofing but a genuinely
+    ``Real``-registered object with a non-idempotent ``__float__`` was still
+    accepted, with the *stored* field coming from a later, unchecked
+    conversion call rather than the value that was actually validated.
+    """
+
+    @pytest.mark.parametrize(
+        ("ctor", "field", "in_domain"),
+        [
+            (EMANormalizer, "decay", 0.5),
+            (StreamingBatchNormalizer, "momentum", 0.5),
+            (EMANormalizer, "epsilon", 1e-6),
+        ],
+        ids=["ema-decay", "streaming-momentum", "ema-epsilon"],
+    )
+    def test_converts_exactly_once(self, ctor, field, in_domain) -> None:
+        """The constructor must never read the scalar more than once."""
+        spoof = _UnstableReal(in_domain, in_domain * 1000.0 + 1000.0)
+        normalizer = ctor(**{field: spoof})
+        assert spoof.calls == 1, (
+            f"{field} was converted {spoof.calls} times; a validator that "
+            "checks one conversion and stores a later one lets a hostile "
+            "Real-registered scalar diverge between what was validated and "
+            "what is actually stored"
+        )
+        assert getattr(normalizer, f"_{field}") == in_domain
 
 
 class TestNormalizerFeatureDimValidation:

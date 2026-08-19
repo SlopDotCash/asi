@@ -47,6 +47,30 @@ def _require_exact_str(name: object, value: object) -> str:
     return value
 
 
+def _validated_finite_real(name: str, value: object) -> float:
+    """Validate a ``Real``-typed scalar and convert it to ``float`` exactly once.
+
+    A ``numbers.Real`` registrant is trusted to convert consistently, but
+    nothing enforces that a hostile registrant's ``__float__`` returns the
+    same value on every call. Checking finiteness (or a caller's range) from
+    one ``float()`` call and then separately converting again for storage
+    lets such an object report an innocuous in-range value for validation
+    while a later, unchecked call supplies whatever is actually stored. Every
+    caller of this helper must reuse the single returned value rather than
+    reading ``value`` again.
+    """
+    value_type = type(value)
+    if issubclass(value_type, bool) or not issubclass(value_type, Real):
+        raise TypeError(f"{name} must be a finite real number")
+    try:
+        number = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError, OverflowError) as error:
+        raise TypeError(f"{name} must be a finite real number") from error
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
 NORMALIZER_STATE_SCHEMA = "alberta.normalizer-state.v2"
 WELFORD_ESTIMATOR_SCHEMA = "alberta.welford-cumulative-float32-fail-stop-at-2p24.v2"
 BOUNDED_RECENCY_ESTIMATOR_SEMANTICS = "bounded-recency"
@@ -278,12 +302,10 @@ class Normalizer[
         Args:
             epsilon: Small constant added to std for numerical stability
         """
-        epsilon_type = type(epsilon)
-        if issubclass(epsilon_type, bool) or not issubclass(epsilon_type, Real):
-            raise TypeError("epsilon must be a finite real number")
-        if not math.isfinite(epsilon) or epsilon <= 0.0:
+        epsilon = _validated_finite_real("epsilon", epsilon)
+        if epsilon <= 0.0:
             raise ValueError("epsilon must be finite and positive")
-        self._epsilon = float(epsilon)
+        self._epsilon = epsilon
 
     @abstractmethod
     def to_config(self) -> dict[str, Any]:
@@ -479,14 +501,10 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
                 prior-regularized moments with no exponential forgetting.
         """
         super().__init__(epsilon=epsilon)
-        decay_type = type(decay)
-        if issubclass(decay_type, bool) or not issubclass(decay_type, Real):
-            raise TypeError("decay must be a finite real number")
-        if not math.isfinite(decay):
-            raise ValueError("decay must be finite")
+        decay = _validated_finite_real("decay", decay)
         if not 0.0 <= decay <= 1.0:
             raise ValueError("decay must be in [0, 1]")
-        self._decay = float(decay)
+        self._decay = decay
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -785,14 +803,10 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
     def __init__(self, epsilon: float = 1e-5, momentum: float = 0.99):
         """Initialize the streaming BatchNorm-style normalizer."""
         super().__init__(epsilon=epsilon)
-        momentum_type = type(momentum)
-        if issubclass(momentum_type, bool) or not issubclass(momentum_type, Real):
-            raise TypeError("momentum must be a finite real number")
-        if not math.isfinite(momentum):
-            raise ValueError("momentum must be finite")
+        momentum = _validated_finite_real("momentum", momentum)
         if not 0.0 <= momentum <= 1.0:
             raise ValueError("momentum must be in [0, 1]")
-        self._momentum = float(momentum)
+        self._momentum = momentum
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
