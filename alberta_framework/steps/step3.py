@@ -721,16 +721,44 @@ def run_step3_scan(
 ) -> HordeLearningResult:
     """Run the Step 3 Horde over transition arrays."""
     if type(horde) is not HordeLearner:
-        raise ValueError("horde must be an exact HordeLearner")
+        raise TypeError("horde must be an exact HordeLearner")
     if type(state) is not MultiHeadMLPState:
-        raise ValueError("state must be an exact MultiHeadMLPState")
+        raise TypeError("state must be an exact MultiHeadMLPState")
     features = _require_float32_matrix("features", features)
     cumulants = _require_float32_matrix("cumulants", cumulants)
     next_features = _require_float32_matrix("next_features", next_features)
+    steps = int(features.shape[0])
+    feature_dim = int(features.shape[1])
+    if not 1 <= steps <= _INT32_MAX:
+        raise ValueError("features must contain between 1 and signed-int32 steps")
+    if not 1 <= feature_dim <= _INT32_MAX:
+        raise ValueError("features must have at least one feature column")
     if next_features.shape != features.shape:
         raise ValueError("next_features must match features")
-    if cumulants.shape != (features.shape[0], horde.n_demons):
+    if cumulants.shape != (steps, horde.n_demons):
         raise ValueError("cumulants must match steps and configured demons")
+    state_feature_dim = (
+        state.trunk_params.weights[0].shape[1]
+        if state.trunk_params.weights
+        else state.head_params.weights[0].shape[1]
+    )
+    if state_feature_dim != feature_dim:
+        msg = (
+            f"state feature dimension ({state_feature_dim}) does not match features ({feature_dim})"
+        )
+        raise ValueError(msg)
+    if len(state.head_params.weights) != horde.n_demons:
+        msg = (
+            f"state demon count ({len(state.head_params.weights)}) does not match "
+            f"horde demon count ({horde.n_demons})"
+        )
+        raise ValueError(msg)
+    _require_handoff_resources(
+        steps=steps,
+        raw_dim=feature_dim,
+        constructed_dim=0,
+        n_demons=horde.n_demons,
+    )
     return run_horde_learning_loop(
         horde,
         state,

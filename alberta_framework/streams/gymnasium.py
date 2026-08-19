@@ -492,8 +492,62 @@ def learn_from_trajectory(
         [squared_error, error, mean_step_size]; a learner constructed with
         a normalizer emits a fourth column, normalizer_mean_var.
     """
-    if learner_state is None:
-        learner_state = learner.init(observations.shape[1])
+    if type(learner) is not LinearLearner and not isinstance(learner, LinearLearner):
+        raise TypeError("learner must be an instance of LinearLearner")
+    actual_obs_type = type(cast(object, observations))
+    if not (
+        actual_obs_type is np.ndarray
+        or isinstance(observations, (jax.Array, jax.core.Tracer))
+    ):
+        raise TypeError("observations must be a trusted array")
+    actual_tgt_type = type(cast(object, targets))
+    if not (
+        actual_tgt_type is np.ndarray
+        or isinstance(targets, (jax.Array, jax.core.Tracer))
+    ):
+        raise TypeError("targets must be a trusted array")
+    try:
+        obs_ndim = observations.ndim
+        tgt_ndim = targets.ndim
+        num_steps = int(observations.shape[0])
+        target_steps = int(targets.shape[0])
+        feature_dim = int(observations.shape[1]) if obs_ndim >= 2 else None
+        target_dim = int(targets.shape[1]) if tgt_ndim >= 2 else 1
+    except Exception as error:
+        raise TypeError("observations and targets must expose trusted shape metadata") from error
+
+    if obs_ndim != 2:
+        raise ValueError("observations must be a 2D array of shape (num_steps, feature_dim)")
+    if tgt_ndim not in (1, 2):
+        raise ValueError("targets must be a 1D or 2D array")
+    if not 1 <= num_steps <= _INT32_MAX:
+        raise ValueError("observations sequence length must be an integer in [1, 2147483647]")
+    if target_steps != num_steps:
+        raise ValueError("targets sequence length must match observations sequence length")
+    if feature_dim is None or not 1 <= feature_dim <= _INT32_MAX:
+        raise ValueError("feature_dim must be an integer in [1, 2147483647]")
+    if target_dim is not None and not 1 <= target_dim <= _INT32_MAX:
+        raise ValueError("target_dim must be an integer in [1, 2147483647]")
+
+    if observations.dtype != jnp.float32:
+        raise TypeError("observations must have dtype float32")
+    if targets.dtype != jnp.float32:
+        raise TypeError("targets must have dtype float32")
+
+    _require_float32_allocation("observations", num_steps * feature_dim)
+    _require_float32_allocation("targets", num_steps * (target_dim if tgt_ndim == 2 else 1))
+    _require_float32_allocation("metrics output", num_steps * 4)
+
+    if learner_state is not None:
+        if type(learner_state) is not LearnerState:
+            raise TypeError("learner_state must be an exact LearnerState")
+        if learner_state.weights.ndim != 1 or learner_state.weights.shape[0] != feature_dim:
+            raise ValueError(
+                f"learner_state.weights shape {learner_state.weights.shape} does not match "
+                f"feature_dim={feature_dim}"
+            )
+    else:
+        learner_state = learner.init(feature_dim)
 
     def step_fn(state: LearnerState, inputs: tuple[Array, Array]) -> tuple[LearnerState, Array]:
         obs, target = inputs

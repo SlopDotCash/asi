@@ -7274,6 +7274,8 @@ class PrototypeAgent:
         Returns:
             :class:`PrototypeArrayResult` with final state and per-step arrays.
         """
+        if type(state) is not PrototypeAgentState:
+            raise TypeError("state must be an exact PrototypeAgentState")
         if horde_discounts is not None and discounts is None:
             raise ValueError("horde_discounts requires explicit discounts")
         if self._state_builder is not None:
@@ -7289,24 +7291,35 @@ class PrototypeAgent:
         use_explicit_discounts = discounts is not None
         use_horde_cumulants = horde_cumulants is not None
         use_horde_discounts = horde_discounts is not None
-        n = int(rewards.shape[0])
+        actual_type = type(cast(object, rewards))
+        if not (
+            actual_type is np.ndarray
+            or isinstance(rewards, (jax.Array, jax.core.Tracer))
+        ):
+            raise TypeError("rewards must be a trusted array")
+        try:
+            n = int(rewards.shape[0])
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            raise TypeError("rewards must expose trusted shape metadata") from error
+        if not 1 <= n <= _INT32_MAX:
+            raise ValueError("rewards must contain between 1 and signed-int32 steps")
 
+        raw_observation_dim = (
+            self._config.gru_perception.observation_dim
+            if self._config.gru_perception is not None
+            else self._config.oak.observation_dim
+        )
+        rewards = _checked_finite_array(
+            rewards,
+            (n,),
+            name="rewards",
+        )
+        next_observations = _checked_finite_array(
+            next_observations,
+            (n, raw_observation_dim),
+            name="next_observations",
+        )
         if use_explicit_discounts:
-            rewards = _checked_finite_array(
-                rewards,
-                (n,),
-                name="rewards",
-            )
-            raw_observation_dim = (
-                self._config.gru_perception.observation_dim
-                if self._config.gru_perception is not None
-                else self._config.oak.observation_dim
-            )
-            next_observations = _checked_finite_array(
-                next_observations,
-                (n, raw_observation_dim),
-                name="next_observations",
-            )
             discounts = _checked_unit_discount(
                 discounts,
                 (n,),
@@ -7431,6 +7444,17 @@ class PrototypeAgent:
         ) = None,
     ) -> PrototypeArrayResult:
         """Run authoritative transitions and fixed optional sidecars through scan."""
+
+        if type(state) is not PrototypeAgentState:
+            raise TypeError("state must be an exact PrototypeAgentState")
+        if type(transitions) is not PrototypeTransition:
+            raise TypeError("transitions must be an exact PrototypeTransition")
+        try:
+            n = int(transitions.reward.shape[0])
+        except (AttributeError, IndexError, TypeError, ValueError) as error:
+            raise TypeError("transitions must expose trusted shape metadata") from error
+        if not 1 <= n <= _INT32_MAX:
+            raise ValueError("transitions must contain between 1 and signed-int32 steps")
 
         use_partner_input = partner_policy_fusion_input is not None
         use_partner_feedback = partner_policy_fusion_feedback is not None
