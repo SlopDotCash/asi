@@ -138,37 +138,40 @@ class Step11OaKConfig:
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> Step11OaKConfig:
         """Reconstruct from :meth:`to_config` output."""
-        if cls is not Step11OaKConfig:
-            raise ValueError("cls must be Step11OaKConfig")
-        if type(payload) is not dict:
-            raise ValueError("payload must be an actual dict")
-        if any(type(key) is not str for key in payload):
-            raise ValueError("payload keys must be exact strings")
-        if payload.keys() != _STEP11_CONFIG_FIELDS:
-            raise ValueError("payload must contain the exact Step11OaKConfig fields")
-        if type(payload["type"]) is not str or payload["type"] != "Step11OaKConfig":
-            raise ValueError("payload type must be Step11OaKConfig")
-        specs_raw = payload["subtask_specs"]
-        if type(specs_raw) is not list:
-            raise ValueError("subtask_specs must be an actual list")
-        if len(specs_raw) > _MAX_SUBTASK_SPECS:
-            raise ValueError(
-                f"subtask_specs must contain at most {_MAX_SUBTASK_SPECS} elements"
-            )
+        data = _require_payload(
+            payload,
+            name="Step11OaKConfig payload",
+            fields=_STEP11_CONFIG_FIELDS,
+        )
+        if type(data["type"]) is not str or data["type"] != "Step11OaKConfig":
+            raise ValueError("Step11OaKConfig payload type must be 'Step11OaKConfig'")
+        raw_specs = data.pop("subtask_specs")
+        if type(specs_raw := raw_specs) is not list:
+            raise ValueError("subtask_specs payload must be an exact list")
+        values = cast(list[object], specs_raw)
+        _require_subtask_count(len(values))
         specs: list[SubtaskSpec] = []
-        for raw in specs_raw:
-            if type(raw) is not dict:
-                raise ValueError("subtask_specs entries must be actual dicts")
-            if any(type(key) is not str for key in raw):
-                raise ValueError("subtask_specs entry keys must be exact strings")
-            if raw.keys() != _SUBTASK_SPEC_FIELDS:
-                raise ValueError("subtask_specs entries must contain the exact fields")
-            specs.append(SubtaskSpec(**raw))
-        data = {
-            key: value
-            for key, value in payload.items()
-            if key not in {"type", "subtask_specs"}
-        }
+        for index in range(len(values)):
+            raw = _require_payload(
+                values[index],
+                name=f"subtask_specs[{index}]",
+                fields=_SUBTASK_SPEC_FIELDS,
+            )
+            specs.append(
+                SubtaskSpec(
+                    feature_index=_require_int(
+                        "feature_index", raw["feature_index"], minimum=0, maximum=_INT32_MAX
+                    ),
+                    threshold=_require_positive_real("threshold", raw["threshold"]),
+                    pseudo_reward_scale=_require_positive_real(
+                        "pseudo_reward_scale", raw["pseudo_reward_scale"]
+                    ),
+                    max_option_steps=_require_int(
+                        "max_option_steps", raw["max_option_steps"], minimum=1, maximum=_INT32_MAX
+                    ),
+                )
+            )
+        data.pop("type")
         return cls(subtask_specs=tuple(specs), **data)
 
     def to_oak_config(self) -> OaKConfig:
@@ -299,6 +302,24 @@ def _require_bool(name: str, value: object) -> bool:
     return value
 
 
+def _require_payload(
+    value: object, *, name: str, fields: frozenset[str]
+) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise ValueError(f"{name} must be an exact dictionary")
+    raw = cast(dict[object, object], value)
+    if any(type(key) is not str for key in raw):
+        raise ValueError(f"{name} keys must be exact strings")
+    if cast(set[str], set(raw)) != fields:
+        raise ValueError(f"{name} fields do not match the schema")
+    return cast(dict[str, Any], dict(raw))
+
+
+def _require_subtask_count(count: int) -> None:
+    if count > _MAX_SUBTASK_SPECS:
+        raise ValueError(f"subtask_specs must contain at most {_MAX_SUBTASK_SPECS} values")
+
+
 def _trusted_array(
     name: str,
     value: object,
@@ -421,10 +442,7 @@ def _validate_oak_facade_config(config: Step11OaKConfig) -> None:
     )
     if type(config.subtask_specs) is not tuple:
         raise ValueError("subtask_specs must be a tuple of SubtaskSpec")
-    if len(config.subtask_specs) > _MAX_SUBTASK_SPECS:
-        raise ValueError(
-            f"subtask_specs must contain at most {_MAX_SUBTASK_SPECS} elements"
-        )
+    _require_subtask_count(len(config.subtask_specs))
     canonical_specs: list[SubtaskSpec] = []
     for spec in config.subtask_specs:
         if type(spec) is not SubtaskSpec:

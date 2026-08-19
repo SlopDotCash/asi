@@ -239,29 +239,77 @@ def test_config_subclass_is_rejected_before_attribute_hooks() -> None:
     assert HostileConfig.calls == 0
 
 
-def test_from_config_requires_exact_closed_json_schema() -> None:
+def test_from_config_requires_complete_exact_schema_without_mapping_hooks() -> None:
+    class HostileDict(dict[object, object]):
+        calls = 0
+
+        def __iter__(self):  # pragma: no cover - must not run
+            type(self).calls += 1
+            raise AssertionError("mapping hook must not run")
+
+    with pytest.raises(ValueError, match="exact dictionary"):
+        Step11OaKConfig.from_config(cast(Any, HostileDict()))
+    assert HostileDict.calls == 0
+
     payload = Step11OaKConfig().to_config()
-    for altered in (
-        {key: value for key, value in payload.items() if key != "type"},
-        {**payload, "type": "Wrong"},
-        {**payload, "extra": 1},
+    for mutation in (
+        lambda value: value.pop("type"),
+        lambda value: value.__setitem__("extra", 1),
+        lambda value: value.__setitem__("type", "wrong"),
     ):
-        with pytest.raises(ValueError):
-            Step11OaKConfig.from_config(altered)
-
-    class DictSubclass(dict[str, Any]):
-        pass
-
-    with pytest.raises(ValueError, match="actual dict"):
-        Step11OaKConfig.from_config(DictSubclass(payload))
+        malformed = dict(payload)
+        mutation(malformed)
+        with pytest.raises(ValueError, match="(schema|payload type)"):
+            Step11OaKConfig.from_config(malformed)
 
 
-def test_from_config_rejects_hostile_or_open_subtask_entries() -> None:
+def test_from_config_requires_exact_nested_records_before_hooks() -> None:
+    class HostileRecord(dict[object, object]):
+        calls = 0
+
+        def __iter__(self):  # pragma: no cover - must not run
+            type(self).calls += 1
+            raise AssertionError("record hook must not run")
+
+    payload = Step11OaKConfig().to_config()
+    payload["subtask_specs"] = [HostileRecord()]
+    with pytest.raises(ValueError, match="exact dictionary"):
+        Step11OaKConfig.from_config(payload)
+    assert HostileRecord.calls == 0
+
     payload = Step11OaKConfig(
         subtask_specs=(SubtaskSpec(feature_index=0),)
     ).to_config()
     payload["subtask_specs"] = [{**payload["subtask_specs"][0], "extra": 1}]
-    with pytest.raises(ValueError, match="exact fields"):
+    with pytest.raises(ValueError, match="fields do not match"):
+        Step11OaKConfig.from_config(payload)
+
+
+def test_from_config_and_direct_paths_have_matching_canonical_values() -> None:
+    direct = Step11OaKConfig(
+        observation_dim=np.int32(4),  # type: ignore[arg-type]
+        base_step_size=np.float64(0.05),  # type: ignore[arg-type]
+        subtask_specs=(SubtaskSpec(feature_index=0, threshold=Fraction(1, 2)),),
+    )
+    parsed = Step11OaKConfig.from_config(direct.to_config())
+    assert parsed == direct
+    assert parsed.to_config() == direct.to_config()
+
+
+def test_subtask_validation_work_is_bounded_before_iteration() -> None:
+    spec = SubtaskSpec(feature_index=0)
+    with pytest.raises(ValueError, match="at most 4096"):
+        Step11OaKConfig(subtask_specs=(spec,) * 4_097)
+
+    payload = Step11OaKConfig().to_config()
+    raw_spec = {
+        "feature_index": 0,
+        "threshold": 0.5,
+        "pseudo_reward_scale": 1.0,
+        "max_option_steps": 8,
+    }
+    payload["subtask_specs"] = [raw_spec] * 4_097
+    with pytest.raises(ValueError, match="at most 4096"):
         Step11OaKConfig.from_config(payload)
 
 
