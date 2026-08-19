@@ -221,6 +221,54 @@ def test_across_seed_spread_uses_sample_estimator() -> None:
     assert across_seed_spread([0.5]) == 0.0
 
 
+def test_frontier_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    """Plain json.loads kept the last per_task_accuracy and scored a poisoned shard."""
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    screen.mkdir(parents=True)
+    confirm.mkdir(parents=True)
+    (screen / "base_seed0.json").write_text(
+        '{"seed":0,"per_task_accuracy":[0.1,0.1],"per_task_accuracy":[0.9,0.9]}',
+        encoding="utf-8",
+    )
+    _shard(screen / "candidate_seed0.json", seed=0, accuracy=0.81)
+    _shard(confirm / "base_seed0.json", seed=0, accuracy=0.80)
+    _shard(confirm / "candidate_seed0.json", seed=0, accuracy=0.82)
+    with pytest.raises(ValueError, match="duplicate"):
+        build_frontier(screen, confirm, base="base", arms=["candidate"], created_unix=0.0)
+
+
+def test_ceiling_npz_metadata_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    ceiling = tmp_path / "ceiling"
+    ceiling.mkdir()
+    valid_payload: dict[str, object] = {
+        "schema": "asi.ipmnist_ceiling.run.v2",
+        "evidence_class": "development_screening_diagnostic",
+        "development_only": True,
+        "scientific_promotion_allowed": False,
+        "tag": "stationary_sigma0_ndecay099",
+        "spec_name": "sigma0_ndecay099",
+        "seed": 0,
+        "perm_mode": "identity",
+        "n_tasks": 1,
+        "task_length": 5000,
+        "per_task_accuracy": [1.0],
+        "mean_accuracy": 1.0,
+        "wall_clock_seconds": 1.0,
+        "provenance": {"schema": "asi.ipmnist.ceiling_run_provenance.v1"},
+    }
+    hostile_metadata = json.dumps(valid_payload).replace(
+        "{", '{"evidence_class":"bogus",', 1
+    )
+    np.savez_compressed(
+        ceiling / "stationary_sigma0_ndecay099_seed0.npz",
+        metadata=np.asarray(hostile_metadata),
+        per_step=np.ones((1, 5000), dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        build_ceiling_summary(ceiling, tmp_path / "confirm")
+
+
 def test_frontier_requires_and_uses_exact_paired_seed_sets(tmp_path: Path) -> None:
     screen = tmp_path / "screen"
     confirm = tmp_path / "confirm"
@@ -657,6 +705,19 @@ def test_rule_summary_rejects_noncanonical_or_duplicate_seeds_before_io(
             tmp_path / "confirm",
             seeds=seeds,  # type: ignore[arg-type]
         )
+
+
+def test_rule_summary_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    screen.mkdir(parents=True)
+    for name in SCREEN_ARMS[1:]:
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=0.8)
+    (screen / f"{SCREEN_ARMS[0]}_seed0.json").write_text(
+        '{"seed":0,"per_task_accuracy":[0.1],"per_task_accuracy":[0.9]}',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="duplicate"):
+        build_legacy_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
 
 
 @pytest.mark.parametrize("accuracy", [[], [float("nan")], [-0.1], [1.1]])

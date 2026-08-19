@@ -31,6 +31,7 @@ from alberta_framework.benchmarks import (
     forager_results,
     forager_rng_parity,
     historical_forager,
+    ipmnist_campaign_tools,
     official_foragax,
     official_foragax_oci,
     upgd_ipmnist,
@@ -52,6 +53,7 @@ _PATH_LOADERS: tuple[
     tuple[str, Callable[[Path], object], type[BaseException]], ...
 ] = (
     ("shared", load_strict_json_object, ValueError),
+    ("campaign_tools", ipmnist_campaign_tools._json_object, ValueError),
     ("evidence_manifest", evidence_manifest._load_strict_json_object, ValueError),
     ("upgd_ipmnist", upgd_ipmnist._strict_json_object, ValueError),
     ("upgd_label_emnist", upgd_label_emnist._strict_json_object, ValueError),

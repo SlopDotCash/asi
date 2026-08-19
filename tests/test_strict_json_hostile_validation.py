@@ -12,6 +12,7 @@ from alberta_framework._strict_json import (
     _reject_duplicate_object_keys,
     _validate_exact_json_tree,
     load_strict_json_object,
+    load_strict_json_object_from_text,
 )
 
 
@@ -98,6 +99,22 @@ def test_load_rejects_nonfinite_json(tmp_path: Path) -> None:
     path.write_text('{"a": NaN}', encoding="utf-8")
     with pytest.raises(ValueError, match="non-standard JSON numeric constant"):
         load_strict_json_object(path)
+
+
+def test_load_from_text_rejects_duplicate_keys_and_non_strings() -> None:
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
+        load_strict_json_object_from_text('{"a": 1, "a": 2}', label="metadata")
+    with pytest.raises(ValueError, match="must be an exact string"):
+        load_strict_json_object_from_text(_StringSubclass("{}"), label="metadata")
+    with pytest.raises(ValueError, match="must be an exact string"):
+        load_strict_json_object_from_text(b"{}", label="metadata")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="non-empty exact string"):
+        load_strict_json_object_from_text("{}", label="")
+
+
+def test_load_from_text_rejects_overflow_exponent() -> None:
+    with pytest.raises(ValueError, match="non-finite JSON number"):
+        load_strict_json_object_from_text('{"value":1e999}', label="metadata")
 
 
 def test_hostile_path_not_invoke_fspath_on_error() -> None:

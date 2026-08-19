@@ -20,6 +20,10 @@ from typing import Any, cast
 import numpy as np
 
 from alberta_framework._seed_validation import require_jax_seed
+from alberta_framework._strict_json import (
+    load_strict_json_object,
+    load_strict_json_object_from_text,
+)
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 
 DEFAULT_BASE = "upgd_ema_norm_sigma0"
@@ -88,10 +92,7 @@ def across_seed_spread(values: Sequence[float] | np.ndarray[Any, Any]) -> float:
 
 
 def _json_object(path: Path) -> dict[str, Any]:
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if type(payload) is not dict:
-        raise ValueError(f"{path} must contain a JSON object")
-    return cast(dict[str, Any], payload)
+    return load_strict_json_object(path)
 
 
 def seed_means(root: Path, config_name: str) -> dict[int, float]:
@@ -240,10 +241,11 @@ def _ceiling_runs(
         runs[seed] = payload
     for path in sorted(ceiling_dir.glob(f"{prefix}_seed*.npz")):
         with np.load(path, allow_pickle=False) as archive:
-            payload = json.loads(str(archive["metadata"].item()))
+            payload = load_strict_json_object_from_text(
+                archive["metadata"].item(),
+                label=f"{path} metadata",
+            )
             per_step = np.asarray(archive["per_step"])
-        if type(payload) is not dict:
-            raise ValueError(f"{path} metadata must be a JSON object")
         if payload.get("schema") != "asi.ipmnist_ceiling.run.v2":
             raise ValueError(f"{path} has an unsupported maintained run schema")
         if (

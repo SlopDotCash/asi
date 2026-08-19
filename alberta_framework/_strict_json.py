@@ -54,19 +54,7 @@ def _reject_duplicate_object_keys(
     return parsed
 
 
-def _decode_bounded_utf8_json(path: Path) -> str:
-    try:
-        with path.open("rb") as stream:
-            raw = stream.read(_MAX_JSON_BYTES + 1)
-    except OSError:
-        raise
-    if len(raw) > _MAX_JSON_BYTES:
-        raise ValueError("JSON payload exceeds the byte limit")
-    try:
-        text = raw.decode("utf-8", errors="strict")
-    except UnicodeDecodeError as error:
-        raise ValueError("JSON payload must be valid UTF-8") from error
-
+def _scan_json_nesting(text: str) -> None:
     depth = 0
     in_string = False
     escaped = False
@@ -87,7 +75,38 @@ def _decode_bounded_utf8_json(path: Path) -> str:
                 raise ValueError("JSON payload exceeds the nesting-depth limit")
         elif character in "]}":
             depth -= 1
+
+
+def _decode_bounded_utf8_json(path: Path) -> str:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(_MAX_JSON_BYTES + 1)
+    except OSError:
+        raise
+    if len(raw) > _MAX_JSON_BYTES:
+        raise ValueError("JSON payload exceeds the byte limit")
+    try:
+        text = raw.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as error:
+        raise ValueError("JSON payload must be valid UTF-8") from error
+    _scan_json_nesting(text)
     return text
+
+
+def _loads_strict_json_object(text: str, *, label: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_nonstandard_constant,
+            parse_float=_parse_finite_float,
+            object_pairs_hook=_reject_duplicate_object_keys,
+        )
+    except RecursionError as error:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from error
+    _validate_exact_json_tree(parsed)
+    if type(parsed) is not dict:
+        raise ValueError(f"{label}: payload must contain one JSON object")
+    return parsed
 
 
 def _validate_exact_json_tree(root: object) -> None:
@@ -118,17 +137,21 @@ def load_strict_json_object(path: Path | str) -> dict[str, Any]:
     """Load one finite UTF-8 JSON object, rejecting duplicate keys at every depth."""
 
     resolved = _require_path(path, name="path")
-    text = _decode_bounded_utf8_json(resolved)
-    try:
-        parsed = json.loads(
-            text,
-            parse_constant=_reject_nonstandard_constant,
-            parse_float=_parse_finite_float,
-            object_pairs_hook=_reject_duplicate_object_keys,
-        )
-    except RecursionError as error:
-        raise ValueError("JSON payload exceeds the parser recursion limit") from error
-    _validate_exact_json_tree(parsed)
-    if type(parsed) is not dict:
-        raise ValueError(f"{resolved}: payload must contain one JSON object")
-    return parsed
+    return _loads_strict_json_object(
+        _decode_bounded_utf8_json(resolved),
+        label=str(resolved),
+    )
+
+
+def load_strict_json_object_from_text(text: object, *, label: str) -> dict[str, Any]:
+    """Parse one in-memory JSON object under the same bounds as the file loader."""
+
+    if type(label) is not str or not label:
+        raise ValueError("label must be a non-empty exact string")
+    if type(text) is not str:
+        raise ValueError(f"{label} must be an exact string")
+    encoded = text.encode("utf-8")
+    if len(encoded) > _MAX_JSON_BYTES:
+        raise ValueError("JSON payload exceeds the byte limit")
+    _scan_json_nesting(text)
+    return _loads_strict_json_object(text, label=label)
