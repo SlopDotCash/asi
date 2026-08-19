@@ -385,6 +385,21 @@ def step4_update(
     )
 
 
+def _require_trusted_array_metadata(name: str, array: object) -> tuple[int, ...]:
+    actual_type = type(array)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        shape = tuple(int(dim) for dim in cast(Any, array).shape)
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape metadata") from error
+    return shape
+
+
 def run_step4_scan(
     agent: SARSAAgent,
     state: SARSAState,
@@ -393,6 +408,31 @@ def run_step4_scan(
     terminated: Array,
 ) -> SARSAArrayResult:
     """Run Step 4 SARSA over pre-collected transition arrays."""
+    if type(agent) is not SARSAAgent:
+        raise TypeError("agent must be an exact SARSAAgent")
+    if type(state) is not SARSAState:
+        raise TypeError("state must be an exact SARSAState")
+
+    features_shape = _require_trusted_array_metadata("next_features", next_features)
+    if len(features_shape) != 2:
+        raise ValueError("next_features must have shape (num_steps, feature_dim)")
+    num_steps = _require_positive_int("scan sequence length", features_shape[0])
+
+    rewards_shape = _require_trusted_array_metadata("rewards", rewards)
+    if rewards_shape != (num_steps,):
+        raise ValueError(f"rewards must have shape ({num_steps},)")
+
+    terminated_shape = _require_trusted_array_metadata("terminated", terminated)
+    if terminated_shape != (num_steps,):
+        raise ValueError(f"terminated must have shape ({num_steps},)")
+
+    output_scalars = num_steps * (agent.n_actions + 2)
+    if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
+        raise ValueError("step 4 scan result bytes must fit signed int32")
+
+    features_array = jnp.asarray(next_features, dtype=jnp.float32)
+    rewards_array = jnp.asarray(rewards, dtype=jnp.float32)
+    terminated_array = jnp.asarray(terminated, dtype=jnp.float32)
 
     def step_fn(
         carry: SARSAState,
@@ -406,7 +446,7 @@ def run_step4_scan(
     final_state, (q_values, td_errors, actions) = jax.lax.scan(
         step_fn,
         state,
-        (next_features, rewards, terminated),
+        (features_array, rewards_array, terminated_array),
     )
     return SARSAArrayResult(
         state=final_state,

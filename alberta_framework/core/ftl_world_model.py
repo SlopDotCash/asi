@@ -531,6 +531,27 @@ class SparseFTLWorldModel:
         )
 
 
+def _require_scan_array_metadata(name: str, array: object) -> tuple[int, ...]:
+    actual_type = type(array)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        shape = tuple(int(dim) for dim in array.shape)  # type: ignore[attr-defined]
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape metadata") from error
+    return shape
+
+
+def _require_scan_resource(num_steps: int, observation_dim: int) -> None:
+    output_scalars = num_steps * (3 * observation_dim + 1)
+    if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
+        raise ValueError("sparse FTL world model scan result bytes must fit signed int32")
+
+
 def run_sparse_ftl_world_model(
     model: SparseFTLWorldModel,
     state: SparseFTLWorldModelState,
@@ -539,6 +560,40 @@ def run_sparse_ftl_world_model(
     next_observations: Array,
 ) -> SparseFTLWorldModelLearningResult:
     """Run one uninterrupted, predict-before-update transition stream."""
+    if type(model) is not SparseFTLWorldModel:
+        raise TypeError("model must be an exact SparseFTLWorldModel")
+    if type(state) is not SparseFTLWorldModelState:
+        raise TypeError("state must be an exact SparseFTLWorldModelState")
+
+    obs_shape = _require_scan_array_metadata("observations", observations)
+    if len(obs_shape) != 2 or obs_shape[1] != model.config.observation_dim:
+        raise ValueError(
+            f"observations must have shape (num_steps, {model.config.observation_dim})"
+        )
+    num_steps = _require_int32("scan sequence length", obs_shape[0], minimum=1)
+
+    next_obs_shape = _require_scan_array_metadata("next_observations", next_observations)
+    if next_obs_shape != (num_steps, model.config.observation_dim):
+        raise ValueError(
+            f"next_observations must have shape ({num_steps}, {model.config.observation_dim})"
+        )
+
+    act_shape = _require_scan_array_metadata("actions", actions)
+    expected_act_shape = (
+        (num_steps,)
+        if model.config.action_dim == 1 and len(act_shape) == 1
+        else (num_steps, model.config.action_dim)
+    )
+    if act_shape != expected_act_shape:
+        raise ValueError(
+            f"actions must have shape ({num_steps},) or ({num_steps}, {model.config.action_dim})"
+        )
+
+    _require_scan_resource(num_steps, model.config.observation_dim)
+
+    obs_array = jnp.asarray(observations, dtype=jnp.float32)
+    next_obs_array = jnp.asarray(next_observations, dtype=jnp.float32)
+    act_array = jnp.asarray(actions, dtype=jnp.float32)
 
     def step_fn(
         carry: SparseFTLWorldModelState,
@@ -556,7 +611,7 @@ def run_sparse_ftl_world_model(
     final_state, outputs = jax.lax.scan(
         step_fn,
         state,
-        (observations, actions, next_observations),
+        (obs_array, act_array, next_obs_array),
     )
     predictions, targets, errors, squared_errors = outputs
     return SparseFTLWorldModelLearningResult(

@@ -575,7 +575,10 @@ def run_option_value_duration_from_arrays(
         raise ValueError("observations have an incompatible shape")
     if observations.dtype != jnp.float32:
         raise ValueError("observations must have dtype float32")
-    num_steps = observations.shape[0]
+    num_steps = _require_int32("scan sequence length", observations.shape[0], minimum=1)
+    output_scalars = num_steps * (4 * learner.n_options + 3)
+    if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
+        raise ValueError("option value duration scan result bytes must fit signed int32")
     next_observations = learner._require_array(
         "next_observations",
         next_observations,

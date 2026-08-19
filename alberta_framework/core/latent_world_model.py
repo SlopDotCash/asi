@@ -1075,6 +1075,27 @@ class LatentWorldModel:
         return config
 
 
+def _require_scan_array_metadata(name: str, array: object) -> tuple[int, ...]:
+    actual_type = type(array)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        shape = tuple(int(dim) for dim in array.shape)  # type: ignore[attr-defined]
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape metadata") from error
+    return shape
+
+
+def _require_scan_resource(num_steps: int, latent_dim: int, n_heads: int) -> None:
+    output_scalars = num_steps * (3 * latent_dim + 3 * n_heads + 12)
+    if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
+        raise ValueError("latent world model scan result bytes must fit signed int32")
+
+
 def run_latent_world_model_learning_loop(
     model: LatentWorldModel,
     state: LatentWorldModelState,
@@ -1085,12 +1106,58 @@ def run_latent_world_model_learning_loop(
     discounts: Float[Array, " num_steps"] | None = None,
 ) -> LatentWorldModelLearningResult:
     """Run online latent world-model learning over transition arrays."""
+    if type(model) is not LatentWorldModel:
+        raise TypeError("model must be an exact LatentWorldModel")
+    if type(state) is not LatentWorldModelState:
+        raise TypeError("state must be an exact LatentWorldModelState")
+
+    obs_shape = _require_scan_array_metadata("observations", observations)
+    if len(obs_shape) != 2 or obs_shape[1] != model.config.observation_dim:
+        raise ValueError(
+            f"observations must have shape (num_steps, {model.config.observation_dim})"
+        )
+    num_steps = _require_int32("scan sequence length", obs_shape[0], minimum=1)
+
+    next_obs_shape = _require_scan_array_metadata("next_observations", next_observations)
+    if next_obs_shape != (num_steps, model.config.observation_dim):
+        raise ValueError(
+            f"next_observations must have shape ({num_steps}, {model.config.observation_dim})"
+        )
+
+    act_shape = _require_scan_array_metadata("actions", actions)
+    if model.config.n_actions is not None:
+        if act_shape != (num_steps,):
+            raise ValueError(f"actions must have shape ({num_steps},)")
+    else:
+        if act_shape != (num_steps, model.config.action_dim):
+            raise ValueError(f"actions must have shape ({num_steps}, {model.config.action_dim})")
+
+    rew_shape = _require_scan_array_metadata("rewards", rewards)
+    if rew_shape != (num_steps,):
+        raise ValueError(f"rewards must have shape ({num_steps},)")
+
     if discounts is None:
-        discounts = jnp.full(
-            jnp.shape(rewards),
+        discounts_array = jnp.full(
+            (num_steps,),
             jnp.asarray(model.config.gamma, dtype=jnp.float32),
             dtype=jnp.float32,
         )
+    else:
+        disc_shape = _require_scan_array_metadata("discounts", discounts)
+        if disc_shape != (num_steps,):
+            raise ValueError(f"discounts must have shape ({num_steps},)")
+        discounts_array = jnp.asarray(discounts, dtype=jnp.float32)
+
+    _require_scan_resource(num_steps, model.config.latent_dim, model.config.latent_dim + 2)
+
+    obs_array = jnp.asarray(observations, dtype=jnp.float32)
+    next_obs_array = jnp.asarray(next_observations, dtype=jnp.float32)
+    rew_array = jnp.asarray(rewards, dtype=jnp.float32)
+    act_array = (
+        jnp.asarray(actions, dtype=jnp.int32)
+        if model.config.n_actions is not None
+        else jnp.asarray(actions, dtype=jnp.float32)
+    )
 
     def _scan_fn(
         carry: LatentWorldModelState,
@@ -1140,7 +1207,7 @@ def run_latent_world_model_learning_loop(
     ) = jax.lax.scan(
         _scan_fn,
         state,
-        (observations, actions, rewards, discounts, next_observations),
+        (obs_array, act_array, rew_array, discounts_array, next_obs_array),
     )
     return LatentWorldModelLearningResult(
         state=final_state,

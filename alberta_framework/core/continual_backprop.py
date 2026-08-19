@@ -1341,6 +1341,27 @@ class CBPLearningResult:
     replacements_made: Array
 
 
+def _require_scan_array_metadata(name: str, array: object) -> tuple[int, ...]:
+    actual_type = type(array)
+    if not (
+        actual_type is np.ndarray
+        or issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a trusted array")
+    try:
+        shape = tuple(int(dim) for dim in array.shape)  # type: ignore[attr-defined]
+    except (AttributeError, IndexError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must expose trusted shape metadata") from error
+    return shape
+
+
+def _require_scan_resource(num_steps: int, n_heads: int, n_hidden_layers: int) -> None:
+    output_scalars = num_steps * (3 * n_heads + n_hidden_layers)
+    if output_scalars > _INT32_MAX or 4 * output_scalars > _INT32_MAX:
+        raise ValueError("CBP learning loop scan result bytes must fit signed int32")
+
+
 def run_cbp_learning_loop(
     learner: CBPMultiHeadMLPLearner,
     state: CBPMultiHeadMLPState,
@@ -1359,6 +1380,24 @@ def run_cbp_learning_loop(
         :class:`CBPLearningResult` with the final state, per-step
         per-head metrics, and per-step per-layer replacement flags.
     """
+    if type(learner) is not CBPMultiHeadMLPLearner:
+        raise TypeError("learner must be an exact CBPMultiHeadMLPLearner")
+    if type(state) is not CBPMultiHeadMLPState:
+        raise TypeError("state must be an exact CBPMultiHeadMLPState")
+
+    obs_shape = _require_scan_array_metadata("observations", observations)
+    if len(obs_shape) != 2:
+        raise ValueError("observations must have shape (num_steps, feature_dim)")
+    num_steps = _require_int("scan sequence length", obs_shape[0], minimum=1)
+
+    tgt_shape = _require_scan_array_metadata("targets", targets)
+    if tgt_shape != (num_steps, learner.n_heads):
+        raise ValueError(f"targets must have shape ({num_steps}, {learner.n_heads})")
+
+    _require_scan_resource(num_steps, learner.n_heads, len(learner.hidden_sizes))
+
+    obs_array = jnp.asarray(observations, dtype=jnp.float32)
+    tgt_array = jnp.asarray(targets, dtype=jnp.float32)
 
     def step_fn(
         carry: CBPMultiHeadMLPState, inputs: tuple[Array, Array]
@@ -1369,7 +1408,7 @@ def run_cbp_learning_loop(
 
     t0 = time.time()
     final_state, (per_head_metrics, replacements_made) = jax.lax.scan(
-        step_fn, state, (observations, targets)
+        step_fn, state, (obs_array, tgt_array)
     )
     elapsed = time.time() - t0
     final_mlp = final_state.mlp_state.replace(  # type: ignore[attr-defined]

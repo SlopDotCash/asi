@@ -524,6 +524,9 @@ def run_learning_loop[StreamStateT](
     Raises:
         ValueError: If tracking interval is invalid
     """
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
+    _preflight_float32_resources("learning loop scan result", num_steps * 4)
+
     # Validate tracking configs
     if step_size_tracking is not None:
         if step_size_tracking.interval < 1:
@@ -837,6 +840,7 @@ def run_learning_loop_batched[StreamStateT](
     mean_error = result.metrics[:, :, 0].mean(axis=0)  # Average over seeds
     ```
     """
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
 
     # Define single-seed function that returns consistent structure
     def single_seed_run(
@@ -1673,6 +1677,9 @@ def run_mlp_learning_loop[StreamStateT](
     Raises:
         ValueError: If normalizer_tracking.interval is invalid
     """
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
+    _preflight_float32_resources("MLP learning loop scan result", num_steps * 4)
+
     # Validate tracking config
     if normalizer_tracking is not None:
         if normalizer_tracking.interval < 1:
@@ -1823,6 +1830,7 @@ def run_mlp_learning_loop_batched[StreamStateT](
     mean_error = result.metrics[:, :, 0].mean(axis=0)  # Average over seeds
     ```
     """
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
 
     def single_seed_run(
         key: Array,
@@ -2275,6 +2283,9 @@ def run_td_learning_loop[StreamStateT](
         (num_steps, 4) with columns [squared_td_error, td_error, mean_step_size,
         mean_eligibility_trace]
     """
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
+    _preflight_float32_resources("TD learning loop scan result", num_steps * 4)
+
     # Initialize states
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim)
@@ -2312,6 +2323,9 @@ def run_true_online_td_loop[StreamStateT](
     learner_state: TrueOnlineTDState | None = None,
 ) -> tuple[TrueOnlineTDState, Array]:
     """Run True Online TD(lambda) over a TD stream with ``jax.lax.scan``."""
+    num_steps = _require_int32("num_steps", num_steps, minimum=1)
+    _preflight_float32_resources("true online TD learning loop scan result", num_steps * 4)
+
     if learner_state is None:
         learner_state = learner.init(stream.feature_dim)
     stream_state = stream.init(key)
