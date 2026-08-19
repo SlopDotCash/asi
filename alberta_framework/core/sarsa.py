@@ -62,6 +62,11 @@ from alberta_framework.core.update_safety import (
 
 
 _INT32_MAX = 2**31 - 1
+# Matches the documented learning-loop step ceiling established for
+# scan-driven array loops elsewhere in ``core`` (see
+# ``learners._LEARNING_LOOP_MAX_STEPS`` and ``utils.nexting``). SARSA's
+# array-based loops below have no other cap on the scanned sequence length.
+_SARSA_SEQUENCE_MAX_STEPS = 10_000
 _SARSA_CONFIG_FIELDS = {
     "n_actions",
     "gamma",
@@ -119,6 +124,34 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_sarsa_sequence_length(name: str, value: object) -> int:
+    """Reject an oversized or malformed leading axis before it drives a scan.
+
+    ``run_sarsa_from_arrays`` and ``run_sarsa_from_arrays_final_state`` hand
+    their step arrays straight to ``jax.lax.scan`` with no bound on the
+    leading (step) dimension. A hostile or mistaken caller supplying a huge
+    ``num_steps`` can force JAX to trace/compile a scan of that length,
+    hanging the process well before any step executes.
+    """
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1:
+        raise ValueError(f"{name} must have a leading step axis")
+    length = int(value.shape[0])
+    if length < 1 or length > _SARSA_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} length must be an integer in [1, {_SARSA_SEQUENCE_MAX_STEPS}]"
+        )
+    return length
+
+
+def _require_sarsa_matching_length(name: str, value: object, *, expected: int) -> None:
+    if not isinstance(value, jax.Array):
+        raise TypeError(f"{name} must be a JAX array")
+    if value.ndim < 1 or int(value.shape[0]) != expected:
+        raise ValueError(f"{name} must share the same leading length as observations")
 
 
 def _validated_config_float_with_ratio(
@@ -1205,7 +1238,19 @@ def run_sarsa_from_arrays(
 
     Returns:
         SARSAArrayResult with per-step Q-values, TD errors, and actions
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_SARSA_SEQUENCE_MAX_STEPS``), or the other
+            step arrays do not share its leading length.
     """
+    num_steps = _require_sarsa_sequence_length("observations", observations)
+    _require_sarsa_matching_length("rewards", rewards, expected=num_steps)
+    _require_sarsa_matching_length("terminated", terminated, expected=num_steps)
+    _require_sarsa_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
 
     @jax.jit
     def _scan_fn(
@@ -1256,7 +1301,19 @@ def run_sarsa_from_arrays_final_state(
 
     Throughput benchmarks use this helper to avoid materializing per-step
     Q-values, TD errors, and actions.
+
+    Raises:
+        TypeError: If an input is not a JAX array.
+        ValueError: If ``observations`` is empty, exceeds the documented
+            scan-length ceiling (``_SARSA_SEQUENCE_MAX_STEPS``), or the other
+            step arrays do not share its leading length.
     """
+    num_steps = _require_sarsa_sequence_length("observations", observations)
+    _require_sarsa_matching_length("rewards", rewards, expected=num_steps)
+    _require_sarsa_matching_length("terminated", terminated, expected=num_steps)
+    _require_sarsa_matching_length(
+        "next_observations", next_observations, expected=num_steps
+    )
 
     @jax.jit
     def _scan_fn(

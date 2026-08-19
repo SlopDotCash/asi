@@ -16,8 +16,15 @@ from alberta_framework import (
     SARSAAgent,
     SARSAArrayResult,
     SARSAConfig,
+    SARSAState,
     SARSAUpdateResult,
     run_sarsa_from_arrays,
+    run_sarsa_from_arrays_final_state,
+)
+from alberta_framework.core.sarsa import (
+    _SARSA_SEQUENCE_MAX_STEPS,
+    _require_sarsa_matching_length,
+    _require_sarsa_sequence_length,
 )
 
 
@@ -989,6 +996,117 @@ class TestSARSAScan:
 
         # Should run without error and produce finite results
         assert jnp.all(jnp.isfinite(result.td_errors))
+
+
+# =============================================================================
+# Scan sequence-length ceiling (hang guard)
+# =============================================================================
+#
+# ``run_sarsa_from_arrays`` and ``run_sarsa_from_arrays_final_state`` hand
+# their step arrays straight to ``jax.lax.scan`` with no bound on the leading
+# (step) axis. A hostile or mistaken caller supplying a huge array forces JAX
+# to trace/compile a scan of that length, hanging the process well before any
+# step executes -- the same hang class fixed for other scan-driven array
+# loops elsewhere in ``core`` and ``utils``.
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    seen: list[int] = []
+
+    def spy(fn, init, xs, **kwargs):  # type: ignore[no-untyped-def]
+        first = xs[0] if isinstance(xs, tuple) else xs
+        seen.append(int(first.shape[0]))
+        raise AssertionError(f"jax.lax.scan must not run: T={first.shape[0]}")
+
+    monkeypatch.setattr("alberta_framework.core.sarsa.jax.lax.scan", spy)
+    return seen
+
+
+def _sarsa_arrays(
+    n_steps: int,
+) -> tuple[SARSAAgent, SARSAState, jax.Array, jax.Array, jax.Array, jax.Array]:
+    agent = _make_agent(n_actions=2, hidden_sizes=(8,))
+    state = agent.init(feature_dim=4, key=jr.key(42))
+    obs = jnp.ones((n_steps, 4))
+    next_obs = jnp.ones((n_steps, 4))
+    rewards = jnp.ones(n_steps)
+    terminated = jnp.zeros(n_steps)
+    action, new_key = agent.select_action(state, obs[0])
+    state = state.replace(  # type: ignore[attr-defined]
+        last_action=action,
+        last_observation=obs[0],
+        rng_key=new_key,
+    )
+    return agent, state, obs, rewards, terminated, next_obs
+
+
+class TestSARSASequenceCeiling:
+    def test_documented_protocol_ceiling(self) -> None:
+        assert _SARSA_SEQUENCE_MAX_STEPS == 10_000
+
+    def test_last_fit_length_is_accepted(self) -> None:
+        vector = jnp.zeros((_SARSA_SEQUENCE_MAX_STEPS,))
+        assert (
+            _require_sarsa_sequence_length("observations", vector)
+            == _SARSA_SEQUENCE_MAX_STEPS
+        )
+
+    def test_first_overflow_length_is_rejected(self) -> None:
+        vector = jnp.zeros((_SARSA_SEQUENCE_MAX_STEPS + 1,))
+        with pytest.raises(
+            ValueError, match=r"observations length must be an integer in \[1, 10000\]"
+        ):
+            _require_sarsa_sequence_length("observations", vector)
+
+    def test_mismatched_length_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="same leading length"):
+            _require_sarsa_matching_length(
+                "rewards", jnp.zeros((3,)), expected=4
+            )
+
+    def test_run_sarsa_from_arrays_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent, state, obs, rewards, terminated, next_obs = _sarsa_arrays(
+            _SARSA_SEQUENCE_MAX_STEPS + 1
+        )
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_sarsa_from_arrays(agent, state, obs, rewards, terminated, next_obs)
+        assert seen == []
+
+    def test_run_sarsa_from_arrays_final_state_rejects_overflow_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent, state, obs, rewards, terminated, next_obs = _sarsa_arrays(
+            _SARSA_SEQUENCE_MAX_STEPS + 1
+        )
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_sarsa_from_arrays_final_state(
+                agent, state, obs, rewards, terminated, next_obs
+            )
+        assert seen == []
+
+    def test_origin_hang_class_is_rejected_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A far larger sequence length -- the actual hang class -- is also
+        rejected before ``jax.lax.scan`` is ever called."""
+        seen = _spy_scan(monkeypatch)
+        agent, state, obs, rewards, terminated, next_obs = _sarsa_arrays(200_000)
+        with pytest.raises(ValueError, match="observations length must be an integer in"):
+            run_sarsa_from_arrays(agent, state, obs, rewards, terminated, next_obs)
+        assert seen == []
+
+    def test_mismatched_step_arrays_are_rejected_before_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = _spy_scan(monkeypatch)
+        agent, state, obs, rewards, terminated, next_obs = _sarsa_arrays(10)
+        with pytest.raises(ValueError, match="same leading length"):
+            run_sarsa_from_arrays(agent, state, obs, rewards[:5], terminated, next_obs)
+        assert seen == []
 
 
 # =============================================================================
