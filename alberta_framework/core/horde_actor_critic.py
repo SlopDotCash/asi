@@ -495,9 +495,15 @@ class QHordeActorCriticAgent:
             raise ValueError("temperature must be positive")
         if config.actor_td_error_clip is not None and config.actor_td_error_clip <= 0:
             raise ValueError("actor_td_error_clip must be positive when provided")
-        if config.critic_target not in {"expected_sarsa", "sampled_sarsa"}:
+        if type(config.critic_target) is not str or config.critic_target not in {
+            "expected_sarsa",
+            "sampled_sarsa",
+        }:
             raise ValueError("critic_target must be 'expected_sarsa' or 'sampled_sarsa'")
-        if config.actor_update not in {"td_error", "expected_advantage"}:
+        if type(config.actor_update) is not str or config.actor_update not in {
+            "td_error",
+            "expected_advantage",
+        }:
             raise ValueError("actor_update must be 'td_error' or 'expected_advantage'")
         if critic.n_demons < config.n_actions:
             raise ValueError("critic must have at least one head per action")
@@ -2201,9 +2207,15 @@ class NonlinearQHordeActorCriticAgent:
             raise ValueError("actor_td_error_clip must be positive when provided")
         if config.actor_gradient_clip_norm is not None and config.actor_gradient_clip_norm <= 0:
             raise ValueError("actor_gradient_clip_norm must be positive when provided")
-        if config.critic_target not in {"expected_sarsa", "sampled_sarsa"}:
+        if type(config.critic_target) is not str or config.critic_target not in {
+            "expected_sarsa",
+            "sampled_sarsa",
+        }:
             raise ValueError("critic_target must be 'expected_sarsa' or 'sampled_sarsa'")
-        if config.actor_update not in {"td_error", "expected_advantage"}:
+        if type(config.actor_update) is not str or config.actor_update not in {
+            "td_error",
+            "expected_advantage",
+        }:
             raise ValueError("actor_update must be 'td_error' or 'expected_advantage'")
         if critic.n_demons < config.n_actions:
             raise ValueError("critic must have at least one head per action")
