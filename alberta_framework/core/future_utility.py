@@ -480,7 +480,7 @@ def normalize_future_utility_signal(
     )
     normalized = signal
 
-    if mode in {"uncertainty", "uncertainty_age"}:
+    if type(mode) is str and mode in {"uncertainty", "uncertainty_age"}:
         normalized = normalized / jnp.sqrt(new_second_moment + 1e-6)
 
     return normalized, new_second_moment
@@ -501,7 +501,7 @@ def bias_correct_future_utility(
     checkpoint schemas.  Age-zero slots have no observations and retain their
     raw value (normally zero).
     """
-    if mode not in {"age", "uncertainty_age"}:
+    if type(mode) is not str or mode not in {"age", "uncertainty_age"}:
         return utilities
 
     age_count = jnp.maximum(ages.astype(jnp.float32), 0.0)

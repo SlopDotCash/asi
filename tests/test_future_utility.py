@@ -565,6 +565,71 @@ def test_compositional_future_utility_metrics_remain_finite_with_variants() -> N
     chex.assert_tree_all_finite(result.state.candidate_utilities)
 
 
+class _HostileStr(str):
+    calls = 0
+
+    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile eq must not run")
+
+    def __hash__(self) -> int:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile hash must not run")
+
+    def __bool__(self) -> bool:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile bool must not run")
+
+    def __str__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile str must not run")
+
+    def __repr__(self) -> str:  # type: ignore[override]
+        type(self).calls += 1
+        raise AssertionError("hostile repr must not run")
+
+
+def test_normalize_future_utility_signal_skips_hostile_mode_before_membership() -> None:
+    """A hostile str-subclass mode must not run its __eq__/__hash__ hooks.
+
+    ``normalize_future_utility_signal`` gates ``"uncertainty"``/
+    ``"uncertainty_age"`` normalization with ``mode in {...}``. Before the
+    fix, an untrusted ``mode`` object reached that membership test before its
+    type was confirmed, letting a hostile ``__eq__``/``__hash__`` run.
+    """
+    hostile = _HostileStr("uncertainty")
+    _HostileStr.calls = 0
+    signal = jnp.array([2.0, 3.0], dtype=jnp.float32)
+    normalized, second_moment = normalize_future_utility_signal(
+        signal=signal,
+        ages=jnp.array([0, 0], dtype=jnp.int32),
+        second_moment=jnp.zeros(2, dtype=jnp.float32),
+        moment_decay=0.9,
+        utility_decay=0.99,
+        mode=hostile,  # type: ignore[arg-type]
+    )
+    assert _HostileStr.calls == 0
+    # A non-str mode never matches the normalization set, so the signal
+    # passes through unnormalized (the same fallback as an unrecognized
+    # plain-string mode).
+    chex.assert_trees_all_close(normalized, signal)
+
+
+def test_bias_correct_future_utility_skips_hostile_mode_before_membership() -> None:
+    """A hostile str-subclass mode must not run its __eq__/__hash__ hooks."""
+    hostile = _HostileStr("age")
+    _HostileStr.calls = 0
+    utilities = jnp.array([0.5, 0.25], dtype=jnp.float32)
+    corrected = bias_correct_future_utility(
+        utilities,
+        ages=jnp.array([3, 5], dtype=jnp.int32),
+        utility_decay=0.9,
+        mode=hostile,  # type: ignore[arg-type]
+    )
+    assert _HostileStr.calls == 0
+    chex.assert_trees_all_close(corrected, utilities)
+
+
 def test_inf_error_silent_feature_scores_zero_not_nan() -> None:
     """Inf error * a silent feature is 0*inf = NaN in the LMS counterfactual.
 
