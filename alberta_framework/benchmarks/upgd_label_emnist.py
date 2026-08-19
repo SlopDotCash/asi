@@ -96,7 +96,7 @@ import math
 import platform
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -395,6 +395,26 @@ class LabelEMNISTConfig:
             "hidden2": self.hidden2,
             "n_classes": self.n_classes,
         }
+
+
+_LABEL_EMNIST_CONFIG_FIELDS: frozenset[str] = frozenset(
+    field.name for field in fields(LabelEMNISTConfig)
+)
+
+
+def _require_exact_config_fields(
+    config_payload: Mapping[str, Any], *, context: str
+) -> None:
+    actual = set(config_payload)
+    missing = sorted(_LABEL_EMNIST_CONFIG_FIELDS.difference(actual))
+    unexpected = sorted(actual.difference(_LABEL_EMNIST_CONFIG_FIELDS))
+    if missing or unexpected:
+        parts: list[str] = []
+        if missing:
+            parts.append(f"missing field(s) {missing}")
+        if unexpected:
+            parts.append(f"unexpected field(s) {unexpected}")
+        raise ValueError(f"{context}: {'; '.join(parts)}")
 
 
 @chex.dataclass(frozen=True)
@@ -1102,8 +1122,12 @@ def load_plan(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: plan_sha256 does not match the plan body")
     if body.get("benchmark") != BENCHMARK:
         raise ValueError(f"{path}: plan benchmark is not {BENCHMARK}")
-    config_payload = dict(body["config"])
+    raw_config = body.get("config")
+    if not isinstance(raw_config, Mapping):
+        raise ValueError(f"{path}: plan config must be an object")
+    config_payload = dict(raw_config)
     n_steps = config_payload.pop("n_steps", None)
+    _require_exact_config_fields(config_payload, context=f"{path}: config")
     config = LabelEMNISTConfig(**config_payload)
     if n_steps != config.n_steps:
         raise ValueError(f"{path}: plan n_steps is inconsistent with config")

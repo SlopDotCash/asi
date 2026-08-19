@@ -641,6 +641,36 @@ class TestPlanShardMergeAccounting:
         assert loaded["plan"]["planned_shard_count"] == 4
         assert loaded["plan_sha256"] == payload["plan_sha256"]
 
+    def test_load_plan_rejects_truncated_or_extra_config_keys(self, tmp_path):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+        from alberta_framework.benchmarks.upgd_label_emnist import canonical_json_sha256
+
+        protocol_fields = ("n_tasks", "task_length", "input_dim", "hidden1", "hidden2", "n_classes")
+        for dropped in protocol_fields:
+            payload = self._plan()
+            body = dict(payload["plan"])
+            config = dict(body["config"])
+            del config[dropped]
+            body["config"] = config
+            payload["plan"] = body
+            payload["plan_sha256"] = canonical_json_sha256(body)
+            path = tmp_path / f"plan_missing_{dropped}.json"
+            atomic_write_new_json(path, payload)
+            with pytest.raises(ValueError, match="config"):
+                load_plan(path)
+
+        payload = self._plan()
+        body = dict(payload["plan"])
+        config = dict(body["config"])
+        config["extra_field"] = 1
+        body["config"] = config
+        payload["plan"] = body
+        payload["plan_sha256"] = canonical_json_sha256(body)
+        path = tmp_path / "plan_extra.json"
+        atomic_write_new_json(path, payload)
+        with pytest.raises(ValueError, match="config"):
+            load_plan(path)
+
     def test_plan_rejects_bad_seed_lists(self):
         with pytest.raises(ValueError, match="unique"):
             build_plan_payload(TINY, [1, 1], DATASET_META)
