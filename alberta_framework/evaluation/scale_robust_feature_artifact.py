@@ -1584,15 +1584,52 @@ def _object_without_duplicates(
     return result
 
 
-def load_evidence_artifact(path: Path) -> dict[str, object]:
-    """Load strict JSON, rejecting duplicate keys and NaN/Infinity."""
+_MAX_JSON_NESTING_DEPTH = 64
 
-    loaded = json.loads(
-        path.read_text(encoding="utf-8"),
-        parse_constant=_reject_json_constant,
-        parse_float=_parse_finite_json_float,
-        object_pairs_hook=_object_without_duplicates,
-    )
+
+def _scan_json_nesting(text: str) -> None:
+    """Reject nests that RecursionError ``json.loads`` before the parser runs."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError("JSON payload exceeds the nesting-depth limit")
+        elif character in "]}":
+            depth -= 1
+
+
+def load_evidence_artifact(path: Path) -> dict[str, object]:
+    """Load strict JSON, rejecting duplicate keys, NaN/Infinity, and deep nests."""
+
+    text = path.read_text(encoding="utf-8")
+    try:
+        _scan_json_nesting(text)
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    try:
+        loaded = json.loads(
+            text,
+            parse_constant=_reject_json_constant,
+            parse_float=_parse_finite_json_float,
+            object_pairs_hook=_object_without_duplicates,
+        )
+    except RecursionError as exc:
+        raise ValueError(
+            f"{path}: JSON payload exceeds the parser recursion limit"
+        ) from exc
     if not isinstance(loaded, dict):
         raise ValueError("artifact root must be an object")
     return loaded
