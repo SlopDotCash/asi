@@ -208,6 +208,49 @@ def test_timeseries_csv_round_trips_values_under_the_matching_seed_headers(
     ]
 
 
+@pytest.mark.parametrize("mode", ["summary_csv", "timeseries_csv", "json"])
+def test_export_rejects_oversized_config_name_before_header_hang(
+    mode: str,
+    tmp_path: Path,
+) -> None:
+    name = "a" * 50_000
+    result = _constant_result("placeholder")._replace(config_name=name)
+    results = {name: result}
+    suffix = "json" if mode == "json" else "csv"
+    existing = tmp_path / f"existing.{suffix}"
+    sentinel = "existing artifact\n"
+    existing.write_text(sentinel, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="config name exceeds"):
+        _export_mode(mode, results, existing)
+
+    assert existing.read_text(encoding="utf-8") == sentinel
+
+
+def test_timeseries_csv_accepts_max_config_name(tmp_path: Path) -> None:
+    name = "a" * export_module._MAX_EXPORT_STRING_BYTES
+    result = _constant_result("placeholder")._replace(config_name=name)
+    path = tmp_path / "bounded.csv"
+    export_to_csv({name: result}, path, include_timeseries=True)
+    assert path.is_file()
+    with path.open(encoding="utf-8", newline="") as handle:
+        assert next(csv.DictReader(handle))[f"{name}_seed17"] == "1.0"
+
+
+def test_report_rejects_oversized_experiment_name_before_path_join(
+    tmp_path: Path,
+) -> None:
+    results = {"candidate": _constant_result("candidate")}
+    with pytest.raises(ValueError, match="experiment_name exceeds"):
+        save_experiment_report(
+            results,
+            tmp_path,
+            "a" * (export_module._MAX_EXPORT_FILENAME_BYTES + 1),
+            metric=_METRIC,
+        )
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_json_round_trips_summary_values_and_timeseries(tmp_path: Path) -> None:
     results = {
         f"value_{index}": _constant_result(f"value_{index}", value)

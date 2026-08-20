@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_EXPORT_STRING_BYTES = 256
+_MAX_EXPORT_FILENAME_BYTES = 200
 _PATH_TYPES = frozenset({Path, type(Path())})
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -56,9 +58,22 @@ def _require_path(value: object, *, name: str = "path") -> Path:
     raise ValueError(f"{name} must be an exact str or Path")
 
 
-def _require_exact_str(name: str, value: object) -> str:
+def _require_exact_str(
+    name: str,
+    value: object,
+    *,
+    maximum: int = _MAX_EXPORT_STRING_BYTES,
+) -> str:
     if type(value) is not str:
         raise ValueError(f"{name} must be an exact string")
+    if type(maximum) is not int or maximum < 1:
+        raise ValueError("export string limit must be a positive exact integer")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{name} must be valid UTF-8") from exc
+    if len(encoded) > maximum:
+        raise ValueError(f"{name} exceeds the {maximum}-byte export limit")
     return value
 
 
@@ -140,7 +155,7 @@ def _preflight_significance_results(
 
 
 def _require_filename_component(name: str) -> str:
-    _require_exact_str("experiment_name", name)
+    _require_exact_str("experiment_name", name, maximum=_MAX_EXPORT_FILENAME_BYTES)
     if not name or name in {".", ".."} or Path(name).name != name or "\x00" in name:
         raise ValueError("experiment_name must be one safe filename component")
     return name
