@@ -49,6 +49,7 @@ _EXPECTED_SCRIPT_NAMES = {
     "asi-action-conditioned-latent",
     "asi-activation-feature-ipmnist",
     "asi-adamo-diagnostic",
+    "asi-adamo-matched-development",
     "asi-clear-qualification",
     "asi-coom-qualification-smoke",
     "asi-cora-catalog",

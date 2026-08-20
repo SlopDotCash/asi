@@ -13,7 +13,7 @@ from alberta_framework.benchmarks.dreamer_continual_development import (
     validate_result,
 )
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 def test_end_to_end_lane_exercises_world_model_replay_imagination_and_control() -> None:

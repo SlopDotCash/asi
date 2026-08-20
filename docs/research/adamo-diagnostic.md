@@ -43,6 +43,11 @@ Run only on a caller-materialized NPZ containing exactly float32 `inputs` and in
   --profile contract-smoke --seed 15600
 ```
 
+That public function/CLI surface is restricted to the consumed `15600`--`15603` roster for both
+registered profiles. It cannot select any prospectively reserved matched seed. The fresh-schedule
+executor is a private capability-gated dependency of the still-disabled matched campaign;
+publication remains separately gated as well.
+
 Receipts bind exact dataset and current-source hashes, runtime identity, data steps, observations,
 updates, logical model queries, reverse-mode Jacobian rows, persistent numeric bytes, peak Gram
 workspace, and a named logical-compute convention. Timing is telemetry only. Successful execution
@@ -61,5 +66,17 @@ Newton-Schulz, ReLU-revival, empirical NTK, effective-rank, CNN, RL, or transfor
 Before a scientific comparison: locate and pin official code or independently verify equations;
 implement the exact paper dataset/task construction, architecture, initialization and full
 diagnostic definitions; qualify the missing model families; freeze a separate preregistered
-protocol and untouched seeds; and establish calibrated compute, memory, and timing gates. The four
-listed seeds are consumed development seeds and can never promote a claim.
+protocol and untouched seeds; and establish calibrated compute, memory, and timing gates. The
+original `15600`-`15603` schedule was consumed by executable qualification and is excluded from
+the retained matched screen. The exposed `25600`-`25603` preplan roster is also quarantined
+because an earlier test fixture exercised seed `25600`; none of those roots may enter the retained
+matrix. The prospectively frozen, repository-audited `9156001`-`9156004` schedule can execute only
+through `asi-adamo-matched-development` after a separate authorization review. Any exposed
+outcome consumes those seeds and can never promote a claim. The plan also freezes the exact
+OpenML `mnist_784` version 1 rows 0--59999 materialization and records canonical per-array
+dtype, shape, and SHA-256 identities before execution; dispatch fails closed unless the loaded
+arrays match those frozen hashes. There is no opaque or unavailable NPZ input.
+Use `--data-home` to select an OpenML cache; it does not change the frozen source selection or
+materialized-array validation. Reports validate structurally against their pinned runtime by
+default, so a GPU-produced report remains auditable on CPU; execution and publication separately
+require an exact current source/runtime match.

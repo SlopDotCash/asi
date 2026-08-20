@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added `asi-adamo-matched-development`, a prospectively frozen and initially
+  execution-disabled four-seed AdamO development plan. It binds the canonical OpenML MNIST
+  materialization, fresh seeds, current package/lock/runtime identity,
+  offline pinned-runtime validation, exact paired
+  Student-t arithmetic, Jacobian/isometry diagnostics, resource deltas, immutable
+  publication, and permanently nonpromoting outcome policy. It contains no run or
+  result; execution requires a separate reviewed authorization change.
 - Added the unfrozen `preview1` reference-agent transaction ledger, primitive
   Prototype adapter, aggregate SwitchingTwoState/RiverSwim life runner, and
   development-only quiescent checkpoint codec. These L0 mechanisms enforce

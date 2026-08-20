@@ -32,6 +32,9 @@ _ASI_SCRIPTS = {
         "alberta_framework.benchmarks.activation_feature_ipmnist:main"
     ),
     "asi-adamo-diagnostic": "alberta_framework.benchmarks.adamo_diagnostic:main",
+    "asi-adamo-matched-development": (
+        "alberta_framework.benchmarks.adamo_matched_development:main"
+    ),
     "asi-clear-qualification": (
         "alberta_framework.benchmarks.clear_qualification:main"
     ),
