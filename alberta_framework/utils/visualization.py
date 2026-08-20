@@ -54,6 +54,10 @@ def _require_positive_int(name: str, value: object) -> int:
         raise ValueError(f"{name} must be a positive int")
     return value
 
+# Public last-fit in tests is a 2x2 heatmap and window_size=2.
+# Origin enumerated unbounded axes with nested range — hang, not leftover INT32 math.
+_VIS_GRID_MAX = 10_000
+
 
 def set_publication_style(
     font_size: int = 10,
@@ -156,6 +160,10 @@ def plot_learning_curves(
     show_ci = _require_exact_bool("show_ci", show_ci)
     log_scale = _require_exact_bool("log_scale", log_scale)
     window_size = _require_positive_int("window_size", window_size)
+    if window_size > _VIS_GRID_MAX:
+        raise ValueError(
+            f"window_size must be an integer in [1, {_VIS_GRID_MAX}]"
+        )
 
     try:
         import matplotlib.pyplot as plt
@@ -342,6 +350,12 @@ def plot_hyperparameter_heatmap(
         Tuple of (figure, axes)
     """
     lower_is_better = _require_exact_bool("lower_is_better", lower_is_better)
+    n1 = len(param1_values)
+    n2 = len(param2_values)
+    if type(n1) is not int or type(n2) is not int or n1 > _VIS_GRID_MAX or n2 > _VIS_GRID_MAX:
+        raise ValueError(
+            f"heatmap axes must have length in [0, {_VIS_GRID_MAX}]"
+        )
 
     try:
         import matplotlib.pyplot as plt
@@ -353,7 +367,7 @@ def plot_hyperparameter_heatmap(
     else:
         fig = cast("Figure", ax.figure)
     # Build heatmap data
-    data = np.zeros((len(param1_values), len(param2_values)))
+    data = np.zeros((n1, n2))
     for i, p1 in enumerate(param1_values):
         for j, p2 in enumerate(param2_values):
             name = name_pattern.format(p1=p1, p2=p2)
