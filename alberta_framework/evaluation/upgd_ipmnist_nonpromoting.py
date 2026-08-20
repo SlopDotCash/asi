@@ -280,6 +280,33 @@ def _require_exact_str(name: object, value: object) -> str:
     return value
 
 
+_MAX_JSON_NESTING_DEPTH = 64
+
+
+def _scan_json_nesting(text: str) -> None:
+    """Reject nests that RecursionError ``json.loads`` before the parser runs."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError("JSON payload exceeds the nesting-depth limit")
+        elif character in "]}":
+            depth -= 1
+
+
 def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -301,12 +328,17 @@ def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
             raise ValueError("non-finite JSON number is forbidden")
         return parsed
 
-    parsed = json.loads(
-        raw.decode("utf-8"),
-        object_pairs_hook=pairs_hook,
-        parse_constant=reject_constant,
-        parse_float=parse_float,
-    )
+    text = raw.decode("utf-8")
+    _scan_json_nesting(text)
+    try:
+        parsed = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from exc
     if not isinstance(parsed, dict):
         raise ValueError("payload must contain one JSON object")
     return parsed
