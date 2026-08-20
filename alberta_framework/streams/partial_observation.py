@@ -50,6 +50,12 @@ class MaskMode(enum.Enum):
     PERIODIC = "periodic"
 
 
+# Public last-fit is the three-mask cycling schedule in
+# ``tests/test_partial_observation.py``. Origin stacked a pointer-repeat of
+# 5_000 identical masks with no reject — hang, not leftover INT32 math.
+_MAX_PERIODIC_SCHEDULE_LENGTH = 4_096
+
+
 def _require_unit_interval_probability(name: str, value: object) -> float:
     """Return a canonical probability valid at the float32 execution sink."""
     return validated_float32_scalar(name, value, lower=0.0, upper=1.0)
@@ -159,6 +165,11 @@ class PartialObservationWrapper[InnerStateT]:
             if schedule is None or len(schedule) == 0:
                 raise ValueError(
                     "MaskMode.PERIODIC requires a non-empty schedule."
+                )
+            if len(schedule) > _MAX_PERIODIC_SCHEDULE_LENGTH:
+                raise ValueError(
+                    "periodic schedule length must be an integer in "
+                    f"[1, {_MAX_PERIODIC_SCHEDULE_LENGTH}]"
                 )
             masks = [jnp.asarray(m, dtype=jnp.bool_) for m in schedule]
             if any(mask.shape != (feature_dim,) for mask in masks):
