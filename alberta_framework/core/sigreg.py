@@ -39,6 +39,8 @@ from jaxtyping import Float
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 _INT32_MAX = 2**31 - 1
+# Origin ``jnp.asarray`` still accepts depth 64 and RecursionErrors at 10_000.
+_MAX_ARRAY_NESTING_DEPTH = 64
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -237,6 +239,43 @@ def _validated_kernel_width(kernel_width: float | Array) -> Array:
     return _runtime_checked_value(width, predicate, _KERNEL_WIDTH_ERROR)
 
 
+def _require_host_array_nesting(value: object, *, name: str) -> None:
+    """Reject cycles and nesting that RecursionError ``jnp.asarray``."""
+    if type(value) not in (list, tuple):
+        return
+    frames: list[tuple[object, int, int]] = [(value, 1, 0)]
+    ancestors = {id(value)}
+    while frames:
+        node, depth, index = frames[-1]
+        if depth > _MAX_ARRAY_NESTING_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum host array nesting depth")
+        kids = cast(list[Any] | tuple[Any, ...], node)
+        if index >= len(kids):
+            frames.pop()
+            ancestors.discard(id(node))
+            continue
+        child = kids[index]
+        frames[-1] = (node, depth, index + 1)
+        if type(child) not in (list, tuple):
+            continue
+        child_id = id(child)
+        if child_id in ancestors:
+            raise ValueError(f"{name} contains a cyclic host array")
+        child_depth = depth + 1
+        if child_depth > _MAX_ARRAY_NESTING_DEPTH:
+            raise ValueError(f"{name} exceeds the maximum host array nesting depth")
+        ancestors.add(child_id)
+        frames.append((child, child_depth, 0))
+
+
+def _asarray_float32(value: object, *, name: str) -> Array:
+    _require_host_array_nesting(value, name=name)
+    try:
+        return jnp.asarray(value, dtype=jnp.float32)
+    except RecursionError as exc:
+        raise ValueError(f"{name} exceeds the maximum host array nesting depth") from exc
+
+
 def _require_finite_array(values: Array, message: str) -> Array:
     """Reject non-finite coordinates without rewriting them to a fake zero."""
     array = jnp.asarray(values)
@@ -252,8 +291,8 @@ def _preflight_projected_statistic(
     embeddings: Array,
     directions: Array,
 ) -> tuple[Array, Array, int, int]:
-    z = jnp.asarray(embeddings, dtype=jnp.float32)
-    dirs = jnp.asarray(directions, dtype=jnp.float32)
+    z = _asarray_float32(embeddings, name="embeddings")
+    dirs = _asarray_float32(directions, name="directions")
     if z.ndim < 2:
         raise ValueError("embeddings must have shape (..., latent_dim)")
     if dirs.ndim != 2 or dirs.shape[0] < 1 or dirs.shape[1] != z.shape[-1]:
@@ -327,8 +366,8 @@ def epps_pulley_gaussian_statistic(
     eager values raise :class:`ValueError`; invalid compiled values raise a
     :class:`jax.errors.JaxRuntimeError` when the result is synchronized.
     """
+    flattened = jnp.ravel(_asarray_float32(samples, name="samples"))
     width = _validated_kernel_width(kernel_width)
-    flattened = jnp.ravel(jnp.asarray(samples, dtype=jnp.float32))
     if flattened.size < 1:
         raise ValueError("samples must be non-empty")
     _require_float32_resource(
