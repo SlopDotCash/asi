@@ -1454,6 +1454,7 @@ def _reserved_new_output(path: Path) -> Iterator[tuple[Path, int, str]]:
         os.close(reservation_fd)
         reservation_fd = None
         os.fsync(parent_fd)
+        _probe_linkable_tmpfile(parent_fd, destination.name)
         yield destination, parent_fd, reservation_name
     finally:
         if reservation_fd is not None:
@@ -1488,6 +1489,57 @@ def _link_unnamed_file(file_fd: int, parent_fd: int, name: str) -> None:
         if error == errno.EEXIST:
             raise FileExistsError(error, os.strerror(error), name)
         raise OSError(error, os.strerror(error), name)
+
+
+def _probe_linkable_tmpfile(parent_fd: int, destination_name: str) -> None:
+    """Fail before campaign work when this output filesystem cannot publish atomically."""
+    if not hasattr(os, "O_TMPFILE"):
+        raise OSError("immutable publication requires Linux O_TMPFILE support")
+    probe_name = f".{destination_name}.publication-probe"
+    probe_fd: int | None = None
+    probe_identity: tuple[int, int] | None = None
+    linked = False
+    try:
+        try:
+            os.stat(probe_name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise FileExistsError(f"publication capability probe already exists: {probe_name}")
+        probe_fd = os.open(
+            ".",
+            os.O_WRONLY | os.O_CLOEXEC | os.O_TMPFILE,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        probe_stat = os.fstat(probe_fd)
+        probe_identity = (probe_stat.st_dev, probe_stat.st_ino)
+        try:
+            _link_unnamed_file(probe_fd, parent_fd, probe_name)
+        except OSError as error:
+            raise OSError(
+                "campaign output filesystem cannot link O_TMPFILE; "
+                "choose a filesystem with linkable unnamed-inode support"
+            ) from error
+        linked = True
+        linked_stat = os.stat(probe_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(linked_stat.st_mode)
+            or (linked_stat.st_dev, linked_stat.st_ino) != probe_identity
+        ):
+            raise OSError("campaign output filesystem linked the wrong probe inode")
+    finally:
+        if linked:
+            try:
+                current = os.stat(probe_name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if (current.st_dev, current.st_ino) == probe_identity:
+                    os.unlink(probe_name, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+        if probe_fd is not None:
+            os.close(probe_fd)
 
 
 def _load_json_strict_at(

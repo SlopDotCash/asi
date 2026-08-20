@@ -119,6 +119,9 @@ Plan, shard, and aggregate publication pins every path segment with no-follow
 directory descriptors, reserves the destination with deterministic `O_EXCL`
 before dataset access or execution, publishes without replacement, fsyncs, and
 strictly rereads and validates the linked file. No retained campaign result exists.
+The output filesystem must support linking an unnamed inode created with
+`O_TMPFILE`; the reservation path probes that capability and fails before plan
+admission, dataset access, or campaign work when the filesystem cannot provide it.
 
 No campaign mutation is enabled by this freeze. `plan`, `run-shard`, and
 `summarize` all fail before output reservation or dataset access while the
