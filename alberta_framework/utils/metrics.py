@@ -101,8 +101,17 @@ def _require_finite_real(name: str, value: object) -> float:
 
 
 def _reject_boolean_numeric_trace(
-    values: object, *, name: str, depth: int = 0
+    values: object,
+    *,
+    name: str,
+    depth: int = 0,
+    _remaining_nodes: list[int] | None = None,
 ) -> None:
+    if _remaining_nodes is None:
+        _remaining_nodes = [_BOOLEAN_TRACE_MAX_NODES]
+    _remaining_nodes[0] -= 1
+    if _remaining_nodes[0] < 0:
+        raise ValueError(f"{name} exceeds the boolean-trace value limit")
     if depth > _BOOLEAN_TRACE_MAX_DEPTH:
         raise ValueError(f"{name} exceeds the boolean-trace depth limit")
     if _is_bool(values):
@@ -115,7 +124,10 @@ def _reject_boolean_numeric_trace(
             raise ValueError(f"{name} exceeds the boolean-trace value limit")
         for index, item in enumerate(sequence):
             _reject_boolean_numeric_trace(
-                item, name=f"{name}[{index}]", depth=depth + 1
+                item,
+                name=f"{name}[{index}]",
+                depth=depth + 1,
+                _remaining_nodes=_remaining_nodes,
             )
         return
     if type(values) is np.ndarray:
@@ -126,7 +138,10 @@ def _reject_boolean_numeric_trace(
                 raise ValueError(f"{name} exceeds the boolean-trace value limit")
             for index, item in enumerate(values.flat):
                 _reject_boolean_numeric_trace(
-                    item, name=f"{name}[{index}]", depth=depth + 1
+                    item,
+                    name=f"{name}[{index}]",
+                    depth=depth + 1,
+                    _remaining_nodes=_remaining_nodes,
                 )
         elif values.dtype.kind not in "iuf":
             raise ValueError(f"{name} must contain real numeric values")

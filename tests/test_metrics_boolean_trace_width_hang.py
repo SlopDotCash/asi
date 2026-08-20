@@ -7,6 +7,7 @@ import time
 
 import pytest
 
+from alberta_framework.utils import metrics
 from alberta_framework.utils.metrics import (
     _BOOLEAN_TRACE_MAX_NODES,
     compute_cumulative_error,
@@ -35,6 +36,18 @@ def test_cumulative_error_rejects_oversized_metrics_history_before_walk() -> Non
     with pytest.raises(ValueError, match="boolean-trace value limit"):
         compute_cumulative_error([{"squared_error": 1.0}] * (_BOOLEAN_TRACE_MAX_NODES + 1))
     assert time.perf_counter() - started < 0.25
+
+
+def test_nested_shared_trace_uses_one_traversal_wide_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Small aliased containers must not amplify beyond the global budget."""
+    monkeypatch.setattr(metrics, "_BOOLEAN_TRACE_MAX_NODES", 8)
+    leaf = [0.0, 1.0]
+    middle = [leaf, leaf]
+    root = [middle, middle]
+    with pytest.raises(ValueError, match="boolean-trace value limit"):
+        metrics._reject_boolean_numeric_trace(root, name="values")
 
 
 def test_running_mean_accepts_public_last_fit() -> None:
