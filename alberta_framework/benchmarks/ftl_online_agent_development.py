@@ -42,6 +42,7 @@ ARM_IDS = ("sparse_ftl_online", "sparse_ftl_frozen", "privileged_dynamics_mpc")
 ACTION_DELTAS = np.asarray(((1, 0), (-1, 0), (0, 1), (0, -1)), dtype=np.float32)
 ACTION_DELTAS.flags.writeable = False
 MAX_STEPS_PER_TASK = 16
+MAX_PLANNING_HORIZON = 4
 WORKLOAD_REGISTRY = (
     ("arm_ids", ARM_IDS),
     ("action_deltas", ((1, 0), (-1, 0), (0, 1), (0, -1))),
@@ -146,7 +147,7 @@ class DevelopmentResult:
         if self.seed not in FROZEN_SEEDS:
             raise ValueError("seed is outside the frozen development schedule")
         _int(self.steps_per_task, "steps_per_task", 1, MAX_STEPS_PER_TASK)
-        _int(self.planning_horizon, "planning_horizon", 1, 4)
+        _int(self.planning_horizon, "planning_horizon", 1, MAX_PLANNING_HORIZON)
         if (
             type(self.arms) is not tuple
             or any(type(arm) is not ArmResult for arm in self.arms)
@@ -187,7 +188,8 @@ def _mpc_action(
     horizon: int,
     predict: Callable[[np.ndarray, int], np.ndarray],
 ) -> tuple[int, int, int]:
-    sequences = tuple(itertools.product(range(4), repeat=horizon))
+    host_horizon = _int(horizon, "planning_horizon", 1, MAX_PLANNING_HORIZON)
+    sequences = tuple(itertools.product(range(4), repeat=host_horizon))
     best_score = -math.inf
     best_action = 0
     queries = 0
@@ -279,7 +281,7 @@ def run_development_lane(
     if host_seed not in FROZEN_SEEDS:
         raise ValueError("seed is outside the frozen development schedule")
     steps = _int(steps_per_task, "steps_per_task", 1, MAX_STEPS_PER_TASK)
-    horizon = _int(planning_horizon, "planning_horizon", 1, 4)
+    horizon = _int(planning_horizon, "planning_horizon", 1, MAX_PLANNING_HORIZON)
     result = DevelopmentResult(
         schema=SCHEMA,
         seed=host_seed,
