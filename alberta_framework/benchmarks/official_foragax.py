@@ -216,6 +216,19 @@ class OfficialForagaxValidationError(ValueError):
     """Raised when provenance or artifact verification fails closed."""
 
 
+def _require_string(value: Any, *, label: str) -> str:
+    if type(value) is not str or not value:
+        raise OfficialForagaxValidationError(f"{label} must be a non-empty string")
+    return value
+
+
+def _require_sha256(value: Any, *, label: str) -> str:
+    result = _require_string(value, label=label)
+    if _SHA256_PATTERN.fullmatch(result) is None:
+        raise OfficialForagaxValidationError(f"{label} must be a lowercase SHA-256")
+    return result
+
+
 @dataclass(frozen=True)
 class OfficialForagaxRunRequest:
     """Inputs for one official seed/index execution.
@@ -253,25 +266,28 @@ class OfficialForagaxRunRequest:
                 )
         if not self.config_path.parts:
             raise OfficialForagaxValidationError("config_path must not be empty")
-        if not isinstance(self.gpu, bool):
+        if type(self.gpu) is not bool:
             raise OfficialForagaxValidationError("gpu must be a boolean")
-        if not isinstance(self.expected_repository, str):
+        if type(self.expected_repository) is not str:
             raise OfficialForagaxValidationError(
                 "expected_repository must be a string"
             )
-        if not _COMMIT_PATTERN.fullmatch(self.execution_commit):
+        if (
+            type(self.execution_commit) is not str
+            or _COMMIT_PATTERN.fullmatch(self.execution_commit) is None
+        ):
             raise OfficialForagaxValidationError(
                 "execution_commit must be a full lowercase 40-character Git SHA"
             )
-        if self.config_commit is not None and not _COMMIT_PATTERN.fullmatch(
-            self.config_commit
+        if self.config_commit is not None and (
+            type(self.config_commit) is not str
+            or _COMMIT_PATTERN.fullmatch(self.config_commit) is None
         ):
             raise OfficialForagaxValidationError(
                 "config_commit must be a full lowercase 40-character Git SHA"
             )
         if (
-            isinstance(self.index, bool)
-            or not isinstance(self.index, int)
+            type(self.index) is not int
             or self.index < 0
             or self.index > OFFICIAL_FORAGAX_MAX_SEED
         ):
@@ -279,8 +295,7 @@ class OfficialForagaxRunRequest:
                 f"index must be an integer in [0, {OFFICIAL_FORAGAX_MAX_SEED}]"
             )
         if self.expected_seed is not None and (
-            isinstance(self.expected_seed, bool)
-            or not isinstance(self.expected_seed, int)
+            type(self.expected_seed) is not int
             or self.expected_seed < 0
             or self.expected_seed > OFFICIAL_FORAGAX_MAX_SEED
         ):
@@ -289,8 +304,7 @@ class OfficialForagaxRunRequest:
                 f"[0, {OFFICIAL_FORAGAX_MAX_SEED}]"
             )
         if self.max_env_steps is not None and (
-            isinstance(self.max_env_steps, bool)
-            or not isinstance(self.max_env_steps, int)
+            type(self.max_env_steps) is not int
             or self.max_env_steps < 1
         ):
             raise OfficialForagaxValidationError("max_env_steps must be positive")
@@ -333,8 +347,7 @@ class OfficialForagaxBatchRunRequest:
                 "a batch request must contain at least two indices"
             )
         if any(
-            isinstance(index, bool)
-            or not isinstance(index, int)
+            type(index) is not int
             or index < 0
             or index > OFFICIAL_FORAGAX_MAX_SEED
             for index in indices
@@ -359,8 +372,7 @@ class OfficialForagaxBatchRunRequest:
                     "expected_seeds must have one entry per requested index"
                 )
             if any(
-                isinstance(seed, bool)
-                or not isinstance(seed, int)
+                type(seed) is not int
                 or seed < 0
                 or seed > OFFICIAL_FORAGAX_MAX_SEED
                 for seed in expected_seeds
@@ -414,6 +426,22 @@ class OfficialForagaxRunPlan:
     runtime: Mapping[str, Any]
     config_snapshot_bytes: bytes = dataclasses.field(repr=False)
     execution_config_bytes: bytes = dataclasses.field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not OfficialForagaxRunRequest:
+            raise TypeError("request must be an OfficialForagaxRunRequest")
+        _require_sha256(self.interpreter_sha256, label="interpreter_sha256")
+        _require_sha256(self.package_freeze_sha256, label="package_freeze_sha256")
+        if type(self.command) is not tuple or any(type(item) is not str for item in self.command):
+            raise TypeError("command must be a tuple")
+        if type(self.package_freeze) is not tuple or any(
+            type(item) is not str for item in self.package_freeze
+        ):
+            raise TypeError("package_freeze must be a tuple")
+        if type(self.config_snapshot_bytes) is not bytes:
+            raise TypeError("config_snapshot_bytes must be bytes")
+        if type(self.execution_config_bytes) is not bytes:
+            raise TypeError("execution_config_bytes must be bytes")
 
     @property
     def output_dir(self) -> Path:
@@ -476,6 +504,22 @@ class OfficialForagaxBatchRunPlan:
     runtime: Mapping[str, Any]
     config_snapshot_bytes: bytes = dataclasses.field(repr=False)
     execution_config_bytes: bytes = dataclasses.field(repr=False)
+
+    def __post_init__(self) -> None:
+        if type(self.request) is not OfficialForagaxBatchRunRequest:
+            raise TypeError("request must be an OfficialForagaxBatchRunRequest")
+        _require_sha256(self.interpreter_sha256, label="interpreter_sha256")
+        _require_sha256(self.package_freeze_sha256, label="package_freeze_sha256")
+        if type(self.command) is not tuple or any(type(item) is not str for item in self.command):
+            raise TypeError("command must be a tuple")
+        if type(self.package_freeze) is not tuple or any(
+            type(item) is not str for item in self.package_freeze
+        ):
+            raise TypeError("package_freeze must be a tuple")
+        if type(self.config_snapshot_bytes) is not bytes:
+            raise TypeError("config_snapshot_bytes must be bytes")
+        if type(self.execution_config_bytes) is not bytes:
+            raise TypeError("execution_config_bytes must be bytes")
 
     @property
     def output_dir(self) -> Path:
@@ -540,6 +584,23 @@ class VerifiedOfficialForagaxEvidence:
     endorsement_descriptor_sha256: str
     endorsement_sha256: str
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        _require_sha256(self.manifest_sha256, label="manifest_sha256")
+        if self.manifest_kind not in ("official_foragax_single", "official_foragax_batch"):
+            raise OfficialForagaxValidationError(
+                "manifest_kind must be 'official_foragax_single' or 'official_foragax_batch'"
+            )
+        _require_string(self.trust_descriptor_id, label="trust_descriptor_id")
+        _require_sha256(self.trust_descriptor_sha256, label="trust_descriptor_sha256")
+        _require_string(self.profile_id, label="profile_id")
+        _require_sha256(self.profile_sha256, label="profile_sha256")
+        _require_sha256(self.artifact_identities_sha256, label="artifact_identities_sha256")
+        _require_string(self.endorsement_descriptor_id, label="endorsement_descriptor_id")
+        _require_sha256(self.endorsement_descriptor_sha256, label="endorsement_descriptor_sha256")
+        _require_sha256(self.endorsement_sha256, label="endorsement_sha256")
+
 
 @dataclass(frozen=True)
 class VerifiedOfficialForagaxManifest:
@@ -549,6 +610,20 @@ class VerifiedOfficialForagaxManifest:
     artifact_path: Path
     manifest: Mapping[str, Any]
     evidence: VerifiedOfficialForagaxEvidence | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if not isinstance(self.artifact_path, Path):
+            raise OfficialForagaxValidationError("artifact_path must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        if self.evidence is not None and not isinstance(
+            self.evidence, VerifiedOfficialForagaxEvidence
+        ):
+            raise OfficialForagaxValidationError(
+                "evidence must be a VerifiedOfficialForagaxEvidence or None"
+            )
 
 
 @dataclass(frozen=True)
@@ -560,6 +635,15 @@ class OfficialForagaxRun:
     manifest: Mapping[str, Any]
     resumed: bool
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if not isinstance(self.artifact_path, Path):
+            raise OfficialForagaxValidationError("artifact_path must be a Path")
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        _require_bool(self.resumed, label="resumed")
+
 
 @dataclass(frozen=True)
 class VerifiedOfficialForagaxBatchManifest:
@@ -570,6 +654,24 @@ class VerifiedOfficialForagaxBatchManifest:
     manifest: Mapping[str, Any]
     evidence: VerifiedOfficialForagaxEvidence | None
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if type(self.artifact_paths) is not tuple or not all(
+            isinstance(p, Path) for p in self.artifact_paths
+        ):
+            raise OfficialForagaxValidationError(
+                "artifact_paths must be a tuple of Path instances"
+            )
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        if self.evidence is not None and not isinstance(
+            self.evidence, VerifiedOfficialForagaxEvidence
+        ):
+            raise OfficialForagaxValidationError(
+                "evidence must be a VerifiedOfficialForagaxEvidence or None"
+            )
+
 
 @dataclass(frozen=True)
 class OfficialForagaxBatchRun:
@@ -579,6 +681,19 @@ class OfficialForagaxBatchRun:
     artifact_paths: tuple[Path, ...]
     manifest: Mapping[str, Any]
     resumed: bool
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.manifest_path, Path):
+            raise OfficialForagaxValidationError("manifest_path must be a Path")
+        if type(self.artifact_paths) is not tuple or not all(
+            isinstance(p, Path) for p in self.artifact_paths
+        ):
+            raise OfficialForagaxValidationError(
+                "artifact_paths must be a tuple of Path instances"
+            )
+        if not isinstance(self.manifest, Mapping):
+            raise OfficialForagaxValidationError("manifest must be a Mapping")
+        _require_bool(self.resumed, label="resumed")
 
 
 def _absolute_without_resolving_symlinks(path: Path) -> Path:
@@ -1263,19 +1378,6 @@ def _expect_exact_keys(
         )
 
 
-def _require_string(value: Any, *, label: str) -> str:
-    if type(value) is not str or not value:
-        raise OfficialForagaxValidationError(f"{label} must be a non-empty string")
-    return value
-
-
-def _require_sha256(value: Any, *, label: str) -> str:
-    result = _require_string(value, label=label)
-    if _SHA256_PATTERN.fullmatch(result) is None:
-        raise OfficialForagaxValidationError(f"{label} must be a lowercase SHA-256")
-    return result
-
-
 def _require_git_sha1(value: Any, *, label: str) -> str:
     result = _require_string(value, label=label)
     if _COMMIT_PATTERN.fullmatch(result) is None:
@@ -1600,7 +1702,7 @@ def _qualification_workload_projection(
     backend: str,
 ) -> dict[str, Any]:
     """Project one trust entry into the reviewable qualifier workload schema."""
-    if backend not in {"cpu", "gpu"}:
+    if type(backend) is not str or backend not in {"cpu", "gpu"}:
         raise OfficialForagaxValidationError(
             "qualification workload backend is invalid"
         )
@@ -3534,8 +3636,10 @@ def _sanitized_runtime(runtime: Mapping[str, Any]) -> dict[str, Any]:
         if isinstance(direct_url, Mapping):
             normalized_url = dict(direct_url)
             url = normalized_url.get("url")
-            if isinstance(url, str) and url.startswith("file:"):
-                normalized_url["url"] = "<LOCAL_PATH>"
+            if isinstance(url, str):
+                normalized_url["url"] = str.__str__(url)
+                if normalized_url["url"].startswith("file:"):
+                    normalized_url["url"] = "<LOCAL_PATH>"
             normalized["direct_url"] = normalized_url
         result["foragax_implementation"] = normalized
     return result
@@ -3588,18 +3692,27 @@ def _sanitize_package_freeze_line(line: str) -> str:
     if not separator:
         return line
     try:
-        direct_url = json.loads(direct_url_text)
-    except json.JSONDecodeError:
+        direct_url = _strict_json_loads(direct_url_text, label="package freeze direct_url")
+    except (OfficialForagaxValidationError, json.JSONDecodeError):
         return prefix + " ; direct_url=<REDACTED>"
     if isinstance(direct_url, dict):
         url = direct_url.get("url")
-        if isinstance(url, str) and url.startswith("file:"):
-            direct_url["url"] = "<LOCAL_PATH>"
-    return (
-        prefix
-        + " ; direct_url="
-        + json.dumps(direct_url, sort_keys=True, separators=(",", ":"))
-    )
+        if isinstance(url, str):
+            direct_url["url"] = str.__str__(url)
+            if direct_url["url"].startswith("file:"):
+                direct_url["url"] = "<LOCAL_PATH>"
+    try:
+        encoded = json.dumps(
+            direct_url,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise OfficialForagaxValidationError(
+            "package freeze direct_url is not finite JSON"
+        ) from exc
+    return prefix + " ; direct_url=" + encoded
 
 
 def _extract_probe_payload(stdout: bytes) -> Mapping[str, Any]:
@@ -3960,7 +4073,7 @@ payload = {{
         "class_source_sha256": class_source["sha256"],
     }},
 }}
-sys.stdout.write({_PROBE_PREFIX!r} + json.dumps(payload, sort_keys=True) + "\\n")
+sys.stdout.write({_PROBE_PREFIX!r} + json.dumps(payload, sort_keys=True, allow_nan=False) + "\\n")
 """
     result = _run_execution_python(
         repository=repository,
@@ -4154,8 +4267,8 @@ direct_url_text = distribution.read_text("direct_url.json")
 direct_url = None
 if direct_url_text:
     try:
-        direct_url = json.loads(direct_url_text)
-    except json.JSONDecodeError:
+        direct_url = _strict_json_loads(direct_url_text, label="distribution direct_url")
+    except (OfficialForagaxValidationError, json.JSONDecodeError):
         direct_url = {{"unparsed": direct_url_text.strip()}}
 
 spec = importlib.util.find_spec("foragax")
@@ -4623,7 +4736,7 @@ payload = {{
     }},
     "immutable_runtime": {immutable_runtime!r},
 }}
-sys.stdout.write({_PROBE_PREFIX!r} + json.dumps(payload, sort_keys=True) + "\\n")
+sys.stdout.write({_PROBE_PREFIX!r} + json.dumps(payload, sort_keys=True, allow_nan=False) + "\\n")
 """
     result = _run_execution_python(
         repository=repository,
@@ -4741,8 +4854,7 @@ def _semantic_environment(probe: Mapping[str, Any]) -> dict[str, Any]:
     reward_delay = raw.get("reward_delay", 0)
     random_shift_max_steps = raw.get("random_shift_max_steps", 0)
     if (
-        isinstance(aperture_size, bool)
-        or not isinstance(aperture_size, int)
+        type(aperture_size) is not int
         or (aperture_size != -1 and (aperture_size < 1 or aperture_size % 2 == 0))
     ):
         raise OfficialForagaxValidationError(
@@ -4756,7 +4868,7 @@ def _semantic_environment(probe: Mapping[str, Any]) -> dict[str, Any]:
         ("reward_delay", reward_delay),
         ("random_shift_max_steps", random_shift_max_steps),
     ):
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        if type(value) is not int or value < 0:
             raise OfficialForagaxValidationError(
                 f"official environment {name} is invalid"
             )
@@ -4828,7 +4940,7 @@ def _validated_registry_identity(value: Any) -> dict[str, str]:
         )
     result: dict[str, str] = {}
     for key, item in value.items():
-        if not isinstance(item, str) or not item:
+        if type(key) is not str or type(item) is not str or not item:
             raise OfficialForagaxValidationError(
                 f"official agent registry {key} is invalid"
             )
@@ -4893,7 +5005,7 @@ def _validated_resolved_hyperparameters(
     def validate_strings(item: Any) -> None:
         if isinstance(item, dict):
             for key, nested in item.items():
-                if not isinstance(key, str):
+                if type(key) is not str:
                     raise OfficialForagaxValidationError(
                         "official resolved hyperparameter keys must be strings"
                     )
@@ -4901,7 +5013,7 @@ def _validated_resolved_hyperparameters(
         elif isinstance(item, list):
             for nested in item:
                 validate_strings(nested)
-        elif isinstance(item, str):
+        elif type(item) is str:
             if (
                 Path(item).is_absolute()
                 or PureWindowsPath(item).is_absolute()
@@ -4923,6 +5035,18 @@ def _classify_official_foragax_agent_access(
     registry: Mapping[str, str],
 ) -> dict[str, Any]:
     """Classify scientific identity and information access, failing closed."""
+    def finite_json_number(value: object) -> bool:
+        # Resolved hyperparameters have already crossed the canonical-JSON
+        # boundary.  Keep this check total even for arbitrarily large JSON
+        # integers: ``math.isfinite`` converts integers through binary64 and
+        # raises ``OverflowError`` for values such as ``10**1000``.
+        if type(value) not in (int, float):
+            return False
+        try:
+            return math.isfinite(cast(int | float, value))
+        except (OverflowError, TypeError, ValueError):
+            return False
+
     registry_class = registry["class"]
     if registry_class in _LEARNING_REGISTRY_CLASSES:
         method_family = "learning"
@@ -4960,11 +5084,8 @@ def _classify_official_foragax_agent_access(
         and isinstance(temperature_prioritization, bool)
         and isinstance(use_sinusoidal_encoding, bool)
         and isinstance(channel_priorities, dict)
-        and all(isinstance(key, str) for key in channel_priorities)
-        and all(
-            isinstance(priority, (int, float)) and not isinstance(priority, bool)
-            for priority in channel_priorities.values()
-        )
+        and all(type(key) is str for key in channel_priorities)
+        and all(finite_json_number(priority) for priority in channel_priorities.values())
     )
     aperture_size = semantic_environment.get("aperture_size")
     observation_type = semantic_environment.get("observation_type")
@@ -5094,7 +5215,7 @@ def _verified_agent_access_sections(
             "official manifest agent registry hash does not verify"
         )
     agent = run.get("agent")
-    if not isinstance(agent, str) or not agent:
+    if type(agent) is not str or not agent:
         raise OfficialForagaxValidationError(
             "official manifest agent identity is invalid"
         )
@@ -5156,14 +5277,15 @@ for distribution in distributions():
                 json.loads(direct_url),
                 sort_keys=True,
                 separators=(",", ":"),
+                allow_nan=False,
             )
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError, ValueError):
             direct_url = direct_url.strip()
         line += f" ; direct_url={{direct_url}}"
     packages.append(line)
 sys.stdout.write(
     {_PROBE_PREFIX!r}
-    + json.dumps({{"packages": sorted(set(packages))}}, sort_keys=True)
+    + json.dumps({{"packages": sorted(set(packages))}}, sort_keys=True, allow_nan=False)
     + "\\n"
 )
 """
@@ -5178,7 +5300,7 @@ sys.stdout.write(
     payload = _extract_probe_payload(result.stdout)
     packages = payload.get("packages")
     if not isinstance(packages, list) or not all(
-        isinstance(item, str) and item for item in packages
+        type(item) is str and item for item in packages
     ):
         raise OfficialForagaxValidationError(
             "supplied interpreter returned an invalid package freeze"
@@ -5307,15 +5429,14 @@ def prepare_official_foragax_run(
     problem = config_data.get("problem")
     configured_env_steps = config_data.get("total_steps")
     meta_parameters = config_data.get("metaParameters")
-    if not isinstance(agent, str) or not agent.strip():
+    if type(agent) is not str or not agent.strip():
         raise OfficialForagaxValidationError("official config has no non-empty agent")
     if problem != "Foragax":
         raise OfficialForagaxValidationError(
             "official config problem must be exactly 'Foragax'"
         )
     if (
-        isinstance(configured_env_steps, bool)
-        or not isinstance(configured_env_steps, int)
+        type(configured_env_steps) is not int
         or configured_env_steps < 1
     ):
         raise OfficialForagaxValidationError(
@@ -5473,8 +5594,7 @@ def prepare_official_foragax_run(
         family: Literal["continuing", "ppo"] = "ppo"
         entrypoint = "src/rtu_ppo.py"
         if (
-            isinstance(rollout_steps, bool)
-            or not isinstance(rollout_steps, int)
+            type(rollout_steps) is not int
             or rollout_steps < 1
         ):
             raise OfficialForagaxValidationError(
@@ -5484,8 +5604,7 @@ def prepare_official_foragax_run(
         if configured_updates is None:
             configured_updates = configured_env_steps // rollout_steps + 1
         if (
-            isinstance(configured_updates, bool)
-            or not isinstance(configured_updates, int)
+            type(configured_updates) is not int
             or configured_updates < 1
         ):
             raise OfficialForagaxValidationError(
@@ -7717,7 +7836,7 @@ def _manifest_relative_file(
     *,
     label: str,
 ) -> Path:
-    if not isinstance(value, str):
+    if type(value) is not str:
         raise OfficialForagaxValidationError(f"official manifest {label} is invalid")
     relative = _canonical_relative_path(value, label=f"manifest {label}")
     return root / relative
@@ -9598,7 +9717,7 @@ def _verify_execution_and_logs(
 ) -> None:
     command = execution.get("command")
     if not isinstance(command, list) or not all(
-        isinstance(argument, str) for argument in command
+        type(argument) is str for argument in command
     ):
         raise OfficialForagaxValidationError("official manifest command is invalid")
     if any(Path(argument).is_absolute() for argument in command):
@@ -9621,7 +9740,7 @@ def _verify_execution_and_logs(
     if (
         not isinstance(freeze, list)
         or not freeze
-        or not all(isinstance(item, str) and item for item in freeze)
+        or not all(type(item) is str and item for item in freeze)
         or freeze != sorted(set(freeze))
     ):
         raise OfficialForagaxValidationError(
@@ -9669,7 +9788,7 @@ def _verify_execution_and_logs(
         not isinstance(relevant_environment, dict)
         or not required_environment_keys <= relevant_environment.keys()
         or any(
-            not isinstance(key, str) or not isinstance(value, str)
+            type(key) is not str or type(value) is not str
             for key, value in relevant_environment.items()
         )
     ):
@@ -9878,7 +9997,7 @@ def verify_official_foragax_manifest(
         or implementation.get("package") != "foragax"
         or implementation.get("install_tree_hash_scheme")
         != "relative-path+size+bytes-v1"
-        or not isinstance(implementation.get("install_tree_sha256"), str)
+        or type(implementation.get("install_tree_sha256")) is not str
     ):
         raise OfficialForagaxValidationError(
             "official Foragax implementation provenance is not verified"
@@ -9927,8 +10046,7 @@ def verify_official_foragax_manifest(
     )
     expected_steps = run.get("expected_result_env_steps")
     if (
-        isinstance(expected_steps, bool)
-        or not isinstance(expected_steps, int)
+        type(expected_steps) is not int
         or expected_steps < 1
     ):
         raise OfficialForagaxValidationError(
@@ -10171,7 +10289,7 @@ def verify_official_foragax_batch_manifest(
         or implementation.get("package") != "foragax"
         or implementation.get("install_tree_hash_scheme")
         != "relative-path+size+bytes-v1"
-        or not isinstance(implementation.get("install_tree_sha256"), str)
+        or type(implementation.get("install_tree_sha256")) is not str
     ):
         raise OfficialForagaxValidationError(
             "official batch Foragax implementation is not verified"
@@ -10232,11 +10350,11 @@ def verify_official_foragax_batch_manifest(
         )
     if (
         any(
-            isinstance(index, bool) or not isinstance(index, int)
+            type(index) is not int
             for index in indices
         )
         or any(
-            isinstance(seed, bool) or not isinstance(seed, int)
+            type(seed) is not int
             for seed in effective_seeds
         )
         or indices != list(range(indices[0], indices[-1] + 1))
@@ -10252,9 +10370,8 @@ def verify_official_foragax_batch_manifest(
         zip(indices, effective_seeds, run_entries, artifacts, strict=True)
     ):
         if (
-            isinstance(index, bool)
-            or not isinstance(index, int)
-            or not isinstance(effective_seed, int)
+            type(index) is not int
+            or type(effective_seed) is not int
             or not isinstance(run_entry, dict)
             or not isinstance(artifact, dict)
             or run_entry.get("index") != index
@@ -10282,8 +10399,7 @@ def verify_official_foragax_batch_manifest(
         )
         expected_steps = run_entry.get("expected_result_env_steps")
         if (
-            isinstance(expected_steps, bool)
-            or not isinstance(expected_steps, int)
+            type(expected_steps) is not int
             or expected_steps < 1
         ):
             raise OfficialForagaxValidationError(
@@ -10933,7 +11049,7 @@ def _official_spec_shared_kwargs(
     environment_provenance = manifest.get("environment")
     if (
         not isinstance(package_freeze, list)
-        or not all(isinstance(item, str) for item in package_freeze)
+        or not all(type(item) is str for item in package_freeze)
         or not isinstance(runtime, dict)
         or not isinstance(relevant_environment, dict)
         or not isinstance(environment_provenance, dict)
