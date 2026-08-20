@@ -27,6 +27,7 @@ from typing import NoReturn
 import jax
 import numpy as np
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.evaluation.continual_multiagent import (
     AcceptanceEvidence,
     AcceptanceThresholds,
@@ -38,6 +39,7 @@ from alberta_framework.evaluation.continual_multiagent import (
 )
 
 SCHEMA_VERSION = "alberta.continual_multiagent_evidence.v1"
+_MAX_JSON_NESTING_DEPTH = 64
 PROTOCOL_VERSION = "recurring-two-agent-contextual-bandit-aba.v1"
 DIGEST_ALGORITHM = "sha256"
 DIGEST_SCOPE = "$.content"
@@ -669,12 +671,21 @@ def _reject_duplicate_keys(
 def load_evidence_artifact(path: Path) -> dict[str, object]:
     """Load strict JSON and require a top-level object."""
 
-    parsed = json.loads(
-        path.read_text(encoding="utf-8"),
-        parse_constant=_reject_nonstandard_json_constant,
-        parse_float=_parse_finite_json_float,
-        object_pairs_hook=_reject_duplicate_keys,
+    text = path.read_text(encoding="utf-8")
+    require_json_text_nesting(
+        text,
+        max_depth=_MAX_JSON_NESTING_DEPTH,
+        name="evidence artifact",
     )
+    try:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_nonstandard_json_constant,
+            parse_float=_parse_finite_json_float,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except RecursionError as exc:
+        raise ValueError("evidence artifact exceeds the JSON nesting limit") from exc
     if not isinstance(parsed, dict):
         raise ValueError("evidence artifact must be a JSON object")
     return parsed
