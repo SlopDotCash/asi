@@ -1042,14 +1042,12 @@ def _select_action_epsilon_greedy_from_q_masked(
 
 
 def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Array:
-    """Return epsilon-greedy probabilities with uniform tie handling."""
+    """Return epsilon-greedy probabilities matching Gumbel tie-breaking."""
     q = jnp.asarray(q_values, dtype=jnp.float32)
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
-    max_q = jnp.max(q)
-    greedy_mask = jnp.isclose(q, max_q, atol=1e-6, rtol=0.0).astype(jnp.float32)
-    n_greedy = jnp.maximum(jnp.sum(greedy_mask), jnp.array(1.0, dtype=jnp.float32))
-    return eps / n_actions + (1.0 - eps) * greedy_mask / n_greedy
+    greedy_probs = jax.nn.softmax(q / 1e-6)
+    return eps / n_actions + (1.0 - eps) * greedy_probs
 
 
 def _clipped_epsilon_greedy_importance_ratio(
