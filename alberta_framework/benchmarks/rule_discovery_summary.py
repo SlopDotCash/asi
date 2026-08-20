@@ -12,8 +12,8 @@ from typing import Any
 import numpy as np
 
 import alberta_framework.benchmarks.rule_discovery as rule_discovery_module
-from alberta_framework._seed_validation import require_jax_seed, require_unique_jax_seeds
-from alberta_framework._strict_json import load_strict_json_object
+from alberta_framework._seed_validation import require_unique_jax_seeds
+from alberta_framework.benchmarks import ipmnist_screening
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
 
@@ -36,29 +36,51 @@ DISCOVERY_ARMS = (
 )
 CHAMPION = "sigma0_shiftnorm_d099"
 
+# Rule-discovery shards belong to a single IPMNIST protocol with two stages: a
+# 60-task development screen and a 200-task confirmation, both at 5,000 steps per
+# task.  The arm identity, the stage task count, and the task length are all
+# load-bearing: without them a shard from the wrong arm or the wrong stage would
+# be aggregated and republished under valid-looking provenance (issue #2134).
+_SCREEN_TASK_COUNT = 60
+_CONFIRM_TASK_COUNT = 200
+_REQUIRED_TASK_LENGTH = 5000
 
-def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
+
+def _arm(
+    directory: Path,
+    name: str,
+    seeds: Sequence[int],
+    *,
+    expected_task_count: int,
+) -> dict[str, Any]:
     values = []
     for seed in seeds:
         path = directory / f"{name}_seed{seed}.json"
         if not path.exists():
             raise ValueError(f"{name} is missing seed {seed} in {directory}")
-        payload = load_strict_json_object(path)
-        if (
-            type(payload.get("per_task_accuracy")) is not list
-            or not payload["per_task_accuracy"]
-        ):
-            raise ValueError(f"{path} lacks per_task_accuracy")
-        payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
-        if payload_seed != seed:
+        # ``load_shard`` is the strict screening boundary: it validates the
+        # schema, registered arm membership, curve domain/length, seed, and the
+        # registered-compatible noise mode before we trust any measurement.
+        shard = ipmnist_screening.load_shard(path)
+        if shard["config_name"] != name:
+            raise ValueError(
+                f"{path} reports arm {shard['config_name']!r}, not the expected "
+                f"{name!r}"
+            )
+        if shard["seed"] != seed:
             raise ValueError(f"{path} seed does not match requested seed {seed}")
-        accuracy = np.asarray(payload["per_task_accuracy"], dtype=np.float64)
-        if (
-            accuracy.ndim != 1
-            or not bool(np.all(np.isfinite(accuracy)))
-            or not bool(np.all((0.0 <= accuracy) & (accuracy <= 1.0)))
-        ):
-            raise ValueError(f"{path} has invalid per_task_accuracy")
+        config = shard["config"]
+        if config["n_tasks"] != expected_task_count:
+            raise ValueError(
+                f"{path} has {config['n_tasks']} tasks, not the {expected_task_count} "
+                "required for this stage"
+            )
+        if config["task_length"] != _REQUIRED_TASK_LENGTH:
+            raise ValueError(
+                f"{path} has task_length {config['task_length']}, not the required "
+                f"{_REQUIRED_TASK_LENGTH}"
+            )
+        accuracy = np.asarray(shard["per_task_accuracy"], dtype=np.float64)
         values.append(float(np.mean(accuracy)))
     return {"per_seed": values, "mean": float(np.mean(values))}
 
@@ -71,7 +93,10 @@ def build_legacy_rule_discovery_summary(
 ) -> dict[str, Any]:
     """Reconstruct the exact legacy v1 payload for compatibility checks."""
     seeds = require_unique_jax_seeds(seeds)
-    screen = {name: _arm(screen_dir, name, seeds) for name in SCREEN_ARMS}
+    screen = {
+        name: _arm(screen_dir, name, seeds, expected_task_count=_SCREEN_TASK_COUNT)
+        for name in SCREEN_ARMS
+    }
     confirm_names = ("disc_r1_pscale_norms", CHAMPION)
     present = [
         (confirm_dir / f"{name}_seed{seed}.json").exists()
@@ -81,7 +106,10 @@ def build_legacy_rule_discovery_summary(
     if any(present) and not all(present):
         raise ValueError("rule-discovery confirmation seeds are incomplete")
     full = (
-        {name: _arm(confirm_dir, name, seeds) for name in confirm_names}
+        {
+            name: _arm(confirm_dir, name, seeds, expected_task_count=_CONFIRM_TASK_COUNT)
+            for name in confirm_names
+        }
         if all(present)
         else {}
     )
@@ -155,6 +183,9 @@ def build_rule_discovery_summary(
         sources={
             "rule_discovery": Path(rule_discovery_module.__file__),
             "rule_discovery_summary": Path(__file__),
+            # The screening loader is now part of the trusted validation path,
+            # so its source is bound into the maintained analysis provenance.
+            "ipmnist_screening": Path(ipmnist_screening.__file__),
         },
         repository_root=Path(__file__).resolve().parents[2],
     )
