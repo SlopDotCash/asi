@@ -30,6 +30,7 @@ import math
 import operator
 from collections.abc import Mapping
 from numbers import Real
+from types import MappingProxyType
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -39,6 +40,8 @@ import numpy as np
 import numpy.typing as npt
 from jax import Array
 from jaxtyping import Bool, Float, Int
+
+from alberta_framework._bounded_containers import require_bounded_container_tree
 
 PARTNER_POLICY_FUSION_CONFIG_SCHEMA = "alberta.partner-policy-fusion.config.v1"
 PARTNER_POLICY_FUSION_CHECKPOINT_SCHEMA = "alberta.partner-policy-fusion.checkpoint.v1"
@@ -67,6 +70,11 @@ _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 # Largest non-INT32 constructor bound in this L0 module (`max_partners`).
 # Sequence T is the remaining unbounded scan axis on origin.
 _FUSION_SEQUENCE_MAX_STEPS = 1_024
+# Same ceiling as security/checkpoints. Origin json.dumps RecursionErrors
+# a 16_000-deep fusion mapping during from_checkpoint_payload digest.
+_CHECKPOINT_JSON_MAX_DEPTH = 32
+_CHECKPOINT_JSON_MAX_NODES = 4096
+
 
 
 _ACTUAL_INT_TYPES = frozenset(
@@ -149,16 +157,42 @@ def _strict_float32(
     return normalized
 
 
+def _json_container_children(node: object) -> tuple[object, ...] | None:
+    """Return JSON-container children, or None for a scalar leaf."""
+
+    node_type = type(node)
+    if node_type is dict:
+        return tuple(cast(dict[Any, Any], node).values())
+    if node_type is list:
+        return tuple(cast(list[Any], node))
+    if node_type is tuple:
+        return cast(tuple[object, ...], node)
+    if node_type is MappingProxyType:
+        return tuple(cast(Mapping[str, Any], node).values())
+    return None
+
+
 def _canonical_json_bytes(payload: object) -> bytes:
     """Return the canonical encoding used by checkpoint digests."""
 
-    return json.dumps(
+    require_bounded_container_tree(
         payload,
-        allow_nan=False,
-        ensure_ascii=True,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
+        children=_json_container_children,
+        max_depth=_CHECKPOINT_JSON_MAX_DEPTH,
+        max_nodes=_CHECKPOINT_JSON_MAX_NODES,
+        name="checkpoint payload",
+        kind="JSON",
+    )
+    try:
+        return json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    except RecursionError as exc:
+        raise ValueError("checkpoint payload exceeds the JSON nesting limit") from exc
 
 
 def _payload_digest(payload: object) -> str:
