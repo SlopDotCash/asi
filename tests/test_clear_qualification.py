@@ -23,6 +23,7 @@ from alberta_framework.benchmarks.clear_qualification import (
     ArchiveIdentity,
     ClearDatasetReceipt,
     ClearQualificationError,
+    _decode,
     _metric_values,
     execution_config,
     load_dataset_manifest,
@@ -417,3 +418,36 @@ def test_result_rejects_scalar_alias_and_unbounded_payload() -> None:
         validate_result(json.dumps(result).encode(), expected_plan=plan)
     with pytest.raises(ClearQualificationError, match="byte limit"):
         validate_result(b" " * ((1 << 20) + 1), expected_plan=plan)
+
+
+def _nested_object_bytes(depth: int) -> bytes:
+    return (b'{"a":' * depth) + b"0" + (b"}" * depth)
+
+
+def test_decode_rejects_deep_object_nest_without_recursion_error() -> None:
+    raw = _nested_object_bytes(10_000)
+    assert len(raw) < (1 << 20)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        _decode(raw, limit=1 << 20, label="dataset manifest")
+
+
+def test_verify_dataset_manifest_rejects_deep_object_nest(tmp_path: Path) -> None:
+    raw = _nested_object_bytes(10_000)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        verify_dataset_manifest(raw, root=tmp_path)
+
+
+def test_decode_rejects_one_past_strict_json_depth() -> None:
+    raw = _nested_object_bytes(65)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        _decode(raw, limit=1 << 20, label="dataset manifest")
+
+
+def test_decode_accepts_shallow_object() -> None:
+    assert _decode(b'{"ok": true}', limit=1 << 20, label="dataset manifest") == {"ok": True}
+
+
+def test_decode_still_rejects_invalid_json() -> None:
+    with pytest.raises(ClearQualificationError, match="not valid JSON|JSON"):
+        _decode(b"{", limit=1 << 20, label="dataset manifest")
+
