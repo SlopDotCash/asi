@@ -70,6 +70,7 @@ from alberta_framework.core.working_memory import (
 )
 
 _INT32_MAX = 2**31 - 1
+_MAX_STATE_BUILDER_DECAY_RATES = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -119,6 +120,10 @@ def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
     if type(value) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
     rates = cast(tuple[object, ...], value)
+    if len(rates) > _MAX_STATE_BUILDER_DECAY_RATES:
+        raise ValueError(
+            f"{name} length must be an integer in [0, {_MAX_STATE_BUILDER_DECAY_RATES}]"
+        )
     return tuple(
         validated_float32_scalar(
             f"{name}[{index}]",
@@ -1042,6 +1047,15 @@ class FixedTraceStateBuilderConfig:
             or not isinstance(out_decays, (list, tuple))
         ):
             raise ValueError("decay rates must be lists or tuples")
+        if (
+            len(obs_decays) > _MAX_STATE_BUILDER_DECAY_RATES
+            or len(act_decays) > _MAX_STATE_BUILDER_DECAY_RATES
+            or len(out_decays) > _MAX_STATE_BUILDER_DECAY_RATES
+        ):
+            raise ValueError(
+                "decay-rate length must be an integer in "
+                f"[0, {_MAX_STATE_BUILDER_DECAY_RATES}]"
+            )
         return cls(
             observation_dim=data["observation_dim"],
             n_actions=data["n_actions"],
