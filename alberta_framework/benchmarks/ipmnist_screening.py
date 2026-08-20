@@ -146,7 +146,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from types import FunctionType, MappingProxyType
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import chex
 import jax
@@ -325,6 +325,8 @@ from alberta_framework.evaluation.replay_frozen_ipmnist_nonpromoting import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SCREENING_RNG_IMPL: Final[str] = "threefry2x32"
 
 LEGACY_SHARD_SCHEMA = "alberta.ipmnist_screening.shard.v1"
 SHARD_SCHEMA = "alberta.ipmnist_screening.shard.v2"
@@ -10369,6 +10371,13 @@ def noise_curvature_development_result_payload(
     return validate_noise_curvature_development_result(payload)
 
 
+def _screening_root_key(seed: object) -> Array:
+    """Return the runner-owned Threefry root independent of ambient JAX config."""
+
+    resolved_seed = require_jax_seed(seed, name="seed")
+    return jr.key(jnp.uint32(resolved_seed), impl=_SCREENING_RNG_IMPL)
+
+
 def run_screening_config(
     data_x: np.ndarray | Array,
     data_y: np.ndarray | Array,
@@ -10449,7 +10458,7 @@ def run_screening_config(
     else:
         init_fn, step_fn = spec.factory(spec.hyperparameters)
 
-    root = jr.key(jnp.uint32(resolved_seed))
+    root = _screening_root_key(resolved_seed)
     key_init, key_schedule, key_noise = jr.split(root, 3)
     params = init_mlp_params(key_init, config)
     schedule = build_schedule(key_schedule, config, n_train)
