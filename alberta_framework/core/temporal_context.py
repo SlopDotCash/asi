@@ -42,6 +42,9 @@ from jaxtyping import Float
 from alberta_framework._float32 import round_real_to_float32_with_ratio
 
 _INT32_MAX: int = 2**31 - 1
+# Public last-fit in tests is 3 array steps. Origin scanned the leading
+# observation axis with no reject — hang/OOM, not an INT32 leftover.
+_TEMPORAL_CONTEXT_LOOP_MAX_STEPS = 10_000
 
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -154,6 +157,25 @@ def _require_int(
     if maximum is not None and number > maximum:
         raise ValueError(f"{name} must be <= {maximum}")
     return number
+
+
+def _require_temporal_context_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jax.lax.scan``."""
+    if type(value) is not int or value < 1 or value > _TEMPORAL_CONTEXT_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_TEMPORAL_CONTEXT_LOOP_MAX_STEPS}]"
+        )
+    return value
+
+
+def _require_temporal_context_array_steps(observations: object) -> int:
+    """Reject pre-collected scan lengths above the public last-fit before scan."""
+    if not isinstance(observations, jax.Array):
+        raise TypeError("observations must be a JAX array")
+    if observations.ndim != 2:
+        raise ValueError("observations must be rank-2")
+    num_steps = observations.shape[0]
+    return _require_temporal_context_loop_steps("observations num_steps", num_steps)
 
 
 def _temporal_context_persist_bytes(input_dim: int) -> int:
@@ -592,11 +614,17 @@ def transform_temporal_context_arrays(
     *,
     state: TemporalContextState | None = None,
 ) -> tuple[TemporalContextState, Float[Array, "steps output_dim"]]:
-    """Transform an observation array with a causal scan."""
+    """Transform an observation array with a causal scan.
+
+    Raises:
+        ValueError: If ``observations`` length is not an exact integer in
+            ``[1, 10_000]``.
+    """
     observations = _require_observation_batch_metadata(
         observations,
         input_dim=featurizer.config.input_dim,
     )
+    _require_temporal_context_array_steps(observations)
     if state is None:
         state = featurizer.init()
 
