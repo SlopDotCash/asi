@@ -3080,10 +3080,10 @@ def _validate_benchmark_contract(
     if (
         type(benchmark_config.jax_chunk_size) is not int
         or benchmark_config.jax_chunk_size < 1
-        or benchmark_config.jax_chunk_size >= _INT32_MAX
+        or benchmark_config.jax_chunk_size > 10_000
     ):
         raise ValueError(
-            "causal-map jax_chunk_size must be a positive int below int32 maximum"
+            "causal-map jax_chunk_size must be an integer in [1, 10000]"
         )
     if env.preset != "field_of_view" or env.resolved_env_id != "ForagaxTwoBiomeLarge-v1":
         raise ValueError(
