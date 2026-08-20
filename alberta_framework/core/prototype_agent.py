@@ -260,6 +260,7 @@ def feature_to_subtask_specs(
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_DREAMS_PER_STEP = 10_000
 _UINT32_MAX = 4_294_967_295
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
         int,
@@ -725,7 +726,7 @@ class PrototypeAgentConfig:
                 "n_dreams_per_step",
                 self.n_dreams_per_step,
                 minimum=0,
-                maximum=_INT32_MAX,
+                maximum=_MAX_DREAMS_PER_STEP,
             ),
         )
         # horde_hidden_sizes: hostile-safe per-element validation
@@ -1335,7 +1336,10 @@ class PrototypeAgentConfig:
             "buffer_capacity", data.pop("buffer_capacity", 200), minimum=1, maximum=_INT32_MAX
         )
         n_dreams_per_step = _require_int(
-            "n_dreams_per_step", data.pop("n_dreams_per_step", 0), minimum=0, maximum=_INT32_MAX
+            "n_dreams_per_step",
+            data.pop("n_dreams_per_step", 0),
+            minimum=0,
+            maximum=_MAX_DREAMS_PER_STEP,
         )
         dream_next_observation_mode = data.pop(
             "dream_next_observation_mode",
