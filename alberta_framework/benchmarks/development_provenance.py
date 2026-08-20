@@ -16,9 +16,45 @@ from typing import cast
 import jax
 import numpy as np
 
+_MAX_REGISTRY_ITEMS = 4096
+_MAX_REGISTRY_STRING_BYTES = 4096
+_MAX_REGISTRY_BYTES = 1 << 20
+
 
 def _sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _require_bounded_registry(value: object) -> None:
+    """Reject oversized host containers before canonical JSON encoding."""
+    if type(value) in (list, tuple):
+        items = cast(Sequence[object], value)
+        if len(items) > _MAX_REGISTRY_ITEMS:
+            raise ValueError("registry exceeds the collection limit")
+        for item in items:
+            _require_bounded_registry(item)
+        return
+    if isinstance(value, Mapping):
+        mapping = cast(Mapping[object, object], value)
+        if len(mapping) > _MAX_REGISTRY_ITEMS:
+            raise ValueError("registry exceeds the collection limit")
+        for key, item in mapping.items():
+            if type(key) is not str:
+                raise TypeError("registry mapping keys must be exact strings")
+            _require_bounded_registry(key)
+            _require_bounded_registry(item)
+        return
+    if type(value) is str:
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError("registry string must be valid UTF-8") from exc
+        if len(encoded) > _MAX_REGISTRY_STRING_BYTES:
+            raise ValueError("registry string exceeds the byte limit")
+        return
+    if type(value) in (int, float, bool) or value is None:
+        return
+    raise TypeError(f"unsupported registry value: {type(value).__name__}")
 
 
 def _canonical(value: object) -> object:
@@ -32,9 +68,12 @@ def _canonical(value: object) -> object:
 
 
 def registry_sha256(value: object) -> str:
+    _require_bounded_registry(value)
     encoded = json.dumps(
         _canonical(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
+    if len(encoded) > _MAX_REGISTRY_BYTES:
+        raise ValueError("registry exceeds the canonical JSON byte limit")
     return _sha256_bytes(encoded)
 
 
