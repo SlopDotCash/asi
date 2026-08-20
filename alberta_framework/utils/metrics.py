@@ -3,7 +3,8 @@
 Provides functions for computing tracking error, learning curves,
 and other metrics useful for evaluating continual learners. Nested
 boolean-trace walks stop at ``_BOOLEAN_TRACE_MAX_DEPTH`` so a hostile nest
-raises ``ValueError`` instead of ``RecursionError``.
+raises ``ValueError`` instead of ``RecursionError``. Host list, tuple, and
+object-array width stops at ``_BOOLEAN_TRACE_MAX_NODES`` before the walk.
 
 The task-matrix metrics in this module use a common convention: rows are
 evaluation checkpoints and columns are tasks or regimes. ``first_exposure[j]``
@@ -30,6 +31,10 @@ _INT32_MAX: int = 2**31 - 1
 # Same ceiling as security._JSON_MAX_DEPTH. An unbounded list/tuple walk
 # RecursionErrors on a ~1200-deep nest and cannot reject the boolean.
 _BOOLEAN_TRACE_MAX_DEPTH: int = 32
+# Public last-fit is the 6-step running-mean fixture in
+# ``tests/test_continual_metrics.py``. Origin walked a pointer-repeat of
+# 15_000_000 host floats with no reject — hang, not leftover INT32 math.
+_BOOLEAN_TRACE_MAX_NODES: int = 1_000_000
 
 _ACTUAL_INT_TYPES = frozenset(
     {
@@ -106,6 +111,8 @@ def _reject_boolean_numeric_trace(
         return
     if type(values) in (list, tuple):
         sequence = cast(list[object] | tuple[object, ...], values)
+        if len(sequence) > _BOOLEAN_TRACE_MAX_NODES:
+            raise ValueError(f"{name} exceeds the boolean-trace value limit")
         for index, item in enumerate(sequence):
             _reject_boolean_numeric_trace(
                 item, name=f"{name}[{index}]", depth=depth + 1
@@ -115,6 +122,8 @@ def _reject_boolean_numeric_trace(
         if values.dtype.kind == "b":
             raise ValueError(f"{name} must not be a boolean array")
         if values.dtype.kind == "O":
+            if values.size > _BOOLEAN_TRACE_MAX_NODES:
+                raise ValueError(f"{name} exceeds the boolean-trace value limit")
             for index, item in enumerate(values.flat):
                 _reject_boolean_numeric_trace(
                     item, name=f"{name}[{index}]", depth=depth + 1
@@ -170,6 +179,8 @@ def _require_index_vector(values: object, *, name: str) -> NDArray[np.int64]:
         raise ValueError(f"{name} must be integer indices, not a boolean")
     if type(values) in (list, tuple):
         sequence = cast(list[object] | tuple[object, ...], values)
+        if len(sequence) > _BOOLEAN_TRACE_MAX_NODES:
+            raise ValueError(f"{name} exceeds the boolean-trace value limit")
         for index, item in enumerate(sequence):
             if not _is_index_int(item):
                 raise ValueError(f"{name}[{index}] must be an integer index, not a boolean")
@@ -597,8 +608,11 @@ def _metric_history_values(
         raise ValueError(f"{name} metric key must be an exact string")
     if type(metrics_history) is not list:
         raise ValueError(f"{name} must be an exact list")
+    history = cast(list[object], metrics_history)
+    if len(history) > _BOOLEAN_TRACE_MAX_NODES:
+        raise ValueError(f"{name} exceeds the boolean-trace value limit")
     values: list[float] = []
-    for index, record in enumerate(metrics_history):
+    for index, record in enumerate(history):
         if type(record) is not dict:
             raise ValueError(f"{name}[{index}] must be an exact dictionary")
         if any(type(record_key) is not str for record_key in record):
