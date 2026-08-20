@@ -42,6 +42,7 @@ from jaxtyping import Float
 from alberta_framework._float32 import round_real_to_float32_with_ratio
 
 _INT32_MAX: int = 2**31 - 1
+_MAX_TEMPORAL_CONTEXT_PERIODS = 4_096
 # Public last-fit in tests is 3 array steps. Origin scanned the leading
 # observation axis with no reject — hang/OOM, not an INT32 leftover.
 _TEMPORAL_CONTEXT_LOOP_MAX_STEPS = 10_000
@@ -330,6 +331,11 @@ class TemporalContextConfig:
             raw = payload["periods"]
             if type(raw) not in (list, tuple):
                 raise ValueError("periods must be a list or tuple")
+            if len(raw) > _MAX_TEMPORAL_CONTEXT_PERIODS:
+                raise ValueError(
+                    "periods length must be an integer in "
+                    f"[0, {_MAX_TEMPORAL_CONTEXT_PERIODS}]"
+                )
             payload["periods"] = tuple(raw)
         return cls(**payload)
 
@@ -424,6 +430,11 @@ def _validate_config(config: TemporalContextConfig) -> None:
     if type(config.periods) is not tuple:
         raise ValueError(
             "periods must be an actual tuple"
+        )
+    if len(config.periods) > _MAX_TEMPORAL_CONTEXT_PERIODS:
+        raise ValueError(
+            "periods length must be an integer in "
+            f"[0, {_MAX_TEMPORAL_CONTEXT_PERIODS}]"
         )
     canonical_periods = tuple(
         _require_positive_real("period", p) for p in config.periods
