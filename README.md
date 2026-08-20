@@ -242,6 +242,7 @@ The console scripts are grouped by responsibility; every command supports `--hel
 | `alberta-step1-smoke`, `alberta-step2-smoke` | Nonpromoting mechanism smoke checks |
 | `asi-native-supervised-catalog`, `asi-plasticity-diagnostic` | Inspect or run bounded, permanently nonpromoting supervised diagnostics |
 | `asi-adamo-diagnostic` | Catalog or run the bounded, permanently nonpromoting AdamO dynamical-isometry comparator |
+| `asi-intentional-updates-matched-development` | Inspect the frozen, execution-disabled supervised + TD/control Intentional Updates development plan |
 | `asi-clear-qualification` | Verify local CLEAR archive identities and emit a permanently nonpromoting matched setup plan |
 | `asi-coom-qualification-smoke` | Inspect or run the bounded, synthetic, permanently nonpromoting COOM qualification smoke |
 | `asi-cora-catalog` | Inspect the blocked CORA qualification catalog without importing external runtimes |

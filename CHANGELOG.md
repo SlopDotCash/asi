@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- Add a prospectively frozen, execution-disabled Intentional Updates matched-development
+  campaign spanning the existing batch-size-one supervised adapter plus new end-to-end linear
+  TD(0), TD(lambda), and Q(lambda) consumers. The two workload families retain separate paired
+  questions, exact resource receipts, telemetry-only timing, immutable negative outcomes, and a
+  permanently nonpromoting report policy. No campaign run or output is included.
+
 ### Added
 
 - Added the unfrozen `preview1` reference-agent transaction ledger, primitive

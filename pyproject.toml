@@ -88,6 +88,7 @@ asi-native-supervised-catalog = "alberta_framework.benchmarks.native_supervised_
 asi-plasticity-diagnostic = "alberta_framework.benchmarks.plasticity_diagnostics:main"
 asi-nap-ipmnist = "alberta_framework.benchmarks.nap_ipmnist:main"
 asi-adamo-diagnostic = "alberta_framework.benchmarks.adamo_diagnostic:main"
+asi-intentional-updates-matched-development = "alberta_framework.benchmarks.intentional_updates_control:main"
 asi-activation-feature-ipmnist = "alberta_framework.benchmarks.activation_feature_ipmnist:main"
 asi-coom-qualification-smoke = "alberta_framework.benchmarks.coom_qualification:main"
 asi-clear-qualification = "alberta_framework.benchmarks.clear_qualification:main"
