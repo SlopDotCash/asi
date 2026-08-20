@@ -1218,6 +1218,28 @@ class TestShardsAndMerge:
         ):
             merge_shards(paths, control_name="upgd_w_control", slope_window=2)
 
+    def test_merge_rejects_mismatched_package_snapshot_sha(self, tmp_path, small_data):
+        """v2 shards spanning multiple package snapshot SHAs must fail closed."""
+        # Two valid v2 shards differing only in their package snapshot SHA must not merge.
+        x, y = small_data
+        base_payload = _bound_shard_payload(
+            run_screening_config(
+                x, y, screening_spec("upgd_w_control"), seed=0, config=SMALL
+            )
+        )
+        payload_a = dict(base_payload)
+        payload_a["package_snapshot_sha"] = "a" * 64
+        payload_b = dict(base_payload)
+        payload_b["seed"] = 1
+        payload_b["package_snapshot_sha"] = "b" * 64
+        path_a = tmp_path / "upgd_w_control_seed0.json"
+        path_b = tmp_path / "upgd_w_control_seed1.json"
+        path_a.write_text(json.dumps(payload_a), encoding="utf-8")
+        path_b.write_text(json.dumps(payload_b), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="package_snapshot_sha"):
+            merge_shards([path_a, path_b], control_name="upgd_w_control", slope_window=2)
+
     def _write_inband_shard(self, tmp_path, config_name, seed, accuracy):
         """Write a structurally valid shard with controlled accuracy."""
         payload = {
