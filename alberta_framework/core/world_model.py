@@ -53,6 +53,7 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+_MAX_WORLD_MODEL_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -111,6 +112,11 @@ def _validated_step_size(name: str, value: object) -> float:
 def _validate_hidden_sizes(value: object) -> tuple[int, ...]:
     if type(value) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(value) > _MAX_WORLD_MODEL_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_WORLD_MODEL_HIDDEN_LAYERS}]"
+        )
     return tuple(
         _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
         for index, width in enumerate(value)
@@ -240,6 +246,11 @@ def _validate_world_model_resources(
 def _serialized_sequence(name: str, value: object) -> tuple[Any, ...]:
     if type(value) not in (list, tuple):
         raise ValueError(f"serialized {name} must be an actual list or tuple")
+    if name == "hidden_sizes" and len(value) > _MAX_WORLD_MODEL_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_WORLD_MODEL_HIDDEN_LAYERS}]"
+        )
     return tuple(cast(list[Any] | tuple[Any, ...], value))
 
 
