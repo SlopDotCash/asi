@@ -24,6 +24,7 @@ from alberta_framework.benchmarks.ipmnist_ceiling import (
     run_arm_per_step,
     run_batch_reference,
 )
+from alberta_framework.benchmarks.ipmnist_screening import LEGACY_SHARD_SCHEMA
 from alberta_framework.benchmarks.rule_discovery_summary import (
     CHAMPION,
     SCREEN_ARMS,
@@ -51,6 +52,50 @@ def _shard(path: Path, *, seed: int, accuracy: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"seed": seed, "per_task_accuracy": [accuracy, accuracy]}),
+        encoding="utf-8",
+    )
+
+
+def _rule_shard(
+    path: Path, *, config_name: str, seed: int, accuracy: float, n_tasks: int = 60
+) -> None:
+    """Write a strictly valid legacy-v1 screening shard the loader accepts.
+
+    The maintained rule-discovery summary now validates every shard through
+    ``ipmnist_screening.load_shard``, so its fixtures must be complete v1 shards
+    rather than the bare seed/accuracy stub used by the other analyzers.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema": LEGACY_SHARD_SCHEMA,
+                "config_name": config_name,
+                "base_learner": "upgd_w",
+                "seed": seed,
+                "noise_mode": "step",
+                "hyperparameters": {},
+                "config": {
+                    "input_dim": 784,
+                    "hidden1": 300,
+                    "hidden2": 150,
+                    "n_classes": 10,
+                    "n_tasks": n_tasks,
+                    "task_length": 5000,
+                },
+                "per_task_accuracy": [accuracy] * n_tasks,
+                "per_task_loss": [0.5] * n_tasks,
+                "per_task_plasticity": [0.5] * n_tasks,
+                "wall_clock_seconds": 12.0,
+                "created_unix": 1785805898.0,
+                "environment": {
+                    "jax": "0.7.1",
+                    "numpy": "1.26.0",
+                    "python": "3.12.3",
+                    "platform": "linux",
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -677,7 +722,12 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     for name in SCREEN_ARMS:
         for seed in (0, 1, 2):
             accuracy = 0.8 if name == CHAMPION else 0.79
-            _shard(screen / f"{name}_seed{seed}.json", seed=seed, accuracy=accuracy)
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                config_name=name,
+                seed=seed,
+                accuracy=accuracy,
+            )
 
     summary = build_rule_discovery_summary(screen, confirm)
 
@@ -740,7 +790,12 @@ def test_rule_summary_requires_payload_seed_to_match_requested_seed(
     tmp_path: Path,
 ) -> None:
     screen = tmp_path / "screen"
-    _shard(screen / f"{SCREEN_ARMS[0]}_seed0.json", seed=1, accuracy=0.8)
+    _rule_shard(
+        screen / f"{SCREEN_ARMS[0]}_seed0.json",
+        config_name=SCREEN_ARMS[0],
+        seed=1,
+        accuracy=0.8,
+    )
     with pytest.raises(ValueError, match="does not match requested seed"):
         build_legacy_rule_discovery_summary(
             screen, tmp_path / "confirm", seeds=(0,)
@@ -752,9 +807,18 @@ def test_rule_summary_rejects_partial_confirmation_seed_set(tmp_path: Path) -> N
     confirm = tmp_path / "confirm"
     for name in SCREEN_ARMS:
         for seed in (0, 1):
-            _shard(screen / f"{name}_seed{seed}.json", seed=seed, accuracy=0.8)
-    _shard(
-        confirm / "disc_r1_pscale_norms_seed0.json", seed=0, accuracy=0.8
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                config_name=name,
+                seed=seed,
+                accuracy=0.8,
+            )
+    _rule_shard(
+        confirm / "disc_r1_pscale_norms_seed0.json",
+        config_name="disc_r1_pscale_norms",
+        seed=0,
+        accuracy=0.8,
+        n_tasks=200,
     )
     with pytest.raises(ValueError, match="confirmation seeds are incomplete"):
         build_legacy_rule_discovery_summary(screen, confirm, seeds=(0, 1))
