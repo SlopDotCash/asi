@@ -428,6 +428,27 @@ def cohens_d(
     return float((mean_a - mean_b) / pooled_std)
 
 
+def _paired_cohens_d(
+    values_a: NDArray[np.float64], values_b: NDArray[np.float64]
+) -> float:
+    """Compute Cohen's d_z from the within-pair difference distribution.
+
+    Pooled-variance Cohen's d (``cohens_d``) is wrong for paired samples: it
+    denominates by the between-seed variance in each group, which a paired
+    design shares and the paired t-test itself cancels out. d_z denominates
+    by the standard deviation of the differences instead, matching what
+    ``scipy.stats.ttest_rel`` actually tests.
+    """
+    differences = values_a - values_b
+    mean_difference = float(np.mean(differences))
+    difference_std = float(np.std(differences, ddof=1))
+    if difference_std == 0.0:
+        if mean_difference == 0.0:
+            return 0.0
+        return float(np.copysign(np.inf, mean_difference))
+    return mean_difference / difference_std
+
+
 def ttest_comparison(
     values_a: NDArray[np.float64] | list[float],
     values_b: NDArray[np.float64] | list[float],
@@ -447,7 +468,9 @@ def ttest_comparison(
         method_b: Name of second method
 
     Returns:
-        SignificanceResult with test results
+        SignificanceResult with test results. Paired tests report Cohen's
+        ``d_z`` from the within-pair differences; independent tests report
+        pooled-standard-deviation Cohen's ``d``.
 
     Raises:
         ValueError: If ``alpha`` is not a finite probability strictly between
@@ -503,7 +526,7 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -601,10 +624,10 @@ def wilcoxon_comparison(
 ) -> SignificanceResult:
     """Perform Wilcoxon signed-rank test (paired non-parametric).
 
-    Caveat: the reported ``effect_size`` is Cohen's d computed on the raw
-    values, not a rank-based effect size.  The standard companion to this
-    test is the matched-pairs rank-biserial correlation; interpret the
-    parametric d alongside a rank test with care.
+    Caveat: the reported ``effect_size`` is Cohen's d_z (mean/std of the
+    within-pair differences), not a rank-based effect size.  The standard
+    companion to this test is the matched-pairs rank-biserial correlation;
+    interpret the parametric d_z alongside a rank test with care.
 
     Args:
         values_a: Values for first method
@@ -657,7 +680,7 @@ def wilcoxon_comparison(
     except ImportError:
         raise ImportError("scipy is required for Wilcoxon test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = _paired_cohens_d(a, b)
 
     return SignificanceResult(
         test_name="Wilcoxon signed-rank",

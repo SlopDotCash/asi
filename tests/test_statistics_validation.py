@@ -602,6 +602,24 @@ class TestPairedTests:
         # every a_i < b_i: effect size sign must reflect a < b
         assert res.effect_size < 0.0
 
+    def test_paired_ttest_effect_size_uses_within_pair_differences(self) -> None:
+        # Large shared between-seed variation with a small, consistent
+        # per-seed shift: pooled Cohen's d (wrong for paired data) is nearly
+        # zero because the shared variation dominates its denominator, while
+        # the correct paired d_z -- computed from the differences, where the
+        # shared variation cancels -- is large.
+        a = np.asarray([101.0, 202.0, 303.0, 404.0])
+        b = np.asarray([100.0, 200.0, 300.0, 400.0])
+        differences = a - b
+
+        res = ttest_comparison(a, b, paired=True)
+
+        assert res.effect_size == pytest.approx(
+            float(np.mean(differences) / np.std(differences, ddof=1))
+        )
+        assert abs(res.effect_size) > 1.0
+        assert abs(cohens_d(a, b)) < 0.1
+
     def test_paired_ttest_rejects_identical_samples(self) -> None:
         values = [0.91, 0.88, 0.95]
         with pytest.raises(
@@ -663,12 +681,16 @@ class TestIdenticalWilcoxonRejection:
                 )
 
     def test_constant_nonzero_shift_stays_defined(self) -> None:
+        # A constant per-pair shift has zero within-pair variance, so the
+        # paired d_z (mean/std of differences) is a signed infinity -- not
+        # NaN -- matching the zero-pooled-variance convention in cohens_d.
         result = wilcoxon_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
 
         assert result.test_name == "Wilcoxon signed-rank"
         assert result.statistic == pytest.approx(0.0)
         assert result.p_value < 1.0
-        assert result.effect_size == cohens_d([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        assert np.isinf(result.effect_size)
+        assert np.sign(result.effect_size) > 0
 
 
 class TestOneSampleRejection:
