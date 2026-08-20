@@ -976,9 +976,11 @@ def _compare_structure(
         if type(actual) is not type(expected) or actual != expected:
             errors.append(f"{location} does not match the v1 value")
         return
-    if isinstance(expected, int):
-        if isinstance(actual, bool) or not isinstance(actual, int) or actual != expected:
-            errors.append(f"{location} does not match the v1 integer value")
+    if type(expected) is bool or type(expected) is not int:
+        errors.append(f"{location} must be an integer")
+        return
+    if type(actual) is bool or type(actual) is not int or actual != expected:
+        errors.append(f"{location} does not match the v1 integer value")
         return
     if isinstance(expected, float):
         if not _numbers_match(actual, expected):
