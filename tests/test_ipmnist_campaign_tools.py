@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import BinaryIO
 
@@ -47,12 +48,61 @@ class _StringSubclass(str):
     pass
 
 
-def _shard(path: Path, *, seed: int, accuracy: float) -> None:
+def _shard(
+    path: Path,
+    *,
+    seed: int,
+    accuracy: float,
+    tasks: int = 60,
+    task_length: int = 5000,
+    config_name: str | None = None,
+) -> None:
+    """Write a fully valid legacy v1 screening shard for campaign-tool tests."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if config_name is None:
+        config_name = path.stem.rsplit("_seed", 1)[0]
+    values = [accuracy] * tasks
     path.write_text(
-        json.dumps({"seed": seed, "per_task_accuracy": [accuracy, accuracy]}),
+        json.dumps(
+            {
+                "schema": "alberta.ipmnist_screening.shard.v1",
+                "seed": seed,
+                "config_name": config_name,
+                "base_learner": "upgd_w",
+                "noise_mode": "step",
+                "config": {
+                    "n_tasks": tasks,
+                    "task_length": task_length,
+                    "input_dim": 784,
+                    "hidden1": 300,
+                    "hidden2": 150,
+                    "n_classes": 10,
+                },
+                "per_task_accuracy": values,
+                "per_task_loss": [0.5] * tasks,
+                "per_task_plasticity": [0.5] * tasks,
+                "wall_clock_seconds": 1.0,
+                "environment": {
+                    "jax": "0.4.0",
+                    "numpy": "1.26.0",
+                    "python": "3.12.0",
+                    "platform": "linux",
+                },
+                "hyperparameters": {},
+                "created_unix": 0,
+            }
+        ),
         encoding="utf-8",
     )
+
+
+def _screen_suite(directory: Path, *, seeds: Sequence[int] = (0,)) -> None:
+    """Write a complete, valid 60-task rule-discovery screen shard set."""
+    for name in SCREEN_ARMS:
+        for seed in seeds:
+            accuracy = 0.8 if name == CHAMPION else 0.79
+            _shard(directory / f"{name}_seed{seed}.json", seed=seed, accuracy=accuracy)
+
 
 
 def _ceiling_run(
@@ -383,7 +433,7 @@ def test_ceiling_confirm_alignment_rejects_delta_above_frozen_tolerance(
     tmp_path: Path,
 ) -> None:
     confirm = tmp_path / "confirm"
-    _shard(confirm / "sigma0_ndecay099_seed0.json", seed=0, accuracy=0.8)
+    _shard(confirm / "sigma0_ndecay099_seed0.json", seed=0, accuracy=0.8, tasks=2)
     run = {"seed": 0, "per_task_accuracy": [0.8, 0.8 + 2 * CONFIRM_ALIGNMENT_ATOL]}
 
     with pytest.raises(ValueError, match="exceeds atol"):
@@ -641,9 +691,12 @@ def test_atomic_publication_cleans_up_link_failure(
         del source, target
         raise OSError("injected link fault")
 
+    def write_complete(stream: BinaryIO) -> None:
+        stream.write(b"complete")
+
     monkeypatch.setattr("alberta_framework.benchmarks.ipmnist_ceiling.os.link", fail_link)
     with pytest.raises(OSError, match="injected link fault"):
-        _atomic_publish(destination, lambda stream: stream.write(b"complete"))
+        _atomic_publish(destination, write_complete)
 
     assert not destination.exists()
     assert list(tmp_path.iterdir()) == []
@@ -663,9 +716,12 @@ def test_atomic_publication_rolls_back_directory_sync_failure(
             raise OSError("injected directory sync fault")
         real_fsync(descriptor)
 
+    def write_complete(stream: BinaryIO) -> None:
+        stream.write(b"complete")
+
     monkeypatch.setattr("alberta_framework.benchmarks.ipmnist_ceiling.os.fsync", fail_second_fsync)
     with pytest.raises(OSError, match="injected directory sync fault"):
-        _atomic_publish(destination, lambda stream: stream.write(b"complete"))
+        _atomic_publish(destination, write_complete)
 
     assert not destination.exists()
     assert list(tmp_path.iterdir()) == []
@@ -693,6 +749,7 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     assert len(summary["provenance"]["inputs"]) == 24
     assert "rule_discovery" in summary["provenance"]["sources"]
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
+    assert "ipmnist_screening" in summary["provenance"]["sources"]
 
 
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])
@@ -758,6 +815,56 @@ def test_rule_summary_rejects_partial_confirmation_seed_set(tmp_path: Path) -> N
     )
     with pytest.raises(ValueError, match="confirmation seeds are incomplete"):
         build_legacy_rule_discovery_summary(screen, confirm, seeds=(0, 1))
+
+
+def test_rule_summary_rejects_arm_substitution(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    _screen_suite(screen)
+    # Replace the disc_r1 screen shard with a genuine sigma0_shiftnorm_d099
+    # payload renamed to the disc_r1 filename: the payload arm must win.
+    _shard(
+        screen / "disc_r1_seed0.json",
+        seed=0,
+        accuracy=0.8,
+        config_name="sigma0_shiftnorm_d099",
+    )
+    with pytest.raises(ValueError, match="does not match expected arm"):
+        build_legacy_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+
+
+def test_rule_summary_rejects_stage_substitution(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    _screen_suite(screen)
+    # Genuine 60-task screen shards dropped into the confirmation directory
+    # under their expected names: the confirmation stage must require 200 tasks.
+    _shard(
+        confirm / "disc_r1_pscale_norms_seed0.json",
+        seed=0,
+        accuracy=0.8,
+        tasks=60,
+    )
+    _shard(
+        confirm / "sigma0_shiftnorm_d099_seed0.json",
+        seed=0,
+        accuracy=0.8,
+        tasks=60,
+    )
+    with pytest.raises(ValueError, match="expected 200"):
+        build_legacy_rule_discovery_summary(screen, confirm, seeds=(0,))
+
+
+def test_rule_summary_rejects_wrong_task_length(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    _screen_suite(screen)
+    _shard(
+        screen / "disc_r1_seed0.json",
+        seed=0,
+        accuracy=0.8,
+        task_length=1000,
+    )
+    with pytest.raises(ValueError, match="task_length"):
+        build_legacy_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
 
 
 def test_current_rule_discovery_legacy_payload_reconstructs_exactly() -> None:
