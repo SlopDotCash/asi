@@ -65,6 +65,7 @@ MULTI_HEAD_LIFETIME_COUNTER_NBYTES = 12
 MULTI_HEAD_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
 _INT32_MAX = 2**31 - 1
+_MAX_MULTI_HEAD_HIDDEN_LAYERS = 4_096
 _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _CONFIG_FIELDS = frozenset(
     {
@@ -527,6 +528,11 @@ class MultiHeadMLPLearner:
             raise ValueError(
                 f"hidden_sizes must be an actual tuple, got {type(hidden_sizes).__name__}"
             )
+        if len(hidden_sizes) > _MAX_MULTI_HEAD_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_MULTI_HEAD_HIDDEN_LAYERS}]"
+            )
         hidden_sizes = tuple(
             _require_int(f"hidden_sizes[{i}]", v, minimum=1, maximum=_INT32_MAX)
             for i, v in enumerate(hidden_sizes)
@@ -711,6 +717,11 @@ class MultiHeadMLPLearner:
             raise ValueError("unsupported MultiHeadMLP state schema")
         if type(config["hidden_sizes"]) is not list:
             raise ValueError("hidden_sizes must be a list")
+        if len(config["hidden_sizes"]) > _MAX_MULTI_HEAD_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_MULTI_HEAD_HIDDEN_LAYERS}]"
+            )
         if (
             config["per_head_gamma_lamda"] is not None
             and type(config["per_head_gamma_lamda"]) is not list
