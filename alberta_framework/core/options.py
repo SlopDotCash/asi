@@ -972,6 +972,14 @@ def check_option_terminated(
 # ---------------------------------------------------------------------------
 
 
+# Scale of the Gumbel perturbation used for greedy tie-breaking in action
+# selection.  ``argmax(q + _GUMBEL_TIE_BREAK_SCALE * Gumbel(0, 1))`` draws the
+# greedy action from ``softmax(q / _GUMBEL_TIE_BREAK_SCALE)`` (the Gumbel-max
+# identity), so the importance-ratio probabilities must use the same scale to
+# describe the policy that actually generated the action.
+_GUMBEL_TIE_BREAK_SCALE = 1e-6
+
+
 def _q_values_for_obs(q_weights: Array, observation: Array) -> Array:
     """Compute Q(s, ·) = q_weights @ obs for all actions."""
     return q_weights @ observation
@@ -987,7 +995,9 @@ def _select_action_epsilon_greedy(
     """ε-greedy action selection with Gumbel tie-breaking."""
     key, explore_key, noise_key = jr.split(key, 3)
     q_vals = _q_values_for_obs(q_weights, observation)
-    greedy = jnp.argmax(q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))).astype(jnp.int32)
+    greedy = jnp.argmax(
+        q_vals + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(noise_key, (n_actions,))
+    ).astype(jnp.int32)
     random_action = jr.randint(explore_key, (), 0, n_actions).astype(jnp.int32)
     explore = jr.uniform(key) < jnp.asarray(epsilon, dtype=jnp.float32)
     action = jnp.where(explore, random_action, greedy)
@@ -1002,7 +1012,9 @@ def _select_action_epsilon_greedy_from_q(
 ) -> tuple[Array, Array]:
     """ε-greedy action selection from pre-computed Q values."""
     key, explore_key, noise_key = jr.split(key, 3)
-    greedy = jnp.argmax(q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))).astype(jnp.int32)
+    greedy = jnp.argmax(
+        q_vals + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(noise_key, (n_actions,))
+    ).astype(jnp.int32)
     random_action = jr.randint(explore_key, (), 0, n_actions).astype(jnp.int32)
     explore = jr.uniform(key) < jnp.asarray(epsilon, dtype=jnp.float32)
     action = jnp.where(explore, random_action, greedy)
@@ -1024,7 +1036,7 @@ def _select_action_epsilon_greedy_from_q_masked(
 
     n_actions = q_vals.shape[0]
     key, explore_key, noise_key = jr.split(key, 3)
-    noisy = q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))
+    noisy = q_vals + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(noise_key, (n_actions,))
     masked_noisy = jnp.where(action_mask, noisy, -jnp.inf)
     greedy = jnp.argmax(masked_noisy).astype(jnp.int32)
     eligible_count = jnp.sum(action_mask.astype(jnp.int32))
@@ -1042,14 +1054,23 @@ def _select_action_epsilon_greedy_from_q_masked(
 
 
 def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Array:
-    """Return epsilon-greedy probabilities with uniform tie handling."""
+    """Return epsilon-greedy probabilities matching Gumbel-max action selection.
+
+    Action selection draws ``argmax(q + _GUMBEL_TIE_BREAK_SCALE * Gumbel(0, 1))``,
+    whose greedy component is distributed as
+    ``softmax(q / _GUMBEL_TIE_BREAK_SCALE)`` by the Gumbel-max identity.  Using
+    that exact distribution keeps the importance-ratio numerator and denominator
+    on the same policy that generated the action: exactly tied values collapse to
+    a uniform split over the maximisers, well-separated values collapse to a hard
+    greedy choice, and near-ties within the tie-break scale receive the smooth
+    Gumbel-max weights instead of the previous hard ``isclose`` uniform split.
+    """
     q = jnp.asarray(q_values, dtype=jnp.float32)
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
-    max_q = jnp.max(q)
-    greedy_mask = jnp.isclose(q, max_q, atol=1e-6, rtol=0.0).astype(jnp.float32)
-    n_greedy = jnp.maximum(jnp.sum(greedy_mask), jnp.array(1.0, dtype=jnp.float32))
-    return eps / n_actions + (1.0 - eps) * greedy_mask / n_greedy
+    scale = jnp.asarray(_GUMBEL_TIE_BREAK_SCALE, dtype=jnp.float32)
+    greedy = jax.nn.softmax(q / scale)
+    return eps / n_actions + (1.0 - eps) * greedy
 
 
 def _clipped_epsilon_greedy_importance_ratio(
