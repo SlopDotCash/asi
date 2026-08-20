@@ -76,6 +76,7 @@ from alberta_framework.core.update_safety import (
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_INDEPENDENT_HORDE_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
 )
@@ -117,6 +118,11 @@ def _read_mapping(name: str, value: object) -> dict[str, Any]:
 def _decode_tuple(name: str, value: object) -> tuple[Any, ...]:
     if type(value) not in {list, tuple}:
         raise ValueError(f"{name} must be an exact list or tuple")
+    if name == "hidden_sizes" and len(value) > _MAX_INDEPENDENT_HORDE_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_INDEPENDENT_HORDE_HIDDEN_LAYERS}]"
+        )
     return tuple(cast(list[Any] | tuple[Any, ...], value))
 
 
@@ -385,6 +391,11 @@ class IndependentDemonHorde:
             raise ValueError("horde_spec must be a nonempty HordeSpec")
         if type(hidden_sizes) is not tuple:
             raise ValueError("hidden_sizes must be an exact tuple")
+        if len(hidden_sizes) > _MAX_INDEPENDENT_HORDE_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_INDEPENDENT_HORDE_HIDDEN_LAYERS}]"
+            )
         hidden_sizes = tuple(
             _require_int32(f"hidden_sizes[{i}]", v, minimum=1) for i, v in enumerate(hidden_sizes)
         )
