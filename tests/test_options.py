@@ -21,8 +21,10 @@ from alberta_framework.core.options import (
     STOMPSpecArrays,
     STOMPState,
     SubtaskSpec,
+    _clipped_epsilon_greedy_importance_ratio,
     _differential_q_update,
     _differential_semidp_q_update,
+    _epsilon_greedy_action_probabilities,
     _stomp_direct_array_scalars,
     load_stomp_state_with_migration,
     replace_dispatched_primitive_action,
@@ -547,3 +549,83 @@ def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibili
     ):
         with pytest.raises(ValueError, match=match):
             STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
+
+
+@pytest.mark.unit
+class TestEpsilonGreedyImportanceRatios:
+    """Intra-option importance ratios must align with Gumbel tie-breaking behavior policy."""
+
+    def test_epsilon_greedy_action_probabilities_exact_ties(self) -> None:
+        q_tied = jnp.array([1.0, 1.0], dtype=jnp.float32)
+        probs_tied = _epsilon_greedy_action_probabilities(
+            q_tied, jnp.asarray(0.2, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(probs_tied, [0.5, 0.5], rtol=1e-5)
+
+        q_three = jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32)
+        probs_three = _epsilon_greedy_action_probabilities(
+            q_three, jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(probs_three, [1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], rtol=1e-5)
+
+    def test_epsilon_greedy_action_probabilities_distinct(self) -> None:
+        q_distinct = jnp.array([0.0, 1.0], dtype=jnp.float32)
+        probs_distinct = _epsilon_greedy_action_probabilities(
+            q_distinct, jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(probs_distinct, [0.0, 1.0], atol=1e-6)
+
+    def test_epsilon_greedy_action_probabilities_near_ties(self) -> None:
+        # q = [0, 5e-7], behavior epsilon = 0.2, target epsilon = 0
+        q_near = jnp.array([0.0, 5e-7], dtype=jnp.float32)
+        behavior_probs = _epsilon_greedy_action_probabilities(
+            q_near, jnp.asarray(0.2, dtype=jnp.float32)
+        )
+        target_probs = _epsilon_greedy_action_probabilities(
+            q_near, jnp.asarray(0.0, dtype=jnp.float32)
+        )
+
+        expected_greedy = jax.nn.softmax(q_near / 1e-6)
+        expected_behavior = 0.2 / 2.0 + 0.8 * expected_greedy
+        expected_target = expected_greedy
+
+        np.testing.assert_allclose(behavior_probs, expected_behavior, rtol=1e-5)
+        np.testing.assert_allclose(target_probs, expected_target, rtol=1e-5)
+
+        # Action 0 ratio and action 1 ratio
+        ratio_0 = float(target_probs[0] / behavior_probs[0])
+        ratio_1 = float(target_probs[1] / behavior_probs[1])
+        assert ratio_0 < 1.0
+        assert ratio_1 > 1.0
+        expected_ratio_0 = float(expected_target[0] / expected_behavior[0])
+        expected_ratio_1 = float(expected_target[1] / expected_behavior[1])
+        np.testing.assert_allclose(ratio_0, expected_ratio_0, rtol=1e-5)
+        np.testing.assert_allclose(ratio_1, expected_ratio_1, rtol=1e-5)
+
+    def test_clipped_epsilon_greedy_importance_ratio_near_ties(self) -> None:
+        # q_weights @ obs gives q = [0, 5e-7]
+        q_weights = jnp.array([[0.0, 0.0], [5e-7, 0.0]], dtype=jnp.float32)
+        obs = jnp.array([1.0, 0.0], dtype=jnp.float32)
+
+        ratio_act0 = _clipped_epsilon_greedy_importance_ratio(
+            q_weights,
+            obs,
+            action=jnp.asarray(0, dtype=jnp.int32),
+            behavior_epsilon=0.2,
+            target_epsilon=0.0,
+            clip=2.0,
+        )
+        ratio_act1 = _clipped_epsilon_greedy_importance_ratio(
+            q_weights,
+            obs,
+            action=jnp.asarray(1, dtype=jnp.int32),
+            behavior_epsilon=0.2,
+            target_epsilon=0.0,
+            clip=2.0,
+        )
+
+        # Verify not flat 1.0
+        assert float(ratio_act0) < 1.0
+        assert float(ratio_act1) > 1.0
+        np.testing.assert_allclose(float(ratio_act0), 0.9390799, rtol=1e-4)
+        np.testing.assert_allclose(float(ratio_act1), 1.0409585, rtol=1e-4)
