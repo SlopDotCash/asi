@@ -494,7 +494,10 @@ class TestStep7Scan:
         result = run_step7_scan(cfg, agent, model, state, jnp.zeros(n_steps), obs)
         assert int(result.state.step_count) == n_steps
 
-    @pytest.mark.parametrize("strategy", ["random", "reward", "surprise", "predecessor"])
+    @pytest.mark.parametrize(
+        "strategy",
+        ["random", "reward", "surprise", "predecessor", "prioritized", "learned"],
+    )
     def test_scan_strategies(self, strategy: str) -> None:
         cfg = _cfg(strategy=strategy, planning_steps=1)
         agent, model, state = _init(cfg)
@@ -544,6 +547,16 @@ class TestStep7Smoke:
         result = run_step7_smoke(cfg, steps=16, seed=0)
         assert result.finite
 
+    def test_smoke_prioritized_strategy(self) -> None:
+        cfg = _cfg(planning_steps=2, strategy="prioritized")
+        result = run_step7_smoke(cfg, steps=16, seed=0)
+        assert result.finite
+
+    def test_smoke_learned_strategy(self) -> None:
+        cfg = _cfg(planning_steps=2, strategy="learned")
+        result = run_step7_smoke(cfg, steps=16, seed=0)
+        assert result.finite
+
 
 # ---------------------------------------------------------------------------
 # 200-step fineness
@@ -572,6 +585,29 @@ class TestStep7Fineness:
         acceptance = jnp.sum(result.planning_accepted)
         # At least some steps should have accepted planning
         assert int(acceptance) > 0
+
+    @pytest.mark.parametrize("strategy", ["prioritized", "learned"])
+    def test_200_step_priority_queue_strategies_stay_finite(self, strategy: str) -> None:
+        # ``prioritized`` and ``predecessor``-scores its own popped anchor
+        # against its own successor when computing propagated priorities
+        # (see ``_propagate_predecessor_priorities``), and ``learned`` feeds
+        # ``rollout_td_signal`` straight back into the per-anchor utility EMA
+        # (see ``_update_planning_utility``). Neither self-referential update
+        # loop was exercised at 200-step length before this test: run it long
+        # enough that a degenerate feedback loop (unbounded priority growth,
+        # NaN from a runaway utility EMA) would show up.
+        cfg = _cfg(planning_steps=2, strategy=strategy, warmup=5)
+        agent, model, state = _init(cfg)
+        n_steps = 200
+        rewards = jr.normal(jr.key(70), (n_steps,))
+        next_obs = jr.normal(jr.key(71), (n_steps, OBS_DIM))
+        result = run_step7_scan(cfg, agent, model, state, rewards, next_obs)
+        chex.assert_tree_all_finite(result.real_td_errors)
+        chex.assert_tree_all_finite(result.planning_td_errors)
+        chex.assert_tree_all_finite(result.state.memory_priorities)
+        chex.assert_tree_all_finite(result.state.memory_utilities)
+        assert int(result.state.step_count) == n_steps
+        assert int(jnp.sum(result.planning_accepted)) > 0
 
 
 # ---------------------------------------------------------------------------
