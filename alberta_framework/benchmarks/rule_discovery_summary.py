@@ -11,9 +11,9 @@ from typing import Any
 
 import numpy as np
 
+import alberta_framework.benchmarks.ipmnist_screening as ipmnist_screening_module
 import alberta_framework.benchmarks.rule_discovery as rule_discovery_module
 from alberta_framework._seed_validation import require_jax_seed, require_unique_jax_seeds
-from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
 
@@ -37,28 +37,39 @@ DISCOVERY_ARMS = (
 CHAMPION = "sigma0_shiftnorm_d099"
 
 
-def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
+def _arm(
+    directory: Path,
+    name: str,
+    seeds: Sequence[int],
+    *,
+    expected_n_tasks: int,
+) -> dict[str, Any]:
     values = []
     for seed in seeds:
         path = directory / f"{name}_seed{seed}.json"
         if not path.exists():
             raise ValueError(f"{name} is missing seed {seed} in {directory}")
-        payload = load_strict_json_object(path)
-        if (
-            type(payload.get("per_task_accuracy")) is not list
-            or not payload["per_task_accuracy"]
-        ):
-            raise ValueError(f"{path} lacks per_task_accuracy")
+        payload = ipmnist_screening_module.load_shard(path)
+        payload_name = payload["config_name"]
+        if payload_name != name:
+            raise ValueError(
+                f"{path}: config_name {payload_name!r} does not match "
+                f"expected arm {name!r}"
+            )
+        config = payload["config"]
+        if config["n_tasks"] != expected_n_tasks:
+            raise ValueError(
+                f"{path}: n_tasks {config['n_tasks']} does not match expected "
+                f"{expected_n_tasks}"
+            )
+        if config["task_length"] != 5_000:
+            raise ValueError(f"{path}: task_length must be 5000")
+        if payload["noise_mode"] != "step":
+            raise ValueError(f"{path}: noise_mode must be step")
         payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
         if payload_seed != seed:
             raise ValueError(f"{path} seed does not match requested seed {seed}")
         accuracy = np.asarray(payload["per_task_accuracy"], dtype=np.float64)
-        if (
-            accuracy.ndim != 1
-            or not bool(np.all(np.isfinite(accuracy)))
-            or not bool(np.all((0.0 <= accuracy) & (accuracy <= 1.0)))
-        ):
-            raise ValueError(f"{path} has invalid per_task_accuracy")
         values.append(float(np.mean(accuracy)))
     return {"per_seed": values, "mean": float(np.mean(values))}
 
@@ -71,7 +82,10 @@ def build_legacy_rule_discovery_summary(
 ) -> dict[str, Any]:
     """Reconstruct the exact legacy v1 payload for compatibility checks."""
     seeds = require_unique_jax_seeds(seeds)
-    screen = {name: _arm(screen_dir, name, seeds) for name in SCREEN_ARMS}
+    screen = {
+        name: _arm(screen_dir, name, seeds, expected_n_tasks=60)
+        for name in SCREEN_ARMS
+    }
     confirm_names = ("disc_r1_pscale_norms", CHAMPION)
     present = [
         (confirm_dir / f"{name}_seed{seed}.json").exists()
@@ -81,7 +95,10 @@ def build_legacy_rule_discovery_summary(
     if any(present) and not all(present):
         raise ValueError("rule-discovery confirmation seeds are incomplete")
     full = (
-        {name: _arm(confirm_dir, name, seeds) for name in confirm_names}
+        {
+            name: _arm(confirm_dir, name, seeds, expected_n_tasks=200)
+            for name in confirm_names
+        }
         if all(present)
         else {}
     )
@@ -153,6 +170,7 @@ def build_rule_discovery_summary(
             for seed in seeds
         ],
         sources={
+            "ipmnist_screening": Path(ipmnist_screening_module.__file__),
             "rule_discovery": Path(rule_discovery_module.__file__),
             "rule_discovery_summary": Path(__file__),
         },
