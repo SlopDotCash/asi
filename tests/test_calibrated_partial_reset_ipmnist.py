@@ -8,6 +8,7 @@ import pytest
 from alberta_framework.benchmarks.calibrated_partial_reset_ipmnist import (
     ARMS,
     _make_cpr_learner,
+    _partial_reset,
     calibrated_partial_reset_spec,
     persistent_numeric_bytes,
 )
@@ -74,3 +75,28 @@ def test_each_reduction_changes_the_end_to_end_parameter_trajectory(mode: str) -
 def test_hard_reset_is_a_full_below_mean_reduction() -> None:
     changed = _trajectory("hard_reset")
     assert all(np.isfinite(np.asarray(value)).all() for value in changed.values())
+
+
+def test_partial_reset_uses_hidden1_rows_then_hidden2_columns_at_unequal_widths() -> None:
+    params = {
+        "w1": jnp.ones((2, 3), dtype=jnp.float32),
+        "b1": jnp.arange(3, dtype=jnp.float32),
+        "w2": jnp.asarray([[1, 2], [3, 4], [5, 6]], dtype=jnp.float32),
+        "b2": jnp.arange(2, dtype=jnp.float32),
+        "w3": jnp.asarray([[7], [8]], dtype=jnp.float32),
+        "b3": jnp.asarray([9], dtype=jnp.float32),
+    }
+    initial = {name: jnp.full_like(value, 10) for name, value in params.items()}
+    reset = _partial_reset(
+        params,
+        initial,
+        jnp.asarray([0, 2, 0], dtype=jnp.float32),
+        jnp.asarray([2, 0], dtype=jnp.float32),
+        replacement_rate=0.01,
+        sharpness=16.0,
+        mode="hard_reset",
+    )
+    np.testing.assert_array_equal(reset["w2"], np.asarray([[0, 10], [3, 10], [0, 10]]))
+    np.testing.assert_array_equal(reset["w3"], np.asarray([[7], [0]]))
+    for name in ("b1", "b2", "b3"):
+        np.testing.assert_array_equal(reset[name], params[name])

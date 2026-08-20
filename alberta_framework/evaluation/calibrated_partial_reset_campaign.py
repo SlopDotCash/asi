@@ -52,7 +52,9 @@ _TEST_EXECUTION_CAPABILITY: Final = object()
 _MAX_JSON_NODES: Final = 100_000
 _MAX_JSON_DEPTH: Final = 16
 _MAX_STRING_BYTES: Final = 16_384
-_MAX_INTEGER_ABS: Final = 2**63 - 1
+_MAX_TOTAL_UTF8_BYTES: Final = 8 * 1024 * 1024
+_MIN_INTEGER: Final = -(2**63)
+_MAX_INTEGER: Final = 2**63 - 1
 _MAX_REPORT_BYTES: Final = 64 * 1024 * 1024
 _MAX_NUMERIC_BYTES: Final = 256 * 1024 * 1024
 _MAX_RUNTIME_DEVICES: Final = 64
@@ -231,6 +233,16 @@ def frozen_plan() -> dict[str, object]:
         ],
         "allowed_boundary_information": [],
         "allowed_task_information": ["current_example_label"],
+        "primary_paired_question": {
+            "candidate": "cpr_utility",
+            "control": "cpr_off",
+            "metric": "mean_online_accuracy",
+            "direction": "higher_is_better",
+            "decision_rule": "advance iff mean_delta > 0 and at least 4 of 5 seed deltas > 0",
+            "advance_outcome": "advance_for_nonpromoting_followup",
+            "reject_outcome": "do_not_advance",
+            "ablation_policy": "utility-free, L2-init, and hard-reset arms are descriptive only",
+        },
         "reviewed_execution_transition": False,
         "execution_authorized": False,
         "development_only": True,
@@ -242,10 +254,11 @@ def frozen_plan() -> dict[str, object]:
 
 def _bounded_json(value: object) -> object:
     nodes = 0
+    utf8_bytes = 0
     seen: set[int] = set()
 
     def visit(item: object, depth: int) -> object:
-        nonlocal nodes
+        nonlocal nodes, utf8_bytes
         nodes += 1
         if nodes > _MAX_JSON_NODES or depth > _MAX_JSON_DEPTH:
             raise ValueError("CPR result exceeds its JSON structure bound")
@@ -253,7 +266,7 @@ def _bounded_json(value: object) -> object:
         if item is None or actual_type is bool:
             return item
         if actual_type is int:
-            if abs(cast(int, item)) > _MAX_INTEGER_ABS:
+            if cast(int, item) < _MIN_INTEGER or cast(int, item) > _MAX_INTEGER:
                 raise ValueError("CPR result contains an out-of-bounds integer")
             return item
         if actual_type is float:
@@ -261,7 +274,9 @@ def _bounded_json(value: object) -> object:
                 raise ValueError("CPR result contains a non-finite float")
             return item
         if actual_type is str:
-            if len(cast(str, item).encode("utf-8")) > _MAX_STRING_BYTES:
+            size = len(cast(str, item).encode("utf-8"))
+            utf8_bytes += size
+            if size > _MAX_STRING_BYTES or utf8_bytes > _MAX_TOTAL_UTF8_BYTES:
                 raise ValueError("CPR result contains an oversized string")
             return item
         if actual_type is not dict and actual_type is not list:
@@ -278,7 +293,15 @@ def _bounded_json(value: object) -> object:
         mapping = cast(dict[object, object], item)
         if len(mapping) > 4096 or any(type(key) is not str for key in mapping):
             raise ValueError("CPR result object exceeds its field bound")
-        return {cast(str, key): visit(child, depth + 1) for key, child in mapping.items()}
+        result: dict[str, object] = {}
+        for key, child in mapping.items():
+            checked_key = cast(str, key)
+            key_size = len(checked_key.encode("utf-8"))
+            utf8_bytes += key_size
+            if key_size > _MAX_STRING_BYTES or utf8_bytes > _MAX_TOTAL_UTF8_BYTES:
+                raise ValueError("CPR result contains oversized aggregate UTF-8")
+            result[checked_key] = visit(child, depth + 1)
+        return result
 
     return visit(value, 0)
 
@@ -368,7 +391,7 @@ def _record(result: ScreeningRunResult) -> dict[str, object]:
             "timing_telemetry_seconds": result.wall_clock_seconds,
             "timing_is_selection_metric": False,
         },
-        "outcome": "inconclusive",
+        "outcome": "descriptive_only",
         "outcome_retained": True,
     }
 
@@ -387,7 +410,47 @@ def _aggregate(rows: list[dict[str, object]]) -> dict[str, object]:
             if row["arm"] == arm
         ]
         means[arm] = math.fsum(values) / len(values)
-    return {"mean_online_accuracy": means, "row_count": len(rows), "outcome": "inconclusive"}
+    by_pair = {
+        (cast(int, row["seed"]), cast(str, row["arm"])): cast(
+            float,
+            cast(dict[str, object], cast(dict[str, object], row["result"])["metrics"])[
+                "mean_online_accuracy"
+            ],
+        )
+        for row in rows
+    }
+    paired_deltas = [
+        {
+            "seed": seed,
+            "utility_minus_off": by_pair[(seed, "cpr_utility")] - by_pair[(seed, "cpr_off")],
+        }
+        for seed in sorted({seed for seed, _arm in by_pair})
+    ]
+    delta_values = [item["utility_minus_off"] for item in paired_deltas]
+    mean_delta = math.fsum(delta_values) / len(delta_values)
+    positive_count = sum(delta > 0.0 for delta in delta_values)
+    outcome = (
+        "advance_for_nonpromoting_followup"
+        if mean_delta > 0.0 and positive_count >= 4
+        else "do_not_advance"
+    )
+    return {
+        "mean_online_accuracy": means,
+        "row_count": len(rows),
+        "primary_paired_question": {
+            "candidate": "cpr_utility",
+            "control": "cpr_off",
+            "metric": "mean_online_accuracy",
+            "direction": "higher_is_better",
+            "paired_deltas": paired_deltas,
+            "mean_delta": mean_delta,
+            "positive_seed_count": positive_count,
+            "decision_rule": "advance iff mean_delta > 0 and at least 4 of 5 seed deltas > 0",
+            "outcome": outcome,
+        },
+        "ablation_policy": "utility-free, L2-init, and hard-reset arms are descriptive only",
+        "outcome": outcome,
+    }
 
 
 def _run(
@@ -478,7 +541,32 @@ def _run(
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii")
+    bounded = _bounded_json(value)
+    encoded = json.dumps(bounded, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "ascii"
+    )
+    if len(encoded) > _MAX_REPORT_BYTES:
+        raise ValueError("CPR canonical JSON exceeds its byte bound")
+    return encoded
+
+
+def _exact_json_equal(left: object, right: object) -> bool:
+    if type(left) is not type(right):
+        return False
+    actual_type = type(left)
+    if actual_type is dict:
+        left_map = cast(dict[str, object], left)
+        right_map = cast(dict[str, object], right)
+        if len(left_map) != len(right_map) or any(key not in right_map for key in left_map):
+            return False
+        return all(_exact_json_equal(left_map[key], right_map[key]) for key in left_map)
+    if actual_type is list:
+        left_list = cast(list[object], left)
+        right_list = cast(list[object], right)
+        return len(left_list) == len(right_list) and all(
+            _exact_json_equal(a, b) for a, b in zip(left_list, right_list, strict=True)
+        )
+    return bool(left == right)
 
 
 def _exact_object(value: object, fields: tuple[str, ...], label: str) -> dict[str, object]:
@@ -553,7 +641,7 @@ def _validate_record(value: object, config: IPMNISTConfig) -> None:
     timing = resources["timing_telemetry_seconds"]
     if type(timing) is not float or not math.isfinite(timing) or timing < 0.0 or timing > 604_800.0:
         raise ValueError("CPR timing telemetry drifted")
-    if record["outcome"] != "inconclusive" or record["outcome_retained"] is not True:
+    if record["outcome"] != "descriptive_only" or record["outcome_retained"] is not True:
         raise ValueError("CPR nonpromoting outcome policy drifted")
 
 
@@ -570,6 +658,11 @@ def validate_report(
         raise ValueError("CPR config must be an exact IPMNISTConfig")
     if type(seeds) is not tuple or any(type(seed) is not int for seed in seeds):
         raise ValueError("CPR seeds must be an exact integer tuple")
+    if len(seeds) != 5 or not any(
+        all(seed == roster[index] for index, seed in enumerate(seeds))
+        for roster in (CAMPAIGN_SEEDS, TEST_ONLY_SEEDS)
+    ):
+        raise ValueError("CPR seed roster differs from the campaign or test-only contract")
     if type(reexecute) is not bool:
         raise ValueError("CPR reexecution selector must be an exact bool")
     report = cast(dict[str, object], _bounded_json(value))
@@ -578,15 +671,18 @@ def validate_report(
     )
     if report["schema"] != SCHEMA:
         raise ValueError("CPR report fields or schema drifted")
-    if report["plan"] != frozen_plan():
+    if not _exact_json_equal(report["plan"], frozen_plan()):
         raise ValueError("CPR report plan drifted")
     checked_x, checked_y = _validated_arrays(x, y, config)
     identity = _exact_object(report["identity"], ("source", "runtime", "dataset"), "identity")
-    if identity != {
-        "source": _source_identity(),
-        "runtime": _runtime_identity(),
-        "dataset": _dataset_identity(checked_x, checked_y),
-    }:
+    if not _exact_json_equal(
+        identity,
+        {
+            "source": _source_identity(),
+            "runtime": _runtime_identity(),
+            "dataset": _dataset_identity(checked_x, checked_y),
+        },
+    ):
         raise ValueError("CPR report identity drifted")
     if type(report["rows"]) is not list:
         raise ValueError("CPR rows must be an exact list")
@@ -610,7 +706,7 @@ def validate_report(
             or row["arm"] != arm
         ):
             raise ValueError("CPR report roster drifted")
-        if row["execution_identity"] != expected_identity[seed]:
+        if not _exact_json_equal(row["execution_identity"], expected_identity[seed]):
             raise ValueError("CPR row identity drifted")
         _validate_record(row["result"], config)
         if reexecute:
@@ -626,7 +722,7 @@ def validate_report(
             replay_resources["timing_telemetry_seconds"] = claimed_resources[
                 "timing_telemetry_seconds"
             ]
-            if replay != row["result"]:
+            if not _exact_json_equal(replay, row["result"]):
                 raise ValueError("CPR row differs from strict current reexecution")
             if (
                 _source_identity() != source
@@ -635,20 +731,31 @@ def validate_report(
             ):
                 raise RuntimeError("CPR identity changed during strict reexecution")
     _exact_object(
-        report["aggregate"], ("mean_online_accuracy", "row_count", "outcome"), "aggregate"
+        report["aggregate"],
+        (
+            "mean_online_accuracy",
+            "row_count",
+            "primary_paired_question",
+            "ablation_policy",
+            "outcome",
+        ),
+        "aggregate",
     )
-    if report["aggregate"] != _aggregate(rows):
+    if not _exact_json_equal(report["aggregate"], _aggregate(rows)):
         raise ValueError("CPR aggregate arithmetic drifted")
     policy = _exact_object(
         report["policy"],
         ("development_only", "scientific_promotion_allowed", "negative_outcomes_retained"),
         "policy",
     )
-    if policy != {
-        "development_only": True,
-        "scientific_promotion_allowed": False,
-        "negative_outcomes_retained": True,
-    }:
+    if not _exact_json_equal(
+        policy,
+        {
+            "development_only": True,
+            "scientific_promotion_allowed": False,
+            "negative_outcomes_retained": True,
+        },
+    ):
         raise ValueError("CPR result policy drifted")
     unsigned = dict(report)
     claimed = unsigned.pop("sha256")

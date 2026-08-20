@@ -36,6 +36,14 @@ row is strictly reexecuted before publication. The 25 rows and 25 reexecutions t
 runner dispatches, 2,000,000 observations/data steps/updates, zero environment steps, and
 4,000,000 model queries.
 
+The prospectively frozen primary question is whether utility-scaled CPR improves each
+seed's mean online accuracy relative to mechanism-off Adam. The report retains all five
+paired `utility - off` deltas and their exact `math.fsum` mean. It advances only to another
+nonpromoting development follow-up when the mean delta is positive and at least four of
+five seed deltas are positive; otherwise the outcome is `do_not_advance`. The utility-free,
+L2-init, and hard-reset reductions are descriptive ablations and cannot change that primary
+outcome. This directional development rule has no scientific threshold or promotion force.
+
 The static numeric envelope counts one caller-owned C-contiguous float32 dataset and int32
 labels, one materialized permutation/index schedule, and the peak retained learner state:
 parameters, initialization target, both Adam moments, utility traces, and step counter. Its

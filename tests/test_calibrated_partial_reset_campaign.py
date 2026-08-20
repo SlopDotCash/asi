@@ -114,6 +114,11 @@ def test_private_runner_covers_complete_roster_and_strict_reexecution(
     assert [(row["seed"], row["arm"]) for row in report["rows"]] == [
         (seed, arm) for seed in lane.TEST_ONLY_SEEDS for arm in lane.ARMS
     ]
+    primary = report["aggregate"]["primary_paired_question"]
+    assert [item["seed"] for item in primary["paired_deltas"]] == list(lane.TEST_ONLY_SEEDS)
+    assert primary["mean_delta"] == pytest.approx(0.01)
+    assert primary["positive_seed_count"] == 5
+    assert primary["outcome"] == "advance_for_nonpromoting_followup"
     lane.validate_report(
         report,
         *_data(),
@@ -193,8 +198,46 @@ def test_runtime_device_bound_precedes_device_attribute_access(
 
 
 def test_json_boundary_rejects_unbounded_integer() -> None:
-    with pytest.raises(ValueError, match="out-of-bounds integer"):
-        lane._bounded_json({"nested": [2**64]})
+    assert lane._bounded_json({"values": [-(2**63), 2**63 - 1]}) == {
+        "values": [-(2**63), 2**63 - 1]
+    }
+    for value in (-(2**63) - 1, 2**63):
+        with pytest.raises(ValueError, match="out-of-bounds integer"):
+            lane._bounded_json({"nested": [value]})
+
+
+def test_json_boundary_enforces_aggregate_utf8_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(lane, "_MAX_TOTAL_UTF8_BYTES", 7)
+    with pytest.raises(ValueError, match="UTF-8|oversized string"):
+        lane._canonical({"a": "1234", "b": "5678"})
+
+
+def test_validator_rejects_bool_int_aliases_in_nested_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    report = _run_for_test(monkeypatch)
+    forged = copy.deepcopy(report)
+    forged["plan"]["execution_authorized"] = 0
+    _resign(forged)
+    with pytest.raises(ValueError, match="plan"):
+        lane.validate_report(
+            forged,
+            *_data(),
+            config=SMALL,
+            seeds=lane.TEST_ONLY_SEEDS,
+            reexecute=False,
+        )
+    forged = copy.deepcopy(report)
+    forged["policy"]["development_only"] = 1
+    _resign(forged)
+    with pytest.raises(ValueError, match="policy"):
+        lane.validate_report(
+            forged,
+            *_data(),
+            config=SMALL,
+            seeds=lane.TEST_ONLY_SEEDS,
+            reexecute=False,
+        )
 
 
 def test_combined_numeric_bound_precedes_dataset_copy_and_runner(
