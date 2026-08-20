@@ -338,6 +338,8 @@ def _performance_matrix(
         raise ValueError("performance_matrix must have shape (checkpoints, tasks)")
     if matrix.shape[0] < 1 or matrix.shape[1] < 1:
         raise ValueError("performance_matrix must be non-empty")
+    if np.any(np.isinf(matrix)):
+        raise ValueError("performance_matrix has an infinite evaluation")
     return matrix
 
 
@@ -487,6 +489,8 @@ def compute_prequential_performance(
     values = _numeric_array(online_performance, name="online_performance")
     if values.ndim != 1 or values.size == 0:
         raise ValueError("online_performance must be a non-empty one-dimensional trace")
+    if np.any(np.isinf(values)):
+        raise ValueError("online_performance must not contain infinity")
     finite = values[np.isfinite(values)]
     if finite.size == 0:
         raise ValueError("online_performance must contain at least one finite value")
@@ -524,6 +528,10 @@ def compute_stability_gap(
         raise ValueError(
             "reference_performance must be scalar or match online_performance"
         ) from exc
+    if np.any(np.isinf(values)):
+        raise ValueError("online_performance must not contain infinity")
+    if np.any(np.isinf(broadcast_reference)):
+        raise ValueError("reference_performance must not contain infinity")
 
     valid = np.isfinite(values) & np.isfinite(broadcast_reference)
     if not np.any(valid):
@@ -562,6 +570,8 @@ def compute_recovery_lengths(
     threshold_value = _require_finite_real("threshold", threshold)
     if values.ndim != 1 or values.size == 0:
         raise ValueError("online_performance must be a non-empty one-dimensional trace")
+    if np.any(np.isinf(values)):
+        raise ValueError("online_performance must not contain infinity")
     if points.ndim != 1 or points.size == 0:
         raise ValueError("change_points must be a non-empty one-dimensional array")
     if np.any(points < 0) or np.any(points >= values.size):
