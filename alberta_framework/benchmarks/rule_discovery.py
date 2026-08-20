@@ -868,11 +868,18 @@ def _require_unique_task_names(task_names: Sequence[str], *, name: str) -> tuple
     return names
 
 
+# CLI last-fit is `--n-random 3072`. `10**12` still reaches
+# `random_genomes(key, n)` as shape `(n, GENOME_SIZE)` float32.
+_MAX_SEARCH_INT = 1_000_000
+
+
 def _require_search_int(name: str, value: object, *, minimum: int) -> int:
     if type(name) is not str:
         raise ValueError("name must be an exact string")
     if type(value) is not int or value < minimum:
         raise ValueError(f"{name} must be an integer >= {minimum}")
+    if value > _MAX_SEARCH_INT:
+        raise ValueError(f"{name} exceeds the search integer limit")
     return value
 
 
