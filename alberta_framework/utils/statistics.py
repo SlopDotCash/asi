@@ -38,6 +38,9 @@ _ACTUAL_FLOAT_TYPES = frozenset(
     {float, Fraction, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
 )
 _ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+# Public last-fit in tests is n_bootstrap=500; the documented default is 10_000.
+# Origin handed unbounded counts to range(n_bootstrap) — hang, not leftover INT32 math.
+_BOOTSTRAP_MAX_COUNT = 10_000
 
 
 def _require_exact_str(name: str, value: object) -> str:
@@ -957,6 +960,10 @@ def bootstrap_ci(
         raise ValueError("statistic must be either 'mean' or 'median'")
     _validate_confidence_level(confidence_level)
     n_bootstrap = _require_positive_int("n_bootstrap", n_bootstrap)
+    if n_bootstrap > _BOOTSTRAP_MAX_COUNT:
+        raise ValueError(
+            f"n_bootstrap count must be an integer in [1, {_BOOTSTRAP_MAX_COUNT}]"
+        )
     rng = np.random.default_rng(seed)
 
     stat_func = np.mean if statistic == "mean" else np.median
