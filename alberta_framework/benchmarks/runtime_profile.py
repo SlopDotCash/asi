@@ -13,7 +13,10 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Any, Literal, cast
+
+from alberta_framework._bounded_containers import require_bounded_container_tree
 
 ENVIRONMENT_RUNTIME_PROFILE_SCHEMA_VERSION = (
     "alberta.environment_runtime_profile.v1"
@@ -97,27 +100,71 @@ _REQUIRED_SCIENTIFIC_PACKAGES = tuple(
 )
 
 
-def _json_copy(value: Any, *, label: str) -> Any:
+# Same ceiling as security/checkpoints. Origin json.dumps RecursionErrors
+# a 16_000-deep runtime-profile mapping during validate_environment_runtime_profile.
+_JSON_MAX_DEPTH = 32
+_JSON_MAX_NODES = 4096
+
+
+def _json_container_children(node: object) -> tuple[object, ...] | None:
+    """Return JSON-container children, or None for a scalar leaf."""
+
+    node_type = type(node)
+    if node_type is dict:
+        return tuple(cast(dict[Any, Any], node).values())
+    if node_type is list:
+        return tuple(cast(list[Any], node))
+    if node_type is tuple:
+        return cast(tuple[object, ...], node)
+    if node_type is MappingProxyType:
+        return tuple(cast(Mapping[str, Any], node).values())
+    return None
+
+
+def _require_bounded_json(value: object, *, name: str) -> None:
+    """Reject deep or cyclic host trees before json.dumps RecursionError."""
+
+    require_bounded_container_tree(
+        value,
+        children=_json_container_children,
+        max_depth=_JSON_MAX_DEPTH,
+        max_nodes=_JSON_MAX_NODES,
+        name=name,
+        kind="JSON",
+    )
+
+
+def _dumps_canonical_json(value: object, *, name: str) -> str:
+    """Encode one finite JSON tree after a structural nest preflight."""
+
+    _require_bounded_json(value, name=name)
     try:
-        encoded = json.dumps(
+        return json.dumps(
             value,
             allow_nan=False,
             ensure_ascii=False,
             separators=(",", ":"),
             sort_keys=True,
         )
+    except RecursionError as exc:
+        raise ValueError(f"{name} exceeds the JSON nesting limit") from exc
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain finite JSON data") from exc
+
+
+def _json_copy(value: Any, *, label: str) -> Any:
+    encoded = _dumps_canonical_json(value, name=label)
+    try:
         return json.loads(encoded)
+    except RecursionError as exc:
+        raise ValueError(f"{label} exceeds the JSON nesting limit") from exc
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"{label} must contain finite JSON data") from exc
 
 
 def _canonical_json_sha256(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+    encoded = _dumps_canonical_json(
+        value, name="canonical JSON digest payload"
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
