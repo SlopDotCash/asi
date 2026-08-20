@@ -126,6 +126,21 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_sarsa_host_steps(name: str, value: object) -> int:
+    """Reject an oversized host loop count before ``range`` materializes it.
+
+    ``run_sarsa_episode`` and ``run_sarsa_continuing`` are Python env loops.
+    Origin accepted any signed-int32 count and handed it to ``range`` — hang,
+    not leftover INT32 arithmetic. Public last-fit matches the array-scan
+    ceiling ``_SARSA_SEQUENCE_MAX_STEPS``.
+    """
+    if type(value) is not int or not 1 <= value <= _SARSA_SEQUENCE_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_SARSA_SEQUENCE_MAX_STEPS}]"
+        )
+    return value
+
+
 def _require_sarsa_sequence_length(name: str, value: object) -> int:
     """Reject an oversized or malformed leading axis before it drives a scan.
 
@@ -1089,6 +1104,7 @@ def run_sarsa_episode(
     Returns:
         SARSAEpisodeResult with episode metrics
     """
+    max_steps = _require_sarsa_host_steps("max_steps", max_steps)
     obs, _info = env.reset()
     obs = jnp.asarray(obs, dtype=jnp.float32).flatten()
 
@@ -1161,6 +1177,7 @@ def run_sarsa_continuing(
     Returns:
         SARSAContinuingResult with step-level metrics
     """
+    num_steps = _require_sarsa_host_steps("num_steps", num_steps)
     obs, _info = env.reset()
     obs = jnp.asarray(obs, dtype=jnp.float32).flatten()
 
