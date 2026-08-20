@@ -79,6 +79,7 @@ from alberta_framework.core.update_safety import (
 EVIDENCE_LEVEL = "L0"
 SCIENTIFIC_PROMOTION_ALLOWED = False
 _INT32_MAX = 2**31 - 1
+_MAX_LATENT_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -108,6 +109,11 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
     if type(sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(sizes) > _MAX_LATENT_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_LATENT_HIDDEN_LAYERS}]"
+        )
     return tuple(
         _require_int32(f"hidden_sizes[{index}]", size, minimum=1)
         for index, size in enumerate(sizes)
@@ -395,6 +401,11 @@ class LatentWorldModelConfig:
         if "hidden_sizes" in payload:
             if type(payload["hidden_sizes"]) is not list:
                 raise ValueError("hidden_sizes must be a list in serialized config")
+            if len(payload["hidden_sizes"]) > _MAX_LATENT_HIDDEN_LAYERS:
+                raise ValueError(
+                    "hidden_sizes length must be an integer in "
+                    f"[0, {_MAX_LATENT_HIDDEN_LAYERS}]"
+                )
             payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
         if "observation_scale" in payload and payload["observation_scale"] is not None:
             if type(payload["observation_scale"]) is not list:
