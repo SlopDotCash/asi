@@ -28,6 +28,8 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+
+from alberta_framework._strict_json import load_strict_json_object
 from typing import Any, cast
 
 import jax
@@ -763,8 +765,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     for manifest_path in args.reference_manifest:
         try:
-            dispatch = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            dispatch = load_strict_json_object(manifest_path)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
             parser.error(
                 f"could not decode --reference-manifest {manifest_path}: {exc}"
             )
