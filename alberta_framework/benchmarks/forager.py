@@ -1708,6 +1708,7 @@ class ForagerBenchmarkConfig:
             self.jax_chunk_size,
             name="jax_chunk_size",
             minimum=1,
+            maximum=10_000,
         )
         # A padded scan longer than the entire requested lifetime can only
         # waste compile memory/time; normalize it to the exact effective size.
