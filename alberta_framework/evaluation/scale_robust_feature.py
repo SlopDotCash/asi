@@ -95,8 +95,8 @@ CONDITION_NAMES = (
 EARLY_WINDOW_STEPS = 200
 TAIL_WINDOW_STEPS = 500
 ASYMPTOTIC_WINDOW_STEPS = 1_500
-# Origin ConditionSeedRecord rebuilt every pair before any count bound.
-# A cheap ``((0, 1),) * 25_000_000`` pointer-repeat took 4.107s on origin/main.
+# Frozen records contain at most 91 candidates; this leaves ample margin while
+# bounding reconstruction and set-building work for caller-provided records.
 _MAX_INTEGER_PAIRS = 4096
 
 FROZEN_STREAM_CONFIGURATION: dict[str, int | float] = {
@@ -517,12 +517,12 @@ def make_condition_learner(condition: str) -> FixedBudgetInteractionLearner:
 
 
 def count_relevant_context_pairs(
-    pairs: Sequence[tuple[int, int]],
+    pairs: tuple[tuple[int, int], ...] | list[tuple[int, int]],
     *,
     relevant_dim: int = 8,
     input_dim: int = 12,
 ) -> int:
-    """Count unique canonical context products over relevant input channels."""
+    """Count unique context products from one bounded exact tuple or list."""
 
     normalized_pairs = _integer_pairs(pairs, name="pairs", allow_list=True)
     relevant_pairs = {
@@ -534,12 +534,12 @@ def count_relevant_context_pairs(
 
 
 def count_relevant_context_pairs_by_task(
-    pairs: Sequence[tuple[int, int]],
+    pairs: tuple[tuple[int, int], ...] | list[tuple[int, int]],
     *,
     relevant_dim: int = 8,
     input_dim: int = 12,
 ) -> tuple[int, int]:
-    """Count unique relevant products for the supplied C and D cues separately."""
+    """Count task-specific products from one bounded exact tuple or list."""
 
     normalized_pairs = _integer_pairs(pairs, name="pairs", allow_list=True)
     canonical_pairs = {(min(left, right), max(left, right)) for left, right in normalized_pairs}
