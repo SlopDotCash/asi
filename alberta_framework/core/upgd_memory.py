@@ -43,6 +43,7 @@ from alberta_framework.core.update_safety import (
 from alberta_framework.core.upgd import UPGDLearner, UPGDState
 
 _INT32_MAX: int = 2**31 - 1
+_MAX_UPGD_MEMORY_HIDDEN_LAYERS = 4_096
 _UINT32_MAX: int = 2**32 - 1
 _MAX_PERSISTENT_STATE_BYTES: int = 256 * 1024 * 1024
 _FLOAT32_MIN_NORMAL: float = float(np.finfo(np.float32).tiny)
@@ -402,6 +403,11 @@ class UPGDMemoryConfig:
             hidden = payload["hidden_sizes"]
             if type(hidden) not in {list, tuple}:
                 raise ValueError("hidden_sizes must be a list or tuple")
+            if len(hidden) > _MAX_UPGD_MEMORY_HIDDEN_LAYERS:
+                raise ValueError(
+                    "hidden_sizes length must be an integer in "
+                    f"[0, {_MAX_UPGD_MEMORY_HIDDEN_LAYERS}]"
+                )
             payload["hidden_sizes"] = tuple(hidden)
         return cls(**payload)
 
@@ -450,6 +456,11 @@ def _validate_config(config: UPGDMemoryConfig) -> None:
     if type(config.hidden_sizes) is not tuple:
         raise TypeError(
             f"hidden_sizes must be an actual tuple, got {type(config.hidden_sizes).__name__}"
+        )
+    if len(config.hidden_sizes) > _MAX_UPGD_MEMORY_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_UPGD_MEMORY_HIDDEN_LAYERS}]"
         )
     canonical_hidden = tuple(
         _require_int("hidden_sizes element", size, minimum=1, maximum=_INT32_MAX)
