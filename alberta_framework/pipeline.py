@@ -97,6 +97,9 @@ Signature: ``(observation, reward, terminated) -> Array(n_demons,)``.
 
 _INT32_MAX: int = 2**31 - 1
 _MAX_CONFIG_SEQUENCE_LENGTH: int = 4096
+# Public last-fit in tests is run_arrays length 2 and smoke steps=8.
+# Origin scanned INT32-legal array lengths — hang, not leftover INT32 math.
+_PIPELINE_SCAN_MAX: int = 10_000
 
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
     int,
@@ -1695,9 +1698,11 @@ class AlbertaPipeline:
         """
         state = self._state_contract(state)
         observations = self._observation_operand("observations", observations, batched=True)
-        steps = int(observations.shape[0])
-        if not 1 <= steps <= _INT32_MAX:
-            raise ValueError("observations must contain between 1 and signed-int32 steps")
+        steps = observations.shape[0]
+        if type(steps) is not int or not 1 <= steps <= _PIPELINE_SCAN_MAX:
+            raise ValueError(
+                f"observations must contain between 1 and {_PIPELINE_SCAN_MAX} steps"
+            )
         rewards = _trusted_array_metadata(
             "rewards", rewards, shape=(steps,), dtype=jnp.float32
         )
@@ -1840,7 +1845,7 @@ def run_pipeline_smoke(
     seed: int = 0,
 ) -> AlbertaPipelineSmokeResult:
     """Run a deterministic Step 1-4 pipeline smoke probe."""
-    steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
+    steps = _require_int("steps", steps, minimum=1, maximum=_PIPELINE_SCAN_MAX)
     seed = require_jax_seed(seed, name="seed")
     if config is None:
         cfg = AlbertaPipelineConfig()
