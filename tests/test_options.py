@@ -21,8 +21,10 @@ from alberta_framework.core.options import (
     STOMPSpecArrays,
     STOMPState,
     SubtaskSpec,
+    _clipped_epsilon_greedy_importance_ratio,
     _differential_q_update,
     _differential_semidp_q_update,
+    _epsilon_greedy_action_probabilities,
     _stomp_direct_array_scalars,
     load_stomp_state_with_migration,
     replace_dispatched_primitive_action,
@@ -52,6 +54,43 @@ class TestSubtaskSpecValidation:
     def test_rejects_bad_pseudo_reward_scale(self, scale: float) -> None:
         with pytest.raises(ValueError, match="pseudo_reward_scale"):
             SubtaskSpec(feature_index=0, pseudo_reward_scale=scale)
+
+
+@pytest.mark.unit
+class TestEpsilonGreedyImportanceRatio:
+    """The importance ratio must reflect the Gumbel-max behavior policy that
+    `_select_action_epsilon_greedy(_from_q)` actually samples from, not a
+    hard tie-broken argmax -- see GitHub issue #2136."""
+
+    def test_near_tied_q_values_are_not_treated_as_an_exact_tie(self) -> None:
+        # Reproduces the issue #2136 repro exactly: for near-tied Q-values the
+        # Gumbel-max greedy distribution is close to, but not, a uniform tie.
+        q_values = jnp.array([0.0, 5.0e-7], dtype=jnp.float32)
+        probs = _epsilon_greedy_action_probabilities(q_values, jnp.asarray(0.0, dtype=jnp.float32))
+        expected = jnp.array([0.37754068, 0.62245935], dtype=jnp.float32)
+        np.testing.assert_allclose(probs, expected, rtol=1e-5, atol=1e-5)
+
+    def test_importance_ratio_matches_hand_computed_value(self) -> None:
+        # q_weights @ observation = [0, 5e-7], matching the issue's q_values.
+        q_weights = jnp.array([[0.0, 0.0, 0.0], [5.0e-7, 0.0, 0.0]], dtype=jnp.float32)
+        observation = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+        ratio = _clipped_epsilon_greedy_importance_ratio(
+            q_weights,
+            observation,
+            jnp.asarray(0, dtype=jnp.int32),
+            behavior_epsilon=0.2,
+            target_epsilon=0.0,
+            clip=10.0,
+        )
+        expected = jnp.asarray(0.9390799, dtype=jnp.float32)
+        np.testing.assert_allclose(ratio, expected, rtol=1e-5, atol=1e-5)
+
+    def test_exact_tie_still_splits_evenly(self) -> None:
+        q_values = jnp.array([1.0, 1.0, 1.0], dtype=jnp.float32)
+        probs = _epsilon_greedy_action_probabilities(q_values, jnp.asarray(0.3, dtype=jnp.float32))
+        np.testing.assert_allclose(
+            probs, jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32), rtol=1e-6, atol=1e-6
+        )
 
 
 def _agent() -> STOMPAgent:
