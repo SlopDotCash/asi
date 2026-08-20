@@ -10616,6 +10616,7 @@ _V2_SHARD_FIELDS = frozenset(
         "source_provenance",
         "dataset_provenance",
         "environment",
+        "package_snapshot_sha",
     }
 )
 _V2_MECHANISM_SHARD_FIELDS = _V2_SHARD_FIELDS | frozenset({"mechanism_receipt"})
@@ -11018,6 +11019,7 @@ def shard_payload(
         "source_provenance": source_binding,
         "dataset_provenance": dataset_binding,
         "environment": runtime_binding,
+        "package_snapshot_sha": source_binding["relevant_source_sha256"],
     }
     if spec.mechanism in {
         "c_chain",
@@ -11102,6 +11104,9 @@ def load_shard(
         payload["environment"] = _validated_runtime_environment(
             payload["environment"], context=str(path)
         )
+        package_snapshot_sha = payload.get("package_snapshot_sha")
+        if not _is_lower_hex(package_snapshot_sha, 64):
+            raise ValueError(f"{path}: package_snapshot_sha must be a lowercase SHA-256")
     _require_exact_keys(
         payload["config"], _IPMNIST_CONFIG_FIELDS, context=f"{path}: config"
     )
@@ -11420,6 +11425,7 @@ def merge_shards(
     slope_window: int = 15,
     *,
     spec_registry: Mapping[str, ScreeningSpec] | None = None,
+    require_current_source: bool = False,
 ) -> dict[str, Any]:
     """Merge shards into a ranked screening summary with paired comparisons.
 
@@ -11454,6 +11460,22 @@ def merge_shards(
         if shard_schema == SHARD_SCHEMA
         else None
     )
+    if require_current_source and source_provenance is not None:
+        current = _screening_source_provenance()
+        if source_provenance != current:
+            raise ValueError(
+                "shards source provenance does not match current source; "
+                f"shard {str(source_provenance.get('relevant_source_sha256','?'))[:8]} vs "
+                f"current {str(current.get('relevant_source_sha256','?'))[:8]}; "
+                "rerun shards with current source"
+            )
+    if shard_schema == SHARD_SCHEMA:
+        package_shas = {shard["package_snapshot_sha"] for shard in shards}
+        if len(package_shas) != 1:
+            raise ValueError(
+                "shards span multiple package_snapshot_sha bindings; process matching "
+                f"runs separately (mismatched: {sorted(package_shas)})"
+            )
     configs = {tuple(sorted(s["config"].items())) for s in shards}
     if len(configs) != 1:
         raise ValueError("shards span multiple protocol configs; merge them separately")
