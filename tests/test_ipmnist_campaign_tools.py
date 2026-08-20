@@ -743,6 +743,7 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     assert len(summary["provenance"]["inputs"]) == 24
     assert "rule_discovery" in summary["provenance"]["sources"]
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
+    assert "ipmnist_screening" in summary["provenance"]["sources"]
 
 
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])

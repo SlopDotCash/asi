@@ -13,6 +13,7 @@ import numpy as np
 
 import alberta_framework.benchmarks.rule_discovery as rule_discovery_module
 from alberta_framework._seed_validation import require_unique_jax_seeds
+from alberta_framework.benchmarks import ipmnist_screening
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 from alberta_framework.benchmarks.ipmnist_screening import load_shard
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
@@ -175,6 +176,7 @@ def build_rule_discovery_summary(
         sources={
             "rule_discovery": Path(rule_discovery_module.__file__),
             "rule_discovery_summary": Path(__file__),
+            "ipmnist_screening": Path(ipmnist_screening.__file__),
         },
         repository_root=Path(__file__).resolve().parents[2],
     )
