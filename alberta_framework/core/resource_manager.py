@@ -50,6 +50,7 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+_MAX_GENERATOR_POLICIES = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
 )
@@ -103,6 +104,16 @@ def _require_exact_tuple(name: str, value: object) -> tuple[Any, ...]:
 def _decode_sequence(name: str, value: object) -> tuple[Any, ...]:
     if type(value) is not list:
         raise ValueError(f"serialized {name} must be an exact JSON list")
+    return tuple(value)
+
+
+def _decode_bounded_sequence(name: str, value: object) -> tuple[Any, ...]:
+    if type(value) is not list:
+        raise ValueError(f"serialized {name} must be an exact JSON list")
+    if len(value) > _MAX_GENERATOR_POLICIES:
+        raise ValueError(
+            f"{name} length must be an integer in [0, {_MAX_GENERATOR_POLICIES}]"
+        )
     return tuple(value)
 
 
@@ -782,6 +793,11 @@ class GeneratorMetaResourceManager:
         n_policies = len(policy_names)
         if n_policies < 1:
             raise ValueError("at least one generator policy is required")
+        if n_policies > _MAX_GENERATOR_POLICIES:
+            raise ValueError(
+                "policy_names length must be an integer in "
+                f"[1, {_MAX_GENERATOR_POLICIES}]"
+            )
         lengths = {
             len(op_ids),
             len(parent_modes),
@@ -949,9 +965,13 @@ class GeneratorMetaResourceManager:
         )
         try:
             initial_preferences = config.pop("initial_preferences")
-            decoded_policy_names = _decode_sequence("policy_names", config.pop("policy_names"))
-            decoded_op_ids = _decode_sequence("op_ids", config.pop("op_ids"))
-            decoded_parent_modes = _decode_sequence("parent_modes", config.pop("parent_modes"))
+            decoded_policy_names = _decode_bounded_sequence(
+                "policy_names", config.pop("policy_names")
+            )
+            decoded_op_ids = _decode_bounded_sequence("op_ids", config.pop("op_ids"))
+            decoded_parent_modes = _decode_bounded_sequence(
+                "parent_modes", config.pop("parent_modes")
+            )
             if any(type(value) is not str for value in decoded_policy_names):
                 raise ValueError("serialized policy_names elements must be JSON strings")
             if any(type(value) is not int for value in (*decoded_op_ids, *decoded_parent_modes)):
@@ -963,11 +983,13 @@ class GeneratorMetaResourceManager:
                 "candidate_min_age_multipliers",
                 "imprint_scales",
             ):
-                values = _decode_sequence(name, config.pop(name))
+                values = _decode_bounded_sequence(name, config.pop(name))
                 if any(type(value) is not float for value in values):
                     raise ValueError(f"serialized {name} elements must be JSON numbers")
                 float_sequences[name] = values
-            decoded_initial = _decode_sequence("initial_preferences", initial_preferences)
+            decoded_initial = _decode_bounded_sequence(
+                "initial_preferences", initial_preferences
+            )
             if any(type(value) is not float for value in decoded_initial):
                 raise ValueError("serialized initial_preferences elements must be JSON numbers")
             return cls(
