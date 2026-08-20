@@ -43,6 +43,7 @@ from alberta_framework.recurring_feature_gate import (
     CRITICAL_TASKS,
     DEVELOPMENT_SEEDS,
     EVIDENCE_SEEDS,
+    MAX_RECURRING_FEATURE_DIM,
     PAIRWISE_PROBE_SCOPE,
     PHASE_TASKS,
     TASK_NAMES,
@@ -63,8 +64,6 @@ CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan"
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
 BOOTSTRAP_SEED = 2_026_073_002
-# Frozen v1 protocol uses feature_dim=6. Cap reconstruction well below C(n, 2) hang.
-_MAX_PROTOCOL_FEATURE_DIM = 64
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
@@ -121,9 +120,9 @@ def _bounded_feature_dim(value: object, *, name: str) -> int:
 
     if type(value) is not int:
         raise ValueError(f"{name} must be an exact int")
-    if value < 6 or value > _MAX_PROTOCOL_FEATURE_DIM:
+    if value < 6 or value > MAX_RECURRING_FEATURE_DIM:
         raise ValueError(
-            f"{name} must be an integer in [6, {_MAX_PROTOCOL_FEATURE_DIM}]"
+            f"{name} must be an integer in [6, {MAX_RECURRING_FEATURE_DIM}]"
         )
     return value
 

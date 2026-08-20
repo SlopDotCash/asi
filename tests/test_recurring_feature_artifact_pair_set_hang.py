@@ -7,11 +7,11 @@ import time
 import pytest
 
 from alberta_framework.evaluation.recurring_feature_artifact import (
-    _MAX_PROTOCOL_FEATURE_DIM,
     _result_integrity,
     build_recurring_feature_artifact,
 )
 from alberta_framework.recurring_feature_gate import (
+    MAX_RECURRING_FEATURE_DIM,
     FeatureMemoryBudget,
     PhaseEvidence,
     RecurringFeatureGateResult,
@@ -46,12 +46,12 @@ def _result(*, feature_dim: object) -> RecurringFeatureGateResult:
 
 def test_frozen_feature_dim_is_inside_the_reconstruction_bound() -> None:
     assert RecurringFeatureProtocol().feature_dim == 6
-    assert 6 <= RecurringFeatureProtocol().feature_dim <= _MAX_PROTOCOL_FEATURE_DIM
+    assert 6 <= RecurringFeatureProtocol().feature_dim <= MAX_RECURRING_FEATURE_DIM
 
 
 def test_last_fit_feature_dim_reconstructs_without_pair_set_hang() -> None:
     started = time.perf_counter()
-    finite, archive = _result_integrity(_result(feature_dim=_MAX_PROTOCOL_FEATURE_DIM))
+    finite, archive = _result_integrity(_result(feature_dim=MAX_RECURRING_FEATURE_DIM))
     assert time.perf_counter() - started < 0.5
     assert finite is False
     assert archive is False
@@ -70,6 +70,13 @@ def test_build_rejects_oversized_feature_dim_before_pair_set(
     assert time.perf_counter() - started < 0.5
 
 
+def test_public_result_decision_rejects_oversized_feature_dim_before_pair_set() -> None:
+    started = time.perf_counter()
+    with pytest.raises(ValueError, match=r"feature_dim must be in \[6, 64\]"):
+        _result(feature_dim=5000).decision()
+    assert time.perf_counter() - started < 0.5
+
+
 def test_build_rejects_non_int_feature_dim_before_pair_set() -> None:
     started = time.perf_counter()
     with pytest.raises(ValueError, match="exact int"):
@@ -78,3 +85,22 @@ def test_build_rejects_non_int_feature_dim_before_pair_set() -> None:
             gate_wall_seconds=0.0,
         )
     assert time.perf_counter() - started < 0.5
+
+
+class _HostileInt(int):
+    def __lt__(self, other: object) -> bool:
+        raise AssertionError("hostile integer comparison ran")
+
+    def __gt__(self, other: object) -> bool:
+        raise AssertionError("hostile integer comparison ran")
+
+    def __index__(self) -> int:
+        raise AssertionError("hostile integer index conversion ran")
+
+
+def test_build_rejects_hostile_int_subclass_before_hooks() -> None:
+    with pytest.raises(ValueError, match="exact int"):
+        build_recurring_feature_artifact(
+            _result(feature_dim=_HostileInt(6)),
+            gate_wall_seconds=0.0,
+        )

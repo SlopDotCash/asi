@@ -61,6 +61,11 @@ PAIRWISE_PROBE_SCOPE = (
     "discovery, continual control, or Alberta Plan completion."
 )
 
+# Bound the exhaustive C(n, 2) candidate universe before constructing it.  The
+# frozen protocol uses six inputs; 64 retains bounded noncanonical development
+# diagnostics without permitting scalar-controlled pair-set explosions.
+MAX_RECURRING_FEATURE_DIM = 64
+
 
 def _require_builtin_int(
     name: str,
@@ -178,9 +183,12 @@ class RecurringFeatureProtocol:
 
     def validate(self) -> None:
         """Reject malformed protocols before allocating experiment arrays."""
-        _require_builtin_int("feature_dim", self.feature_dim)
-        if self.feature_dim < 6:
-            raise ValueError("feature_dim must be at least 6 for the declared task pairs")
+        _require_builtin_int(
+            "feature_dim",
+            self.feature_dim,
+            minimum=6,
+            maximum=MAX_RECURRING_FEATURE_DIM,
+        )
         _require_builtin_int("output_heads", self.output_heads)
         if self.output_heads != len(TASK_NAMES):
             raise ValueError(f"output_heads must be {len(TASK_NAMES)}")

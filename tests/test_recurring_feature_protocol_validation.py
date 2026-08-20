@@ -177,7 +177,6 @@ def test_run_rejects_boolean_seed_before_allocation() -> None:
     [
         {"steps_per_phase": 2**24},
         {"heldout_samples": 2**27},
-        {"feature_dim": 2**27},
     ],
 )
 def test_protocol_rejects_oversized_seed_arrays_before_allocation(
@@ -185,4 +184,13 @@ def test_protocol_rejects_oversized_seed_arrays_before_allocation(
 ) -> None:
     protocol = replace(RecurringFeatureProtocol(), **overrides)
     with pytest.raises(ValueError, match="resource"):
+        protocol.validate()
+
+
+@pytest.mark.parametrize("feature_dim", [65, 5000])
+def test_protocol_rejects_oversized_pair_universe_before_reconstruction(
+    feature_dim: int,
+) -> None:
+    protocol = replace(RecurringFeatureProtocol(), feature_dim=feature_dim)
+    with pytest.raises(ValueError, match=r"feature_dim must be in \[6, 64\]"):
         protocol.validate()
