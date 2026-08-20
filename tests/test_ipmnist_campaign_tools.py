@@ -691,9 +691,12 @@ def test_atomic_publication_cleans_up_link_failure(
         del source, target
         raise OSError("injected link fault")
 
+    def write_complete(stream: BinaryIO) -> None:
+        stream.write(b"complete")
+
     monkeypatch.setattr("alberta_framework.benchmarks.ipmnist_ceiling.os.link", fail_link)
     with pytest.raises(OSError, match="injected link fault"):
-        _atomic_publish(destination, lambda stream: stream.write(b"complete"))
+        _atomic_publish(destination, write_complete)
 
     assert not destination.exists()
     assert list(tmp_path.iterdir()) == []
@@ -713,9 +716,12 @@ def test_atomic_publication_rolls_back_directory_sync_failure(
             raise OSError("injected directory sync fault")
         real_fsync(descriptor)
 
+    def write_complete(stream: BinaryIO) -> None:
+        stream.write(b"complete")
+
     monkeypatch.setattr("alberta_framework.benchmarks.ipmnist_ceiling.os.fsync", fail_second_fsync)
     with pytest.raises(OSError, match="injected directory sync fault"):
-        _atomic_publish(destination, lambda stream: stream.write(b"complete"))
+        _atomic_publish(destination, write_complete)
 
     assert not destination.exists()
     assert list(tmp_path.iterdir()) == []
