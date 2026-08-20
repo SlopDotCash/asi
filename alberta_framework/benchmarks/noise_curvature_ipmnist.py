@@ -36,6 +36,9 @@ PARAMETER_NAMES: Final[frozenset[str]] = frozenset(
     name for layer in LAYER_PARAMETER_NAMES for name in layer
 )
 _INT32_MAX: Final[int] = (1 << 31) - 1
+# Public last-fit in tests is power_iterations=1. Origin looped INT32-legal
+# iteration counts — hang, not leftover INT32 math.
+_MAX_POWER_ITERATIONS: Final[int] = 10_000
 _MAX_ARRAY_ELEMENTS: Final[int] = 1_000_000
 _MAX_PERSISTENT_BYTES: Final[int] = 256 * 1024 * 1024
 
@@ -104,6 +107,10 @@ class NoiseCurvatureConfig:
         _exact_int("total_steps", self.total_steps, minimum=1)
         interval = _exact_int("control_interval", self.control_interval, minimum=1)
         _exact_int("power_iterations", self.power_iterations, minimum=1)
+        if self.power_iterations > _MAX_POWER_ITERATIONS:
+            raise ValueError(
+                f"power_iterations must be an integer in [1, {_MAX_POWER_ITERATIONS}]"
+            )
         if self.total_steps % interval:
             raise ValueError("total_steps must be divisible by control_interval")
         _finite_float("base_step_size", self.base_step_size, positive=True)
