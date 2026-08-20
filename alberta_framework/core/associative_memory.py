@@ -35,6 +35,7 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX: int = 2**31 - 1
+_MAX_ASSOCIATIVE_SUFFIX_LENGTH = 4_096
 _UINT32_MAX: int = 4294967295
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
     int,
@@ -417,7 +418,10 @@ def _validate_config(config: AssociativeMemoryConfig) -> None:
         "block_size", config.block_size, minimum=1, maximum=_INT32_MAX
     )
     suffix_length = _require_int(
-        "suffix_length", config.suffix_length, minimum=2, maximum=block_size
+        "suffix_length",
+        config.suffix_length,
+        minimum=2,
+        maximum=min(block_size, _MAX_ASSOCIATIVE_SUFFIX_LENGTH),
     )
     feature_family = config.feature_family
     if type(feature_family) is not str:
