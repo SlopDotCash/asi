@@ -76,6 +76,10 @@ def _runtime_identity() -> dict[str, object]:
     devices = tuple(jax.devices())
     if len(devices) == 0 or len(devices) > _MAX_RUNTIME_DEVICES:
         raise RuntimeError("CPR runtime device inventory is out of bounds")
+    default_prng = str(jax.config.jax_default_prng_impl)
+    random_seed_offset = int(jax.config.jax_random_seed_offset)
+    if default_prng != "threefry2x32" or random_seed_offset != 0:
+        raise RuntimeError("CPR execution requires unoffset Threefry RNG roots")
     environment = (
         "JAX_DEFAULT_MATMUL_PRECISION",
         "JAX_DEFAULT_PRNG_IMPL",
@@ -122,12 +126,12 @@ def _runtime_identity() -> dict[str, object]:
             ],
             "config": {
                 "jax_default_matmul_precision": str(jax.config.jax_default_matmul_precision),
-                "jax_default_prng_impl": str(jax.config.jax_default_prng_impl),
+                "jax_default_prng_impl": default_prng,
                 "jax_disable_jit": bool(jax.config.jax_disable_jit),
                 "jax_enable_x64": bool(jax.config.jax_enable_x64),
                 "jax_numpy_dtype_promotion": str(jax.config.jax_numpy_dtype_promotion.value),
                 "jax_numpy_rank_promotion": str(jax.config.jax_numpy_rank_promotion),
-                "jax_random_seed_offset": int(jax.config.jax_random_seed_offset),
+                "jax_random_seed_offset": random_seed_offset,
                 "jax_threefry_partitionable": bool(jax.config.jax_threefry_partitionable),
             },
         },

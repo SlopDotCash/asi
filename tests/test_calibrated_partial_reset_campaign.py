@@ -84,6 +84,9 @@ def test_plan_is_prospective_exact_and_nonpromoting() -> None:
         "total_environment_steps": 0,
         "total_model_queries": 4_000_000,
     }
+    runtime = lane._runtime_identity()
+    assert runtime["jax"]["config"]["jax_default_prng_impl"] == "threefry2x32"
+    assert runtime["jax"]["config"]["jax_random_seed_offset"] == 0
 
 
 def test_public_transaction_is_closed_before_reservation_or_consumer(
