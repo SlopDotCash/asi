@@ -55,6 +55,9 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is 600 array steps. Origin handed ``10**12`` to
+# ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
+_COMPOSITIONAL_LOOP_MAX_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -82,6 +85,31 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
     return canonical
+
+
+def _require_compositional_loop_steps(name: str, value: object) -> int:
+    """Reject scan lengths above the public last-fit before ``jnp.arange``."""
+    if type(value) is not int or value < 1 or value > _COMPOSITIONAL_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"{name} must be an integer in [1, {_COMPOSITIONAL_LOOP_MAX_STEPS}]"
+        )
+    return value
+
+
+def _require_compositional_array_steps(observations: object, targets: object) -> int:
+    """Reject pre-collected scan lengths above the public last-fit before scan."""
+    if not isinstance(observations, jax.Array) or not isinstance(targets, jax.Array):
+        raise TypeError("observations and targets must be JAX arrays")
+    if observations.ndim != 2 or targets.ndim != 2:
+        raise ValueError("observations and targets must be rank-2")
+    num_steps = observations.shape[0]
+    if type(num_steps) is not int or num_steps < 1 or num_steps > _COMPOSITIONAL_LOOP_MAX_STEPS:
+        raise ValueError(
+            f"observations num_steps must be an integer in [1, {_COMPOSITIONAL_LOOP_MAX_STEPS}]"
+        )
+    if targets.shape[0] != num_steps:
+        raise ValueError("observations and targets must share num_steps")
+    return num_steps
 
 
 def _require_choice(name: str, value: object, choices: frozenset[str]) -> str:
@@ -4733,7 +4761,14 @@ def run_compositional_arrays(
     observations: Array,
     targets: Array,
 ) -> CompositionalFeatureLearningResult:
-    """Run a compositional learner over pre-collected stream arrays."""
+    """Run a compositional learner over pre-collected stream arrays.
+
+    Raises:
+        TypeError: If ``observations`` or ``targets`` is not a JAX array.
+        ValueError: If ``num_steps`` is not an exact integer in
+            ``[1, 10_000]``.
+    """
+    _require_compositional_array_steps(observations, targets)
 
     def step_fn(
         carry: CompositionalFeatureState,
@@ -4763,7 +4798,13 @@ def run_compositional_loop(
     key: Array,
     learner_state: CompositionalFeatureState | None = None,
 ) -> CompositionalFeatureLearningResult:
-    """Run compositional feature discovery directly from a scan-compatible stream."""
+    """Run compositional feature discovery directly from a scan-compatible stream.
+
+    Raises:
+        ValueError: If ``num_steps`` exceeds the documented protocol ceiling
+            (``10_000``).
+    """
+    num_steps = _require_compositional_loop_steps("num_steps", num_steps)
     stream_key, learner_key = jr.split(key)
     stream_state = stream.init(stream_key)
     if learner_state is None:
