@@ -8,8 +8,10 @@ import time
 import numpy as np
 import pytest
 
+from alberta_framework.streams import partial_observation
 from alberta_framework.streams.partial_observation import (
     _MAX_PERIODIC_SCHEDULE_LENGTH,
+    _MAX_PERIODIC_SCHEDULE_VALUES,
     MaskMode,
     PartialObservationWrapper,
 )
@@ -55,3 +57,23 @@ def test_periodic_schedule_accepts_public_last_fit() -> None:
         schedule=(row_a, row_b, row_a),
     )
     assert wrapper.mode is MaskMode.PERIODIC
+
+
+def test_periodic_schedule_rejects_large_rows_before_array_conversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pointer-repeated row cannot amplify into a multi-gigabyte stack."""
+    feature_dim = 1_000_000
+    row = np.zeros((feature_dim,), dtype=bool)
+    schedule_length = _MAX_PERIODIC_SCHEDULE_VALUES // feature_dim + 1
+
+    def fail_asarray(*args: object, **kwargs: object) -> object:
+        raise AssertionError("array conversion ran before the working-set gate")
+
+    monkeypatch.setattr(partial_observation.jnp, "asarray", fail_asarray)
+    with pytest.raises(ValueError, match="periodic schedule working set"):
+        PartialObservationWrapper(
+            RandomWalkStream(feature_dim=feature_dim, drift_rate=0.0, noise_std=0.0),
+            mode=MaskMode.PERIODIC,
+            schedule=(row,) * schedule_length,
+        )

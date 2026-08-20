@@ -54,6 +54,10 @@ class MaskMode(enum.Enum):
 # ``tests/test_partial_observation.py``. Origin stacked a pointer-repeat of
 # 5_000 identical masks with no reject — hang, not leftover INT32 math.
 _MAX_PERIODIC_SCHEDULE_LENGTH = 4_096
+# Each logical boolean is retained once in the per-row converted masks and
+# once again in the stacked schedule.  Cap the logical payload at 64 MiB so
+# those two runner-owned arrays stay below 128 MiB before allocator overhead.
+_MAX_PERIODIC_SCHEDULE_VALUES = 64 * 1024 * 1024
 
 
 def _require_unit_interval_probability(name: str, value: object) -> float:
@@ -170,6 +174,12 @@ class PartialObservationWrapper[InnerStateT]:
                 raise ValueError(
                     "periodic schedule length must be an integer in "
                     f"[1, {_MAX_PERIODIC_SCHEDULE_LENGTH}]"
+                )
+            schedule_values = len(schedule) * feature_dim
+            if schedule_values > _MAX_PERIODIC_SCHEDULE_VALUES:
+                raise ValueError(
+                    "periodic schedule working set exceeds the bounded "
+                    f"{_MAX_PERIODIC_SCHEDULE_VALUES}-value payload"
                 )
             masks = [jnp.asarray(m, dtype=jnp.bool_) for m in schedule]
             if any(mask.shape != (feature_dim,) for mask in masks):
