@@ -527,9 +527,15 @@ class PrototypeFeatureLifecycleConfig:
         if type(payload["carry_survivors"]) is not bool:
             raise ValueError("serialized carry_survivors must be a JSON boolean")
         raw_subtask_indices = payload.get("option_subtask_feature_indices")
-        if type(raw_subtask_indices) is not list or not all(
-            type(index) is int for index in raw_subtask_indices
-        ):
+        if type(raw_subtask_indices) is not list:
+            raise ValueError(
+                "serialized option_subtask_feature_indices must be a JSON integer list"
+            )
+        if len(raw_subtask_indices) > _MAX_PYTHON_COLLECTION_LENGTH:
+            raise ValueError(
+                "serialized option_subtask_feature_indices exceeds the collection limit"
+            )
+        if not all(type(index) is int for index in raw_subtask_indices):
             raise ValueError(
                 "serialized option_subtask_feature_indices must be a JSON integer list"
             )
