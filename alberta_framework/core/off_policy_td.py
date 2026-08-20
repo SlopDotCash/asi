@@ -72,6 +72,9 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit is the 600-step off-policy positive control. Leftover INT32
+# still admits T=10_000_000 (feature_dim=2) into jax.lax.scan.
+_MAX_LEARNING_LOOP_STEPS = 10_000
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -1156,6 +1159,8 @@ def run_gradient_td_learning_loop(
         raise ValueError("observations must have shape (num_steps, feature_dim)")
     num_steps = observations_shape[0]
     _require_scan_resources(num_steps, feature_dim)
+    if num_steps > _MAX_LEARNING_LOOP_STEPS:
+        raise ValueError("num_steps exceeds the learning-loop scan limit")
     _array_metadata("observations", observations, (num_steps, feature_dim))
     _array_metadata("next_observations", next_observations, (num_steps, feature_dim))
     for name, value in (("rewards", rewards), ("gammas", gammas), ("rhos", rhos)):
