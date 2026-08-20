@@ -43,7 +43,7 @@ from alberta_framework.recurring_feature_gate import (
     CRITICAL_TASKS,
     DEVELOPMENT_SEEDS,
     EVIDENCE_SEEDS,
-    MAX_RECURRING_FEATURE_DIM,
+    FROZEN_RECURRING_FEATURE_DIM,
     PAIRWISE_PROBE_SCOPE,
     PHASE_TASKS,
     TASK_NAMES,
@@ -91,6 +91,11 @@ _REQUIRED_CHECK_ORDER = (
     "upstream_gate_decision",
 )
 _REQUIRED_CHECKS = frozenset(_REQUIRED_CHECK_ORDER)
+_FROZEN_CANDIDATE_PAIRS = frozenset(
+    (left, right)
+    for left in range(FROZEN_RECURRING_FEATURE_DIM)
+    for right in range(left + 1, FROZEN_RECURRING_FEATURE_DIM)
+)
 
 
 @dataclass(frozen=True)
@@ -115,15 +120,12 @@ def _finite_float(value: float) -> float | None:
     return numeric if math.isfinite(numeric) else None
 
 
-def _bounded_feature_dim(value: object, *, name: str) -> int:
-    """Admit an exact host dim before reconstructing the C(n, 2) pair set."""
-
+def _frozen_feature_dim(value: object, *, name: str) -> int:
+    """Require the literal v1 dimension before consuming result evidence."""
     if type(value) is not int:
         raise ValueError(f"{name} must be an exact int")
-    if value < 6 or value > MAX_RECURRING_FEATURE_DIM:
-        raise ValueError(
-            f"{name} must be an integer in [6, {MAX_RECURRING_FEATURE_DIM}]"
-        )
+    if value != FROZEN_RECURRING_FEATURE_DIM:
+        raise ValueError(f"{name} must be exactly {FROZEN_RECURRING_FEATURE_DIM} for artifact v1")
     return value
 
 
@@ -323,7 +325,7 @@ def _recovery_payload(seed: RecurringFeatureSeedEvidence) -> list[dict[str, obje
 
 def _variant_seed_payload(seed: RecurringFeatureSeedEvidence) -> dict[str, object]:
     candidate_set = set(seed.candidate_pairs)
-    expected_candidates = {(left, right) for left in range(6) for right in range(left + 1, 6)}
+    expected_candidates = _FROZEN_CANDIDATE_PAIRS
     return {
         "final_heldout_nmse": {
             task: _finite_float(seed.final_heldout_nmse[index])
@@ -579,15 +581,10 @@ def _check(
 
 
 def _result_integrity(result: RecurringFeatureGateResult) -> tuple[bool, bool]:
-    feature_dim = _bounded_feature_dim(
+    _frozen_feature_dim(
         result.protocol.feature_dim,
         name="protocol.feature_dim",
     )
-    expected_candidates = {
-        (left, right)
-        for left in range(feature_dim)
-        for right in range(left + 1, feature_dim)
-    }
     finite_complete = True
     archive_complete = True
     for variant in (result.retained, result.no_retention):
@@ -604,7 +601,7 @@ def _result_integrity(result: RecurringFeatureGateResult) -> tuple[bool, bool]:
             )
             archive_complete = archive_complete and (
                 len(seed.candidate_pairs) == result.protocol.candidate_pair_budget
-                and set(seed.candidate_pairs) == expected_candidates
+                and set(seed.candidate_pairs) == _FROZEN_CANDIDATE_PAIRS
                 and TASK_PAIRS[3] in set(seed.candidate_pairs)
             )
     return finite_complete, archive_complete
@@ -770,7 +767,7 @@ def _acceptance_payload(
 
 
 def _scientific_payload(result: RecurringFeatureGateResult) -> dict[str, object]:
-    _bounded_feature_dim(result.protocol.feature_dim, name="protocol.feature_dim")
+    _frozen_feature_dim(result.protocol.feature_dim, name="protocol.feature_dim")
     criteria = RecurringFeatureGateCriteria()
     return {
         "protocol": _protocol_payload(),
@@ -1054,7 +1051,7 @@ def _recomputed_aggregate(
         return None
     initial_error_count = len(errors)
     protocol = RecurringFeatureProtocol()
-    expected_candidates = {(left, right) for left in range(6) for right in range(left + 1, 6)}
+    expected_candidates = _FROZEN_CANDIDATE_PAIRS
     parsed_nmse: dict[str, dict[str, list[float]]] = {
         variant_name: _nmse_values(variant_records, errors, variant_name)
         for variant_name, variant_records in variants.items()
@@ -1098,7 +1095,8 @@ def _recomputed_aggregate(
             candidate_archive_valid = (
                 isinstance(raw_candidates, list)
                 and len(raw_candidates) == protocol.candidate_pair_budget
-                and candidates == expected_candidates
+                and candidates is not None
+                and frozenset(candidates) == expected_candidates
             )
             active_bank_valid = (
                 isinstance(raw_active, list)
@@ -1504,7 +1502,7 @@ def _expected_check_actuals(
     archive_ok = True
     finite_ok = True
     active_ok = True
-    expected_candidates = {(left, right) for left in range(6) for right in range(left + 1, 6)}
+    expected_candidates = _FROZEN_CANDIDATE_PAIRS
     protocol = RecurringFeatureProtocol()
     for variant_records in variants.values():
         for variant_record in variant_records:
@@ -1513,7 +1511,8 @@ def _expected_check_actuals(
             archive_ok = archive_ok and (
                 isinstance(raw_candidates, list)
                 and len(raw_candidates) == protocol.candidate_pair_budget
-                and _pair_set(raw_candidates) == expected_candidates
+                and (candidate_pairs := _pair_set(raw_candidates)) is not None
+                and frozenset(candidate_pairs) == expected_candidates
                 and variant_record.get("candidate_archive_is_exhaustive_all_pairs") is True
                 and variant_record.get("obsolete_pair_remains_in_candidate_archive") is True
             )

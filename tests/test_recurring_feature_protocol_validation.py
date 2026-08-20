@@ -9,6 +9,8 @@ import numpy as np
 import pytest
 
 from alberta_framework.recurring_feature_gate import (
+    MAX_RECURRING_EVIDENCE_PAIRS,
+    MAX_RECURRING_FEATURE_DIM,
     RecurringFeatureGateCriteria,
     RecurringFeatureProtocol,
     run_recurring_feature_gate,
@@ -187,10 +189,16 @@ def test_protocol_rejects_oversized_seed_arrays_before_allocation(
         protocol.validate()
 
 
-@pytest.mark.parametrize("feature_dim", [65, 5000])
-def test_protocol_rejects_oversized_pair_universe_before_reconstruction(
-    feature_dim: int,
-) -> None:
-    protocol = replace(RecurringFeatureProtocol(), feature_dim=feature_dim)
-    with pytest.raises(ValueError, match=r"feature_dim must be in \[6, 64\]"):
-        protocol.validate()
+def test_all_pairs_feature_dim_bound_matches_representable_evidence() -> None:
+    assert MAX_RECURRING_FEATURE_DIM == 91
+    assert MAX_RECURRING_FEATURE_DIM * (MAX_RECURRING_FEATURE_DIM - 1) // 2 == 4095
+    assert MAX_RECURRING_FEATURE_DIM * (MAX_RECURRING_FEATURE_DIM - 1) // 2 <= (
+        MAX_RECURRING_EVIDENCE_PAIRS
+    )
+    assert (MAX_RECURRING_FEATURE_DIM + 1) * MAX_RECURRING_FEATURE_DIM // 2 > (
+        MAX_RECURRING_EVIDENCE_PAIRS
+    )
+
+    replace(RecurringFeatureProtocol(), feature_dim=91).validate()
+    with pytest.raises(ValueError, match=r"feature_dim must be in \[6, 91\]"):
+        replace(RecurringFeatureProtocol(), feature_dim=92).validate()

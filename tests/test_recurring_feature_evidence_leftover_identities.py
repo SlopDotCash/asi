@@ -6,8 +6,13 @@ import math
 from collections.abc import Callable
 from dataclasses import replace
 
+import numpy as np
 import pytest
 
+from alberta_framework.evaluation.recurring_feature_artifact import (
+    SCHEMA_VERSION,
+    build_recurring_feature_artifact,
+)
 from alberta_framework.recurring_feature_gate import (
     PAIRWISE_PROBE_SCOPE,
     PHASE_TASKS,
@@ -154,6 +159,54 @@ def test_decision_revalidates_forged_protocol_before_diagnostics() -> None:
 
     with pytest.raises(ValueError, match="feature_dim must be a built-in integer"):
         result.decision()
+
+
+def test_artifact_builder_accepts_only_the_exact_frozen_dimension() -> None:
+    result = _decision_result()
+    for variant in (result.retained, result.no_retention):
+        for phase in variant.seeds[0].phase_evidence:
+            object.__setattr__(phase, "recovery_steps", 1)
+        for recovery in variant.seeds[0].task_recovery:
+            object.__setattr__(recovery, "acquisition_steps", 1)
+            object.__setattr__(
+                recovery,
+                "recurrence_steps",
+                tuple(1 for _ in recovery.recurrence_steps),
+            )
+    artifact = build_recurring_feature_artifact(
+        result,
+        gate_wall_seconds=0.0,
+    )
+    assert artifact["schema_version"] == SCHEMA_VERSION
+
+    for feature_dim in (5, 7, 91, 92, 5000):
+        result = _decision_result()
+        object.__setattr__(result.protocol, "feature_dim", feature_dim)
+        with pytest.raises(ValueError, match="must be exactly 6 for artifact v1"):
+            build_recurring_feature_artifact(result, gate_wall_seconds=0.0)
+
+
+@pytest.mark.parametrize("feature_dim", [True, 6.0, np.int64(6)])
+def test_artifact_builder_rejects_non_exact_int_dimension(feature_dim: object) -> None:
+    result = _decision_result()
+    object.__setattr__(result.protocol, "feature_dim", feature_dim)
+    with pytest.raises(ValueError, match="must be an exact int"):
+        build_recurring_feature_artifact(result, gate_wall_seconds=0.0)
+
+
+class _HostileInt(int):
+    def __eq__(self, other: object) -> bool:
+        raise AssertionError("hostile equality ran")
+
+    def __index__(self) -> int:
+        raise AssertionError("hostile index conversion ran")
+
+
+def test_artifact_builder_rejects_hostile_int_subclass_without_dispatch() -> None:
+    result = _decision_result()
+    object.__setattr__(result.protocol, "feature_dim", _HostileInt(6))
+    with pytest.raises(ValueError, match="must be an exact int"):
+        build_recurring_feature_artifact(result, gate_wall_seconds=0.0)
 
 
 def test_decision_revalidates_and_cross_binds_memory_budget() -> None:
