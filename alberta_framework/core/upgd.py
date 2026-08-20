@@ -74,6 +74,7 @@ def _require_exact_str(name: object, value: object) -> str:
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_UPGD_HIDDEN_LAYERS = 4_096
 # Public last-fit in tests is 5_000 array steps / 50 stream steps. Origin handed
 # ``10**12`` to ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
 _UPGD_LOOP_MAX_STEPS = 10_000
@@ -675,6 +676,11 @@ class UPGDLearner:
             raise ValueError("hidden_sizes must be a tuple of integers")
         if not isinstance(hidden_sizes, (tuple, list)):
             raise ValueError("hidden_sizes must be a tuple of integers")
+        if len(hidden_sizes) > _MAX_UPGD_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_UPGD_HIDDEN_LAYERS}]"
+            )
         canonical_hidden: list[int] = []
         for idx, size in enumerate(hidden_sizes):
             canonical_hidden.append(
@@ -1561,6 +1567,11 @@ class UPGDLearner:
             raise ValueError("hidden_sizes must be a tuple of integers")
         if not isinstance(raw_hidden, (tuple, list)):
             raise ValueError("hidden_sizes must be a tuple of integers")
+        if len(raw_hidden) > _MAX_UPGD_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_UPGD_HIDDEN_LAYERS}]"
+            )
         hidden_list: list[int] = []
         for idx, value in enumerate(raw_hidden):
             hidden_list.append(_require_int(f"hidden_sizes[{idx}]", value, minimum=1))
