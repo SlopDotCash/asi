@@ -37,6 +37,9 @@ from alberta_framework.streams.base import ScanStream
 from alberta_framework.utils.statistics import common_final_window
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is seeds=3. Origin handed unbounded counts to
+# list(range(seeds)) with no last-fit reject — hang, not leftover INT32 math.
+_MULTI_SEED_MAX_COUNT = 10_000
 
 _NUMPY_COORDINATE_TYPES = frozenset(
     np.dtype(dtype_code).type
@@ -507,8 +510,10 @@ def run_multi_seed_experiment(
     # Convert seeds to list. Bool is a subclass of int, so isinstance(seeds, int)
     # would treat True as a one-seed experiment and False as an empty run.
     if type(seeds) is int:
-        if seeds < 1:
-            raise ValueError("seeds count must be a positive built-in integer")
+        if seeds < 1 or seeds > _MULTI_SEED_MAX_COUNT:
+            raise ValueError(
+                f"seeds count must be an integer in [1, {_MULTI_SEED_MAX_COUNT}]"
+            )
         seed_list = list(range(seeds))
     else:
         if isinstance(seeds, (str, bytes, bytearray)):
