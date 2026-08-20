@@ -32,6 +32,8 @@ DEV_SEEDS = (0, 1, 2, 3, 4)
 MAX_MANIFEST_BYTES = 1 << 20
 MAX_ARCHIVES = 8
 MAX_SAMPLES_PER_BUCKET = 10_000_000
+# Public last-fit in tests is a 10x10 accuracy matrix.
+MAX_METRIC_MATRIX_ROWS = 10_000
 MAX_RESULT_BYTES = 1 << 20
 
 
@@ -333,7 +335,13 @@ def qualification_plan(receipt: ClearDatasetReceipt) -> Mapping[str, object]:
 
 
 def _metric_values(matrix: list[list[float]]) -> Mapping[str, float]:
+    if type(matrix) is not list:
+        raise ClearQualificationError("accuracy matrix must be an exact list")
     rows = len(matrix)
+    if type(rows) is not int or not 1 <= rows <= MAX_METRIC_MATRIX_ROWS:
+        raise ClearQualificationError(
+            f"accuracy matrix must have between 1 and {MAX_METRIC_MATRIX_ROWS} rows"
+        )
     diagonal = [matrix[index][index] for index in range(rows)]
     lower = [matrix[i][j] for i in range(rows) for j in range(i)]
     upper = [matrix[i][j] for i in range(rows) for j in range(i + 1, rows)]
