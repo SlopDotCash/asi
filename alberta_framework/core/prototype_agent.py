@@ -260,6 +260,7 @@ def feature_to_subtask_specs(
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_HORDE_HIDDEN_LAYERS = 4_096
 _UINT32_MAX = 4_294_967_295
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
         int,
@@ -732,6 +733,11 @@ class PrototypeAgentConfig:
         raw_hidden = self.horde_hidden_sizes
         if type(raw_hidden) is not tuple:
             raise ValueError("horde_hidden_sizes must be a tuple of integers")
+        if len(raw_hidden) > _MAX_HORDE_HIDDEN_LAYERS:
+            raise ValueError(
+                "horde_hidden_sizes length must be an integer in "
+                f"[0, {_MAX_HORDE_HIDDEN_LAYERS}]"
+            )
         canonical_hidden: list[int] = []
         for idx, value in enumerate(raw_hidden):
             canonical_hidden.append(
@@ -1325,6 +1331,11 @@ class PrototypeAgentConfig:
         hidden_raw = data.pop("horde_hidden_sizes", [64, 64])
         if type(hidden_raw) is not list:
             raise ValueError("serialized horde_hidden_sizes must be an actual list")
+        if len(hidden_raw) > _MAX_HORDE_HIDDEN_LAYERS:
+            raise ValueError(
+                "horde_hidden_sizes length must be an integer in "
+                f"[0, {_MAX_HORDE_HIDDEN_LAYERS}]"
+            )
         hidden_list: list[int] = []
         for idx, value in enumerate(hidden_raw):
             hidden_list.append(
