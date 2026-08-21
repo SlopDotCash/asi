@@ -40,6 +40,7 @@ import operator
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from numbers import Real
+from types import MappingProxyType
 from typing import Any, Literal, SupportsIndex, cast
 
 import chex
@@ -50,11 +51,16 @@ import numpy as np
 import numpy.typing as npt
 from jax import Array
 
+from alberta_framework._bounded_containers import require_bounded_container_tree
 from alberta_framework._float32 import round_real_to_float32
 
 DUAL_REPLAY_CONFIG_SCHEMA = "alberta.dual-replay.config.v1"
 DUAL_REPLAY_CHECKPOINT_SCHEMA = "alberta.dual-replay.checkpoint.v1"
 MECHANISM_STATUS = "mechanism-only-no-training-integration"
+# Same ceiling as security/checkpoints. Origin json.dumps RecursionErrors
+# a 16_000-deep memory mapping during from_checkpoint_payload digest.
+_CHECKPOINT_JSON_MAX_DEPTH = 32
+_CHECKPOINT_JSON_MAX_NODES = 4096
 
 LongTermPolicy = Literal["reservoir", "calibrated"]
 AleatoricControl = Literal["veto", "downweight"]
@@ -680,8 +686,34 @@ def _tree_nbytes(tree: object) -> int:
     return sum(int(leaf.size) * int(leaf.dtype.itemsize) for leaf in jax.tree.leaves(tree))
 
 
+def _json_container_children(node: object) -> tuple[object, ...] | None:
+    """Return JSON-container children, or None for a scalar leaf."""
+
+    node_type = type(node)
+    if node_type is dict:
+        return tuple(cast(dict[Any, Any], node).values())
+    if node_type is list:
+        return tuple(cast(list[Any], node))
+    if node_type is tuple:
+        return cast(tuple[object, ...], node)
+    if node_type is MappingProxyType:
+        return tuple(cast(Mapping[str, Any], node).values())
+    return None
+
+
 def _canonical_json(payload: object) -> str:
-    return json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True)
+    require_bounded_container_tree(
+        payload,
+        children=_json_container_children,
+        max_depth=_CHECKPOINT_JSON_MAX_DEPTH,
+        max_nodes=_CHECKPOINT_JSON_MAX_NODES,
+        name="checkpoint payload",
+        kind="JSON",
+    )
+    try:
+        return json.dumps(payload, allow_nan=False, separators=(",", ":"), sort_keys=True)
+    except RecursionError as exc:
+        raise ValueError("checkpoint payload exceeds the JSON nesting limit") from exc
 
 
 def _payload_digest(payload: object) -> str:
