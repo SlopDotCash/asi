@@ -14,12 +14,15 @@ import pytest
 import alberta_framework.utils.export as export_module
 from alberta_framework.utils.experiments import AggregatedResults, MetricSummary
 from alberta_framework.utils.export import (
+    _get_md_significance_marker,
+    _get_significance_marker,
     export_to_csv,
     export_to_json,
     generate_latex_table,
     generate_markdown_table,
     save_experiment_report,
 )
+from alberta_framework.utils.statistics import SignificanceResult
 
 pytestmark = pytest.mark.unit
 
@@ -581,3 +584,50 @@ def test_export_rejects_boolean_summary_statistics(
 
     with pytest.raises(ValueError, match="refusing to export boolean as numeric measurement"):
         generate_markdown_table(results)
+
+
+class TestSignificanceMarkerAlpha:
+    """Significance markers must follow each result's stored alpha (#2227)."""
+
+    def test_significant_at_alpha_010_gets_marker(self) -> None:
+        r = SignificanceResult(
+            test_name="wilcoxon", statistic=1.0, p_value=0.08,
+            significant=True, alpha=0.10, effect_size=0.5,
+            method_a="a", method_b="b",
+        )
+        md = _get_md_significance_marker("b", "a", {("b", "a"): r})
+        assert md == " *"
+        latex = _get_significance_marker("b", "a", {("b", "a"): r})
+        assert latex == r"$^{*}$"
+
+    def test_holm_alpha_scales_by_own_threshold(self) -> None:
+        r = SignificanceResult(
+            test_name="ttest", statistic=5.0, p_value=0.002,
+            significant=True, alpha=0.0025, effect_size=1.2,
+            method_a="a", method_b="b",
+        )
+        # p < alpha (0.0025) but not < alpha/10 → 1 star
+        assert _get_md_significance_marker("b", "a", {("b", "a"): r}) == " *"
+
+    def test_legacy_alpha_005_keeps_old_tiers(self) -> None:
+        r = SignificanceResult(
+            test_name="ttest", statistic=5.0, p_value=0.03,
+            significant=True, alpha=0.05, effect_size=1.2,
+            method_a="a", method_b="b",
+        )
+        assert _get_md_significance_marker("b", "a", {("b", "a"): r}) == " *"
+        r3 = SignificanceResult(
+            test_name="ttest", statistic=5.0, p_value=0.0005,
+            significant=True, alpha=0.05, effect_size=1.2,
+            method_a="a", method_b="b",
+        )
+        assert _get_md_significance_marker("b", "a", {("b", "a"): r3}) == " ***"
+
+    def test_nonsignificant_empty_regardless_of_alpha(self) -> None:
+        r = SignificanceResult(
+            test_name="ttest", statistic=1.0, p_value=0.3,
+            significant=False, alpha=0.05, effect_size=0.1,
+            method_a="a", method_b="b",
+        )
+        assert _get_md_significance_marker("b", "a", {("b", "a"): r}) == ""
+        assert _get_significance_marker("b", "a", {("b", "a"): r}) == ""
