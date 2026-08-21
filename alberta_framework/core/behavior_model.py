@@ -225,11 +225,17 @@ def floor_and_renormalize_probabilities(
     if min_probability * n_actions >= 1.0:
         return jnp.ones_like(probs) / n_actions
     clipped = jnp.maximum(probs, 0.0)
-    normalizer = jnp.maximum(
-        jnp.sum(clipped, axis=-1, keepdims=True),
-        jnp.asarray(1e-12, dtype=jnp.float32),
-    )
-    normalized = clipped / normalizer
+    normalizer = jnp.sum(clipped, axis=-1, keepdims=True)
+    uniform = jnp.ones_like(probs) / n_actions
+    # A zero, non-finite, or precision-collapsed normalizer cannot yield a
+    # usable simplex (all-zero mass, or float32 ratios that underflow to
+    # zero): fall back to the uniform distribution so the documented
+    # sum-to-one invariant holds. Well-formed inputs keep their exact output.
+    raw_normalized = clipped / normalizer
+    normalized_sum = jnp.sum(raw_normalized, axis=-1, keepdims=True)
+    usable = jnp.isfinite(normalized_sum) & (normalized_sum > 0.5)
+    safe_normalizer = jnp.where(usable, normalizer, jnp.ones_like(normalizer))
+    normalized = jnp.where(usable, clipped / safe_normalizer, uniform)
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
     return jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
 
