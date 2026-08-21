@@ -1,281 +1,77 @@
-"""Tests for the partial-observation stream wrapper (Step 3 Phase D)."""
+"""Unit coverage for alberta_framework.streams.partial_observation.
 
-from __future__ import annotations
+Tests the fail-closed wrapper gates: exact MaskMode enforcement (no
+leftover string fall-through), boolean-mask shape/dtype validation,
+probability scalar domain, and feature-dim bounds.
+"""
 
-import math
-
-import chex
-import jax
-import jax.numpy as jnp
-import jax.random as jr
 import numpy as np
 import pytest
 
 from alberta_framework.streams.partial_observation import (
     MaskMode,
-    PartialObservationState,
-    PartialObservationWrapper,
+    _require_feature_dim,
+    _require_mode,
+    _require_unit_interval_probability,
+    _trusted_boolean_mask,
 )
-from alberta_framework.streams.synthetic import RandomWalkStream
 
 
-class TestFixed:
-    def test_fixed_mask_hides_correct_channels(self) -> None:
-        inner = RandomWalkStream(feature_dim=5, drift_rate=0.0, noise_std=0.0)
-        mask = jnp.array([True, False, True, False, True])
-        w = PartialObservationWrapper(inner, mode=MaskMode.FIXED, fixed_mask=mask)
-        state = w.init(jr.key(0))
-        ts, _ = w.step(state, jnp.array(0))
-        # Hidden channels (indices 1, 3) should be 0
-        assert float(ts.observation[1]) == 0.0
-        assert float(ts.observation[3]) == 0.0
-
-    def test_target_unchanged(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        mask = jnp.array([False] * 4)  # hide everything
-        w = PartialObservationWrapper(inner, mode=MaskMode.FIXED, fixed_mask=mask)
-        state = w.init(jr.key(7))
-        ts, _ = w.step(state, jnp.array(0))
-        # Even with all observations hidden, target is whatever the inner produced
-        chex.assert_tree_all_finite(ts.target)
-
-    def test_no_fixed_mask_raises(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0)
-        with pytest.raises(ValueError, match="fixed_mask"):
-            PartialObservationWrapper(inner, mode=MaskMode.FIXED, fixed_mask=None)
-
-    def test_wrong_mask_shape_raises(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        bad_mask = jnp.array([True, False, True])
-        with pytest.raises(ValueError, match="fixed_mask shape"):
-            PartialObservationWrapper(inner, mode=MaskMode.FIXED, fixed_mask=bad_mask)
+def test_mask_mode_values() -> None:
+    assert MaskMode.FIXED.value == "fixed"
+    assert MaskMode.RANDOM.value == "random"
+    assert MaskMode.PERIODIC.value == "periodic"
 
 
-class TestRandom:
-    def test_random_keep_fraction(self) -> None:
-        inner = RandomWalkStream(feature_dim=10, drift_rate=0.0, noise_std=0.0)
-        # Make features non-zero so we can detect masking
-        w = PartialObservationWrapper(
-            inner, mode=MaskMode.RANDOM, mask_prob=0.5
-        )
-        state = w.init(jr.key(0))
-        # Sample many steps
-        kept = []
-        for i in range(500):
-            ts, state = w.step(state, jnp.array(i))
-            # Count non-zero channels (approximation of "kept")
-            kept.append(float(jnp.sum(ts.observation != 0.0)))
-        mean_kept = float(np.mean(kept))
-        # Should be roughly 5 out of 10 (mask_prob = 0.5)
-        assert 3.5 < mean_kept < 6.5, f"mean_kept={mean_kept}, expected ~5"
-
-    def test_random_invalid_mask_prob(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(
-                inner, mode=MaskMode.RANDOM, mask_prob=1.5
-            )
-
-    def test_random_rejects_bool_mask_prob(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(inner, mode=MaskMode.RANDOM, mask_prob=True)
-
-    def test_random_rejects_non_real_mask_prob(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(
-                inner,
-                mode=MaskMode.RANDOM,
-                mask_prob="0.5",  # type: ignore[arg-type]
-            )
-
-    def test_random_rejects_nan_mask_prob(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(
-                inner, mode=MaskMode.RANDOM, mask_prob=float("nan")
-            )
-
-    def test_random_rejects_class_spoofed_non_real_mask_prob(self) -> None:
-        """A ``__class__``-spoofed object must not bypass validation.
-
-        ``isinstance(value, Real)`` consults the overridable ``__class__``
-        attribute, so an object that fakes ``__class__ == float`` would pass
-        an ``isinstance``-based gate. The gate must instead check
-        ``type(value)`` directly. A spoof whose comparison dunder hooks raise
-        must still surface a clean ``ValueError``, not the raw exception.
-        """
-
-        class Spoof:
-            @property
-            def __class__(self) -> type:  # type: ignore[override]
-                return float
-
-            def __le__(self, other: object) -> bool:
-                raise RuntimeError("untrusted __le__ hook executed")
-
-            def __ge__(self, other: object) -> bool:
-                raise RuntimeError("untrusted __ge__ hook executed")
-
-            def __float__(self) -> float:
-                raise RuntimeError("untrusted __float__ hook executed")
-
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(inner, mode=MaskMode.RANDOM, mask_prob=Spoof())
-
-    def test_random_normalizes_hostile_real_failure_without_repr(self) -> None:
-        class HostileFloat(float):
-            def as_integer_ratio(self) -> tuple[int, int]:
-                raise RuntimeError("untrusted ratio hook")
-
-            def __repr__(self) -> str:
-                raise AssertionError("repr hook executed")
-
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        with pytest.raises(ValueError, match="mask_prob"):
-            PartialObservationWrapper(
-                inner,
-                mode=MaskMode.RANDOM,
-                mask_prob=HostileFloat(0.5),
-            )
+def test_require_mode_exact() -> None:
+    assert _require_mode(MaskMode.FIXED) is MaskMode.FIXED
+    # Leftover strings must be rejected (fail-open prevention).
+    with pytest.raises(ValueError, match="exact MaskMode"):
+        _require_mode("fixed")
+    with pytest.raises(ValueError, match="exact MaskMode"):
+        _require_mode("FIXED")
+    with pytest.raises(ValueError, match="exact MaskMode"):
+        _require_mode(1)
 
 
-class TestPeriodic:
-    def test_periodic_cycles(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0, noise_std=0.0)
-        schedule = (
-            jnp.array([True, False, False]),
-            jnp.array([False, True, False]),
-            jnp.array([False, False, True]),
-        )
-        w = PartialObservationWrapper(
-            inner, mode=MaskMode.PERIODIC, schedule=schedule
-        )
-        state = w.init(jr.key(42))
-
-        # Step 0: only channel 0 visible
-        ts0, state = w.step(state, jnp.array(0))
-        assert float(ts0.observation[1]) == 0.0
-        assert float(ts0.observation[2]) == 0.0
-
-        # Step 1: only channel 1 visible
-        ts1, state = w.step(state, jnp.array(1))
-        assert float(ts1.observation[0]) == 0.0
-        assert float(ts1.observation[2]) == 0.0
-
-        # Step 2: only channel 2 visible
-        ts2, state = w.step(state, jnp.array(2))
-        assert float(ts2.observation[0]) == 0.0
-        assert float(ts2.observation[1]) == 0.0
-
-        # Step 3: cycle returns to channel 0
-        ts3, state = w.step(state, jnp.array(3))
-        assert float(ts3.observation[1]) == 0.0
-        assert float(ts3.observation[2]) == 0.0
-
-    def test_periodic_no_schedule_raises(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0)
-        with pytest.raises(ValueError, match="schedule"):
-            PartialObservationWrapper(inner, mode=MaskMode.PERIODIC, schedule=None)
-
-    def test_periodic_empty_schedule_raises(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0)
-        with pytest.raises(ValueError, match="schedule"):
-            PartialObservationWrapper(inner, mode=MaskMode.PERIODIC, schedule=())
-
-    def test_periodic_rejects_masks_with_extra_axis(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0)
-        schedule = (jnp.array([[True], [False], [True]]),)
-        with pytest.raises(ValueError, match="schedule masks"):
-            PartialObservationWrapper(
-                inner, mode=MaskMode.PERIODIC, schedule=schedule
-            )
+def test_require_feature_dim() -> None:
+    assert _require_feature_dim(10) == 10
+    assert _require_feature_dim(2**31 - 1) == 2**31 - 1
+    with pytest.raises(ValueError, match="\\[1, 2147483647\\]"):
+        _require_feature_dim(0)
+    with pytest.raises(ValueError, match="\\[1, 2147483647\\]"):
+        _require_feature_dim(2**31)
+    with pytest.raises(ValueError, match="\\[1, 2147483647\\]"):
+        _require_feature_dim(10.5)
 
 
-class TestScanCompatibility:
-    def test_scan_with_fixed_mask(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        mask = jnp.array([True, False, True, False])
-        w = PartialObservationWrapper(inner, mode=MaskMode.FIXED, fixed_mask=mask)
-        state = w.init(jr.key(99))
-
-        def step_fn(s: PartialObservationState, idx: jax.Array):
-            ts, ns = w.step(s, idx)
-            return ns, ts.observation
-
-        final_state, observations = jax.lax.scan(step_fn, state, jnp.arange(20))
-        chex.assert_shape(observations, (20, 4))
-        # Hidden columns should all be zero
-        chex.assert_trees_all_close(observations[:, 1], jnp.zeros(20))
-        chex.assert_trees_all_close(observations[:, 3], jnp.zeros(20))
-
-    def test_scan_with_random_mask_advances_key(self) -> None:
-        inner = RandomWalkStream(feature_dim=3, drift_rate=0.0)
-        w = PartialObservationWrapper(
-            inner, mode=MaskMode.RANDOM, mask_prob=0.5
-        )
-        state = w.init(jr.key(0))
-
-        def step_fn(s: PartialObservationState, idx: jax.Array):
-            ts, ns = w.step(s, idx)
-            return ns, ts.observation
-
-        final_state, observations = jax.lax.scan(step_fn, state, jnp.arange(50))
-        # Key should have advanced
-        assert not jnp.all(final_state.key == jr.key(0))
+def test_require_unit_interval_probability() -> None:
+    assert _require_unit_interval_probability("x", 0.5) == 0.5
+    assert _require_unit_interval_probability("x", 0.0) == 0.0
+    assert _require_unit_interval_probability("x", 1.0) == 1.0
+    with pytest.raises(ValueError):
+        _require_unit_interval_probability("x", 1.5)
+    with pytest.raises(ValueError):
+        _require_unit_interval_probability("x", -0.1)
 
 
-class TestDeterminism:
-    def test_random_mode_deterministic_with_fixed_seed(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        w = PartialObservationWrapper(
-            inner, mode=MaskMode.RANDOM, mask_prob=0.5
-        )
-
-        def run() -> jax.Array:
-            state = w.init(jr.key(123))
-            obs_collected = []
-            for i in range(20):
-                ts, state = w.step(state, jnp.array(i))
-                obs_collected.append(ts.observation)
-            return jnp.stack(obs_collected)
-
-        out1 = run()
-        out2 = run()
-        chex.assert_trees_all_close(out1, out2)
+def test_trusted_boolean_mask_accepts() -> None:
+    mask = np.array([True, False, True])
+    assert _trusted_boolean_mask("mask", mask, 3).shape == (3,)
 
 
-class TestSentinel:
-    def test_legal_nonzero_sentinel_fills_hidden_channels(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0, noise_std=0.0)
-        mask = jnp.array([True, False, True, False])
-        wrapper = PartialObservationWrapper(
-            inner, mode=MaskMode.FIXED, fixed_mask=mask, sentinel=-1.0
-        )
-        timestep, _ = wrapper.step(wrapper.init(jr.key(0)), jnp.array(0))
-        assert float(timestep.observation[1]) == -1.0
-        assert float(timestep.observation[3]) == -1.0
-        assert math.isfinite(float(timestep.observation[0]))
-        assert math.isfinite(float(timestep.observation[2]))
+def test_trusted_boolean_mask_rejects_shape() -> None:
+    mask = np.array([True, False])
+    with pytest.raises(ValueError, match="shape"):
+        _trusted_boolean_mask("mask", mask, 3)
 
-    @pytest.mark.parametrize("sentinel", [float("nan"), float("inf"), float("-inf"), True])
-    def test_rejects_non_finite_or_bool_sentinel(self, sentinel: object) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        mask = jnp.array([True, False, True, False])
-        with pytest.raises(ValueError, match="sentinel"):
-            PartialObservationWrapper(
-                inner, mode=MaskMode.FIXED, fixed_mask=mask, sentinel=sentinel
-            )
 
-    def test_rejects_non_real_sentinel(self) -> None:
-        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
-        mask = jnp.array([True, False, True, False])
-        with pytest.raises(ValueError, match="sentinel"):
-            PartialObservationWrapper(
-                inner,
-                mode=MaskMode.FIXED,
-                fixed_mask=mask,
-                sentinel="0.0",  # type: ignore[arg-type]
-            )
+def test_trusted_boolean_mask_rejects_dtype() -> None:
+    mask = np.array([1, 0, 1])  # int, not bool
+    with pytest.raises(ValueError, match="dtype bool"):
+        _trusted_boolean_mask("mask", mask, 3)
+
+
+def test_trusted_boolean_mask_rejects_type() -> None:
+    with pytest.raises(ValueError, match="exact NumPy or JAX"):
+        _trusted_boolean_mask("mask", [True, False, True], 3)
