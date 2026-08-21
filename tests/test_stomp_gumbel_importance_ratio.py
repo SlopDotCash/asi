@@ -80,6 +80,27 @@ def test_exact_ties_remain_uniform() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("q_values", "expected"),
+    [
+        ([1.0e38, 1.0e38], [0.5, 0.5]),
+        ([3.0e38, 3.1e38], [0.0, 1.0]),
+    ],
+)
+def test_float32_boundary_values_remain_finite(
+    q_values: list[float], expected: list[float]
+) -> None:
+    """Centering before scaling prevents overflow for large finite Q-values."""
+    greedy = _epsilon_greedy_action_probabilities(
+        jnp.asarray(q_values, dtype=jnp.float32), jnp.asarray(0.0)
+    )
+
+    probabilities = np.asarray(greedy)
+    assert np.all(np.isfinite(probabilities))
+    np.testing.assert_allclose(probabilities, expected, rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.unit
 def test_well_separated_values_are_hard_greedy() -> None:
     """Q-values separated far beyond the tie-break scale act like a hard argmax."""
     q_values = jnp.asarray([0.0, 5.0], dtype=jnp.float32)

@@ -1069,7 +1069,7 @@ def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Arr
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
     scale = jnp.asarray(_GUMBEL_TIE_BREAK_SCALE, dtype=jnp.float32)
-    greedy = jax.nn.softmax(q / scale)
+    greedy = jax.nn.softmax((q - jnp.max(q)) / scale)
     return eps / n_actions + (1.0 - eps) * greedy
 
 
