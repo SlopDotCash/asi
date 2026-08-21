@@ -868,3 +868,29 @@ class TestBehaviorModelSequenceCeiling:
         result = run_behavior_model_from_arrays(model, state, observations, actions)
         chex.assert_shape(result.probabilities, (12, 3))
         assert int(result.state.step_count) == 12
+
+
+class TestFloorRenormalizeDegenerate:
+    """Degenerate inputs must still yield a valid simplex (#2238)."""
+
+    def test_zero_mass_returns_simplex(self) -> None:
+        out = floor_and_renormalize_probabilities(jnp.zeros(3, dtype=jnp.float32))
+        np.testing.assert_allclose(float(out.sum()), 1.0, rtol=1e-5)
+        # zero mass falls back to uniform: every entry above the floor
+        assert float(out.min()) > 0.0
+
+    def test_float32_underflow_returns_simplex(self) -> None:
+        out = floor_and_renormalize_probabilities(
+            jnp.asarray([1e38, 1.0, 1.0], dtype=jnp.float32)
+        )
+        np.testing.assert_allclose(float(out.sum()), 1.0, rtol=1e-5)
+
+    def test_well_formed_input_unchanged(self) -> None:
+        probs = jnp.asarray([0.5, 0.3, 0.2], dtype=jnp.float32)
+        out = floor_and_renormalize_probabilities(probs)
+        np.testing.assert_allclose(float(out.sum()), 1.0, rtol=1e-5)
+        assert float(out[0]) > float(out[1]) > float(out[2])
+
+    def test_single_action(self) -> None:
+        out = floor_and_renormalize_probabilities(jnp.asarray([1.0], dtype=jnp.float32))
+        np.testing.assert_allclose(float(out.sum()), 1.0, rtol=1e-6)
