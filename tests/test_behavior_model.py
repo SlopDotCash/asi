@@ -868,3 +868,32 @@ class TestBehaviorModelSequenceCeiling:
         result = run_behavior_model_from_arrays(model, state, observations, actions)
         chex.assert_shape(result.probabilities, (12, 3))
         assert int(result.state.step_count) == 12
+
+
+@pytest.mark.parametrize(
+    ("label", "probabilities"),
+    (
+        ("all-zero mass", [0.0, 0.0, 0.0]),
+        ("underflowing spread", [1e38, 1.0, 1.0]),
+    ),
+)
+def test_floor_and_renormalize_returns_a_simplex_for_degenerate_mass(
+    label: str,
+    probabilities: list[float],
+) -> None:
+    """The helper documents "a valid simplex"; degenerate mass must not break it.
+
+    ``normalized`` is ``clipped / max(sum(clipped), 1e-12)``. When the clipped
+    mass is zero that ratio is all zeros, and when one entry dominates the sum
+    in float32 every ratio underflows to zero. Either way the affine step
+    returns ``min_probability`` in every slot, so the result sums to
+    ``n * min_probability`` rather than one.
+    """
+    floored = floor_and_renormalize_probabilities(
+        jnp.asarray(probabilities, dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+
+    chex.assert_tree_all_finite(floored)
+    assert float(jnp.min(floored)) >= 1e-6 - 1e-9, label
+    chex.assert_trees_all_close(jnp.sum(floored), 1.0, atol=1e-5)
