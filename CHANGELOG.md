@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Made activation/feature campaign output reservation probe the destination
+  filesystem's linkable-`O_TMPFILE` capability before plan admission, dataset
+  access, or execution, so partially supported Linux filesystems fail early
+  instead of losing a completed shard at publication time.
 - Canonicalized discounted-SARSA lifecycle timers at the exact-dispatch
   reference-control boundary. The first compiled update can no longer grow
   persistent numeric state by promoting two host floats into JAX leaves, so

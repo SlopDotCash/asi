@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import errno
+import hashlib
 import json
 import os
 from collections.abc import Iterator
@@ -605,13 +607,20 @@ def test_aggregate_rejects_missing_duplicate_and_self_consistent_statistic_forge
         campaign.validate_aggregate(aggregate)
 
 
-@pytest.mark.skipif(
-    not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_TMPFILE")),
-    reason="strict loader/publication requires Linux descriptor support",
-)
+def _require_publication_filesystem(tmp_path: Path, authorized: None) -> None:
+    try:
+        with campaign._reserved_new_output(tmp_path / "capability-probe.json"):
+            pass
+    except OSError as error:
+        if "requires Linux" in str(error) or "cannot link O_TMPFILE" in str(error):
+            pytest.skip(str(error))
+        raise
+
+
 def test_strict_file_admission_and_append_only_writer(
     cheap_plan: dict[str, object], tmp_path: Path, authorized: None
 ) -> None:
+    _require_publication_filesystem(tmp_path, authorized)
     destination = tmp_path / "plan.json"
     campaign.write_new_json(destination, cheap_plan)
     assert campaign.load_json_strict(destination, max_bytes=campaign._MAX_SHARD_BYTES) == cheap_plan
@@ -686,13 +695,10 @@ def test_summarizer_uses_metadata_from_the_descriptor_that_supplied_bytes(
     assert swapped is True
 
 
-@pytest.mark.skipif(
-    not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_TMPFILE")),
-    reason="descriptor-pinned publication requires Linux",
-)
 def test_reserved_publication_resists_parent_swap_and_occupied_race(
     cheap_plan: dict[str, object], tmp_path: Path, authorized: None
 ) -> None:
+    _require_publication_filesystem(tmp_path, authorized)
     requested_parent = tmp_path / "requested"
     requested_parent.mkdir()
     destination = requested_parent / "result.json"
@@ -712,16 +718,13 @@ def test_reserved_publication_resists_parent_swap_and_occupied_race(
     assert occupied.read_text(encoding="utf-8") == "do not replace"
 
 
-@pytest.mark.skipif(
-    not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_TMPFILE")),
-    reason="descriptor-pinned publication requires Linux",
-)
 def test_reservation_is_exclusive_before_work_and_publication_strictly_rereads(
     cheap_plan: dict[str, object],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     authorized: None,
 ) -> None:
+    _require_publication_filesystem(tmp_path, authorized)
     destination = tmp_path / "plan.json"
     with campaign._reserved_new_output(destination) as target:
         with pytest.raises(FileExistsError, match="reserved"):
@@ -744,16 +747,13 @@ def test_reservation_is_exclusive_before_work_and_publication_strictly_rereads(
     ) == cheap_plan
 
 
-@pytest.mark.skipif(
-    not all(hasattr(os, name) for name in ("O_NOFOLLOW", "O_TMPFILE")),
-    reason="descriptor-pinned publication requires Linux",
-)
 def test_publication_rejects_zero_write_and_nonregular_reread_swap(
     cheap_plan: dict[str, object],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     authorized: None,
 ) -> None:
+    _require_publication_filesystem(tmp_path, authorized)
     short_output = tmp_path / "short.json"
     with campaign._reserved_new_output(short_output) as target:
         monkeypatch.setattr(os, "write", lambda *_args, **_kwargs: 0)
@@ -774,3 +774,31 @@ def test_publication_rejects_zero_write_and_nonregular_reread_swap(
         monkeypatch.setattr(campaign, "_link_unnamed_file", link_then_swap)
         with pytest.raises(ValueError, match="regular file"):
             campaign._publish_reserved_json(target, cheap_plan)
+
+
+@pytest.mark.skipif(
+    not all(hasattr(os, name) for name in ("O_DIRECTORY", "O_NOFOLLOW", "O_TMPFILE")),
+    reason="unlinkable-O_TMPFILE regression requires Linux descriptor support",
+)
+def test_reservation_rejects_unlinkable_tmpfile_before_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authorized: None
+) -> None:
+    destination_name = f"{'x' * 232}.json"
+    destination = tmp_path / destination_name
+    linked_names: list[str] = []
+
+    def reject_link(_file_fd: int, _parent_fd: int, name: str) -> None:
+        linked_names.append(name)
+        raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
+
+    monkeypatch.setattr(campaign, "_link_unnamed_file", reject_link)
+    entered = False
+    with pytest.raises(OSError, match="cannot link O_TMPFILE"):
+        with campaign._reserved_new_output(destination):
+            entered = True
+    assert entered is False
+    assert linked_names == [
+        f".publication-probe-{hashlib.sha256(destination_name.encode()).hexdigest()[:16]}"
+    ]
+    assert not destination.exists()
+    assert not (tmp_path / f".{destination_name}.reservation").exists()
