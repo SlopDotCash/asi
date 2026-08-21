@@ -37,7 +37,13 @@ DISCOVERY_ARMS = (
 CHAMPION = "sigma0_shiftnorm_d099"
 
 
-def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
+def _arm(
+    directory: Path,
+    name: str,
+    seeds: Sequence[int],
+    *,
+    expected_tasks: int | None = None,
+) -> dict[str, Any]:
     values = []
     for seed in seeds:
         path = directory / f"{name}_seed{seed}.json"
@@ -52,6 +58,15 @@ def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
         payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
         if payload_seed != seed:
             raise ValueError(f"{path} seed does not match requested seed {seed}")
+        # Semantic arm binding (#2134): a v2 payload must declare the exact
+        # config that produced it, and that config must match the expected arm.
+        # A v1 payload (no config_name) is accepted for backward compatibility
+        # with the historical reconstruction path.
+        config_name = payload.get("config_name")
+        if type(config_name) is str and config_name != name:
+            raise ValueError(
+                f"{path} config_name {config_name!r} does not match expected arm {name!r}"
+            )
         accuracy = np.asarray(payload["per_task_accuracy"], dtype=np.float64)
         if (
             accuracy.ndim != 1
@@ -59,6 +74,20 @@ def _arm(directory: Path, name: str, seeds: Sequence[int]) -> dict[str, Any]:
             or not bool(np.all((0.0 <= accuracy) & (accuracy <= 1.0)))
         ):
             raise ValueError(f"{path} has invalid per_task_accuracy")
+        # Stage binding (#2134): the screen is 60 tasks, confirmation is 200.
+        # Prefer an explicit n_tasks field; otherwise infer from the curve.
+        if expected_tasks is not None:
+            declared_tasks = payload.get("n_tasks")
+            actual_tasks = (
+                declared_tasks
+                if type(declared_tasks) is int
+                else int(accuracy.shape[0])
+            )
+            if actual_tasks != expected_tasks:
+                raise ValueError(
+                    f"{path} has {actual_tasks} tasks; expected {expected_tasks} "
+                    f"for this stage"
+                )
         values.append(float(np.mean(accuracy)))
     return {"per_seed": values, "mean": float(np.mean(values))}
 
@@ -71,7 +100,10 @@ def build_legacy_rule_discovery_summary(
 ) -> dict[str, Any]:
     """Reconstruct the exact legacy v1 payload for compatibility checks."""
     seeds = require_unique_jax_seeds(seeds)
-    screen = {name: _arm(screen_dir, name, seeds) for name in SCREEN_ARMS}
+    screen = {
+        name: _arm(screen_dir, name, seeds, expected_tasks=60)
+        for name in SCREEN_ARMS
+    }
     confirm_names = ("disc_r1_pscale_norms", CHAMPION)
     present = [
         (confirm_dir / f"{name}_seed{seed}.json").exists()
@@ -81,7 +113,10 @@ def build_legacy_rule_discovery_summary(
     if any(present) and not all(present):
         raise ValueError("rule-discovery confirmation seeds are incomplete")
     full = (
-        {name: _arm(confirm_dir, name, seeds) for name in confirm_names}
+        {
+            name: _arm(confirm_dir, name, seeds, expected_tasks=200)
+            for name in confirm_names
+        }
         if all(present)
         else {}
     )
