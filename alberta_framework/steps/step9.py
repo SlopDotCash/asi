@@ -36,6 +36,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._scan_resources import ScanBudget, require_scan_steps
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
@@ -71,6 +72,10 @@ from alberta_framework.steps.step6 import (
 )
 
 _INT32_MAX = 2**31 - 1
+# Scan-length budget for dreaming loops: values above the cap would
+# materialize multi-gigabyte arange buffers and billion-iteration scans at
+# trace time. Mirrors the dreaming.py _DREAM_ROLLOUT_BUDGET precedent.
+_DREAM_SCAN_BUDGET = ScanBudget("Step 9 dreaming", maximum_steps=10_000)
 _MAX_CONFIG_SEQUENCE_LENGTH = 4_096
 _MAX_DREAM_WORK_PER_REAL_STEP = 4_096
 # Matches the established ceiling for other scan-driven array-loop runners
@@ -428,11 +433,18 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
     planning_budget = _require_int(
         "planning_budget", config.planning_budget, minimum=0, maximum=_INT32_MAX
     )
+    if planning_budget > 0:
+        planning_budget = require_scan_steps(
+            "planning_budget", planning_budget, _DREAM_SCAN_BUDGET
+        )
     dream_rollout_horizon = _require_int(
         "dream_rollout_horizon",
         config.dream_rollout_horizon,
         minimum=1,
         maximum=_INT32_MAX,
+    )
+    dream_rollout_horizon = require_scan_steps(
+        "dream_rollout_horizon", dream_rollout_horizon, _DREAM_SCAN_BUDGET
     )
     # Candidate selection publishes selected indices as signed int32 values.
     dream_candidate_count = _require_int(
@@ -440,6 +452,9 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         config.dream_candidate_count,
         minimum=1,
         maximum=_INT32_MAX,
+    )
+    dream_candidate_count = require_scan_steps(
+        "dream_candidate_count", dream_candidate_count, _DREAM_SCAN_BUDGET
     )
     dream_surprise_weight = _require_real(
         "dream_surprise_weight",
