@@ -5,7 +5,6 @@ selection primitive (tie-breaking by source index, non-finite handling,
 validation gates).
 """
 
-import jax
 import jax.numpy as jnp
 import pytest
 
