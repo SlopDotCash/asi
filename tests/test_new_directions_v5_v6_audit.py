@@ -310,12 +310,12 @@ def test_v6_amendment_rejects_false_audit_status_text() -> None:
 def test_strict_json_rejects_duplicates_and_nonfinite_numbers(tmp_path: Path) -> None:
     duplicate = tmp_path / "duplicate.json"
     duplicate.write_text('{"schema":"a","schema":"b"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="duplicate JSON key"):
+    with pytest.raises(ValueError, match=r"^duplicate JSON object key$"):
         load_strict_json(duplicate)
 
     nonfinite = tmp_path / "nonfinite.json"
     nonfinite.write_text(json.dumps({"value": float("nan")}), encoding="utf-8")
-    with pytest.raises(ValueError, match="finite"):
+    with pytest.raises(ValueError, match=r"^non-standard JSON numeric constant is forbidden$"):
         load_strict_json(nonfinite)
 
 
@@ -339,3 +339,46 @@ def test_maintained_audit_cli_is_packaged() -> None:
     assert project["project"]["scripts"]["asi-new-directions-audit"] == (
         "alberta_framework.benchmarks.new_directions_v5_v6_audit:main"
     )
+
+
+def test_strict_json_rejects_deep_object_nest_before_loads(tmp_path: Path) -> None:
+    path = tmp_path / "deep-object.json"
+    path.write_text('{"k":' * 10_000 + "0" + "}" * 10_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nesting-depth"):
+        load_strict_json(path)
+
+
+def test_strict_json_rejects_deep_array_nest_before_loads(tmp_path: Path) -> None:
+    path = tmp_path / "deep-array.json"
+    path.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+    with pytest.raises(ValueError, match="nesting-depth"):
+        load_strict_json(path)
+
+
+def test_strict_json_still_enforces_the_16_mb_audit_bound(tmp_path: Path) -> None:
+    """The shared loader's cap is 16 MiB; the audit contract's cap is 16 MB.
+
+    Delegating without this check would silently widen the audited artifact
+    bound by 777,216 bytes, so pin the byte that separates them.
+    """
+    path = tmp_path / "oversize.json"
+    padding = 16_000_050 - len('{"a":""}')
+    path.write_text('{"a":"' + "x" * padding + '"}', encoding="utf-8")
+    assert path.stat().st_size == 16_000_050
+    with pytest.raises(ValueError, match=r"^JSON artifact exceeds the 16 MB audit bound$"):
+        load_strict_json(path)
+
+
+def test_strict_json_rejects_a_non_object_root(tmp_path: Path) -> None:
+    path = tmp_path / "array-root.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(ValueError, match="payload must contain one JSON object"):
+        load_strict_json(path)
+
+
+def test_duplicate_key_error_does_not_leak_the_key(tmp_path: Path) -> None:
+    path = tmp_path / "leaky.json"
+    path.write_text('{"SECRET123": 1, "SECRET123": 2}', encoding="utf-8")
+    with pytest.raises(ValueError) as excinfo:
+        load_strict_json(path)
+    assert "SECRET123" not in str(excinfo.value)
