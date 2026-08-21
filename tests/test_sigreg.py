@@ -124,6 +124,56 @@ def test_sigreg_diagnostics_std_is_finite_at_float32_extremes() -> None:
     chex.assert_tree_all_finite(diagnostics)
 
 
+def _bhep_reference_statistic(samples: np.ndarray, kernel_width: float) -> float:
+    """Independent float64 reimplementation of the closed-form BHEP statistic.
+
+    Transcribes ``BHEP_{n,beta}`` exactly as given in Henze, N. (2021), "Tests
+    for multivariate normality -- a critical review with emphasis on
+    weighted L^2-statistics" (arXiv:2004.07332), Section 2.1:
+
+        BHEP_{n,beta} = (1/n) * sum_{j,k} exp(-beta^2 ||Y_j - Y_k||^2 / 2)
+            - 2 / (1 + beta^2)^(d/2) * sum_j exp(-beta^2 ||Y_j||^2 / (2 (1 + beta^2)))
+            + n / (1 + 2 beta^2)^(d/2)
+
+    for the univariate case ``d = 1``, citing that Baringhaus, L. & Henze, N.
+    (1988), "A Consistent Test for Multivariate Normality Based on the
+    Empirical Characteristic Function," studied the special case ``beta =
+    1``. ``epps_pulley_gaussian_statistic`` uses ``kernel_width = 1 / beta``
+    and reports ``BHEP_{n,beta} / n`` (a per-sample normalization suited to
+    use as a bounded loss rather than a raw n-scaled test statistic), clipped
+    at zero for floating-point safety.
+    """
+    x = np.asarray(samples, dtype=np.float64)
+    n = x.shape[0]
+    beta = 1.0 / kernel_width
+    diffs = x[:, None] - x[None, :]
+    term_a = np.sum(np.exp(-(beta**2) * diffs**2 / 2.0)) / n
+    term_b = (2.0 / (1.0 + beta**2) ** 0.5) * np.sum(
+        np.exp(-(beta**2) * x**2 / (2.0 * (1.0 + beta**2)))
+    )
+    term_c = n / (1.0 + 2.0 * beta**2) ** 0.5
+    return float(max((term_a - term_b + term_c) / n, 0.0))
+
+
+@pytest.mark.parametrize("kernel_width", [1.0, 0.75, 2.0])
+def test_epps_pulley_matches_closed_form_bhep_statistic(kernel_width: float) -> None:
+    """Cross-check against the published closed form, not just relative ordering.
+
+    ``kernel_width=1.0`` is beta=1, the exact case Baringhaus & Henze (1988)
+    studied; the other widths exercise the general beta dependence given in
+    Henze (2021, arXiv:2004.07332, Sec. 2.1). See
+    ``_bhep_reference_statistic`` for the transcribed formula.
+    """
+    samples = np.asarray([-1.5, 0.3, 2.0, -0.7], dtype=np.float64)
+    expected = _bhep_reference_statistic(samples, kernel_width)
+
+    actual = epps_pulley_gaussian_statistic(
+        jnp.asarray(samples, dtype=jnp.float32), kernel_width=kernel_width
+    )
+
+    assert float(actual) == pytest.approx(expected, abs=1.0e-6)
+
+
 def test_epps_pulley_statistic_penalizes_collapsed_samples() -> None:
     gaussian = jr.normal(jr.key(1), (128,), dtype=jnp.float32)
     collapsed = jnp.zeros((128,), dtype=jnp.float32)
