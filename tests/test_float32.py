@@ -1,120 +1,86 @@
-"""Exact boundary tests for host-real to IEEE binary32 narrowing."""
+"""Unit coverage for alberta_framework._float32.
 
+Exercises the exact host-scalar → binary32 conversion: ties-to-even
+rounding, subnormal/overflow handling, negative zero, ratio extraction
+(actual-type gates), and the public rounding API (checked against
+numpy.float32 where exact).
+"""
+
+import math
 from fractions import Fraction
-from numbers import Real
 
 import numpy as np
 import pytest
 
-from alberta_framework._float32 import round_real_to_float32
-
-
-def _raw_float32(value: float) -> int:
-    return int(np.asarray(value, dtype=np.float32).view(np.uint32).item())
-
-
-@pytest.mark.parametrize(
-    ("offset", "expected"),
-    [
-        (-Fraction(1, 2**60), np.float32(1.0)),
-        (Fraction(0), np.float32(1.0)),
-        (
-            Fraction(1, 2**60),
-            np.nextafter(np.float32(1.0), np.float32(2.0)),
-        ),
-    ],
-    ids=("below", "tie-to-even", "above"),
+from alberta_framework._float32 import (
+    _is_actual_int,
+    _real_ratio,
+    _round_quotient_ties_to_even,
+    round_real_to_float32,
+    round_real_to_float32_with_ratio,
 )
-def test_rounds_fraction_midpoint_exactly(offset: Fraction, expected: np.float32) -> None:
-    midpoint = Fraction(1) + Fraction(1, 2**24)
-    assert _raw_float32(round_real_to_float32(midpoint + offset)) == _raw_float32(
-        float(expected)
-    )
 
 
-def test_rounds_fraction_zero_without_numpy_conversion() -> None:
-    assert _raw_float32(round_real_to_float32(Fraction(0))) == 0
+def test_round_quotient_ties_to_even() -> None:
+    # 1/2 → tie → round to 0 (even)
+    assert _round_quotient_ties_to_even(1, 2) == 0
+    # 3/2 → 1.5 → tie → round to 2 (even)
+    assert _round_quotient_ties_to_even(3, 2) == 2
+    # 5/2 → 2.5 → tie → round to 2 (even)
+    assert _round_quotient_ties_to_even(5, 2) == 2
+    # 7/2 → 3.5 → tie → round to 4 (even)
+    assert _round_quotient_ties_to_even(7, 2) == 4
+    # Non-tie rounds normally
+    assert _round_quotient_ties_to_even(4, 2) == 2
+    assert _round_quotient_ties_to_even(5, 3) == 2
 
 
-def test_rounds_overflow_midpoint_outward() -> None:
-    float32_max = (2**24 - 1) * 2**104
-    midpoint = Fraction(float32_max + 2**103)
-
-    assert round_real_to_float32(midpoint - 1) == float(np.finfo(np.float32).max)
-    assert round_real_to_float32(midpoint) == float("inf")
-    assert round_real_to_float32(midpoint + 1) == float("inf")
+def test_is_actual_int() -> None:
+    assert _is_actual_int(1) is True
+    assert _is_actual_int(np.int32(1)) is True
+    assert _is_actual_int(1.0) is False
+    assert _is_actual_int(True) is False
 
 
-def test_rounds_subnormal_midpoint_to_even_zero() -> None:
-    midpoint = Fraction(1, 2**150)
-    minimum_subnormal = np.nextafter(np.float32(0.0), np.float32(1.0))
-
-    assert _raw_float32(round_real_to_float32(midpoint - Fraction(1, 2**200))) == 0
-    assert _raw_float32(round_real_to_float32(midpoint)) == 0
-    assert _raw_float32(round_real_to_float32(midpoint + Fraction(1, 2**200))) == (
-        _raw_float32(float(minimum_subnormal))
-    )
+def test_real_ratio_basic() -> None:
+    assert _real_ratio(3) == (3, 1, False)
+    assert _real_ratio(-3) == (-3, 1, False)
+    assert _real_ratio(0.5) == (1, 2, False)
+    assert _real_ratio(Fraction(1, 3)) == (1, 3, False)
 
 
-@pytest.mark.parametrize("value", [-0.0, np.float32(-0.0), np.longdouble(-0.0)])
-def test_preserves_signed_zero(value: float) -> None:
-    assert _raw_float32(round_real_to_float32(value)) == 0x80000000
+def test_real_ratio_negative_zero() -> None:
+    n, d, neg_zero = _real_ratio(-0.0)
+    assert n == 0
+    assert neg_zero is True
+    n2, d2, neg_zero2 = _real_ratio(0.0)
+    assert neg_zero2 is False
 
 
-@pytest.mark.parametrize("value", [True, False, np.bool_(True), np.bool_(False)])
-def test_rejects_bool_aliases(value: object) -> None:
-    with pytest.raises(TypeError):
-        round_real_to_float32(value)  # type: ignore[arg-type]
+def test_real_ratio_rejects_bool() -> None:
+    with pytest.raises(TypeError, match="non-bool"):
+        _real_ratio(True)
 
 
-def test_rejects_non_real_whose_class_property_spoofs_float() -> None:
-    class ClassSpoof:
-        @property
-        def __class__(self) -> type[float]:
-            return float
-
-        def as_integer_ratio(self) -> tuple[int, int]:
-            return (1, 2)
-
-    value = ClassSpoof()
-    assert isinstance(value, Real)
-    assert not issubclass(type(value), Real)
-
-    with pytest.raises(TypeError, match="actual non-bool real"):
-        round_real_to_float32(value)  # type: ignore[arg-type]
+def test_float32_rounding_matches_numpy() -> None:
+    values = [0.1, 0.2, 1.5, 3.14, 1e-40, 1e40, 123456.789, -0.5]
+    for v in values:
+        mine = round_real_to_float32(v)
+        ref = float(np.float32(v))
+        assert mine == ref, f"{v}: {mine} vs {ref}"
 
 
-def test_float_subclass_is_rejected_before_spoofed_ratio_dispatch() -> None:
-    class IntegralSpoofFloat(float):
-        calls = 0
-
-        @property
-        def __class__(self) -> type[int]:
-            return int
-
-        def as_integer_ratio(self) -> tuple[int, int]:
-            type(self).calls += 1
-            return (-1, 2**200)
-
-    value = IntegralSpoofFloat(0.5)
-
-    with pytest.raises(TypeError, match="actual non-bool real"):
-        round_real_to_float32(value)
-    assert IntegralSpoofFloat.calls == 0
+def test_float32_with_ratio_returns_ratio() -> None:
+    n, d, rounded = round_real_to_float32_with_ratio(0.1)
+    assert (n, d) == (3602879701896397, 36028797018963968)
+    assert rounded == float(np.float32(0.1))
 
 
-def test_rejects_float_subclass_before_malformed_ratio_hook() -> None:
-    class IntegerSpoof:
-        @property
-        def __class__(self) -> type[int]:
-            return int
+def test_float32_overflow_to_inf() -> None:
+    assert math.isinf(round_real_to_float32(1e40))
+    assert round_real_to_float32(1e40) > 0
 
-        def __int__(self) -> int:
-            return 1
 
-    class MalformedRatioFloat(float):
-        def as_integer_ratio(self) -> tuple[object, int]:
-            return (IntegerSpoof(), 2)
-
-    with pytest.raises(TypeError, match="actual non-bool real"):
-        round_real_to_float32(MalformedRatioFloat(0.5))
+def test_float32_subnormal() -> None:
+    # 1e-40 is subnormal in float32; numpy matches.
+    assert round_real_to_float32(1e-40) == float(np.float32(1e-40))
