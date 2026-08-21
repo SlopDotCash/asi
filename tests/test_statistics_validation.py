@@ -668,7 +668,10 @@ class TestIdenticalWilcoxonRejection:
         assert result.test_name == "Wilcoxon signed-rank"
         assert result.statistic == pytest.approx(0.0)
         assert result.p_value < 1.0
-        assert result.effect_size == cohens_d([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        # Paired d_z of a perfectly constant +0.5 shift has zero within-pair
+        # difference spread, so the standardized difference is +inf (not the
+        # pooled independent-groups d of 0.5).
+        assert np.isposinf(result.effect_size)
 
 
 class TestOneSampleRejection:
@@ -927,6 +930,57 @@ class TestEffectSizes:
         res = mann_whitney_comparison([3.0, 5.0], [1.0, 4.0])
         assert res.statistic == pytest.approx(3.0)
         assert res.effect_size == pytest.approx(0.5)
+
+
+class TestPairedCohensDz:
+    """Paired tests must report Cohen's d_z, not the pooled independent-groups d.
+
+    A consistent per-pair shift buried under large shared between-seed variance
+    is negligible under the pooled formula (the shared variance swamps the
+    denominator) but large under d_z (which the paired test actually reflects).
+    """
+
+    # a is consistently ~1 unit above b, per pair, on top of a large shared level.
+    _A = np.array([101.0, 202.0, 303.0, 404.0])
+    _B = np.array([100.0, 200.0, 300.0, 400.0])
+    # differences = [1, 2, 3, 4]; mean 2.5, std(ddof=1) = sqrt(5/3) -> d_z ~ 1.9365.
+    _EXPECTED_DZ = 2.5 / np.sqrt(5.0 / 3.0)
+    _POOLED_D = float(np.mean(_A) - np.mean(_B)) / np.sqrt(
+        (np.var(_A, ddof=1) + np.var(_B, ddof=1)) / 2.0
+    )
+
+    def test_paired_ttest_reports_dz_not_pooled(self) -> None:
+        res = ttest_comparison(self._A, self._B, paired=True)
+        assert res.test_name == "paired t-test"
+        assert res.effect_size == pytest.approx(self._EXPECTED_DZ, rel=1e-9)
+        assert res.effect_size == pytest.approx(1.9364916731, abs=1e-9)
+        # The pooled d (~0.0193) must NOT be what a paired test reports.
+        assert self._POOLED_D == pytest.approx(0.0193, abs=1e-3)
+        assert abs(res.effect_size - self._POOLED_D) > 1.0
+
+    def test_wilcoxon_reports_dz_not_pooled(self) -> None:
+        res = wilcoxon_comparison(self._A, self._B)
+        assert res.test_name == "Wilcoxon signed-rank"
+        assert res.effect_size == pytest.approx(self._EXPECTED_DZ, rel=1e-9)
+        assert res.effect_size != pytest.approx(self._POOLED_D, abs=1e-3)
+
+    def test_unpaired_ttest_still_reports_pooled_d(self) -> None:
+        res = ttest_comparison(self._A, self._B, paired=False)
+        assert res.test_name == "independent t-test"
+        assert res.effect_size == pytest.approx(cohens_d(self._A, self._B), rel=1e-12)
+        assert res.effect_size == pytest.approx(self._POOLED_D, rel=1e-9)
+
+    def test_paired_dz_sign_follows_difference_direction(self) -> None:
+        # b consistently above a -> negative d_z under the same magnitude.
+        res = ttest_comparison(self._B, self._A, paired=True)
+        assert res.effect_size == pytest.approx(-self._EXPECTED_DZ, rel=1e-9)
+
+    def test_paired_dz_constant_shift_is_signed_infinity(self) -> None:
+        # A perfectly constant nonzero per-pair shift has zero difference spread.
+        res = ttest_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5], paired=True)
+        assert np.isposinf(res.effect_size)
+        neg = ttest_comparison([0.5, 1.5, 2.5], [1.0, 2.0, 3.0], paired=True)
+        assert np.isneginf(neg.effect_size)
 
 
 # ---------------------------------------------------------------------------
