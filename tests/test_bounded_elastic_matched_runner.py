@@ -16,6 +16,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig
 from alberta_framework.evaluation.bounded_elastic_ipmnist_nonpromoting import (
     registered_bounded_elastic_hyperparameters,
 )
+from tests._forager_matched_platform import HAS_O_TMPFILE, requires_o_tmpfile
 
 SMALL = IPMNISTConfig(n_tasks=1, task_length=5000, input_dim=2, hidden1=4, hidden2=2, n_classes=2)
 
@@ -291,6 +292,7 @@ def test_campaign_rejects_unregistered_outcome_decisions(
         )
 
 
+@requires_o_tmpfile
 def test_writer_is_create_only_and_retains_negative_outcomes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -314,6 +316,7 @@ def test_writer_is_create_only_and_retains_negative_outcomes(
     assert not destination.with_name(f".{destination.name}.reservation").exists()
 
 
+@requires_o_tmpfile
 def test_writer_strictly_rereads_before_link_and_retains_failed_attempt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -340,6 +343,7 @@ def test_writer_strictly_rereads_before_link_and_retains_failed_attempt(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_writer_retains_reservation_after_reexecution_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -366,6 +370,7 @@ def test_writer_retains_reservation_after_reexecution_failure(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 @pytest.mark.parametrize("replace_linked_inode", [False, True])
 def test_post_link_failure_rolls_back_only_the_exact_published_inode(
     monkeypatch: pytest.MonkeyPatch,
@@ -407,6 +412,7 @@ def test_post_link_failure_rolls_back_only_the_exact_published_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_link_success_followed_by_exception_rolls_back_exact_inode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -434,6 +440,7 @@ def test_link_success_followed_by_exception_rolls_back_exact_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_writer_rejects_replaced_visible_reservation_before_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -464,6 +471,7 @@ def test_writer_rejects_replaced_visible_reservation_before_publication(
     marker.unlink()
 
 
+@requires_o_tmpfile
 def test_writer_parent_swap_does_not_publish_through_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -493,6 +501,16 @@ def test_writer_parent_swap_does_not_publish_through_replacement(
         )
     assert destination.read_bytes() == competitor
     assert not (retired / destination.name).exists()
+
+
+@pytest.mark.skipif(HAS_O_TMPFILE, reason="Linux publishes the artifact instead of refusing")
+def test_reservation_fails_closed_without_linux_descriptor_support(tmp_path: Path) -> None:
+    destination = tmp_path / "never" / "bounded-elastic.json"
+    with pytest.raises(OSError, match="immutable output publication requires Linux"):
+        runner._reserve_output(destination, _capability=runner._TEST_EXECUTION_CAPABILITY)
+
+    assert not destination.parent.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_public_writer_is_closed_before_creating_output(tmp_path: Path) -> None:
@@ -552,6 +570,7 @@ def test_standalone_paths_remain_disabled_after_flag_transition(
     assert not destination.parent.exists()
 
 
+@requires_o_tmpfile
 def test_transaction_reserves_before_dataset_load_or_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -579,6 +598,7 @@ def test_transaction_reserves_before_dataset_load_or_runner(
     assert marker.read_bytes() == b"prior reservation"
 
 
+@requires_o_tmpfile
 def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -615,6 +635,7 @@ def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     assert calls == 1
 
 
+@requires_o_tmpfile
 def test_transaction_publishes_only_after_strict_reexecution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
