@@ -252,3 +252,54 @@ def test_costly_paper_lanes_are_unconditionally_closed() -> None:
     assert isinstance(sequential_ale, Mapping)
     assert random_label_cifar["qualified"] is False
     assert sequential_ale["qualified"] is False
+
+
+def _npy_header_bytes(shape: tuple[int, ...], dtype: object) -> bytes:
+    from io import BytesIO
+
+    buffer = BytesIO()
+    np.lib.format.write_array_header_2_0(
+        buffer,
+        {
+            "descr": np.lib.format.dtype_to_descr(np.dtype(dtype)),
+            "fortran_order": False,
+            "shape": shape,
+        },
+    )
+    return buffer.getvalue()
+
+
+def test_cli_rejects_oversize_npy_header_before_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import zipfile
+
+    dataset = tmp_path / "oversize.npz"
+    with zipfile.ZipFile(dataset, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("images.npy", _npy_header_bytes((80_000, INPUT_DIM), np.float32))
+        archive.writestr("labels.npy", _npy_header_bytes((80_000,), np.int32))
+
+    def _forbidden_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("np.load must not run after an oversize npy header")
+
+    monkeypatch.setattr(np, "load", _forbidden_load)
+    with pytest.raises(ValueError, match="unbounded"):
+        main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))
+
+
+def test_cli_rejects_compressed_oversize_members_before_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = tmp_path / "compressed-oversize.npz"
+    images = np.zeros((80_000, INPUT_DIM), dtype=np.float32)
+    labels = np.zeros((80_000,), dtype=np.int32)
+    np.savez_compressed(dataset, images=images, labels=labels)
+    del images, labels
+
+    def _forbidden_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("np.load must not run after an oversize compressed NPZ")
+
+    monkeypatch.setattr(np, "load", _forbidden_load)
+    with pytest.raises(ValueError, match="unbounded"):
+        main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))
+
