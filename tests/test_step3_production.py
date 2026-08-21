@@ -20,8 +20,12 @@ from alberta_framework.core.horde import run_horde_learning_loop
 from alberta_framework.steps import (
     Step3HordeConfig,
     build_step2_to_step3_arrays,
+    init_step3_state,
     make_step3_horde,
+    run_step3_scan,
     run_step3_smoke,
+    step3_predict,
+    step3_update,
 )
 
 _INVALID_HORDE_SCALARS: tuple[tuple[str, Any], ...] = (
@@ -154,6 +158,62 @@ def test_step3_smoke_is_finite_and_serializable() -> None:
     assert isinstance(horde_config, dict)
     assert handoff["n_demons"] == 2
     assert horde_config["type"] == "HordeLearner"
+
+
+@pytest.mark.parametrize(
+    "config",
+    (
+        Step3HordeConfig(
+            gammas=(0.9,),
+            lamdas=(0.9,),
+            hidden_sizes=(),
+            routing="independent",
+        ),
+        Step3HordeConfig(
+            gammas=(0.0, 0.9),
+            lamdas=(0.0, 0.9),
+            hidden_sizes=(),
+            routing="mixed",
+        ),
+    ),
+)
+def test_step3_public_runtime_supports_nonshared_routing(
+    config: Step3HordeConfig,
+) -> None:
+    horde = make_step3_horde(config)
+    state = init_step3_state(horde, feature_dim=2, key=jr.key(0))
+    features = jnp.ones((2,), dtype=jnp.float32)
+    cumulants = jnp.ones((config.n_demons,), dtype=jnp.float32)
+
+    result = step3_update(horde, state, features, cumulants, features)
+    assert result.predictions.shape == (config.n_demons,)
+    scanned = run_step3_scan(
+        horde,
+        state,
+        features[None, :],
+        cumulants[None, :],
+        features[None, :],
+    )
+    assert scanned.td_errors.shape == (1, config.n_demons)
+
+
+def test_step3_runtime_rejects_mismatched_routing_state() -> None:
+    """A state built for one routing mode must not be accepted by another."""
+    independent = make_step3_horde(
+        Step3HordeConfig(gammas=(0.9,), lamdas=(0.9,), hidden_sizes=(), routing="independent")
+    )
+    mixed_config = Step3HordeConfig(
+        gammas=(0.0, 0.9), lamdas=(0.0, 0.9), hidden_sizes=(), routing="mixed"
+    )
+    mixed = make_step3_horde(mixed_config)
+    mixed_state = init_step3_state(mixed, feature_dim=2, key=jr.key(0))
+    features = jnp.ones((2,), dtype=jnp.float32)
+    cumulants = jnp.ones((mixed_config.n_demons,), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="state must match the horde implementation"):
+        step3_predict(independent, mixed_state, features)
+    with pytest.raises(ValueError, match="state must match the horde implementation"):
+        step3_update(independent, mixed_state, features, cumulants, features)
 
 
 def test_step3_config_validation() -> None:
