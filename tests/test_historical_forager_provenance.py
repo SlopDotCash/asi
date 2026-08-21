@@ -103,7 +103,6 @@ def test_family_pairing_rejects_non_strings() -> None:
 
 def test_validation_bounds_depth() -> None:
     # A nested structure beyond _MAX_PROVENANCE_DEPTH (8) must be rejected.
-    value = historical_forager_provenance()
     deep: dict[str, object] = {}
     cursor = deep
     for _ in range(12):
