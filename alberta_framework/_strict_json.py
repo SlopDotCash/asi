@@ -55,6 +55,8 @@ def _reject_duplicate_object_keys(
 
 
 def _scan_json_nesting(text: str) -> None:
+    if type(text) is not str:
+        raise ValueError("JSON text must be an exact string")
     depth = 0
     in_string = False
     escaped = False
