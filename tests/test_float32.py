@@ -84,3 +84,37 @@ def test_float32_overflow_to_inf() -> None:
 def test_float32_subnormal() -> None:
     # 1e-40 is subnormal in float32; numpy matches.
     assert round_real_to_float32(1e-40) == float(np.float32(1e-40))
+
+
+def test_rounds_fraction_midpoint_exactly() -> None:
+    # Fraction midpoint at 1 + 2^-24 with a tiny offset (tie-to-even via ratio).
+    frac = Fraction(1) + Fraction(1, 2**24) + Fraction(1, 2**60)
+    rounded = round_real_to_float32(frac)
+    # 1 + 2^-24 + tiny is exactly halfway → rounds to 1 (even) or 1+2^-23.
+    assert rounded in (1.0, float(np.float32(1.0 + 2**-23)))
+
+
+def test_rounds_overflow_midpoint_outward() -> None:
+    # float32_max = (2^24-1)*2^104; its midpoint rounds to inf.
+    float32_max = (2**24 - 1) * 2**104
+    mid = float32_max + float32_max / 2
+    assert math.isinf(round_real_to_float32(mid))
+
+
+def test_rounds_subnormal_midpoint_to_even_zero() -> None:
+    # Midpoint 2^-150 is between 0 and the min subnormal 2^-149 → tie → 0.
+    assert round_real_to_float32(Fraction(1, 2**150)) == 0.0
+
+
+def test_preserves_signed_zero() -> None:
+    neg = round_real_to_float32_with_ratio(-0.0)
+    assert math.copysign(1.0, neg[2]) == -1.0
+    pos = round_real_to_float32_with_ratio(0.0)
+    assert math.copysign(1.0, pos[2]) == 1.0
+
+
+def test_rejects_bool_aliases() -> None:
+    with pytest.raises(TypeError, match="non-bool"):
+        _real_ratio(True)
+    with pytest.raises(TypeError, match="non-bool"):
+        _real_ratio(np.bool_(True))
