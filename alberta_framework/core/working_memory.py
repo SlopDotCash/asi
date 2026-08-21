@@ -29,6 +29,10 @@ from alberta_framework.core.update_safety import (
     select_transaction,
 )
 
+# Host-side cardinality bound for multi-timescale decay-rate tuples. Mirrors
+# HistoryFeatureExtractor's _MAX_HISTORY_CONFIGURATION_ITEMS = 4096 (#2220).
+_MAX_WORKING_MEMORY_DECAY_RATES = 1 << 12
+
 
 @dataclass(frozen=True)
 class WorkingMemoryConfig:
@@ -123,10 +127,15 @@ class WorkingMemoryConfig:
         ):
             if key in payload:
                 value = payload[key]
+                if type(value) is not list and type(value) is not tuple:
+                    raise ValueError(f"{key} must be an actual list or tuple")
+                if len(value) > _MAX_WORKING_MEMORY_DECAY_RATES:
+                    raise ValueError(
+                        f"serialized {key} must contain at most "
+                        f"{_MAX_WORKING_MEMORY_DECAY_RATES} decay rates"
+                    )
                 if type(value) is list:
                     payload[key] = tuple(value)
-                elif type(value) is not tuple:
-                    raise ValueError(f"{key} must be an actual list or tuple")
                 if any(type(item) is not float for item in payload[key]):
                     raise ValueError(f"serialized {key} values must be JSON numbers")
         for key in ("observation_dim", "action_dim", "reward_dim"):
@@ -287,6 +296,10 @@ def _require_array(
 def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
     if type(rates) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
+    if len(rates) > _MAX_WORKING_MEMORY_DECAY_RATES:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_WORKING_MEMORY_DECAY_RATES} decay rates"
+        )
     return tuple(
         validated_float32_scalar(
             f"{name}[{index}]",
