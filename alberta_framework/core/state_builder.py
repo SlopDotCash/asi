@@ -115,9 +115,17 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
     return _require_integer(name, value, minimum=minimum, maximum=_INT32_MAX)
 
 
+_MAX_FIXED_TRACE_CONFIGURATION_ITEMS = 1 << 12
+_MAX_FIXED_TRACE_DECAY_RATES = _MAX_FIXED_TRACE_CONFIGURATION_ITEMS
+
+
 def _require_decay_rates(name: str, value: object) -> tuple[float, ...]:
     if type(value) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
+    if len(value) > _MAX_FIXED_TRACE_DECAY_RATES:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_FIXED_TRACE_DECAY_RATES} decay rates"
+        )
     rates = cast(tuple[object, ...], value)
     return tuple(
         validated_float32_scalar(
@@ -1036,12 +1044,24 @@ class FixedTraceStateBuilderConfig:
         obs_decays = data["observation_decay_rates"]
         act_decays = data["action_decay_rates"]
         out_decays = data["outcome_decay_rates"]
-        if (
-            not isinstance(obs_decays, (list, tuple))
-            or not isinstance(act_decays, (list, tuple))
-            or not isinstance(out_decays, (list, tuple))
+        for name, value in (
+            ("observation_decay_rates", obs_decays),
+            ("action_decay_rates", act_decays),
+            ("outcome_decay_rates", out_decays),
         ):
-            raise ValueError("decay rates must be lists or tuples")
+            if type(value) is list:
+                if len(value) > _MAX_FIXED_TRACE_DECAY_RATES:
+                    raise ValueError(
+                        f"{name} must contain at most "
+                        f"{_MAX_FIXED_TRACE_DECAY_RATES} decay rates"
+                    )
+            elif type(value) is not tuple:
+                raise ValueError("decay rates must be lists or tuples")
+            elif len(value) > _MAX_FIXED_TRACE_DECAY_RATES:
+                raise ValueError(
+                    f"{name} must contain at most "
+                    f"{_MAX_FIXED_TRACE_DECAY_RATES} decay rates"
+                )
         return cls(
             observation_dim=data["observation_dim"],
             n_actions=data["n_actions"],
