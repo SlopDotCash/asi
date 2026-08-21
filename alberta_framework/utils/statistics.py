@@ -428,6 +428,56 @@ def cohens_d(
     return float((mean_a - mean_b) / pooled_std)
 
 
+def _paired_cohens_d(
+    values_a: NDArray[np.float64] | list[float],
+    values_b: NDArray[np.float64] | list[float],
+) -> float:
+    """Compute Cohen's d_z for paired/matched samples.
+
+    A paired design shares the between-seed variance across both groups,
+    and the paired test itself cancels it out. The correct effect size is
+    therefore d_z = mean(differences) / std(differences, ddof=1), not the
+    pooled independent-groups formula. Using pooled Cohen's d on paired
+    data can understate a real, consistent within-pair shift by orders of
+    magnitude.
+
+    Args:
+        values_a: Values for first method (paired with ``values_b``)
+        values_b: Values for second method (paired with ``values_a``)
+
+    Returns:
+        Cohen's d_z (positive means a > b on average within pairs).
+
+    Raises:
+        ValueError: If either sample is not a finite one-dimensional
+            vector, the samples differ in length, hold fewer than 2 pairs,
+            or the within-pair differences have zero variance.
+    """
+    a = _require_sample_vector(values_a, name="values_a")
+    b = _require_sample_vector(values_b, name="values_b")
+    _require_finite_values(a, name="values_a")
+    _require_finite_values(b, name="values_b")
+
+    if len(a) != len(b):
+        raise ValueError(
+            f"paired d_z requires equal-length samples (got {len(a)} and {len(b)})"
+        )
+    if len(a) < 2:
+        raise ValueError(
+            f"paired d_z requires at least 2 pairs (got {len(a)})"
+        )
+
+    differences = a - b
+    std_differences = np.std(differences, ddof=1)
+    if std_differences == 0:
+        mean_difference = np.mean(differences)
+        if mean_difference == 0:
+            return 0.0
+        return float(np.copysign(np.inf, mean_difference))
+
+    return float(np.mean(differences) / std_differences)
+
+
 def ttest_comparison(
     values_a: NDArray[np.float64] | list[float],
     values_b: NDArray[np.float64] | list[float],
@@ -503,7 +553,10 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    if paired:
+        effect = _paired_cohens_d(a, b)
+    else:
+        effect = cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -657,7 +710,7 @@ def wilcoxon_comparison(
     except ImportError:
         raise ImportError("scipy is required for Wilcoxon test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = _paired_cohens_d(a, b)
 
     return SignificanceResult(
         test_name="Wilcoxon signed-rank",
