@@ -132,6 +132,8 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_STACKED_HORDE_CONFIGURATION_ITEMS = 1 << 12
+_MAX_STACKED_HORDE_DEMONS = _MAX_STACKED_HORDE_CONFIGURATION_ITEMS
 _CONFIG_FIELDS = {
     "type",
     "n_demons",
@@ -174,9 +176,19 @@ def _require_sequence(name: str, value: object) -> tuple[object, ...]:
 
 
 def _decode_sequence(name: str, value: object) -> tuple[object, ...]:
-    if type(value) not in (list, tuple):
+    if type(value) is list:
+        if len(value) > _MAX_STACKED_HORDE_DEMONS:
+            raise ValueError(
+                f"{name} must contain at most {_MAX_STACKED_HORDE_DEMONS} items"
+            )
+        return tuple(value)
+    elif type(value) is not tuple:
         raise ValueError(f"{name} must be an actual list or tuple")
-    return tuple(cast(list[object] | tuple[object, ...], value))
+    elif len(value) > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_STACKED_HORDE_DEMONS} items"
+        )
+    return cast(tuple[object, ...], value)
 
 
 def _preflight_horde_resources(n_demons: int, feature_dim: int) -> None:
@@ -257,7 +269,9 @@ class StackedHordeConfig:
 
     def __post_init__(self) -> None:
         """Validate the configuration."""
-        n_demons = _require_int32("n_demons", self.n_demons, minimum=1)
+        n_demons = _require_int32(
+            "n_demons", self.n_demons, minimum=1, maximum=_MAX_STACKED_HORDE_DEMONS
+        )
         feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
 
         raw_sequences = {
@@ -365,8 +379,10 @@ def nexting_spec(
     )
     canonical_lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
     n_demons = len(canonical_indices) * len(canonical_gammas)
-    if n_demons < 1 or n_demons > _INT32_MAX:
-        raise ValueError("derived n_demons must be in the signed int32 domain")
+    if n_demons < 1 or n_demons > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"derived nexting demon count ({n_demons}) must be in [1, {_MAX_STACKED_HORDE_DEMONS}]"
+        )
     _preflight_horde_resources(n_demons, feature_dim)
     _preflight_stacked_horde_update_working_set(n_demons, feature_dim)
     idxs: list[int] = []
