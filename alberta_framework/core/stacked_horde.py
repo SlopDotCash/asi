@@ -132,6 +132,9 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
 
 
 _INT32_MAX = 2**31 - 1
+# Host-side cardinality bound for stacked-Horde demon counts and demon-list
+# sequences. Mirrors _MAX_HORDE_DEMONS = 4096 in types.py (#2225).
+_MAX_STACKED_HORDE_DEMONS = 1 << 12
 _CONFIG_FIELDS = {
     "type",
     "n_demons",
@@ -174,8 +177,12 @@ def _require_sequence(name: str, value: object) -> tuple[object, ...]:
 
 
 def _decode_sequence(name: str, value: object) -> tuple[object, ...]:
-    if type(value) not in (list, tuple):
+    if type(value) is not list and type(value) is not tuple:
         raise ValueError(f"{name} must be an actual list or tuple")
+    if len(value) > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_STACKED_HORDE_DEMONS} elements"
+        )
     return tuple(cast(list[object] | tuple[object, ...], value))
 
 
@@ -257,7 +264,9 @@ class StackedHordeConfig:
 
     def __post_init__(self) -> None:
         """Validate the configuration."""
-        n_demons = _require_int32("n_demons", self.n_demons, minimum=1)
+        n_demons = _require_int32(
+            "n_demons", self.n_demons, minimum=1, maximum=_MAX_STACKED_HORDE_DEMONS
+        )
         feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
 
         raw_sequences = {
@@ -363,6 +372,15 @@ def nexting_spec(
         validated_float32_scalar(f"gammas[{i}]", value, lower=0.0, upper=1.0)
         for i, value in enumerate(raw_gammas)
     )
+    # Preflight the demon-grid product before building the config: the
+    # returned config has len(cumulant_indices) * len(gammas) demons.
+    demon_product = len(canonical_indices) * len(canonical_gammas)
+    if demon_product > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            "nexting_spec demon grid "
+            f"{len(canonical_indices)} x {len(canonical_gammas)} = {demon_product} "
+            f"exceeds {_MAX_STACKED_HORDE_DEMONS} demons"
+        )
     canonical_lamda = validated_float32_scalar("lamda", lamda, lower=0.0, upper=1.0)
     n_demons = len(canonical_indices) * len(canonical_gammas)
     if n_demons < 1 or n_demons > _INT32_MAX:
