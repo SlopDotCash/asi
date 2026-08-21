@@ -33,11 +33,15 @@ from alberta_framework.core.horde import (
     HordeLearningResult,
     HordeUpdateResult,
     MixedHorde,
+    MixedHordeLearningResult,
+    MixedHordeState,
     run_horde_learning_loop,
     run_mixed_horde_learning_loop,
 )
 from alberta_framework.core.independent_demon_horde import (
     IndependentDemonHorde,
+    IndependentDemonHordeLearningResult,
+    IndependentDemonHordeState,
     run_independent_horde_learning_loop,
 )
 from alberta_framework.core.multi_head_learner import MultiHeadMLPState
@@ -52,6 +56,11 @@ from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 Step3NormalizerName = Literal["none", "ema"]
 Step3TraceModeName = Literal["accumulating", "replacing"]
+Step3Horde = HordeLearner | IndependentDemonHorde | MixedHorde
+Step3HordeState = MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState
+Step3LearningResult = (
+    HordeLearningResult | IndependentDemonHordeLearningResult | MixedHordeLearningResult
+)
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _ACTUAL_INT_TYPES = frozenset(
@@ -441,7 +450,7 @@ class Step3SmokeResult:
 class Step3OneStepResult:
     """Result from one Step 3 transition."""
 
-    state: MultiHeadMLPState
+    state: Step3HordeState
     predictions: Array
     td_errors: Array
     td_targets: Array
@@ -650,46 +659,62 @@ def make_step3_horde(
     raise ValueError(msg)
 
 
+_STEP3_HORDE_STATES: dict[type, type] = {
+    HordeLearner: MultiHeadMLPState,
+    IndependentDemonHorde: IndependentDemonHordeState,
+    MixedHorde: MixedHordeState,
+}
+
+
+def _require_step3_pair(horde: object, state: object) -> None:
+    """Reject a horde/state pair that the Step 3 runtime cannot execute.
+
+    Each routing mode owns exactly one state type. The learners do reject a
+    foreign state, but only from inside a traced call, so the pair is checked
+    here to keep the three public entry points rejecting identically and to
+    surface the mismatch before any array validation runs.
+    """
+    expected = _STEP3_HORDE_STATES.get(type(horde))
+    if expected is None:
+        raise ValueError("horde must be an exact supported Step 3 Horde")
+    if type(state) is not expected:
+        raise ValueError("state must match the horde implementation")
+
+
 def init_step3_state(
-    horde: HordeLearner,
+    horde: HordeLearner | IndependentDemonHorde | MixedHorde,
     *,
     feature_dim: int,
     key: Array,
-) -> MultiHeadMLPState:
+) -> MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState:
     """Initialize a Step 3 Horde state."""
-    if type(horde) is not HordeLearner:
-        raise ValueError("horde must be an exact HordeLearner")
+    if type(horde) not in _STEP3_HORDE_STATES:
+        raise ValueError("horde must be an exact supported Step 3 Horde")
     feature_dim = _require_positive_int("feature_dim", feature_dim)
     key = _require_typed_key("key", key)
     return horde.init(feature_dim, key)
 
 
 def step3_predict(
-    horde: HordeLearner,
-    state: MultiHeadMLPState,
+    horde: HordeLearner | IndependentDemonHorde | MixedHorde,
+    state: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
     features: Array,
 ) -> Array:
     """Return one prediction per Step 3 demon."""
-    if type(horde) is not HordeLearner:
-        raise ValueError("horde must be an exact HordeLearner")
-    if type(state) is not MultiHeadMLPState:
-        raise ValueError("state must be an exact MultiHeadMLPState")
+    _require_step3_pair(horde, state)
     features = _require_float32_vector("features", features)
-    return cast(Array, horde.predict(state, features))
+    return cast(Array, horde.predict(cast(Any, state), features))
 
 
 def step3_update(
-    horde: HordeLearner,
-    state: MultiHeadMLPState,
+    horde: HordeLearner | IndependentDemonHorde | MixedHorde,
+    state: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
     features: Array,
     cumulants: Array,
     next_features: Array,
 ) -> Step3OneStepResult:
     """Run one Step 3 Horde transition update."""
-    if type(horde) is not HordeLearner:
-        raise ValueError("horde must be an exact HordeLearner")
-    if type(state) is not MultiHeadMLPState:
-        raise ValueError("state must be an exact MultiHeadMLPState")
+    _require_step3_pair(horde, state)
     features = _require_float32_vector("features", features)
     cumulants = _require_float32_vector("cumulants", cumulants)
     next_features = _require_float32_vector("next_features", next_features)
@@ -698,7 +723,7 @@ def step3_update(
     if cumulants.shape != (horde.n_demons,):
         raise ValueError("cumulants must match the configured demons")
     result: HordeUpdateResult = horde.update(
-        state,
+        cast(Any, state),
         features,
         cumulants,
         next_features,
@@ -713,17 +738,17 @@ def step3_update(
 
 
 def run_step3_scan(
-    horde: HordeLearner,
-    state: MultiHeadMLPState,
+    horde: HordeLearner | IndependentDemonHorde | MixedHorde,
+    state: MultiHeadMLPState | IndependentDemonHordeState | MixedHordeState,
     features: Array,
     cumulants: Array,
     next_features: Array,
-) -> HordeLearningResult:
+) -> Step3LearningResult:
     """Run the Step 3 Horde over transition arrays."""
-    if type(horde) is not HordeLearner:
-        raise TypeError("horde must be an exact HordeLearner")
-    if type(state) is not MultiHeadMLPState:
-        raise TypeError("state must be an exact MultiHeadMLPState")
+    if type(horde) not in (HordeLearner, IndependentDemonHorde, MixedHorde):
+        raise TypeError("horde must be an exact HordeLearner or supported routed Horde")
+    if type(state) not in (MultiHeadMLPState, IndependentDemonHordeState, MixedHordeState):
+        raise TypeError("state must be an exact MultiHeadMLPState or routed Horde state")
     features = _require_float32_matrix("features", features)
     cumulants = _require_float32_matrix("cumulants", cumulants)
     next_features = _require_float32_matrix("next_features", next_features)
@@ -737,34 +762,38 @@ def run_step3_scan(
         raise ValueError("next_features must match features")
     if cumulants.shape != (steps, horde.n_demons):
         raise ValueError("cumulants must match steps and configured demons")
-    state_feature_dim = (
-        state.trunk_params.weights[0].shape[1]
-        if state.trunk_params.weights
-        else state.head_params.weights[0].shape[1]
-    )
-    if state_feature_dim != feature_dim:
-        msg = (
-            f"state feature dimension ({state_feature_dim}) does not match features ({feature_dim})"
-        )
-        raise ValueError(msg)
-    if len(state.head_params.weights) != horde.n_demons:
-        msg = (
-            f"state demon count ({len(state.head_params.weights)}) does not match "
-            f"horde demon count ({horde.n_demons})"
-        )
-        raise ValueError(msg)
     _require_handoff_resources(
         steps=steps,
         raw_dim=feature_dim,
         constructed_dim=0,
         n_demons=horde.n_demons,
     )
-    return run_horde_learning_loop(
-        horde,
-        state,
-        features,
-        cumulants,
-        next_features,
+    if type(horde) is HordeLearner:
+        shared_state = cast(MultiHeadMLPState, state)
+        state_feature_dim = (
+            shared_state.trunk_params.weights[0].shape[1]
+            if shared_state.trunk_params.weights
+            else shared_state.head_params.weights[0].shape[1]
+        )
+        if state_feature_dim != feature_dim:
+            raise ValueError(
+                f"state feature dimension ({state_feature_dim}) does not match "
+                f"features ({feature_dim})"
+            )
+        if len(shared_state.head_params.weights) != horde.n_demons:
+            raise ValueError(
+                f"state demon count ({len(shared_state.head_params.weights)}) does not match "
+                f"horde demon count ({horde.n_demons})"
+            )
+        return run_horde_learning_loop(horde, shared_state, features, cumulants, next_features)
+    if type(horde) is IndependentDemonHorde:
+        if not isinstance(state, IndependentDemonHordeState):
+            raise TypeError("state must match the horde implementation")
+        return run_independent_horde_learning_loop(horde, state, features, cumulants, next_features)
+    if not isinstance(state, MixedHordeState):
+        raise TypeError("state must match the horde implementation")
+    return run_mixed_horde_learning_loop(
+        cast(MixedHorde, horde), state, features, cumulants, next_features
     )
 
 
