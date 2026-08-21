@@ -371,6 +371,58 @@ def compute_timeseries_statistics(
     return mean, ci_lower, ci_upper
 
 
+def cohens_dz(
+    values_a: NDArray[np.float64] | list[float],
+    values_b: NDArray[np.float64] | list[float],
+) -> float:
+    """Compute Cohen's d_z for paired/matched samples (#2154).
+
+    A paired design shares between-seed variance across both groups and the
+    paired test statistic cancels it out, so the pooled independent-groups
+    formula overstates the denominator. The correct standardized effect for a
+    paired comparison is the mean of the pairwise differences divided by the
+    standard deviation of those differences (ddof=1).
+
+    Args:
+        values_a: Values for first method (paired with ``values_b``)
+        values_b: Values for second method (paired with ``values_a``)
+
+    Returns:
+        Cohen's d_z (positive means a > b on average). Raises ``ValueError``
+        if the samples are not equal-length finite vectors with at least 2
+        pairs and non-zero difference variance.
+
+    Raises:
+        ValueError: If the paired samples are invalid for d_z.
+    """
+    a = _require_sample_vector(values_a, name="values_a")
+    b = _require_sample_vector(values_b, name="values_b")
+    _require_finite_values(a, name="values_a")
+    _require_finite_values(b, name="values_b")
+    if len(a) != len(b):
+        raise ValueError(
+            f"paired effect size requires equal-length samples (got {len(a)} and {len(b)})"
+        )
+    if len(a) < 2:
+        raise ValueError(
+            f"paired effect size requires at least 2 pairs (got {len(a)})"
+        )
+    differences = a - b
+    diff_std = differences.std(ddof=1)
+    if diff_std == 0.0:
+        # Constant (non-zero) shift: every difference is identical, so the
+        # standardized effect is unbounded. Mirror cohens_d's zero-variance
+        # convention: signed infinity (positive when a > b).
+        if np.all(differences >= 0) and np.any(differences > 0):
+            return float("inf")
+        if np.all(differences <= 0) and np.any(differences < 0):
+            return float("-inf")
+        raise ValueError(
+            "paired effect size is undefined for zero difference variance"
+        )
+    return float(differences.mean() / diff_std)
+
+
 def cohens_d(
     values_a: NDArray[np.float64] | list[float],
     values_b: NDArray[np.float64] | list[float],
@@ -503,7 +555,11 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = (
+        cohens_dz(a, b)
+        if paired
+        else cohens_d(a, b)
+    )
 
     return SignificanceResult(
         test_name=test_name,
@@ -601,10 +657,10 @@ def wilcoxon_comparison(
 ) -> SignificanceResult:
     """Perform Wilcoxon signed-rank test (paired non-parametric).
 
-    Caveat: the reported ``effect_size`` is Cohen's d computed on the raw
-    values, not a rank-based effect size.  The standard companion to this
-    test is the matched-pairs rank-biserial correlation; interpret the
-    parametric d alongside a rank test with care.
+    Caveat: the reported ``effect_size`` is Cohen's d_z computed on the
+    paired differences, not a rank-based effect size.  The standard companion
+    to this test is the matched-pairs rank-biserial correlation; interpret
+    the parametric d_z alongside a rank test with care.
 
     Args:
         values_a: Values for first method
@@ -657,7 +713,7 @@ def wilcoxon_comparison(
     except ImportError:
         raise ImportError("scipy is required for Wilcoxon test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = cohens_dz(a, b)
 
     return SignificanceResult(
         test_name="Wilcoxon signed-rank",
