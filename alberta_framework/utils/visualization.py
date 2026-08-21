@@ -668,11 +668,9 @@ def _get_significance_marker_for_plot(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return "***"
-    elif p < 0.01:
-        return "**"
-    elif p < 0.05:
-        return "*"
-    return ""
+    from alberta_framework.utils.export import _significance_tier
+
+    tier = _significance_tier(result.p_value, result.alpha)
+    if tier == 0:
+        return ""
+    return "*" * tier

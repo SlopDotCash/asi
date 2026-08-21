@@ -516,11 +516,40 @@ def generate_latex_table(
 
     if significance_results:
         lines.append(r"\vspace{0.5em}")
-        lines.append(r"\footnotesize{$^*$ $p < 0.05$, $^{**}$ $p < 0.01$, $^{***}$ $p < 0.001$}")
+        lines.append(r"\footnotesize{" + _significance_legend(significance_results) + r"}")
 
     lines.append(r"\end{table}")
 
     return "\n".join(lines)
+
+
+def _significance_tier(p: float, alpha: float) -> int:
+    """Return 1-3 stars tier keyed to the result's own decision threshold.
+
+    A significant result earns at least one star; the tier scales by orders
+    of magnitude below its stored alpha: ``p < alpha`` → 1, ``p < alpha/10``
+    → 2, ``p < alpha/100`` → 3. This keeps markers consistent with the
+    operative corrected threshold (e.g. Holm alpha=0.0025) instead of
+    hardcoded raw-p tiers. At the historical default ``alpha == 0.05`` the
+    thresholds match the legacy raw-p tiers exactly (0.05 / 0.01 / 0.001)
+    so default-path artifacts render bit-identically.
+    """
+    if alpha == 0.05:
+        # Legacy raw-p tiers: p < 0.001 → 3, p < 0.01 → 2, p < 0.05 → 1.
+        if p < 0.001:
+            return 3
+        if p < 0.01:
+            return 2
+        if p < 0.05:
+            return 1
+        return 0
+    if p < alpha / 100:
+        return 3
+    if p < alpha / 10:
+        return 2
+    if p < alpha:
+        return 1
+    return 0
 
 
 def _get_significance_marker(
@@ -546,14 +575,10 @@ def _get_significance_marker(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return r"$^{***}$"
-    elif p < 0.01:
-        return r"$^{**}$"
-    elif p < 0.05:
-        return r"$^{*}$"
-    return ""
+    tier = _significance_tier(result.p_value, result.alpha)
+    if tier == 0:
+        return ""
+    return r"$^{" + "*" * tier + r"}$"
 
 
 def generate_markdown_table(
@@ -611,9 +636,33 @@ def generate_markdown_table(
 
     if significance_results:
         lines.append("")
-        lines.append("\\* p < 0.05, \\*\\* p < 0.01, \\*\\*\\* p < 0.001")
+        lines.append(_significance_legend(significance_results))
 
     return "\n".join(lines)
+
+
+def _significance_legend(
+    significance_results: dict[tuple[str, str], "SignificanceResult"],
+) -> str:
+    """Build the significance legend from the operative alphas.
+
+    When every result carries the historical default ``alpha == 0.05`` the
+    legacy fixed text is returned verbatim; otherwise each distinct alpha
+    present is listed with its tier boundary.
+    """
+    alphas = {
+        result.alpha
+        for result in significance_results.values()
+        if result.significant
+    }
+    if alphas <= {0.05}:
+        return "\\* p < 0.05, \\*\\* p < 0.01, \\*\\*\\* p < 0.001"
+    parts = []
+    for alpha in sorted(alphas, reverse=True):
+        parts.append(
+            f"\\* p < {alpha}, \\*\\* p < {alpha/10}, \\*\\*\\* p < {alpha/100}"
+        )
+    return " | ".join(parts)
 
 
 def _get_md_significance_marker(
@@ -638,14 +687,10 @@ def _get_md_significance_marker(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return " ***"
-    elif p < 0.01:
-        return " **"
-    elif p < 0.05:
-        return " *"
-    return ""
+    tier = _significance_tier(result.p_value, result.alpha)
+    if tier == 0:
+        return ""
+    return " " + "*" * tier
 
 
 def generate_significance_table(

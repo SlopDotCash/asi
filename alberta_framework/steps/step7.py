@@ -57,6 +57,8 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
+
+from alberta_framework._scan_resources import ScanBudget, require_scan_steps
 from jax import Array
 
 from alberta_framework._seed_validation import require_jax_seed
@@ -161,6 +163,12 @@ class Step7DynaConfig:
 
 
 _INT32_MAX = 2**31 - 1
+
+# Host-side scan budget for Step 7 planning loops. Mirrors the core/dreaming.py
+# precedent (maximum_steps=10_000); every known caller uses values <= 3, so the
+# cap is far above real usage and only rejects hostile/typo'd configs before
+# jnp.arange materializes a multi-gigabyte array (#2214).
+_STEP7_PLANNING_BUDGET = ScanBudget("step7 planning", maximum_steps=10_000)
 _STEP7_CONFIG_FIELDS = frozenset(
     {
         "control",
@@ -281,11 +289,18 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         minimum=0,
         maximum=_INT32_MAX,
     )
+    if planning_steps > 0:
+        require_scan_steps("planning_steps", planning_steps, _STEP7_PLANNING_BUDGET)
     planning_rollout_depth = _require_int(
         "planning_rollout_depth",
         config.planning_rollout_depth,
         minimum=1,
         maximum=_INT32_MAX,
+    )
+    require_scan_steps(
+        "planning_rollout_depth",
+        planning_rollout_depth,
+        _STEP7_PLANNING_BUDGET,
     )
     planning_warmup_steps = _require_int(
         "planning_warmup_steps",
