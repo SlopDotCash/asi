@@ -1920,6 +1920,8 @@ def _validate_resolved_components(
 
 
 def _validate_resource_payload(resource: Any, *, arm: str, path: str) -> None:
+    if type(arm) is not str:
+        raise ValueError("resource arm is invalid")
     if not isinstance(resource, Mapping):
         raise ValueError(f"{path} must be an object")
     expected_method = (
