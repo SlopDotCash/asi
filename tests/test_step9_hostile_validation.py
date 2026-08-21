@@ -409,3 +409,43 @@ def test_run_step9_scan_accepts_a_small_in_bounds_sequence() -> None:
     cfg, agent, model, buffer, state, rewards, next_observations = _step9_scan_components(4)
     result = run_step9_scan(cfg, agent, model, buffer, state, rewards, next_observations)
     assert result.real_td_errors.shape == (4,)
+
+
+class TestStep9ScanBudget:
+    """Oversized dreaming loop lengths must fail at config validation (#2214)."""
+
+    def _cfg(self, **overrides: Any) -> Any:
+        return Step9DreamingConfig(
+            planning_budget=1,
+            dream_rollout_horizon=1,
+            dream_candidate_count=1,
+            **overrides,
+        )
+
+    def test_planning_budget_rejected_above_budget(self) -> None:
+        with pytest.raises(
+            ValueError, match="planning_budget must be an integer in \\[1, 10000\\]"
+        ):
+            self._cfg(planning_budget=10**9)
+
+    def test_dream_rollout_horizon_rejected_above_budget(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="dream_rollout_horizon must be an integer in \\[1, 10000\\]",
+        ):
+            self._cfg(dream_rollout_horizon=10**9)
+
+    def test_dream_candidate_count_rejected_above_budget(self) -> None:
+        with pytest.raises(
+            ValueError,
+            match="dream_candidate_count must be an integer in \\[1, 10000\\]",
+        ):
+            self._cfg(dream_candidate_count=10**9)
+
+    def test_boundary_accepted(self) -> None:
+        cfg = self._cfg(
+            planning_budget=10_000,
+            dream_rollout_horizon=10_000,
+            dream_candidate_count=10_000,
+        )
+        assert cfg.planning_budget == 10_000
