@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import numpy as np
 import pytest
@@ -51,6 +51,52 @@ def _shard(path: Path, *, seed: int, accuracy: float) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"seed": seed, "per_task_accuracy": [accuracy, accuracy]}),
+        encoding="utf-8",
+    )
+
+
+def _rule_shard_payload(
+    name: str,
+    *,
+    seed: int,
+    accuracy: float,
+    n_tasks: int = 60,
+) -> dict[str, Any]:
+    source_dir = "confirm_full" if n_tasks == 200 else "shards"
+    source = (
+        _REPO_ROOT
+        / "outputs"
+        / "ipmnist_screening"
+        / source_dir
+        / f"{name}_seed0.json"
+    )
+    payload = json.loads(source.read_text(encoding="utf-8"))
+    payload["seed"] = seed
+    payload["config"]["n_tasks"] = n_tasks
+    payload["per_task_accuracy"] = [accuracy] * n_tasks
+    payload["per_task_loss"] = [0.5] * n_tasks
+    payload["per_task_plasticity"] = [0.5] * n_tasks
+    return payload
+
+
+def _rule_shard(
+    path: Path,
+    *,
+    name: str,
+    seed: int,
+    accuracy: float,
+    n_tasks: int = 60,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            _rule_shard_payload(
+                name,
+                seed=seed,
+                accuracy=accuracy,
+                n_tasks=n_tasks,
+            )
+        ),
         encoding="utf-8",
     )
 
@@ -677,7 +723,12 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     for name in SCREEN_ARMS:
         for seed in (0, 1, 2):
             accuracy = 0.8 if name == CHAMPION else 0.79
-            _shard(screen / f"{name}_seed{seed}.json", seed=seed, accuracy=accuracy)
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                name=name,
+                seed=seed,
+                accuracy=accuracy,
+            )
 
     summary = build_rule_discovery_summary(screen, confirm)
 
@@ -691,8 +742,65 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     )
     assert summary["provenance"]["schema"] == "asi.ipmnist.analysis_provenance.v1"
     assert len(summary["provenance"]["inputs"]) == 24
+    assert "ipmnist_screening" in summary["provenance"]["sources"]
     assert "rule_discovery" in summary["provenance"]["sources"]
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
+
+
+def test_rule_summary_rejects_v2_payload_arm_substitution(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    screen.mkdir()
+    source = (
+        _REPO_ROOT
+        / "outputs"
+        / "ipmnist_screening"
+        / "replication_r1"
+        / "shards"
+        / "sigma0_shiftnorm_d099_seed0.json"
+    )
+    source_bytes = source.read_bytes()
+    for name in SCREEN_ARMS:
+        (screen / f"{name}_seed0.json").write_bytes(source_bytes)
+
+    with pytest.raises(ValueError, match="config_name.*expected arm.*disc_r1"):
+        build_legacy_rule_discovery_summary(
+            screen,
+            tmp_path / "confirm",
+            seeds=(0,),
+        )
+
+
+def test_rule_summary_rejects_screen_shards_as_confirmation(tmp_path: Path) -> None:
+    campaign = _REPO_ROOT / "outputs" / "ipmnist_screening"
+    confirm = tmp_path / "confirm"
+    confirm.mkdir()
+    for name in ("disc_r1_pscale_norms", CHAMPION):
+        source = campaign / "shards" / f"{name}_seed0.json"
+        (confirm / source.name).write_bytes(source.read_bytes())
+
+    with pytest.raises(ValueError, match="n_tasks.*expected 200"):
+        build_legacy_rule_discovery_summary(
+            campaign / "shards",
+            confirm,
+            seeds=(0,),
+        )
+
+
+def test_rule_summary_rejects_pool_noise_mode_shards(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    _rule_shard(
+        screen / f"{SCREEN_ARMS[0]}_seed0.json",
+        name=SCREEN_ARMS[0],
+        seed=0,
+        accuracy=0.8,
+    )
+    path = screen / f"{SCREEN_ARMS[0]}_seed0.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["noise_mode"] = "pool"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="noise_mode"):
+        build_legacy_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
 
 
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])
@@ -711,7 +819,12 @@ def test_rule_summary_rejects_duplicate_json_object_keys(tmp_path: Path) -> None
     screen = tmp_path / "screen"
     screen.mkdir(parents=True)
     for name in SCREEN_ARMS[1:]:
-        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=0.8)
+        _rule_shard(
+            screen / f"{name}_seed0.json",
+            name=name,
+            seed=0,
+            accuracy=0.8,
+        )
     (screen / f"{SCREEN_ARMS[0]}_seed0.json").write_text(
         '{"seed":0,"per_task_accuracy":[0.1],"per_task_accuracy":[0.9]}',
         encoding="utf-8",
@@ -727,8 +840,15 @@ def test_rule_summary_rejects_invalid_accuracy_payloads(
     screen = tmp_path / "screen"
     path = screen / f"{SCREEN_ARMS[0]}_seed0.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _rule_shard_payload(
+        SCREEN_ARMS[0],
+        seed=0,
+        accuracy=0.8,
+    )
+    payload["per_task_accuracy"] = accuracy
     path.write_text(
-        json.dumps({"seed": 0, "per_task_accuracy": accuracy}), encoding="utf-8"
+        json.dumps(payload),
+        encoding="utf-8",
     )
     with pytest.raises(ValueError):
         build_legacy_rule_discovery_summary(
@@ -740,7 +860,12 @@ def test_rule_summary_requires_payload_seed_to_match_requested_seed(
     tmp_path: Path,
 ) -> None:
     screen = tmp_path / "screen"
-    _shard(screen / f"{SCREEN_ARMS[0]}_seed0.json", seed=1, accuracy=0.8)
+    _rule_shard(
+        screen / f"{SCREEN_ARMS[0]}_seed0.json",
+        name=SCREEN_ARMS[0],
+        seed=1,
+        accuracy=0.8,
+    )
     with pytest.raises(ValueError, match="does not match requested seed"):
         build_legacy_rule_discovery_summary(
             screen, tmp_path / "confirm", seeds=(0,)
@@ -752,9 +877,18 @@ def test_rule_summary_rejects_partial_confirmation_seed_set(tmp_path: Path) -> N
     confirm = tmp_path / "confirm"
     for name in SCREEN_ARMS:
         for seed in (0, 1):
-            _shard(screen / f"{name}_seed{seed}.json", seed=seed, accuracy=0.8)
-    _shard(
-        confirm / "disc_r1_pscale_norms_seed0.json", seed=0, accuracy=0.8
+            _rule_shard(
+                screen / f"{name}_seed{seed}.json",
+                name=name,
+                seed=seed,
+                accuracy=0.8,
+            )
+    _rule_shard(
+        confirm / "disc_r1_pscale_norms_seed0.json",
+        name="disc_r1_pscale_norms",
+        seed=0,
+        accuracy=0.8,
+        n_tasks=200,
     )
     with pytest.raises(ValueError, match="confirmation seeds are incomplete"):
         build_legacy_rule_discovery_summary(screen, confirm, seeds=(0, 1))
