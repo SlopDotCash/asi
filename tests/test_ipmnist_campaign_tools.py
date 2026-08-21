@@ -47,12 +47,23 @@ class _StringSubclass(str):
     pass
 
 
-def _shard(path: Path, *, seed: int, accuracy: float) -> None:
+def _shard(
+    path: Path,
+    *,
+    seed: int,
+    accuracy: float,
+    tasks: int = 60,
+    config_name: str | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps({"seed": seed, "per_task_accuracy": [accuracy, accuracy]}),
-        encoding="utf-8",
-    )
+    payload: dict[str, object] = {
+        "seed": seed,
+        "per_task_accuracy": [accuracy] * tasks,
+        "n_tasks": tasks,
+    }
+    if config_name is not None:
+        payload["config_name"] = config_name
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _ceiling_run(
@@ -383,7 +394,12 @@ def test_ceiling_confirm_alignment_rejects_delta_above_frozen_tolerance(
     tmp_path: Path,
 ) -> None:
     confirm = tmp_path / "confirm"
-    _shard(confirm / "sigma0_ndecay099_seed0.json", seed=0, accuracy=0.8)
+    _shard(
+        confirm / "sigma0_ndecay099_seed0.json",
+        seed=0,
+        accuracy=0.8,
+        tasks=2,
+    )
     run = {"seed": 0, "per_task_accuracy": [0.8, 0.8 + 2 * CONFIRM_ALIGNMENT_ATOL]}
 
     with pytest.raises(ValueError, match="exceeds atol"):
@@ -693,6 +709,65 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     assert len(summary["provenance"]["inputs"]) == 24
     assert "rule_discovery" in summary["provenance"]["sources"]
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
+
+
+def test_rule_summary_rejects_arm_substitution(tmp_path: Path) -> None:
+    """#2134: a payload whose config_name does not match the arm must be rejected."""
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        for seed in (0,):
+            accuracy = 0.8 if name == CHAMPION else 0.79
+            _shard(screen / f"{name}_seed{seed}.json", seed=seed, accuracy=accuracy)
+
+    # Replace one arm's shard with a payload claiming a different config.
+    _shard(
+        screen / f"disc_r1_seed0.json",
+        seed=0,
+        accuracy=0.86,
+        config_name=CHAMPION,
+    )
+    with pytest.raises(ValueError, match="does not match expected arm"):
+        build_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+
+
+def test_rule_summary_accepts_matching_config_name(tmp_path: Path) -> None:
+    """#2134: a v2 payload whose config_name matches the arm is accepted."""
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        for seed in (0,):
+            accuracy = 0.8 if name == CHAMPION else 0.79
+            _shard(
+                screen / f"{name}_seed{seed}.json",
+                seed=seed,
+                accuracy=accuracy,
+                config_name=name,
+            )
+    summary = build_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+    assert summary["screen_60_task"][CHAMPION]["mean"] == pytest.approx(0.8)
+
+
+def test_rule_summary_rejects_stage_substitution(tmp_path: Path) -> None:
+    """#2134: 60-task screen shards must not satisfy the 200-task confirmation stage."""
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for name in SCREEN_ARMS:
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=0.79, tasks=60)
+    for name in ("disc_r1_pscale_norms", CHAMPION):
+        _shard(confirm / f"{name}_seed0.json", seed=0, accuracy=0.8, tasks=60)
+    with pytest.raises(ValueError, match="expected 200"):
+        build_rule_discovery_summary(screen, confirm, seeds=(0,))
+
+
+def test_rule_summary_accepts_200_task_confirmation(tmp_path: Path) -> None:
+    """#2134: genuine 200-task confirmation shards are accepted."""
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for name in SCREEN_ARMS:
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=0.79, tasks=60)
+    for name in ("disc_r1_pscale_norms", CHAMPION):
+        _shard(confirm / f"{name}_seed0.json", seed=0, accuracy=0.8, tasks=200)
+    summary = build_rule_discovery_summary(screen, confirm, seeds=(0,))
+    assert summary["confirm_200_task"][CHAMPION]["mean"] == pytest.approx(0.8)
 
 
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])
