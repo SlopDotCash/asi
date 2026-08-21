@@ -43,7 +43,10 @@ import jax.numpy as jnp
 import numpy as np
 import orbax.checkpoint as ocp
 
-from alberta_framework._bounded_containers import require_bounded_container_tree
+from alberta_framework._bounded_containers import (
+    require_bounded_container_tree,
+    require_json_text_nesting,
+)
 
 # Stamped into checkpoint metadata on save, but deliberately NOT validated on
 # load: compatibility is enforced structurally instead, by restoring into the
@@ -59,6 +62,10 @@ _EMPTY_ARRAYS_KEY = "_empty_array_leaves"
 # on a 10_000-deep metadata nest and cannot reject it as ValueError.
 _JSON_MAX_DEPTH = 32
 _JSON_MAX_NODES = 4096
+# Orbax JsonRestore json.loads the on-disk metadata file with no nest
+# preflight. Origin RecursionErrors a 16_000-deep object nest.
+_JSON_MAX_BYTES = 16 * 1024 * 1024
+_ON_DISK_METADATA_NAME = "metadata"
 
 
 def _is_empty_array(value: object) -> bool:
@@ -162,6 +169,39 @@ def _json_children(value: object) -> Iterable[object] | None:
     return None
 
 
+def _on_disk_metadata_path(path: Path) -> Path:
+    return path / _ON_DISK_METADATA_NAME / _ON_DISK_METADATA_NAME
+
+
+def _preflight_on_disk_metadata(path: Path) -> None:
+    """Reject deep on-disk metadata JSON before Orbax ``json.loads``."""
+
+    meta_path = _on_disk_metadata_path(path)
+    try:
+        if meta_path.is_symlink() or not meta_path.is_file():
+            return
+    except OSError:
+        return
+    with meta_path.open("rb") as stream:
+        raw = stream.read(_JSON_MAX_BYTES + 1)
+    if len(raw) > _JSON_MAX_BYTES:
+        raise ValueError("checkpoint metadata exceeds the JSON byte limit")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("checkpoint metadata must be valid UTF-8") from error
+    try:
+        require_json_text_nesting(
+            text,
+            max_depth=_JSON_MAX_DEPTH,
+            name="checkpoint metadata",
+        )
+    except ValueError as exc:
+        if "nesting limit" not in str(exc):
+            raise
+        raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
+
+
 def _require_json_safe_metadata(metadata: dict[str, Any]) -> None:
     """Reject metadata that cannot round-trip as finite JSON."""
     try:
@@ -255,6 +295,7 @@ def load_checkpoint(
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
+    _preflight_on_disk_metadata(path)
     try:
         compatible_template = _orbax_compatible_tree(state_template)
         with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
@@ -303,6 +344,7 @@ def load_checkpoint_metadata(path: str | Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
 
+    _preflight_on_disk_metadata(path)
     with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
         loaded = ckptr.restore(
             str(path),
