@@ -1179,3 +1179,33 @@ class TestPairwiseComparisons:
     def test_common_final_window_requires_positive_integer(self, window: object) -> None:
         with pytest.raises(ValueError, match="window must be a positive integer"):
             common_final_window({"learner": 10}, window, "squared_error")
+
+
+class TestPairedEffectSize:
+    """Paired comparisons must report Cohen's d_z, not pooled Cohen's d (#2154)."""
+
+    def test_paired_ttest_reports_dz(self) -> None:
+        """A consistent within-pair shift must not be swamped by between-seed variance."""
+        a = np.array([101.0, 202.0, 303.0, 404.0])
+        b = np.array([100.0, 200.0, 300.0, 400.0])
+        result = ttest_comparison(a, b, paired=True)
+        differences = a - b
+        expected = np.mean(differences) / np.std(differences, ddof=1)
+        assert result.effect_size == pytest.approx(expected)
+        assert result.effect_size > 1.0  # the issue's ~1.94, not ~0.02
+
+    def test_wilcoxon_reports_dz(self) -> None:
+        """Wilcoxon is always paired; its effect size must also be d_z."""
+        a = np.array([101.0, 202.0, 303.0, 404.0])
+        b = np.array([100.0, 200.0, 300.0, 400.0])
+        result = wilcoxon_comparison(a, b)
+        differences = a - b
+        expected = np.mean(differences) / np.std(differences, ddof=1)
+        assert result.effect_size == pytest.approx(expected)
+
+    def test_independent_ttest_still_uses_pooled_d(self) -> None:
+        """Unpaired comparisons keep the pooled Cohen's d formula."""
+        a = np.array([101.0, 202.0, 303.0, 404.0])
+        b = np.array([100.0, 200.0, 300.0, 400.0])
+        result = ttest_comparison(a, b, paired=False)
+        assert result.effect_size == pytest.approx(cohens_d(a, b))
