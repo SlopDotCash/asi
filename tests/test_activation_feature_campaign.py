@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import errno
+import hashlib
 import json
 import os
 from collections.abc import Iterator
@@ -782,9 +783,12 @@ def test_publication_rejects_zero_write_and_nonregular_reread_swap(
 def test_reservation_rejects_unlinkable_tmpfile_before_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, authorized: None
 ) -> None:
-    destination = tmp_path / "result.json"
+    destination_name = f"{'x' * 232}.json"
+    destination = tmp_path / destination_name
+    linked_names: list[str] = []
 
-    def reject_link(_file_fd: int, _parent_fd: int, _name: str) -> None:
+    def reject_link(_file_fd: int, _parent_fd: int, name: str) -> None:
+        linked_names.append(name)
         raise OSError(errno.ENOENT, os.strerror(errno.ENOENT))
 
     monkeypatch.setattr(campaign, "_link_unnamed_file", reject_link)
@@ -793,5 +797,8 @@ def test_reservation_rejects_unlinkable_tmpfile_before_work(
         with campaign._reserved_new_output(destination):
             entered = True
     assert entered is False
+    assert linked_names == [
+        f".publication-probe-{hashlib.sha256(destination_name.encode()).hexdigest()[:16]}"
+    ]
     assert not destination.exists()
-    assert not (tmp_path / ".result.json.reservation").exists()
+    assert not (tmp_path / f".{destination_name}.reservation").exists()

@@ -1495,7 +1495,8 @@ def _probe_linkable_tmpfile(parent_fd: int, destination_name: str) -> None:
     """Fail before campaign work when this output filesystem cannot publish atomically."""
     if not hasattr(os, "O_TMPFILE"):
         raise OSError("immutable publication requires Linux O_TMPFILE support")
-    probe_name = f".{destination_name}.publication-probe"
+    destination_digest = hashlib.sha256(destination_name.encode("utf-8")).hexdigest()[:16]
+    probe_name = f".publication-probe-{destination_digest}"
     probe_fd: int | None = None
     probe_identity: tuple[int, int] | None = None
     linked = False
