@@ -5,7 +5,6 @@ parsing, duplicate-key rejection, nesting preflight, bounded decode,
 exact-tree validation, and the public loaders.
 """
 
-import json
 from pathlib import Path
 
 import pytest
