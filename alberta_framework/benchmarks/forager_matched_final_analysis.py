@@ -1128,6 +1128,8 @@ def _validate_inventory_payload(payload: Any, *, label: str) -> str:
 
 
 def _expected_entrypoint_binding(candidate_id: str) -> dict[str, Any]:
+    if type(candidate_id) is not str:
+        raise ForagerMatchedFinalAnalysisError("candidate_id must be an exact string")
     if candidate_id in open_protocol.MATCHED_CURRENT_ALBERTA_CANDIDATE_IDS:
         source_key = "alberta"
         entrypoint_path = "alberta_framework/benchmarks/_forager_matched_alberta_worker.py"
