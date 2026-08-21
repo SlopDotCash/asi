@@ -265,6 +265,8 @@ def _metrics(matrix: tuple[tuple[float, ...], ...]) -> tuple[float, float, float
 
 
 def _run_arm(seed: int, steps: int, capacity: int, arm_id: str) -> ArmResult:
+    if type(arm_id) is not str:
+        raise ValueError("arm_id must be an exact string")
     shared = np.zeros((2,), dtype=np.float32)
     task_values = np.zeros((len(TASK_TARGETS), 2), dtype=np.float32)
     replay: list[tuple[int, float]] = []
