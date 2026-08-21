@@ -39,6 +39,7 @@ from alberta_framework.utils.statistics import (
     bonferroni_correction,
     bootstrap_ci,
     cohens_d,
+    cohens_dz,
     common_final_window,
     compute_statistics,
     compute_timeseries_statistics,
@@ -668,7 +669,7 @@ class TestIdenticalWilcoxonRejection:
         assert result.test_name == "Wilcoxon signed-rank"
         assert result.statistic == pytest.approx(0.0)
         assert result.p_value < 1.0
-        assert result.effect_size == cohens_d([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        assert result.effect_size == cohens_dz([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
 
 
 class TestOneSampleRejection:
@@ -900,6 +901,30 @@ class TestEffectSizes:
         effect = cohens_d(values_a, values_b)
         assert np.isinf(effect)
         assert np.sign(effect) == expected_sign
+
+    def test_cohens_dz_hand_computed(self) -> None:
+        # a - b = [1, 1, 1, 1]: mean 1, ddof std 0 -> undefined; use varied shift.
+        a = [101.0, 202.0, 303.0, 404.0]
+        b = [100.0, 200.0, 300.0, 400.0]
+        diffs = np.array([1.0, 2.0, 3.0, 4.0])
+        expected = diffs.mean() / diffs.std(ddof=1)
+        assert cohens_dz(a, b) == pytest.approx(expected)
+
+    def test_cohens_dz_requires_equal_lengths(self) -> None:
+        with pytest.raises(ValueError, match="equal-length"):
+            cohens_dz([1.0, 2.0], [1.0])
+
+    def test_cohens_dz_requires_two_pairs(self) -> None:
+        with pytest.raises(ValueError, match="at least 2 pairs"):
+            cohens_dz([1.0], [2.0])
+
+    def test_cohens_dz_signed_infinity_for_zero_difference_variance(self) -> None:
+        # Constant shift → every difference identical → unbounded effect.
+        assert cohens_dz([2.0, 2.0], [1.0, 1.0]) == float("inf")
+        assert cohens_dz([1.0, 1.0], [2.0, 2.0]) == float("-inf")
+        # Identical samples → zero shift → undefined.
+        with pytest.raises(ValueError, match="zero difference variance"):
+            cohens_dz([1.0, 1.0], [1.0, 1.0])
 
     def test_cohens_d_positive_means_a_greater(self) -> None:
         rng = np.random.default_rng(7)
