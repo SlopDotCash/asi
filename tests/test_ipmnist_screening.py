@@ -1240,6 +1240,71 @@ class TestShardsAndMerge:
         with pytest.raises(ValueError, match="package_snapshot_sha"):
             merge_shards([path_a, path_b], control_name="upgd_w_control", slope_window=2)
 
+    def test_load_rejects_missing_package_snapshot_sha(self, tmp_path, small_data):
+        """v2 shards missing package_snapshot_sha must fail closed at load."""
+        x, y = small_data
+        payload = _bound_shard_payload(
+            run_screening_config(
+                x, y, screening_spec("upgd_w_control"), seed=0, config=SMALL
+            )
+        )
+        payload.pop("package_snapshot_sha")
+        path = tmp_path / "upgd_w_control_seed0.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="package_snapshot_sha|missing field"):
+            load_shard(path)
+
+    def test_load_rejects_non_hex_package_snapshot_sha(self, tmp_path, small_data):
+        """v2 shards with non-lower-hex package_snapshot_sha must fail closed."""
+        x, y = small_data
+        payload = _bound_shard_payload(
+            run_screening_config(
+                x, y, screening_spec("upgd_w_control"), seed=0, config=SMALL
+            )
+        )
+        # Uppercase hex is rejected (must be lowercase).
+        payload["package_snapshot_sha"] = "A" * 64
+        path = tmp_path / "upgd_w_control_seed0.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(ValueError, match="package_snapshot_sha must be a lowercase"):
+            load_shard(path)
+
+    def test_merge_require_current_source_drift(self, tmp_path, small_data, monkeypatch):
+        """require_current_source=True must reject drift from current source."""
+        x, y = small_data
+        base_payload = _bound_shard_payload(
+            run_screening_config(
+                x, y, screening_spec("upgd_w_control"), seed=0, config=SMALL
+            )
+        )
+        # Two shards with identical package SHA still drift if current source differs.
+        payload_a = dict(base_payload)
+        payload_b = dict(base_payload)
+        payload_b["seed"] = 1
+        path_a = tmp_path / "upgd_w_control_seed0.json"
+        path_b = tmp_path / "upgd_w_control_seed1.json"
+        path_a.write_text(json.dumps(payload_a), encoding="utf-8")
+        path_b.write_text(json.dumps(payload_b), encoding="utf-8")
+
+        # Monkeypatch current source to a different digest to simulate drift.
+        drifted = dict(payload_a["source_provenance"])
+        drifted["relevant_source_sha256"] = "f" * 64
+        drifted["git_commit"] = "0" * 40
+        drifted["git_tree"] = "0" * 40
+        monkeypatch.setattr(
+            ipmnist_screening,
+            "_screening_source_provenance",
+            lambda repo_root=None: drifted,
+        )
+
+        with pytest.raises(ValueError, match="does not match current source"):
+            merge_shards(
+                [path_a, path_b],
+                control_name="upgd_w_control",
+                slope_window=2,
+                require_current_source=True,
+            )
+
     def _write_inband_shard(self, tmp_path, config_name, seed, accuracy):
         """Write a structurally valid shard with controlled accuracy."""
         payload = {
