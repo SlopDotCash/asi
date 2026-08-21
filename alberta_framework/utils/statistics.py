@@ -813,6 +813,8 @@ def pairwise_comparisons(
     """
     from alberta_framework.utils.experiments import AggregatedResults
 
+    if type(test) is not str:
+        raise ValueError("test is invalid")
     alpha_value = _require_alpha(alpha)
     window = _require_positive_int("window", window)
 
