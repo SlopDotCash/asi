@@ -65,9 +65,13 @@ def test_container_node_budget() -> None:
 
 def test_container_validation_args() -> None:
     with pytest.raises(ValueError, match="max_depth"):
-        require_bounded_container_tree([], children=_list_children, max_depth=0, max_nodes=None, name="x", kind="list")
+        require_bounded_container_tree(
+            [], children=_list_children, max_depth=0, max_nodes=None, name="x", kind="list"
+        )
     with pytest.raises(ValueError, match="name"):
-        require_bounded_container_tree([], children=_list_children, max_depth=2, max_nodes=None, name="", kind="list")
+        require_bounded_container_tree(
+            [], children=_list_children, max_depth=2, max_nodes=None, name="", kind="list"
+        )
 
 
 def test_json_nesting_flat() -> None:
