@@ -23,6 +23,7 @@ from alberta_framework.core.options import (
     SubtaskSpec,
     _differential_q_update,
     _differential_semidp_q_update,
+    _epsilon_greedy_action_probabilities,
     _stomp_direct_array_scalars,
     load_stomp_state_with_migration,
     replace_dispatched_primitive_action,
@@ -547,3 +548,64 @@ def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibili
     ):
         with pytest.raises(ValueError, match=match):
             STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
+
+
+def test_epsilon_greedy_probs_match_gumbel_tie_break_for_near_ties() -> None:
+    """#2136: near-tied q-values follow the Gumbel-max selection distribution.
+
+    ``_select_action_epsilon_greedy_from_q`` picks the greedy action with
+    ``argmax(q + 1e-6 * Gumbel(0, 1))``; its greedy-component probabilities are
+    ``softmax(q / 1e-6)``. The importance-ratio helper must use that same
+    distribution instead of collapsing values within the old ``atol=1e-6``
+    window into an exact uniform tie.
+    """
+    import jax
+    import jax.numpy as jnp
+
+    # q = [0, 5e-7] differ by 5e-7 (inside the old 1e-6 tolerance), but the
+    # selector distinguishes them via the Gumbel draw.
+    q_values = jnp.array([0.0, 5e-7], dtype=jnp.float32)
+
+    # Pure greedy component (epsilon = 0): softmax([0, 0.5]) from issue #2136.
+    probs = _epsilon_greedy_action_probabilities(
+        q_values, jnp.array(0.0, dtype=jnp.float32)
+    )
+    expected = jnp.array([0.37754068, 0.62245935], dtype=jnp.float32)
+    jax.debug.callback(
+        lambda p, e: __import__("numpy").testing.assert_allclose(
+            __import__("numpy").asarray(p),
+            __import__("numpy").asarray(e),
+            atol=1e-6,
+        ),
+        probs,
+        expected,
+    )
+
+    # Issue scenario: behavior epsilon 0.2 → 0.2/2 + 0.8 * greedy.
+    mixed = _epsilon_greedy_action_probabilities(
+        q_values, jnp.array(0.2, dtype=jnp.float32)
+    )
+    expected_mixed = 0.2 / 2 + 0.8 * expected
+    jax.debug.callback(
+        lambda p, e: __import__("numpy").testing.assert_allclose(
+            __import__("numpy").asarray(p),
+            __import__("numpy").asarray(e),
+            atol=1e-6,
+        ),
+        mixed,
+        expected_mixed,
+    )
+
+    # Exact ties remain uniform under softmax of equal logits.
+    tied = _epsilon_greedy_action_probabilities(
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+        jnp.array(0.0, dtype=jnp.float32),
+    )
+    jax.debug.callback(
+        lambda p: __import__("numpy").testing.assert_allclose(
+            __import__("numpy").asarray(p),
+            __import__("numpy").asarray([0.5, 0.5]),
+            atol=1e-6,
+        ),
+        tied,
+    )
