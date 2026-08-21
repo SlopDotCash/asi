@@ -93,6 +93,8 @@ class _OutputMember:
 
 
 def _absolute(value: str, *, label: str) -> Path:
+    if type(value) is not str:
+        raise ContainerError(f"{label} must be an exact string")
     path = Path(value)
     if (
         not path.is_absolute()
@@ -113,6 +115,8 @@ def _under(path: Path, root: Path, *, label: str) -> Path:
 
 
 def _relative(value: str, *, label: str) -> PurePosixPath:
+    if type(value) is not str:
+        raise ContainerError(f"{label} must be an exact string")
     path = PurePosixPath(value)
     if (
         not path.parts
