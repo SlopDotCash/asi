@@ -18,6 +18,15 @@ units (their sum plus environment transitions), persistent array bytes, and wall
 only). Logical units are an implementation-independent call count, not hardware FLOPs. Negative
 results must be retained.
 
+The planner maximizes the summed reward over the imagined rollout, matching the paper's Eq. 2
+`H`-step finite-horizon return and the per-step cost the lane actually reports. Scoring only the
+terminal imagined state optimizes a different objective than the one measured: under it the
+privileged-dynamics control degraded monotonically with deeper lookahead (-6, -22, -50, -82 at
+horizons 1-4) and lost to the learned online arm on two of four frozen seeds at the frozen default
+horizon of two, so it no longer bounded the lane. With the summed return the control holds the
+analytic optimum of -6 at every horizon on every frozen seed. Horizon one is a single imagined
+step, where the two objectives are identical.
+
 Every arm receives the same current goal for planning and no boundary or task identifier; the
 world model itself trains only on observation, action, and next observation. The validator derives
 the exact metric sequence length and persistent numeric bytes from the frozen execution contract,

@@ -199,10 +199,16 @@ def _mpc_action(
     queries = 0
     for sequence in itertools.product(range(4), repeat=host_horizon):
         imagined = observation.copy()
+        # arXiv:2507.09177v1 Eq. 2 maximizes the summed H-step reward over the
+        # imagined rollout, and this lane's reported return accumulates the same
+        # per-step cost at every executed step.  Scoring only the terminal
+        # imagined state optimizes a different objective than the one measured,
+        # which stops the privileged-dynamics control from bounding the lane.
+        score = 0.0
         for action in sequence:
             imagined = np.asarray(predict(imagined, action), dtype=np.float32)
             queries += 1
-        score = -float(np.sum((imagined - goal) ** 2))
+            score -= float(np.sum((imagined - goal) ** 2))
         if score > best_score:
             best_score, best_action = score, sequence[0]
     return best_action, queries, candidate_count
