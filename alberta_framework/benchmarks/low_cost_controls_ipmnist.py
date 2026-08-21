@@ -325,6 +325,10 @@ def _run_arm(
         # Evaluation forwards are deterministic: the stochastic arm uses its
         # declared test-time scaling rather than a fresh draw.
         _, hidden1, hidden2 = _forward(params, jnp.asarray(inputs), arm_id, eval_key, False)
+        # The post-task diagnostic is a real forward pass and is billed as one
+        # query per task boundary, matching `adamo_diagnostic`'s published
+        # `2 * observations + n_tasks` accounting for the same structure.
+        queries += 1
         host1, host2 = np.asarray(hidden1), np.asarray(hidden2)
         dead_units = int(np.sum(np.all(host1 == 0.0, axis=0))) + int(
             np.sum(np.all(host2 == 0.0, axis=0))
