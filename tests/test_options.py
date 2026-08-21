@@ -23,6 +23,7 @@ from alberta_framework.core.options import (
     SubtaskSpec,
     _differential_q_update,
     _differential_semidp_q_update,
+    _epsilon_greedy_action_probabilities,
     _stomp_direct_array_scalars,
     load_stomp_state_with_migration,
     replace_dispatched_primitive_action,
@@ -547,3 +548,40 @@ def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibili
     ):
         with pytest.raises(ValueError, match=match):
             STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
+
+
+@pytest.mark.unit
+class TestEpsilonGreedyGumbelProbabilities:
+    """Importance ratios must match the Gumbel-max selector (#2136)."""
+
+    def test_near_tied_values_use_gumbel_distribution(self) -> None:
+        """q = [0, 5e-7] must produce softmax(q/1e-6) greedy probabilities."""
+        q = jnp.array([0.0, 5e-7])
+        behavior = _epsilon_greedy_action_probabilities(q, jnp.array(0.2))
+        target = _epsilon_greedy_action_probabilities(q, jnp.array(0.0))
+        ratio = target / behavior
+        np.testing.assert_allclose(
+            np.asarray(ratio),
+            np.array([0.9390799, 1.0409585]),
+            atol=1e-5,
+        )
+
+    def test_exact_tie_stays_uniform(self) -> None:
+        """Exactly equal q-values must still split uniformly."""
+        q = jnp.array([1.0, 1.0])
+        probs = _epsilon_greedy_action_probabilities(q, jnp.array(0.1))
+        np.testing.assert_allclose(
+            np.asarray(probs),
+            np.array([0.5, 0.5]),
+            atol=1e-6,
+        )
+
+    def test_three_way_exact_tie(self) -> None:
+        """Three-way exact tie splits uniformly with epsilon."""
+        q = jnp.array([1.0, 1.0, 1.0])
+        probs = _epsilon_greedy_action_probabilities(q, jnp.array(0.3))
+        np.testing.assert_allclose(
+            np.asarray(probs),
+            np.array([1 / 3, 1 / 3, 1 / 3]),
+            atol=1e-6,
+        )
