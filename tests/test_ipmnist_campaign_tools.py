@@ -786,6 +786,23 @@ def test_rule_summary_rejects_screen_shards_as_confirmation(tmp_path: Path) -> N
         )
 
 
+def test_rule_summary_rejects_pool_noise_mode_shards(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    _rule_shard(
+        screen / f"{SCREEN_ARMS[0]}_seed0.json",
+        name=SCREEN_ARMS[0],
+        seed=0,
+        accuracy=0.8,
+    )
+    path = screen / f"{SCREEN_ARMS[0]}_seed0.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["noise_mode"] = "pool"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="noise_mode"):
+        build_legacy_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+
+
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])
 def test_rule_summary_rejects_noncanonical_or_duplicate_seeds_before_io(
     tmp_path: Path, seeds: object

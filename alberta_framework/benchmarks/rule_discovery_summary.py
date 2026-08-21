@@ -17,6 +17,15 @@ from alberta_framework._seed_validation import require_jax_seed, require_unique_
 from alberta_framework.benchmarks.ipmnist_provenance import analysis_provenance
 from alberta_framework.benchmarks.rule_discovery import NONPROMOTING_POLICY
 
+SCREEN_STAGE_N_TASKS = {
+    "screen": 60,
+    "confirmation": 200,
+}
+SCREEN_N_TASKS = SCREEN_STAGE_N_TASKS["screen"]
+CONFIRMATION_N_TASKS = SCREEN_STAGE_N_TASKS["confirmation"]
+RULE_DISCOVERY_TASK_LENGTH = 5_000
+RULE_DISCOVERY_NOISE_MODE = "step"
+
 SCREEN_ARMS = (
     "disc_r1",
     "disc_r2",
@@ -62,10 +71,10 @@ def _arm(
                 f"{path}: n_tasks {config['n_tasks']} does not match expected "
                 f"{expected_n_tasks}"
             )
-        if config["task_length"] != 5_000:
-            raise ValueError(f"{path}: task_length must be 5000")
-        if payload["noise_mode"] != "step":
-            raise ValueError(f"{path}: noise_mode must be step")
+        if config["task_length"] != RULE_DISCOVERY_TASK_LENGTH:
+            raise ValueError(f"{path}: task_length must be {RULE_DISCOVERY_TASK_LENGTH}")
+        if payload["noise_mode"] != RULE_DISCOVERY_NOISE_MODE:
+            raise ValueError(f"{path}: noise_mode must be {RULE_DISCOVERY_NOISE_MODE!r}")
         payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
         if payload_seed != seed:
             raise ValueError(f"{path} seed does not match requested seed {seed}")
@@ -83,7 +92,7 @@ def build_legacy_rule_discovery_summary(
     """Reconstruct the exact legacy v1 payload for compatibility checks."""
     seeds = require_unique_jax_seeds(seeds)
     screen = {
-        name: _arm(screen_dir, name, seeds, expected_n_tasks=60)
+        name: _arm(screen_dir, name, seeds, expected_n_tasks=SCREEN_N_TASKS)
         for name in SCREEN_ARMS
     }
     confirm_names = ("disc_r1_pscale_norms", CHAMPION)
@@ -96,7 +105,7 @@ def build_legacy_rule_discovery_summary(
         raise ValueError("rule-discovery confirmation seeds are incomplete")
     full = (
         {
-            name: _arm(confirm_dir, name, seeds, expected_n_tasks=200)
+            name: _arm(confirm_dir, name, seeds, expected_n_tasks=CONFIRMATION_N_TASKS)
             for name in confirm_names
         }
         if all(present)
