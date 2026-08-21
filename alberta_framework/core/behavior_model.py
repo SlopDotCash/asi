@@ -230,6 +230,16 @@ def floor_and_renormalize_probabilities(
         jnp.asarray(1e-12, dtype=jnp.float32),
     )
     normalized = clipped / normalizer
+    # A usable normalizer requires positive normalized mass. Zero-mass input
+    # (every clipped entry 0) and float32 underflow (e.g. [1e38, 1, 1] where
+    # each ratio underflows to 0) both yield normalized.sum() == 0; the affine
+    # step below would then return min_probability in every slot — a vector
+    # summing to n*min_probability, not a simplex. Fall back to the uniform
+    # distribution in that case so the documented simplex invariant holds.
+    normalized_sum = jnp.sum(normalized, axis=-1, keepdims=True)
+    usable = normalized_sum > jnp.asarray(0.5, dtype=jnp.float32)
+    uniform = jnp.ones_like(normalized) / n_actions
+    normalized = jnp.where(usable, normalized, uniform)
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
     return jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
 
