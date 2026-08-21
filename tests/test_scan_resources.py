@@ -4,7 +4,6 @@ Tests the host-side scan-budget contracts: budget validation, step and
 parallel counts, step-unit products, and JAX leading-length checks.
 """
 
-import jax
 import jax.numpy as jnp
 import pytest
 
