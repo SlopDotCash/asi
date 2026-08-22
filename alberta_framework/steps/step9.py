@@ -84,21 +84,7 @@ _MAX_DREAM_WORK_PER_REAL_STEP = 4_096
 # additionally includes model-based dreaming rollouts, so this module is at
 # least as exposed to the hang as its siblings.
 _STEP9_SEQUENCE_MAX_STEPS = 10_000
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 @dataclass(frozen=True)
