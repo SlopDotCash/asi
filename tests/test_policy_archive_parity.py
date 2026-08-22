@@ -41,14 +41,16 @@ def test_replacement_keeps_nearest_position_and_order() -> None:
 
 
 def test_tie_breaks_deterministically_to_first_nearest() -> None:
-    # New entry at 0.4: closer to a (0.0, dist 0.4 < 0.5) than b (1.0, dist 0.6).
-    # argmin picks a → replacement at index 0.
+    # New entry at 0.5: exactly equidistant from a (0.0, dist 0.5) and
+    # b (1.0, dist 0.5) — a genuine tie. min_latent_distance=0.6 makes both
+    # distances strictly `< 0.6`, so argmin must pick the first nearest (a)
+    # deterministically → replacement at index 0.
     archive = (
-        BoundedPolicyArchive(byte_budget=256, min_latent_distance=0.5)
+        BoundedPolicyArchive(byte_budget=256, min_latent_distance=0.6)
         .add(_entry("a", (0.0,), 1.0))
         .add(_entry("b", (1.0,), 1.0))
     )
-    replaced = archive.add(_entry("d", (0.4,), 9.0))
+    replaced = archive.add(_entry("d", (0.5,), 9.0))
     assert [e.identity for e in replaced.entries] == ["d", "b"]
 
 
