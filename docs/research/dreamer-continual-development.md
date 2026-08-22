@@ -26,3 +26,17 @@ selective-replay variants, evaluation matrices, published compute budgets, and o
 parity. Before comparison, locate and pin the Continual-Dreamer source snapshot, implement those
 components, match environment/dependency versions and all information boundaries, validate hardware
 accounting, reproduce official single-task controls, and freeze untouched scientific seeds.
+
+## External DreamerV3 source qualification
+
+The read-only `dreamerv3_external_qualification` record binds the official DreamerV3 commit and
+Git tree, the observed 6,312,430-byte source archive and its SHA-256 digest, the MIT license bytes,
+and the official requirements, configuration, and Dockerfile bytes. The prospective first slice is
+the official `dmc_proprio` configuration combined with `debug`, which uses proprioceptive state and
+the smallest published model overlay.
+
+This closes only the external-source availability and license-review gate. The official Dockerfile
+uses mutable apt/PPA inputs and executes a mutable gist; most Python dependencies are not pinned;
+the requirements select CUDA; and the dm_control/MuJoCo runtime and assets are not content-closed.
+No runtime was built, no environment or workload was executed, and no parity, performance,
+execution-attestation, development-result, or scientific claim is made.
