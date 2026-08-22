@@ -43,17 +43,8 @@ _MAX_RUN_STEPS = 1_000_000
 _PRNG_IMPLEMENTATION = "threefry2x32"
 _PAIR_RESULT_SCHEMA = "asi.ipmnist.gradual-input-pair.result.v1"
 _ADAMW_IDENTITY = tuple(sorted(ADAMW_PROTOCOL_HYPERPARAMETERS.items()))
-_NUMPY_INTEGER_TYPES = (
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.longlong,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.ulonglong,
+_NUMPY_INTEGER_TYPES = tuple(
+    {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
 )
 
 GRADUAL_IPMNIST_PROTOCOL = MappingProxyType(
