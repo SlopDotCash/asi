@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from alberta_framework.benchmarks.adalin import (
+    ADALIN_MATCHED_RESULT_SCHEMA,
     ADALIN_OFFICIAL_COMMIT,
     ADALIN_PROTOCOL,
     AdaLinConfig,
@@ -22,6 +23,8 @@ from alberta_framework.benchmarks.adalin import (
     initialize_adalin_state,
     make_pmnist_schedule,
     run_adalin_development,
+    run_adalin_matched_development,
+    validate_adalin_matched_result,
     validate_adalin_result,
 )
 
@@ -180,6 +183,92 @@ def test_mechanism_off_runner_keeps_alpha_zero() -> None:
     assert result["arm"] == "relu_alpha_zero_mechanism_off"
     assert result["state"]["final_alpha_l2"] == 0.0
     validate_adalin_result(json.loads(json.dumps(result)))
+
+
+def test_matched_runner_binds_schedule_initialization_resources_and_nonpromotion() -> None:
+    inputs = np.eye(4, dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], np.int32)
+    config = AdaLinConfig(
+        tasks=2, examples_per_task=4, batch_size=2, hidden_widths=(3, 2), classes=2
+    )
+    result = run_adalin_matched_development(
+        inputs, labels, inputs, labels, config=config, seed=1_571_001
+    )
+    validate_adalin_matched_result(json.loads(json.dumps(result)))
+
+    assert result["schema"] == ADALIN_MATCHED_RESULT_SCHEMA
+    assert [arm["arm"] for arm in result["arms"]] == [
+        "adalin",
+        "relu_alpha_zero_mechanism_off",
+    ]
+    enabled, disabled = result["arms"]
+    assert enabled["provenance"]["schedule_sha256"] == disabled["provenance"][
+        "schedule_sha256"
+    ]
+    assert enabled["provenance"]["initial_shared_parameters_sha256"] == disabled[
+        "provenance"
+    ]["initial_shared_parameters_sha256"]
+    assert enabled["resources"]["optimizer_updates"] == disabled["resources"][
+        "optimizer_updates"
+    ]
+    assert disabled["state"]["final_alpha_l2"] == 0.0
+    assert result["policy"]["scientific_promotion_allowed"] is False
+    assert result["policy"]["automatic_reference_selection_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "replacement"),
+    [
+        ("matched_axes", "schedule_sha256", "0" * 64),
+        ("matched_axes", "initial_shared_parameters_sha256", "1" * 64),
+        ("comparison", "adalin_minus_mechanism_off", 1.0),
+        ("resources", "optimizer_updates", 1),
+        ("policy", "automatic_reference_selection_allowed", True),
+    ],
+)
+def test_matched_validator_rejects_forged_derived_fields(
+    section: str, field: str, replacement: object
+) -> None:
+    inputs = np.eye(4, dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], np.int32)
+    config = AdaLinConfig(
+        tasks=1, examples_per_task=4, batch_size=2, hidden_widths=(3, 2), classes=2
+    )
+    result = run_adalin_matched_development(
+        inputs, labels, inputs, labels, config=config, seed=1_571_002
+    )
+    forged = copy.deepcopy(result)
+    forged[section][field] = replacement
+    with pytest.raises(ValueError):
+        validate_adalin_matched_result(forged)
+
+
+def test_matched_validator_rejects_arm_schedule_or_shared_initialization_substitution() -> None:
+    inputs = np.eye(4, dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], np.int32)
+    config = AdaLinConfig(
+        tasks=1, examples_per_task=4, batch_size=2, hidden_widths=(3, 2), classes=2
+    )
+    result = run_adalin_matched_development(
+        inputs, labels, inputs, labels, config=config, seed=1_571_003
+    )
+    for field in ("schedule_sha256", "initial_shared_parameters_sha256"):
+        forged = copy.deepcopy(result)
+        forged["arms"][1]["provenance"][field] = "f" * 64
+        with pytest.raises(ValueError):
+            validate_adalin_matched_result(forged)
+
+
+def test_matched_runner_rejects_seed_outside_frozen_development_roster() -> None:
+    inputs = np.eye(4, dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], np.int32)
+    config = AdaLinConfig(
+        tasks=1, examples_per_task=4, batch_size=2, hidden_widths=(3, 2), classes=2
+    )
+    with pytest.raises(ValueError, match="frozen AdaLin matched-development roster"):
+        run_adalin_matched_development(
+            inputs, labels, inputs, labels, config=config, seed=1_571_999
+        )
 
 
 @pytest.mark.parametrize(

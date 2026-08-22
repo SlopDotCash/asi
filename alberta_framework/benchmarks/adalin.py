@@ -22,7 +22,9 @@ ADALIN_PAPER_URL = "https://arxiv.org/abs/2505.09486v1"
 ADALIN_OFFICIAL_REPOSITORY = "https://github.com/RoozbehRazavi/AdaLin"
 ADALIN_OFFICIAL_COMMIT = "011469138bc22bf82955b16d68f33e4fbd04e3f8"
 ADALIN_OFFICIAL_TREE_AUDIT = "single README.md blob containing '# AdaLin'; no runnable code"
-ADALIN_RESULT_SCHEMA = "asi.adalin.pmnist-development-result.v1"
+ADALIN_RESULT_SCHEMA = "asi.adalin.pmnist-development-result.v2"
+ADALIN_MATCHED_RESULT_SCHEMA = "asi.adalin.pmnist-matched-development-result.v1"
+ADALIN_MATCHED_DEVELOPMENT_SEEDS = (1_571_001, 1_571_002, 1_571_003)
 
 ADALIN_PROTOCOL = MappingProxyType(
     {
@@ -485,6 +487,20 @@ def _state_hash(state: AdaLinState) -> str:
     return _hash_arrays(*(np.asarray(leaf) for leaf in leaves))
 
 
+def _shared_parameter_hash(parameters: AdaLinParameters) -> str:
+    """Hash the matched initialization surface, excluding mechanism-owned alpha."""
+    return _hash_arrays(
+        *(np.asarray(value) for value in (
+            parameters.weight1,
+            parameters.bias1,
+            parameters.weight2,
+            parameters.bias2,
+            parameters.weight3,
+            parameters.bias3,
+        ))
+    )
+
+
 def _implementation_hash() -> str:
     return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
@@ -540,6 +556,7 @@ def run_adalin_development(
         mechanism_enabled=mechanism_enabled,
     )
     initial_hash = _state_hash(state)
+    initial_shared_hash = _shared_parameter_hash(state.parameters)
     initial_bytes = _parameter_bytes(state.parameters) + int(np.asarray(state.updates).nbytes)
     task_online: list[float] = []
     task_test: list[float] = []
@@ -608,6 +625,7 @@ def run_adalin_development(
             "implementation_sha256": _implementation_hash(),
             "schedule_sha256": schedule_hash,
             "initial_state_sha256": initial_hash,
+            "initial_shared_parameters_sha256": initial_shared_hash,
             "final_state_sha256": _state_hash(state),
         },
         "metrics": {
@@ -790,6 +808,7 @@ def validate_adalin_result(value: object) -> None:
             "implementation_sha256",
             "schedule_sha256",
             "initial_state_sha256",
+            "initial_shared_parameters_sha256",
             "final_state_sha256",
         },
         "provenance",
@@ -807,6 +826,7 @@ def validate_adalin_result(value: object) -> None:
     for field in (
         "schedule_sha256",
         "initial_state_sha256",
+        "initial_shared_parameters_sha256",
         "final_state_sha256",
         "implementation_sha256",
     ):
@@ -962,3 +982,212 @@ def validate_adalin_result(value: object) -> None:
         "negative_outcomes_retained": True,
     }:
         raise ValueError("result policy is not permanently nonpromoting")
+
+
+_MATCHED_RESULT_KEYS = {
+    "schema",
+    "arms",
+    "matched_axes",
+    "comparison",
+    "resources",
+    "policy",
+}
+_MATCHED_RESOURCE_FIELDS = (
+    "environment_data_steps",
+    "observations",
+    "label_queries",
+    "optimizer_updates",
+    "model_queries",
+    "model_forward_calls",
+)
+
+
+def run_adalin_matched_development(
+    train_inputs: object,
+    train_labels: object,
+    test_inputs: object,
+    test_labels: object,
+    *,
+    config: AdaLinConfig = PAPER_PMNIST_CONFIG,
+    seed: int,
+) -> dict[str, object]:
+    """Run AdaLin and its exact alpha-zero reduction on one matched PMNIST schedule."""
+    if type(seed) is not int or seed not in ADALIN_MATCHED_DEVELOPMENT_SEEDS:
+        raise ValueError("seed is not in the frozen AdaLin matched-development roster")
+    enabled = run_adalin_development(
+        train_inputs,
+        train_labels,
+        test_inputs,
+        test_labels,
+        config=config,
+        seed=seed,
+        mechanism_enabled=True,
+    )
+    disabled = run_adalin_development(
+        train_inputs,
+        train_labels,
+        test_inputs,
+        test_labels,
+        config=config,
+        seed=seed,
+        mechanism_enabled=False,
+    )
+    enabled_metric = cast(dict[str, object], enabled["metrics"])[
+        "asi_whole_stream_preupdate_online_accuracy"
+    ]
+    disabled_metric = cast(dict[str, object], disabled["metrics"])[
+        "asi_whole_stream_preupdate_online_accuracy"
+    ]
+    delta = float(cast(float, enabled_metric)) - float(cast(float, disabled_metric))
+    outcome = "positive" if delta > 0.0 else "negative" if delta < 0.0 else "tied"
+    enabled_resources = cast(dict[str, object], enabled["resources"])
+    disabled_resources = cast(dict[str, object], disabled["resources"])
+    result: dict[str, object] = {
+        "schema": ADALIN_MATCHED_RESULT_SCHEMA,
+        "arms": [enabled, disabled],
+        "matched_axes": {
+            "seed": enabled["seed"],
+            "config": enabled["config"],
+            "dataset_sha256": cast(dict[str, object], enabled["dataset"])["sha256"],
+            "schedule_sha256": cast(dict[str, object], enabled["provenance"])[
+                "schedule_sha256"
+            ],
+            "initial_shared_parameters_sha256": cast(
+                dict[str, object], enabled["provenance"]
+            )["initial_shared_parameters_sha256"],
+            "learner_observes_task_boundary": False,
+        },
+        "comparison": {
+            "primary_metric": "asi_whole_stream_preupdate_online_accuracy",
+            "adalin_minus_mechanism_off": delta,
+            "outcome": outcome,
+            "claim_threshold": None,
+        },
+        "resources": {
+            field: cast(int, enabled_resources[field]) + cast(int, disabled_resources[field])
+            for field in _MATCHED_RESOURCE_FIELDS
+        }
+        | {
+            "wall_clock_seconds_telemetry": float(
+                cast(float, enabled_resources["wall_clock_seconds_telemetry"])
+            )
+            + float(cast(float, disabled_resources["wall_clock_seconds_telemetry"])),
+            "timing_qualified": False,
+        },
+        "policy": {
+            "status": "development-only-nonpromoting",
+            "development_only": True,
+            "scientific_promotion_allowed": False,
+            "negative_outcomes_retained": True,
+            "automatic_reference_selection_allowed": False,
+        },
+    }
+    validate_adalin_matched_result(result)
+    return result
+
+
+def validate_adalin_matched_result(value: object) -> None:
+    """Strictly validate one matched AdaLin/mechanism-off development result."""
+    _require_builtin_json(value)
+    result = _exact_dict(value, "matched result")
+    _require_keys(result, _MATCHED_RESULT_KEYS, "matched result")
+    if result["schema"] != ADALIN_MATCHED_RESULT_SCHEMA:
+        raise ValueError("unexpected matched AdaLin result schema")
+    raw_arms = result["arms"]
+    if type(raw_arms) is not list or len(raw_arms) != 2:
+        raise ValueError("matched result must contain exactly two arms")
+    arms = cast(list[object], raw_arms)
+    for arm in arms:
+        validate_adalin_result(arm)
+    enabled = _exact_dict(arms[0], "enabled arm")
+    disabled = _exact_dict(arms[1], "disabled arm")
+    if enabled["arm"] != "adalin" or disabled["arm"] != "relu_alpha_zero_mechanism_off":
+        raise ValueError("matched arms are out of order or unsupported")
+    if type(enabled["seed"]) is not int or enabled["seed"] not in ADALIN_MATCHED_DEVELOPMENT_SEEDS:
+        raise ValueError("seed is not in the frozen AdaLin matched-development roster")
+
+    enabled_dataset = _exact_dict(enabled["dataset"], "enabled dataset")
+    disabled_dataset = _exact_dict(disabled["dataset"], "disabled dataset")
+    enabled_provenance = _exact_dict(enabled["provenance"], "enabled provenance")
+    disabled_provenance = _exact_dict(disabled["provenance"], "disabled provenance")
+    if (
+        enabled["seed"] != disabled["seed"]
+        or enabled["config"] != disabled["config"]
+        or enabled_dataset != disabled_dataset
+        or enabled_provenance["schedule_sha256"] != disabled_provenance["schedule_sha256"]
+        or enabled_provenance["initial_shared_parameters_sha256"]
+        != disabled_provenance["initial_shared_parameters_sha256"]
+    ):
+        raise ValueError("AdaLin arms do not share the matched execution axes")
+
+    expected_axes = {
+        "seed": enabled["seed"],
+        "config": enabled["config"],
+        "dataset_sha256": enabled_dataset["sha256"],
+        "schedule_sha256": enabled_provenance["schedule_sha256"],
+        "initial_shared_parameters_sha256": enabled_provenance[
+            "initial_shared_parameters_sha256"
+        ],
+        "learner_observes_task_boundary": False,
+    }
+    axes = _exact_dict(result["matched_axes"], "matched axes")
+    if axes != expected_axes:
+        raise ValueError("matched axes disagree with arm receipts")
+
+    enabled_resources = _exact_dict(enabled["resources"], "enabled resources")
+    disabled_resources = _exact_dict(disabled["resources"], "disabled resources")
+    for field in _MATCHED_RESOURCE_FIELDS:
+        if enabled_resources[field] != disabled_resources[field]:
+            raise ValueError(f"matched arm resource {field} differs")
+    resources = _exact_dict(result["resources"], "matched resources")
+    expected_resources: dict[str, object] = {
+        field: cast(int, enabled_resources[field]) + cast(int, disabled_resources[field])
+        for field in _MATCHED_RESOURCE_FIELDS
+    }
+    expected_resources.update(
+        {
+            "wall_clock_seconds_telemetry": float(
+                cast(float, enabled_resources["wall_clock_seconds_telemetry"])
+            )
+            + float(cast(float, disabled_resources["wall_clock_seconds_telemetry"])),
+            "timing_qualified": False,
+        }
+    )
+    if resources != expected_resources:
+        raise ValueError("matched resources are not the exact arm totals")
+
+    comparison = _exact_dict(result["comparison"], "matched comparison")
+    _require_keys(
+        comparison,
+        {"primary_metric", "adalin_minus_mechanism_off", "outcome", "claim_threshold"},
+        "matched comparison",
+    )
+    enabled_metric = _exact_finite_number(
+        _exact_dict(enabled["metrics"], "enabled metrics")[
+            "asi_whole_stream_preupdate_online_accuracy"
+        ],
+        "enabled primary metric",
+    )
+    disabled_metric = _exact_finite_number(
+        _exact_dict(disabled["metrics"], "disabled metrics")[
+            "asi_whole_stream_preupdate_online_accuracy"
+        ],
+        "disabled primary metric",
+    )
+    delta = enabled_metric - disabled_metric
+    expected_outcome = "positive" if delta > 0.0 else "negative" if delta < 0.0 else "tied"
+    if comparison != {
+        "primary_metric": "asi_whole_stream_preupdate_online_accuracy",
+        "adalin_minus_mechanism_off": delta,
+        "outcome": expected_outcome,
+        "claim_threshold": None,
+    }:
+        raise ValueError("matched comparison is not derived from arm metrics")
+    if result["policy"] != {
+        "status": "development-only-nonpromoting",
+        "development_only": True,
+        "scientific_promotion_allowed": False,
+        "negative_outcomes_retained": True,
+        "automatic_reference_selection_allowed": False,
+    }:
+        raise ValueError("matched result policy is not permanently nonpromoting")
