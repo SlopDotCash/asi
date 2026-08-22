@@ -86,6 +86,9 @@ from alberta_framework.benchmarks.historical_forager_provenance import (
 LOGGER = logging.getLogger("alberta.forager")
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _HISTORICAL_CLI_SCHEMA = "alberta.historical_numpy_forager.cli.v1"
+# Public last-fit is one comma-separated field. Origin split then walked
+# unbounded int/float lists before leftover INT32 math — hang, not a width overflow.
+_MAX_FORAGER_CLI_SEQUENCE = 4_096
 
 
 def _configure_logging() -> None:
@@ -105,6 +108,11 @@ def _parse_ints(value: str) -> tuple[int, ...]:
         raise argparse.ArgumentTypeError("expected comma-separated integers") from exc
     if not values:
         raise argparse.ArgumentTypeError("at least one integer is required")
+    if len(values) > _MAX_FORAGER_CLI_SEQUENCE:
+        raise argparse.ArgumentTypeError(
+            "sequence length must be an integer in "
+            f"[1, {_MAX_FORAGER_CLI_SEQUENCE}]"
+        )
     if len(set(values)) != len(values):
         raise argparse.ArgumentTypeError("seed values must be unique")
     return values
@@ -117,6 +125,11 @@ def _parse_floats(value: str) -> tuple[float, ...]:
         raise argparse.ArgumentTypeError("expected comma-separated numbers") from exc
     if not values:
         raise argparse.ArgumentTypeError("at least one number is required")
+    if len(values) > _MAX_FORAGER_CLI_SEQUENCE:
+        raise argparse.ArgumentTypeError(
+            "sequence length must be an integer in "
+            f"[1, {_MAX_FORAGER_CLI_SEQUENCE}]"
+        )
     return values
 
 
