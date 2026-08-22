@@ -59,6 +59,9 @@ _EMPTY_ARRAYS_KEY = "_empty_array_leaves"
 # on a 10_000-deep metadata nest and cannot reject it as ValueError.
 _JSON_MAX_DEPTH = 32
 _JSON_MAX_NODES = 4096
+# NumPy/JAX last-fit rank. Origin walked unbounded empty-leaf shape lists
+# during restore — hang, not leftover INT32 math.
+_MAX_ARRAY_RANK = 32
 
 
 def _is_empty_array(value: object) -> bool:
@@ -117,10 +120,15 @@ def _restore_empty_arrays(template: Any, restored: Any, manifest: object) -> Any
             raise ValueError("checkpoint empty array manifest is invalid")
         raw_shape = raw_spec["shape"]
         raw_dtype = raw_spec["dtype"]
+        if not _is_empty_array(expected) or type(raw_shape) is not list:
+            raise ValueError("checkpoint empty array leaf does not match the restore template")
+        if len(raw_shape) > _MAX_ARRAY_RANK:
+            raise ValueError(
+                "shape rank must be an integer in "
+                f"[0, {_MAX_ARRAY_RANK}]"
+            )
         if (
-            not _is_empty_array(expected)
-            or type(raw_shape) is not list
-            or any(type(dimension) is not int or dimension < 0 for dimension in raw_shape)
+            any(type(dimension) is not int or dimension < 0 for dimension in raw_shape)
             or type(raw_dtype) is not str
             or list(expected.shape) != raw_shape
             or str(expected.dtype) != raw_dtype
