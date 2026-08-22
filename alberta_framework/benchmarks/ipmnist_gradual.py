@@ -31,6 +31,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     build_schedule,
     cross_entropy_loss,
     init_mlp_params,
+    mlp_logits,
     validated_ipmnist_data,
 )
 
@@ -358,6 +359,107 @@ class GradualInputPairResult:
             object.__setattr__(self, name, snapshot)
 
 
+@dataclass(frozen=True)
+class GradualTransitionMatrixResult:
+    """Host receipt for one matched run of every paper transition mode."""
+
+    schema: str
+    development_only: bool
+    scientific_promotion_allowed: bool
+    execution_attestation: bool
+    arm_names: tuple[str, str, str, str]
+    learner_name: str
+    learner_hyperparameters: tuple[tuple[str, float], ...]
+    prng_implementation: str
+    seed: int
+    config: IPMNISTConfig
+    transition_steps: int
+    dataset_rows: int
+    dataset_sha256: str
+    schedule_sha256: str
+    example_order_sha256: str
+    correct_counts: np.ndarray
+    loss_sums: np.ndarray
+    persistent_numeric_bytes: np.ndarray
+    timing_ns: np.ndarray
+    observations_per_arm: int
+    updates_per_arm: int
+    data_steps_per_arm: int
+    environment_steps_per_arm: int
+    model_queries_per_arm: int
+
+    def __post_init__(self) -> None:
+        arms = ("abrupt", "input_interpolation", "output_interpolation", "task_sampling")
+        if self.schema != "asi.ipmnist.gradual-transition-matrix.result.v1":
+            raise ValueError("schema must identify the gradual transition matrix")
+        if self.development_only is not True or self.scientific_promotion_allowed is not False:
+            raise ValueError("matrix results must be permanently development-only")
+        if self.execution_attestation is not False:
+            raise ValueError("matrix consistency hashes are not execution attestation")
+        if type(self.arm_names) is not tuple or self.arm_names != arms:
+            raise ValueError("arm_names must identify every frozen transition arm")
+        if self.learner_name != "adamw_control" or self.learner_hyperparameters != _ADAMW_IDENTITY:
+            raise ValueError("learner identity must identify the frozen AdamW control")
+        if self.prng_implementation != _PRNG_IMPLEMENTATION:
+            raise ValueError("prng_implementation must be threefry2x32")
+        seed = require_jax_seed(self.seed, name="seed")
+        if type(self.config) is not IPMNISTConfig:
+            raise ValueError("config must be an exact IPMNISTConfig")
+        config = IPMNISTConfig(**self.config.to_config())
+        width = _exact_index("transition_steps", self.transition_steps, minimum=1)
+        if width >= config.task_length:
+            raise ValueError("transition_steps must be smaller than task_length")
+        rows = _exact_index("dataset_rows", self.dataset_rows, minimum=config.task_length)
+        for name in ("dataset_sha256", "schedule_sha256", "example_order_sha256"):
+            value = getattr(self, name)
+            if (
+                type(value) is not str
+                or len(value) != 71
+                or not value.startswith("sha256:")
+                or any(character not in "0123456789abcdef" for character in value[7:])
+            ):
+                raise ValueError(f"{name} must be one canonical SHA-256 identity")
+        arrays = (
+            ("correct_counts", self.correct_counts, np.int32, (4, config.n_tasks)),
+            ("loss_sums", self.loss_sums, np.float64, (4, config.n_tasks)),
+            ("persistent_numeric_bytes", self.persistent_numeric_bytes, np.int64, (4,)),
+            ("timing_ns", self.timing_ns, np.int64, (4,)),
+        )
+        for name, value, dtype, shape in arrays:
+            if type(value) is not np.ndarray or value.dtype != dtype or value.shape != shape:
+                raise ValueError(f"{name} must be an exact {dtype.__name__} array of shape {shape}")
+            if name != "correct_counts" and (np.any(value < 0) or not np.all(np.isfinite(value))):
+                raise ValueError(f"{name} must be finite and nonnegative")
+            snapshot = value.copy()
+            snapshot.flags.writeable = False
+            object.__setattr__(self, name, snapshot)
+        if np.any(self.correct_counts < 0) or np.any(self.correct_counts > config.task_length):
+            raise ValueError("correct_counts contains an invalid numerator")
+        expected_persistent_bytes = (
+            config.parameter_count * 16
+            + 6 * 5 * 4
+            + rows * (config.input_dim + 1) * 4
+            + config.n_tasks * (config.input_dim + config.task_length) * 4
+        )
+        if not np.all(self.persistent_numeric_bytes == expected_persistent_bytes):
+            raise ValueError("persistent_numeric_bytes must equal the complete numeric state")
+        expected = config.n_steps
+        counters = {
+            "observations_per_arm": expected,
+            "updates_per_arm": expected,
+            "data_steps_per_arm": expected,
+            "environment_steps_per_arm": 0,
+            "model_queries_per_arm": 2 * expected,
+        }
+        for name, value in counters.items():
+            if type(getattr(self, name)) is not int or getattr(self, name) != value:
+                raise ValueError(f"{name} must equal {value}")
+        object.__setattr__(self, "seed", seed)
+        object.__setattr__(self, "config", config)
+        object.__setattr__(self, "transition_steps", width)
+        object.__setattr__(self, "dataset_rows", rows)
+
+
 def _array_sha256(domain: bytes, *values: Array) -> str:
     digest = hashlib.sha256()
     digest.update(domain)
@@ -556,6 +658,185 @@ def run_gradual_input_pair(
         loss_sums=np.asarray([output[1] for output in arm_outputs], dtype=np.float64),
         persistent_numeric_bytes=np.asarray([output[2] for output in arm_outputs], dtype=np.int64),
         timing_ns=np.asarray([output[3] for output in arm_outputs], dtype=np.int64),
+        observations_per_arm=horizon,
+        updates_per_arm=horizon,
+        data_steps_per_arm=horizon,
+        environment_steps_per_arm=0,
+        model_queries_per_arm=2 * horizon,
+    )
+
+
+def run_gradual_transition_matrix(
+    data_x: object,
+    data_y: object,
+    *,
+    learner_name: str,
+    seed: int,
+    config: IPMNISTConfig,
+    transition_steps: int,
+) -> GradualTransitionMatrixResult:
+    """Run abrupt and all three gradual mechanisms on one matched schedule.
+
+    This is a development diagnostic, not a performance claim. Each arm starts
+    from the same parameters and learner RNG root. The evaluator alone owns the
+    transition mode, coefficient, task identity, and task-sampling decisions.
+    """
+    if learner_name != "adamw_control" or type(learner_name) is not str:
+        raise ValueError("this frozen adapter supports only adamw_control")
+    if type(config) is not IPMNISTConfig:
+        raise ValueError("config must be an exact IPMNISTConfig")
+    checked_config = IPMNISTConfig(**config.to_config())
+    if checked_config.n_steps > _MAX_RUN_STEPS:
+        raise ValueError("run horizon exceeds the 1000000-step ceiling")
+    width = _exact_index("transition_steps", transition_steps, minimum=1)
+    if width >= checked_config.task_length:
+        raise ValueError("transition_steps must be smaller than task_length")
+    resolved_seed = require_jax_seed(seed, name="seed")
+    for name, value in (("data_x", data_x), ("data_y", data_y)):
+        actual_type = type(value)
+        if not (actual_type is np.ndarray or issubclass(actual_type, jax.Array)):
+            raise ValueError(f"{name} must be an exact NumPy or JAX array")
+    raw_x = cast(np.ndarray | Array, data_x)
+    raw_y = cast(np.ndarray | Array, data_y)
+    if len(raw_x.shape) != 2 or len(raw_y.shape) != 1 or raw_x.shape[0] != raw_y.shape[0]:
+        raise ValueError("dataset metadata is invalid")
+    dataset_elements = math.prod(raw_x.shape) + math.prod(raw_y.shape)
+    schedule_elements = checked_config.n_tasks * (
+        checked_config.input_dim + checked_config.task_length
+    )
+    persistent_ceiling = (
+        checked_config.parameter_count * 16
+        + 6 * 5 * 4
+        + dataset_elements * 4
+        + schedule_elements * 4
+    )
+    if persistent_ceiling > _MAX_RESOURCE_BYTES:
+        raise ValueError("aggregate persistent numeric allocation exceeds 256 MiB")
+    resolved_x, resolved_y = validated_ipmnist_data(
+        raw_x,
+        raw_y,
+        input_dim=checked_config.input_dim,
+        n_classes=checked_config.n_classes,
+        min_length=checked_config.task_length,
+    )
+    x_bank = jnp.asarray(resolved_x, dtype=jnp.float32)
+    y_bank = jnp.asarray(resolved_y, dtype=jnp.int32)
+    dataset_numeric_bytes = int(x_bank.nbytes + y_bank.nbytes)
+    init_fn, step_fn = _make_adamw_learner(dict(_ADAMW_IDENTITY))
+
+    @jax.jit
+    def checked_step(
+        params: dict[str, Array], state: Any, x: Array, target: Array, label: Array, key: Array
+    ) -> tuple[LearnerUpdateResult, Array, Array, Array]:
+        def soft_loss(candidate: dict[str, Array]) -> tuple[Array, Array]:
+            logits = mlp_logits(candidate, x)
+            return -jnp.sum(target * jax.nn.log_softmax(logits)), logits
+
+        (loss, logits), grads = jax.value_and_grad(soft_loss, has_aux=True)(params)
+        transaction = step_fn(params, state, grads, key)
+        if type(transaction) is not LearnerUpdateResult:
+            raise TypeError("AdamW learner did not return its checked transaction")
+        post_loss, _ = soft_loss(transaction.params)
+        accuracy = (jnp.argmax(logits) == label).astype(jnp.float32)
+        return transaction, accuracy, loss, post_loss
+
+    root = jr.key(resolved_seed, impl=_PRNG_IMPLEMENTATION)
+    key_init, key_schedule, key_noise = jr.split(root, 3)
+    initial_params = init_mlp_params(key_init, checked_config)
+    schedule = build_schedule(key_schedule, checked_config, int(x_bank.shape[0]))
+    modes = ("abrupt", "input_interpolation", "output_interpolation", "task_sampling")
+
+    def run_arm(mode: str) -> tuple[list[int], list[float], int, int]:
+        params = initial_params
+        state = init_fn(params)
+        key = key_noise
+        correct_counts: list[int] = []
+        loss_sums: list[float] = []
+        started = time.perf_counter_ns()
+        transition_config = GradualTransitionConfig(
+            mode=cast(TransitionMode, mode), transition_steps=1 if mode == "abrupt" else width
+        )
+        for task in range(checked_config.n_tasks):
+            current = schedule.permutations[task]
+            previous = schedule.permutations[max(task - 1, 0)]
+            examples = schedule.example_indices[task]
+            task_correct = 0
+            task_loss = 0.0
+            for offset in range(checked_config.task_length):
+                example = examples[offset]
+                label = y_bank[example]
+                new_x = x_bank[example][current]
+                x = new_x
+                target = jax.nn.one_hot(label, checked_config.n_classes, dtype=jnp.float32)
+                if task > 0 and offset < width and mode != "abrupt":
+                    alpha = transition_alpha(offset, transition_config)
+                    old_x = x_bank[example][previous]
+                    if mode == "input_interpolation":
+                        x, valid = input_interpolation_transaction(old_x, new_x, alpha)
+                        if not bool(valid):
+                            raise ValueError("input interpolation transaction became invalid")
+                    elif mode == "output_interpolation":
+                        target = output_interpolation(
+                            int(label), int(label), alpha, n_classes=checked_config.n_classes
+                        )
+                    else:
+                        choose_new = task_sampling_mask(
+                            seed=resolved_seed,
+                            transition_id=task,
+                            count=width,
+                            alpha=alpha,
+                        )[offset]
+                        x = new_x if bool(choose_new) else old_x
+                key, step_key = jr.split(key)
+                transaction, accuracy, loss, post_loss = checked_step(
+                    params, state, x, target, label, step_key
+                )
+                if not bool(transaction.update_applied):
+                    raise ValueError("AdamW learner update transaction became invalid")
+                params, state = transaction.params, transaction.state
+                if not bool(jnp.isfinite(accuracy) & jnp.isfinite(loss) & jnp.isfinite(post_loss)):
+                    raise ValueError("learner metric transaction became invalid")
+                task_correct += int(accuracy)
+                task_loss += float(loss)
+                if not math.isfinite(task_loss):
+                    raise ValueError("learner task-loss accumulation became invalid")
+            correct_counts.append(task_correct)
+            loss_sums.append(task_loss)
+        for leaf in jax.tree_util.tree_leaves((params, state)):
+            if hasattr(leaf, "block_until_ready"):
+                leaf.block_until_ready()
+        timing = time.perf_counter_ns() - started
+        persistent = dataset_numeric_bytes + _numeric_tree_bytes(
+            (initial_params, params, state, schedule)
+        )
+        return correct_counts, loss_sums, persistent, timing
+
+    outputs = tuple(run_arm(mode) for mode in modes)
+    horizon = checked_config.n_steps
+    return GradualTransitionMatrixResult(
+        schema="asi.ipmnist.gradual-transition-matrix.result.v1",
+        development_only=True,
+        scientific_promotion_allowed=False,
+        execution_attestation=False,
+        arm_names=modes,
+        learner_name=learner_name,
+        learner_hyperparameters=_ADAMW_IDENTITY,
+        prng_implementation=_PRNG_IMPLEMENTATION,
+        seed=resolved_seed,
+        config=checked_config,
+        transition_steps=width,
+        dataset_rows=int(x_bank.shape[0]),
+        dataset_sha256=_array_sha256(b"asi.ipmnist.gradual.dataset.v1\0", x_bank, y_bank),
+        schedule_sha256=_array_sha256(
+            b"asi.ipmnist.gradual.permutations.v1\0", schedule.permutations
+        ),
+        example_order_sha256=_array_sha256(
+            b"asi.ipmnist.gradual.example-order.v1\0", schedule.example_indices
+        ),
+        correct_counts=np.asarray([output[0] for output in outputs], dtype=np.int32),
+        loss_sums=np.asarray([output[1] for output in outputs], dtype=np.float64),
+        persistent_numeric_bytes=np.asarray([output[2] for output in outputs], dtype=np.int64),
+        timing_ns=np.asarray([output[3] for output in outputs], dtype=np.int64),
         observations_per_arm=horizon,
         updates_per_arm=horizon,
         data_steps_per_arm=horizon,
