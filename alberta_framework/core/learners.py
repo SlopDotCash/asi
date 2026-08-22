@@ -85,6 +85,9 @@ from alberta_framework.streams.base import ScanStream
 
 _INT32_MAX = 2**31 - 1
 _MAX_RESOURCE_BYTES = 256 * 1024 * 1024
+# Public last-fit in tests is two hidden layers. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_MLP_HIDDEN_LAYERS = 4_096
 # Documented public protocol: README / package ``__init__`` / loop docstrings
 # last-fit ``num_steps=10_000`` and batched ``30`` seeds. Not an INT32 cap.
 _LEARNING_LOOP_MAX_STEPS = 10_000
@@ -171,6 +174,11 @@ def _require_learning_loop_seed_steps(num_steps: int, num_seeds: int) -> None:
 def _require_hidden_sizes(hidden_sizes: object) -> tuple[int, ...]:
     if type(hidden_sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(hidden_sizes) > _MAX_MLP_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_MLP_HIDDEN_LAYERS}]"
+        )
     return tuple(
         _require_int32(f"hidden_sizes[{index}]", width, minimum=1)
         for index, width in enumerate(hidden_sizes)
@@ -1313,6 +1321,11 @@ class MLPLearner:
             raise ValueError("unexpected MLPLearner config type")
         if type(config["hidden_sizes"]) is not list:
             raise ValueError("hidden_sizes must be a list")
+        if len(config["hidden_sizes"]) > _MAX_MLP_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_MLP_HIDDEN_LAYERS}]"
+            )
         config = config.copy()
         config.pop("type")
 
