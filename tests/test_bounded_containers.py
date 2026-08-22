@@ -8,6 +8,7 @@ from typing import Any, cast
 import pytest
 
 from alberta_framework._bounded_containers import (
+    _MAX_JSON_TEXT_CHARS,
     require_bounded_container_tree,
     require_json_text_nesting,
 )
@@ -63,6 +64,21 @@ def test_tree_preflight_rejects_cycle_depth_and_node_budget() -> None:
             name="payload",
             kind="JSON",
         )
+
+
+def test_json_text_scanner_rejects_oversized_host_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _MAX_JSON_TEXT_CHARS == 16 * 1024 * 1024
+    monkeypatch.setattr(
+        "alberta_framework._bounded_containers._MAX_JSON_TEXT_CHARS", 8
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"payload length must be an integer in \[0, 8\]",
+    ):
+        require_json_text_nesting("[" * 9, max_depth=3, name="payload")
+    require_json_text_nesting("[]", max_depth=3, name="payload")
 
 
 def test_json_text_scanner_ignores_brackets_inside_escaped_strings() -> None:
