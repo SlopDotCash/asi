@@ -58,6 +58,9 @@ _ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
 # ``cumulants``, and ``next_observations`` straight to ``jax.lax.scan`` with
 # no other cap on the scanned sequence length.
 _HORDE_SEQUENCE_MAX_STEPS = 10_000
+# Public last-fit in tests is two hidden layers. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_HORDE_HIDDEN_LAYERS = 4_096
 
 
 def _require_float32(
@@ -76,6 +79,20 @@ def _require_exact_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be an exact bool")
     return value
+
+
+def _require_hidden_layer_count(hidden_sizes: object) -> None:
+    if type(hidden_sizes) in (tuple, list) and len(hidden_sizes) > _MAX_HORDE_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_HORDE_HIDDEN_LAYERS}]"
+        )
+
+
+def _pop_hidden_sizes(config: dict[str, Any]) -> tuple[Any, ...]:
+    hidden_sizes = config.pop("hidden_sizes")
+    _require_hidden_layer_count(hidden_sizes)
+    return tuple(hidden_sizes)
 
 
 def _require_horde_sequence_length(name: str, value: object) -> int:
@@ -305,6 +322,7 @@ class HordeLearner:
         step_size, sparsity, leaky_relu_slope, use_layer_norm = _canonical_horde_host_scalars(
             step_size, sparsity, leaky_relu_slope, use_layer_norm
         )
+        _require_hidden_layer_count(hidden_sizes)
         self._horde_spec = horde_spec
         self._hidden_sizes = hidden_sizes
         self._step_size = step_size
@@ -423,7 +441,7 @@ class HordeLearner:
 
         return cls(
             horde_spec=horde_spec,
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=_pop_hidden_sizes(config),
             optimizer=optimizer,
             bounder=bounder,
             normalizer=normalizer,
@@ -670,6 +688,7 @@ class MixedHorde:
         step_size, sparsity, leaky_relu_slope, use_layer_norm = _canonical_horde_host_scalars(
             step_size, sparsity, leaky_relu_slope, use_layer_norm
         )
+        _require_hidden_layer_count(hidden_sizes)
         self._horde_spec = horde_spec
         self._hidden_sizes = hidden_sizes
         self._optimizer = optimizer
@@ -812,7 +831,7 @@ class MixedHorde:
         )
         return cls(
             horde_spec=horde_spec,
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=_pop_hidden_sizes(config),
             optimizer=optimizer,
             bounder=bounder,
             normalizer=normalizer,
