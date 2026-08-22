@@ -208,6 +208,9 @@ FORAGER_FOV_EMA_SUBSAMPLE = 100
 FORAGER_FOV_TAIL_FRACTION = 0.10
 FORAGER_ENVIRONMENT_RNG_SCHEDULE = "dedicated_environment_split_chain_v1"
 _MAX_JAX_INT32 = 2**31 - 1
+# Public last-fit is one hidden layer. Origin walked unbounded actor/critic
+# ``hidden_sizes`` before leftover INT32 math — hang, not a width overflow.
+_MAX_FORAGER_HIDDEN_LAYERS = 4_096
 _ACTUAL_NUMPY_INT_TYPES = frozenset(
     np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
 )
@@ -954,10 +957,14 @@ class AlbertaForagerConfig:
             ("actor_hidden_sizes", self.actor_hidden_sizes),
             ("critic_hidden_sizes", self.critic_hidden_sizes),
         ):
-            if type(widths) is not tuple or not widths or any(
-                type(width) is not int or width < 1
-                for width in widths
-            ):
+            if type(widths) is not tuple or not widths:
+                raise ValueError(f"{name} must contain positive integer widths")
+            if len(widths) > _MAX_FORAGER_HIDDEN_LAYERS:
+                raise ValueError(
+                    f"{name} length must be an integer in "
+                    f"[1, {_MAX_FORAGER_HIDDEN_LAYERS}]"
+                )
+            if any(type(width) is not int or width < 1 for width in widths):
                 raise ValueError(f"{name} must contain positive integer widths")
         unit_interval = {
             "gamma": self.gamma,
