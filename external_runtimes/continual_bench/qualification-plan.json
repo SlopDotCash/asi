@@ -1,0 +1,22 @@
+{
+  "schema": "asi.continual_bench_external_source_qualification.v1",
+  "policy": "read_only_nonexecuting_permanently_nonpromoting",
+  "paper_revision": "arXiv:2507.09177v1",
+  "source": {
+    "repository": "https://github.com/sail-sg/ContinualBench.git",
+    "commit": "a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad",
+    "git_tree": "ebf540dbac186f13858f97dfe12eb0b3c823ec43",
+    "source_archive_sha256": "7726bc3badd6ad8752845b50a98e84e8d19c549c49bacf7bda84cd3933aa6e04",
+    "license": "MIT",
+    "license_path": "LICENSE.txt",
+    "license_sha256": "854b88f1dd8df45fc717efc3926da5d10efb6b1122b47ddbea639eb2637a867f"
+  },
+  "claims": {
+    "source_identity_content_bound": true,
+    "runtime_qualified": false,
+    "assets_qualified": false,
+    "external_execution_authorized": false,
+    "paper_parity_claimed": false,
+    "scientific_promotion_allowed": false
+  }
+}
