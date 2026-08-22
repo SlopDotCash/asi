@@ -40,6 +40,9 @@ from jaxtyping import Bool, Int
 CONFIG_SCHEMA_VERSION = "alberta.feature_bank_router.config.v1"
 INACTIVE_DESCRIPTOR = (-1, -1)
 _INT32_MAX = 2**31 - 1
+# Public last-fit is a small consumer PyTree. Origin flattened then walked
+# unbounded leaves before leftover INT32 math — hang, not a width overflow.
+_MAX_CONSUMER_LEAVES = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -522,6 +525,11 @@ class FeatureBankRouter:
         leaves, tree_definition = jax.tree_util.tree_flatten(consumers)
         if not leaves:
             raise ValueError("consumers must contain at least one array leaf")
+        if len(leaves) > _MAX_CONSUMER_LEAVES:
+            raise ValueError(
+                "consumer leaf count must be an integer in "
+                f"[1, {_MAX_CONSUMER_LEAVES}]"
+            )
         if feature_axes is None:
             raw_axes = [-1] * len(leaves)
         else:
