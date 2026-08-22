@@ -18,6 +18,8 @@ from alberta_framework.benchmarks.plasticity_diagnostics import (
     OFFICIAL_CODE_COMMIT,
     PAPER_REVISION,
     PROFILES,
+    RANDOM_LABEL_PROTOCOL,
+    _random_label_schedule,
     costly_lane_gates,
     main,
     require_costly_lane,
@@ -133,6 +135,45 @@ def test_random_label_and_privileged_task_claims_fail_closed() -> None:
         validate_result(dataclasses.replace(result, scientific_promotion_allowed=True))
 
 
+def test_random_label_mnist_runs_matched_end_to_end_without_paper_parity_claim() -> None:
+    images, labels = _fixture()
+    result = run_diagnostic(
+        images,
+        labels,
+        seed=FROZEN_SEEDS[0],
+        task_protocol=RANDOM_LABEL_PROTOCOL,
+    )
+    assert result.task_protocol == RANDOM_LABEL_PROTOCOL
+    assert result.labels_permuted is True
+    control, mechanism_off, candidate = result.arms
+    assert control.task_accuracy == mechanism_off.task_accuracy
+    assert control.task_loss == mechanism_off.task_loss
+    assert control.final_state_sha256 == mechanism_off.final_state_sha256
+    assert candidate.receipt.replacements > 0
+    assert result.paper_parity_claimed is False
+
+
+def test_random_label_schedule_is_deterministic_and_relabels_each_task() -> None:
+    images, labels = _fixture()
+    profile = PROFILES["contract-smoke"]
+    first = _random_label_schedule(images, labels, profile, FROZEN_SEEDS[0])
+    second = _random_label_schedule(images, labels, profile, FROZEN_SEEDS[0])
+    for (left_images, left_labels), (right_images, right_labels) in zip(
+        first, second, strict=True
+    ):
+        np.testing.assert_array_equal(left_images, right_images)
+        np.testing.assert_array_equal(left_labels, right_labels)
+    assert not np.array_equal(first[0][1], first[1][1])
+
+
+def test_random_label_protocol_rejects_forged_label_semantics() -> None:
+    result = run_diagnostic(
+        *_fixture(), seed=FROZEN_SEEDS[0], task_protocol=RANDOM_LABEL_PROTOCOL
+    )
+    with pytest.raises(ValueError, match="protocol semantics"):
+        validate_result(dataclasses.replace(result, labels_permuted=False))
+
+
 @pytest.mark.parametrize(
     ("images_mutation", "labels_mutation"),
     [
@@ -167,6 +208,7 @@ def test_catalog_cli_does_not_load_or_execute_data(capsys: pytest.CaptureFixture
     assert main(("--catalog",)) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["schema"].startswith("asi.loss_of_plasticity")
+    assert RANDOM_LABEL_PROTOCOL in payload["task_protocols"]
     assert payload["costly_lane_gates"]["execution_authorized"] is False
 
 
@@ -181,3 +223,25 @@ def test_cli_runs_only_caller_supplied_bounded_npz(
     assert payload["task_protocol"] == "cumulative-input-permutation"
     assert payload["labels_permuted"] is False
     assert payload["scientific_promotion_allowed"] is False
+
+
+def test_cli_runs_random_label_protocol_from_caller_data(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    images, labels = _fixture()
+    dataset = tmp_path / "mnist.npz"
+    np.savez(dataset, images=images, labels=labels)
+    assert main(
+        (
+            "--dataset",
+            str(dataset),
+            "--seed",
+            str(FROZEN_SEEDS[0]),
+            "--task-protocol",
+            RANDOM_LABEL_PROTOCOL,
+        )
+    ) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["task_protocol"] == RANDOM_LABEL_PROTOCOL
+    assert payload["labels_permuted"] is True
+    assert payload["paper_parity_claimed"] is False
