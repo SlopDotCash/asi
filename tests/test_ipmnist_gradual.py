@@ -14,6 +14,7 @@ from alberta_framework.benchmarks.ipmnist_gradual import (
     input_interpolation_transaction,
     output_interpolation,
     run_gradual_input_pair,
+    run_gradual_transition_matrix,
     task_sampling_mask,
     transition_alpha,
 )
@@ -208,6 +209,50 @@ def test_gradual_input_pair_runs_one_matched_real_learner_schedule() -> None:
     assert result.timing_ns.shape == (2,)
     assert np.all(result.timing_ns >= 0)
     assert not result.correct_counts.flags.writeable
+
+
+def test_gradual_transition_matrix_executes_every_paper_mode_on_one_schedule() -> None:
+    data_x = np.asarray(
+        [
+            [-1.0, -0.5, 0.5, 1.0],
+            [1.0, 0.5, -0.5, -1.0],
+            [-0.5, 1.0, -1.0, 0.5],
+            [0.5, -1.0, 1.0, -0.5],
+        ],
+        dtype=np.float32,
+    )
+    data_y = np.asarray([0, 1, 0, 1], dtype=np.int32)
+    config = IPMNISTConfig(
+        n_tasks=3, task_length=4, input_dim=4, hidden1=3, hidden2=2, n_classes=2
+    )
+
+    result = run_gradual_transition_matrix(
+        data_x,
+        data_y,
+        learner_name="adamw_control",
+        seed=17,
+        config=config,
+        transition_steps=2,
+    )
+
+    assert result.arm_names == (
+        "abrupt",
+        "input_interpolation",
+        "output_interpolation",
+        "task_sampling",
+    )
+    assert result.correct_counts.shape == (4, 3)
+    assert result.loss_sums.shape == (4, 3)
+    assert result.persistent_numeric_bytes.shape == (4,)
+    assert result.timing_ns.shape == (4,)
+    assert result.schedule_sha256.startswith("sha256:")
+    assert result.example_order_sha256.startswith("sha256:")
+    assert result.observations_per_arm == result.updates_per_arm == 12
+    assert result.model_queries_per_arm == 24
+    assert result.development_only is True
+    assert result.scientific_promotion_allowed is False
+    assert result.execution_attestation is False
+    assert not result.loss_sums.flags.writeable
 
 
 def test_gradual_pair_rng_is_independent_of_global_default() -> None:
