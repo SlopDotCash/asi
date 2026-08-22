@@ -9,12 +9,17 @@ state-of-the-art claim.
 
 The cited paper is *Beyond Single-Model Optimization: Preserving Plasticity in
 Continual Reinforcement Learning*, pinned to `arXiv:2604.15414v1` (submitted
-2026-04-16). The paper discloses an anonymous code view at
-`https://anonymous.4open.science/r/telapa-map_elites-54E8/`. That view does not
-expose a reviewable immutable Git commit or content-tree digest in the paper,
-and the restricted audit environment could not retrieve it. The catalog
-therefore records no code revision or tree identity and categorically rejects
-paper parity. A mutable anonymous URL must never be substituted for a commit.
+2026-04-16). The attributed public repository is now
+`lute47lillo/telapa_collas2026`, bound at commit
+`a4dc16ed0ea015b1b8efb271e4d664931adccd3e` and tree
+`e58072c9c87f984ec9644c7a8fb18e4ce9455286`. The catalog also binds the observed
+8,621,070-byte GitHub source archive and the README and `environment.yml` bytes.
+
+The repository README says the project is MIT-licensed and points to `LICENSE`,
+but that file is absent from the complete committed tree and GitHub reports no
+detected license. The catalog therefore records the attribution and immutable
+source identity while leaving license review incomplete, vending no source
+bytes, and categorically rejecting paper parity and external execution.
 
 The paper's mechanism is substantially larger than this lane: per-task policy
 neighborhoods, PPO, post-training MAP-Elites illumination, few-shot origin
@@ -61,7 +66,7 @@ Run the CI-cheap smoke or print only its catalog:
 
 ## Gates still closed
 
-- establish and license-review an immutable official source revision and tree;
+- obtain and content-bind the license file declared by the official README;
 - reproduce the exact dependency/runtime lock and source/config identities;
 - implement the paper environments, curricula, PPO and MAP-Elites budgets;
 - implement the learned embedder, normalization, anchors, replay, alignment,

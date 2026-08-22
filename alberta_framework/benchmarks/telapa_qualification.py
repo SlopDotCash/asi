@@ -1,9 +1,9 @@
 """Bounded TeLAPA-inspired policy-archive qualification smoke.
 
 This development lane deliberately tests ASI's archive primitive in the live
-``SwitchingTwoStateMDP`` stream.  It is not an implementation or reproduction
-of TeLAPA: the anonymous paper repository has no established immutable source
-identity, and this lane has neither PPO/MAP-Elites nor a learned embedder.
+``SwitchingTwoStateMDP`` stream. It is not an implementation or reproduction
+of TeLAPA: the public paper repository lacks its declared license file, and
+this lane has neither PPO/MAP-Elites nor a learned embedder.
 """
 
 from __future__ import annotations
@@ -36,7 +36,13 @@ from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig, Switc
 SCHEMA = "asi.telapa_qualification_smoke.development.v1"
 PAPER_REVISION = "arXiv:2604.15414v1"
 PAPER_DATE = "2026-04-16"
-DISCLOSED_REPOSITORY = "https://anonymous.4open.science/r/telapa-map_elites-54E8/"
+DISCLOSED_REPOSITORY = "https://github.com/lute47lillo/telapa_collas2026"
+REPOSITORY_REVISION = "a4dc16ed0ea015b1b8efb271e4d664931adccd3e"
+REPOSITORY_TREE = "e58072c9c87f984ec9644c7a8fb18e4ce9455286"
+SOURCE_ARCHIVE_SHA256 = "25a77241a99a83002a91e282f6a969670f2cb968d2ad685229a904e43a5a926b"
+SOURCE_ARCHIVE_BYTES = 8_621_070
+README_SHA256 = "c1ac75ece6ddb3eb67ead1779053c1f2c51283d4e389af75073e9ce9ec052438"
+ENVIRONMENT_SHA256 = "8b2b9fe39fb7103ed090a429799ada34443b58dcd185e20b32e99913f6553a77"
 _MAX_JSON_BYTES = 1_000_000
 _MAX_JSON_DEPTH = 64
 _MAX_JSON_NODES = 50_000
@@ -150,9 +156,17 @@ class TeLAPACatalogEntry:
     paper_revision: str = PAPER_REVISION
     paper_revision_date: str = PAPER_DATE
     disclosed_repository: str = DISCLOSED_REPOSITORY
-    repository_revision: None = None
-    repository_tree_digest: None = None
-    immutable_external_source_established: bool = False
+    repository_revision: str = REPOSITORY_REVISION
+    repository_tree_digest: str = REPOSITORY_TREE
+    source_archive_sha256: str = SOURCE_ARCHIVE_SHA256
+    source_archive_bytes: int = SOURCE_ARCHIVE_BYTES
+    readme_sha256: str = README_SHA256
+    environment_sha256: str = ENVIRONMENT_SHA256
+    immutable_external_source_established: bool = True
+    readme_declared_license: str = "MIT"
+    license_file_present: bool = False
+    license_review_complete: bool = False
+    source_bytes_vendored: bool = False
     paper_parity_allowed: bool = False
     paper_mechanism: str = (
         "per-task policy neighborhoods, MAP-Elites illumination, few-shot retrieval, "
@@ -189,15 +203,30 @@ class TeLAPACatalogEntry:
             or self.disclosed_repository != DISCLOSED_REPOSITORY
         ):
             raise ValueError("TeLAPA catalog identity mismatch")
-        if self.repository_revision is not None or self.repository_tree_digest is not None:
-            raise ValueError("unverified anonymous source must not acquire an immutable identity")
+        if (
+            self.repository_revision != REPOSITORY_REVISION
+            or self.repository_tree_digest != REPOSITORY_TREE
+            or self.source_archive_sha256 != SOURCE_ARCHIVE_SHA256
+            or type(self.source_archive_bytes) is not int
+            or self.source_archive_bytes != SOURCE_ARCHIVE_BYTES
+            or self.readme_sha256 != README_SHA256
+            or self.environment_sha256 != ENVIRONMENT_SHA256
+        ):
+            raise ValueError("TeLAPA public immutable identity mismatch")
         if (
             type(self.immutable_external_source_established) is not bool
-            or self.immutable_external_source_established
+            or not self.immutable_external_source_established
+            or self.readme_declared_license != "MIT"
+            or type(self.license_file_present) is not bool
+            or self.license_file_present
+            or type(self.license_review_complete) is not bool
+            or self.license_review_complete
+            or type(self.source_bytes_vendored) is not bool
+            or self.source_bytes_vendored
             or type(self.paper_parity_allowed) is not bool
             or self.paper_parity_allowed
         ):
-            raise ValueError("anonymous source provenance must fail closed")
+            raise ValueError("missing TeLAPA license file must fail closed")
         if (
             type(self.paper_mechanism) is not str
             or type(self.development_adapter) is not str
