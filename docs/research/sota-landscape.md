@@ -98,9 +98,12 @@ local same-runner development ranking, not a paper-level SOTA claim.
   arms through the current runner: a charged mechanism-off Adam control, the
   full adaptive penalty, and its projective-only and orthogonal-only causal
   ablations, with output-churn/full-logit-NTK diagnostics and strict resource
-  receipts. No comparison has been run, and the receipt freezes the substantial
-  supervised/online adaptation gaps; this is not a reproduction of the paper's
-  RL results. [Calibrated Partial Resets
+  receipts. A retained 4-arm × 5-seed cheap development screen rejected all
+  three active configurations against mechanism-off; the exact artifacts and
+  limits are in
+  [`outputs/cchain_ipmnist/cheap_screen.v1/`](../../outputs/cchain_ipmnist/cheap_screen.v1/).
+  The receipts freeze the substantial supervised/online adaptation gaps; this
+  is not a reproduction of the paper's RL results. [Calibrated Partial Resets
   (2026)](https://arxiv.org/abs/2607.24996) reports utility-scaled partial
   resets on Continual MetaWorld, Continual MinAtar, and SlipperyAnt. ASI pins
   CPR paper v1 and official repository commit
