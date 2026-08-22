@@ -45,21 +45,7 @@ _INT32_MAX = 2**31 - 1
 # ``streams.gauntlet``, ``core.sarsa``, ``core.average_reward``,
 # ``core.horde_actor_critic``).
 _FEATURE_DISCOVERY_LOOP_MAX_STEPS = 10_000
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _finite_real_and_float32(name: str, value: object) -> tuple[Real, int, int, float]:

@@ -81,21 +81,7 @@ _MAX_DECISION_RECORD_BYTES = 256 * 1024 * 1024
 _FLOAT32_MAX_BELOW_OVERFLOW = float(
     np.nextafter(np.float32(np.finfo(np.float32).max), np.float32(0.0))
 )
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:

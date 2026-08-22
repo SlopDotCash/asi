@@ -38,19 +38,7 @@ _BOOLEAN_TRACE_MAX_NODES: int = 1_000_000
 # compatibility with recursive host-node admission.
 _NUMERIC_TRACE_MAX_VALUES: int = 2_000_000
 
-_ACTUAL_INT_TYPES = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES: tuple[type, ...] = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 _ACTUAL_FLOAT_TYPES = (
     float,
     Fraction,

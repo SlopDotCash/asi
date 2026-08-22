@@ -51,21 +51,7 @@ from alberta_framework.core.update_safety import (
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
