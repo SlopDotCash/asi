@@ -45,19 +45,7 @@ _SELECTION_SEMANTICS = "lowest-index-argmax-over-safe-positive-mass"
 _FLOAT32_MAX = 3.4028234663852886e38
 _INT32_MAX = 2_147_483_647
 _UINT32_MAX = 4_294_967_295
-_ACTUAL_INT_TYPES: tuple[type, ...] = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES: tuple[type, ...] = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 
 
 def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:

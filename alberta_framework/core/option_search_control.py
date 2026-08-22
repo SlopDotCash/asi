@@ -50,21 +50,7 @@ _CONFIG_TYPE = "OptionSearchControlConfig"
 _MAX_BACKUP_BUDGET = 4_096
 _MAX_CANDIDATE_DIAGNOSTIC_SLOTS = 262_144
 _INT32_MAX = 2_147_483_647
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_int32(name: str, value: object, *, minimum: int = 1, maximum: int = _INT32_MAX) -> int:

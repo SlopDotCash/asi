@@ -69,21 +69,7 @@ _INT32_MAX = 2**31 - 1
 _MAX_HISTORY_CONFIGURATION_ITEMS = 1 << 12
 _MAX_HISTORY_DECAY_RATES = _MAX_HISTORY_CONFIGURATION_ITEMS
 _MAX_HISTORY_CHANNELS = _MAX_HISTORY_CONFIGURATION_ITEMS
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int) -> int:

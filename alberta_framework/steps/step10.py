@@ -210,19 +210,7 @@ _STEP10_CONFIG_FIELDS = frozenset(
     {"type", "subtask_specs", *Step10STOMPConfig.__dataclass_fields__}
 )
 _SUBTASK_SPEC_FIELDS = frozenset(SubtaskSpec.__dataclass_fields__)
-_ACTUAL_INT_TYPES = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 _ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES + (
     float,
     Fraction,

@@ -54,21 +54,7 @@ Step3NormalizerName = Literal["none", "ema"]
 Step3TraceModeName = Literal["accumulating", "replacing"]
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 _STEP3_CONFIG_FIELDS = frozenset(
     {

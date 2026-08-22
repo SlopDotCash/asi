@@ -51,21 +51,7 @@ _INT32_MAX = 2**31 - 1
 # hands its caller-supplied step arrays straight to ``jax.lax.scan`` with no
 # other cap on the scanned sequence length.
 _OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS = 10_000
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _TRUSTED_REAL_TYPES = (
     _ACTUAL_INT_TYPES | frozenset(np.dtype(code).type for code in ("e", "f", "d", "g")) | {float}
 )

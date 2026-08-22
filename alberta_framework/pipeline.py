@@ -103,19 +103,7 @@ _MAX_CONFIG_SEQUENCE_LENGTH: int = 4096
 _PIPELINE_SCAN_BUDGET = ScanBudget("Step 1-4 pipeline", maximum_steps=10_000)
 _PIPELINE_SCAN_MAX: int = _PIPELINE_SCAN_BUDGET.maximum_steps
 
-_ACTUAL_INT_TYPES: tuple[type, ...] = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES: tuple[type, ...] = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 
 def _require_exact_str(name: str, value: object) -> str:
     if type(value) is not str:
