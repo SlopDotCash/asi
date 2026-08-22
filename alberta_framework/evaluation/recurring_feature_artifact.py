@@ -33,7 +33,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from statistics import NormalDist
 from typing import NoReturn
 
 import jax
@@ -64,6 +63,10 @@ CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan"
 BOOTSTRAP_RESAMPLES = 10_000
 BOOTSTRAP_CONFIDENCE_LEVEL = 0.95
 BOOTSTRAP_SEED = 2_026_073_002
+# Exact, separately-rounded AS241 value for inv_cdf(0.975).  Do not obtain
+# this through statistics.NormalDist: its C accelerator may contract Horner
+# multiply-adds on FMA-capable hosts and return the adjacent lower float.
+_WILSON_95_Z_SCORE = float.fromhex("0x1.f5c0331eeff82p+0")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
@@ -430,7 +433,7 @@ def wilson_score_interval(successes: int, sample_size: int) -> dict[str, object]
     if sample_size < 1 or not 0 <= successes <= sample_size:
         raise ValueError("invalid Wilson interval counts")
     proportion = successes / sample_size
-    z_score = NormalDist().inv_cdf(0.5 + BOOTSTRAP_CONFIDENCE_LEVEL / 2.0)
+    z_score = _WILSON_95_Z_SCORE
     z_squared = z_score**2
     denominator = 1.0 + z_squared / sample_size
     center = (proportion + z_squared / (2.0 * sample_size)) / denominator
