@@ -127,6 +127,24 @@ class BoundedPolicyArchive:
     def persistent_bytes(self) -> int:
         return sum(entry.persistent_bytes for entry in self.entries)
 
+    def retrieve_nearest(self, latent: tuple[float, ...]) -> PolicyEntry | None:
+        """Return the first nearest retained policy for an exact latent query."""
+        if (
+            type(latent) is not tuple
+            or not latent
+            or any(type(value) is not float or not math.isfinite(value) for value in latent)
+        ):
+            raise ValueError("query latent must be a non-empty tuple of finite floats")
+        if not self.entries:
+            return None
+        if len(latent) != len(self.entries[0].latent):
+            raise ValueError("query latent width must match retained entries")
+        distances = tuple(
+            float(np.linalg.norm(np.asarray(latent) - np.asarray(entry.latent)))
+            for entry in self.entries
+        )
+        return self.entries[int(np.argmin(np.asarray(distances)))]
+
     def add(self, entry: PolicyEntry) -> BoundedPolicyArchive:
         """Return the deterministic successor archive."""
         if type(entry) is not PolicyEntry:

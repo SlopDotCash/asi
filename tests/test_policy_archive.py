@@ -62,6 +62,27 @@ def test_archive_preflights_host_dimensions() -> None:
         )
 
 
+def test_diverse_archive_retrieves_nearest_latent_deterministically() -> None:
+    first = _entry("first", (0.0, 0.0), 1.0)
+    tied = _entry("tied", (2.0, 0.0), 2.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024,
+        min_latent_distance=0.1,
+        entries=(first, tied),
+    )
+
+    assert archive.retrieve_nearest((1.0, 0.0)) is first
+    with pytest.raises(ValueError, match="latent width"):
+        archive.retrieve_nearest((1.0,))
+    with pytest.raises(ValueError, match="finite float"):
+        archive.retrieve_nearest((float("nan"), 0.0))
+
+
+def test_empty_archive_has_no_nearest_policy() -> None:
+    archive = BoundedPolicyArchive(byte_budget=1024, min_latent_distance=0.1)
+    assert archive.retrieve_nearest((0.0, 0.0)) is None
+
+
 def test_protocol_is_nonpromoting() -> None:
     assert POLICY_ARCHIVE_PROTOCOL["paper_revision"] == "arXiv:2604.15414v1"
     assert POLICY_ARCHIVE_PROTOCOL["controls"] == ("one_model", "fixed_snapshot")
