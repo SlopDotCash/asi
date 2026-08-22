@@ -31,6 +31,19 @@ from alberta_framework.streams.pavlovian import (
     reacquisition_scenario,
 )
 
+# ``np.longdouble`` is only wider than float64 on platforms whose C long double
+# carries extra mantissa bits (x86-64 80-bit extended, or IEEE quad). On
+# aarch64 macOS it *is* float64, so no longdouble value can distinguish a
+# single narrowing from a double-rounded one, and the smallest longdouble
+# subnormal survives ``float()`` unchanged -- the two properties below become
+# untestable rather than false. The Fraction-parametrized cases keep the
+# double-rounding semantics covered on every platform.
+LONGDOUBLE_IS_EXTENDED = np.finfo(np.longdouble).nmant > np.finfo(np.float64).nmant
+requires_extended_longdouble = pytest.mark.skipif(
+    not LONGDOUBLE_IS_EXTENDED,
+    reason="requires np.longdouble wider than float64; on this platform they are identical",
+)
+
 pytestmark = pytest.mark.slow
 
 # ---------------------------------------------------------------------------
@@ -485,6 +498,7 @@ def test_construct_canonicalizes_noise_std_to_float32() -> None:
     assert stream._noise_std == float(np.float32(0.1))  # noqa: SLF001
 
 
+@requires_extended_longdouble
 def test_construct_narrows_original_noise_real_once() -> None:
     midpoint_plus = (
         np.longdouble(1.0)
@@ -500,6 +514,7 @@ def test_construct_narrows_original_noise_real_once() -> None:
     assert stream._noise_std == float(np.float32(midpoint_plus))  # noqa: SLF001
 
 
+@requires_extended_longdouble
 def test_construct_rejects_negative_real_that_rounds_to_zero() -> None:
     below_zero = -np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
     assert float(below_zero) == 0.0
