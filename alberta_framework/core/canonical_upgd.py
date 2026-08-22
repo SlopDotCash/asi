@@ -102,19 +102,7 @@ _RAW_GLOBAL_PROFILES = frozenset(
     }
 )
 _INT32_MAX = 2_147_483_647
-_ACTUAL_INT_TYPES: tuple[type, ...] = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _ACTUAL_REAL_TYPES = frozenset(
     (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble)
 )

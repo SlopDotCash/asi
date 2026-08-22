@@ -45,21 +45,7 @@ _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _FLOAT32_EPSILON = float(np.finfo(np.float32).eps)
 _ALIGNMENT_ENDPOINT_TOLERANCE = 4.0 * _FLOAT32_EPSILON
 _INT32_MAX = 2**31 - 1
-_ACTUAL_INT_TYPES: frozenset[type] = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _ACTUAL_FLOAT_TYPES: frozenset[type] = frozenset(
     {float, Fraction, *(np.dtype(c).type for c in ("e", "f", "d", "g"))}
 )

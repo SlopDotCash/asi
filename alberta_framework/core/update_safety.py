@@ -13,21 +13,7 @@ from jaxtyping import Bool, Int
 
 from alberta_framework._bounded_containers import require_bounded_container_tree
 
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _INT32_MAX = int(np.iinfo(np.int32).max)
 # Origin ``jax.tree.leaves`` still returns at depth 8000 and SystemErrors at 10_000.
 _MAX_PYTREE_NESTING_DEPTH = 4096
