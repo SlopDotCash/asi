@@ -132,6 +132,10 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
 
 
 _INT32_MAX = 2**31 - 1
+# Bounded cardinality for stacked Horde demons and their per-demon
+# sequences, mirroring _MAX_HORDE_DEMONS in types.py (unbounded per-item
+# walks are a hostile resource risk before aggregate preflight runs).
+_MAX_STACKED_HORDE_DEMONS = 4_096
 _CONFIG_FIELDS = {
     "type",
     "n_demons",
@@ -176,6 +180,10 @@ def _require_sequence(name: str, value: object) -> tuple[object, ...]:
 def _decode_sequence(name: str, value: object) -> tuple[object, ...]:
     if type(value) not in (list, tuple):
         raise ValueError(f"{name} must be an actual list or tuple")
+    if len(value) > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_STACKED_HORDE_DEMONS} items"
+        )
     return tuple(cast(list[object] | tuple[object, ...], value))
 
 
@@ -258,6 +266,10 @@ class StackedHordeConfig:
     def __post_init__(self) -> None:
         """Validate the configuration."""
         n_demons = _require_int32("n_demons", self.n_demons, minimum=1)
+        if n_demons > _MAX_STACKED_HORDE_DEMONS:
+            raise ValueError(
+                f"n_demons must be at most {_MAX_STACKED_HORDE_DEMONS}"
+            )
         feature_dim = _require_int32("feature_dim", self.feature_dim, minimum=1)
 
         raw_sequences = {
@@ -367,6 +379,11 @@ def nexting_spec(
     n_demons = len(canonical_indices) * len(canonical_gammas)
     if n_demons < 1 or n_demons > _INT32_MAX:
         raise ValueError("derived n_demons must be in the signed int32 domain")
+    if n_demons > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"derived n_demons ({n_demons}) exceeds the stacked-horde ceiling "
+            f"({_MAX_STACKED_HORDE_DEMONS})"
+        )
     _preflight_horde_resources(n_demons, feature_dim)
     _preflight_stacked_horde_update_working_set(n_demons, feature_dim)
     idxs: list[int] = []
