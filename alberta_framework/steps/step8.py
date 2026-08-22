@@ -53,6 +53,9 @@ from alberta_framework.steps._float32_validation import (
 from alberta_framework.steps._smoke_record_validation import require_step_shape
 
 _STEP8_SMOKE_BUDGET = ScanBudget("Step 8 smoke", maximum_steps=10_000)
+# Public last-fit in tests is one hidden layer. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_STEP8_HIDDEN_LAYERS = 4_096
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,11 @@ class Step8WorldModelConfig:
             raise ValueError("Step8WorldModelConfig payload fields do not match the schema")
         if type(raw["hidden_sizes"]) is not list:
             raise ValueError("hidden_sizes must be an exact list")
+        if len(cast(list[object], raw["hidden_sizes"])) > _MAX_STEP8_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_STEP8_HIDDEN_LAYERS}]"
+            )
         data = dict(raw)
         data["hidden_sizes"] = tuple(cast(list[object], data["hidden_sizes"]))
         return cls(**cast(Any, data))
@@ -228,6 +236,11 @@ def _validate_world_model_config(config: Step8WorldModelConfig) -> None:
     action_dim = _require_int("action_dim", config.action_dim, minimum=1, maximum=_INT32_MAX)
     if type(config.hidden_sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(config.hidden_sizes) > _MAX_STEP8_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_STEP8_HIDDEN_LAYERS}]"
+        )
     hidden_sizes = tuple(
         _require_int("hidden_sizes", size, minimum=1, maximum=_INT32_MAX)
         for size in config.hidden_sizes
