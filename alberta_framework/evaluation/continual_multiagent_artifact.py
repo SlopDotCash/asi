@@ -42,6 +42,10 @@ PROTOCOL_VERSION = "recurring-two-agent-contextual-bandit-aba.v1"
 DIGEST_ALGORITHM = "sha256"
 DIGEST_SCOPE = "$.content"
 CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan"
+# Exact, separately-rounded AS241 value for inv_cdf(0.975).  The default
+# published interval must not depend on whether a host C compiler contracts
+# the polynomial's multiply-adds.
+_WILSON_95_Z_SCORE = float.fromhex("0x1.f5c0331eeff82p+0")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
@@ -209,10 +213,15 @@ def wilson_score_interval(
     if not 0.0 < confidence_level < 1.0:
         raise ValueError("confidence_level must lie in (0, 1)")
 
-    from statistics import NormalDist
-
     proportion = successes / sample_size
-    z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
+    if confidence_level == 0.95:
+        z_score = _WILSON_95_Z_SCORE
+    else:
+        # Non-protocol confidence levels retain the general convenience path;
+        # only 95% intervals are serialized by the frozen protocol.
+        from statistics import NormalDist
+
+        z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
     z_squared = z_score * z_score
     denominator = 1.0 + z_squared / sample_size
     center = (proportion + z_squared / (2.0 * sample_size)) / denominator
