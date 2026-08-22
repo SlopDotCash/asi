@@ -42,6 +42,7 @@ from alberta_framework.core._float32_scalars import validated_float32_scalar
 _INT32_MAX = 2**31 - 1
 # Origin ``jnp.asarray`` still accepts depth 64 and RecursionErrors at 10_000.
 _MAX_ARRAY_NESTING_DEPTH = 64
+_MAX_HOST_ARRAY_CONTAINER_ITEMS = 4096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -244,7 +245,12 @@ def _require_host_array_nesting(value: object, *, name: str) -> None:
     """Reject cycles and nesting that RecursionError ``jnp.asarray``."""
     def children(node: object) -> list[Any] | tuple[Any, ...] | None:
         if type(node) in (list, tuple):
-            return cast(list[Any] | tuple[Any, ...], node)
+            sequence = cast(list[Any] | tuple[Any, ...], node)
+            if len(sequence) > _MAX_HOST_ARRAY_CONTAINER_ITEMS:
+                raise ValueError(
+                    f"{name} length must be an integer in [0, {_MAX_HOST_ARRAY_CONTAINER_ITEMS}]"
+                )
+            return sequence
         return None
 
     require_bounded_container_tree(
