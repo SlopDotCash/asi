@@ -25,6 +25,9 @@ from jax import Array
 
 SCHEMA = "asi.native_supervised_cl_development.v1"
 AVALANCHE_REVISION = "ContinualAI/avalanche@eb075be393e1f458b2c352514ff6c17b5a2c0f4e"
+AVALANCHE_QUALIFICATION_PLAN_SHA256 = (
+    "ee85d404886ec2ae3412f9bec888e36cb1a984b41185af90cd8d1e36f7975053"
+)
 FROZEN_SEEDS = (15780, 15781, 15782, 15783)
 BENCHMARK_IDS = ("split_mnist", "rotated_mnist", "split_cifar100", "ipmnist")
 ARM_IDS = ("online_sgd", "replay_sgd", "running_centroid", "frozen_no_learning")
@@ -321,6 +324,7 @@ class SuiteResult:
     dataset_sha256: str
     schedule_sha256: str
     source_sha256: str
+    avalanche_qualification_plan_sha256: str
     runtime_identity: tuple[str, str, str, str]
     arms: tuple[ArmResult, ...]
     development_only: bool = True
@@ -337,10 +341,17 @@ class SuiteResult:
         _exact_int(self.input_dim, "input_dim", 1, MAX_INPUT_DIM)
         if self.n_classes != spec.n_classes:
             raise ValueError("class count differs from the catalog")
-        for name in ("dataset_sha256", "schedule_sha256", "source_sha256"):
+        for name in (
+            "dataset_sha256",
+            "schedule_sha256",
+            "source_sha256",
+            "avalanche_qualification_plan_sha256",
+        ):
             _digest(getattr(self, name), name)
         if self.source_sha256 != _source_sha256():
             raise ValueError("current ASI source identity drift")
+        if self.avalanche_qualification_plan_sha256 != AVALANCHE_QUALIFICATION_PLAN_SHA256:
+            raise ValueError("Avalanche qualification plan identity drift")
         if self.runtime_identity != _runtime_identity():
             raise ValueError("current runtime identity drift")
         if type(self.arms) is not tuple or any(type(arm) is not ArmResult for arm in self.arms):
@@ -476,6 +487,7 @@ def run_native_suite(
         dataset_sha256=_dataset_sha256(data, targets),
         schedule_sha256=_schedule_sha256(tasks),
         source_sha256=_source_sha256(),
+        avalanche_qualification_plan_sha256=AVALANCHE_QUALIFICATION_PLAN_SHA256,
         runtime_identity=_runtime_identity(),
         arms=tuple(_run_arm(tasks, spec.n_classes, capacity, arm_id) for arm_id in ARM_IDS),
     )
@@ -538,6 +550,7 @@ def catalog_payload() -> dict[str, object]:
     return {
         "schema": "asi.native_supervised_cl_catalog.v1",
         "avalanche_revision": AVALANCHE_REVISION,
+        "avalanche_qualification_plan_sha256": AVALANCHE_QUALIFICATION_PLAN_SHA256,
         "development_only": True,
         "scientific_promotion_allowed": False,
         "frozen_seeds": list(FROZEN_SEEDS),
@@ -560,7 +573,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "ARM_IDS", "AVALANCHE_REVISION", "BENCHMARK_IDS", "CATALOG", "FROZEN_SEEDS",
+    "ARM_IDS", "AVALANCHE_QUALIFICATION_PLAN_SHA256", "AVALANCHE_REVISION",
+    "BENCHMARK_IDS", "CATALOG", "FROZEN_SEEDS",
     "ArmResult", "BenchmarkSpec", "ResourceReceipt", "SuiteResult", "TaskBatch",
     "benchmark_spec", "build_task_stream", "catalog_payload", "main", "run_native_suite",
     "validate_result",

@@ -8,6 +8,15 @@ site (60,000 train and 10,000 test 28×28 images) and the University of Toronto 
 ICLR 2024, arXiv `2404.00781`, and its separately audited UPGD code revision; this suite does not
 replace the full `upgd_ipmnist` runner.
 
+Every native catalog and result also binds the complete prospective Avalanche
+qualification plan by SHA-256
+`ee85d404886ec2ae3412f9bec888e36cb1a984b41185af90cd8d1e36f7975053`.
+That plan owns the audited source tree/archive/license, hash-locked runtime,
+compatibility deviations, and ten unresolved execution blockers. The external
+runtime test recomputes this digest from the plan bytes, so those inputs cannot
+drift independently of native receipts. This binding does not authorize an
+image build, dataset download, scenario execution, or parity claim.
+
 The additive `asi.native_supervised_cl_development.v1` runner accepts caller-supplied exact
 float32 images and int32 labels; it never downloads or writes data. It deterministically constructs
 Split MNIST (five ascending class pairs), Rotated MNIST (fixed 0/45/90/135/180 degree rotations),

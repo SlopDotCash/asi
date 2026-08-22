@@ -12,6 +12,9 @@ from types import ModuleType
 import pytest
 
 from alberta_framework.benchmarks.external_qualification import qualification_plan
+from alberta_framework.benchmarks.native_supervised_suite import (
+    AVALANCHE_QUALIFICATION_PLAN_SHA256,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -43,6 +46,9 @@ def _plan() -> dict[str, object]:
 
 
 def test_plan_binds_official_source_license_and_every_runtime_input() -> None:
+    assert hashlib.sha256((ROOT / "qualification-plan.json").read_bytes()).hexdigest() == (
+        AVALANCHE_QUALIFICATION_PLAN_SHA256
+    )
     plan = _plan()
     authority = plan["authority"]
     inputs = plan["qualification_inputs"]

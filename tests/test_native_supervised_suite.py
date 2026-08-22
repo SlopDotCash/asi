@@ -9,6 +9,7 @@ import pytest
 
 from alberta_framework.benchmarks.native_supervised_suite import (
     ARM_IDS,
+    AVALANCHE_QUALIFICATION_PLAN_SHA256,
     BENCHMARK_IDS,
     FROZEN_SEEDS,
     build_task_stream,
@@ -44,6 +45,9 @@ def test_all_catalog_lanes_construct_and_run_end_to_end(benchmark_id: str) -> No
     assert len(result.schedule_sha256) == 64
     assert len(result.source_sha256) == 64
     assert len(result.runtime_identity) == 4
+    assert result.avalanche_qualification_plan_sha256 == (
+        AVALANCHE_QUALIFICATION_PLAN_SHA256
+    )
     for arm in result.arms:
         assert arm.receipt.data_steps == len(arm.task_accuracies) * 2
         assert arm.receipt.data_bytes_read > 0
@@ -89,6 +93,10 @@ def test_result_binds_dataset_schedule_source_and_runtime_identities() -> None:
     with pytest.raises(ValueError, match="runtime identity"):
         validate_result(
             dataclasses.replace(first, runtime_identity=("forged", *first.runtime_identity[1:]))
+        )
+    with pytest.raises(ValueError, match="qualification plan"):
+        validate_result(
+            dataclasses.replace(first, avalanche_qualification_plan_sha256="0" * 64)
         )
 
 
@@ -160,3 +168,6 @@ def test_catalog_cli_is_metadata_only(capsys: pytest.CaptureFixture[str]) -> Non
     payload = json.loads(capsys.readouterr().out)
     assert payload == catalog_payload()
     assert payload["avalanche_revision"].endswith("eb075be393e1f458b2c352514ff6c17b5a2c0f4e")
+    assert payload["avalanche_qualification_plan_sha256"] == (
+        "ee85d404886ec2ae3412f9bec888e36cb1a984b41185af90cd8d1e36f7975053"
+    )
