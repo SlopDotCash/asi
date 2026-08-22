@@ -337,6 +337,27 @@ def test_coom_retained_receipt_loader_is_bounded_and_fail_closed(tmp_path: Path)
         smoke.load_receipt(receipt)
 
 
+def test_receipt_parent_traversal_does_not_require_directory_read_permission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    smoke = _smoke_module()
+    real_open = smoke.os.open
+    directory_flags: list[int] = []
+
+    def record_open(
+        path: str, flags: int, mode: int = 0o777, *, dir_fd: int | None = None
+    ) -> int:
+        if flags & smoke.os.O_DIRECTORY:
+            directory_flags.append(flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(smoke.os, "open", record_open)
+    smoke.preflight_new_output(tmp_path / "receipt.json")
+
+    assert directory_flags
+    assert all(flags & smoke.os.O_PATH for flags in directory_flags)
+
+
 
 def test_retained_receipt_loader_rejects_path_subclass_before_hooks(tmp_path: Path) -> None:
     smoke = _smoke_module()

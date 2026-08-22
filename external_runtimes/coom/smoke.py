@@ -400,14 +400,14 @@ def _open_output_parent(path: Path) -> tuple[Path, int]:
     if type(path) is not type(Path()):
         raise ValueError("output path must be an exact concrete Path")
     destination = Path(os.path.abspath(os.fspath(path)))
-    descriptor = os.open(os.path.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    descriptor = os.open(os.path.sep, os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         for component in destination.parent.parts[1:]:
             if component in ("", ".", ".."):
                 raise ValueError("output path contains an unsafe directory component")
             next_descriptor = os.open(
                 component,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                 dir_fd=descriptor,
             )
             os.close(descriptor)
@@ -441,11 +441,34 @@ def _link_unnamed_file(file_fd: int, parent_fd: int, name: str) -> None:
         ctypes.c_int,
     )
     linkat.restype = ctypes.c_int
-    if linkat(file_fd, b"", parent_fd, os.fsencode(name), 0x1000) != 0:
+    encoded_name = os.fsencode(name)
+    if linkat(file_fd, b"", parent_fd, encoded_name, 0x1000) == 0:
+        return
+    direct_error = ctypes.get_errno()
+    if direct_error == errno.EEXIST:
+        raise FileExistsError(direct_error, os.strerror(direct_error), name)
+
+    # AT_EMPTY_PATH requires CAP_DAC_READ_SEARCH for an unprivileged process,
+    # which deliberately conflicts with this runtime's --cap-drop ALL gate.
+    # Linux documents /proc/self/fd plus AT_SYMLINK_FOLLOW as the capability-free
+    # way to publish the same O_TMPFILE inode.
+    proc_fd_path = os.fsencode(f"/proc/self/fd/{file_fd}")
+    if linkat(-100, proc_fd_path, parent_fd, encoded_name, 0x400) == 0:
+        return
+    fallback_error = ctypes.get_errno()
+    if fallback_error == errno.EEXIST:
+        raise FileExistsError(fallback_error, os.strerror(fallback_error), name)
+    raise OSError(fallback_error, os.strerror(fallback_error), name)
+
+
+def _sync_filesystem(file_fd: int) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    syncfs = libc.syncfs
+    syncfs.argtypes = (ctypes.c_int,)
+    syncfs.restype = ctypes.c_int
+    if syncfs(file_fd) != 0:
         error = ctypes.get_errno()
-        if error == errno.EEXIST:
-            raise FileExistsError(error, os.strerror(error), name)
-        raise OSError(error, os.strerror(error), name)
+        raise OSError(error, os.strerror(error))
 
 
 def write_new_receipt(path: Path, receipt: dict[str, object]) -> Path:
@@ -494,7 +517,7 @@ def write_new_receipt(path: Path, receipt: dict[str, object]) -> Path:
             raise FileExistsError(
                 f"refusing to overwrite immutable receipt: {destination}"
             ) from exc
-        os.fsync(parent_fd)
+        _sync_filesystem(file_fd)
         return destination
     finally:
         if file_fd is not None:
