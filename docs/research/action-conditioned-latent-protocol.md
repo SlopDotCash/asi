@@ -40,7 +40,18 @@ exploration schedule are matched. The roster is:
 4. a trained model behind a disabled decision interface;
 5. exact no-model mechanism-off control; and
 6. the repository's live SARSA control agent as a stronger non-world-model
-   comparator.
+comparator.
+
+The existing `SparseFTLWorldModel` is not yet a valid seventh arm. It predicts
+only the next observation, while this environment switches its reward matrix
+without changing transition dynamics and does not expose the active phase to
+the learner. The same current observation, action, and next observation can
+therefore carry reward 0 in phase A and reward 1 in phase B. Applying the
+environment payoff table to an FTL state prediction would require privileged
+phase information and violate the matched information boundary. A valid FTL
+arm needs an online learned reward head (with its updates, queries, and bytes
+charged) or a separately justified decision objective; next-observation
+prediction alone cannot drive the existing immediate-reward selector.
 
 The decision-off and mechanism-off arms must have identical action/reward
 transcript hashes. Receipts count real environment steps, model updates,
