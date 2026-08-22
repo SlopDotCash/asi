@@ -1,11 +1,34 @@
 """Tests for sparse initialization."""
 
+import math
+
 import chex
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
 from alberta_framework import sparse_init
+
+# SparseInit is Algorithm 1 of Elsayed, Vasan, and Mahmood, "Streaming Deep
+# Reinforcement Learning Finally Works" (arXiv:2410.14606v2).  Algorithm 1
+# writes the per-output-neuron zero count as ``n <- s x fan_in``; the authors'
+# reference implementation resolves that real-valued count with a ceiling:
+#
+#     num_zeros = int(math.ceil(sparsity * fan_in))
+#
+# (https://github.com/mohmdelsayed/streaming-drl/blob/40bd4a61/sparse_init.py).
+# These pairs are exactly the ones where the ceiling and a round-to-nearest
+# count disagree, so they are what separates the published rule from a
+# look-alike.
+_CEILING_DISAGREEMENT_CASES = [
+    (0.9, 8, 8),
+    (0.9, 16, 15),
+    (0.9, 128, 116),
+    (0.9, 256, 231),
+    (0.8, 64, 52),
+    (0.2, 32, 7),
+    (0.95, 32, 31),
+]
 
 
 class TestSparseInit:
@@ -31,10 +54,58 @@ class TestSparseInit:
 
         # Count zeros per row
         zeros_per_row = jnp.sum(weights == 0, axis=1)
-        expected_zeros = int(sparsity * fan_in + 0.5)
+        expected_zeros = math.ceil(sparsity * fan_in)
 
         # Each row should have exactly expected_zeros zeros
         chex.assert_trees_all_close(zeros_per_row, jnp.full(fan_out, expected_zeros))
+
+    @pytest.mark.parametrize(("sparsity", "fan_in", "expected_zeros"), _CEILING_DISAGREEMENT_CASES)
+    def test_zero_count_is_the_published_ceiling(self, sparsity, fan_in, expected_zeros):
+        """Zeros per output neuron equal ceil(sparsity * fan_in), per SparseInit.
+
+        Elsayed et al. 2024 (arXiv:2410.14606v2) Algorithm 1 with the authors'
+        reference ``sparse_init.py`` line ``num_zeros = int(math.ceil(sparsity *
+        fan_in))``.  Every pair here is one where a round-to-nearest count would
+        be one lower, so this pins the published rule and not a coincidence.
+        """
+        assert expected_zeros == math.ceil(sparsity * fan_in)
+        assert expected_zeros != int(sparsity * fan_in + 0.5)
+
+        weights = sparse_init(jr.key(7), (24, fan_in), sparsity=sparsity)
+        zeros_per_row = jnp.sum(weights == 0, axis=1)
+        chex.assert_trees_all_close(zeros_per_row, jnp.full(24, expected_zeros))
+
+    @pytest.mark.parametrize(("sparsity", "fan_in"), [(0.8, 50), (0.9, 100), (0.5, 64), (0.2, 25)])
+    def test_ceiling_uses_binary64_like_the_reference(self, sparsity, fan_in):
+        """A whole-number ``sparsity * fan_in`` must not round up to one extra zero.
+
+        The reference ``sparse_init.py`` evaluates ``math.ceil(sparsity *
+        fan_in)`` in binary64, where ``0.9 * 100`` is exactly ``90.0``. Taking
+        the ceiling of the *exact* value of the decimal literal instead would
+        give 91, because binary64 ``0.9`` is slightly above nine tenths. This
+        pins the reference's arithmetic, not just its ceiling.
+        """
+        expected_zeros = math.ceil(sparsity * fan_in)
+        assert expected_zeros * 1.0 == sparsity * fan_in
+
+        weights = sparse_init(jr.key(11), (16, fan_in), sparsity=sparsity)
+        zeros_per_row = jnp.sum(weights == 0, axis=1)
+        chex.assert_trees_all_close(zeros_per_row, jnp.full(16, expected_zeros))
+
+    def test_ceiling_saturating_sparsity_zeros_every_input(self):
+        """ceil(0.99 * 64) == 64 zeroes the whole row, unlike a rounded count.
+
+        Reference: Elsayed et al. 2024 (arXiv:2410.14606v2) Algorithm 1 and
+        ``sparse_init.py``; ``row_indices[:num_zeros]`` covers the full fan-in
+        once the ceiling saturates, while round-to-nearest would leave one live
+        input per output neuron.
+        """
+        fan_in = 64
+        assert math.ceil(0.99 * fan_in) == fan_in
+        assert int(0.99 * fan_in + 0.5) == fan_in - 1
+
+        weights = sparse_init(jr.key(3), (16, fan_in), sparsity=0.99)
+        assert jnp.all(weights == 0)
 
     def test_nonzero_values_within_paper_sparse_init_bounds(self):
         """Non-zero values should stay within SparseInit Algorithm 1 bounds."""
@@ -75,7 +146,7 @@ class TestSparseInit:
 
         # Check sparsity
         zeros_per_row = jnp.sum(weights == 0, axis=1)
-        expected_zeros = int(0.5 * 16 + 0.5)
+        expected_zeros = math.ceil(0.5 * 16)
         chex.assert_trees_all_close(zeros_per_row, jnp.full(32, expected_zeros))
 
     def test_invalid_init_type_raises(self):

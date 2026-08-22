@@ -84,17 +84,21 @@ def sparse_init(
 ) -> Float[Array, "fan_out fan_in"]:
     """Create a sparsely initialized weight matrix.
 
-    Applies the paper-specified SparseInit distribution and then zeros out a
-    fraction of weights per output neuron. This creates sparser gradient flows
-    that improve stability in streaming learning settings.
+    Applies the paper-specified SparseInit distribution and then zeros out
+    ``ceil(sparsity * fan_in)`` inputs per output neuron. This creates sparser
+    gradient flows that improve stability in streaming learning settings.
 
-    Reference: Elsayed et al. 2024, sparse_init.py
+    Reference: Elsayed, Vasan, and Mahmood 2024, "Streaming Deep Reinforcement
+    Learning Finally Works" (arXiv:2410.14606v2), Algorithm 1 (SparseInit), and
+    the authors' reference ``sparse_init.py`` at commit ``40bd4a61``
+    (https://github.com/mohmdelsayed/streaming-drl/blob/40bd4a61/sparse_init.py).
 
     Args:
         key: JAX random key
         shape: Weight matrix shape (fan_out, fan_in)
-        sparsity: Fraction of input connections to zero out per output neuron
-            (default: 0.9 means 90% sparse)
+        sparsity: Fraction of input connections to zero out per output neuron.
+            The zeroed count is ``ceil(sparsity * fan_in)``, exactly as in the
+            reference implementation (default: 0.9 means 90% sparse)
         init_type: Initialization distribution, "uniform" or "normal"
             (default: the uniform bound specified by SparseInit Algorithm 1)
 
@@ -131,7 +135,13 @@ def sparse_init(
     if fan_out > _INT32_MAX // max(1, fan_in) or 4 * fan_out * fan_in > _INT32_MAX:
         raise ValueError("shape byte count must fit signed int32")
     sparsity_validated = _require_float32_in_unit("sparsity", sparsity)
-    num_zeros = int(sparsity_validated * fan_in + 0.5)  # round to nearest int
+    # SparseInit zeros ``ceil(sparsity * fan_in)`` inputs per output neuron:
+    # Elsayed et al. 2024 (arXiv:2410.14606v2) Algorithm 1 takes ``n <- s x
+    # fan_in`` as a count, and the authors' reference implementation resolves it
+    # as ``num_zeros = int(math.ceil(sparsity * fan_in))``.  Evaluated in the same
+    # binary64 arithmetic as the reference so a decimal literal such as 0.9 gives
+    # the published count rather than one more.
+    num_zeros = math.ceil(sparsity_validated * fan_in)
 
     # Split key for init and sparsity mask
     init_key, mask_key = jr.split(key)
