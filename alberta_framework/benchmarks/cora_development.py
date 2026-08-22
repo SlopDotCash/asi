@@ -23,6 +23,13 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework.benchmarks.cora_procgen_qualification import (
+    ProcgenQualificationPlan,
+)
+from alberta_framework.benchmarks.cora_procgen_qualification import (
+    plan_sha256 as procgen_plan_sha256,
+)
+
 SCHEMA = "asi.cora_development.v1"
 PAPER = "Powers et al., CoLLAs 2022; arXiv:2110.10067v2"
 OFFICIAL_CODE = "AGI-Labs/continual_rl@f2754bb282757829765beb4703f24b87efa13ff9"
@@ -451,13 +458,20 @@ def validate_result(value: object) -> CORADevelopmentResult:
 
 
 def catalog_payload() -> dict[str, object]:
+    procgen_plan = ProcgenQualificationPlan()
+    procgen_plan.validate()
+    procgen_payload = json.loads(json.dumps(dataclasses.asdict(procgen_plan)))
     return {
-        "schema": "asi.cora_qualification_catalog.v1",
+        "schema": "asi.cora_qualification_catalog.v2",
         "paper": PAPER,
         "official_code": OFFICIAL_CODE,
         "external_execution_ready": False,
         "development_only": True,
         "families": [dataclasses.asdict(family) for family in CORA_CATALOG],
+        "procgen_qualification": {
+            "plan": procgen_payload,
+            "plan_sha256": procgen_plan_sha256(),
+        },
     }
 
 
