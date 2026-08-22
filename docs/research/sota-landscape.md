@@ -60,7 +60,10 @@ local same-runner development ranking, not a paper-level SOTA claim.
   permuted-MNIST tasks using 10,000 images per task, one epoch, batch size 16,
   and a 100-by-100 MLP. Its curves are relevant evidence about adaptive
   activations and plasticity, but its data budget, batching, network, and
-  reporting do not define an exact-protocol leaderboard entry.
+  reporting do not define an exact-protocol leaderboard entry. ASI's
+  [matched development lane](adalin-matched-development.md) compares learnable
+  alpha with its exact alpha-zero reduction under shared development axes; it
+  remains permanently nonpromoting and does not reproduce the paper.
 - [Plasticity of Growing and Elastic Neural Networks
   (2026)](https://arxiv.org/abs/2608.01475) studies online permuted MNIST and
   FashionMNIST with 10,000 or 40,000 examples per task, per-example SGD at

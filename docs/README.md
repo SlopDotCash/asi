@@ -46,6 +46,8 @@ The package overview and development entry points are in
   the current status authority.
 - [`research/ipmnist-theory.md`](research/ipmnist-theory.md) — mechanistic interpretation of
   the development-only IPMNIST campaign.
+- [`research/adalin-matched-development.md`](research/adalin-matched-development.md) — strict
+  permanently nonpromoting AdaLin versus alpha-zero matched PMNIST contract.
 - [`research/ipmnist-campaign-index.md`](research/ipmnist-campaign-index.md) — mutable pointer
   to the current IPMNIST summary and the supersession status of append-only records.
 - [`research/sota-landscape.md`](research/sota-landscape.md) — current protocol-aware external
