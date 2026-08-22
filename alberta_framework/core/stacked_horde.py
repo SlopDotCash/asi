@@ -379,6 +379,11 @@ def nexting_spec(
     n_demons = len(canonical_indices) * len(canonical_gammas)
     if n_demons < 1 or n_demons > _INT32_MAX:
         raise ValueError("derived n_demons must be in the signed int32 domain")
+    if n_demons > _MAX_STACKED_HORDE_DEMONS:
+        raise ValueError(
+            f"derived n_demons ({n_demons}) exceeds the stacked-horde ceiling "
+            f"({_MAX_STACKED_HORDE_DEMONS})"
+        )
     _preflight_horde_resources(n_demons, feature_dim)
     _preflight_stacked_horde_update_working_set(n_demons, feature_dim)
     idxs: list[int] = []

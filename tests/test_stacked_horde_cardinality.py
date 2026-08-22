@@ -11,6 +11,7 @@ from alberta_framework.core.stacked_horde import (
     _MAX_STACKED_HORDE_DEMONS,
     StackedHordeConfig,
     _decode_sequence,
+    nexting_spec,
 )
 
 
@@ -27,6 +28,18 @@ def _config(n_demons: int = 4):
 def test_oversized_n_demons_rejected() -> None:
     with pytest.raises(ValueError, match="at most"):
         StackedHordeConfig(**_config(_MAX_STACKED_HORDE_DEMONS + 1))
+
+
+def test_nexting_spec_derived_product_rejected_before_grid_build() -> None:
+    # nexting_spec derives n_demons = len(indices) * len(gammas); the product
+    # must be rejected before the combinatorial grid is materialized (65x65).
+    with pytest.raises(ValueError, match="ceiling"):
+        nexting_spec(4, tuple(range(65)), (0.0,) * 65)
+
+
+def test_nexting_spec_normal_product_allowed() -> None:
+    cfg = nexting_spec(4, (0, 1, 2), (0.0, 0.5, 0.9, 0.99))
+    assert cfg.n_demons == 12
 
 
 def test_oversized_sequence_rejected() -> None:
