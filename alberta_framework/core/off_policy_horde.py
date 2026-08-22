@@ -51,6 +51,9 @@ _INT32_MAX = 2**31 - 1
 # hands its caller-supplied step arrays straight to ``jax.lax.scan`` with no
 # other cap on the scanned sequence length.
 _OFF_POLICY_HORDE_SEQUENCE_MAX_STEPS = 10_000
+# Public last-fit in tests is two hidden layers. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_OFF_POLICY_HORDE_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -101,6 +104,23 @@ def _require_positive_clip(name: str, value: object) -> float:
     if type(value) is float and math.isinf(value) and value > 0.0:
         return value
     return _require_float32(name, value, positive=True)
+
+
+def _require_hidden_layer_count(hidden_sizes: object) -> None:
+    if (
+        type(hidden_sizes) in (tuple, list)
+        and len(hidden_sizes) > _MAX_OFF_POLICY_HORDE_HIDDEN_LAYERS
+    ):
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_OFF_POLICY_HORDE_HIDDEN_LAYERS}]"
+        )
+
+
+def _pop_hidden_sizes(config: dict[str, Any]) -> tuple[Any, ...]:
+    hidden_sizes = config.pop("hidden_sizes")
+    _require_hidden_layer_count(hidden_sizes)
+    return tuple(hidden_sizes)
 
 
 def _preflight_nonlinear_state(*, n_demons: int, hidden_size: int, feature_dim: int) -> None:
@@ -409,6 +429,7 @@ class OffPolicyHordeLearner:
         min_behavior_probability = _require_float32(
             "min_behavior_probability", min_behavior_probability, positive=True
         )
+        _require_hidden_layer_count(hidden_sizes)
 
         self._horde_spec = horde_spec
         self._hidden_sizes = hidden_sizes
@@ -1036,7 +1057,7 @@ class OffPolicyHordeLearner:
 
         return cls(
             horde_spec=horde_spec,
-            hidden_sizes=tuple(config.pop("hidden_sizes")),
+            hidden_sizes=_pop_hidden_sizes(config),
             optimizer=optimizer,
             bounder=bounder,
             normalizer=normalizer,
