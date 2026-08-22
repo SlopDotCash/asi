@@ -49,6 +49,9 @@ ADAMO_PROTOCOL = MappingProxyType({
 _INT32_MAX = (1 << 31) - 1
 _MAX_ARRAY_ELEMENTS = 1_000_000
 _MAX_WORKING_BYTES = 256 * 1024 * 1024
+# Public last-fit is NumPy ndim. Origin walked unbounded ``shape`` rank
+# before leftover INT32 math — hang, not a per-axis overflow.
+_MAX_ADAMO_SHAPE_RANK = 32
 
 
 def _trusted_float_array(value: object, *, name: str) -> Array:
@@ -242,6 +245,11 @@ class AdamO:
     def init_for_shape(self, shape: tuple[int, ...]) -> AdamOState:
         if type(shape) is not tuple or not shape:
             raise ValueError("shape must be a non-empty tuple")
+        if len(shape) > _MAX_ADAMO_SHAPE_RANK:
+            raise ValueError(
+                "shape length must be an integer in "
+                f"[1, {_MAX_ADAMO_SHAPE_RANK}]"
+            )
         if any(type(dimension) is not int or dimension < 1 for dimension in shape):
             raise ValueError("shape dimensions must be positive built-in integers")
         return self._adam.init_for_shape(shape)
