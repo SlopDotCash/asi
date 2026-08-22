@@ -406,6 +406,45 @@ class TestGVFSpecRemainingFields:
         )
         assert spec.terminal_reward == value
 
+    @pytest.mark.parametrize("code", list("efdg"))
+    def test_terminal_reward_accepts_every_numpy_float_family(self, code):
+        """Each numpy floating family narrows once and stores an exact float."""
+        value = np.dtype(code).type(1.5)
+        spec = GVFSpec(
+            name="d0",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=0,
+            terminal_reward=value,
+        )
+        assert spec.terminal_reward == 1.5
+        assert type(spec.terminal_reward) is float
+        restored = GVFSpec.from_config(
+            {
+                "name": "d0",
+                "demon_type": "prediction",
+                "gamma": 0.0,
+                "lamda": 0.0,
+                "cumulant_index": 0,
+                "terminal_reward": value,
+            }
+        )
+        assert restored.terminal_reward == 1.5
+
+    @pytest.mark.parametrize("code", list("efdg"))
+    def test_terminal_reward_accepts_what_the_discount_fields_accept(self, code):
+        """One spelling of a legal value must not pass one field and fail its sibling."""
+        value = np.dtype(code).type(0.5)
+        fields = {
+            "name": "d0",
+            "demon_type": DemonType.PREDICTION,
+            "lamda": 0.0,
+            "cumulant_index": 0,
+        }
+        assert GVFSpec(gamma=value, **fields).gamma == 0.5
+        assert GVFSpec(gamma=0.0, terminal_reward=value, **fields).terminal_reward == 0.5
+
     @pytest.mark.parametrize(
         "value",
         [float("nan"), float("inf"), float("-inf"), True, False, "0.0", None],
