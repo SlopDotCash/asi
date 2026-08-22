@@ -1,8 +1,8 @@
 """Bounded hidden-network diagnostics for canonical loss of plasticity.
 
-The implemented workload is input-permuted MNIST.  Labels never change.  It
-is a deliberately short development diagnostic, not a reproduction of the
-800-task paper experiment and not a random-label benchmark.
+The official-paper workload is input-permuted MNIST.  A separate random-label
+protocol extension advances issue #1583 without claiming paper parity.  Both
+are short development diagnostics, not reproductions of the 800-task paper.
 """
 
 from __future__ import annotations
@@ -26,11 +26,14 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-SCHEMA = "asi.loss_of_plasticity_mnist_development.v1"
+SCHEMA = "asi.loss_of_plasticity_mnist_development.v2"
 PAPER_REVISION = "arXiv:2306.13812v3"
 OFFICIAL_CODE_COMMIT = "a6b79580d85f3025bdb601566d3627c5f489f13b"
 FROZEN_SEEDS = (15830, 15831, 15832, 15833)
 ARM_IDS = ("sgd_control", "cbp_mechanism_off", "cbp_bounded")
+CUMULATIVE_INPUT_PROTOCOL = "cumulative-input-permutation"
+RANDOM_LABEL_PROTOCOL = "independent-random-labels"
+TASK_PROTOCOLS = (CUMULATIVE_INPUT_PROTOCOL, RANDOM_LABEL_PROTOCOL)
 MAX_DATASET_EXAMPLES = 60_000
 INPUT_DIM = 784
 N_CLASSES = 10
@@ -308,6 +311,7 @@ class DiagnosticResult:
     development_only: bool = True
     scientific_promotion_allowed: bool = False
     negative_results_must_be_retained: bool = True
+    paper_parity_claimed: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -338,17 +342,18 @@ class DiagnosticResult:
             raise ValueError("current ASI source identity drift")
         if self.runtime_identity != _runtime_identity():
             raise ValueError("current runtime identity drift")
-        if (
-            self.task_protocol != "cumulative-input-permutation"
-            or self.labels_permuted is not False
-        ):
-            raise ValueError("the lane must not be described as random-label MNIST")
+        if type(self.task_protocol) is not str or self.task_protocol not in TASK_PROTOCOLS:
+            raise ValueError("unknown task protocol")
+        expected_labels_permuted = self.task_protocol == RANDOM_LABEL_PROTOCOL
+        if self.labels_permuted is not expected_labels_permuted:
+            raise ValueError("random-label protocol semantics disagree with labels_permuted")
         flags = (
             self.task_boundary_available_to_learner is False,
             self.task_id_available_to_learner is False,
             self.development_only is True,
             self.scientific_promotion_allowed is False,
             self.negative_results_must_be_retained is True,
+            self.paper_parity_claimed is False,
         )
         if not all(flags):
             raise ValueError("information or nonpromotion boundary drift")
@@ -396,6 +401,32 @@ def _schedule(
         tasks.append(
             (np.ascontiguousarray(images[indices][:, permutation]), labels[indices].copy())
         )
+    return tuple(tasks)
+
+
+def _random_label_schedule(
+    images: np.ndarray, labels: np.ndarray, profile: DiagnosticProfile, seed: int
+) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
+    """Build bounded tasks with fresh per-example random labels and unchanged pixels."""
+    if labels.shape != (images.shape[0],):
+        raise ValueError("images and labels must retain matched rows")
+    key = jr.key(seed)
+    tasks: list[tuple[np.ndarray, np.ndarray]] = []
+    for _ in range(profile.n_tasks):
+        key, data_key, label_key = jr.split(key, 3)
+        order = np.asarray(jr.permutation(data_key, images.shape[0]), dtype=np.int32)
+        indices = order[: profile.examples_per_task]
+        random_labels = np.asarray(
+            jr.randint(
+                label_key,
+                (profile.examples_per_task,),
+                minval=0,
+                maxval=N_CLASSES,
+                dtype=jnp.int32,
+            ),
+            dtype=np.int32,
+        )
+        tasks.append((np.ascontiguousarray(images[indices]), random_labels))
     return tuple(tasks)
 
 
@@ -497,17 +528,28 @@ def _run_arm(
 
 
 def run_diagnostic(
-    images: object, labels: object, *, seed: object, profile_id: object = "contract-smoke"
+    images: object,
+    labels: object,
+    *,
+    seed: object,
+    profile_id: object = "contract-smoke",
+    task_protocol: object = CUMULATIVE_INPUT_PROTOCOL,
 ) -> DiagnosticResult:
     data, targets = _arrays(images, labels)
     if type(seed) is not int or seed not in FROZEN_SEEDS:
         raise ValueError("seed is outside the frozen development schedule")
     if type(profile_id) is not str or profile_id not in PROFILES:
         raise ValueError("unknown diagnostic profile")
+    if type(task_protocol) is not str or task_protocol not in TASK_PROTOCOLS:
+        raise ValueError("unknown task protocol")
     profile = PROFILES[profile_id]
     if data.shape[0] < profile.examples_per_task:
         raise ValueError("dataset has too few examples for the frozen profile")
-    tasks = _schedule(data, targets, profile, seed)
+    tasks = (
+        _schedule(data, targets, profile, seed)
+        if task_protocol == CUMULATIVE_INPUT_PROTOCOL
+        else _random_label_schedule(data, targets, profile, seed)
+    )
     result = DiagnosticResult(
         SCHEMA,
         PAPER_REVISION,
@@ -518,8 +560,8 @@ def run_diagnostic(
         _dataset_sha(data, targets),
         hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         _runtime_identity(),
-        "cumulative-input-permutation",
-        False,
+        task_protocol,
+        task_protocol == RANDOM_LABEL_PROTOCOL,
         False,
         False,
         tuple(_run_arm(arm, tasks, profile, seed) for arm in ARM_IDS),
@@ -619,12 +661,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--dataset", type=Path)
     parser.add_argument("--seed", type=int, default=FROZEN_SEEDS[0])
     parser.add_argument("--profile", choices=tuple(PROFILES), default="contract-smoke")
+    parser.add_argument(
+        "--task-protocol", choices=TASK_PROTOCOLS, default=CUMULATIVE_INPUT_PROTOCOL
+    )
     parser.add_argument("--catalog", action="store_true")
     args = parser.parse_args(argv)
     if args.catalog:
         print(
             json.dumps(
-                {"schema": SCHEMA, "costly_lane_gates": costly_lane_gates()},
+                {
+                    "schema": SCHEMA,
+                    "task_protocols": TASK_PROTOCOLS,
+                    "costly_lane_gates": costly_lane_gates(),
+                },
                 sort_keys=True,
             )
         )
@@ -641,7 +690,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         if set(payload.files) != {"images", "labels"}:
             raise ValueError("dataset NPZ must contain exactly images and labels")
         result = run_diagnostic(
-            payload["images"], payload["labels"], seed=args.seed, profile_id=args.profile
+            payload["images"],
+            payload["labels"],
+            seed=args.seed,
+            profile_id=args.profile,
+            task_protocol=args.task_protocol,
         )
     print(_json_result(result))
     return 0

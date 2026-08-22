@@ -13,13 +13,13 @@ commit `a6b79580d85f3025bdb601566d3627c5f489f13b`, inspected 18 August 2026.
 That tip postdates the paper and includes later fixes, including an Adam/GnT
 change, so code-tip parity is not automatically paper parity.
 
-The MNIST experiment is **input-permuted**, not random-label MNIST. The labels
+The official MNIST experiment is **input-permuted**, not random-label MNIST. The labels
 remain the digits 0–9. In each of 800 paper tasks, one pixel permutation is
 shared by all 60,000 training images, the images are presented one at a time in
 random order for one pass, and no task-switch indication is given to the
 network. The official current code applies each new pixel permutation to the
 already permuted array, so the adapter freezes the equivalent cumulative
-permutation. Calling this lane random-label MNIST is rejected by its validator.
+permutation. The official-paper protocol cannot be relabeled as random-label MNIST.
 
 The paper network has three hidden ReLU layers with 2,000 units, Kaiming
 initialization, batch size one, SGD/cross entropy, up to 800 tasks, and 10 runs
@@ -36,6 +36,15 @@ eight tasks, 64 examples per task, two hidden ReLU layers of width 64, learning
 rate 0.003, maturity 100, and replacement rate 1e-4. This is a mechanism
 diagnostic, not paper-scale parity: depth, width, task count, observations, and
 run count differ.
+
+The runner also exposes `independent-random-labels`, a #1583 protocol extension.
+For every task it selects a Threefry-rooted example order from the same bounded
+caller array and independently draws one label in `[0,9]` for every consumed
+example. Pixels are not permuted in this arm. The dataset identity still binds
+the complete caller images and original labels, even though original labels are
+not learner targets in this protocol. This extension uses the same frozen seeds,
+arms, updates, observations, queries, diagnostics, and resource accounting as
+the input-permutation lane. It explicitly sets `paper_parity_claimed=false`.
 
 The matched roster is SGD, CBP with replacement disabled, and bounded CBP.
 Every arm gets identical Threefry-rooted permutations, example orders,
@@ -63,6 +72,11 @@ backend identities. Negative results must be retained and no result can promote.
 .venv/bin/asi-plasticity-diagnostic --catalog
 .venv/bin/asi-plasticity-diagnostic \
   --dataset /approved/mnist-train.npz \
+  --profile bounded-development \
+  --seed 15830
+.venv/bin/asi-plasticity-diagnostic \
+  --dataset /approved/mnist-train.npz \
+  --task-protocol independent-random-labels \
   --profile bounded-development \
   --seed 15830
 ```
