@@ -22,6 +22,18 @@ OFFICIAL_COMMIT = "73f63bb4fa0b5d00bda973e20dfb783bfcf1b8aa"
 METAWORLD_COMMIT = "0875192baaa91c43523708f55866d98eaf3facaf"
 OFFICIAL_SETUP_BLOB = "125705947e810f8a41e7f9560d429d444c06694f"
 OFFICIAL_DOCKERFILE_BLOB = "6282da996f68e58549f3fcf15ba5d326b1f5ef50"
+OFFICIAL_TREE_SHA256 = "514f88bbf29ad64a4fbbc1bc403b6a4eca540e9f"
+OFFICIAL_ARCHIVE_SHA256 = "21ed7d404975be7ca12fbb315eeece14f25cc0580dc6b074a81eac791a2d03d9"
+OFFICIAL_LICENSE_STATUS = "blocked-no-license-file"
+METAWORLD_TREE_SHA256 = "3024851b45599fe678718b92156d6e004c17039c"
+METAWORLD_ARCHIVE_SHA256 = "fa1f0336719ef8110c7c22c411ace52c7936deacddce0a1f011ebde3989ec5a5"
+METAWORLD_LICENSE_SHA256 = "9d4c6640ecd8cb9e3fe55eb923517fb75a241b74949817121399260c8f549243"
+OBSERVED_MUJOCO_ARCHIVE_SHA256 = (
+    "ba8560040f6ca47dbd89e4731bc9e06080a99eba4583cda95cdedca802389153"
+)
+OBSERVED_MUJOCO_KEY_SHA256 = "bffe403bce6978d329239c83e874e0fd412740d149834b8c051689ba4a9adecc"
+LICENSE_DISPOSITION_APPROVED = False
+EXTERNAL_EXECUTION_AUTHORIZED = False
 FROZEN_DEVELOPMENT_SEED = 1_580_000
 FROZEN_STEPS_PER_TASK = 2
 CW10_TASKS = (
@@ -127,6 +139,19 @@ class ContinualWorldSmokePlan:
             "metaworld_commit": METAWORLD_COMMIT,
             "official_setup_blob": OFFICIAL_SETUP_BLOB,
             "official_dockerfile_blob": OFFICIAL_DOCKERFILE_BLOB,
+            "source_audit": {
+                "official_tree_sha256": OFFICIAL_TREE_SHA256,
+                "official_archive_sha256": OFFICIAL_ARCHIVE_SHA256,
+                "official_license_status": OFFICIAL_LICENSE_STATUS,
+                "metaworld_tree_sha256": METAWORLD_TREE_SHA256,
+                "metaworld_archive_sha256": METAWORLD_ARCHIVE_SHA256,
+                "metaworld_license_sha256": METAWORLD_LICENSE_SHA256,
+                "mujoco_archive_sha256": OBSERVED_MUJOCO_ARCHIVE_SHA256,
+                "mujoco_key_sha256": OBSERVED_MUJOCO_KEY_SHA256,
+                "official_runtime_reconstructible": False,
+            },
+            "license_disposition_approved": LICENSE_DISPOSITION_APPROVED,
+            "external_execution_authorized": EXTERNAL_EXECUTION_AUTHORIZED,
             "runtime": dataclasses.asdict(self.runtime),
             "seed": self.seed,
             "tasks": list(CW20_TASKS),
@@ -245,6 +270,11 @@ def build_smoke_receipt(
     outcome: str,
 ) -> ContinualWorldSmokeReceipt:
     """Snapshot one external official-runtime trace into a strict host receipt."""
+    if LICENSE_DISPOSITION_APPROVED is not True or EXTERNAL_EXECUTION_AUTHORIZED is not True:
+        raise PermissionError(
+            "Continual World license disposition and external execution authorization "
+            "must both be approved before trace admission"
+        )
     if type(plan) is not ContinualWorldSmokePlan:
         raise ValueError("plan must be exact")
     horizon = len(CW20_TASKS) * plan.steps_per_task

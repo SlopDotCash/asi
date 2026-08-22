@@ -6,6 +6,7 @@ import dataclasses
 import numpy as np
 import pytest
 
+import alberta_framework.benchmarks.continual_world_qualification as qualification
 from alberta_framework.benchmarks.continual_world_qualification import (
     CW20_TASKS,
     ContinualWorldSmokePlan,
@@ -33,7 +34,9 @@ def runtime() -> IsolatedRuntimeIdentity:
 
 
 @pytest.fixture
-def receipt(runtime: IsolatedRuntimeIdentity):
+def receipt(runtime: IsolatedRuntimeIdentity, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(qualification, "LICENSE_DISPOSITION_APPROVED", True)
+    monkeypatch.setattr(qualification, "EXTERNAL_EXECUTION_AUTHORIZED", True)
     plan = ContinualWorldSmokePlan(runtime=runtime)
     horizon = 20 * plan.steps_per_task
     return build_smoke_receipt(
@@ -57,6 +60,25 @@ def test_protocol_pins_official_sequence_sources_and_nonpromotion(runtime) -> No
     assert payload["paper_revision"] == "arXiv:2105.10919v3"
     assert payload["official_commit"] == "73f63bb4fa0b5d00bda973e20dfb783bfcf1b8aa"
     assert payload["metaworld_commit"] == "0875192baaa91c43523708f55866d98eaf3facaf"
+    assert payload["source_audit"] == {
+        "official_tree_sha256": "514f88bbf29ad64a4fbbc1bc403b6a4eca540e9f",
+        "official_archive_sha256": (
+            "21ed7d404975be7ca12fbb315eeece14f25cc0580dc6b074a81eac791a2d03d9"
+        ),
+        "official_license_status": "blocked-no-license-file",
+        "metaworld_tree_sha256": "3024851b45599fe678718b92156d6e004c17039c",
+        "metaworld_archive_sha256": (
+            "fa1f0336719ef8110c7c22c411ace52c7936deacddce0a1f011ebde3989ec5a5"
+        ),
+        "metaworld_license_sha256": (
+            "9d4c6640ecd8cb9e3fe55eb923517fb75a241b74949817121399260c8f549243"
+        ),
+        "mujoco_archive_sha256": "ba8560040f6ca47dbd89e4731bc9e06080a99eba4583cda95cdedca802389153",
+        "mujoco_key_sha256": "bffe403bce6978d329239c83e874e0fd412740d149834b8c051689ba4a9adecc",
+        "official_runtime_reconstructible": False,
+    }
+    assert payload["license_disposition_approved"] is False
+    assert payload["external_execution_authorized"] is False
     assert payload["learner_boundary_information"] == []
     assert payload["scientific_promotion_allowed"] is False
 
@@ -71,7 +93,11 @@ def test_fixed_action_receipt_is_exact_mechanism_off_and_round_trips(receipt) ->
     assert checked.negative_outcome_retained is True
 
 
-def test_trace_builder_snapshots_and_rejects_wrong_boundary_schedule(runtime) -> None:
+def test_trace_builder_snapshots_and_rejects_wrong_boundary_schedule(
+    runtime: IsolatedRuntimeIdentity, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(qualification, "LICENSE_DISPOSITION_APPROVED", True)
+    monkeypatch.setattr(qualification, "EXTERNAL_EXECUTION_AUTHORIZED", True)
     plan = ContinualWorldSmokePlan(runtime=runtime)
     horizon = 40
     observations = np.zeros((horizon, 32), dtype=np.float32)
@@ -142,3 +168,31 @@ def test_runtime_and_plan_fail_closed(runtime) -> None:
     with pytest.raises(ValueError, match="development seed"):
         ContinualWorldSmokePlan(runtime=runtime, seed=0)
     assert len(protocol_gap_record()) >= 8
+
+
+def test_smoke_execution_fails_before_trace_access_while_license_is_blocked(
+    runtime: IsolatedRuntimeIdentity,
+) -> None:
+    class HostileArray:
+        calls = 0
+
+        def __getattribute__(self, name: str) -> object:
+            if name != "calls":
+                type(self).calls += 1
+                raise AssertionError("trace must not be inspected before authorization")
+            return object.__getattribute__(self, name)
+
+    hostile = HostileArray()
+    with pytest.raises(PermissionError, match="license.*authorization"):
+        build_smoke_receipt(
+            ContinualWorldSmokePlan(runtime=runtime),
+            actions=hostile,  # type: ignore[arg-type]
+            observations=hostile,  # type: ignore[arg-type]
+            rewards=hostile,  # type: ignore[arg-type]
+            successes=hostile,  # type: ignore[arg-type]
+            task_indices=hostile,  # type: ignore[arg-type]
+            persistent_environment_numeric_bytes=1,
+            timing_ns=0,
+            outcome="inconclusive",
+        )
+    assert HostileArray.calls == 0

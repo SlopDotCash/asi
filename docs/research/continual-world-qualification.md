@@ -13,6 +13,16 @@ transitive versions or downloaded archive bytes, so an ASI run must first build 
 separate image and bind its immutable image digest, MuJoCo archive SHA-256, and
 resolved package/runtime versions in `IsolatedRuntimeIdentity`.
 
+The pinned Continual World tree contains no license file, and its Dockerfile is
+not reconstructible as written: the base image, apt/Python dependencies, and
+download URLs are mutable, while the pinned patchelf URL no longer resolves.
+The observed source/tree, Meta-World, MuJoCo, key, and Meta-World license hashes
+are bound into every plan. `LICENSE_DISPOSITION_APPROVED` and
+`EXTERNAL_EXECUTION_AUTHORIZED` remain false, so the host rejects a trace before
+inspecting it. Changing both gates requires explicit maintainer review and
+changes the plan identity; the observed MuJoCo/key hashes are not presented as
+a frozen provider contract.
+
 The qualification smoke traverses all 20 official tasks for two steps each with
 the fixed float32 zero action. The evaluator may record the task index, boundary,
 and name; no learner exists and no task or boundary information reaches a learner.
