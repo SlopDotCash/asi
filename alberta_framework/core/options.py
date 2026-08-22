@@ -1041,15 +1041,30 @@ def _select_action_epsilon_greedy_from_q_masked(
     return action, key
 
 
+# Gumbel-max noise scale used by `_select_action_epsilon_greedy(_from_q)`:
+# argmax(q + _GUMBEL_TIE_BREAK_SCALE * Gumbel(0, 1)) samples the greedy action
+# from softmax(q / _GUMBEL_TIE_BREAK_SCALE), not a hard tie-broken argmax.
+_GUMBEL_TIE_BREAK_SCALE = 1.0e-6
+
+
 def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Array:
-    """Return epsilon-greedy probabilities with uniform tie handling."""
+    """Return epsilon-greedy probabilities matching Gumbel-max action selection.
+
+    The greedy component must be the exact softmax(q / tau) distribution that
+    `argmax(q + tau * Gumbel(0, 1))` samples from -- not a uniform-tie mask --
+    so importance ratios derived from this distribution stay unbiased for
+    near-tied Q-values.
+    """
     q = jnp.asarray(q_values, dtype=jnp.float32)
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
-    max_q = jnp.max(q)
-    greedy_mask = jnp.isclose(q, max_q, atol=1e-6, rtol=0.0).astype(jnp.float32)
-    n_greedy = jnp.maximum(jnp.sum(greedy_mask), jnp.array(1.0, dtype=jnp.float32))
-    return eps / n_actions + (1.0 - eps) * greedy_mask / n_greedy
+    # Softmax is shift invariant, but the division is not: dividing a
+    # large-but-finite float32 Q-value by 1e-6 overflows to inf before softmax
+    # can stabilize it, turning a legitimate tie into NaN. Subtracting the max
+    # keeps the scaled logits in range and is bit-identical elsewhere.
+    scaled = (q - jnp.max(q)) / jnp.asarray(_GUMBEL_TIE_BREAK_SCALE, dtype=jnp.float32)
+    greedy = jax.nn.softmax(scaled)
+    return eps / n_actions + (1.0 - eps) * greedy
 
 
 def _clipped_epsilon_greedy_importance_ratio(
