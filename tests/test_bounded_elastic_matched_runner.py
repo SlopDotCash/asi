@@ -33,7 +33,6 @@ def _run_for_test(
     )
 
 
-@requires_o_tmpfile
 def test_plan_is_prospective_and_public_execution_is_hard_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -143,7 +142,6 @@ def _fake_run(
     )
 
 
-@requires_o_tmpfile
 def test_campaign_runs_all_four_arms_across_frozen_seeds(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner, "run_screening_config", _fake_run)
     result = cast(dict[str, Any], _run_for_test(*_data(), config=SMALL))
@@ -168,7 +166,6 @@ def test_campaign_runs_all_four_arms_across_frozen_seeds(monkeypatch: pytest.Mon
         assert len({row["execution_identity"]["initial_parameters_sha256"] for row in rows}) == 1
 
 
-@requires_o_tmpfile
 def test_campaign_rejects_source_drift_during_execution(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,7 +186,6 @@ def test_campaign_rejects_source_drift_during_execution(
     assert calls == 1
 
 
-@requires_o_tmpfile
 def test_campaign_and_reexecution_reject_dataset_drift(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -229,7 +225,6 @@ def test_campaign_and_reexecution_reject_dataset_drift(
         )
 
 
-@requires_o_tmpfile
 def test_validator_rejects_identity_resource_and_roster_forgery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -264,7 +259,6 @@ def test_validator_rejects_identity_resource_and_roster_forgery(
         )
 
 
-@requires_o_tmpfile
 def test_validator_reexecutes_and_rejects_self_consistent_metric_forgery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -282,7 +276,6 @@ def test_validator_reexecutes_and_rejects_self_consistent_metric_forgery(
         )
 
 
-@requires_o_tmpfile
 def test_campaign_rejects_unregistered_outcome_decisions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -419,6 +412,7 @@ def test_post_link_failure_rolls_back_only_the_exact_published_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_link_success_followed_by_exception_rolls_back_exact_inode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -446,6 +440,7 @@ def test_link_success_followed_by_exception_rolls_back_exact_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_writer_rejects_replaced_visible_reservation_before_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -476,6 +471,7 @@ def test_writer_rejects_replaced_visible_reservation_before_publication(
     marker.unlink()
 
 
+@requires_o_tmpfile
 def test_writer_parent_swap_does_not_publish_through_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -564,6 +560,7 @@ def test_standalone_paths_remain_disabled_after_flag_transition(
     assert not destination.parent.exists()
 
 
+@requires_o_tmpfile
 def test_transaction_reserves_before_dataset_load_or_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -591,6 +588,7 @@ def test_transaction_reserves_before_dataset_load_or_runner(
     assert marker.read_bytes() == b"prior reservation"
 
 
+@requires_o_tmpfile
 def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -627,6 +625,7 @@ def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     assert calls == 1
 
 
+@requires_o_tmpfile
 def test_transaction_publishes_only_after_strict_reexecution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
