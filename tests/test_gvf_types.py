@@ -407,6 +407,67 @@ class TestGVFSpecRemainingFields:
         assert spec.terminal_reward == value
 
     @pytest.mark.parametrize(
+        "real_family",
+        [np.float16, np.float32, np.float64, np.longdouble],
+        ids=["float16", "float32", "float64", "longdouble"],
+    )
+    def test_terminal_reward_accepts_every_numpy_real_family(self, real_family):
+        """``terminal_reward`` must admit each numpy real family its siblings accept.
+
+        Prior to the fix the exact-type allowlist hand-enumerated float16/32/64
+        and omitted ``np.longdouble`` (dtype code ``g``), so a finite
+        ``np.longdouble`` reward was rejected while the same scalar passed the
+        ``gamma``/``lamda`` gate and the float32-narrowing helper the reward gate
+        guards. This asserts sibling-field parity across all four families.
+        """
+        reward = real_family(0.25)
+        spec = GVFSpec(
+            name="d0",
+            demon_type=DemonType.PREDICTION,
+            gamma=real_family(0.5),
+            lamda=real_family(0.5),
+            cumulant_index=0,
+            terminal_reward=reward,
+        )
+        # The reward narrows to a plain float32-backed builtin float, exactly as
+        # the accepted sibling ``gamma``/``lamda`` values do.
+        assert type(spec.terminal_reward) is float
+        assert spec.terminal_reward == 0.25
+        assert type(spec.gamma) is float
+        assert type(spec.lamda) is float
+
+    def test_terminal_reward_longdouble_matches_gamma_sibling_acceptance(self):
+        """A finite ``np.longdouble`` must be accepted by reward and discount alike."""
+        value = np.longdouble("0.125")
+        spec = GVFSpec(
+            name="g",
+            demon_type=DemonType.PREDICTION,
+            gamma=value,
+            lamda=0.0,
+            cumulant_index=-1,
+            terminal_reward=value,
+        )
+        assert spec.gamma == 0.125
+        assert spec.terminal_reward == 0.125
+        assert type(spec.terminal_reward) is float
+
+    def test_terminal_reward_still_rejects_float_subclass(self):
+        """The gate stays an exact-type identity test: float subclasses are rejected."""
+
+        class _RealFloatSubclass(float):
+            pass
+
+        with pytest.raises(ValueError, match="terminal_reward"):
+            GVFSpec(
+                name="d0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.0,
+                lamda=0.0,
+                cumulant_index=0,
+                terminal_reward=_RealFloatSubclass(0.5),
+            )
+
+    @pytest.mark.parametrize(
         "value",
         [float("nan"), float("inf"), float("-inf"), True, False, "0.0", None],
     )
