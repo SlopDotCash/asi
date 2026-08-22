@@ -33,7 +33,7 @@ from alberta_framework.benchmarks.development_provenance import (
 from alberta_framework.core.policy_archive import BoundedPolicyArchive, PolicyEntry
 from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig, SwitchingTwoStateMDP
 
-SCHEMA = "asi.telapa_qualification_smoke.development.v1"
+SCHEMA = "asi.telapa_qualification_smoke.development.v2"
 PAPER_REVISION = "arXiv:2604.15414v1"
 PAPER_DATE = "2026-04-16"
 DISCLOSED_REPOSITORY = "https://github.com/lute47lillo/telapa_collas2026"
@@ -427,6 +427,7 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
     phase_observations: list[np.ndarray] = []
     phase_actions: list[int] = []
     phase_rewards: list[float] = []
+    reward_sum = 0.0
     archive_queries = 0
     descriptor_queries = 0
     boundary_disclosures = 0
@@ -443,6 +444,7 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
         phase_observations.append(observation)
         phase_actions.append(action)
         phase_rewards.append(reward)
+        reward_sum += reward
         if (step + 1) % config.phase_length == 0:
             descriptor = np.asarray(
                 rollout_latent_descriptor(
@@ -459,6 +461,11 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
             if fixed_anchor is None:
                 fixed_anchor = snapshot
             if arm != "mechanism_off":
+                retrieved = None
+                if arm == "diverse_archive":
+                    query = tuple(float(value) for value in descriptor)
+                    archive_queries += len(archive.entries)
+                    retrieved = archive.retrieve_nearest(query)
                 archive = archive.add(
                     PolicyEntry(
                         identity=f"seed-{seed}-boundary-{step + 1}",
@@ -467,13 +474,15 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
                         score=score,
                     )
                 )
-                archive_queries += len(archive.entries)
                 if arm == "diverse_archive":
-                    selected = max(archive.entries, key=lambda entry: (entry.score, entry.identity))
-                    policy = _decode_policy(selected.policy_bytes)
+                    policy = _decode_policy(
+                        snapshot if retrieved is None else retrieved.policy_bytes
+                    )
                 elif arm == "one_model":
+                    archive_queries += len(archive.entries)
                     policy = _decode_policy(archive.entries[-1].policy_bytes)
                 else:
+                    archive_queries += len(archive.entries)
                     policy = _decode_policy(archive.entries[0].policy_bytes)
             else:
                 # Exact archive-off reduction of the fixed-snapshot behavior.
@@ -494,6 +503,8 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
         "reward_sha256": _digest(rewards),
         "initial_policy_sha256": hashlib.sha256(initial_policy).hexdigest(),
         "final_policy_sha256": hashlib.sha256(_policy_bytes(policy)).hexdigest(),
+        "reward_sum": float(reward_sum),
+        "mean_reward": float(reward_sum / config.steps),
         "archive_entry_count": len(archive.entries) if arm != "mechanism_off" else 0,
         "resource_receipt": {
             "environment_steps": config.steps,
@@ -680,7 +691,7 @@ def validate_result(value: object) -> None:
     record_keys = {
         "arm", "seed", "observation_sha256", "action_sha256", "reward_sha256",
         "initial_policy_sha256", "final_policy_sha256", "archive_entry_count",
-        "resource_receipt",
+        "reward_sum", "mean_reward", "resource_receipt",
     }
     receipt_keys = {
         "environment_steps", "observations_consumed", "policy_updates", "policy_queries",
@@ -713,6 +724,9 @@ def validate_result(value: object) -> None:
                 or any(c not in "0123456789abcdef" for c in digest)
             ):
                 raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+        for field in ("reward_sum", "mean_reward"):
+            if type(record[field]) is not float or not math.isfinite(record[field]):
+                raise ValueError(f"{field} must be a finite exact float")
         if (
             type(record["archive_entry_count"]) is not int
             or not 0

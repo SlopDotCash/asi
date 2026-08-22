@@ -35,7 +35,8 @@ Each frozen development seed runs four arms for the same bounded number of
 environment steps, observations, online table updates, action queries,
 descriptor queries, and boundary disclosures:
 
-- `diverse_archive`: distance-filtered immutable policy snapshots;
+- `diverse_archive`: distance-filtered immutable policy snapshots, retrieving
+  the nearest prior snapshot to the current rollout descriptor;
 - `one_model`: the latest snapshot only;
 - `fixed_snapshot`: the first boundary snapshot only;
 - `mechanism_off`: bypasses the archive and retains the same fixed anchor.
@@ -53,7 +54,9 @@ action, reward, initial-policy, and final-policy hashes. Resource receipts
 separately count environment steps, observations, updates, policy/descriptor/
 archive queries, disclosed boundaries, payload bytes, active policy bytes,
 archive or anchor bytes, and environment-state bytes. Timing is absent and
-telemetry-only. Every valid development outcome, including a tie or regression,
+telemetry-only. Records expose reward sums and means so the arms have an actual
+outcome comparison in addition to replay hashes. Every valid development outcome,
+including a tie or regression,
 must be retained outside this smoke under a new nonpromoting path; this CLI does
 not write `outputs/`.
 

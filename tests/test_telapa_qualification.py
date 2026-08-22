@@ -120,6 +120,26 @@ def test_matched_axes_and_exact_resource_receipts() -> None:
         assert receipt["environment_state_persistent_bytes"] == 8
         assert receipt["timing"] is None
         assert receipt["timing_policy"] == "telemetry_only"
+        assert isinstance(record["reward_sum"], float)
+        assert isinstance(record["mean_reward"], float)
+
+
+def test_diverse_arm_queries_prior_archive_by_current_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries: list[tuple[float, ...]] = []
+    original = telapa.BoundedPolicyArchive.retrieve_nearest
+
+    def tracked(
+        archive: telapa.BoundedPolicyArchive, latent: tuple[float, ...]
+    ) -> telapa.PolicyEntry | None:
+        queries.append(latent)
+        return original(archive, latent)
+
+    monkeypatch.setattr(telapa.BoundedPolicyArchive, "retrieve_nearest", tracked)
+    run_smoke(TeLAPASmokeConfig(steps=8, phase_length=2))
+    # run_smoke performs the matrix once, then its strict validator replays it.
+    assert len(queries) == len(telapa.FROZEN_DEVELOPMENT_SEEDS) * 4 * 2
 
 
 @pytest.mark.parametrize(
