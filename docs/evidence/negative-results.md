@@ -247,6 +247,19 @@ postmortem.
     complete-prototype manifest and the not-assessed WP2 matrix: source presence
     was not an empirical gate.
 
+14. **The registered C-CHAIN IPMNIST adaptation collapsed in its bounded cheap
+    development screen.** The complete 4-arm × 5-seed, 2-task × 500-step panel
+    measured mechanism-off mean online accuracy at `0.4116`. Full C-CHAIN was
+    `0.1146` (paired delta `-0.2970`, 95% Student-t CI
+    `[-0.3344, -0.2596]`), projective-only was `0.1130` (`-0.2986`,
+    `[-0.3309, -0.2663]`), and orthogonal-only was `0.1126` (`-0.2990`,
+    `[-0.3305, -0.2675]`). Every active-arm difference was negative on every
+    seed. This rejects the registered supervised current-runner configurations,
+    not C-CHAIN's official continual-RL method. Do not retry the same target
+    relative-loss scale of 10,000 without a new causal hypothesis and bounded
+    plan. Record:
+    [`outputs/cchain_ipmnist/cheap_screen.v1/`](../../outputs/cchain_ipmnist/cheap_screen.v1/).
+
 ## EMNIST transfer results
 
 1. **Bare input conditioning does not solve label permutation.**
