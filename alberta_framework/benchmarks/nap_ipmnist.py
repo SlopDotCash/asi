@@ -50,6 +50,13 @@ DEPENDENCY_COMMIT = "8383d6438b81c7620189c6fedba30c345994cb12"
 PLASTICINE_REPOSITORY = "https://github.com/RLE-Foundation/Plasticine.git"
 PLASTICINE_COMMIT = "aa00b4bb18f7fe298a47e1ce36c32ba55ce064e8"
 FROZEN_SEEDS = (15_640, 15_641, 15_642, 15_643)
+CAMPAIGN_RESERVED_SEEDS = (
+    1_564_260_101,
+    1_564_260_102,
+    1_564_260_103,
+    1_564_260_104,
+    1_564_260_105,
+)
 ARM_IDS = (
     "sgd_current_control",
     "nap_mechanism_off",
@@ -287,7 +294,10 @@ class NaPResult:
             raise ValueError("unknown profile")
         if type(self.profile) is not DiagnosticProfile or self.profile != PROFILES[self.profile_id]:
             raise ValueError("profile payload differs from the immutable registry")
-        if type(self.seed) is not int or self.seed not in FROZEN_SEEDS:
+        if type(self.seed) is not int or self.seed not in (
+            *FROZEN_SEEDS,
+            *CAMPAIGN_RESERVED_SEEDS,
+        ):
             raise ValueError("seed is outside the frozen NaP development schedule")
         for name in (
             "dataset_sha256",
@@ -417,7 +427,7 @@ def _run_arm(
     seed: int,
 ) -> NaPArmResult:
     normalization_enabled, projection_enabled = _arm_flags(arm_id)
-    key = jr.key(seed)
+    key = jr.key(seed, impl="threefry2x32")
     key, init_key = jr.split(key)
     state = _init_state(init_key, profile.hidden_width)
     initial_norms = (float(jnp.linalg.norm(state.w1)), float(jnp.linalg.norm(state.w2)))
@@ -531,8 +541,33 @@ def run_comparator(
     seed: object,
     profile_id: object = "contract-smoke",
 ) -> NaPResult:
-    data, targets = _arrays(images, labels)
     if type(seed) is not int or seed not in FROZEN_SEEDS:
+        raise ValueError("seed is outside the frozen NaP development schedule")
+    return _run_comparator_for_seeds(
+        images,
+        labels,
+        seed=seed,
+        profile_id=profile_id,
+        allowed_seeds=FROZEN_SEEDS,
+    )
+
+
+def _run_comparator_for_seeds(
+    images: object,
+    labels: object,
+    *,
+    seed: object,
+    profile_id: object,
+    allowed_seeds: tuple[int, ...],
+) -> NaPResult:
+    """Private exact-roster entry point for a separately gated campaign."""
+    data, targets = _arrays(images, labels)
+    if (
+        type(allowed_seeds) is not tuple
+        or allowed_seeds not in (FROZEN_SEEDS, CAMPAIGN_RESERVED_SEEDS)
+        or type(seed) is not int
+        or seed not in allowed_seeds
+    ):
         raise ValueError("seed is outside the frozen NaP development schedule")
     if type(profile_id) is not str or profile_id not in PROFILES:
         raise ValueError("unknown NaP profile")

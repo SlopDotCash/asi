@@ -13,6 +13,7 @@ import pytest
 
 from alberta_framework.benchmarks.nap_ipmnist import (
     ARM_IDS,
+    CAMPAIGN_RESERVED_SEEDS,
     DEPENDENCY_COMMIT,
     FROZEN_SEEDS,
     PAPER_IDENTITY,
@@ -20,6 +21,7 @@ from alberta_framework.benchmarks.nap_ipmnist import (
     PLASTICINE_COMMIT,
     NaPCatalogEntry,
     NaPResult,
+    _run_comparator_for_seeds,
     main,
     qualification_gates,
     run_comparator,
@@ -252,3 +254,13 @@ def test_costly_paper_lanes_are_unconditionally_closed() -> None:
     assert isinstance(sequential_ale, Mapping)
     assert random_label_cifar["qualified"] is False
     assert sequential_ale["qualified"] is False
+
+
+def test_private_fresh_roster_does_not_expand_public_seed_contract() -> None:
+    fresh = CAMPAIGN_RESERVED_SEEDS
+    with pytest.raises(ValueError, match="frozen NaP development schedule"):
+        run_comparator(*_fixture(), seed=fresh[0])
+    result = _run_comparator_for_seeds(
+        *_fixture(), seed=fresh[0], profile_id="contract-smoke", allowed_seeds=fresh
+    )
+    assert result.seed == fresh[0]

@@ -384,7 +384,7 @@ def _dataset_sha(images: np.ndarray, labels: np.ndarray) -> str:
 def _schedule(
     images: np.ndarray, labels: np.ndarray, profile: DiagnosticProfile, seed: int
 ) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
-    key = jr.key(seed)
+    key = jr.key(seed, impl="threefry2x32")
     permutation = np.arange(INPUT_DIM, dtype=np.int32)
     tasks: list[tuple[np.ndarray, np.ndarray]] = []
     for _ in range(profile.n_tasks):
