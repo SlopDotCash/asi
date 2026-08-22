@@ -13,7 +13,9 @@ _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 4096
 _MAX_IDENTITY_CHARACTERS = 1024
 _MAX_POLICY_BYTES = 64 * 1024 * 1024
-_MAX_LATENT_WIDTH = 65_536
+# Public last-fit is a compact latent descriptor. Origin walked 65_536
+# floats in PolicyEntry validation — hang, not leftover INT32 math.
+_MAX_LATENT_WIDTH = 4_096
 
 POLICY_ARCHIVE_PROTOCOL = MappingProxyType(
     {
@@ -59,12 +61,13 @@ class PolicyEntry:
             or len(self.policy_bytes) > _MAX_POLICY_BYTES
         ):
             raise ValueError("policy_bytes must be non-empty exact bytes")
-        if (
-            type(self.latent) is not tuple
-            or not self.latent
-            or len(self.latent) > _MAX_LATENT_WIDTH
-        ):
+        if type(self.latent) is not tuple or not self.latent:
             raise ValueError("latent must be a non-empty tuple")
+        if len(self.latent) > _MAX_LATENT_WIDTH:
+            raise ValueError(
+                "latent length must be an integer in "
+                f"[1, {_MAX_LATENT_WIDTH}]"
+            )
         if any(type(value) is not float or not math.isfinite(value) for value in self.latent):
             raise ValueError("latent values must be finite floats")
         if type(self.score) is not float or not math.isfinite(self.score):
