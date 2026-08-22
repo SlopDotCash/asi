@@ -65,6 +65,33 @@ nonpromoting path. The CLI itself writes no `outputs/` data.
 .venv/bin/asi-nap-ipmnist --dataset /path/to/mnist.npz --seed 15640
 ```
 
+## Prospective matched campaign
+
+The separately reviewed campaign contract is implemented in
+`alberta_framework/evaluation/nap_matched_campaign.py`. The public CLI above remains the
+original diagnostic surface: its roots `15640` through `15643` are test/development roots
+and cannot produce the prospective campaign.
+
+The hard-disabled campaign reserves fresh roots `1564260101` through `1564260105`, the
+canonical 60,000-row OpenML MNIST v1 train split materialized as float32 pixels in `[0,1]`,
+the `bounded-development` profile, and a new append-only
+`outputs/nap_matched/v1/report.json` destination. The dataset identity is frozen as SHA-256
+`234322a369029211eb4555087fc5448c972215e4a50dc4e4d8a21b5a3f8d4d9a` under the lane's
+shape/dtype-aware digest.
+
+Every row binds source, dependencies, runtime, JAX/device state, dataset, schedule, and
+initial-state identity. Publication requires an independent replay of all five seeds,
+ignoring timing alone. The primary development question compares `nap` with
+`nap_mechanism_off` on mean task accuracy and advances only when the paired mean is positive
+and at least four of five seed deltas are positive; other arms remain descriptive.
+
+Both authorization literals are false. Public execution fails before reservation, dataset
+loading, schedule construction, or learner dispatch. A later reviewed transition must
+change both literals. The transaction reserves the registered destination before any
+consumer, retains a consumed-without-result tombstone after first dispatch failure, and
+publishes one strict JSON inode without replacement. This is permanently nonpromoting and
+does not create a result until separately authorized and executed.
+
 ## Paper protocol differences and closed gates
 
 The main supervised experiment uses CIFAR-10, 20 million steps, and 200 random
