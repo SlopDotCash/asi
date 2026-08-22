@@ -14,21 +14,29 @@ implementation is `LucMc/continual-learning` at
 The official implementation periodically normalizes each hidden layer's mean absolute
 incoming-weight gradients, maintains an exponential utility trace, pulls incoming weights
 toward a newly sampled initialization, and pulls outgoing weights toward zero. This ASI
-IPMNIST adaptation instead uses the run's retained seed initialization so all matched arms
-share an exact target; uses float32 Adam; leaves biases unchanged, matching the official
-code; and evaluates online permuted MNIST rather than the paper's reinforcement-learning
-suites. It therefore tests the mechanism in ASI and does not claim paper-protocol parity.
+IPMNIST adaptation instead uses per-parameter rather than per-neuron utility, the run's
+retained seed initialization rather than fresh reset draws, and pulls every parameter. It
+uses the authoritative batch-size-one normalized-SGD CPR family already registered in
+`ipmnist_screening`, and evaluates online permuted MNIST rather than the paper's
+reinforcement-learning suites. It therefore tests the mechanism in ASI and does not claim
+paper-protocol parity.
 
-The five matched arms are mechanism-off Adam, utility-scaled CPR, utility-free uniform
-partial reset, continuous L2 pull to initialization, and thresholded hard reset. Unit tests
-pin the mechanism-off trajectory and show that each named reduction changes the end-to-end
-trajectory.
+The five matched arms are mechanism-off normalized SGD, utility-scaled CPR, utility-free
+uniform partial reset, continuous L2 pull to initialization, and thresholded hard reset.
+Unit tests pin the mechanism-off trajectory and show that each named reduction changes the
+end-to-end trajectory.
 
 ## Frozen matching and resources
 
-The unexecuted campaign roster is `61563001` through `61563005`. Repository and Git history
-searches found these seeds globally absent before this plan exposed them. Tests use the
-separate `301` through `305` roster and never execute campaign seeds.
+The unexecuted replacement campaign roster is `1563260101` through `1563260105`.
+Repository and Git history searches found these seeds globally absent before this plan
+exposed them. Tests use the separate `301` through `305` roster and never execute campaign
+seeds.
+
+The authoritative lane measures per-parameter utility and pulls all parameters toward the
+retained initialization. Its post-update clock pulls first on update 100. The official
+pre-update positive-clock convention would pull one update later; this timing and reset-axis
+difference is frozen rather than silently presented as parity.
 
 Every arm shares seed-derived initial parameters and example schedule, 8 tasks of 5,000
 updates, observations, current-example labels, and no task-boundary signal. Each initial
@@ -37,7 +45,7 @@ runner dispatches, 2,000,000 observations/data steps/updates, zero environment s
 4,000,000 model queries.
 
 The prospectively frozen primary question is whether utility-scaled CPR improves each
-seed's mean online accuracy relative to mechanism-off Adam. The report retains all five
+seed's mean online accuracy relative to mechanism-off normalized SGD. The report retains all five
 paired `utility - off` deltas and their exact `math.fsum` mean. It advances only to another
 nonpromoting development follow-up when the mean delta is positive and at least four of
 five seed deltas are positive; otherwise the outcome is `do_not_advance`. The utility-free,
@@ -46,10 +54,10 @@ outcome. This directional development rule has no scientific threshold or promot
 
 The static numeric envelope counts one caller-owned C-contiguous float32 dataset and int32
 labels, one materialized permutation/index schedule, and the peak retained learner state:
-parameters, initialization target, both Adam moments, utility traces, and step counter. Its
-256 MiB ceiling excludes backend/compiler copies, gradients, and transient execution
-buffers; those exclusions prevent this byte envelope from being presented as total process
-memory. Timing is bounded telemetry only and cannot select an outcome.
+live parameters, retained initialization target, utility traces, normalizer, and step
+counter. Its 256 MiB ceiling excludes backend/compiler copies, gradients, and transient
+execution buffers; those exclusions prevent this byte envelope from being presented as
+total process memory. Timing is bounded telemetry only and cannot select an outcome.
 
 The report binds exact source bytes, including `pyproject.toml` and `uv.lock`, installed
 direct dependency versions, Python/platform identity, JAX backend/config/device inventory,

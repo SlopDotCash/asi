@@ -21,17 +21,14 @@ import jax
 import jax.random as jr
 import numpy as np
 
-from alberta_framework.benchmarks.calibrated_partial_reset_ipmnist import (
-    ARMS,
-    OFFICIAL_CODE_REVISION,
-    PAPER_REVISION,
-    calibrated_partial_reset_spec,
-    persistent_numeric_bytes,
-)
 from alberta_framework.benchmarks.ipmnist_screening import (
+    CPR_OFFICIAL_CODE_REVISION,
+    CPR_PAPER_REVISION,
     ScreeningRunResult,
+    _partial_reset_peak_numeric_bytes,
     _screening_dataset_provenance,
     run_screening_config,
+    screening_spec,
 )
 from alberta_framework.benchmarks.upgd_ipmnist import (
     IPMNISTConfig,
@@ -41,8 +38,23 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     load_mnist_train,
 )
 
-SCHEMA: Final = "asi.calibrated-partial-reset.matched-development.v1"
-CAMPAIGN_SEEDS: Final = (61_563_001, 61_563_002, 61_563_003, 61_563_004, 61_563_005)
+SCHEMA: Final = "asi.calibrated-partial-reset.matched-development.v2"
+PAPER_REVISION: Final = CPR_PAPER_REVISION
+OFFICIAL_CODE_REVISION: Final = CPR_OFFICIAL_CODE_REVISION
+ARMS: Final = (
+    "cpr_ipmnist",
+    "cpr_hard_reset",
+    "cpr_l2_init",
+    "cpr_utility_free",
+    "cpr_off",
+)
+CAMPAIGN_SEEDS: Final = (
+    1_563_260_101,
+    1_563_260_102,
+    1_563_260_103,
+    1_563_260_104,
+    1_563_260_105,
+)
 TEST_ONLY_SEEDS: Final = (301, 302, 303, 304, 305)
 CAMPAIGN_CONFIG: Final = IPMNISTConfig(n_tasks=8, task_length=5000)
 _REVIEWED_EXECUTION_TRANSITION: Final = False
@@ -59,12 +71,11 @@ _MAX_REPORT_BYTES: Final = 64 * 1024 * 1024
 _MAX_NUMERIC_BYTES: Final = 256 * 1024 * 1024
 _MAX_RUNTIME_DEVICES: Final = 64
 _ROOT: Final = Path(__file__).resolve().parents[2]
-OUTPUT_PATH: Final = _ROOT / "outputs/calibrated_partial_reset_matched/report.v1.json"
+OUTPUT_PATH: Final = _ROOT / "outputs/calibrated_partial_reset_matched/v2/report.json"
 
 
 def _source_identity() -> dict[str, str]:
     paths = (
-        "alberta_framework/benchmarks/calibrated_partial_reset_ipmnist.py",
         "alberta_framework/benchmarks/ipmnist_screening.py",
         "alberta_framework/benchmarks/upgd_ipmnist.py",
         "alberta_framework/evaluation/calibrated_partial_reset_campaign.py",
@@ -144,12 +155,7 @@ def _runtime_identity() -> dict[str, object]:
 def _resource_envelope(config: IPMNISTConfig, rows: int) -> dict[str, int]:
     dataset = rows * (config.input_dim * 4 + 4)
     schedule = config.n_tasks * (config.task_length + config.input_dim) * 4
-    persistent = persistent_numeric_bytes(
-        input_dim=config.input_dim,
-        hidden1=config.hidden1,
-        hidden2=config.hidden2,
-        n_classes=config.n_classes,
-    )
+    persistent = _partial_reset_peak_numeric_bytes(config)
     return {
         "dataset_bytes": dataset,
         "schedule_bytes": schedule,
@@ -178,15 +184,20 @@ def _transaction_resources(config: IPMNISTConfig, seeds: tuple[int, ...]) -> dic
 
 def frozen_plan() -> dict[str, object]:
     return {
-        "schema": "asi.calibrated-partial-reset.matched-plan.v1",
+        "schema": "asi.calibrated-partial-reset.matched-plan.v2",
         "paper_revision": PAPER_REVISION,
         "official_code_revision": OFFICIAL_CODE_REVISION,
         "adaptation": {
             "workload": "ASI online IPMNIST instead of the paper RL suites",
-            "optimizer": "matched float32 Adam",
+            "optimizer": "batch-size-one float32 normalized SGD",
             "initialization": "retained seed initialization, not fresh reset draws",
-            "biases": "unchanged at reset, matching official code",
-            "utility": "incoming-weight gradient magnitude normalized per hidden layer",
+            "biases": "pulled with all parameter tensors, unlike official hidden-weight handling",
+            "utility": "per-parameter gradient magnitude normalized within each tensor",
+            "reset_axis": "per-parameter utility and all-parameter pull",
+            "reset_timing": "post-update clock divisible by 100; first pull is update 100",
+            "official_timing_difference": (
+                "official pre-update positive-clock gate would first pull one update later"
+            ),
         },
         "seeds": list(CAMPAIGN_SEEDS),
         "test_only_seeds": list(TEST_ONLY_SEEDS),
@@ -234,7 +245,7 @@ def frozen_plan() -> dict[str, object]:
         "allowed_boundary_information": [],
         "allowed_task_information": ["current_example_label"],
         "primary_paired_question": {
-            "candidate": "cpr_utility",
+            "candidate": "cpr_ipmnist",
             "control": "cpr_off",
             "metric": "mean_online_accuracy",
             "direction": "higher_is_better",
@@ -248,7 +259,7 @@ def frozen_plan() -> dict[str, object]:
         "development_only": True,
         "scientific_promotion_allowed": False,
         "negative_outcomes_retained": True,
-        "output_path": "outputs/calibrated_partial_reset_matched/report.v1.json",
+        "output_path": "outputs/calibrated_partial_reset_matched/v2/report.json",
     }
 
 
@@ -382,12 +393,7 @@ def _record(result: ScreeningRunResult) -> dict[str, object]:
             "environment_steps": 0,
             "updates": steps,
             "model_queries": 2 * steps,
-            "persistent_numeric_bytes": persistent_numeric_bytes(
-                input_dim=result.config.input_dim,
-                hidden1=result.config.hidden1,
-                hidden2=result.config.hidden2,
-                n_classes=result.config.n_classes,
-            ),
+            "persistent_numeric_bytes": _partial_reset_peak_numeric_bytes(result.config),
             "timing_telemetry_seconds": result.wall_clock_seconds,
             "timing_is_selection_metric": False,
         },
@@ -422,7 +428,7 @@ def _aggregate(rows: list[dict[str, object]]) -> dict[str, object]:
     paired_deltas = [
         {
             "seed": seed,
-            "utility_minus_off": by_pair[(seed, "cpr_utility")] - by_pair[(seed, "cpr_off")],
+            "utility_minus_off": by_pair[(seed, "cpr_ipmnist")] - by_pair[(seed, "cpr_off")],
         }
         for seed in sorted({seed for seed, _arm in by_pair})
     ]
@@ -438,7 +444,7 @@ def _aggregate(rows: list[dict[str, object]]) -> dict[str, object]:
         "mean_online_accuracy": means,
         "row_count": len(rows),
         "primary_paired_question": {
-            "candidate": "cpr_utility",
+            "candidate": "cpr_ipmnist",
             "control": "cpr_off",
             "metric": "mean_online_accuracy",
             "direction": "higher_is_better",
@@ -503,7 +509,7 @@ def _run(
             if not rows and on_dispatch is not None:
                 on_dispatch()
             result = run_screening_config(
-                checked_x, checked_y, calibrated_partial_reset_spec(arm), seed, config
+                checked_x, checked_y, screening_spec(arm), seed, config
             )
             if (
                 _source_identity() != source
@@ -625,12 +631,7 @@ def _validate_record(value: object, config: IPMNISTConfig) -> None:
         "environment_steps": 0,
         "updates": steps,
         "model_queries": 2 * steps,
-        "persistent_numeric_bytes": persistent_numeric_bytes(
-            input_dim=config.input_dim,
-            hidden1=config.hidden1,
-            hidden2=config.hidden2,
-            n_classes=config.n_classes,
-        ),
+        "persistent_numeric_bytes": _partial_reset_peak_numeric_bytes(config),
         "timing_is_selection_metric": False,
     }
     if any(
@@ -665,6 +666,10 @@ def validate_report(
         raise ValueError("CPR seed roster differs from the campaign or test-only contract")
     if type(reexecute) is not bool:
         raise ValueError("CPR reexecution selector must be an exact bool")
+    if seeds == CAMPAIGN_SEEDS and reexecute and (
+        _REVIEWED_EXECUTION_TRANSITION is not True or _EXECUTION_AUTHORIZED is not True
+    ):
+        raise RuntimeError("CPR campaign execution is not authorized")
     report = cast(dict[str, object], _bounded_json(value))
     report = _exact_object(
         report, ("schema", "plan", "identity", "rows", "aggregate", "policy", "sha256"), "report"
@@ -712,7 +717,7 @@ def validate_report(
         if reexecute:
             replay = _record(
                 run_screening_config(
-                    checked_x, checked_y, calibrated_partial_reset_spec(arm), seed, config
+                    checked_x, checked_y, screening_spec(arm), seed, config
                 )
             )
             replay_resources = cast(dict[str, object], replay["resources"])
@@ -763,7 +768,33 @@ def validate_report(
         raise ValueError("CPR report digest drifted")
 
 
-Reservation = tuple[int, str, str, int, int, int]
+Reservation = tuple[int, str, str, int, int, int, str, int, int]
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    view = memoryview(payload)
+    while view:
+        written = os.write(descriptor, view)
+        if written <= 0:
+            raise OSError("CPR transaction write made no progress")
+        view = view[written:]
+
+
+def _open_existing_directory(path: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    descriptor = os.open(os.path.sep, flags)
+    try:
+        for component in absolute.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise ValueError("CPR output contains an unsafe path segment")
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
 
 def _open_parent(path: Path) -> int:
@@ -809,11 +840,22 @@ def _reserve(path: Path) -> Reservation:
             0o400,
             dir_fd=directory,
         )
-        os.write(marker_fd, b"asi-cpr-reserved-v1\n")
+        _write_all(marker_fd, b"asi-cpr-reserved-v1\n")
         os.fsync(marker_fd)
         metadata = os.fstat(marker_fd)
+        parent_metadata = os.fstat(directory)
         os.fsync(directory)
-        return directory, path.name, marker_name, marker_fd, metadata.st_dev, metadata.st_ino
+        return (
+            directory,
+            path.name,
+            marker_name,
+            marker_fd,
+            metadata.st_dev,
+            metadata.st_ino,
+            os.fspath(path.absolute().parent),
+            parent_metadata.st_dev,
+            parent_metadata.st_ino,
+        )
     except BaseException:
         if marker_fd >= 0:
             try:
@@ -830,7 +872,9 @@ def _reserve(path: Path) -> Reservation:
 
 
 def _owned(reservation: Reservation) -> None:
-    directory, _name, marker, marker_fd, device, inode = reservation
+    directory, _name, marker, marker_fd, device, inode, _parent, _parent_dev, _parent_ino = (
+        reservation
+    )
     held = os.fstat(marker_fd)
     visible = os.stat(marker, dir_fd=directory, follow_symlinks=False)
     if (
@@ -842,14 +886,32 @@ def _owned(reservation: Reservation) -> None:
         raise RuntimeError("CPR output reservation identity changed")
 
 
+def _assert_visible_parent(reservation: Reservation) -> None:
+    directory, _name, _marker, _marker_fd, _device, _inode, parent, device, inode = reservation
+    held = os.fstat(directory)
+    visible_fd = _open_existing_directory(Path(parent))
+    try:
+        visible = os.fstat(visible_fd)
+    finally:
+        os.close(visible_fd)
+    if (
+        not stat.S_ISDIR(held.st_mode)
+        or (held.st_dev, held.st_ino) != (device, inode)
+        or (visible.st_dev, visible.st_ino) != (device, inode)
+    ):
+        raise RuntimeError("CPR registered output parent identity changed")
+
+
 def _finish_reservation(reservation: Reservation, *, consumed: bool) -> None:
-    directory, _name, marker, marker_fd, device, inode = reservation
+    directory, _name, marker, marker_fd, device, inode, _parent, _parent_dev, _parent_ino = (
+        reservation
+    )
     try:
         _owned(reservation)
         if consumed:
             os.ftruncate(marker_fd, 0)
             os.lseek(marker_fd, 0, os.SEEK_SET)
-            os.write(marker_fd, b"asi-cpr-consumed-without-result-v1\n")
+            _write_all(marker_fd, b"asi-cpr-consumed-without-result-v1\n")
             os.fsync(marker_fd)
             os.fsync(directory)
         else:
@@ -884,7 +946,9 @@ def _publish(
 ) -> None:
     if capability is not _EXECUTION_CAPABILITY and capability is not _TEST_EXECUTION_CAPABILITY:
         raise RuntimeError("CPR publication capability is invalid")
-    directory, name, _marker, _marker_fd, _device, _inode = reservation
+    directory, name, _marker, _marker_fd, _device, _inode, _parent, _parent_dev, _parent_ino = (
+        reservation
+    )
     _owned(reservation)
     validate_report(report, x, y, config=config, seeds=seeds, reexecute=True)
     encoded = _canonical(report) + b"\n"
@@ -927,12 +991,14 @@ def _publish(
             raise ValueError("CPR staged report is not strict bounded JSON") from error
         validate_report(staged_report, x, y, config=config, seeds=seeds, reexecute=False)
         _owned(reservation)
+        _assert_visible_parent(reservation)
         published_identity = (staged.st_dev, staged.st_ino)
         _link_tmpfile(descriptor, directory, name)
         metadata = os.fstat(descriptor)
         if metadata.st_nlink != 1 or (metadata.st_dev, metadata.st_ino) != published_identity:
             raise RuntimeError("CPR published inode identity drifted")
         os.fsync(directory)
+        _assert_visible_parent(reservation)
         read_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
         try:
             before = os.fstat(read_fd)

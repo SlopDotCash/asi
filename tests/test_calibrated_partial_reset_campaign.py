@@ -32,7 +32,9 @@ def _fake_run(
 ) -> ScreeningRunResult:
     del data_x, data_y
     checked = cast(Any, spec)
-    value = 0.4 + 0.01 * (lane.TEST_ONLY_SEEDS.index(seed) + lane.ARMS.index(checked.name))
+    value = 0.4 + 0.01 * lane.TEST_ONLY_SEEDS.index(seed)
+    if checked.name == "cpr_ipmnist":
+        value += 0.01
     return ScreeningRunResult(
         config_name=checked.name,
         base_learner=checked.base_learner,
@@ -64,12 +66,35 @@ def _resign(report: dict[str, object]) -> None:
 
 def test_plan_is_prospective_exact_and_nonpromoting() -> None:
     plan = lane.frozen_plan()
-    assert plan["seeds"] == [61_563_001, 61_563_002, 61_563_003, 61_563_004, 61_563_005]
+    assert plan["seeds"] == [
+        1_563_260_101,
+        1_563_260_102,
+        1_563_260_103,
+        1_563_260_104,
+        1_563_260_105,
+    ]
     assert set(plan["seeds"]).isdisjoint(plan["test_only_seeds"])
     assert plan["reviewed_execution_transition"] is False
     assert plan["execution_authorized"] is False
     assert plan["scientific_promotion_allowed"] is False
     assert plan["arms"] == list(lane.ARMS)
+    assert plan["arms"] == [
+        "cpr_ipmnist",
+        "cpr_hard_reset",
+        "cpr_l2_init",
+        "cpr_utility_free",
+        "cpr_off",
+    ]
+    assert plan["primary_paired_question"]["candidate"] == "cpr_ipmnist"
+    assert plan["adaptation"]["reset_timing"] == (
+        "post-update clock divisible by 100; first pull is update 100"
+    )
+    assert plan["output_path"] == (
+        "outputs/calibrated_partial_reset_matched/v2/report.json"
+    )
+    assert "alberta_framework/benchmarks/ipmnist_screening.py" in (
+        plan["source_identity_policy"]["hashed_files"]
+    )
     assert "pyproject.toml" in plan["source_identity_policy"]["hashed_files"]
     assert "uv.lock" in plan["source_identity_policy"]["hashed_files"]
     assert plan["resources"]["combined_numeric_bytes"] <= 256 * 1024 * 1024
@@ -104,6 +129,28 @@ def test_public_transaction_is_closed_before_reservation_or_consumer(
     monkeypatch.setattr(lane, "run_screening_config", forbidden)
     with pytest.raises(RuntimeError, match="not authorized"):
         lane.run_and_publish(tmp_path, tmp_path / "report.json")
+    assert calls == 0
+
+
+def test_campaign_reexecution_is_closed_before_dataset_or_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    def forbidden(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise AssertionError("unauthorized validation reached a consumer")
+
+    monkeypatch.setattr(lane, "_source_identity", forbidden)
+    monkeypatch.setattr(lane, "_validated_arrays", forbidden)
+    monkeypatch.setattr(lane, "_execution_identity", forbidden)
+    monkeypatch.setattr(lane, "run_screening_config", forbidden)
+    with pytest.raises(RuntimeError, match="not authorized"):
+        lane.validate_report(
+            {}, object(), object(), config=lane.CAMPAIGN_CONFIG,
+            seeds=lane.CAMPAIGN_SEEDS, reexecute=True
+        )
     assert calls == 0
 
 
@@ -340,12 +387,49 @@ def test_transaction_strictly_publishes_and_removes_reservation(
     monkeypatch.setattr(lane, "OUTPUT_PATH", destination)
     monkeypatch.setattr(lane, "load_mnist_train", lambda _home: _data())
     monkeypatch.setattr(lane, "run_screening_config", _fake_run)
-    report = lane._run_and_publish(
-        tmp_path,
-        destination,
-        SMALL,
-        lane.TEST_ONLY_SEEDS,
-        lane._TEST_EXECUTION_CAPABILITY,
-    )
+    try:
+        report = lane._run_and_publish(
+            tmp_path,
+            destination,
+            SMALL,
+            lane.TEST_ONLY_SEEDS,
+            lane._TEST_EXECUTION_CAPABILITY,
+        )
+    except OSError as error:
+        if error.errno == 2:
+            pytest.skip("the test filesystem cannot link an O_TMPFILE inode")
+        raise
     assert json.loads(destination.read_bytes()) == report
     assert not destination.with_name(f".{destination.name}.reservation").exists()
+
+
+def test_short_writes_are_completed(monkeypatch: pytest.MonkeyPatch) -> None:
+    written = bytearray()
+
+    def short_write(fd: int, value: object) -> int:
+        del fd
+        chunk = bytes(value)[:2]
+        written.extend(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(lane.os, "write", short_write)
+    lane._write_all(7, b"abcdefg")
+    assert written == b"abcdefg"
+
+
+def test_visible_output_parent_replacement_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    parent = tmp_path / "registered"
+    parent.mkdir()
+    destination = parent / "report.json"
+    monkeypatch.setattr(lane, "OUTPUT_PATH", destination)
+    reservation = lane._reserve(destination)
+    moved = tmp_path / "moved"
+    parent.rename(moved)
+    parent.mkdir()
+    try:
+        with pytest.raises(RuntimeError, match="parent identity"):
+            lane._assert_visible_parent(reservation)
+    finally:
+        lane._finish_reservation(reservation, consumed=False)
