@@ -137,6 +137,9 @@ _CBP_SINGLE_CONFIG_FIELDS = _CBP_MULTI_CONFIG_FIELDS - {
     "per_head_gamma_lamda",
 }
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is two hidden layers. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_CBP_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
@@ -165,6 +168,14 @@ def _require_int(name: str, value: object, *, minimum: int, maximum: int = _INT3
     if not minimum <= canonical <= maximum:
         raise ValueError(f"{name} must be an integer")
     return canonical
+
+
+def _require_hidden_layer_count(hidden_sizes: object) -> None:
+    if type(hidden_sizes) in (tuple, list) and len(hidden_sizes) > _MAX_CBP_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_CBP_HIDDEN_LAYERS}]"
+        )
 
 
 def _require_bool(name: str, value: object) -> bool:
@@ -350,6 +361,7 @@ def init_cbp_state(
         Initial :class:`ContinualBackpropState` with zero utilities
         and ages.
     """
+    _require_hidden_layer_count(hidden_sizes)
     n_layers = len(hidden_sizes)
     if n_layers != len(mlp_state.trunk_params.weights):
         msg = (
@@ -882,6 +894,7 @@ class CBPMultiHeadMLPLearner:
             cbp_config = ContinualBackpropConfig()
         elif type(cbp_config) is not ContinualBackpropConfig:
             raise ValueError("cbp_config must be an actual ContinualBackpropConfig or None")
+        _require_hidden_layer_count(hidden_sizes)
         self._cbp_config = cbp_config
         if type(use_layer_norm) is not bool:
             raise ValueError("use_layer_norm must be an actual bool")
@@ -982,6 +995,7 @@ class CBPMultiHeadMLPLearner:
             raise ValueError("unsupported MultiHeadMLP state schema")
         if type(config["hidden_sizes"]) is not list:
             raise ValueError("hidden_sizes must be a list")
+        _require_hidden_layer_count(config["hidden_sizes"])
         if (
             config["per_head_gamma_lamda"] is not None
             and type(config["per_head_gamma_lamda"]) is not list
