@@ -57,6 +57,9 @@ from alberta_framework.steps._smoke_record_validation import require_step_shape
 Step4OptimizerName = Literal["lms", "idbd", "autostep"]
 Step4BounderName = Literal["none", "obgd"]
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is one hidden layer. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_STEP4_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -118,6 +121,11 @@ class Step4SARSAConfig:
             raise ValueError("Step4SARSAConfig payload fields do not match the schema")
         if type(raw["hidden_sizes"]) is not list:
             raise ValueError("hidden_sizes must be an exact list")
+        if len(cast(list[object], raw["hidden_sizes"])) > _MAX_STEP4_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_STEP4_HIDDEN_LAYERS}]"
+            )
         config = dict(raw)
         config["hidden_sizes"] = tuple(cast(list[object], config["hidden_sizes"]))
         return cls(**cast(Any, config))
@@ -266,6 +274,11 @@ def _validate_sarsa_config(config: Step4SARSAConfig) -> None:
     n_actions = _require_positive_int("n_actions", config.n_actions)
     if type(config.hidden_sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(config.hidden_sizes) > _MAX_STEP4_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_STEP4_HIDDEN_LAYERS}]"
+        )
     hidden_sizes = tuple(
         _require_positive_int("hidden_sizes", size) for size in config.hidden_sizes
     )
