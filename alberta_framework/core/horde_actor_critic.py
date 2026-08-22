@@ -65,6 +65,9 @@ from alberta_framework.core.update_safety import (
 )
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is one hidden layer. Origin walked unbounded
+# ``hidden_sizes`` before INT32 leftover math — hang, not a width overflow.
+_MAX_HORDE_ACTOR_HIDDEN_LAYERS = 4_096
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -97,6 +100,11 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
 def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
     if type(sizes) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
+    if len(sizes) > _MAX_HORDE_ACTOR_HIDDEN_LAYERS:
+        raise ValueError(
+            "hidden_sizes length must be an integer in "
+            f"[0, {_MAX_HORDE_ACTOR_HIDDEN_LAYERS}]"
+        )
     return tuple(
         _require_int32(f"hidden_sizes[{index}]", size, minimum=1)
         for index, size in enumerate(sizes)
@@ -1476,6 +1484,11 @@ class NonlinearHordeActorCriticConfig:
         )
         if type(c["hidden_sizes"]) is not list:
             raise ValueError("serialized hidden_sizes must be an exact built-in list")
+        if len(c["hidden_sizes"]) > _MAX_HORDE_ACTOR_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_HORDE_ACTOR_HIDDEN_LAYERS}]"
+            )
         c["hidden_sizes"] = tuple(c["hidden_sizes"])
         return cls(**c)
 
@@ -2232,6 +2245,11 @@ class NonlinearQHordeActorCriticConfig:
         )
         if type(payload["hidden_sizes"]) is not list:
             raise ValueError("serialized hidden_sizes must be an exact built-in list")
+        if len(payload["hidden_sizes"]) > _MAX_HORDE_ACTOR_HIDDEN_LAYERS:
+            raise ValueError(
+                "hidden_sizes length must be an integer in "
+                f"[0, {_MAX_HORDE_ACTOR_HIDDEN_LAYERS}]"
+            )
         payload["hidden_sizes"] = tuple(payload["hidden_sizes"])
         return cls(**payload)
 
