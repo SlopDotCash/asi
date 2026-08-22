@@ -5,6 +5,28 @@ mechanism-off reduction. It is a five-task, 256-train/256-test, width-32
 development slice. It is permanently nonpromoting, is not paper-comparable,
 and cannot support a scientific, SOTA, or paper-reproduction claim.
 
+## Official-source qualification
+
+The read-only catalog can be inspected without importing or executing the
+external implementation:
+
+```bash
+.venv/bin/python -m alberta_framework.benchmarks.bimu_external_qualification
+```
+
+It binds official commit `1b8a1a1fb892fbe89401390b3ff9611d7f3a5168`, Git tree
+`cbeeb50cdd3421fc046e7a2b73e26147419227e9`, the observed source archive,
+CC BY 4.0 license bytes, and the exact configuration, optimizer, model, layer,
+data, training, and environment files used to audit the ASI lane. The archive
+was downloaded only for this read-only audit; its code was not imported or
+executed.
+
+The official `environment.yml` pins Python and PyTorch but leaves several
+dependencies and the Conda base/channel resolution mutable. It is therefore
+content-bound as an input file but is not a qualified runtime lock. Official
+dataset bytes and downloader behavior also remain unbound. External execution,
+paper parity, and scientific promotion remain explicitly unauthorized.
+
 The literal plan fixes OpenML `mnist_784` version 1 through the canonical
 60,000-row loader, the first 256 scaled rows as training data, the last 256 as
 a disjoint development test, seeds 157001–157003, and arms `memory_off` and
