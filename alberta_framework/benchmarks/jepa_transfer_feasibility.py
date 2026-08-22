@@ -704,12 +704,21 @@ def run_jepa_transfer_feasibility(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--external-catalog", action="store_true")
     parser.add_argument("--steps", type=int, default=256)
     parser.add_argument("--phase-length", type=int, default=32)
     parser.add_argument("--pretraining-steps", type=int, default=32)
     parser.add_argument("--warmup-steps", type=int, default=16)
     parser.add_argument("--exploration-period", type=int, default=4)
     args = parser.parse_args(argv)
+    if args.external_catalog:
+        from alberta_framework.benchmarks.jepa_external_qualification import (
+            catalog_payload,
+        )
+
+        print(json.dumps(catalog_payload(), sort_keys=True, separators=(",", ":")))
+        return 0
+    delattr(args, "external_catalog")
     result = run_jepa_transfer_feasibility(JEPATransferProtocol(**vars(args)))
     payload = result.to_payload()
     validate_jepa_transfer_payload(payload)

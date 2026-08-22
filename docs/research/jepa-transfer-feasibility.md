@@ -24,6 +24,33 @@ Both exact GitHub commit pages and repository trees were inspected. The pins
 are provenance only; external code, checkpoints, and datasets are not imported
 or executed by this lane.
 
+## External qualification inventory
+
+Issue #1577's read-only qualification catalog is emitted with:
+
+```bash
+.venv/bin/asi-jepa-transfer-feasibility --external-catalog
+```
+
+It binds the inspected JEPA-WM source commit and tree, its downloaded source
+archive, and its CC BY-NC 4.0 license bytes. It separately binds the V-JEPA 2
+source commit and tree, source archive, MIT `LICENSE`, and Apache 2.0
+`APACHE-LICENSE`. These are distinct license records; the permissive V-JEPA 2
+source license does not override JEPA-WM's noncommercial license.
+
+The catalog also binds Hugging Face repository revision
+`9b9c41ef249466630dbf1a20e78391865d07b3b9` and the LFS SHA-256 identities and
+sizes of `jepa_wm_droid.pth.tar`, `vjepa2_ac_droid.pth.tar`, and
+`vjepa2_ac_oss.pth.tar` (11,678,963,913 bytes in total). It did not download or
+deserialize those checkpoint objects. The JEPA-WM configuration subtree is
+bound independently; the listed DROID, RoboCasa/RoboSuite, MetaWorld, Push-T,
+PointMaze, Wall, and Franka inputs remain names only, not content-bound assets.
+
+All license, dataset-rights, checkpoint-deserialization, external-execution,
+physical-execution, paper-parity, and scientific-promotion gates remain closed.
+The catalog is a permanently nonpromoting development inventory, not approval
+to acquire, redistribute, or execute an external model or dataset.
+
 ## Native transfer experiment
 
 The runner stores a bounded ASI-only `SwitchingTwoStateMDP` transition trace,
