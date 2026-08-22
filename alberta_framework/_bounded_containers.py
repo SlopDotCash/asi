@@ -13,6 +13,10 @@ from collections.abc import Callable, Iterable, Iterator
 
 ContainerChildren = Callable[[object], Iterable[object] | None]
 
+# Match the 16 MiB JSON byte last-fit used by `_strict_json` and checkpoint
+# codecs so this scanner cannot walk an arbitrarily large host string.
+_MAX_JSON_TEXT_CHARS = 16 * 1024 * 1024
+
 
 def require_bounded_container_tree(
     root: object,
@@ -89,6 +93,10 @@ def require_json_text_nesting(
         raise ValueError("max_depth must be a positive exact integer")
     if type(name) is not str or not name:
         raise ValueError("name must be a non-empty exact string")
+    if len(text) > _MAX_JSON_TEXT_CHARS:
+        raise ValueError(
+            f"{name} length must be an integer in [0, {_MAX_JSON_TEXT_CHARS}]"
+        )
 
     depth = 0
     in_string = False
