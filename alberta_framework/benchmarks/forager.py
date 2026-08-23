@@ -46,6 +46,7 @@ from alberta_framework.core.horde_actor_critic import (
 from alberta_framework.core.horde_actor_critic import (
     NonlinearHordeActorCriticConfig as CoreActorCriticConfig,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Autostep, ObGDBounding
 from alberta_framework.core.recurrent_trace_actor_critic import (
     RecurrentTraceActorCriticAgent,
@@ -3263,10 +3264,7 @@ def _make_rtu_rtrl_scan_chunk(
                     reward,
                     next_features,
                 )
-                next_count = jnp.minimum(
-                    learning_count,
-                    jnp.asarray(_MAX_JAX_INT32 - 1, dtype=jnp.int32),
-                ) + jnp.asarray(1, dtype=jnp.int32)
+                next_count = _saturating_int32_counter_increment(learning_count)
                 return result.state, result.action, result.td_error, next_count
 
             def frozen_update(

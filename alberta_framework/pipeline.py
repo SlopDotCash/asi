@@ -52,6 +52,7 @@ from alberta_framework.core.horde_actor_critic import (
     HordeActorCriticState,
 )
 from alberta_framework.core.multi_head_learner import MultiHeadMLPState
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import ObGDBounding
 from alberta_framework.core.sarsa import SARSAState
 from alberta_framework.core.temporal_context import (
@@ -1625,10 +1626,7 @@ class AlbertaPipeline:
             horde_state=new_horde_state,
             control_state=new_control_state,
             last_features=features,
-            step_count=(
-                jnp.minimum(state.step_count, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32))
-                + jnp.asarray(1, dtype=jnp.int32)
-            ),
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         transaction_applied = (
             inputs_valid

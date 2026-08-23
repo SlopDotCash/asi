@@ -23,6 +23,7 @@ from jax import Array
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -688,11 +689,7 @@ class WorkingMemoryFeaturizer:
                 cfg.reward_decay_rates,
                 reward_gate,
             ),
-            step_count=jnp.minimum(
-                state.step_count,
-                jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
-            )
-            + jnp.asarray(1, dtype=jnp.int32),
+            step_count=_saturating_int32_counter_increment(state.step_count),
             last_gate=jnp.stack([observation_gate, action_gate, reward_gate]),
         )
         previous_checked = state

@@ -40,6 +40,7 @@ from jax import Array
 from jaxtyping import Float
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 _INT32_MAX: int = 2**31 - 1
 # Public last-fit in tests is 3 array steps. Origin scanned the leading
@@ -561,11 +562,7 @@ class TemporalContextFeaturizer:
         proposed_ema = decayed_ema + (1.0 - decay) * obs
         proposed = TemporalContextState(
             observation_ema=proposed_ema,
-            step_count=jnp.minimum(
-                state.step_count,
-                jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
-            )
-            + jnp.asarray(1, dtype=jnp.int32),
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         return cast(
             TemporalContextState,

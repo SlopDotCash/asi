@@ -662,3 +662,21 @@ def test_saturating_helpers_clamp_negative_to_one() -> None:
         assert int(helper(neg1)) == 1
         assert int(helper(maxv)) == 2_147_483_647
 
+    import pathlib as _pl
+
+    for rel in [
+        "alberta_framework/pipeline.py",
+        "alberta_framework/core/working_memory.py",
+        "alberta_framework/core/temporal_context.py",
+        "alberta_framework/benchmarks/forager.py",
+    ]:
+        text = _pl.Path(rel).read_text()
+        assert (
+            "from alberta_framework.core.normalizers import _saturating_int32_counter_increment"
+            in text
+        )
+        assert "_saturating_int32_counter_increment" in text
+        # no remaining plain minimum without maximum clamp
+        assert "jnp.minimum(state.step_count, jnp.asarray(_INT32_MAX - 1" not in text
+        assert "jnp.minimum(learning_count, jnp.asarray(_MAX_JAX_INT32 - 1" not in text
+
