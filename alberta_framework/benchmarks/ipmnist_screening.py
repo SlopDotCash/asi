@@ -2414,6 +2414,20 @@ def _make_adaptive_norm_sigma0_learner(
             )))
             for name in params
         }
+        if hp.get("flag_nap_projection", 0.0) != 0.0:
+            # NaP-style projection (arxiv 2407.01800, issue #1564 direction):
+            # normalization layers tie parameter-norm growth to effective-lr
+            # decay; projecting the weights back onto a bounded norm ball after
+            # each step caps that growth so the effective learning rate does
+            # not decay toward zero. Applied as a weight-side control on top of
+            # the shift-normalized update.
+            max_norm = float(hp.get("nap_max_norm", 4.0))
+            projected = {}
+            for name in params:
+                norm = jnp.linalg.norm(new_params[name])
+                scale = jnp.minimum(1.0, max_norm / (norm + 1e-8))
+                projected[name] = new_params[name] * scale
+            new_params = projected
         metrics = _step_metrics(new_params, x_norm, y, loss, logits)
         return new_params, UPGDAdaptiveNormState(  # type: ignore[call-arg]
             utility=utility, step=count, norm=new_norm, fast_mean=new_fast,
@@ -7477,6 +7491,28 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "shift_refractory": 200.0,
                 "flag_decay_to_init": 1.0,
                 "flag_utility_scaled_decay": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap4",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 4.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap8",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
                 "weight_decay": 0.01,
             },
         ),
