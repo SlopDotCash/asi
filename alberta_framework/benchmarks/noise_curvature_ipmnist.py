@@ -30,6 +30,7 @@ from alberta_framework._scan_resources import (
     require_step_units,
 )
 from alberta_framework.core.baseline_optimizers import Adam, AdamParamState
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import floating_tree_is_finite
 
 PAPER_REVISION: Final[str] = "arXiv:2509.19698v3"
@@ -452,7 +453,7 @@ def _controller_update(
     gradient_variance = jnp.stack(gradient_variances)
     effective_step = jnp.stack(effective_steps)
     normalized_sharpness = jnp.stack(normalizing_steps) * sharpness
-    controller_count = state.controller_count + jnp.asarray(1, dtype=jnp.int32)
+    controller_count = _saturating_int32_counter_increment(state.controller_count)
     decay = jnp.asarray(config.ema_decay, dtype=jnp.float32)
     mean_uncorrected = decay * state.curvature_mean + (1.0 - decay) * normalized_sharpness
     correction = 1.0 - decay ** controller_count.astype(jnp.float32)
@@ -563,7 +564,7 @@ def noise_curvature_step(
     examples = state.examples.at[index].set(x)
     labels = state.labels.at[index].set(y)
     next_index = (index + 1) % config.control_interval
-    buffer_count = state.buffer_count + jnp.asarray(1, dtype=jnp.int32)
+    buffer_count = _saturating_int32_counter_increment(state.buffer_count)
     candidate_state = state.replace(  # type: ignore[attr-defined]
         adam=new_adam,
         examples=examples,

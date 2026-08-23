@@ -94,6 +94,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     IPMNISTConfig,
     init_mlp_params,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 logger = logging.getLogger(__name__)
 
@@ -577,7 +578,7 @@ def rule_step(
     new_member_acc = p_vote * state.member_acc + (1.0 - p_vote) * member_hits
 
     # --- utility gate (champion equations; optional stale-utility cleanup).
-    clock = state.step + jnp.array(1, dtype=jnp.int32)
+    clock = _saturating_int32_counter_increment(state.step)
     utility_prev = dict(state.utility)
     utility_prev["w1"] = utility_prev["w1"] * (1.0 - f_ureset * shifted[:, None])
     utility = {

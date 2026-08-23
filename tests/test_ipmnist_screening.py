@@ -6450,3 +6450,61 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+    def test_lifetime_clocks_saturate_at_int32_max(self):
+        """Lifetime step/count clocks saturate at INT32_MAX instead of wrapping.
+
+        Screening and related benchmark clocks are declared as signed-int32
+        lifetime coordinates. The declared helper
+        ``_saturating_int32_counter_increment`` caps at 2147483647; a plain
+        ``+ jnp.array(1, dtype=jnp.int32)`` wraps to -2147483648. This pins
+        the four benchmark modules that now reuse the helper by name.
+        """
+
+        import jax.numpy as _jnp
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            UPGDIDBDState,
+            upgd_idbd_update,
+        )
+        from alberta_framework.benchmarks.upgd_ipmnist import LeanUPGDState, lean_upgd_w_update
+        from alberta_framework.core.normalizers import _saturating_int32_counter_increment
+
+        int_max = _jnp.array(2_147_483_647, dtype=_jnp.int32)
+        # helper itself saturates
+        assert int(_saturating_int32_counter_increment(int_max)) == 2_147_483_647
+        assert int(int_max + _jnp.array(1, dtype=_jnp.int32)) == -2_147_483_648
+        # screening UPGD-IDBD lifetime step
+        hp = {
+            "weight_decay": 0.01,
+            "meta_step_size": 0.001,
+            "initial_step_size": 0.01,
+            "utility_decay": 0.99,
+            "noise_std": 0.0,
+        }
+        params = {"w": _jnp.ones((2, 2), dtype=_jnp.float32)}
+        grads = {"w": _jnp.ones((2, 2), dtype=_jnp.float32)}
+        noise = {"w": _jnp.zeros((2, 2), dtype=_jnp.float32)}
+        state = UPGDIDBDState(
+            utility={"w": _jnp.zeros((2, 2), dtype=_jnp.float32)},
+            step=int_max,
+            log_alpha={"w": _jnp.zeros((2, 2), dtype=_jnp.float32)},
+            trace={"w": _jnp.zeros((2, 2), dtype=_jnp.float32)},
+        )
+        _, new_state = upgd_idbd_update(params, state, grads, noise, hp)
+        assert int(new_state.step) == 2_147_483_647
+        # lean UPGD-W (upgd_ipmnist)
+        lean_state = LeanUPGDState(
+            utility={"w": _jnp.zeros((2, 2), dtype=_jnp.float32)},
+            step=int_max,
+        )
+        _, lean_new = lean_upgd_w_update(
+            params,
+            lean_state,
+            grads,
+            noise,
+            {"weight_decay": 0.01, "utility_decay": 0.99, "step_size": 0.01},
+        )
+        assert int(lean_new.step) == 2_147_483_647
+
+
