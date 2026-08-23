@@ -2384,11 +2384,26 @@ def _make_adaptive_norm_sigma0_learner(
                 raise RuntimeError(
                     "decay_to_init arm is missing init_params in learner state"
                 )
-            decayed = {
-                name: params[name] * param_decay
-                + (1.0 - param_decay) * init_params[name]
-                for name in params
-            }
+            if hp.get("flag_utility_scaled_decay", 0.0) != 0.0:
+                # Utility-scaled pull-to-initialization (issue #1563 direction):
+                # weights with LOW utility decay strongly toward their initial
+                # values (a soft reset of unused structure), while HIGH-utility
+                # weights are retained. The pull strength scales with
+                # (1 - gate), where gate is the same utility gate used by the
+                # update step.
+                decayed = {}
+                for name in params:
+                    gate = jax.nn.sigmoid(
+                        (utility[name] / bias_correction) / global_max
+                    )
+                    pull = (1.0 - param_decay) * (1.0 - gate[name])
+                    decayed[name] = params[name] * (1.0 - pull) + pull * init_params[name]
+            else:
+                decayed = {
+                    name: params[name] * param_decay
+                    + (1.0 - param_decay) * init_params[name]
+                    for name in params
+                }
         else:
             decayed = {name: params[name] * param_decay for name in params}
         new_params = {
@@ -7443,6 +7458,15 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "norm_decay": 0.99,
                 "shift_refractory": 200.0,
                 "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
                 "weight_decay": 0.01,
             },
         ),
