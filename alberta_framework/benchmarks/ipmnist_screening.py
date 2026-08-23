@@ -2401,7 +2401,8 @@ def _make_adaptive_norm_sigma0_learner(
         }
         metrics = _step_metrics(new_params, x_norm, y, loss, logits)
         return new_params, UPGDAdaptiveNormState(  # type: ignore[call-arg]
-            utility=utility, step=count, norm=new_norm, fast_mean=new_fast
+            utility=utility, step=count, norm=new_norm, fast_mean=new_fast,
+            init_params=state.init_params,
         ), metrics
 
     return init_fn, full_step
