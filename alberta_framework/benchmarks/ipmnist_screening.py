@@ -2393,10 +2393,10 @@ def _make_adaptive_norm_sigma0_learner(
                 # update step.
                 decayed = {}
                 for name in params:
-                    gate = jax.nn.sigmoid(
+                    gate_val = jax.nn.sigmoid(
                         (utility[name] / bias_correction) / global_max
                     )
-                    pull = (1.0 - param_decay) * (1.0 - gate[name])
+                    pull = (1.0 - param_decay) * (1.0 - gate_val)
                     decayed[name] = params[name] * (1.0 - pull) + pull * init_params[name]
             else:
                 decayed = {
