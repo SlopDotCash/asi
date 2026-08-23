@@ -908,3 +908,38 @@ def test_associative_memory_json_roundtrip() -> None:
 
     assert restored == config
     assert restored.feature_family == "token_suffix_pair"
+
+
+def test_full_table_update_retains_every_write_of_the_step() -> None:
+    config = AssociativeMemoryConfig(
+        vocab_size=4,
+        block_size=4,
+        suffix_length=2,
+        feature_family="position_token",
+        max_features=8,
+    )
+    learner = AssociativeMemoryLearner(config)
+    state = learner.init()
+    warm = jnp.asarray([1, 1, 1, 1], dtype=jnp.int32)
+    for _ in range(40):
+        state = learner.update(state, warm, jnp.asarray(2, dtype=jnp.int32)).state
+    for step, label in ((0, 0), (1, 1), (2, 2)):
+        context = jnp.asarray(
+            [(2 + step) % 4, (3 + step) % 4, (1 + step) % 4, (2 * step) % 4],
+            dtype=jnp.int32,
+        )
+        state = learner.update(state, context, jnp.asarray(label, dtype=jnp.int32)).state
+
+    context = jnp.asarray([1, 2, 0, 2], dtype=jnp.int32)
+    before = learner.predict(state, context)
+    active = int(jnp.sum(before.feature_mask.astype(jnp.int32)))
+    assert active == 4
+    assert int(jnp.sum(state.counts > 0)) == config.max_features
+
+    result = learner.update(state, context, jnp.asarray(3, dtype=jnp.int32))
+    after = learner.predict(result.state, context)
+    assert int(jnp.sum(after.found[:active])) == active, (
+        "rows written by one update must not evict each other within that "
+        f"same update; retrievable found={[int(x) for x in after.found[:active]]}"
+    )
+    assert int(result.state.replacements - state.replacements) <= active

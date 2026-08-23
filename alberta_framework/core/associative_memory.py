@@ -897,7 +897,12 @@ class AssociativeMemoryLearner:
         empty = (state.counts <= 0.0) & eligible
         has_empty = jnp.any(empty)
         empty_slot = jnp.argmax(empty.astype(jnp.int32))
-        utility_score = jnp.where(eligible & (~empty), state.utility, jnp.inf)
+        occupied = eligible & (~empty)
+        fresh = occupied & (state.last_update == state.step_count)
+        candidate = occupied & (~fresh)
+        candidate_score = jnp.where(candidate, state.utility, jnp.inf)
+        occupied_score = jnp.where(occupied, state.utility, jnp.inf)
+        utility_score = jnp.where(jnp.any(candidate), candidate_score, occupied_score)
         low_utility_slot = jnp.argmin(utility_score)
         return jnp.where(has_empty, empty_slot, low_utility_slot), has_empty
 
