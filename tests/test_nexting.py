@@ -114,6 +114,80 @@ class TestForwardViewReturns:
         actual = jax.jit(forward_view_returns)(c, jnp.array(0.5, dtype=jnp.float32))
         chex.assert_trees_all_close(actual, jnp.array([2.75, 3.5, 3.0]))
 
+    @pytest.mark.parametrize("make_series", [np.asarray, jnp.asarray])
+    def test_integer_cumulants_are_promoted_to_float_returns(self, make_series) -> None:
+        """Integer cumulants must not truncate gamma into the series dtype.
+
+        With gamma=0.9 truncated to 0 the recursion degenerates to a raw
+        cumulant echo; the return must instead be computed in float.
+        """
+        c = make_series([1, 0, 0, 0, 1], dtype=np.int32)
+        g = forward_view_returns(jnp.asarray(c), gamma=0.9)
+        assert jnp.issubdtype(g.dtype, jnp.floating)
+        expected = forward_view_returns(
+            jnp.asarray([1, 0, 0, 0, 1], dtype=jnp.float32), gamma=0.9
+        )
+        chex.assert_trees_all_close(g, expected)
+
+    def test_boolean_cumulants_are_promoted_to_float_returns(self) -> None:
+        """Boolean cumulants must not turn the bootstrap into a logical OR.
+
+        Casting gamma=True makes every return collapse to all-True.
+        """
+        c = jnp.array([True, False, False, False, True])
+        g = forward_view_returns(c, gamma=0.9)
+        assert jnp.issubdtype(g.dtype, jnp.floating)
+        expected = forward_view_returns(
+            jnp.asarray([1, 0, 0, 0, 1], dtype=jnp.float32), gamma=0.9
+        )
+        chex.assert_trees_all_close(g, expected)
+
+    def test_integer_cumulants_preserve_fractional_terminal_value(self) -> None:
+        """A fractional terminal_value must survive alongside int series."""
+        c = jnp.array([1, 0, 1], dtype=jnp.int32)
+        g = forward_view_returns(c, gamma=0.5, terminal_value=7.6)
+        assert jnp.issubdtype(g.dtype, jnp.floating)
+        # G_2 = 1 + 0.5*7.6 = 4.8; G_1 = 0 + 0.5*4.8 = 2.4; G_0 = 1 + 0.5*2.4 = 2.2
+        chex.assert_trees_all_close(g, jnp.array([2.2, 2.4, 4.8]), atol=1e-6)
+
+    @pytest.mark.parametrize("gamma", [0.9, 0.5])
+    def test_multi_horizon_integer_cumulants_decay_per_horizon(self, gamma: float) -> None:
+        gammas = jnp.array([gamma, gamma + 0.09], dtype=jnp.float32)
+        c_int = jnp.array([1, 0, 0, 0, 1], dtype=jnp.int32)
+        c_float = c_int.astype(jnp.float32)
+        g_int = multi_horizon_returns(c_int, gammas)
+        g_float = multi_horizon_returns(c_float, gammas)
+        assert jnp.issubdtype(g_int.dtype, jnp.floating)
+        chex.assert_trees_all_close(g_int, g_float, atol=1e-6)
+
+    def test_multi_channel_boolean_cumulants_match_float_channels(self) -> None:
+        cumulants_bool = jnp.array([[True, False], [False, True]])
+        cumulants_float = cumulants_bool.astype(jnp.float32)
+        gammas = jnp.array([0.0, 0.9], dtype=jnp.float32)
+        g_bool = multi_channel_horizon_returns(cumulants_bool, gammas)
+        g_float = multi_channel_horizon_returns(cumulants_float, gammas)
+        assert jnp.issubdtype(g_bool.dtype, jnp.floating)
+        chex.assert_trees_all_close(g_bool, g_float, atol=1e-6)
+
+    def test_jit_integer_cumulants_produce_float_returns(self) -> None:
+        c = jnp.array([1, 0, 1], dtype=jnp.int32)
+        actual = jax.jit(forward_view_returns)(c, jnp.array(0.9, dtype=jnp.float32))
+        expected = forward_view_returns(c.astype(jnp.float32), gamma=0.9)
+        assert jnp.issubdtype(actual.dtype, jnp.floating)
+        chex.assert_trees_all_close(actual, expected)
+
+    def test_float64_cumulant_series_keeps_float64_output_under_x64(self) -> None:
+        with jax.enable_x64():
+            c = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float64)
+            g = forward_view_returns(c, gamma=0.5)
+            assert g.dtype == jnp.float64
+            # G_2 = 3; G_1 = 2 + 0.5*3 = 3.5; G_0 = 1 + 0.5*3.5 = 2.75
+            chex.assert_trees_all_close(g, jnp.array([2.75, 3.5, 3.0]))
+
+    def test_float32_series_dtype_is_unchanged(self) -> None:
+        c = jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32)
+        assert forward_view_returns(c, gamma=0.5).dtype == jnp.float32
+
 
 class TestMultiHorizon:
     def test_shape(self) -> None:
