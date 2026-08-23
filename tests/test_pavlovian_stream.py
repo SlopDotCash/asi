@@ -485,6 +485,17 @@ def test_construct_canonicalizes_noise_std_to_float32() -> None:
     assert stream._noise_std == float(np.float32(0.1))  # noqa: SLF001
 
 
+# Probing double-rounding via longdouble requires that longdouble has more mantissa
+# bits than binary64 (e.g. x86-64 80-bit float). On platforms where longdouble has
+# the same width as float64 (such as aarch64 macOS/Linux), these probes cannot be
+# constructed in longdouble and the Fraction-parametrized tests below cover single-rounding.
+_requires_wider_longdouble = pytest.mark.skipif(
+    np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant,
+    reason="requires np.longdouble to be wider than float64 (nmant > 53)",
+)
+
+
+@_requires_wider_longdouble
 def test_construct_narrows_original_noise_real_once() -> None:
     midpoint_plus = (
         np.longdouble(1.0)
@@ -500,6 +511,7 @@ def test_construct_narrows_original_noise_real_once() -> None:
     assert stream._noise_std == float(np.float32(midpoint_plus))  # noqa: SLF001
 
 
+@_requires_wider_longdouble
 def test_construct_rejects_negative_real_that_rounds_to_zero() -> None:
     below_zero = -np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
     assert float(below_zero) == 0.0
