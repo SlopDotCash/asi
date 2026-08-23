@@ -68,12 +68,13 @@ def _preflight_state_resources(feature_dim: int) -> None:
 
 def _preflight_update_working_set(feature_dim: int) -> None:
     # The update retains the source covariance, the rank-one outer product,
-    # the proposed covariance, and the transaction-selected covariance.  The
+    # the proposed unsymmetrized covariance, the symmetrized covariance, and
+    # the transaction-selected covariance as five logical matrix banks.  The
     # width terms are x, source weights, Px, gain, proposed weights, selected
     # weights, and the neutralized gain returned to the caller.  In
     # particular, the selected result is a distinct logical buffer even when
     # an execution backend can sometimes donate/alias it.
-    update_scalars = 4 * feature_dim * feature_dim + 7 * feature_dim + 8
+    update_scalars = 5 * feature_dim * feature_dim + 7 * feature_dim + 8
     if 4 * update_scalars > _INT32_MAX:
         raise ValueError(
             "reward-model update working set byte count must fit signed int32"
@@ -100,6 +101,18 @@ def _saturating_int32_increment(value: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     counter = jnp.asarray(value, dtype=jnp.int32)
     return jnp.minimum(jnp.maximum(counter, 0), maximum - 1) + 1
+
+
+def _symmetrize_matrix(matrix: Array) -> Array:
+    """Enforce exact float32 matrix symmetry without intermediate addition overflow."""
+    half = jnp.asarray(0.5, dtype=matrix.dtype)
+    n = matrix.shape[0]
+    i, j = jnp.indices((n, n))
+    i_min = jnp.minimum(i, j)
+    j_max = jnp.maximum(i, j)
+    val_a = matrix[i_min, j_max]
+    val_b = matrix[j_max, i_min]
+    return jnp.where(i_min == j_max, val_a, half * val_a + half * val_b)
 
 
 @dataclass(frozen=True)
@@ -291,7 +304,7 @@ class RLSRewardModel:
         gain = covariance_features / denominator
         next_weights = state.weights + gain * error
         next_covariance = (state.covariance - jnp.outer(gain, covariance_features)) / forgetting
-        next_covariance = 0.5 * (next_covariance + next_covariance.T)
+        next_covariance = _symmetrize_matrix(next_covariance)
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)
         abs_error = jnp.abs(error)

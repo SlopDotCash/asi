@@ -10,7 +10,11 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework.core.reward_model import RLSRewardModel, RLSRewardModelConfig
+from alberta_framework.core.reward_model import (
+    RLSRewardModel,
+    RLSRewardModelConfig,
+    RLSRewardModelState,
+)
 
 
 @pytest.mark.parametrize("operation", ["predict", "update"])
@@ -366,16 +370,37 @@ def test_rls_reward_model_covariance_preserves_exact_symmetry_single_step() -> N
 
 
 def test_rls_reward_model_covariance_preserves_exact_symmetry_multi_step() -> None:
-    """Covariance update must remain exactly symmetric over multi-step streams."""
+    """Covariance update must remain exactly symmetric at every compiled step."""
     model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4, forgetting=0.99, ridge=1.0))
     state = model.init()
     rng = np.random.default_rng(12345)
 
-    for _ in range(100):
+    for step in range(100):
         features = jnp.array(rng.standard_normal(4), dtype=jnp.float32)
         reward = jnp.array(rng.standard_normal(), dtype=jnp.float32)
         state = model.update(state, features, reward).state
+        cov = np.array(state.covariance)
+        assert np.array_equal(cov, cov.T), f"Covariance asymmetry at step {step}"
+        assert np.max(np.abs(cov - cov.T)) == 0.0
 
-    cov = np.array(state.covariance)
-    assert np.array_equal(cov, cov.T)
-    assert np.max(np.abs(cov - cov.T)) == 0.0
+
+def test_rls_reward_model_covariance_symmetrization_avoids_finite_overflow() -> None:
+    """Finite extreme covariance does not overflow or trigger false rollback."""
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
+    cov = jnp.diag(jnp.array([2e38, 2e38], dtype=jnp.float32))
+    state = RLSRewardModelState(
+        weights=jnp.zeros(2, dtype=jnp.float32),
+        covariance=cov,
+        abs_error_ema=jnp.array(0.0, dtype=jnp.float32),
+        step_count=jnp.array(0, dtype=jnp.int32),
+    )
+    features = jnp.zeros(2, dtype=jnp.float32)
+    reward = jnp.array(1.0, dtype=jnp.float32)
+
+    result = model.update(state, features, reward)
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    assert float(result.error) == 1.0
+    cov_out = np.array(result.state.covariance)
+    assert np.all(np.isfinite(cov_out))
+    assert np.array_equal(cov_out, cov_out.T)

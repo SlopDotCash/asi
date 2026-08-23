@@ -41,11 +41,11 @@ def test_rls_one_bank_and_persistent_fit_while_update_working_set_does_not() -> 
     dim = _WORKING_SET_OVERFLOW
     one_bank_bytes = 4 * (dim * dim)
     persistent_bytes = 4 * (dim * dim + dim + 2)
-    contributor_update_bytes = 4 * (3 * dim * dim + 5 * dim + 8)
-    update_bytes = 4 * (4 * dim * dim + 7 * dim + 8)
+    contributor_update_bytes = 4 * (4 * dim * dim + 7 * dim + 8)
+    update_bytes = 4 * (5 * dim * dim + 7 * dim + 8)
     assert one_bank_bytes <= _INT32_MAX
     assert persistent_bytes <= _INT32_MAX
-    assert contributor_update_bytes <= _INT32_MAX
+    assert contributor_update_bytes > _INT32_MAX
     assert update_bytes > _INT32_MAX
     config = RLSRewardModelConfig(feature_dim=dim)
     assert config.feature_dim == dim
@@ -80,14 +80,24 @@ def test_legal_rls_update_identity_is_unchanged() -> None:
 
 def test_rls_exact_last_legal_update_width_and_first_overflow() -> None:
     scalar_limit = _INT32_MAX // 4
-    # 4*d^2 + 7*d + 8 <= scalar_limit.
-    last_legal = (math.isqrt(16 * scalar_limit - 79) - 7) // 8
-    assert 4 * last_legal * last_legal + 7 * last_legal + 8 <= scalar_limit
+    # 5*d^2 + 7*d + 8 <= scalar_limit.
+    last_legal = (math.isqrt(20 * scalar_limit - 111) - 7) // 10
+    assert 5 * last_legal * last_legal + 7 * last_legal + 8 <= scalar_limit
     first_overflowing = last_legal + 1
-    assert 4 * first_overflowing * first_overflowing + 7 * first_overflowing + 8 > scalar_limit
+    assert 5 * first_overflowing * first_overflowing + 7 * first_overflowing + 8 > scalar_limit
     _preflight_update_working_set(last_legal)
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_update_working_set(first_overflowing)
+
+
+def test_rls_update_working_set_rejects_eleven_thousand_features_boundary() -> None:
+    dim = 11_000
+    four_bank_bytes = 4 * (4 * dim * dim + 7 * dim + 8)
+    five_bank_bytes = 4 * (5 * dim * dim + 7 * dim + 8)
+    assert four_bank_bytes <= _INT32_MAX
+    assert five_bank_bytes > _INT32_MAX
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_update_working_set(dim)
 
 
 @pytest.mark.parametrize(
