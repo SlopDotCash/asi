@@ -23,7 +23,7 @@ import dataclasses
 import math
 import operator
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from numbers import Real
 from typing import Any, SupportsIndex, cast
 
@@ -34,6 +34,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework._bounded_containers import require_bounded_container_tree
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
 )
@@ -86,6 +87,8 @@ NORMALIZER_LIFETIME_COUNTER_NBYTES = 12
 NORMALIZER_LIFETIME_COUNTER_DELTA_NBYTES = 8
 
 _INT32_MAX = 2**31 - 1
+_MAX_NORMALIZER_STATE_LEAVES = 4096
+_MAX_NORMALIZER_STATE_DEPTH = 32
 _UINT32_MAX = 2**32 - 1
 _FLOAT32_CONSECUTIVE_INTEGER_LIMIT = 2**24
 
@@ -973,9 +976,38 @@ def _preflight_normalizer_update_working_set(
         )
 
 
+def _normalizer_state_children(node: object) -> Iterable[object] | None:
+    node_type = type(node)
+    if node_type is dict:
+        values = cast(dict[Any, Any], node)
+        if len(values) > _MAX_NORMALIZER_STATE_LEAVES:
+            raise ValueError(
+                "normalizer state length must be an integer in "
+                f"[0, {_MAX_NORMALIZER_STATE_LEAVES}]"
+            )
+        return values.values()
+    if node_type is list or node_type is tuple:
+        sequence = cast(list[Any] | tuple[Any, ...], node)
+        if len(sequence) > _MAX_NORMALIZER_STATE_LEAVES:
+            raise ValueError(
+                "normalizer state length must be an integer in "
+                f"[0, {_MAX_NORMALIZER_STATE_LEAVES}]"
+            )
+        return sequence
+    return None
+
+
 def measure_normalizer_state_nbytes(state: AnyNormalizerState) -> int:
     """Measure persistent JAX-array bytes in one concrete normalizer state."""
 
+    require_bounded_container_tree(
+        state,
+        children=_normalizer_state_children,
+        max_depth=_MAX_NORMALIZER_STATE_DEPTH,
+        max_nodes=_MAX_NORMALIZER_STATE_LEAVES,
+        name="normalizer state",
+        kind="pytree",
+    )
     return sum(
         int(leaf.size) * int(leaf.dtype.itemsize)
         for leaf in jax.tree.leaves(state)
