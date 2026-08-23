@@ -7324,6 +7324,34 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "weight_decay": 0.001,
             },
         ),
+        # l2-init composition across the shift-normalizer hyperparameter axes
+        # (shift_k and norm_decay), keeping weight_decay at the 0.01 optimum.
+        (
+            "sigma0_shiftnorm_d099_l2init_k05",
+            {
+                "norm_decay": 0.99,
+                "shift_k": 0.5,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_k2",
+            {
+                "norm_decay": 0.99,
+                "shift_k": 2.0,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d098_l2init",
+            {
+                "norm_decay": 0.98,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
