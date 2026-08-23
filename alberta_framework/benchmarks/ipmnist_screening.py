@@ -2207,13 +2207,15 @@ class UPGDAdaptiveNormState:
 
     ``norm.count`` is per-feature ``f32[d]`` for the shift-triggered
     normalizer and scalar for the warm-restart normalizer; ``fast_mean`` is
-    the fast detection EMA in both.
+    the fast detection EMA in both.  ``init_params`` is populated only by
+    the l2-init composition arms (decay toward the initial weights).
     """
 
     utility: dict[str, Array]
     step: Array
     norm: EMANormState
     fast_mean: Array
+    init_params: dict[str, Array] | None = None
 
 
 def shift_adaptive_normalize(
@@ -2318,12 +2320,20 @@ def _make_adaptive_norm_sigma0_learner(
     hp: Mapping[str, float],
     normalize: _AdaptiveNormalizeFn,
     init_count: Callable[[int], Array],
+    *,
+    decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Shared sigma0 (normalize + utility-gated SGD + decay) learner over an
     adaptive normalizer.  The update equations are exactly the sigma0
     champion's (``_make_upgd_ema_norm_ext_learner`` defaults): explicit zero
     perturbation, bias-corrected utility EMA, global-max sigmoid gate,
-    decoupled decay.  The RNG key is deliberately untouched."""
+    decoupled decay.  The RNG key is deliberately untouched.
+
+    With ``decay_to_init=True`` the decoupled decay pulls toward the initial
+    weights (Kumar et al. l2-init composition) instead of zero; the
+    trajectory is bit-identical to the zero-decay arm when
+    ``weight_decay = 0``.
+    """
     step_size = hp["step_size"]
     utility_decay = hp["utility_decay"]
     param_decay = 1.0 - step_size * hp["weight_decay"]
@@ -2339,6 +2349,9 @@ def _make_adaptive_norm_sigma0_learner(
                 count=init_count(input_dim),
             ),
             fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+            init_params={name: value for name, value in params.items()}
+            if decay_to_init
+            else None,
         )
 
     def full_step(
@@ -2365,17 +2378,60 @@ def _make_adaptive_norm_sigma0_learner(
         global_max = jnp.max(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
         )
+        if decay_to_init:
+            init_params = state.init_params
+            if init_params is None:
+                raise RuntimeError(
+                    "decay_to_init arm is missing init_params in learner state"
+                )
+            if hp.get("flag_utility_scaled_decay", 0.0) != 0.0:
+                # Utility-scaled pull-to-initialization (issue #1563 direction):
+                # weights with LOW utility decay strongly toward their initial
+                # values (a soft reset of unused structure), while HIGH-utility
+                # weights are retained. The pull strength scales with
+                # (1 - gate), where gate is the same utility gate used by the
+                # update step.
+                decayed = {}
+                for name in params:
+                    gate_val = jax.nn.sigmoid(
+                        (utility[name] / bias_correction) / global_max
+                    )
+                    pull = (1.0 - param_decay) * (1.0 - gate_val)
+                    decayed[name] = params[name] * (1.0 - pull) + pull * init_params[name]
+            else:
+                decayed = {
+                    name: params[name] * param_decay
+                    + (1.0 - param_decay) * init_params[name]
+                    for name in params
+                }
+        else:
+            decayed = {name: params[name] * param_decay for name in params}
         new_params = {
-            name: params[name] * param_decay
+            name: decayed[name]
             - step_size
             * (grads[name] * (1.0 - jax.nn.sigmoid(
                 (utility[name] / bias_correction) / global_max
             )))
             for name in params
         }
+        if hp.get("flag_nap_projection", 0.0) != 0.0:
+            # NaP-style projection (arxiv 2407.01800, issue #1564 direction):
+            # normalization layers tie parameter-norm growth to effective-lr
+            # decay; projecting the weights back onto a bounded norm ball after
+            # each step caps that growth so the effective learning rate does
+            # not decay toward zero. Applied as a weight-side control on top of
+            # the shift-normalized update.
+            max_norm = float(hp.get("nap_max_norm", 4.0))
+            projected = {}
+            for name in params:
+                norm = jnp.linalg.norm(new_params[name])
+                scale = jnp.minimum(1.0, max_norm / (norm + 1e-8))
+                projected[name] = new_params[name] * scale
+            new_params = projected
         metrics = _step_metrics(new_params, x_norm, y, loss, logits)
         return new_params, UPGDAdaptiveNormState(  # type: ignore[call-arg]
-            utility=utility, step=count, norm=new_norm, fast_mean=new_fast
+            utility=utility, step=count, norm=new_norm, fast_mean=new_fast,
+            init_params=state.init_params,
         ), metrics
 
     return init_fn, full_step
@@ -2400,7 +2456,8 @@ def _make_upgd_shiftnorm_learner(
         )
 
     return _make_adaptive_norm_sigma0_learner(
-        hp, normalize, lambda d: jnp.zeros(d, dtype=jnp.float32)
+        hp, normalize, lambda d: jnp.zeros(d, dtype=jnp.float32),
+        decay_to_init=hp.get("flag_decay_to_init", 0.0) != 0.0,
     )
 
 
@@ -3305,6 +3362,70 @@ class UPGDCBPState:
     utility: dict[str, Array]
     step: Array
     cbp: CBPState
+
+
+@chex.dataclass(frozen=True)
+class UPGDL2InitCBPState:
+    """UPGD L2-init state (decay toward initial weights) plus CBP
+    recycling state. Composes the regenerative-regularization mechanism
+    (Kumar et al.) with the bounded budget-recycling mechanism — the two
+    regularizers act on different axes (parameter magnitude vs. element
+    retention), so the composition is not trivially redundant."""
+
+    utility: dict[str, Array]
+    step: Array
+    init_params: dict[str, Array]
+    cbp: CBPState
+
+
+def _make_upgd_l2init_cbp_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    noise_std = hp["noise_std"]
+
+    def init_fn(params: dict[str, Array]) -> UPGDL2InitCBPState:
+        return UPGDL2InitCBPState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            init_params={name: value for name, value in params.items()},
+            cbp=_init_cbp_state(params["w1"].shape[1], params["w2"].shape[1]),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: UPGDL2InitCBPState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], UPGDL2InitCBPState, StepMetrics]:
+        key_noise, key_cbp = jr.split(key)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x, y
+        )
+        _, _, a1, z2, a2 = _forward_with_activations(params, x)
+        da1, da2 = _activation_loss_grads(params, logits, y, z2)
+        noise = _sorted_flat_noise(key_noise, params, noise_std)
+        l2init_state = UPGDL2InitState(  # type: ignore[call-arg]
+            utility=state.utility, step=state.step, init_params=state.init_params
+        )
+        new_params, new_l2init = upgd_l2init_update(
+            params, l2init_state, grads, noise, hp
+        )
+        opt_arrays = {name: new_l2init.utility[name][None, ...] for name in new_params}
+        new_params, updated_opt_arrays, new_cbp = _cbp_update(
+            new_params, opt_arrays, state.cbp, a1, da1, a2, da2, key_cbp, hp
+        )
+        assert updated_opt_arrays is not None
+        new_utility = {name: updated_opt_arrays[name][0] for name in new_params}
+        metrics = _step_metrics(new_params, x, y, loss, logits)
+        return new_params, UPGDL2InitCBPState(  # type: ignore[call-arg]
+            utility=new_utility,
+            step=new_l2init.step,
+            init_params=state.init_params,
+            cbp=new_cbp,
+        ), metrics
+
+    return init_fn, full_step
 
 
 def _make_upgd_cbp_learner(
@@ -6772,6 +6893,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             factory=_make_upgd_cbp_learner,
             description="UPGD-W with CBP-style dormant-unit recycling.",
         ),
+        ScreeningSpec(
+            name="upgd_l2init_cbp",
+            base_learner="upgd_w",
+            mechanism="l2_init_dormant_unit_recycling",
+            hyperparameters=_upgd_hp(**_CBP_DEFAULTS),
+            factory=_make_upgd_l2init_cbp_learner,
+            description=(
+                "UPGD L2-init (decay toward initial weights) composed with "
+                "CBP-style dormant-unit recycling: magnitude regularization "
+                "plus element-retention budget on orthogonal axes."
+            ),
+        ),
         # --- Wave 5: star around the confirmed upgd_ema_norm result (0.85357
         # at 200 tasks).  Its UPGD-W hyperparameters were tuned for RAW pixel
         # inputs; under EMA-normalized inputs the effective gradient scale,
@@ -7266,6 +7399,181 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ("sigma0_shiftnorm_d099_f08", {"norm_decay": 0.99, "fast_decay": 0.8}),
         ("sigma0_shiftnorm_d099_f095", {"norm_decay": 0.99, "fast_decay": 0.95}),
         ("sigma0_shiftnorm_d099_r200", {"norm_decay": 0.99, "shift_refractory": 200.0}),
+        # l2-init composition: decoupled decay toward the initial weights
+        # (Kumar et al.) on top of the screen-winning shift-normalizer base,
+        # same 0.01 decay scale as the raw l2init arm and co-best
+        # l2init_ema_norm comparison row.
+        (
+            "sigma0_shiftnorm_d099_l2init",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        # l2-init strength sweep: 0.01 is the shared default; 0.05 (stronger
+        # pull toward init) and 0.001 (weaker) bracket it.
+        (
+            "sigma0_shiftnorm_d099_l2init_wd05",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.05,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_wd001",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.001,
+            },
+        ),
+        # l2-init composition across the shift-normalizer hyperparameter axes
+        # (shift_k and norm_decay), keeping weight_decay at the 0.01 optimum.
+        (
+            "sigma0_shiftnorm_d099_l2init_k05",
+            {
+                "norm_decay": 0.99,
+                "shift_k": 0.5,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_k2",
+            {
+                "norm_decay": 0.99,
+                "shift_k": 2.0,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d098_l2init",
+            {
+                "norm_decay": 0.98,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_f095_l2init",
+            {
+                "norm_decay": 0.99,
+                "fast_decay": 0.95,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init_us",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap4",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 4.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap8",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap12",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 12.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap16",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 16.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init_us_nap8",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init_us_nap8_wd008",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
+                "weight_decay": 0.008,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init_us_nap8_wd012",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
+                "weight_decay": 0.012,
+            },
+        ),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
