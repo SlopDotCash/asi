@@ -7306,6 +7306,24 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "weight_decay": 0.01,
             },
         ),
+        # l2-init strength sweep: 0.01 is the shared default; 0.05 (stronger
+        # pull toward init) and 0.001 (weaker) bracket it.
+        (
+            "sigma0_shiftnorm_d099_l2init_wd05",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.05,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_wd001",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.001,
+            },
+        ),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
