@@ -682,9 +682,22 @@ def replace_units_with_flags(
         accum = accum_arr[layer_idx] + rate * n_eligible
         # Will we replace one unit this step?
         do_replace = accum >= 1.0
-        # Pick lowest-utility mature unit from the *current* CBP state.
+        # Pick lowest-utility mature unit from the *current* CBP state,
+        # ranking by the bias-corrected utility EMA (Dohare et al. 2024,
+        # Eq. 7-8): raw / (1 - decay^t), where t is the per-unit update
+        # count. The raw EMA under-weights young units' recent activity,
+        # which re-replaces freshly reset units instead of the genuinely
+        # low-utility mature ones.
+        age_clamped = jnp.maximum(new_cbp_state.ages[layer_idx], 1)
+        decay_power = jnp.power(
+            jnp.asarray(config.decay_rate, dtype=jnp.float32),
+            age_clamped.astype(jnp.float32),
+        )
+        bias_corrected_utility = new_cbp_state.utilities[layer_idx] / (
+            1.0 - decay_power
+        )
         unit_idx, has_candidate = _select_replacement_index(
-            new_cbp_state.utilities[layer_idx],
+            bias_corrected_utility,
             new_cbp_state.ages[layer_idx],
             config.maturity_threshold,
         )
