@@ -483,21 +483,51 @@ def _select_replacement_index(
     utility: Array,
     age: Array,
     maturity_threshold: int,
+    decay_rate: float,
 ) -> tuple[Array, Array]:
-    """Pick the index of the lowest-utility mature unit, if any.
+    """Pick the index of the lowest bias-corrected-utility mature unit, if any.
 
     A unit is "mature" iff ``age >= maturity_threshold``. Among mature
-    units we pick the one with the smallest utility. If no mature unit
-    exists, ``selected`` is ``-1`` (sentinel) and ``has_candidate`` is
-    ``False``.
+    units we rank by the *bias-corrected* utility of Dohare et al. 2024
+    (Nature 632, 768-774), Eq. 8:
 
-    Implementation: replace the utility of immature or non-finite units
-    with ``+inf`` before taking ``argmin`` so they are never chosen.
+        u_hat_l[i] = u_l[i] / (1 - decay_rate ** age_l[i])
+
+    and pick the unit with the smallest ``u_hat``. The raw utility EMA
+    ``u`` (Eq. 7) starts at 0 and warms up as ``(1 - decay_rate ** age)``,
+    so a freshly matured unit reads far below its true utility (e.g. at
+    ``decay_rate=0.99`` a unit of age 100 reads only ``1 - 0.99**100 =
+    0.634`` of it) while a long-lived unit reads at ~1.0. Because
+    :func:`_replace_one_unit` resets a replaced unit's age *and* utility
+    to 0, eligible units in a layer genuinely differ in age, so this
+    warm-up bias does not cancel: ranking on the raw EMA systematically
+    targets the youngest eligible units -- the very units the maturity
+    threshold exists to protect -- and in the pathological case CBP
+    re-replaces its own freshly reset unit every cycle. Dividing by the
+    per-unit bias correction before selection removes this, matching the
+    reference GnT implementation (``lop/algos/gnt.py``).
+
+    If no mature unit exists, ``selected`` is ``-1`` (sentinel) and
+    ``has_candidate`` is ``False``.
+
+    Implementation: replace the corrected utility of immature or
+    non-finite units with ``+inf`` before taking ``argmin`` so they are
+    never chosen. Eligibility semantics (``age >= maturity_threshold &
+    isfinite(utility)``) are unchanged. When ``maturity_threshold >= 1``
+    every eligible unit has ``age >= 1``, so its bias correction
+    ``1 - decay_rate ** age`` is strictly positive and the corrected
+    utility is finite; the degenerate ``maturity_threshold == 0`` case can
+    make an age-0 unit eligible with a zero correction (``0 / 0`` = NaN),
+    so the ``+inf`` mask also drops any non-finite corrected utility to
+    keep ``argmin`` from selecting it.
 
     Args:
-        utility: Per-unit utility array, shape ``(num_units,)``.
+        utility: Per-unit raw utility EMA array, shape ``(num_units,)``.
         age: Per-unit age array (same shape).
         maturity_threshold: Minimum age for eligibility.
+        decay_rate: EMA decay ``eta`` forming the per-unit bias correction
+            ``1 - decay_rate ** age`` (Eq. 8). Matches the ``decay_rate``
+            passed to :func:`update_utility`; cast to float32 as there.
 
     Returns:
         Tuple ``(index, has_candidate)`` where ``index`` is the chosen
@@ -505,7 +535,11 @@ def _select_replacement_index(
     """
     mature = age >= jnp.asarray(maturity_threshold, dtype=age.dtype)
     eligible = mature & jnp.isfinite(utility)
-    masked_utility = jnp.where(eligible, utility, jnp.inf)
+    decay = jnp.asarray(decay_rate, dtype=jnp.float32)
+    bias_correction = 1.0 - decay ** age.astype(jnp.float32)
+    corrected_utility = utility.astype(jnp.float32) / bias_correction
+    selectable = eligible & jnp.isfinite(corrected_utility)
+    masked_utility = jnp.where(selectable, corrected_utility, jnp.inf)
     has_candidate = jnp.any(eligible)
     idx = jnp.argmin(masked_utility)
     selected = jnp.where(has_candidate, idx, jnp.int32(-1))
@@ -687,6 +721,7 @@ def replace_units_with_flags(
             new_cbp_state.utilities[layer_idx],
             new_cbp_state.ages[layer_idx],
             config.maturity_threshold,
+            config.decay_rate,
         )
         # Only replace if we both budgeted for it AND found a mature unit.
         gated = jnp.logical_and(do_replace, has_candidate)

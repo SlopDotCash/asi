@@ -222,7 +222,7 @@ class TestUtilityUpdate:
         new = update_utility(cbp_state, activations, grads, 0.9)
         assert bool(jnp.all(jnp.isfinite(new.utilities[0])))
         chex.assert_trees_all_close(new.utilities[0][0], cbp_state.utilities[0][0])
-        idx, has = _select_replacement_index(new.utilities[0], new.ages[0], 10)
+        idx, has = _select_replacement_index(new.utilities[0], new.ages[0], 10, 0.9)
         assert bool(has)
         assert int(idx) == 1
 
@@ -243,6 +243,139 @@ class TestUtilityUpdate:
         assert bool(jnp.all(jnp.isfinite(new.utilities[0])))
         expected = jnp.abs(activations[0] * grads[0])
         chex.assert_trees_all_close(new.utilities[0], expected)
+
+
+class TestBiasCorrectedSelection:
+    """Replacement must rank by the bias-corrected utility (Dohare et al. 2024, Eq. 8).
+
+    The raw utility EMA of :func:`update_utility` (Eq. 7) starts at 0 and
+    warms up as ``(1 - decay_rate ** age)``, so a freshly matured unit
+    reads far below its true utility while a long-lived unit reads at
+    ~1.0. Ranking on that raw EMA systematically targets the youngest
+    eligible units. Both scenarios below drive the real ``update_utility``
+    EMA and would replace the wrong (younger, strictly more useful) unit
+    under raw-EMA ranking; the bias-corrected ranking must not.
+    """
+
+    @staticmethod
+    def _drive_single_unit(contribution: float, steps: int, decay: float) -> tuple[float, int]:
+        """Run the real ``update_utility`` EMA for one unit and return (utility, age).
+
+        A one-unit layer with constant post-activation ``contribution`` and
+        unit gradient makes ``|act * grad| == contribution`` each step, so the
+        raw EMA after ``steps`` updates is ``contribution * (1 - decay**steps)``.
+        """
+        state = ContinualBackpropState(  # type: ignore[call-arg]
+            utilities=(jnp.zeros(1, dtype=jnp.float32),),
+            ages=(jnp.zeros(1, dtype=jnp.int32),),
+            replacement_accumulators=jnp.zeros(1, dtype=jnp.float32),
+            rng_key=jr.key(0),
+        )
+        acts = (jnp.array([contribution], dtype=jnp.float32),)
+        grads = (jnp.array([1.0], dtype=jnp.float32),)
+        for _ in range(steps):
+            state = update_utility(state, acts, grads, decay)
+        return float(state.utilities[0][0]), int(state.ages[0][0])
+
+    def test_young_strong_unit_not_replaced_over_old_weak_unit(self) -> None:
+        """Falsifier A: a just-matured strong unit must not be replaced.
+
+        unit0 sees constant contribution 1.0 for 100 steps (age 100);
+        unit1 sees constant 0.9 for 700 steps (age 700). The raw EMA reads
+        unit0 (~0.6340) below unit1 (~0.8992) purely from warm-up bias, so
+        raw-EMA ranking replaces the strictly more useful unit0. Corrected
+        (Eq. 8), unit0 (~1.0) > unit1 (~0.9), so the fix replaces unit1.
+        """
+        decay = 0.99
+        u0, a0 = self._drive_single_unit(1.0, 100, decay)
+        u1, a1 = self._drive_single_unit(0.9, 700, decay)
+        assert a0 == 100 and a1 == 700
+        # Documented buggy premise: raw EMA depresses the younger, stronger unit.
+        assert u0 == pytest.approx(0.6340, abs=1e-3)
+        assert u1 == pytest.approx(0.8992, abs=1e-3)
+        assert u0 < u1
+        utility = jnp.array([u0, u1], dtype=jnp.float32)
+        age = jnp.array([a0, a1], dtype=jnp.int32)
+        # Raw-EMA argmin (the buggy statistic) would pick the younger unit0.
+        raw_masked = jnp.where(age >= 100, utility, jnp.inf)
+        assert int(jnp.argmin(raw_masked)) == 0
+        # The bias-corrected selection must pick unit1 instead.
+        idx, has = _select_replacement_index(utility, age, 100, decay)
+        assert bool(has)
+        assert int(idx) == 1
+
+    def test_repeat_victim_freshly_reset_unit_not_re_replaced(self) -> None:
+        """Falsifier B: a freshly reset unit must not be re-replaced by warm-up bias.
+
+        Four units. unit2 was reset 100 steps ago (age 100) yet carries the
+        largest true contribution (1.0); the three long-lived units (age 700)
+        carry a smaller true contribution (0.9). The raw EMA reads unit2
+        (~0.6340) below the long-lived units (~0.8992), so raw-EMA ranking
+        re-replaces the freshly reset unit2. Corrected (Eq. 8), unit2 recovers
+        to ~1.0 (the maximum) and the argmin falls on a long-lived unit --
+        index 0 -- never the repeat victim unit2.
+        """
+        decay = 0.99
+        u_young, a_young = self._drive_single_unit(1.0, 100, decay)
+        u_old, a_old = self._drive_single_unit(0.9, 700, decay)
+        utility = jnp.array([u_old, u_old, u_young, u_old], dtype=jnp.float32)
+        age = jnp.array([a_old, a_old, a_young, a_old], dtype=jnp.int32)
+        # Buggy raw-EMA statistic singles out the freshly reset unit2.
+        raw_masked = jnp.where(age >= 100, utility, jnp.inf)
+        assert int(jnp.argmin(raw_masked)) == 2
+        # The fix must not single out unit2; the argmin falls on index 0.
+        idx, has = _select_replacement_index(utility, age, 100, decay)
+        assert bool(has)
+        assert int(idx) != 2
+        assert int(idx) == 0
+
+    def test_decay_rate_threaded_from_config_into_selection(self) -> None:
+        """The replacement loop must rank by the config's ``decay_rate``.
+
+        End-to-end guard on falsifier A through ``replace_units_with_flags``:
+        a saturated accumulator forces one replacement, and the freshly reset
+        row must be unit1 (old-weak), not unit0 (young-strong).
+        """
+        decay = 0.99
+        u0, a0 = self._drive_single_unit(1.0, 100, decay)
+        u1, a1 = self._drive_single_unit(0.9, 700, decay)
+        learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(2,), sparsity=0.0)
+        mlp_state = learner.init(feature_dim=3, key=jr.key(1))
+        cbp_state = ContinualBackpropState(  # type: ignore[call-arg]
+            utilities=(jnp.array([u0, u1], dtype=jnp.float32),),
+            ages=(jnp.array([a0, a1], dtype=jnp.int32),),
+            # Accumulator already >= 1.0 so exactly one replacement fires.
+            replacement_accumulators=jnp.array([1.0], dtype=jnp.float32),
+            rng_key=jr.key(2),
+        )
+        config = ContinualBackpropConfig(
+            decay_rate=decay,
+            replacement_rate=1.0,
+            maturity_threshold=100,
+            enabled=True,
+        )
+        _, new_cbp, replaced = replace_units_with_flags(mlp_state, cbp_state, config, sparsity=0.0)
+        assert bool(replaced[0])
+        # The replaced unit's age/utility are reset to 0; unit1 must be the victim.
+        assert int(new_cbp.ages[0][1]) == 0
+        assert int(new_cbp.ages[0][0]) != 0
+
+    def test_zero_maturity_threshold_age_zero_gives_no_nan_selection(self) -> None:
+        """Guard: the bias correction's ``0/0`` NaN must not be picked by argmin.
+
+        With ``maturity_threshold == 0`` an age-0 unit is eligible, but its
+        bias correction ``1 - decay_rate ** 0 == 0`` makes the corrected
+        utility ``0 / 0 == NaN``. The +inf mask must drop that non-finite
+        value so a genuinely mature, finite-corrected unit is chosen instead.
+        """
+        decay = 0.99
+        u_old, a_old = self._drive_single_unit(0.5, 300, decay)
+        # unit0 is age-0 (NaN correction); unit1 is a mature finite candidate.
+        utility = jnp.array([0.0, u_old], dtype=jnp.float32)
+        age = jnp.array([0, a_old], dtype=jnp.int32)
+        idx, has = _select_replacement_index(utility, age, 0, decay)
+        assert bool(has)
+        assert int(idx) == 1
 
 
 class TestWrapperUtilityGradients:
