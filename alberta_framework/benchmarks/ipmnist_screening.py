@@ -220,6 +220,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 from alberta_framework.core.adamo import AdamO, AdamOConfig, isometry_gradient
 from alberta_framework.core.baseline_optimizers import Adam
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     select_transaction,
@@ -510,7 +511,10 @@ def _upgd_utility_and_gate(
     }
     global_max = jnp.max(jnp.stack([jnp.max(new_utility[name]) for name in sorted(params)]))
     bias_correction = 1.0 - jnp.power(
-        jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        jnp.asarray(beta, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
     )
     gate = {
         name: jax.nn.sigmoid((new_utility[name] / bias_correction) / global_max)
@@ -1983,7 +1987,10 @@ def _make_intentional_updates_learner(
             + (1.0 - beta2) * jnp.square(gradient)
             for name, gradient in grads.items()
         }
-        bias_correction = 1.0 - beta2 ** new_step.astype(jnp.float32)
+        bias_correction = 1.0 - beta2 ** jnp.minimum(
+                new_step,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         scale = {
             name: (
                 1.0 / (jnp.sqrt(value / bias_correction) + epsilon)
@@ -2004,7 +2011,10 @@ def _make_intentional_updates_learner(
         clip_squared_error = (
             beta_clip * clip_squared_error + (1.0 - beta_clip) * jnp.square(loss)
         )
-        clip_bias_correction = 1.0 - beta_clip ** new_clip_step.astype(jnp.float32)
+        clip_bias_correction = 1.0 - beta_clip ** jnp.minimum(
+                new_clip_step,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         adaptive_cap = clip_mult * jnp.sqrt(clip_squared_error / clip_bias_correction)
         safe_loss = jnp.minimum(loss, adaptive_cap) if use_adaptive_clip else loss
         multiplier = eta * safe_loss / jnp.maximum(denominator, epsilon)
@@ -2156,7 +2166,10 @@ def _make_upgd_ema_norm_ext_learner(
             for name in params
         }
         bias_correction = 1.0 - jnp.power(
-            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+            jnp.asarray(utility_decay, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         global_max = jnp.max(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
@@ -2360,7 +2373,10 @@ def _make_adaptive_norm_sigma0_learner(
             for name in params
         }
         bias_correction = 1.0 - jnp.power(
-            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+            jnp.asarray(utility_decay, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         global_max = jnp.max(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
@@ -2774,7 +2790,10 @@ def _make_discovered_rule_learner(
             for name in params
         }
         bias_correction = 1.0 - jnp.power(
-            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+            jnp.asarray(utility_decay, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         global_max = jnp.max(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
@@ -3070,7 +3089,10 @@ def upgd_w_localgate_update(
         for name in params
     }
     bias_correction = 1.0 - jnp.power(
-        jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        jnp.asarray(beta, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
     )
     new_params = {}
     for name in params:
@@ -4745,7 +4767,10 @@ def _make_rls_head_learner(
                 1.0 - utility_decay
             ) * (-grads[name] * params[name])
         bias_correction = 1.0 - jnp.power(
-            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+            jnp.asarray(utility_decay, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         global_max = jnp.max(
             jnp.stack([jnp.max(new_utility[name]) for name in sorted(names)])
@@ -5655,7 +5680,10 @@ def _make_sgd_momentum_gate_learner(
             params, grads, state.utility, clock, utility_decay
         )
         correction = 1.0 - jnp.power(
-            jnp.asarray(mu, dtype=jnp.float32), clock.astype(jnp.float32)
+            jnp.asarray(mu, dtype=jnp.float32), jnp.minimum(
+                clock,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         new_params: dict[str, Array] = {}
         new_momentum: dict[str, Array] = {}
@@ -5874,7 +5902,10 @@ def snr_reset_mask(
     if eta <= 0.0:
         return jnp.zeros(silence.shape, dtype=bool)
     correction = 1.0 - jnp.power(
-        jnp.asarray(rate_decay, dtype=jnp.float32), age.astype(jnp.float32)
+        jnp.asarray(rate_decay, dtype=jnp.float32), jnp.minimum(
+                age,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
     )
     p = jnp.clip(
         rate / jnp.maximum(correction, 1e-12), rate_floor, 1.0 - rate_floor
@@ -6185,7 +6216,10 @@ def _make_sigma0_gated_l2init_learner(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
         )
         bias_correction = 1.0 - jnp.power(
-            jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+            jnp.asarray(beta, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
         )
         new_params: dict[str, Array] = {}
         for name in params:

@@ -94,6 +94,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
     IPMNISTConfig,
     init_mlp_params,
 )
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 
 logger = logging.getLogger(__name__)
 
@@ -584,7 +585,10 @@ def rule_step(
         name: p_udecay * utility_prev[name] + (1.0 - p_udecay) * (-grads[name] * params[name])
         for name in params
     }
-    bias_correction = 1.0 - jnp.power(p_udecay, clock.astype(jnp.float32))
+    bias_correction = 1.0 - jnp.power(p_udecay, jnp.minimum(
+                clock,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32))
     global_max = jnp.max(jnp.stack([jnp.max(utility[name]) for name in sorted(params)]))
     # --- surprise budget (arm b): global step size scales with error ratio.
     ratio = (state.err_fast + _EPS) / (state.err_slow + _EPS)

@@ -30,6 +30,7 @@ from alberta_framework._scan_resources import (
     require_step_units,
 )
 from alberta_framework.core.baseline_optimizers import Adam, AdamParamState
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 from alberta_framework.core.update_safety import floating_tree_is_finite
 
 PAPER_REVISION: Final[str] = "arXiv:2509.19698v3"
@@ -455,7 +456,10 @@ def _controller_update(
     controller_count = state.controller_count + jnp.asarray(1, dtype=jnp.int32)
     decay = jnp.asarray(config.ema_decay, dtype=jnp.float32)
     mean_uncorrected = decay * state.curvature_mean + (1.0 - decay) * normalized_sharpness
-    correction = 1.0 - decay ** controller_count.astype(jnp.float32)
+    correction = 1.0 - decay ** jnp.minimum(
+                controller_count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
     mean = mean_uncorrected / correction
     deviations = jnp.square(normalized_sharpness - mean)
     variance_uncorrected = decay * state.curvature_variance + (1.0 - decay) * deviations

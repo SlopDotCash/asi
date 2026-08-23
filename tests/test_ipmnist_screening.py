@@ -6450,3 +6450,78 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+class TestBenchmarkFloat32LifetimeExactness:
+    """Bias-correction and EMA clocks declared as int32 saturate then enter float32.
+
+    ``alberta_framework/core/normalizers.py`` declares
+    ``_FLOAT32_CONSECUTIVE_INTEGER_LIMIT = 2**24`` as the horizon where
+    ``int32 -> float32`` stops being exact. The screening/UPGD/noise-curvature
+    and rule-discovery helpers reuse that limit by name: the counter is
+    clamped with ``jnp.minimum(..., LIMIT).astype(float32)`` before the
+    ``1 - beta**count`` bias correction.
+    """
+
+    def test_bias_correction_clamped_at_float32_limit(self):
+        from alberta_framework.core.normalizers import (
+            _FLOAT32_CONSECUTIVE_INTEGER_LIMIT,
+        )
+
+        limit = _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
+        just_below = jnp.array(limit - 1, dtype=jnp.int32)
+        at_limit = jnp.array(limit, dtype=jnp.int32)
+        beyond = jnp.array(limit + 1, dtype=jnp.int32)
+        beyond2 = jnp.array(limit + 2, dtype=jnp.int32)
+
+        def to_float_clamped(x):
+            return jnp.minimum(
+                x, jnp.asarray(limit, dtype=jnp.int32)
+            ).astype(jnp.float32)
+
+        assert float(just_below.astype(jnp.float32)) == float(limit - 1)
+        assert float(to_float_clamped(at_limit)) == float(limit)
+        assert float(to_float_clamped(beyond)) == float(limit)
+        assert float(to_float_clamped(beyond2)) == float(limit)
+        assert float(beyond.astype(jnp.float32)) == float(limit)
+        assert float(beyond2.astype(jnp.float32)) == float(limit + 2)
+
+        beta = jnp.asarray(0.9999995, dtype=jnp.float32)
+        bc_at = 1.0 - jnp.power(beta, to_float_clamped(at_limit))
+        bc_beyond = 1.0 - jnp.power(beta, to_float_clamped(beyond))
+        bc_large = 1.0 - jnp.power(
+            beta,
+            to_float_clamped(jnp.array(33_554_432, dtype=jnp.int32)),
+        )
+        assert float(bc_at) == float(bc_beyond) == float(bc_large)
+        # plain beyond-large would be distinguishable (clamp keeps it at limit)
+        plain_large = jnp.array(33_554_432, dtype=jnp.int32).astype(jnp.float32)
+        bc_plain_large = 1.0 - jnp.power(beta, plain_large)
+        assert float(bc_plain_large) != float(bc_large)
+
+        import alberta_framework.benchmarks.ipmnist_screening as scr
+        import alberta_framework.benchmarks.noise_curvature_ipmnist as nci
+        import alberta_framework.benchmarks.rule_discovery as rd
+        import alberta_framework.benchmarks.upgd_ipmnist as ui
+
+        for mod in (scr, ui, nci, rd):
+            text = Path(mod.__file__).read_text()
+            assert (
+                "from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT"
+                in text
+            )
+            assert "jnp.minimum" in text and "_FLOAT32_CONSECUTIVE_INTEGER_LIMIT" in text
+
+    def test_helper_is_reused_by_name(self):
+        for rel in [
+            "alberta_framework/benchmarks/ipmnist_screening.py",
+            "alberta_framework/benchmarks/upgd_ipmnist.py",
+            "alberta_framework/benchmarks/noise_curvature_ipmnist.py",
+            "alberta_framework/benchmarks/rule_discovery.py",
+        ]:
+            text = Path(rel).read_text()
+            assert (
+                "from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT"
+                in text
+            )
+            assert "jnp.minimum" in text and "_FLOAT32_CONSECUTIVE_INTEGER_LIMIT" in text
+

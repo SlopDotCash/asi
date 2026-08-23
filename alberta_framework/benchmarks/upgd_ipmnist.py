@@ -118,6 +118,7 @@ from alberta_framework._seed_validation import (
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.baseline_optimizers import Adam
 from alberta_framework.core.canonical_upgd import CanonicalUPGD, CanonicalUPGDConfig
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     select_transaction,
@@ -636,7 +637,10 @@ def lean_upgd_w_update(
         jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
     )
     bias_correction = 1.0 - jnp.power(
-        jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        jnp.asarray(beta, dtype=jnp.float32), jnp.minimum(
+                count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
     )
     new_params = {}
     for name in params:
