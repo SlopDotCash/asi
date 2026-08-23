@@ -14,6 +14,8 @@ from alberta_framework.core import ActorCriticAgent as CoreActorCriticAgent
 from alberta_framework.core.actor_critic import (
     ActorCriticAgent,
     ActorCriticConfig,
+    ContinuousActorCriticAgent,
+    ContinuousActorCriticConfig,
     _require_discrete_state_resources,
     run_actor_critic_from_arrays,
 )
@@ -595,3 +597,107 @@ def test_actor_critic_state_contract_and_counter_saturation() -> None:
     )
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 2**31 - 1
+
+
+def test_actor_critic_terminal_update_credits_in_episode_trace() -> None:
+    gamma, lam = 0.9, 0.9
+    agent = ActorCriticAgent(
+        ActorCriticConfig(
+            n_actions=2,
+            gamma=gamma,
+            actor_step_size=0.1,
+            critic_step_size=0.1,
+            actor_lamda=lam,
+            critic_lamda=lam,
+            temperature=1.0,
+        )
+    )
+    obs_a = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    obs_b = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=obs_a,
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=obs_b,
+        terminated=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+    mid = first.state.replace(last_action=jnp.array(0, dtype=jnp.int32))  # type: ignore[attr-defined]
+    policy_at_b = agent.policy(mid, obs_b)
+
+    last = agent.update(
+        mid,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.zeros(2, dtype=jnp.float32),
+        terminated=jnp.array(True),
+    )
+    assert bool(last.update_applied)
+    delta = last.td_error
+
+    # Backward view (Sutton & Barto 2nd ed, eq. 12.25): the trace carried into
+    # the terminal update decays by the discount of the transition INTO S_1,
+    # which was non-terminal, so phi(S_0) keeps gamma * lam credit.
+    expected_critic_trace = gamma * lam * jnp.array([1.0, 0.0]) + jnp.array([0.0, 1.0])
+    chex.assert_trees_all_close(
+        last.state.critic_weights, 0.1 * delta * expected_critic_trace, atol=1e-6
+    )
+
+    grad_a0_at_a = 1.0 - 0.5
+    grad_a0_at_b = (jnp.array([1.0, 0.0]) - policy_at_b)[0]
+    expected_actor_trace_row0 = jnp.array(
+        [gamma * lam * grad_a0_at_a, grad_a0_at_b], dtype=jnp.float32
+    )
+    chex.assert_trees_all_close(
+        last.state.actor_weights[0], 0.1 * delta * expected_actor_trace_row0, atol=1e-6
+    )
+
+    chex.assert_trees_all_close(
+        last.state.critic_trace_weights, jnp.zeros(2, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        last.state.actor_trace_weights, jnp.zeros((2, 2), dtype=jnp.float32)
+    )
+
+
+def test_continuous_actor_critic_terminal_update_credits_in_episode_trace() -> None:
+    gamma, lam = 0.9, 0.9
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(
+            action_dim=1,
+            gamma=gamma,
+            actor_step_size=0.1,
+            critic_step_size=0.1,
+            actor_lamda=lam,
+            critic_lamda=lam,
+        )
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.zeros((1,), dtype=jnp.float32),
+    )
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        terminated=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+    trace_before = first.state.critic_trace_weights
+
+    last = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.zeros(2, dtype=jnp.float32),
+        terminated=jnp.array(True),
+    )
+    assert bool(last.update_applied)
+    delta = last.td_error
+    expected = 0.1 * delta * (gamma * lam * trace_before + jnp.array([0.0, 1.0]))
+    chex.assert_trees_all_close(last.state.critic_weights, expected, atol=1e-6)
+    chex.assert_trees_all_close(
+        last.state.critic_trace_weights, jnp.zeros(2, dtype=jnp.float32)
+    )

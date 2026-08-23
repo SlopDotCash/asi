@@ -2019,3 +2019,118 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert applied.tolist() == [False, True]
     assert final_state.step_count.dtype == jnp.int32
     assert int(final_state.step_count) == 2**31 - 1
+
+
+def test_horde_ac_terminal_update_credits_pre_terminal_features() -> None:
+    gamma, lam = 0.9, 0.9
+    critic = HordeLearner(
+        create_horde_spec(
+            [
+                GVFSpec(  # type: ignore[call-arg]
+                    name="value",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=gamma,
+                    lamda=0.8,
+                    cumulant_index=-1,
+                )
+            ]
+        ),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    agent = HordeActorCriticAgent(
+        HordeActorCriticConfig(n_actions=2, actor_step_size=0.1, actor_lamda=lam),
+        critic=critic,
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        discount=jnp.array(gamma, dtype=jnp.float32),
+    )
+    mid = first.state.replace(last_action=jnp.array(0, dtype=jnp.int32))  # type: ignore[attr-defined]
+    trace_before = mid.actor_trace_weights
+
+    last = agent.update(
+        mid,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.zeros(2, dtype=jnp.float32),
+        discount=jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(last.update_applied)
+    # The fresh actor gradient at S_1 has a zero column for phi(S_0), so any
+    # credit in that column comes from the carried trace; the backward view
+    # decays it by the value head's gamma, not by the terminal discount 0.
+    expected_col0 = 0.1 * last.td_error * (gamma * lam * trace_before[:, 0])
+    chex.assert_trees_all_close(last.state.actor_weights[:, 0], expected_col0, atol=1e-6)
+    assert bool(jnp.any(jnp.abs(last.state.actor_weights[:, 0]) > 1e-8))
+    chex.assert_trees_all_close(
+        last.state.actor_trace_weights,
+        jnp.zeros_like(last.state.actor_trace_weights),
+    )
+
+
+def test_qhorde_ac_terminal_update_credits_pre_terminal_features() -> None:
+    gamma, lam = 0.9, 0.9
+    critic = HordeLearner(
+        create_horde_spec(
+            [
+                GVFSpec(  # type: ignore[call-arg]
+                    name="q0",
+                    demon_type=DemonType.CONTROL,
+                    gamma=0.0,
+                    lamda=0.0,
+                    cumulant_index=-1,
+                ),
+                GVFSpec(  # type: ignore[call-arg]
+                    name="q1",
+                    demon_type=DemonType.CONTROL,
+                    gamma=0.0,
+                    lamda=0.0,
+                    cumulant_index=-1,
+                ),
+            ]
+        ),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    agent = QHordeActorCriticAgent(
+        QHordeActorCriticConfig(
+            n_actions=2, gamma=gamma, actor_step_size=0.1, actor_lamda=lam
+        ),
+        critic=critic,
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        terminated=jnp.array(False),
+    )
+    mid = first.state.replace(last_action=jnp.array(0, dtype=jnp.int32))  # type: ignore[attr-defined]
+    trace_before = mid.actor_trace_weights
+
+    last = agent.update(
+        mid,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.zeros(2, dtype=jnp.float32),
+        terminated=jnp.array(True),
+    )
+    assert bool(last.update_applied)
+    assert bool(jnp.any(jnp.abs(trace_before[:, 0]) > 1e-8))
+    expected_col0 = 0.1 * last.td_error * (gamma * lam * trace_before[:, 0])
+    chex.assert_trees_all_close(last.state.actor_weights[:, 0], expected_col0, atol=1e-6)
+    assert bool(jnp.any(jnp.abs(last.state.actor_weights[:, 0]) > 1e-8))
+    chex.assert_trees_all_close(
+        last.state.actor_trace_weights,
+        jnp.zeros_like(last.state.actor_trace_weights),
+    )

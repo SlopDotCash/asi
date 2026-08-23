@@ -764,8 +764,9 @@ class ActorCriticAgent:
         actor_grad_bias = (one_hot - old_policy) / cfg.temperature
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
 
-        actor_decay = discount * cfg.actor_lamda
-        critic_decay = discount * cfg.critic_lamda
+        trace_discount = jnp.where(discount == 0.0, cfg.gamma, discount)
+        actor_decay = trace_discount * cfg.actor_lamda
+        critic_decay = trace_discount * cfg.critic_lamda
         actor_trace_weights = (
             jnp.where(
                 actor_decay == 0.0,
@@ -1586,8 +1587,9 @@ class ContinuousActorCriticAgent:
         mean_grad_weights = mean_grad_bias[:, None] * prev_obs[None, :]
         log_sigma_grad = (diff * diff) / sigma_sq - 1.0
 
-        actor_decay = discount * cfg.actor_lamda
-        critic_decay = discount * cfg.critic_lamda
+        trace_discount = jnp.where(discount == 0.0, cfg.gamma, discount)
+        actor_decay = trace_discount * cfg.actor_lamda
+        critic_decay = trace_discount * cfg.critic_lamda
         mean_trace_weights = (
             jnp.where(
                 actor_decay == 0.0,

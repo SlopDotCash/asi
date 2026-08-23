@@ -718,7 +718,8 @@ class QHordeActorCriticAgent:
             else sampled_actor_grad_bias
         )
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
-        actor_decay = effective_gamma * cfg.actor_lamda
+        trace_discount = jnp.where(effective_gamma == 0.0, cfg.gamma, effective_gamma)
+        actor_decay = trace_discount * cfg.actor_lamda
         actor_trace_weights = (
             _skip_zero_scale(actor_decay, state.actor_trace_weights) + actor_grad_weights
         )
@@ -1041,7 +1042,8 @@ class HordeActorCriticAgent:
         one_hot = jax.nn.one_hot(safe_last_action, cfg.n_actions, dtype=jnp.float32)
         actor_grad_bias = (one_hot - old_policy) / cfg.temperature
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
-        actor_decay = value_discount * cfg.actor_lamda
+        trace_discount = jnp.where(value_discount == 0.0, value_gamma, value_discount)
+        actor_decay = trace_discount * cfg.actor_lamda
         actor_trace_weights = (
             _skip_zero_scale(actor_decay, state.actor_trace_weights) + actor_grad_weights
         )
@@ -1861,7 +1863,8 @@ class NonlinearHordeActorCriticAgent:
             cfg.actor_gradient_clip_norm,
         )
 
-        actor_decay = value_discount * cfg.actor_lamda
+        trace_discount = jnp.where(value_discount == 0.0, value_gamma, value_discount)
+        actor_decay = trace_discount * cfg.actor_lamda
         n_hidden = len(cfg.hidden_sizes)
 
         new_trunk_traces: list[Array] = []
@@ -2547,7 +2550,8 @@ class NonlinearQHordeActorCriticAgent:
             cfg.actor_gradient_clip_norm,
         )
 
-        actor_decay = effective_gamma * cfg.actor_lamda
+        trace_discount = jnp.where(effective_gamma == 0.0, cfg.gamma, effective_gamma)
+        actor_decay = trace_discount * cfg.actor_lamda
         n_hidden = len(cfg.hidden_sizes)
         new_trunk_traces: list[Array] = []
         for i in range(n_hidden):
