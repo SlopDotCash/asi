@@ -240,6 +240,13 @@ def test_historical_cli_reports_provenance_and_validates_strict_pairing(
 
 
 @pytest.mark.package
+@pytest.mark.skipif(
+    not hasattr(os, "O_TMPFILE"),
+    reason=(
+        "the wheel-install smoke runs `alberta-historical-forager provenance`, "
+        "which publishes through the Linux-only write_new_json O_TMPFILE path"
+    ),
+)
 def test_wheel_and_sdist_are_complete_and_hard_link_safe(tmp_path: Path) -> None:
     uv = shutil.which("uv")
     if uv is None:
