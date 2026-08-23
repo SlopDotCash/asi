@@ -491,7 +491,12 @@ def test_construct_narrows_original_noise_real_once() -> None:
         + np.longdouble(2.0) ** -24
         + np.longdouble(2.0) ** -60
     )
-    assert np.float32(midpoint_plus) != np.float32(float(midpoint_plus))
+    if np.float32(midpoint_plus) == np.float32(float(midpoint_plus)):
+        # np.longdouble is float64 on this platform (e.g. aarch64 macOS), so the
+        # 2^-60 term cannot survive to exercise the double-rounding path — the
+        # defining property of the fixture only exists where C long double is
+        # wider than float64. Skip instead of failing in the precondition.
+        pytest.skip("np.longdouble is not wider than float64 on this platform")
 
     stream = ClassicalConditioningStream(
         phases=(_valid_phase(),),
@@ -502,7 +507,10 @@ def test_construct_narrows_original_noise_real_once() -> None:
 
 def test_construct_rejects_negative_real_that_rounds_to_zero() -> None:
     below_zero = -np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
-    assert float(below_zero) == 0.0
+    if float(below_zero) != 0.0:
+        # Same width caveat as above: where np.longdouble is float64 the
+        # nextafter step is too coarse to build a negative that rounds to zero.
+        pytest.skip("np.longdouble is not wider than float64 on this platform")
     with pytest.raises(ValueError, match="noise_std"):
         ClassicalConditioningStream(phases=(_valid_phase(),), noise_std=below_zero)
 
