@@ -2207,13 +2207,15 @@ class UPGDAdaptiveNormState:
 
     ``norm.count`` is per-feature ``f32[d]`` for the shift-triggered
     normalizer and scalar for the warm-restart normalizer; ``fast_mean`` is
-    the fast detection EMA in both.
+    the fast detection EMA in both.  ``init_params`` is populated only by
+    the l2-init composition arms (decay toward the initial weights).
     """
 
     utility: dict[str, Array]
     step: Array
     norm: EMANormState
     fast_mean: Array
+    init_params: dict[str, Array] | None = None
 
 
 def shift_adaptive_normalize(
@@ -2318,12 +2320,20 @@ def _make_adaptive_norm_sigma0_learner(
     hp: Mapping[str, float],
     normalize: _AdaptiveNormalizeFn,
     init_count: Callable[[int], Array],
+    *,
+    decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Shared sigma0 (normalize + utility-gated SGD + decay) learner over an
     adaptive normalizer.  The update equations are exactly the sigma0
     champion's (``_make_upgd_ema_norm_ext_learner`` defaults): explicit zero
     perturbation, bias-corrected utility EMA, global-max sigmoid gate,
-    decoupled decay.  The RNG key is deliberately untouched."""
+    decoupled decay.  The RNG key is deliberately untouched.
+
+    With ``decay_to_init=True`` the decoupled decay pulls toward the initial
+    weights (Kumar et al. l2-init composition) instead of zero; the
+    trajectory is bit-identical to the zero-decay arm when
+    ``weight_decay = 0``.
+    """
     step_size = hp["step_size"]
     utility_decay = hp["utility_decay"]
     param_decay = 1.0 - step_size * hp["weight_decay"]
@@ -2339,6 +2349,9 @@ def _make_adaptive_norm_sigma0_learner(
                 count=init_count(input_dim),
             ),
             fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+            init_params={name: value for name, value in params.items()}
+            if decay_to_init
+            else None,
         )
 
     def full_step(
@@ -2365,8 +2378,21 @@ def _make_adaptive_norm_sigma0_learner(
         global_max = jnp.max(
             jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
         )
+        if decay_to_init:
+            init_params = state.init_params
+            if init_params is None:
+                raise RuntimeError(
+                    "decay_to_init arm is missing init_params in learner state"
+                )
+            decayed = {
+                name: params[name] * param_decay
+                + (1.0 - param_decay) * init_params[name]
+                for name in params
+            }
+        else:
+            decayed = {name: params[name] * param_decay for name in params}
         new_params = {
-            name: params[name] * param_decay
+            name: decayed[name]
             - step_size
             * (grads[name] * (1.0 - jax.nn.sigmoid(
                 (utility[name] / bias_correction) / global_max
@@ -2400,7 +2426,8 @@ def _make_upgd_shiftnorm_learner(
         )
 
     return _make_adaptive_norm_sigma0_learner(
-        hp, normalize, lambda d: jnp.zeros(d, dtype=jnp.float32)
+        hp, normalize, lambda d: jnp.zeros(d, dtype=jnp.float32),
+        decay_to_init=hp.get("flag_decay_to_init", 0.0) != 0.0,
     )
 
 
@@ -7266,6 +7293,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ("sigma0_shiftnorm_d099_f08", {"norm_decay": 0.99, "fast_decay": 0.8}),
         ("sigma0_shiftnorm_d099_f095", {"norm_decay": 0.99, "fast_decay": 0.95}),
         ("sigma0_shiftnorm_d099_r200", {"norm_decay": 0.99, "shift_refractory": 200.0}),
+        # l2-init composition: decoupled decay toward the initial weights
+        # (Kumar et al.) on top of the screen-winning shift-normalizer base,
+        # same 0.01 decay scale as the raw l2init arm and co-best
+        # l2init_ema_norm comparison row.
+        (
+            "sigma0_shiftnorm_d099_l2init",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "weight_decay": 0.01,
+            },
+        ),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
