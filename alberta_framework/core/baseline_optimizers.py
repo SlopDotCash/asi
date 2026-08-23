@@ -512,8 +512,11 @@ class Adam(Optimizer[Any]):
 
     For the MLP path (:meth:`update_from_gradient`), the gradient is
     pre-computed by the caller (e.g. an eligibility trace or a VJP
-    cotangent), and the returned step does NOT include the error --
-    callers apply ``param += step`` directly.
+    cotangent), and the returned step never includes the error: with
+    ``error=None`` the gradient is the loss gradient and callers apply
+    ``param -= step``; with ``error`` supplied the gradient is the
+    prediction gradient and callers apply ``param += error * step``,
+    the same convention as the LMS/IDBD/Autostep error paths.
 
     With nonzero ``weight_decay``, the MLP path implements decoupled
     weight decay (AdamW; Loshchilov & Hutter 2019): the returned step
@@ -649,22 +652,26 @@ class Adam(Optimizer[Any]):
     ) -> ParamOptimizerUpdate:
         """Compute Adam step from a pre-computed gradient (MLP path).
 
-        The returned step has the SAME sign as the descent step, i.e.
-        callers apply ``param -= step`` to minimize loss when the
-        gradient is the loss gradient. When the gradient is the
-        prediction gradient ``dy/dw`` and the caller wants to do
-        ``param += error * step``, ``error`` should be passed so it is
-        folded into the moment EMAs.
+        With ``error=None`` the gradient is the loss gradient: the
+        returned step points along it and callers apply ``param -= step``
+        to minimize.
 
-        When ``error`` is ``None``, the gradient is assumed to already
-        be the loss gradient and is used as-is.
+        With ``error`` supplied the gradient is the prediction gradient
+        ``dy/dw`` and the base ``Optimizer.update_from_gradient``
+        contract applies: the returned step excludes the error, and the
+        caller multiplies ``error * step`` before applying. The moment
+        EMAs therefore condition the prediction gradient only; the
+        applied update scales linearly with the error, exactly like the
+        LMS/IDBD/Autostep error paths. Folding the error into the
+        moments here would reverse the applied update's sign under the
+        caller's multiplication.
 
         Args:
             state: Current per-parameter Adam state
             gradient: Pre-computed gradient (any shape matching state)
-            error: Optional prediction error scalar. When provided, the
-                effective gradient becomes ``-error * gradient`` (loss
-                gradient direction for ``loss = 0.5 * error^2``).
+            error: Optional prediction error scalar. Never enters the
+                returned step (the caller multiplies ``error * step``);
+                it still gates the checked-update transaction.
             param: Current parameter values; required when the optimizer
                 was constructed with nonzero ``weight_decay`` so the
                 decoupled decay term ``step_size * weight_decay * param``
@@ -680,10 +687,7 @@ class Adam(Optimizer[Any]):
         if self._weight_decay != 0.0 and param is None:
             raise ValueError("nonzero weight_decay requires passing param")
 
-        if error is not None:
-            g = -jnp.squeeze(error) * gradient
-        else:
-            g = gradient
+        g = gradient
 
         new_t = state.t + 1.0
         new_m = _skip_zero_scale(self._beta1, state.beta1, state.m) + (
@@ -952,22 +956,24 @@ class RMSprop(Optimizer[Any]):
     ) -> ParamOptimizerUpdate:
         """Compute RMSprop step from a pre-computed gradient (MLP path).
 
-        When ``error`` is supplied, the effective gradient is treated as
-        ``-error * gradient`` (loss gradient for squared error); when it
-        is ``None`` the gradient is used as-is (already a loss gradient).
+        With ``error=None`` the gradient is the loss gradient and
+        callers apply ``param -= step``. With ``error`` supplied the
+        gradient is the prediction gradient and the returned step
+        excludes the error (the base ``Optimizer.update_from_gradient``
+        contract): the caller multiplies ``error * step``, so the
+        second-moment normalizer conditions the prediction gradient
+        only. ``error`` still gates the checked-update transaction.
 
         Args:
             state: Current per-parameter RMSprop state
             gradient: Pre-computed gradient (any shape matching state)
-            error: Optional prediction error scalar
+            error: Optional prediction error scalar (never enters the
+                returned step)
 
         Returns:
             ``(step, new_state)`` -- step has the same shape as gradient
         """
-        if error is not None:
-            g = -jnp.squeeze(error) * gradient
-        else:
-            g = gradient
+        g = gradient
 
         new_v = _skip_zero_scale(self._decay, state.decay, state.v) + (
             1.0 - state.decay

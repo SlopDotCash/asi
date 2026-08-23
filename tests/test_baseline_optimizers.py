@@ -577,3 +577,98 @@ class TestNADALINE:
         chex.assert_tree_all_finite(result.new_state)
         chex.assert_tree_all_finite(result.weight_delta)
         chex.assert_tree_all_finite(result.bias_delta)
+
+
+# =============================================================================
+# The error-path contract shared with LMS/IDBD/Autostep
+# =============================================================================
+
+
+class TestErrorPathDescentContract:
+    """``update_from_gradient`` with ``error`` must honour the base contract.
+
+    ``Optimizer.update_from_gradient`` documents that the returned delta
+    does NOT include the error: every MLP/multi-head/Horde caller applies
+    ``param += error * step``. A step that folds the error in (or points
+    along the loss gradient) therefore reverses the applied update's sign
+    and scales it by ``error**2`` -- the update ascends the squared error
+    instead of descending it.
+    """
+
+    @pytest.mark.parametrize("optimizer", [Adam(step_size=0.01), RMSprop(step_size=0.01)])
+    def test_applied_update_descends_like_lms(self, optimizer):
+        """sign(error * step) must match the LMS descent direction."""
+        gradient = jnp.asarray([1.0], dtype=jnp.float32)
+        for error_value in (1.0, -1.0):
+            state = optimizer.init_for_shape((1,))
+            error = jnp.asarray(error_value, dtype=jnp.float32)
+            step, _ = optimizer.update_from_gradient(state, gradient, error=error)
+            applied = float(error * step[0])
+            # LMS applies error * (step_size * gradient): sign(error * gradient).
+            expected_sign = error_value * float(gradient[0])
+            assert applied * expected_sign > 0.0, (
+                f"{type(optimizer).__name__} applied update {applied} opposes the "
+                f"descent direction for error={error_value}"
+            )
+
+    @pytest.mark.parametrize("optimizer", [Adam(step_size=0.01), RMSprop(step_size=0.01)])
+    def test_step_excludes_the_error(self, optimizer):
+        """The returned step must be identical for any supplied error value."""
+        gradient = jnp.asarray([0.3, -0.7], dtype=jnp.float32)
+        steps = []
+        for error_value in (0.5, 2.0, -3.0):
+            state = optimizer.init_for_shape((2,))
+            error = jnp.asarray(error_value, dtype=jnp.float32)
+            step, _ = optimizer.update_from_gradient(state, gradient, error=error)
+            steps.append(step)
+        chex.assert_trees_all_equal(steps[0], steps[1])
+        chex.assert_trees_all_equal(steps[0], steps[2])
+
+    @pytest.mark.parametrize(
+        "optimizer", [Adam(step_size=0.05), RMSprop(step_size=0.05)]
+    )
+    def test_linear_unit_converges_under_caller_convention(self, optimizer):
+        """200 ``param += error * step`` updates must reduce the squared error."""
+        x = jnp.asarray(1.0, dtype=jnp.float32)
+        target = 1.0
+        w = jnp.asarray(0.0, dtype=jnp.float32)
+        state = optimizer.init_for_shape((1,))
+        first_error = None
+        for _ in range(200):
+            error = jnp.asarray(target - float(w * x), dtype=jnp.float32)
+            if first_error is None:
+                first_error = float(error) ** 2
+            step, state = optimizer.update_from_gradient(
+                state, jnp.asarray([x], dtype=jnp.float32), error=error
+            )
+            w = w + error * step[0]
+        final_error = (target - float(w * x)) ** 2
+        assert first_error is not None
+        assert final_error < 1e-2, (
+            f"{type(optimizer).__name__} did not converge: squared error "
+            f"{first_error} -> {final_error}"
+        )
+
+    def test_error_none_loss_gradient_path_is_unchanged(self):
+        """``error=None`` keeps the documented loss-gradient step exactly."""
+        optimizer = Adam(step_size=0.01, beta1=0.9, beta2=0.999, eps=1e-8)
+        state = optimizer.init_for_shape((2,))
+        gradient = jnp.asarray([2.0, -0.5], dtype=jnp.float32)
+        step, new_state = optimizer.update_from_gradient(state, gradient, error=None)
+        m_hat = ((1.0 - 0.9) * gradient) / (1.0 - 0.9)
+        v_hat = ((1.0 - 0.999) * gradient**2) / (1.0 - 0.999)
+        expected = 0.01 * m_hat / (jnp.sqrt(v_hat) + 1e-8)
+        chex.assert_trees_all_close(step, expected, atol=1e-7)
+        assert float(new_state.t) == pytest.approx(1.0)
+
+    def test_error_still_gates_the_transaction(self):
+        """A non-finite error must still veto the checked update."""
+        optimizer = Adam(step_size=0.01)
+        state = optimizer.init_for_shape((1,))
+        result = optimizer.update_from_gradient_checked(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            error=jnp.asarray(jnp.nan, dtype=jnp.float32),
+        )
+        assert not bool(result.update_applied)
+        chex.assert_trees_all_close(result.step, jnp.zeros(1))
