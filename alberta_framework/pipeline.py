@@ -1578,6 +1578,7 @@ class AlbertaPipeline:
                 reward,
                 features,
                 auxiliary_cumulants=auxiliary_cumulants,
+                terminated=terminated,
             )
             new_control_state: SARSAState | HordeActorCriticState = ac_result.state
             q_values_or_policy = ac_result.policy

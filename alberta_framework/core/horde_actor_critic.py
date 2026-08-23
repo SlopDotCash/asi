@@ -969,6 +969,7 @@ class HordeActorCriticAgent:
         observation: Array,
         auxiliary_cumulants: Array | None = None,
         discount: Array | None = None,
+        terminated: Array | None = None,
     ) -> HordeActorCriticUpdateResult:
         """Update actor and Horde critic from one transition.
 
@@ -999,6 +1000,14 @@ class HordeActorCriticAgent:
         value = self.value(state, prev_obs)
         next_value = self.value(state, observation)
         value_gamma = self._critic.horde_spec.gammas[cfg.value_head_index]
+        # An episode boundary must zero the value-head discount; otherwise the
+        # actor trace bootstraps across the boundary (issue #2344).
+        if terminated is not None:
+            value_gamma = jnp.where(
+                jnp.asarray(terminated, dtype=jnp.bool_),
+                jnp.asarray(0.0, dtype=jnp.float32),
+                jnp.asarray(value_gamma, dtype=jnp.float32),
+            )
         value_discount = (
             value_gamma if discount is None else jnp.asarray(discount, dtype=jnp.float32)
         )
