@@ -389,6 +389,60 @@ def test_probability_simplex_and_helper_invariants() -> None:
     chex.assert_trees_all_close(logs, jnp.log(selected))
 
 
+def test_floor_and_renormalize_probabilities_degenerate_and_batch() -> None:
+    """Verify simplex invariant holds even for all-zero, negative, or underflowing mass."""
+    # Zero mass
+    zero_mass = floor_and_renormalize_probabilities(
+        jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    chex.assert_trees_all_close(
+        zero_mass,
+        jnp.array([1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0], dtype=jnp.float32),
+        atol=1e-6,
+    )
+    chex.assert_trees_all_close(jnp.sum(zero_mass), 1.0, atol=1e-6)
+    assert float(jnp.min(zero_mass)) >= 1e-6
+
+    # Negative mass (clipped to zero)
+    neg_mass = floor_and_renormalize_probabilities(
+        jnp.array([-5.0, -2.0, -10.0, -1.0], dtype=jnp.float32),
+        min_probability=1e-4,
+    )
+    chex.assert_trees_all_close(neg_mass, jnp.full((4,), 0.25, dtype=jnp.float32), atol=1e-6)
+    chex.assert_trees_all_close(jnp.sum(neg_mass), 1.0, atol=1e-6)
+
+    # Sub-epsilon float32 mass that would previously collapse under max(sum, 1e-12)
+    small_mass = floor_and_renormalize_probabilities(
+        jnp.array([1e-30, 2e-30, 1e-30], dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    chex.assert_trees_all_close(jnp.sum(small_mass), 1.0, atol=1e-6)
+    assert float(jnp.min(small_mass)) >= 1e-6 - 1e-9
+
+    # Batched input with mixed zero-mass and valid-mass rows
+    batch = jnp.array(
+        [
+            [0.0, 0.0, 0.0],
+            [0.2, 0.3, 0.5],
+            [-1.0, -2.0, -3.0],
+        ],
+        dtype=jnp.float32,
+    )
+    floored_batch = floor_and_renormalize_probabilities(batch, min_probability=0.01)
+    chex.assert_shape(floored_batch, (3, 3))
+    sums = jnp.sum(floored_batch, axis=-1)
+    chex.assert_trees_all_close(sums, jnp.ones(3, dtype=jnp.float32), atol=1e-6)
+    chex.assert_trees_all_close(
+        floored_batch[0], jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32), atol=1e-6
+    )
+    chex.assert_trees_all_close(
+        floored_batch[2], jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32), atol=1e-6
+    )
+    assert float(jnp.min(floored_batch)) >= 0.01 - 1e-7
+
+
+
 @pytest.mark.parametrize(
     "action",
     [
