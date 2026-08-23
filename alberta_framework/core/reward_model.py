@@ -291,6 +291,7 @@ class RLSRewardModel:
         gain = covariance_features / denominator
         next_weights = state.weights + gain * error
         next_covariance = (state.covariance - jnp.outer(gain, covariance_features)) / forgetting
+        next_covariance = 0.5 * (next_covariance + next_covariance.T)
 
         error_decay = jnp.asarray(self._config.error_decay, dtype=jnp.float32)
         abs_error = jnp.abs(error)

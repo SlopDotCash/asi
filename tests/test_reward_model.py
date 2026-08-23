@@ -350,3 +350,32 @@ def test_rls_reward_model_rejects_non_scalar_rewards_eager_and_outer_jit(
     compiled = jax.jit(lambda value: model.update(state, features, value).state)
     with pytest.raises(ValueError, match="reward must be a scalar"):
         compiled(reward)
+
+
+def test_rls_reward_model_covariance_preserves_exact_symmetry_single_step() -> None:
+    """Covariance update must remain exactly symmetric in float32."""
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4, forgetting=0.99, ridge=1.0))
+    state = model.init()
+    features = jnp.array([1.2345678, 2.3456789, -3.4567891, 0.5678901], dtype=jnp.float32)
+    reward = jnp.array(1.0, dtype=jnp.float32)
+
+    result = model.update(state, features, reward)
+    cov = np.array(result.state.covariance)
+    assert np.array_equal(cov, cov.T)
+    assert np.max(np.abs(cov - cov.T)) == 0.0
+
+
+def test_rls_reward_model_covariance_preserves_exact_symmetry_multi_step() -> None:
+    """Covariance update must remain exactly symmetric over multi-step streams."""
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=4, forgetting=0.99, ridge=1.0))
+    state = model.init()
+    rng = np.random.default_rng(12345)
+
+    for _ in range(100):
+        features = jnp.array(rng.standard_normal(4), dtype=jnp.float32)
+        reward = jnp.array(rng.standard_normal(), dtype=jnp.float32)
+        state = model.update(state, features, reward).state
+
+    cov = np.array(state.covariance)
+    assert np.array_equal(cov, cov.T)
+    assert np.max(np.abs(cov - cov.T)) == 0.0
