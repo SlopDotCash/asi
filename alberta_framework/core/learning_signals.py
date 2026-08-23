@@ -55,6 +55,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar,
     validated_float32_scalar_with_ratio,
 )
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 
 _INT32_MAX = 2_147_483_647
 _FLOAT32_MAX = float.fromhex("0x1.fffffep+127")
@@ -782,16 +783,23 @@ class LearningSignalEstimator:
             state.calibration_count
         )
         calibration_delta = normalized_residual - state.calibration_mean
+        next_calibration_count_for_float = jnp.minimum(
+            next_calibration_count,
+            jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+        ).astype(jnp.float32)
         next_calibration_mean = (
-            state.calibration_mean + calibration_delta / next_calibration_count.astype(jnp.float32)
+            state.calibration_mean + calibration_delta / next_calibration_count_for_float
         )
         next_calibration_m2 = state.calibration_m2 + calibration_delta * (
             normalized_residual - next_calibration_mean
         )
 
-        calibration_denominator = jnp.maximum(
-            state.calibration_count - jnp.asarray(1, dtype=jnp.int32),
-            jnp.asarray(1, dtype=jnp.int32),
+        calibration_denominator = jnp.minimum(
+            jnp.maximum(
+                state.calibration_count - jnp.asarray(1, dtype=jnp.int32),
+                jnp.asarray(1, dtype=jnp.int32),
+            ),
+            jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
         ).astype(jnp.float32)
         calibration_variance = state.calibration_m2 / calibration_denominator
         calibration_scale = jnp.maximum(

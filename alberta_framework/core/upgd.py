@@ -59,7 +59,10 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar_with_ratio,
 )
 from alberta_framework.core.initializers import sparse_init
-from alberta_framework.core.normalizers import _saturating_int32_counter_increment
+from alberta_framework.core.normalizers import (
+    _FLOAT32_CONSECUTIVE_INTEGER_LIMIT,
+    _saturating_int32_counter_increment,
+)
 from alberta_framework.core.optimizers import Bounder, ObGDBounding
 from alberta_framework.core.types import MLPParams
 from alberta_framework.core.update_safety import zero_if_collapsed_infinity
@@ -2918,7 +2921,12 @@ class UPGDLearner:
         after_warmup = state.step_count >= self._perturbation_warmup_steps
         ramp_progress = jnp.where(
             ramp_steps > 0.0,
-            (state.step_count.astype(jnp.float32) - warmup_steps + 1.0)
+            (jnp.minimum(
+                state.step_count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
+            - warmup_steps
+            + 1.0)
             / jnp.maximum(ramp_steps, 1.0),
             1.0,
         )

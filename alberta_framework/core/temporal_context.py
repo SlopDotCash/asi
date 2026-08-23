@@ -40,6 +40,7 @@ from jax import Array
 from jaxtyping import Float
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _FLOAT32_CONSECUTIVE_INTEGER_LIMIT
 
 _INT32_MAX: int = 2**31 - 1
 # Public last-fit in tests is 3 array steps. Origin scanned the leading
@@ -513,7 +514,10 @@ class TemporalContextFeaturizer:
                 state.step_count,
                 jnp.asarray(0, dtype=jnp.int32),
             )
-            step = safe_step_count.astype(jnp.float32)
+            step = jnp.minimum(
+                safe_step_count,
+                jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+            ).astype(jnp.float32)
             periods = jnp.asarray(cfg.periods, dtype=jnp.float32)
             angles = (2.0 * jnp.pi * step) / periods
             phase = jnp.ravel(jnp.stack([jnp.sin(angles), jnp.cos(angles)], axis=1))

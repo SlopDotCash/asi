@@ -20,7 +20,10 @@ from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
-from alberta_framework.core.normalizers import _saturating_int32_counter_increment
+from alberta_framework.core.normalizers import (
+    _FLOAT32_CONSECUTIVE_INTEGER_LIMIT,
+    _saturating_int32_counter_increment,
+)
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -872,7 +875,10 @@ class PeriodicChangeStream:
         key, key_x, key_noise = jr.split(state.key, 3)
 
         # Compute oscillating weights: w(t) = base + amplitude * sin(2π * t / period + phase)
-        t = state.step_count.astype(jnp.float32)
+        t = jnp.minimum(
+            state.step_count,
+            jnp.asarray(_FLOAT32_CONSECUTIVE_INTEGER_LIMIT, dtype=jnp.int32),
+        ).astype(jnp.float32)
         oscillation = self._amplitude * jnp.sin(2.0 * jnp.pi * t / self._period + state.phases)
         true_weights = state.base_weights + oscillation
 
