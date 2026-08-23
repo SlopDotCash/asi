@@ -3,12 +3,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import stat
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pytest
+
+# The immutable-publication path (write_new_json via O_TMPFILE + os.link,
+# no-replace publication) is Linux-only. On platforms without O_TMPFILE the
+# publish-path tests are permanently red (#2251); skip them explicitly.
+linux_publication_only = pytest.mark.skipif(
+    not hasattr(os, "O_TMPFILE"),
+    reason="immutable no-replace publication is Linux-only (O_TMPFILE)",
+)
 
 import alberta_framework.evaluation.bounded_elastic_matched_runner as runner
 from alberta_framework.benchmarks.ipmnist_screening import ScreeningRunResult, screening_spec
@@ -495,6 +504,7 @@ def test_writer_parent_swap_does_not_publish_through_replacement(
     assert not (retired / destination.name).exists()
 
 
+@linux_publication_only
 def test_public_writer_is_closed_before_creating_output(tmp_path: Path) -> None:
     destination = tmp_path / "never" / "report.json"
     with pytest.raises(RuntimeError, match="standalone.*disabled"):
@@ -552,6 +562,7 @@ def test_standalone_paths_remain_disabled_after_flag_transition(
     assert not destination.parent.exists()
 
 
+@linux_publication_only
 def test_transaction_reserves_before_dataset_load_or_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -579,6 +590,7 @@ def test_transaction_reserves_before_dataset_load_or_runner(
     assert marker.read_bytes() == b"prior reservation"
 
 
+@linux_publication_only
 def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -615,6 +627,7 @@ def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     assert calls == 1
 
 
+@linux_publication_only
 def test_transaction_publishes_only_after_strict_reexecution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
