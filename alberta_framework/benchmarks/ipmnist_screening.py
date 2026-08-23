@@ -7516,6 +7516,40 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "weight_decay": 0.01,
             },
         ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap12",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 12.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_l2init_us_nap16",
+            {
+                "norm_decay": 0.99,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 16.0,
+                "weight_decay": 0.01,
+            },
+        ),
+        (
+            "sigma0_shiftnorm_d099_r200_l2init_us_nap8",
+            {
+                "norm_decay": 0.99,
+                "shift_refractory": 200.0,
+                "flag_decay_to_init": 1.0,
+                "flag_utility_scaled_decay": 1.0,
+                "flag_nap_projection": 1.0,
+                "nap_max_norm": 8.0,
+                "weight_decay": 0.01,
+            },
+        ),
     )
     for name, shift_overrides in shiftnorm_variants:
         specs.append(
