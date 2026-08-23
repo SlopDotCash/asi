@@ -2019,3 +2019,46 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert applied.tolist() == [False, True]
     assert final_state.step_count.dtype == jnp.int32
     assert int(final_state.step_count) == 2**31 - 1
+
+
+def test_array_runner_policies_align_with_actions() -> None:
+    critic = HordeLearner(
+        create_horde_spec(
+            [
+                GVFSpec(  # type: ignore[call-arg]
+                    name="value",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.9,
+                    lamda=0.0,
+                    cumulant_index=-1,
+                )
+            ]
+        ),
+        hidden_sizes=(),
+        step_size=0.5,
+        use_layer_norm=False,
+    )
+    agent = HordeActorCriticAgent(
+        HordeActorCriticConfig(n_actions=3, actor_step_size=0.5, actor_lamda=0.0),
+        critic=critic,
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        actor_weights=jnp.array([[2.0, -1.0], [0.0, 3.0], [-2.0, 0.5]], jnp.float32),
+    )
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], jnp.float32)
+    next_observations = jnp.array([[0.0, 1.0], [1.0, 1.0]], jnp.float32)
+    rewards = jnp.array([1.0, 1.0], jnp.float32)
+
+    result = run_horde_actor_critic_from_arrays(
+        agent, state, observations, rewards, next_observations
+    )
+
+    # ``policies[t]`` documents the pre-update distribution at
+    # ``observations[t]`` -- the one that produced ``actions[t]`` -- matching
+    # the discrete runner's contract.
+    chex.assert_trees_all_close(
+        result.policies[0], agent.policy(state, observations[0]), atol=1e-7
+    )
+    assert not bool(
+        jnp.allclose(result.policies[0], agent.policy(state, next_observations[0]))
+    )
