@@ -244,6 +244,38 @@ def test_config_rejects_respawn_factor_below_float32_one() -> None:
         CausalMapForagerConfig(respawn_safety_factor=below_one)
 
 
+@pytest.mark.parametrize("code", ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"])
+def test_config_accepts_every_numpy_integer_family(code: str) -> None:
+    # A fixed-width scalar-name allowlist cannot cover all five signed (and all
+    # five unsigned) C integer families numpy exposes: on any platform exactly
+    # one signed and one unsigned family is orphaned (on aarch64 Linux that is
+    # np.longlong / np.ulonglong).  The dtype-code derivation admits all ten,
+    # so an integer of any family is accepted and canonicalized to int.
+    scalar = np.dtype(code).type(3)
+    assert type(scalar) is np.dtype(code).type
+    config = CausalMapForagerConfig(
+        initial_retry_delay=scalar,
+        maximum_retry_exponent=scalar,
+    )
+    assert type(config.initial_retry_delay) is int
+    assert config.initial_retry_delay == 3
+    assert type(config.maximum_retry_exponent) is int
+    assert config.maximum_retry_exponent == 3
+
+
+def test_config_rejects_int_subclass_bool_and_float_for_integer_field() -> None:
+    class ForgedInt(np.int64):
+        def __index__(self) -> int:
+            raise AssertionError("must not execute __index__")
+
+    with pytest.raises(ValueError, match="integer"):
+        CausalMapForagerConfig(initial_retry_delay=ForgedInt(3))  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="integer"):
+        CausalMapForagerConfig(initial_retry_delay=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="integer"):
+        CausalMapForagerConfig(initial_retry_delay=3.0)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "field",
     [

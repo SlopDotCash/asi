@@ -99,6 +99,41 @@ def test_transition_config_rejects_forged_and_hostile_values_without_index_hooks
     assert HostileMeta.calls == 0
 
 
+@pytest.mark.parametrize("code", ["b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"])
+def test_config_accepts_every_numpy_integer_family(code: str) -> None:
+    # Every signed and unsigned C integer family numpy exposes must be admitted
+    # by the exact-type gate.  On any platform exactly one signed and one
+    # unsigned family has no fixed-width alias, so a hand-written fixed-width
+    # allowlist orphans it; the dtype-code derivation covers all ten families.
+    scalar = np.dtype(code).type(2)
+    assert type(scalar) is np.dtype(code).type
+    config = GradualTransitionConfig(mode="input_interpolation", transition_steps=scalar)
+    assert type(config.transition_steps) is int
+    assert config.transition_steps == 2
+
+
+def test_config_rejects_int_subclass_bool_and_float_without_index_hooks() -> None:
+    class ForgedInt(np.int64):
+        def __index__(self) -> int:
+            raise AssertionError("must not execute __index__")
+
+    with pytest.raises(ValueError, match="integer"):
+        GradualTransitionConfig(
+            mode="input_interpolation",
+            transition_steps=ForgedInt(2),  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="integer"):
+        GradualTransitionConfig(
+            mode="input_interpolation",
+            transition_steps=True,  # type: ignore[arg-type]
+        )
+    with pytest.raises(ValueError, match="integer"):
+        GradualTransitionConfig(
+            mode="input_interpolation",
+            transition_steps=2.0,  # type: ignore[arg-type]
+        )
+
+
 def test_task_sampling_mask_is_matched_deterministic_and_monotone() -> None:
     first = task_sampling_mask(seed=7, transition_id=3, count=10, alpha=0.3)
     second = task_sampling_mask(seed=7, transition_id=3, count=10, alpha=0.3)
