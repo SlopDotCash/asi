@@ -520,6 +520,8 @@ def _replace_one_unit(
     mlp_state: MultiHeadMLPState,
     cbp_state: ContinualBackpropState,
     key: Array,
+    optimizer: AnyOptimizer | None = None,
+    head_optimizer: AnyOptimizer | None = None,
 ) -> tuple[MultiHeadMLPState, ContinualBackpropState]:
     """Re-initialize a single hidden unit in trunk layer ``layer_idx``.
 
@@ -533,6 +535,12 @@ def _replace_one_unit(
         weight matrix.
     * Reset CBP ``utilities[layer_idx][unit_idx]`` and
       ``ages[layer_idx][unit_idx]`` to 0.
+    * When ``optimizer`` is given, rebuild the replaced unit's optimizer
+      state and eligibility traces so the fresh unit does not inherit the
+      dead unit's adaptation history: the incoming row (and its bias
+      entry) and the zeroed outgoing column are reset to the optimizer's
+      ``init_for_shape`` values, and their traces to zero. Scalar leaves
+      (shared values like a meta step-size) stay untouched.
 
     Args:
         layer_idx: Hidden layer index (Python int, used in indexing
@@ -543,6 +551,10 @@ def _replace_one_unit(
         mlp_state: Current learner state.
         cbp_state: Current CBP state.
         key: PRNG key for sampling new weights.
+        optimizer: The learner's per-parameter trunk optimizer; ``None``
+            leaves optimizer state and traces untouched.
+        head_optimizer: The separate head optimizer when the learner has
+            one; ``None`` falls back to ``optimizer`` for head columns.
 
     Returns:
         Updated ``(mlp_state, cbp_state)``.
@@ -594,9 +606,79 @@ def _replace_one_unit(
         weights=tuple(new_head_weights),
     )
 
+    new_trunk_traces = list(mlp_state.trunk_traces)
+    new_trunk_opt_states = list(mlp_state.trunk_optimizer_states)
+    new_head_traces = list(mlp_state.head_traces)
+    new_head_opt_states = list(mlp_state.head_optimizer_states)
+    if optimizer is not None:
+        row_mask = (
+            jnp.arange(fan_out, dtype=jnp.int32) == unit_idx
+        ) & has_candidate
+
+        def _reset_masked(tree: Any, fresh: Any, mask: Array, axis: int) -> Any:
+            def leaf(value: Array, fresh_value: Array) -> Array:
+                if value.ndim == 0:
+                    return value
+                if value.ndim == 2:
+                    selector = mask[:, None] if axis == 0 else mask[None, :]
+                else:
+                    selector = mask
+                return jnp.where(selector, fresh_value, value)
+
+            return jax.tree_util.tree_map(leaf, tree, fresh)
+
+        fresh_w_opt = optimizer.init_for_shape((fan_out, fan_in))
+        fresh_b_opt = optimizer.init_for_shape((fan_out,))
+        new_trunk_opt_states[2 * layer_idx] = _reset_masked(
+            new_trunk_opt_states[2 * layer_idx], fresh_w_opt, row_mask, 0
+        )
+        new_trunk_opt_states[2 * layer_idx + 1] = _reset_masked(
+            new_trunk_opt_states[2 * layer_idx + 1], fresh_b_opt, row_mask, 0
+        )
+        new_trunk_traces[2 * layer_idx] = jnp.where(
+            row_mask[:, None], 0.0, new_trunk_traces[2 * layer_idx]
+        )
+        new_trunk_traces[2 * layer_idx + 1] = jnp.where(
+            row_mask, 0.0, new_trunk_traces[2 * layer_idx + 1]
+        )
+        if layer_idx < n_layers - 1:
+            next_shape = mlp_state.trunk_params.weights[layer_idx + 1].shape
+            col_mask = (
+                jnp.arange(next_shape[1], dtype=jnp.int32) == unit_idx
+            ) & has_candidate
+            fresh_next_opt = optimizer.init_for_shape(next_shape)
+            new_trunk_opt_states[2 * (layer_idx + 1)] = _reset_masked(
+                new_trunk_opt_states[2 * (layer_idx + 1)], fresh_next_opt, col_mask, 1
+            )
+            new_trunk_traces[2 * (layer_idx + 1)] = jnp.where(
+                col_mask[None, :], 0.0, new_trunk_traces[2 * (layer_idx + 1)]
+            )
+        else:
+            head_opt = optimizer if head_optimizer is None else head_optimizer
+            for h in range(len(new_head_opt_states)):
+                head_shape = mlp_state.head_params.weights[h].shape
+                col_mask = (
+                    jnp.arange(head_shape[1], dtype=jnp.int32) == unit_idx
+                ) & has_candidate
+                fresh_head_opt = head_opt.init_for_shape(head_shape)
+                head_w_opt, head_b_opt = new_head_opt_states[h]
+                new_head_opt_states[h] = (
+                    _reset_masked(head_w_opt, fresh_head_opt, col_mask, 1),
+                    head_b_opt,
+                )
+                head_w_trace, head_b_trace = new_head_traces[h]
+                new_head_traces[h] = (
+                    jnp.where(col_mask[None, :], 0.0, head_w_trace),
+                    head_b_trace,
+                )
+
     new_mlp_state = mlp_state.replace(  # type: ignore[attr-defined]
         trunk_params=new_trunk_params,
         head_params=new_head_params,
+        trunk_traces=tuple(new_trunk_traces),
+        trunk_optimizer_states=tuple(new_trunk_opt_states),
+        head_traces=tuple(new_head_traces),
+        head_optimizer_states=tuple(new_head_opt_states),
     )
 
     # ---- Reset CBP utility & age for the replaced unit. ----
@@ -624,6 +706,8 @@ def maybe_replace_units(
     cbp_state: ContinualBackpropState,
     config: ContinualBackpropConfig,
     sparsity: float,
+    optimizer: AnyOptimizer | None = None,
+    head_optimizer: AnyOptimizer | None = None,
 ) -> tuple[MultiHeadMLPState, ContinualBackpropState]:
     """Possibly replace one low-utility, mature unit per hidden layer.
 
@@ -642,7 +726,7 @@ def maybe_replace_units(
         Updated ``(mlp_state, cbp_state)``.
     """
     new_mlp_state, new_cbp_state, _replaced = replace_units_with_flags(
-        mlp_state, cbp_state, config, sparsity
+        mlp_state, cbp_state, config, sparsity, optimizer, head_optimizer
     )
     return new_mlp_state, new_cbp_state
 
@@ -652,6 +736,8 @@ def replace_units_with_flags(
     cbp_state: ContinualBackpropState,
     config: ContinualBackpropConfig,
     sparsity: float,
+    optimizer: AnyOptimizer | None = None,
+    head_optimizer: AnyOptimizer | None = None,
 ) -> tuple[MultiHeadMLPState, ContinualBackpropState, Array]:
     """Run :func:`maybe_replace_units` and also return the per-layer replacement flags.
 
@@ -699,6 +785,8 @@ def replace_units_with_flags(
             new_mlp_state,
             new_cbp_state,
             subkey,
+            optimizer,
+            head_optimizer,
         )
         # Decrement accumulator only if we actually replaced, and never carry
         # more than the one replacement a step can deliver.
@@ -1192,6 +1280,8 @@ class CBPMultiHeadMLPLearner:
             new_cbp_state,
             self._cbp_config,
             self._sparsity,
+            self._learner.optimizer,
+            self._learner.head_optimizer,
         )
 
         new_state = CBPMultiHeadMLPState(  # type: ignore[call-arg]

@@ -647,6 +647,16 @@ class MultiHeadMLPLearner:
         """The feature normalizer, or None if normalization is disabled."""
         return self._normalizer
 
+    @property
+    def optimizer(self) -> AnyOptimizer:
+        """The per-parameter trunk optimizer."""
+        return self._optimizer
+
+    @property
+    def head_optimizer(self) -> AnyOptimizer | None:
+        """The separate head optimizer, or None when heads share the trunk's."""
+        return self._head_optimizer
+
     def to_config(self) -> dict[str, Any]:
         """Serialize learner configuration to dict.
 

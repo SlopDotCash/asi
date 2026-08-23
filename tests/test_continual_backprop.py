@@ -27,6 +27,7 @@ from alberta_framework.core.continual_backprop import (
     update_utility,
 )
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner
+from alberta_framework.core.optimizers import Autostep
 
 # =============================================================================
 # init_cbp_state shape / value tests
@@ -988,3 +989,67 @@ class TestCBPWrapperConstructorIdentities:
         payload[field] = value
         with pytest.raises(ValueError, match="serialized"):
             CBPMultiHeadMLPLearner.from_config(payload)
+
+
+def test_replacement_resets_optimizer_state_and_traces() -> None:
+    """A fresh unit must not inherit the dead unit's adaptation history.
+
+    The reference GnT implementation resets the optimizer slots of a
+    replaced feature along with its weights, and MLPLearner.
+    reset_dormant_neurons re-initializes optimizer-state slices from
+    init_for_shape for the same reason: a step-size-adapting optimizer
+    whose per-weight state survives the replacement hands the newborn
+    unit the collapsed step-sizes of the unit it replaced.
+    """
+    hidden = (6,)
+    optimizer = Autostep(initial_step_size=0.01)
+    learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=hidden, optimizer=optimizer)
+    mlp_state = learner.init(32, jr.key(0))
+
+    key = jr.key(3)
+    for i in range(60):
+        obs = jr.normal(jr.fold_in(key, i), (32,), jnp.float32)
+        target = jnp.array([float(jnp.sum(obs))], jnp.float32)
+        mlp_state = learner.update(mlp_state, obs, target).state
+
+    cbp_state = init_cbp_state(mlp_state, hidden, jr.key(7))
+    cbp_state = cbp_state.replace(
+        utilities=(jnp.array([0.0, 1.0, 1.0, 1.0, 1.0, 1.0], jnp.float32),),
+        ages=(jnp.full((6,), 500, jnp.int32),),
+        replacement_accumulators=jnp.array([1.0], jnp.float32),
+    )
+    config = ContinualBackpropConfig(
+        decay_rate=0.99, replacement_rate=1.0, maturity_threshold=100
+    )
+
+    new_mlp, _new_cbp, replaced = replace_units_with_flags(
+        mlp_state,
+        cbp_state,
+        config,
+        0.9,
+        learner.optimizer,
+        learner.head_optimizer,
+    )
+    assert bool(replaced[0])
+
+    fresh = optimizer.init_for_shape((6, 32))
+    chex.assert_trees_all_close(
+        new_mlp.trunk_optimizer_states[0].step_sizes[0],
+        fresh.step_sizes[0],
+    )
+    chex.assert_trees_all_close(
+        new_mlp.trunk_traces[0][0], jnp.zeros(32, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(
+        new_mlp.head_traces[0][0][:, 0], jnp.zeros(1, dtype=jnp.float32)
+    )
+    fresh_head = optimizer.init_for_shape(new_mlp.head_params.weights[0].shape)
+    chex.assert_trees_all_close(
+        new_mlp.head_optimizer_states[0][0].step_sizes[:, 0],
+        fresh_head.step_sizes[:, 0],
+    )
+
+    surviving = np.asarray(mlp_state.trunk_optimizer_states[0].step_sizes[1])
+    chex.assert_trees_all_close(
+        new_mlp.trunk_optimizer_states[0].step_sizes[1], jnp.asarray(surviving)
+    )
