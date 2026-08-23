@@ -155,8 +155,11 @@ def forward_view_returns(
     _require_leading_length(
         "cumulants", cumulants, ndim=1, maximum=_NEXTING_MAX_STEPS
     )
-    gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
-    init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
+    # Cast to float32 explicitly: casting gamma/terminal_value into an
+    # integer or boolean cumulant series dtype would silently truncate them
+    # (e.g. gamma=0.95 -> 0), degenerating the forward-view returns.
+    gamma_s = jnp.asarray(gamma, dtype=jnp.float32)
+    init = jnp.asarray(terminal_value, dtype=jnp.float32)
 
     def step(carry: Array, c: Array) -> tuple[Array, Array]:
         # gamma=0 must not multiply an inf later return (0*inf).
