@@ -3335,6 +3335,70 @@ class UPGDCBPState:
     cbp: CBPState
 
 
+@chex.dataclass(frozen=True)
+class UPGDL2InitCBPState:
+    """UPGD L2-init state (decay toward initial weights) plus CBP
+    recycling state. Composes the regenerative-regularization mechanism
+    (Kumar et al.) with the bounded budget-recycling mechanism — the two
+    regularizers act on different axes (parameter magnitude vs. element
+    retention), so the composition is not trivially redundant."""
+
+    utility: dict[str, Array]
+    step: Array
+    init_params: dict[str, Array]
+    cbp: CBPState
+
+
+def _make_upgd_l2init_cbp_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    noise_std = hp["noise_std"]
+
+    def init_fn(params: dict[str, Array]) -> UPGDL2InitCBPState:
+        return UPGDL2InitCBPState(  # type: ignore[call-arg]
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.array(0, dtype=jnp.int32),
+            init_params={name: value for name, value in params.items()},
+            cbp=_init_cbp_state(params["w1"].shape[1], params["w2"].shape[1]),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: UPGDL2InitCBPState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], UPGDL2InitCBPState, StepMetrics]:
+        key_noise, key_cbp = jr.split(key)
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x, y
+        )
+        _, _, a1, z2, a2 = _forward_with_activations(params, x)
+        da1, da2 = _activation_loss_grads(params, logits, y, z2)
+        noise = _sorted_flat_noise(key_noise, params, noise_std)
+        l2init_state = UPGDL2InitState(  # type: ignore[call-arg]
+            utility=state.utility, step=state.step, init_params=state.init_params
+        )
+        new_params, new_l2init = upgd_l2init_update(
+            params, l2init_state, grads, noise, hp
+        )
+        opt_arrays = {name: new_l2init.utility[name][None, ...] for name in new_params}
+        new_params, updated_opt_arrays, new_cbp = _cbp_update(
+            new_params, opt_arrays, state.cbp, a1, da1, a2, da2, key_cbp, hp
+        )
+        assert updated_opt_arrays is not None
+        new_utility = {name: updated_opt_arrays[name][0] for name in new_params}
+        metrics = _step_metrics(new_params, x, y, loss, logits)
+        return new_params, UPGDL2InitCBPState(  # type: ignore[call-arg]
+            utility=new_utility,
+            step=new_l2init.step,
+            init_params=state.init_params,
+            cbp=new_cbp,
+        ), metrics
+
+    return init_fn, full_step
+
+
 def _make_upgd_cbp_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
@@ -6799,6 +6863,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             hyperparameters=_upgd_hp(**_CBP_DEFAULTS),
             factory=_make_upgd_cbp_learner,
             description="UPGD-W with CBP-style dormant-unit recycling.",
+        ),
+        ScreeningSpec(
+            name="upgd_l2init_cbp",
+            base_learner="upgd_w",
+            mechanism="l2_init_dormant_unit_recycling",
+            hyperparameters=_upgd_hp(**_CBP_DEFAULTS),
+            factory=_make_upgd_l2init_cbp_learner,
+            description=(
+                "UPGD L2-init (decay toward initial weights) composed with "
+                "CBP-style dormant-unit recycling: magnitude regularization "
+                "plus element-retention budget on orthogonal axes."
+            ),
         ),
         # --- Wave 5: star around the confirmed upgd_ema_norm result (0.85357
         # at 200 tasks).  Its UPGD-W hyperparameters were tuned for RAW pixel
