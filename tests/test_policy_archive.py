@@ -66,3 +66,43 @@ def test_protocol_is_nonpromoting() -> None:
     assert POLICY_ARCHIVE_PROTOCOL["paper_revision"] == "arXiv:2604.15414v1"
     assert POLICY_ARCHIVE_PROTOCOL["controls"] == ("one_model", "fixed_snapshot")
     assert POLICY_ARCHIVE_PROTOCOL["scientific_promotion_allowed"] is False
+
+
+class TestEqualWidthInvariant:
+    """Enforce archive-wide equal latent width and control arm isolation (#2322)."""
+
+    def test_constructor_rejects_mixed_latent_widths(self) -> None:
+        narrow = _entry("a", (0.0,), 0.0)
+        wide = _entry("b", (3.0, 3.0), 9.0)
+        for mode in ("diverse_archive", "one_model", "fixed_snapshot"):
+            with pytest.raises(ValueError, match="all latent descriptors must have equal width"):
+                BoundedPolicyArchive(
+                    byte_budget=4096,
+                    min_latent_distance=1.0,
+                    mode=mode,
+                    entries=(narrow, wide),
+                )
+
+    def test_diverse_archive_add_rejects_mismatched_latent_width(self) -> None:
+        archive = BoundedPolicyArchive(byte_budget=4096, min_latent_distance=1.0).add(
+            _entry("a", (0.0,), 1.0)
+        )
+        with pytest.raises(ValueError, match="all latent descriptors must have equal width"):
+            archive.add(_entry("b", (1.0, 2.0), 2.0))
+
+    def test_controls_accept_different_latent_width(self) -> None:
+        narrow = _entry("a", (0.0,), 1.0)
+        wide = _entry("b", (1.0, 2.0), 2.0)
+
+        fixed = BoundedPolicyArchive(
+            byte_budget=4096, min_latent_distance=0.0, mode="fixed_snapshot"
+        ).add(narrow)
+        assert fixed.add(wide) is fixed
+        assert [entry.identity for entry in fixed.entries] == ["a"]
+
+        one = BoundedPolicyArchive(
+            byte_budget=4096, min_latent_distance=0.0, mode="one_model"
+        ).add(narrow)
+        updated = one.add(wide)
+        assert [entry.identity for entry in updated.entries] == ["b"]
+        assert updated.entries[0].latent == (1.0, 2.0)
