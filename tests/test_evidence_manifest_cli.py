@@ -1,63 +1,100 @@
-"""Unit coverage for alberta_framework.evaluation.evidence_manifest_cli.
+"""Unit coverage for evidence_manifest_cli: fail-closed output-path
+protection and main() exit-code wiring."""
 
-Exercises the output-path resolution guard (_resolved_new_output) which
-protects the pinned canonical artifact path and refuses overwrites, plus
-the exit-code wiring for the manifest.
-"""
+from __future__ import annotations
 
-import importlib.util
-import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-
-def load_module():
-    repo_root = Path(__file__).resolve().parents[1]
-    spec = importlib.util.spec_from_file_location(
-        "evidence_manifest_cli",
-        str(repo_root / "alberta_framework/evaluation/evidence_manifest_cli.py"),
-    )
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["evidence_manifest_cli"] = module
-    # Stub the evidence_manifest dependency (build would touch the repo).
-    import types
-
-    fake = types.ModuleType("alberta_framework.evaluation.evidence_manifest")
-    fake.REPO_ROOT = repo_root
-    fake.DEFAULT_OUTPUT = fake.REPO_ROOT / "outputs/evidence_manifest.json"
-    fake.build_evidence_manifest = lambda root: {"schema": "x"}
-    fake.evidence_manifest_json = lambda m: '{"schema": "x"}'
-    fake.evidence_manifest_exit_code = lambda m: 0
-    sys.modules["alberta_framework.evaluation.evidence_manifest"] = fake
-    spec.loader.exec_module(module)
-    return module
+from alberta_framework.evaluation.evidence_manifest_cli import (
+    _resolved_new_output,
+    main,
+)
 
 
-mod = load_module()
+class TestResolvedNewOutput:
+    def test_rejects_canonical_default_path(self) -> None:
+        with patch(
+            "alberta_framework.evaluation.evidence_manifest_cli.DEFAULT_OUTPUT",
+            Path("/repo/outputs/evidence_manifest.json"),
+        ):
+            with pytest.raises(FileExistsError, match="canonical artifact path"):
+                _resolved_new_output(Path("/repo/outputs/evidence_manifest.json"))
+
+    def test_rejects_existing_output_path(self, tmp_path: Path) -> None:
+        existing = tmp_path / "existing.json"
+        existing.write_text("{}", encoding="utf-8")
+        with pytest.raises(FileExistsError, match="refusing to overwrite"):
+            _resolved_new_output(existing)
+
+    def test_accepts_fresh_path(self, tmp_path: Path) -> None:
+        fresh = tmp_path / "fresh.json"
+        resolved = _resolved_new_output(fresh)
+        assert resolved == fresh.resolve()
 
 
-def test_resolved_new_output_accepts_new_path(tmp_path: Path) -> None:
-    target = tmp_path / "new" / "manifest.json"
-    resolved = mod._resolved_new_output(target)
-    assert resolved == target.resolve()
+class TestMain:
+    def test_prints_manifest_and_returns_exit_code(self) -> None:
+        manifest_payload = '{"version": 1, "claims": []}'
+        with (
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.build_evidence_manifest",
+                return_value=object(),
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.evidence_manifest_json",
+                return_value=manifest_payload,
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.evidence_manifest_exit_code",
+                return_value=0,
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.sys.stdout"
+            ) as stdout,
+        ):
+            assert main([]) == 0
+            stdout.write.assert_called_once_with(manifest_payload)
 
+    def test_writes_output_file_when_requested(self, tmp_path: Path) -> None:
+        out = tmp_path / "out.json"
+        with (
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.build_evidence_manifest",
+                return_value=object(),
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.evidence_manifest_json",
+                return_value='{"ok": true}',
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.evidence_manifest_exit_code",
+                return_value=1,
+            ),
+        ):
+            code = main(["--output", str(out)])
+            assert code == 1
+            assert out.read_text(encoding="utf-8") == '{"ok": true}'
 
-def test_resolved_new_output_rejects_canonical_path(tmp_path: Path) -> None:
-    canonical = mod.DEFAULT_OUTPUT
-    with pytest.raises(FileExistsError, match="canonical artifact"):
-        mod._resolved_new_output(canonical)
-
-
-def test_resolved_new_output_rejects_existing_path(tmp_path: Path) -> None:
-    existing = tmp_path / "manifest.json"
-    existing.write_text("{}", encoding="utf-8")
-    with pytest.raises(FileExistsError, match="overwrite existing"):
-        mod._resolved_new_output(existing)
-
-
-def test_resolved_new_output_expands_home() -> None:
-    # expanduser on a literal ~/ path resolves against HOME.
-    target = Path("~/evidence_manifest_test_xyz.json")
-    resolved = mod._resolved_new_output(target)
-    assert resolved == target.expanduser().resolve()
+    def test_returns_2_on_output_error(self) -> None:
+        with (
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.build_evidence_manifest",
+                return_value=object(),
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.evidence_manifest_exit_code",
+                return_value=0,
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli._resolved_new_output",
+                side_effect=FileExistsError("refusing to overwrite"),
+            ),
+            patch(
+                "alberta_framework.evaluation.evidence_manifest_cli.sys.stderr"
+            ) as stderr,
+        ):
+            assert main(["--output", "/x/y.json"]) == 2
+            stderr.write.assert_called()
