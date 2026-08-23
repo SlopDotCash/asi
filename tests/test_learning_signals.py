@@ -632,3 +632,33 @@ def test_learning_signal_stable_reductions_remain_finite_at_legal_large_bounds()
     )
     assert bool(jnp.isfinite(signals.epistemic_disagreement))
     assert bool(jnp.isfinite(next_state.calibration_m2))
+def test_saturating_helpers_clamp_negative_to_one() -> None:
+    """Local saturating clones must reuse the canonical negative clamp.
+
+    ``alberta_framework.core.normalizers._saturating_int32_counter_increment``
+    caps at INT32_MAX and clamps negatives to 1 via
+    ``jnp.minimum(jnp.maximum(counter,0), MAX-1)+1``. Eight core modules
+    previously used ``jnp.minimum(value, MAX-1)+1`` and stayed negative for
+    hostile state ``-5 -> -4, -1 -> 0``. This pins that they now reuse the
+    helper by name and clamp.
+    """
+    import jax.numpy as _jnp
+
+    from alberta_framework.core.associative_memory import _saturating_increment as _am
+    from alberta_framework.core.compositional_features import _saturating_int32_increment as _cf
+    from alberta_framework.core.dual_replay import _saturating_increment as _dr
+    from alberta_framework.core.experiential_memory import _saturating_increment as _em
+    from alberta_framework.core.learning_signals import _saturating_increment as _ls
+    from alberta_framework.core.model_replay_rehearsal import _saturating_increment as _mrr
+    from alberta_framework.core.normalizers import _saturating_int32_counter_increment as _canon
+    from alberta_framework.core.prototype_memory import _saturating_increment as _pm
+    from alberta_framework.core.world_model import _saturating_increment as _wm
+
+    neg5 = _jnp.array(-5, dtype=_jnp.int32)
+    neg1 = _jnp.array(-1, dtype=_jnp.int32)
+    maxv = _jnp.array(2_147_483_647, dtype=_jnp.int32)
+    for helper in (_am, _cf, _dr, _em, _ls, _mrr, _pm, _wm, _canon):
+        assert int(helper(neg5)) == 1
+        assert int(helper(neg1)) == 1
+        assert int(helper(maxv)) == 2_147_483_647
+

@@ -42,6 +42,7 @@ from alberta_framework.core.normalizers import (
     EMANormalizerState,
     Normalizer,
     WelfordNormalizerState,
+    _saturating_int32_counter_increment,
 )
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import TraceMode
@@ -278,8 +279,7 @@ def _require_scan_array(name: str, value: object, expected: tuple[int, ...]) -> 
 
 
 def _saturating_increment(value: Array) -> Array:
-    one = jnp.asarray(1, dtype=jnp.int32)
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
+    return _saturating_int32_counter_increment(value)
 
 
 def _float32_operand(

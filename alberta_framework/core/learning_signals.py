@@ -55,6 +55,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar,
     validated_float32_scalar_with_ratio,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 _INT32_MAX = 2_147_483_647
 _FLOAT32_MAX = float.fromhex("0x1.fffffep+127")
@@ -144,9 +145,7 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
 
 
 def _saturating_increment(value: Array) -> Array:
-    """Increment a non-negative int32 counter without lifetime wraparound."""
-    maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
-    return jnp.minimum(value, maximum - 1) + jnp.asarray(1, dtype=jnp.int32)
+    return _saturating_int32_counter_increment(value)
 
 
 def _saturating_counter_sum(left: Array, right: Array) -> Array:

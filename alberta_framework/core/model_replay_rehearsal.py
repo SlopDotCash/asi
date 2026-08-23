@@ -64,6 +64,7 @@ from alberta_framework.core.learning_signals import (
     LearningSignalAvailability,
     TypedLearningSignals,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.world_model_ensemble import (
     WorldModelEnsemble,
     WorldModelEnsembleConfig,
@@ -580,9 +581,7 @@ def _config_digest(payload: dict[str, Any]) -> str:
 
 
 def _saturating_increment(value: Array) -> Array:
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + jnp.asarray(
-        1, dtype=jnp.int32
-    )
+    return _saturating_int32_counter_increment(value)
 
 
 class ModelReplayRehearsal:

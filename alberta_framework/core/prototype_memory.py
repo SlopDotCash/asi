@@ -30,6 +30,7 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -177,8 +178,7 @@ def _read_mapping(name: str, value: object) -> dict[str, Any]:
 
 
 def _saturating_increment(value: Array) -> Array:
-    one = jnp.asarray(1, dtype=jnp.int32)
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
+    return _saturating_int32_counter_increment(value)
 
 
 @chex.dataclass(frozen=True)

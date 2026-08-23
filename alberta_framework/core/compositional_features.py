@@ -50,6 +50,7 @@ from alberta_framework.core.future_utility import (
     normalize_future_utility_signal,
     trace_output_loss_reduction,
 )
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.resource_manager import (
     GeneratorMetaResourceManager,
     GeneratorMetaResourceManagerState,
@@ -167,8 +168,7 @@ def _require_resource(name: str, *, scalars: int, nbytes: int) -> None:
 
 
 def _saturating_int32_increment(value: Array) -> Array:
-    one = jnp.asarray(1, dtype=jnp.int32)
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + one
+    return _saturating_int32_counter_increment(value)
 
 
 def _compositional_state_nbytes(

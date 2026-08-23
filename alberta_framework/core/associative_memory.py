@@ -27,6 +27,7 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework._float32 import round_real_to_float32_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -99,9 +100,7 @@ def _require_array(
 
 
 def _saturating_increment(value: Array) -> Array:
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + jnp.asarray(
-        1, dtype=jnp.int32
-    )
+    return _saturating_int32_counter_increment(value)
 
 
 def _saturating_add_bool(value: Array, increment: Array) -> Array:

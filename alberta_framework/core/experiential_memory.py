@@ -36,6 +36,7 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 _INT32_MAX = 2_147_483_647
 _UINT32_MAX = 4_294_967_295
@@ -491,8 +492,7 @@ def _validate_config(config: ExperientialMemoryConfig) -> None:
         _validated_config_float("recency_scale", config.recency_scale, positive=True),
     )
 def _saturating_increment(value: Array) -> Array:
-    maximum_minus_one = jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)
-    return jnp.minimum(value, maximum_minus_one) + jnp.asarray(1, dtype=jnp.int32)
+    return _saturating_int32_counter_increment(value)
 
 def _tree_nbytes(tree: Any) -> int:
     return sum(int(leaf.size) * int(leaf.dtype.itemsize) for leaf in jax.tree.leaves(tree))

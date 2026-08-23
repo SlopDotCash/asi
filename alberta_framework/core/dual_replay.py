@@ -51,6 +51,7 @@ import numpy.typing as npt
 from jax import Array
 
 from alberta_framework._float32 import round_real_to_float32
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 DUAL_REPLAY_CONFIG_SCHEMA = "alberta.dual-replay.config.v1"
 DUAL_REPLAY_CHECKPOINT_SCHEMA = "alberta.dual-replay.checkpoint.v1"
@@ -689,9 +690,7 @@ def _payload_digest(payload: object) -> str:
 
 
 def _saturating_increment(value: Array) -> Array:
-    return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + jnp.asarray(
-        1, dtype=jnp.int32
-    )
+    return _saturating_int32_counter_increment(value)
 
 
 def _key_from_data(key_data: Array) -> Array:
