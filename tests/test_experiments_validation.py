@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from decimal import Decimal
 from fractions import Fraction
@@ -536,8 +537,16 @@ class _NonfiniteFloatThatConvertsFinite(float):
 
 
 def _platform_longdouble_1e4000() -> np.longdouble:
-    """Parse the cross-platform boundary without leaking an expected warning."""
-    with np.errstate(over="ignore", invalid="ignore"):
+    """Parse the cross-platform boundary without leaking an expected warning.
+
+    Wherever ``longdouble`` is float64 (aarch64), the parse overflows and
+    numpy reports it through the ``warnings`` module, not through the
+    floating-point error state that ``np.errstate`` scopes.  Suppress it with
+    ``catch_warnings`` so the expected overflow does not leak into every
+    collection of this module.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
         return np.longdouble("1e4000")
 
 
