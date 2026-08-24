@@ -34,8 +34,13 @@ from alberta_framework.reference_life_checkpoint import (
     save_reference_life_checkpoint,
 )
 from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig
+from tests._forager_matched_platform import requires_renameat2
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    requires_renameat2,
+]
 
 LIFECYCLE_ID = "prototype.0000001100000012"
 

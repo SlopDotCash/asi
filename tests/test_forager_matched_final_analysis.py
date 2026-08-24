@@ -52,8 +52,13 @@ from alberta_framework.benchmarks import (
 from alberta_framework.benchmarks import forager_matched_statistics as statistics
 from tests import test_forager_matched_executor as executor_fixtures
 from tests import test_forager_matched_open_protocol as protocol_fixtures
+from tests._forager_matched_platform import requires_renameat2
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    requires_renameat2,
+]
 
 
 def _sha(label: str) -> str:
