@@ -1502,8 +1502,6 @@ class FixedBudgetInteractionLearner:
         return self._canonicalize(left, right)
 
     def _canonicalize(self, left: Array, right: Array) -> tuple[Array, Array]:
-        if self._include_squares:
-            return left, right
         return jnp.minimum(left, right), jnp.maximum(left, right)
 
     def _live_descriptor_mask(
