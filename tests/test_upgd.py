@@ -2219,3 +2219,46 @@ class TestLoops:
         stream = RandomWalkStream(feature_dim=4, drift_rate=0.0, noise_std=0.05)
         result = run_upgd_loop(learner, stream, num_steps=50, key=jr.key(0))
         chex.assert_shape(result.metrics, (50, 4))
+
+
+@pytest.mark.parametrize("scale", [1e-20, 1e-12, 1e-10, 1e-6, 1e-3, 1.0, 1e10, 1e20, 1e30])
+def test_gradient_alignment_is_scale_free(scale: float) -> None:
+    """A cosine must satisfy ``cos(c*a, c*b) == cos(a, b)`` for every ``c > 0``.
+
+    Fixed absolute constants made the result a function of the input scale:
+    ``sqrt(total + 1e-12)`` floored the reported norm at ``1e-6``, so the
+    ``> 1e-6`` gate inspected the floor rather than the gradient. Two identical
+    gradients reported ``0.875`` at element scale ``1e-6`` and exactly ``0.0``
+    at ``1e-10``, and the float32 accumulator returned ``nan`` around ``1e20``
+    for gradients that were themselves finite.
+    """
+    gradient = (jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32) * scale,)
+    negated = tuple(-x for x in gradient)
+
+    assert float(UPGDLearner._gradient_alignment(gradient, gradient)) == pytest.approx(
+        1.0, abs=1e-4
+    )
+    assert float(UPGDLearner._gradient_alignment(gradient, negated)) == pytest.approx(
+        -1.0, abs=1e-4
+    )
+
+
+def test_gradient_alignment_keeps_zero_for_directionless_gradients() -> None:
+    """An all-zero tuple has no direction and keeps the documented zero."""
+    zero = (jnp.zeros(3, dtype=jnp.float32),)
+    nonzero = (jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32),)
+
+    assert float(UPGDLearner._gradient_alignment(zero, zero)) == 0.0
+    assert float(UPGDLearner._gradient_alignment(zero, nonzero)) == 0.0
+
+
+def test_gradient_alignment_reports_ordinary_geometry() -> None:
+    """Rescaling must not disturb the angles themselves."""
+    unit_x = (jnp.asarray([1.0, 0.0], dtype=jnp.float32),)
+    unit_y = (jnp.asarray([0.0, 1.0], dtype=jnp.float32),)
+    diagonal = (jnp.asarray([1.0, 1.0], dtype=jnp.float32),)
+
+    assert float(UPGDLearner._gradient_alignment(unit_x, unit_y)) == pytest.approx(0.0, abs=1e-6)
+    assert float(UPGDLearner._gradient_alignment(unit_x, diagonal)) == pytest.approx(
+        0.5**0.5, abs=1e-6
+    )

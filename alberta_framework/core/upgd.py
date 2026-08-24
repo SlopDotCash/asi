@@ -1991,16 +1991,49 @@ class UPGDLearner:
         return jnp.sqrt(total + 1e-12)
 
     @staticmethod
+    def _tuple_peak(xs: tuple[Array, ...]) -> Array:
+        """Largest absolute entry over a static tuple of arrays."""
+        peak = jnp.array(0.0, dtype=jnp.float32)
+        for x in xs:
+            peak = jnp.maximum(peak, jnp.max(jnp.abs(x), initial=0.0))
+        return peak
+
+    @staticmethod
     def _gradient_alignment(
         previous: tuple[Array, ...],
         current: tuple[Array, ...],
     ) -> Array:
-        """Cosine alignment of two gradient tuples, zero for empty gradients."""
-        previous_norm = UPGDLearner._tuple_norm(previous)
-        current_norm = UPGDLearner._tuple_norm(current)
+        """Cosine alignment of two gradient tuples, zero for empty gradients.
+
+        A cosine is scale-free by definition -- ``cos(c*a, c*b) == cos(a, b)``
+        for every ``c > 0`` -- so each tuple is divided by its largest absolute
+        entry before the dot product and norms are taken.  Comparing the raw
+        magnitudes against fixed absolute constants instead made the result a
+        function of the input scale: two identical gradients reported ``0.875``
+        at element scale ``1e-6`` and exactly ``0.0`` at ``1e-10``, because
+        ``sqrt(total + 1e-12)`` floored the norm at ``1e-6`` and the gate then
+        inspected the floor rather than the gradient.  Rescaling also keeps the
+        float32 accumulator off its overflow, which previously returned ``nan``
+        for finite gradients around ``1e20``.
+
+        A tuple whose entries are all exactly zero has no direction; it keeps
+        the documented zero.
+        """
+        previous_peak = UPGDLearner._tuple_peak(previous)
+        current_peak = UPGDLearner._tuple_peak(current)
+        has_direction = (previous_peak > 0.0) & (current_peak > 0.0)
+        safe_previous_peak = jnp.where(previous_peak > 0.0, previous_peak, 1.0)
+        safe_current_peak = jnp.where(current_peak > 0.0, current_peak, 1.0)
+        scaled_previous = tuple(x / safe_previous_peak for x in previous)
+        scaled_current = tuple(y / safe_current_peak for y in current)
+        previous_norm = UPGDLearner._tuple_norm(scaled_previous)
+        current_norm = UPGDLearner._tuple_norm(scaled_current)
+        cosine = UPGDLearner._tuple_dot(scaled_previous, scaled_current) / (
+            previous_norm * current_norm
+        )
         return jnp.where(
-            (previous_norm > 1e-6) & (current_norm > 1e-6),
-            UPGDLearner._tuple_dot(previous, current) / (previous_norm * current_norm + 1e-12),
+            has_direction,
+            jnp.clip(cosine, -1.0, 1.0),
             jnp.array(0.0, dtype=jnp.float32),
         )
 
