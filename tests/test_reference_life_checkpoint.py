@@ -34,6 +34,7 @@ from alberta_framework.reference_life_checkpoint import (
     save_reference_life_checkpoint,
 )
 from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig
+from tests._forager_matched_platform import requires_renameat2
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -54,6 +55,7 @@ def test_switching_metric_schedule_is_constant_time_at_counter_horizon() -> None
         _switching_metric_schedule(1, 0)
 
 
+@requires_renameat2
 def test_checkpoint_validator_rejects_generation_and_zero_event_metric_forgery() -> None:
     runner = _runner()
     state, _ = _advance(runner, runner.init(), 2)
@@ -199,6 +201,7 @@ def saved_case(
     return runner, state, barrier_state, checkpoint
 
 
+@requires_renameat2
 def test_quiescent_checkpoint_restores_exact_continuation(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
 ) -> None:
@@ -257,6 +260,7 @@ def _rehash_bundle(path: Path) -> None:
     (path / "COMMITTED").write_text(f"{bundle_id}\n", encoding="ascii")
 
 
+@requires_renameat2
 def test_restore_rejects_incomplete_tampered_unknown_and_symlink_bundles(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -343,6 +347,7 @@ def test_restore_rejects_incomplete_tampered_unknown_and_symlink_bundles(
         load_reference_life_checkpoint(symlinked)
 
 
+@requires_renameat2
 def test_restore_rejects_rehashed_duplicate_prototype_metadata_key(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -363,6 +368,7 @@ def test_restore_rejects_rehashed_duplicate_prototype_metadata_key(
         load_reference_life_checkpoint(duplicate)
 
 
+@requires_renameat2
 def test_publish_failure_and_existing_generation_leave_runner_unchanged(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -394,6 +400,7 @@ def test_publish_failure_and_existing_generation_leave_runner_unchanged(
     assert not tuple(parent.glob(".*.staging-*"))
 
 
+@requires_renameat2
 def test_post_commit_lock_cleanup_failure_returns_committed_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -429,6 +436,7 @@ def _bundle_bytes(path: Path) -> dict[str, bytes | None]:
 
 
 @pytest.mark.parametrize("stale", [False, True], ids=["current", "stale"])
+@requires_renameat2
 def test_save_to_existing_generation_is_rejected_without_mutation(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -459,6 +467,7 @@ def test_save_to_existing_generation_is_rejected_without_mutation(
     assert restored_runner.current_state is restored_state
 
 
+@requires_renameat2
 def test_save_inside_existing_generation_is_rejected_without_mutation(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -480,6 +489,7 @@ def test_save_inside_existing_generation_is_rejected_without_mutation(
     assert restored_runner.current_state is restored_state
 
 
+@requires_renameat2
 def test_save_through_ancestor_symlink_into_generation_is_rejected(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -503,6 +513,7 @@ def test_save_through_ancestor_symlink_into_generation_is_rejected(
     assert restored_runner.current_state is restored_state
 
 
+@requires_renameat2
 def test_checkpoint_filesystem_publication_stays_inside_runner_barrier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
