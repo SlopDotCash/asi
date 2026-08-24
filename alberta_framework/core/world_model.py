@@ -94,6 +94,24 @@ def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     return validated_float32_scalar(name, value, **bounds)
 
 
+_SMALLEST_NORMAL_FLOAT32 = float(np.finfo(np.float32).tiny)
+
+
+def _validated_normalizing_scale(name: str, value: object) -> float:
+    """Accept only a scale that still divides and multiplies once narrowed to float32.
+
+    A subnormal float32 is returned as an exact zero by every arithmetic operand on
+    the accelerator backends this runs on, so a scale below the smallest normal
+    cannot rescale anything: the head it belongs to is structurally unable to
+    express a change, whatever it predicts. Refusing it here keeps that a
+    construction error rather than a model that converges and predicts nothing.
+    """
+    scale = _validated_config_float(name, value, positive=True)
+    if abs(float(np.float32(scale))) < _SMALLEST_NORMAL_FLOAT32:
+        raise ValueError(f"{name} must remain a normal float32 once narrowed, not a subnormal")
+    return scale
+
+
 def _validated_step_size(name: str, value: object) -> float:
     """Accept an exact zero freeze without silently underflowing learning to zero."""
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
@@ -304,7 +322,10 @@ class ActionConditionedWorldModelConfig:
         gamma: Maximum environment discount used for clipping predicted
             discounts.
         observation_scale: Per-observation-dimension scale for normalized delta
-            targets. When ``None``, all dimensions use scale ``1``.
+            targets, dividing on encode and multiplying on decode. When ``None``,
+            all dimensions use scale ``1``. Each entry must narrow to a normal
+            float32; a subnormal is flushed by the decode multiply, leaving that
+            head unable to express any change.
         reward_scale: Scalar reward target scale.
         predict_delta: When ``True`` (default), the observation heads are
             trained on the normalized change ``next_obs - obs`` and decoded
@@ -364,9 +385,7 @@ class ActionConditionedWorldModelConfig:
             if len(observation_scale) != observation_dim:
                 raise ValueError("observation_scale length must equal observation_dim")
             observation_scale = tuple(
-                _validated_config_float(
-                    f"observation_scale[{index}]", scale, positive=True
-                )
+                _validated_normalizing_scale(f"observation_scale[{index}]", scale)
                 for index, scale in enumerate(observation_scale)
             )
 
@@ -794,7 +813,12 @@ class ActionConditionedWorldModel:
         discount: Array,
         next_observation: Array,
     ) -> Array:
-        """Build normalized ``[delta_obs, reward, discount]`` targets."""
+        """Build normalized ``[delta_obs, reward, discount]`` targets.
+
+        The observation divisor here is the same ``observation_scale`` the decode in
+        :meth:`_prediction_and_raw_diagnostics` multiplies by, so a head that fits
+        its target reconstructs the delta it was shown.
+        """
         obs = _float32_operand(
             "observation", observation, (self._config.observation_dim,)
         )
@@ -805,12 +829,17 @@ class ActionConditionedWorldModel:
         )
         reward_arr = _float32_operand("reward", reward, ())
         discount_arr = _float32_operand("discount", discount, ())
+        # The divisor is the raw declared scale, not a floored one: the decode in
+        # `_prediction_and_raw_diagnostics` multiplies by the raw value, and a head
+        # that fits a target divided by anything else reconstructs that ratio of the
+        # delta it trained on while still reporting a converged fit. Construction
+        # refuses a scale that does not narrow to a normal float32, which is the only
+        # way this divisor reaches zero.
         obs_scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
-        safe_scale = jnp.maximum(obs_scale, jnp.asarray(1e-6, dtype=jnp.float32))
         normalized_delta = jnp.where(
             self._config.predict_delta,
-            (next_obs - obs) / safe_scale,
-            next_obs / safe_scale,
+            (next_obs - obs) / obs_scale,
+            next_obs / obs_scale,
         )
         reward_target = jnp.reshape(
             reward_arr / self._config.reward_scale,

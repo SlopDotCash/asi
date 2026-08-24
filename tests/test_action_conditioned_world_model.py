@@ -204,6 +204,189 @@ def test_action_conditioned_world_model_update_and_prediction_shapes() -> None:
     chex.assert_tree_all_finite(result.prediction_error)
 
 
+_SMALLEST_NORMAL_FLOAT32 = float(np.finfo(np.float32).tiny)
+_BELOW_THE_OLD_FLOOR = [1e-7, 1e-9, 1e-12, 1e-20, 1e-30, _SMALLEST_NORMAL_FLOAT32]
+_PAIRING_SCALES = [1.0, 1e-3, 1e-6, *_BELOW_THE_OLD_FLOOR]
+
+# Every factor below is a power of two and each dimension's observation shares one with
+# its delta, so obs, delta and their sum are exact float32 at any scale the config
+# accepts and no intermediate lands in the subnormal range the backends flush.
+_PAIRING_DIM_FACTORS = (1.0, 2.0)
+_PAIRING_NORMALIZED_OBS = (1.0, 4.0)
+_PAIRING_NORMALIZED_DELTA = (1.0, 4.0)
+
+
+def _pairing_scales(scale: float) -> tuple[float, ...]:
+    return tuple(scale * factor for factor in _PAIRING_DIM_FACTORS)
+
+
+def _scale_matched_transition(scale: float) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Return ``(obs, delta, next_obs)`` sized to the per-dimension declared scale.
+
+    The delta is the declared scale times :data:`_PAIRING_NORMALIZED_DELTA`, which is
+    what ``observation_scale`` means: the size of the change the heads are asked to
+    predict, expressed in normalized units.
+    """
+    dim_scales = np.asarray(_pairing_scales(scale), dtype=np.float32)
+    obs = np.asarray(_PAIRING_NORMALIZED_OBS, dtype=np.float32) * dim_scales
+    delta = np.asarray(_PAIRING_NORMALIZED_DELTA, dtype=np.float32) * dim_scales
+    return (
+        jnp.asarray(obs, dtype=jnp.float32),
+        jnp.asarray(delta, dtype=jnp.float32),
+        jnp.asarray(obs + delta, dtype=jnp.float32),
+    )
+
+
+def _pairing_model(scale: float) -> ActionConditionedWorldModel:
+    return ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            observation_scale=_pairing_scales(scale),
+            hidden_sizes=(),
+            step_size=0.05,
+            use_layer_norm=False,
+        )
+    )
+
+
+@pytest.mark.parametrize("scale", _PAIRING_SCALES)
+def test_observation_targets_rescale_back_to_the_delta_they_encode(scale: float) -> None:
+    """A head that emits its target exactly must decode to the delta it was shown."""
+    model = _pairing_model(scale)
+    obs, delta, next_obs = _scale_matched_transition(scale)
+    target = model.targets(
+        obs,
+        jnp.asarray(0.25, dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+        next_obs,
+    )
+    decoded = target[:2] * jnp.asarray(_pairing_scales(scale), dtype=jnp.float32)
+    np.testing.assert_array_equal(np.asarray(decoded), np.asarray(delta))
+
+
+@pytest.mark.parametrize("scale", _PAIRING_SCALES)
+def test_observation_targets_are_scale_free(scale: float) -> None:
+    """Declaring the scale of the transition must put the heads on the same targets."""
+    model = _pairing_model(scale)
+    obs, _, next_obs = _scale_matched_transition(scale)
+    target = model.targets(
+        obs,
+        jnp.asarray(0.25, dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+        next_obs,
+    )
+    np.testing.assert_array_equal(
+        np.asarray(target[:2]),
+        np.asarray(_PAIRING_NORMALIZED_DELTA, dtype=np.float32),
+    )
+
+
+@pytest.mark.parametrize("scale", _PAIRING_SCALES)
+def test_observation_targets_stay_finite_across_the_validated_domain(scale: float) -> None:
+    """No accepted scale may turn a representable delta into an infinity or a NaN."""
+    model = _pairing_model(scale)
+    obs, _, next_obs = _scale_matched_transition(scale)
+    chex.assert_tree_all_finite(
+        model.targets(
+            obs,
+            jnp.asarray(0.25, dtype=jnp.float32),
+            jnp.asarray(0.9, dtype=jnp.float32),
+            next_obs,
+        )
+    )
+
+
+def test_converged_prediction_recovers_a_delta_far_below_the_old_floor() -> None:
+    """End-to-end through the real learner: the old floor lost all but 1e-3 of this."""
+    scale = 1e-9
+    model = _pairing_model(scale)
+    state = model.init(jr.key(0))
+    obs, delta, next_obs = _scale_matched_transition(scale)
+    action = jnp.asarray(0, dtype=jnp.float32)
+    reward = jnp.asarray(0.0, dtype=jnp.float32)
+    discount = jnp.asarray(0.0, dtype=jnp.float32)
+    for _ in range(3000):
+        state = model.update(state, obs, action, reward, discount, next_obs).state
+
+    reconstructed = np.asarray(
+        model.predict(state, obs, action).next_observation, dtype=np.float64
+    ) - np.asarray(obs, dtype=np.float64)
+    relative = np.abs(reconstructed / np.asarray(delta, dtype=np.float64) - 1.0)
+    assert float(np.max(relative)) < 1e-4
+
+
+@pytest.mark.parametrize(
+    ("scale", "expected_words"),
+    [
+        ((1.0, 2.0), [0x3DCCCCCE, 0x3DCCCCCD, 0x3E000000, 0x3F733333]),
+        ((1e-3, 2e-3), [0x42C80000, 0x42C7FFFF, 0x3E000000, 0x3F733333]),
+        ((1e-6, 2e-6), [0x47C35001, 0x47C35000, 0x3E000000, 0x3F733333]),
+    ],
+)
+def test_targets_at_and_above_the_old_floor_are_bit_for_bit_unchanged(
+    scale: tuple[float, float], expected_words: list[int]
+) -> None:
+    """Scales the removed floor never touched must not be re-rounded by the change."""
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            observation_scale=scale,
+            hidden_sizes=(),
+            reward_scale=4.0,
+        )
+    )
+    target = model.targets(
+        jnp.asarray([0.2, -0.1], dtype=jnp.float32),
+        jnp.asarray(0.5, dtype=jnp.float32),
+        jnp.asarray(0.95, dtype=jnp.float32),
+        jnp.asarray([0.3, 0.1], dtype=jnp.float32),
+    )
+    words = np.asarray(target, dtype=np.float32).view(np.uint32)
+    assert [int(word) for word in words] == expected_words
+
+
+@pytest.mark.parametrize("scale", [1e-40, 1e-44, 1.4e-45])
+def test_config_rejects_an_observation_scale_that_narrows_to_a_subnormal(
+    scale: float,
+) -> None:
+    """The decode multiply flushes a subnormal operand, so the head could never move."""
+    assert 0.0 < abs(float(np.float32(scale))) < _SMALLEST_NORMAL_FLOAT32
+    with pytest.raises(ValueError, match="must remain a normal float32 once narrowed"):
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            observation_scale=(scale, 1.0),
+        )
+
+
+def test_config_accepts_the_smallest_normal_observation_scale() -> None:
+    """The rejected boundary is representability, so the smallest normal still builds."""
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=1,
+        n_actions=2,
+        hidden_sizes=(),
+        observation_scale=(_SMALLEST_NORMAL_FLOAT32,),
+    )
+    assert config.observation_scale == (_SMALLEST_NORMAL_FLOAT32,)
+
+
+def test_reward_and_discount_targets_are_untouched_by_the_observation_scale() -> None:
+    """The reward leg was already paired on the raw config value and must stay put."""
+    model = _pairing_model(1e-9)
+    obs, _, next_obs = _scale_matched_transition(1e-9)
+    target = model.targets(
+        obs,
+        jnp.asarray(0.25, dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+        next_obs,
+    )
+    assert float(target[2]) == 0.25 / model.config.reward_scale
+    assert float(target[3]) == float(np.float32(0.9))
+
+
 def test_action_conditioned_world_model_config_roundtrip() -> None:
     config = ActionConditionedWorldModelConfig(
         observation_dim=3,
