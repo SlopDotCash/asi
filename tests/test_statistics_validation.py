@@ -363,6 +363,18 @@ class TestProbabilityContracts:
 
 
 class TestTimeseriesStatistics:
+    @pytest.mark.parametrize("shape", [(), (3,), (2, 3, 1)])
+    def test_non_matrix_input_rejected(self, shape: tuple[int, ...]) -> None:
+        metric_array = np.ones(shape, dtype=np.float64)
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"^metric_array must be a two-dimensional matrix "
+                r"\(one row per seed, one column per step\), got shape "
+            ),
+        ):
+            compute_timeseries_statistics(metric_array)
+
     def test_matches_per_column_compute_statistics(self) -> None:
         """Vectorised timeseries CI agrees with per-step scalar CI."""
         rng = np.random.default_rng(2)
