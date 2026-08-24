@@ -44,6 +44,7 @@ from jaxtyping import Bool, Float, Int
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
+    masked_convex_weights,
     neutralize_array,
     safe_discrete_action,
     select_transaction,
@@ -340,6 +341,12 @@ class LearnedResourceManager:
     Positive advantage means action ``i`` beat the current allocation.  Centering
     by the allocation baseline keeps the preferences numerically stable and
     makes uniform shifts in all losses irrelevant.
+
+    ``weights`` in the advantage above is the emitted allocation renormalized to
+    sum to one over the actions with a finite loss, so the baseline stays a
+    convex combination of exactly the losses that took part.  Both properties
+    above depend on that: an allocation summing to less than one would pull the
+    baseline toward zero and leave the advantage tracking the raw loss.
     """
 
     def __init__(
@@ -594,8 +601,7 @@ class LearnedResourceManager:
         adjusted = jnp.where(valid_actions, safe_losses + cost_terms, 0.0)
 
         weights = self._weights_jit(state, context)
-        finite_weight_sum = jnp.maximum(jnp.sum(jnp.where(valid_actions, weights, 0.0)), 1e-12)
-        masked_weights = jnp.where(valid_actions, weights / finite_weight_sum, 0.0)
+        masked_weights = masked_convex_weights(valid_actions, weights)
         baseline = jnp.sum(masked_weights * adjusted)
         advantages = jnp.where(valid_actions, baseline - adjusted, 0.0)
         advantages = jnp.clip(
@@ -1191,8 +1197,7 @@ class GeneratorMetaResourceManager:
         adjusted = jnp.where(finite, safe_rewards - cost_terms, 0.0)
 
         weights = self._weights_jit(state, context)
-        finite_weight_sum = jnp.maximum(jnp.sum(jnp.where(finite, weights, 0.0)), 1e-12)
-        masked_weights = jnp.where(finite, weights / finite_weight_sum, 0.0)
+        masked_weights = masked_convex_weights(finite, weights)
         baseline = jnp.sum(masked_weights * adjusted)
         selection_input_valid = jnp.asarray(True, dtype=jnp.bool_)
         if self._update_rule == "exp3":

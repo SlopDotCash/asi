@@ -23,6 +23,10 @@ from alberta_framework.core.compositional_features import (
     CompositionalFeatureLearner,
     run_compositional_arrays,
 )
+from alberta_framework.core.resource_manager import (
+    GeneratorMetaResourceManagerState,
+    LearnedResourceManagerState,
+)
 
 
 class TestLearnedResourceManager:
@@ -315,6 +319,121 @@ class TestLearnedResourceManager:
         )
         assert math.isinf(bound)
 
+    # The manager renormalizes its allocation over the actions whose loss was
+    # finite.  Once a learned preference puts that subset far enough below the
+    # leader the subset's own mass underflows, and the tests below pin that the
+    # baseline stays the mean of the losses that took part.
+    _MASKED_BASELINE_GAPS = [0.0, 10.0, 28.0, 30.0, 40.0, 60.0, 80.0, 88.0, 110.0, 200.0]
+
+    @staticmethod
+    def _seeded_state(
+        manager: LearnedResourceManager,
+        gap: float,
+    ) -> LearnedResourceManagerState:
+        """Return a state whose first action leads the others by ``gap`` nats."""
+        fresh = manager.init()
+        return LearnedResourceManagerState(  # type: ignore[call-arg]
+            log_weights=jnp.asarray([[gap, 0.0, 0.0]], dtype=jnp.float32),
+            loss_ema=fresh.loss_ema,
+            action_counts=fresh.action_counts,
+            step_count=fresh.step_count,
+        )
+
+    @classmethod
+    def _masked_update(
+        cls,
+        gap: float,
+        shift: float = 0.0,
+    ) -> tuple[NDArray[np.float32], NDArray[np.float32], bool]:
+        """Update with the leading action's loss masked out by ``NaN``."""
+        manager = LearnedResourceManager(n_actions=3, n_contexts=1, exploration=0.0)
+        state = cls._seeded_state(manager, gap)
+        losses = jnp.asarray([jnp.nan, 1.0 + shift, 3.0 + shift], dtype=jnp.float32)
+        result = manager.update(state, losses, 0)
+        return (
+            np.asarray(result.advantages, dtype=np.float32),
+            np.asarray(result.state.log_weights, dtype=np.float32).ravel(),
+            bool(result.update_applied),
+        )
+
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_masked_baseline_centers_on_the_losses_that_took_part(self, gap: float) -> None:
+        advantages, _, applied = self._masked_update(gap)
+        assert applied
+        # The two participating losses are 1.0 and 3.0 with equal allocation, so
+        # the baseline is 2.0 and the advantages are its distance to each.
+        np.testing.assert_allclose(advantages[1], 1.0, rtol=0.0, atol=1e-6)
+        np.testing.assert_allclose(advantages[2], -1.0, rtol=0.0, atol=1e-6)
+        assert advantages[0] == 0.0
+
+    @pytest.mark.parametrize("shift", [0.0, 1.0, 10.0, 100.0, 1000.0])
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_masked_advantages_ignore_a_uniform_shift_in_all_losses(
+        self,
+        gap: float,
+        shift: float,
+    ) -> None:
+        baseline_advantages, _, _ = self._masked_update(gap)
+        shifted_advantages, _, _ = self._masked_update(gap, shift)
+        np.testing.assert_allclose(
+            shifted_advantages,
+            baseline_advantages,
+            rtol=0.0,
+            atol=1e-4,
+        )
+
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_masked_advantages_stay_inside_the_participating_loss_spread(
+        self,
+        gap: float,
+    ) -> None:
+        advantages, _, _ = self._masked_update(gap)
+        assert np.abs(advantages).max() <= 2.0
+
+    @pytest.mark.parametrize(
+        ("gap", "advantage_words", "log_weight_words"),
+        [
+            pytest.param(
+                0.0,
+                ("0x00000000", "0x3f800000", "0xbf800000"),
+                ("0x00000000", "0x3f800000", "0xbf800000"),
+                id="gap-0",
+            ),
+            pytest.param(
+                10.0,
+                ("0x00000000", "0x3f800000", "0xbf800000"),
+                ("0x40d44444", "0xc0144444", "0xc08a2222"),
+                id="gap-10",
+            ),
+            pytest.param(
+                20.0,
+                ("0x00000000", "0x3f800000", "0xbf800000"),
+                ("0x41544444", "0xc0b44444", "0xc0f44444"),
+                id="gap-20",
+            ),
+            pytest.param(
+                28.0,
+                ("0x00000000", "0x3f800000", "0xbf800000"),
+                ("0x41949630", "0xc1049630", "0xc1249630"),
+                id="gap-28",
+            ),
+        ],
+    )
+    def test_masked_update_is_bit_for_bit_unchanged_where_the_mass_was_representable(
+        self,
+        gap: float,
+        advantage_words: tuple[str, ...],
+        log_weight_words: tuple[str, ...],
+    ) -> None:
+        """Pin the words recorded from the floored formulation above its floor."""
+        advantages, log_weights, _ = self._masked_update(gap)
+
+        def words(values: NDArray[np.float32]) -> tuple[str, ...]:
+            return tuple(f"0x{word:08x}" for word in values.view(np.uint32))
+
+        assert words(advantages) == advantage_words
+        assert words(log_weights) == log_weight_words
+
 
 class TestGeneratorMetaResourceManager:
     """Behavioral checks for generator-internal meta-resource policies."""
@@ -581,6 +700,77 @@ class TestGeneratorMetaResourceManager:
 
         assert jnp.all(jnp.isfinite(result.metrics))
         assert jnp.all(jnp.isfinite(result.state.generator_resource_state.log_weights))
+
+    _MASKED_BASELINE_GAPS = [0.0, 28.0, 30.0, 40.0, 80.0, 110.0]
+
+    @staticmethod
+    def _three_policy_manager(*, exploration: float) -> GeneratorMetaResourceManager:
+        return GeneratorMetaResourceManager(
+            policy_names=("safe", "residual", "product"),
+            op_ids=(1, 3, 5),
+            parent_modes=(0, 3, 1),
+            replacement_multipliers=(0.5, 2.0, 1.0),
+            promotion_margin_multipliers=(1.25, 0.75, 1.0),
+            candidate_min_age_multipliers=(1.5, 0.5, 1.0),
+            imprint_scales=(0.0, 1.0, 0.5),
+            n_contexts=1,
+            exploration=exploration,
+        )
+
+    @classmethod
+    def _masked_update(
+        cls,
+        gap: float,
+        shift: float = 0.0,
+        *,
+        exploration: float = 0.0,
+    ) -> tuple[NDArray[np.float32], bool]:
+        """Update with the leading policy's reward masked out by ``NaN``."""
+        manager = cls._three_policy_manager(exploration=exploration)
+        fresh = manager.init()
+        state = GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
+            log_weights=jnp.asarray([[gap, 0.0, 0.0]], dtype=jnp.float32),
+            reward_ema=fresh.reward_ema,
+            action_counts=fresh.action_counts,
+            step_count=fresh.step_count,
+        )
+        rewards = jnp.asarray([jnp.nan, 1.0 + shift, 3.0 + shift], dtype=jnp.float32)
+        result = manager.update(state, rewards, 0)
+        return (
+            np.asarray(result.advantages, dtype=np.float32),
+            bool(result.update_applied),
+        )
+
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_masked_baseline_centers_on_the_rewards_that_took_part(self, gap: float) -> None:
+        advantages, applied = self._masked_update(gap)
+        assert applied
+        # Rewards 1.0 and 3.0 share the remaining allocation equally, so the
+        # baseline is 2.0 and the centered rewards are its distance to each.
+        np.testing.assert_allclose(advantages[1], -1.0, rtol=0.0, atol=1e-6)
+        np.testing.assert_allclose(advantages[2], 1.0, rtol=0.0, atol=1e-6)
+
+    @pytest.mark.parametrize("shift", [0.0, 100.0, 1000.0])
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_masked_advantages_ignore_a_uniform_shift_in_all_rewards(
+        self,
+        gap: float,
+        shift: float,
+    ) -> None:
+        unshifted, _ = self._masked_update(gap)
+        shifted, _ = self._masked_update(gap, shift)
+        np.testing.assert_allclose(shifted, unshifted, rtol=0.0, atol=1e-4)
+
+    @pytest.mark.parametrize("gap", _MASKED_BASELINE_GAPS)
+    def test_default_exploration_floor_keeps_the_masked_mass_representable(
+        self,
+        gap: float,
+    ) -> None:
+        """The class default already protects this path; pin that it still does."""
+        advantages, applied = self._masked_update(gap, exploration=0.01)
+        assert applied
+        np.testing.assert_allclose(advantages[1], -1.0, rtol=0.0, atol=1e-6)
+        np.testing.assert_allclose(advantages[2], 1.0, rtol=0.0, atol=1e-6)
 
 
 def test_learned_resource_manager_integer_validation() -> None:

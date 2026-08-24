@@ -47,6 +47,7 @@ from alberta_framework.core.future_utility import (
 )
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
+    masked_convex_weights,
     neutralize_array,
     select_transaction,
 )
@@ -1036,8 +1037,7 @@ class FixedBudgetFeatureLearner:
         finite: Array,
     ) -> Array:
         """Exponentiated-gradient preference update for utility scores."""
-        finite_mass = jnp.maximum(jnp.sum(jnp.where(finite, allocation, 0.0)), 1e-12)
-        masked_allocation = jnp.where(finite, allocation / finite_mass, 0.0)
+        masked_allocation = masked_convex_weights(finite, allocation)
         baseline = jnp.sum(masked_allocation * jnp.where(finite, scores, 0.0))
         advantages = jnp.where(finite, scores - baseline, 0.0)
         advantages = jnp.clip(

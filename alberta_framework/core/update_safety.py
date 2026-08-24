@@ -199,6 +199,39 @@ def neutralize_metrics(
     return {name: neutralize_array(applied, value) for name, value in metrics.items()}
 
 
+def masked_convex_weights(mask: Bool[Array, " n"], weights: Array) -> Array:
+    """Renormalize non-negative ``weights`` to sum to one over ``mask``.
+
+    A baseline built from the result is a convex combination of the masked-in
+    values, so it is bounded by them and a uniform shift in all of them moves it
+    by exactly that shift.  Flooring the divisor instead promises neither: once
+    the masked-in entries carry less mass than the floor, the row sums to less
+    than one and the baseline is pulled toward zero rather than toward the values
+    that took part, which turns a centered advantage into the raw value.
+
+    Masked-in entries whose total is not a normal float of ``weights.dtype`` fall
+    back to a uniform allocation.  Every arithmetic operand below the smallest
+    normal is returned as an exact zero by the accelerator backends this runs on,
+    so their relative sizes cannot be recovered here and uniform is the only
+    convex answer left.  A non-finite total is passed through so the caller's
+    finiteness gate still sees it.
+    """
+
+    participating = jnp.where(mask, weights, jnp.zeros_like(weights))
+    mass = jnp.sum(participating)
+    smallest_normal = jnp.asarray(np.finfo(cast(Any, weights.dtype)).tiny, dtype=mass.dtype)
+    usable = mass >= smallest_normal
+    counted = jnp.sum(mask.astype(weights.dtype))
+    uniform = jnp.where(mask, jnp.ones_like(weights), jnp.zeros_like(weights)) / jnp.maximum(
+        counted, jnp.ones_like(counted)
+    )
+    return jnp.where(
+        usable | ~jnp.isfinite(mass),
+        participating / jnp.where(usable, mass, jnp.ones_like(mass)),
+        uniform,
+    )
+
+
 def zero_if_collapsed_infinity(
     product: Array,
     infinite_input: Array,
