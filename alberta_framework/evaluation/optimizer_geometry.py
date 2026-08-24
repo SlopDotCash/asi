@@ -203,12 +203,25 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     direction = _trusted_array(gradient, name="gradient")
     if delta.shape != direction.shape or delta.ndim != 1 or delta.size < 1:
         raise ValueError("perturbation and gradient must be non-empty equal-width vectors")
-    squared_norm = jnp.vdot(direction, direction).real
-    numerator = jnp.vdot(direction, delta).real
-    active = squared_norm > 0.0
+    # Compute the squared norm with max-absolute rescaling: squaring a
+    # float32 gradient below ~1e-20 underflows to exactly zero, which
+    # would silently disable the projection and return the perturbation
+    # unchanged with valid=True.  Rescaling to unit peak keeps the ratio
+    # numerator / squared_norm (the projection coefficient) exact and
+    # scale-free.
+    max_abs = jnp.max(jnp.abs(direction))
+    has_scale = max_abs > 0.0
+    inv = jnp.where(has_scale, jnp.array(1.0, dtype=delta.dtype) / max_abs, jnp.zeros_like(max_abs))
+    rescaled = direction * inv
+    squared_norm = jnp.vdot(rescaled, rescaled).real
+    numerator = jnp.vdot(rescaled, delta).real
+    active = has_scale
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
     coefficient = numerator / denominator
-    projection = direction * coefficient * active.astype(delta.dtype)
+    # The projection in the rescaled frame is direction * (coefficient * inv);
+    # direction / max_abs == rescaled, so projection = rescaled * coefficient
+    # is the exact component of delta along the (unit) gradient direction.
+    projection = rescaled * coefficient * active.astype(delta.dtype)
     candidate = delta - projection
     valid = (
         jnp.all(jnp.isfinite(delta))
