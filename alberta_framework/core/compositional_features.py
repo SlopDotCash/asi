@@ -4315,7 +4315,7 @@ class CompositionalFeatureLearner:
                 references_later_cascade,
                 references_active_change,
             )
-            rebound_depth = (
+            rebound_depth = jnp.minimum(
                 jnp.maximum(
                     depth[safe_candidate_pa],
                     jnp.where(
@@ -4324,7 +4324,8 @@ class CompositionalFeatureLearner:
                         jnp.asarray(0, dtype=jnp.int32),
                     ),
                 )
-                + 1
+                + 1,
+                self._max_depth,
             ).astype(jnp.int32)
             candidate_depth = jnp.where(
                 candidate_rebound_mask,

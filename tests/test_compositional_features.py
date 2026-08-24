@@ -515,6 +515,47 @@ class TestCompositionalFeatureLearner:
         assert int(result.promoted_candidate) == 0
         assert int(result.state.ops[2]) == OP_TANH
 
+    def test_candidate_rebound_at_depth_limit_does_not_poison_future_updates(self) -> None:
+        """Rebinding through a promoted max-depth parent must remain valid."""
+        learner = CompositionalFeatureLearner(
+            n_features=5,
+            n_tasks=1,
+            candidate_count=2,
+            step_size_output=0.0,
+            utility_decay=0.99,
+            replacement_interval=1,
+            min_feature_age=0,
+            candidate_min_age=0,
+            promotion_margin=0.0,
+            max_depth=2,
+            use_obgd=False,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(27)).replace(  # type: ignore[attr-defined]
+            ops=jnp.array([OP_RAW, OP_RAW, OP_PRODUCT, OP_PRODUCT, OP_PRODUCT]),
+            parent_a=jnp.array([0, 1, 0, 0, 2], dtype=jnp.int32),
+            parent_b=jnp.array([-1, -1, 1, 1, 1], dtype=jnp.int32),
+            depth=jnp.array([0, 0, 1, 1, 2], dtype=jnp.int32),
+            utilities=jnp.array([0.0, 0.0, 10.0, 0.0, 10.0], dtype=jnp.float32),
+            ages=jnp.full((5,), 10, dtype=jnp.int32),
+            candidate_ops=jnp.array([OP_PRODUCT, OP_PRODUCT], dtype=jnp.int32),
+            candidate_parent_a=jnp.array([2, 3], dtype=jnp.int32),
+            candidate_parent_b=jnp.array([0, 1], dtype=jnp.int32),
+            candidate_depth=jnp.array([2, 2], dtype=jnp.int32),
+            candidate_utilities=jnp.array([100.0, 1.0], dtype=jnp.float32),
+            candidate_ages=jnp.full((2,), 10, dtype=jnp.int32),
+        )
+        observation = jnp.array([1.0, -1.0], dtype=jnp.float32)
+        target = jnp.array([0.0], dtype=jnp.float32)
+
+        promotion = learner.update(state, observation, target)
+        subsequent = learner.update(promotion.state, observation, target)
+
+        assert bool(promotion.update_applied)
+        assert bool(promotion.curation_trace.candidate_rebound_mask[1])
+        assert int(promotion.state.candidate_depth[1]) <= learner.max_depth
+        assert bool(subsequent.update_applied)
+        assert int(subsequent.state.step_count) == int(promotion.state.step_count) + 1
+
     def test_tanh_family_quota_protects_smooth_scaffold(self) -> None:
         """Family protection can keep the last smooth basis from early churn."""
         learner = CompositionalFeatureLearner(
