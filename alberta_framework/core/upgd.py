@@ -1984,23 +1984,56 @@ class UPGDLearner:
 
     @staticmethod
     def _tuple_norm(xs: tuple[Array, ...]) -> Array:
-        """L2 norm over a static tuple of arrays."""
+        """L2 norm over a static tuple of arrays (scale-free, stable).
+
+        Computes ``sqrt(sum(x_i^2))`` with max-absolute rescaling so the
+        result is invariant under uniform scaling and neither the squares
+        (which double the exponent) nor the final sqrt overflow or
+        underflow in float32: norm(c·x) == c·norm(x) for every c > 0.
+        """
+        max_abs = jnp.array(0.0, dtype=jnp.float32)
+        for x in xs:
+            max_abs = jnp.maximum(max_abs, jnp.max(jnp.abs(x)))
+        has_scale = max_abs > 0.0
+        # Rescale to unit peak before squaring; the scale cancels exactly
+        # in the final sqrt, so no additive epsilon pollutes the norm.
+        inv = jnp.where(has_scale, jnp.array(1.0, dtype=jnp.float32) / max_abs, jnp.array(0.0, dtype=jnp.float32))
         total = jnp.array(0.0, dtype=jnp.float32)
         for x in xs:
-            total = total + jnp.sum(jnp.square(x))
-        return jnp.sqrt(total + 1e-12)
+            total = total + jnp.sum(jnp.square(x * inv))
+        return jnp.where(has_scale, max_abs * jnp.sqrt(total), jnp.array(0.0, dtype=jnp.float32))
 
     @staticmethod
     def _gradient_alignment(
         previous: tuple[Array, ...],
         current: tuple[Array, ...],
     ) -> Array:
-        """Cosine alignment of two gradient tuples, zero for empty gradients."""
+        """Cosine alignment of two gradient tuples, zero for empty gradients.
+
+        Scale-free: the cosine of identical gradients is exactly 1.0 at
+        every magnitude.  Each gradient is normalized to unit norm before
+        the dot product, so every intermediate is O(1) and neither the
+        squares, the norm products, nor the dot can overflow or underflow
+        in float32 (no absolute magnitude gate, no additive floor).
+        """
         previous_norm = UPGDLearner._tuple_norm(previous)
         current_norm = UPGDLearner._tuple_norm(current)
+        has_direction = (previous_norm > 0.0) & (current_norm > 0.0)
+        inv_previous = jnp.where(
+            previous_norm > 0.0,
+            jnp.array(1.0, dtype=jnp.float32) / previous_norm,
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        inv_current = jnp.where(
+            current_norm > 0.0,
+            jnp.array(1.0, dtype=jnp.float32) / current_norm,
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        normalized_previous = tuple(x * inv_previous for x in previous)
+        normalized_current = tuple(x * inv_current for x in current)
         return jnp.where(
-            (previous_norm > 1e-6) & (current_norm > 1e-6),
-            UPGDLearner._tuple_dot(previous, current) / (previous_norm * current_norm + 1e-12),
+            has_direction,
+            UPGDLearner._tuple_dot(normalized_previous, normalized_current),
             jnp.array(0.0, dtype=jnp.float32),
         )
 
