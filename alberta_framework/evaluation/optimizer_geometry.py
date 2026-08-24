@@ -173,7 +173,17 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
         raise ValueError("matrix must be non-empty and steps a positive integer")
     norm = jnp.linalg.norm(value)
     valid = jnp.all(jnp.isfinite(value)) & jnp.isfinite(norm)
-    x = value / jnp.maximum(norm, jnp.asarray(1e-12, dtype=value.dtype))
+    # Normalize by the matrix's own Frobenius norm. A fixed 1e-12 floor
+    # laundered any matrix with a smaller norm (e.g. subnormal float32
+    # entries) into a numerically zero "valid" sign instead of
+    # orthogonalizing it (issues #2379/#2391). A genuinely zero matrix
+    # keeps its exact zero through the identity scale.
+    scale = jnp.where(
+        norm > jnp.asarray(0.0, dtype=value.dtype),
+        norm,
+        jnp.asarray(1.0, dtype=value.dtype),
+    )
+    x = value / scale
     if x.shape[0] > x.shape[1]:
         x = x.T
         transposed = True
