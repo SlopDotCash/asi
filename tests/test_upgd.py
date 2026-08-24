@@ -1804,6 +1804,157 @@ class TestUtilityTracking:
 
 
 # =============================================================================
+# Gradient-alignment scale freedom
+# =============================================================================
+
+_ALIGNMENT_SCALES = [1.0, 1e-4, 1e-6, 1e-8, 1e-10, 1e-19, 1e-23]
+_ALIGNMENT_DIRECTION = [1.0, -2.0, 0.5, 1.5]
+_ALIGNMENT_ORTHOGONAL = [2.0, 1.0, -1.5, 0.5]
+
+
+def _alignment_tuple(entries, scale):
+    return (jnp.array(entries, dtype=jnp.float32) * scale,)
+
+
+def _alignment_learner(meta_step_size=0.5):
+    """A learner whose parameters never move, so consecutive gradients are comparable."""
+    return UPGDLearner(
+        n_heads=1,
+        hidden_sizes=(),
+        sparsity=0.0,
+        step_size=0.0,
+        perturbation_sigma=0.0,
+        meta_plasticity_mode="gradient_alignment",
+        meta_plasticity_step_size=meta_step_size,
+        meta_plasticity_min_multiplier=0.1,
+        meta_plasticity_max_multiplier=10.0,
+    )
+
+
+def _two_updates(learner, obs, first_target, second_target):
+    state = learner.init(feature_dim=obs.shape[0], key=jr.key(16))
+    state = learner.update(state, obs, first_target).state
+    return learner.update(state, obs, second_target).state
+
+
+class TestGradientAlignmentScaleFreedom:
+    """A cosine is scale free: rescaling both gradient tuples must not change it.
+
+    The alignment feeds ``meta_*_log_scale`` and ``adaptive_kappa_log_scale``, so a
+    magnitude-dependent cosine silently turns meta-plasticity off for a problem
+    expressed in smaller units and reports a direction that is not there.
+    """
+
+    @pytest.mark.parametrize("scale", _ALIGNMENT_SCALES)
+    def test_repeated_gradient_aligns_with_itself_at_every_scale(self, scale):
+        gradient = _alignment_tuple(_ALIGNMENT_DIRECTION, scale)
+        alignment = UPGDLearner._gradient_alignment(gradient, gradient)
+        assert float(alignment) == pytest.approx(1.0, abs=1e-6)
+
+    @pytest.mark.parametrize("scale", _ALIGNMENT_SCALES)
+    def test_reversed_gradient_anti_aligns_at_every_scale(self, scale):
+        gradient = _alignment_tuple(_ALIGNMENT_DIRECTION, scale)
+        reversed_gradient = (-gradient[0],)
+        alignment = UPGDLearner._gradient_alignment(gradient, reversed_gradient)
+        assert float(alignment) == pytest.approx(-1.0, abs=1e-6)
+
+    @pytest.mark.parametrize("scale", _ALIGNMENT_SCALES)
+    def test_orthogonal_gradients_report_no_alignment_at_every_scale(self, scale):
+        gradient = _alignment_tuple(_ALIGNMENT_DIRECTION, scale)
+        orthogonal = _alignment_tuple(_ALIGNMENT_ORTHOGONAL, scale)
+        alignment = UPGDLearner._gradient_alignment(gradient, orthogonal)
+        assert float(alignment) == pytest.approx(0.0, abs=1e-6)
+
+    @pytest.mark.parametrize("scale", [1.0, 1e-6, 1e-12, 1e-20, 1e20])
+    def test_alignment_matches_the_analytic_cosine_at_every_scale(self, scale):
+        first = _alignment_tuple([1.0, 0.0], scale)
+        second = _alignment_tuple([1.0, 1.0], scale)
+        alignment = UPGDLearner._gradient_alignment(first, second)
+        assert float(alignment) == pytest.approx(0.7071067811865476, abs=1e-6)
+
+    @pytest.mark.parametrize("scale", [1e19, 1e20, 1e30])
+    def test_alignment_stays_finite_when_the_squared_norm_overflows(self, scale):
+        gradient = _alignment_tuple(_ALIGNMENT_DIRECTION, scale)
+        assert bool(jnp.all(jnp.isfinite(gradient[0])))
+        assert float(UPGDLearner._gradient_alignment(gradient, gradient)) == pytest.approx(
+            1.0, abs=1e-6
+        )
+        assert float(UPGDLearner._gradient_alignment(gradient, (-gradient[0],))) == pytest.approx(
+            -1.0, abs=1e-6
+        )
+
+    def test_alignment_is_scale_free_across_a_shared_rescale(self):
+        first = jnp.array([1.0, -2.0, 0.5, 1.5], dtype=jnp.float32)
+        second = jnp.array([0.5, 1.0, 2.0, -0.25], dtype=jnp.float32)
+        reference = float(UPGDLearner._gradient_alignment((first,), (second,)))
+        for scale in (1e-3, 1e-9, 1e-15, 1e-21, 1e9):
+            rescaled = UPGDLearner._gradient_alignment((first * scale,), (second * scale,))
+            assert float(rescaled) == pytest.approx(reference, abs=1e-6)
+
+    def test_alignment_is_zero_for_gradients_that_carry_no_direction(self):
+        zero = (jnp.zeros(4, dtype=jnp.float32),)
+        unit = _alignment_tuple(_ALIGNMENT_DIRECTION, 1.0)
+        assert float(UPGDLearner._gradient_alignment(zero, zero)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(zero, unit)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(unit, zero)) == 0.0
+        assert float(UPGDLearner._gradient_alignment((), ())) == 0.0
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_alignment_is_zero_rather_than_nonfinite_for_a_broken_gradient(self, bad):
+        broken = (jnp.array([bad, 1.0, 0.5, -1.0], dtype=jnp.float32),)
+        unit = _alignment_tuple(_ALIGNMENT_DIRECTION, 1.0)
+        assert float(UPGDLearner._gradient_alignment(broken, unit)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(unit, broken)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(broken, broken)) == 0.0
+
+    @pytest.mark.parametrize("scale", [1.0, 1e-4, 1e-6, 1e-8, 1e-10])
+    def test_meta_plasticity_signal_does_not_depend_on_input_units(self, scale):
+        learner = _alignment_learner()
+        obs = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32) * scale
+        target = jnp.array([1.0], dtype=jnp.float32) * scale
+
+        state = _two_updates(learner, obs, target, target)
+
+        assert float(state.meta_head_weight_log_scale) == pytest.approx(0.5, abs=1e-6)
+        assert float(state.meta_head_bias_log_scale) == pytest.approx(0.5, abs=1e-6)
+
+    @pytest.mark.parametrize("scale", [1.0, 1e-4, 1e-6, 1e-8, 1e-10])
+    def test_meta_plasticity_signal_reverses_for_reversed_gradients(self, scale):
+        learner = _alignment_learner()
+        obs = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32) * scale
+        first = jnp.array([1.0], dtype=jnp.float32) * scale
+        initial = learner.init(feature_dim=3, key=jr.key(16))
+        second = 2.0 * learner.predict(initial, obs) - first
+
+        state = _two_updates(learner, obs, first, second)
+
+        assert float(state.meta_head_weight_log_scale) == pytest.approx(-0.5, abs=1e-6)
+        assert float(state.meta_head_bias_log_scale) == pytest.approx(-0.5, abs=1e-6)
+
+    def test_meta_plasticity_state_stays_finite_for_large_finite_gradients(self):
+        learner = _alignment_learner()
+        obs = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32) * 1e10
+        target = jnp.array([1.0], dtype=jnp.float32) * 1e10
+
+        state = _two_updates(learner, obs, target, target)
+
+        for gradient in state.previous_head_weight_grads:
+            assert bool(jnp.all(jnp.isfinite(gradient)))
+        assert bool(jnp.isfinite(state.meta_head_weight_log_scale))
+        assert float(state.meta_head_weight_log_scale) == pytest.approx(0.5, abs=1e-6)
+
+    def test_first_update_leaves_the_meta_scales_untouched(self):
+        learner = _alignment_learner()
+        obs = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32)
+        initial = learner.init(feature_dim=3, key=jr.key(16))
+
+        state = learner.update(initial, obs, jnp.array([1.0], dtype=jnp.float32)).state
+
+        assert float(state.meta_head_weight_log_scale) == 0.0
+        assert float(state.meta_head_bias_log_scale) == 0.0
+
+
+# =============================================================================
 # Perturbation magnitude
 # =============================================================================
 

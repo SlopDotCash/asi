@@ -1983,12 +1983,31 @@ class UPGDLearner:
         return total
 
     @staticmethod
-    def _tuple_norm(xs: tuple[Array, ...]) -> Array:
-        """L2 norm over a static tuple of arrays."""
-        total = jnp.array(0.0, dtype=jnp.float32)
+    def _tuple_unit(xs: tuple[Array, ...]) -> tuple[tuple[Array, ...], Array]:
+        """Unit-norm copy of a tuple of arrays, plus whether a direction exists.
+
+        The tuple is rescaled by an exact power of two before its squares are
+        accumulated, and the divisor is the norm of that rescaled copy, so the
+        divisor stays representable at every input magnitude.
+        """
+        largest = jnp.array(0.0, dtype=jnp.float32)
         for x in xs:
+            largest = jnp.maximum(largest, jnp.max(jnp.abs(x), initial=0.0))
+        # A fixed magnitude floor cannot stand in for this rescale: a floor above
+        # the true norm makes the floor the divisor, and in float32 the squares of
+        # entries near 1e-20 underflow to zero before any floor is consulted, so
+        # both ends report a direction that the gradients do not have. Dividing by
+        # the largest entry is also unsafe, because its float32 reciprocal is
+        # subnormal for entries above ~1e38 and flushes the quotient to zero.
+        _, exponent = jnp.frexp(largest)
+        rescaled = tuple(jnp.ldexp(x, -exponent) for x in xs)
+        total = jnp.array(0.0, dtype=jnp.float32)
+        for x in rescaled:
             total = total + jnp.sum(jnp.square(x))
-        return jnp.sqrt(total + 1e-12)
+        norm = jnp.sqrt(total)
+        exists = jnp.isfinite(norm) & (norm > 0.0)
+        safe_norm = jnp.where(exists, norm, jnp.ones_like(norm))
+        return tuple(x / safe_norm for x in rescaled), exists
 
     @staticmethod
     def _gradient_alignment(
@@ -1996,11 +2015,11 @@ class UPGDLearner:
         current: tuple[Array, ...],
     ) -> Array:
         """Cosine alignment of two gradient tuples, zero for empty gradients."""
-        previous_norm = UPGDLearner._tuple_norm(previous)
-        current_norm = UPGDLearner._tuple_norm(current)
+        previous_unit, previous_exists = UPGDLearner._tuple_unit(previous)
+        current_unit, current_exists = UPGDLearner._tuple_unit(current)
         return jnp.where(
-            (previous_norm > 1e-6) & (current_norm > 1e-6),
-            UPGDLearner._tuple_dot(previous, current) / (previous_norm * current_norm + 1e-12),
+            previous_exists & current_exists,
+            UPGDLearner._tuple_dot(previous_unit, current_unit),
             jnp.array(0.0, dtype=jnp.float32),
         )
 
