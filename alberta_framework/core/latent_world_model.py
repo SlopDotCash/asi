@@ -79,6 +79,10 @@ from alberta_framework.core.update_safety import (
 EVIDENCE_LEVEL = "L0"
 SCIENTIFIC_PROMOTION_ALLOWED = False
 _INT32_MAX = 2**31 - 1
+# Smallest normal binary32 (float(np.finfo(np.float32).tiny)); every admitted
+# observation_scale must be at least this so its float32 reciprocal stays
+# finite when the encoder divides by the declared scale.
+_SMALLEST_NORMAL_FLOAT32 = 1.1754943508222875e-38
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -290,7 +294,9 @@ class LatentWorldModelConfig:
                 raise ValueError("observation_scale length must equal observation_dim")
             observation_scale = tuple(
                 validated_float32_scalar(
-                    f"observation_scale[{index}]", scale, positive=True
+                    f"observation_scale[{index}]",
+                    scale,
+                    lower=_SMALLEST_NORMAL_FLOAT32,
                 )
                 for index, scale in enumerate(observation_scale)
             )
@@ -669,8 +675,11 @@ class LatentWorldModel:
     ) -> Float[Array, " latent_dim"]:
         """Encode one observation with explicit (differentiable) encoder params."""
         obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._config.observation_dim,))
+        # Divide by the declared per-dimension scale. The validator bounds every
+        # admitted scale at or above the smallest normal float32, so ``1/scale``
+        # stays finite; no ``max(scale, 1e-6)`` floor silently substitutes it.
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
-        scaled = obs / jnp.maximum(scale, jnp.asarray(1e-6, dtype=jnp.float32))
+        scaled = obs / scale
         return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
 
     @functools.partial(jax.jit, static_argnums=(0,))

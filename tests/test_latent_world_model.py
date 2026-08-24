@@ -585,6 +585,78 @@ def test_trainable_encoder_config_validation_fails_closed(
         )
 
 
+def _encode_once(observation_scale: tuple[float, ...], observation: list[float]) -> Array:
+    """Encode one observation through a fresh model sharing a fixed init key.
+
+    The encoder matrix/bias init does not depend on ``observation_scale``, so
+    two models built with the same key differ only through the declared scale
+    the encoder divides by.
+    """
+    config = LatentWorldModelConfig(
+        observation_dim=len(observation_scale),
+        n_actions=2,
+        latent_dim=4,
+        hidden_sizes=(),
+        observation_scale=observation_scale,
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(0))
+    return model.encode(state, jnp.asarray(observation, dtype=jnp.float32))
+
+
+@pytest.mark.unit
+def test_encoder_divides_by_declared_scale_below_the_retired_floor() -> None:
+    # Declared multiples of scale; the encoder must reduce obs/scale to these
+    # regardless of the scale magnitude (scale-free encoding).
+    multiples = [1.5, -0.75]
+    reference = _encode_once((1.0, 1.0), multiples)
+    # Scales spanning the previously corrupted [smallest-normal, 1e-6) range.
+    # (The exact smallest-normal boundary is excluded here only because
+    # obs = multiple * scale becomes subnormal for |multiple| < 1 and XLA
+    # flushes denormals to zero; the boundary's validation is checked below.)
+    for scale in (1e-9, 1e-20, 1e-30, 1e-37):
+        observation = [multiple * scale for multiple in multiples]
+        latent = _encode_once((scale, scale), observation)
+        # Before the fix, scales below the retired 1e-6 floor were divided by
+        # 1e-6 instead of their declared value, so obs/scale was corrupted and
+        # the latents diverged from the scale=1.0 reference row.
+        chex.assert_trees_all_close(latent, reference, atol=1e-5, rtol=1e-5)
+
+
+@pytest.mark.unit
+def test_encoder_scale_at_or_above_retired_floor_is_unchanged() -> None:
+    # Scales at/above the retired 1e-6 floor kept their exact bits under the old
+    # ``max(scale, 1e-6)`` path; guard that behavior is preserved.
+    multiples = [2.0, -1.25]
+    reference = _encode_once((1.0, 1.0), multiples)
+    for scale in (1.0, 1e-3, 1e-6):
+        observation = [multiple * scale for multiple in multiples]
+        latent = _encode_once((scale, scale), observation)
+        chex.assert_trees_all_close(latent, reference, atol=1e-6, rtol=1e-6)
+
+
+@pytest.mark.unit
+def test_observation_scale_rejects_below_smallest_normal_float32() -> None:
+    smallest_normal = float(np.finfo(np.float32).tiny)
+    subnormal = float(np.finfo(np.float32).smallest_subnormal)
+    assert subnormal < smallest_normal
+    # A subnormal scale has no finite float32 reciprocal, so it must be refused
+    # at construction instead of being silently substituted by the old floor.
+    with pytest.raises(ValueError, match="observation_scale"):
+        LatentWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            observation_scale=(subnormal,),
+        )
+    # The smallest normal float32 is the boundary and must still validate.
+    boundary = LatentWorldModelConfig(
+        observation_dim=1,
+        n_actions=2,
+        observation_scale=(smallest_normal,),
+    )
+    assert boundary.observation_scale == (smallest_normal,)
+
+
 def test_latent_world_model_config_rejects_booleans_and_non_integers() -> None:
     with pytest.raises(ValueError, match="observation_dim"):
         LatentWorldModelConfig(observation_dim=True, n_actions=2)  # type: ignore[arg-type]
