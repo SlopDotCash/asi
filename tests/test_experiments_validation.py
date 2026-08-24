@@ -7,6 +7,8 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Never
 
+import warnings
+
 import numpy as np
 import pytest
 
@@ -536,9 +538,18 @@ class _NonfiniteFloatThatConvertsFinite(float):
 
 
 def _platform_longdouble_1e4000() -> np.longdouble:
-    """Parse the cross-platform boundary without leaking an expected warning."""
-    with np.errstate(over="ignore", invalid="ignore"):
-        return np.longdouble("1e4000")
+    """Parse the cross-platform boundary without leaking an expected warning.
+
+    ``np.longdouble("1e4000")`` overflows at parse time; the emitted
+    RuntimeWarning comes from the string-parsing path, which
+    ``np.errstate`` does not govern (errstate only covers arithmetic).
+    Suppress it with the warning machinery instead so the helper never
+    leaks into pytest runs (issue #2387).
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with np.errstate(over="ignore", invalid="ignore"):
+            return np.longdouble("1e4000")
 
 
 @pytest.mark.parametrize(
