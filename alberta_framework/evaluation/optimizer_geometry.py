@@ -213,12 +213,22 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     direction = _trusted_array(gradient, name="gradient")
     if delta.shape != direction.shape or delta.ndim != 1 or delta.size < 1:
         raise ValueError("perturbation and gradient must be non-empty equal-width vectors")
-    squared_norm = jnp.vdot(direction, direction).real
-    numerator = jnp.vdot(direction, delta).real
+    # Scale-invariant projection: compute the Gram terms on a normalized
+    # copy of the gradient so the squared norm cannot underflow to zero in
+    # float32 (issue #2393). With the old raw vdot, a subnormal gradient's
+    # squared norm underflowed -> active=False -> the perturbation was
+    # returned unchanged with valid=True, silently keeping the very
+    # gradient component this function exists to remove.
+    max_abs = jnp.max(jnp.abs(direction))
+    unit_direction = direction / jnp.maximum(
+        max_abs, jnp.asarray(1e-30, dtype=direction.dtype)
+    )
+    squared_norm = jnp.vdot(unit_direction, unit_direction).real
+    numerator = jnp.vdot(unit_direction, delta).real
     active = squared_norm > 0.0
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
     coefficient = numerator / denominator
-    projection = direction * coefficient * active.astype(delta.dtype)
+    projection = unit_direction * coefficient * active.astype(delta.dtype)
     candidate = delta - projection
     valid = (
         jnp.all(jnp.isfinite(delta))
