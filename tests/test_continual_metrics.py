@@ -403,3 +403,25 @@ def test_continual_learning_summary_rejects_leftover_identities() -> None:
     )
     assert '"final_performance": 0.8' in dumped
     assert '"final_performance": true' not in dumped
+
+
+def test_forward_transfer_is_keyed_on_first_exposure_row_not_task_index() -> None:
+    """FWT skips a task with no pre-exposure checkpoint, whatever its index.
+
+    The GEM measure is "performance on a task probed *before* it is ever
+    trained on", so the skip condition is a ``first_exposure`` row of 0 rather
+    than a task index of 0. Task 0 is the skipped one only under the
+    conventional ordering where it is trained first.
+    """
+    matrix = np.array(
+        [[0.5, 0.6, 0.7], [0.9, 0.9, 0.9], [0.95, 0.95, 0.95]],
+        dtype=np.float64,
+    )
+    baseline = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+
+    # Task 0 is trained *second*, so row 0 is a genuine pre-exposure probe.
+    forward = compute_forward_transfer(matrix, [1, 0, 0], baseline)
+
+    assert forward[0] == pytest.approx(0.4)
+    assert np.isnan(forward[1])
+    assert np.isnan(forward[2])
