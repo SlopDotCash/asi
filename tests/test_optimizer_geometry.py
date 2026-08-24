@@ -87,6 +87,123 @@ def test_flad_jit_removes_gradient_aligned_component() -> None:
     np.testing.assert_allclose(result, [0.0, 4.0])
 
 
+FLAD_PERTURBATION = np.array([1.0, -2.0, 0.5, 3.0], dtype=np.float32)
+FLAD_GRADIENT = np.array([2.0, 1.0, -1.0, 0.5], dtype=np.float32)
+
+
+def _flad_reference(perturbation: np.ndarray, gradient: np.ndarray) -> np.ndarray:
+    """Project the perturbation away from the gradient in float64."""
+    delta = perturbation.astype(np.float64)
+    direction = gradient.astype(np.float64)
+    squared_norm = float(direction @ direction)
+    if squared_norm == 0.0:
+        return delta
+    return delta - direction * (float(direction @ delta) / squared_norm)
+
+
+@pytest.mark.parametrize("scale", [1e-20, 1e-25, 1e-30])
+def test_flad_underflowing_squared_norm_still_removes_the_component(scale: float) -> None:
+    gradient = FLAD_GRADIENT * np.float32(scale)
+    assert float(jnp.vdot(jnp.asarray(gradient), jnp.asarray(gradient)).real) == 0.0
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        jnp.asarray(FLAD_PERTURBATION), jnp.asarray(gradient)
+    )
+    assert bool(valid)
+    np.testing.assert_allclose(
+        np.asarray(safe, dtype=np.float64),
+        _flad_reference(FLAD_PERTURBATION, gradient),
+        atol=1e-6,
+    )
+
+
+@pytest.mark.parametrize("scale", [1e19, 1e20, 1e30, 1.7e38])
+def test_flad_overflowing_squared_norm_is_answered_from_the_rescaled_gradient(
+    scale: float,
+) -> None:
+    gradient = FLAD_GRADIENT * np.float32(scale)
+    assert not bool(jnp.isfinite(jnp.vdot(jnp.asarray(gradient), jnp.asarray(gradient)).real))
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        jnp.asarray(FLAD_PERTURBATION), jnp.asarray(gradient)
+    )
+    assert bool(valid)
+    np.testing.assert_allclose(
+        np.asarray(safe, dtype=np.float64),
+        _flad_reference(FLAD_PERTURBATION, gradient),
+        atol=1e-6,
+    )
+
+
+def test_flad_unrepresentable_coefficient_stays_invalid() -> None:
+    maximum = np.float32(np.finfo(np.float32).max)
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        jnp.full((4,), maximum), jnp.full((4,), maximum)
+    )
+    assert bool(jnp.all(jnp.isfinite(safe)))
+    assert not bool(valid)
+
+
+@pytest.mark.parametrize("scale", [1e-38, 2.938736e-39])
+def test_flad_subnormal_gradient_entries_are_left_at_their_own_scale(scale: float) -> None:
+    gradient = FLAD_GRADIENT * np.float32(scale)
+    magnitudes = np.abs(gradient).view(np.uint32) & np.uint32(0x7FFFFFFF)
+    assert bool(np.any((magnitudes > 0) & (magnitudes < np.uint32(0x00800000))))
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        jnp.asarray(FLAD_PERTURBATION), jnp.asarray(gradient)
+    )
+    assert bool(valid)
+    np.testing.assert_array_equal(safe, jnp.asarray(FLAD_PERTURBATION))
+
+
+@pytest.mark.parametrize(
+    ("scale", "expected_words"),
+    [
+        (1.0, [0x3F2E147B, 0xC00A3D71, 0x3F28F5C2, 0x403AE148]),
+        (1e-10, [0x3F2E147B, 0xC00A3D71, 0x3F28F5C2, 0x403AE148]),
+        (1e-19, [0x3F1E79E8, 0xC00C30C3, 0x3F30C30C, 0x4039E79E]),
+    ],
+)
+def test_flad_usable_squared_norm_answers_are_bit_for_bit_unchanged(
+    scale: float, expected_words: list[int]
+) -> None:
+    """Pin the answers recorded before the rescale was introduced.
+
+    A gradient whose squared norm is already a positive finite number is answered
+    from that divisor, so its result must not be re-rounded onto the grid the
+    rescaled inner products would land on. The 1e-19 row keeps the precision it
+    loses to a divisor assembled from subnormal partial products.
+    """
+    direction = jnp.asarray(FLAD_GRADIENT * np.float32(scale))
+    squared_norm = jnp.vdot(direction, direction).real
+    assert bool(squared_norm > 0.0) and bool(jnp.isfinite(squared_norm))
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        jnp.asarray(FLAD_PERTURBATION), direction
+    )
+    assert bool(valid)
+    words = np.asarray(safe, dtype=np.float32).view(np.uint32)
+    assert [int(word) for word in words] == expected_words
+
+
+def test_flad_zero_gradient_reduces_to_the_perturbation_bit_for_bit() -> None:
+    delta = jnp.asarray(FLAD_PERTURBATION)
+    safe, valid = jax.jit(flad_noise_component_transaction)(
+        delta, jnp.zeros(4, dtype=jnp.float32)
+    )
+    assert bool(valid)
+    np.testing.assert_array_equal(safe, delta)
+
+
+def test_flad_bfloat16_underflow_is_repaired_within_its_own_precision() -> None:
+    gradient = jnp.asarray(FLAD_GRADIENT * np.float32(1e-20), dtype=jnp.bfloat16)
+    delta = jnp.asarray(FLAD_PERTURBATION, dtype=jnp.bfloat16)
+    assert float(jnp.vdot(gradient, gradient).real) == 0.0
+    safe, valid = jax.jit(flad_noise_component_transaction)(delta, gradient)
+    assert bool(valid)
+    reference = _flad_reference(
+        np.asarray(delta, dtype=np.float32), np.asarray(gradient, dtype=np.float32)
+    )
+    np.testing.assert_allclose(np.asarray(safe, dtype=np.float64), reference, atol=1e-2)
+
+
 def test_streaming_matrix_evaluation_is_frozen_matched_and_nonpromoting() -> None:
     result = run_streaming_matrix_evaluation()
     assert result["schema"] == GEOMETRY_RESULT_SCHEMA

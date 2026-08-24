@@ -197,22 +197,96 @@ def spectral_matrix_sign(matrix: Array, *, steps: int = 5) -> Array:
     )
 
 
+def _subnormal_entry_present(value: Array) -> Array:
+    """Report whether any entry is a nonzero subnormal.
+
+    A power-of-two rescale cannot move such an entry. ``jnp.ldexp`` returns a
+    subnormal operand bit-for-bit unmodified on a backend that flushes subnormal
+    arithmetic operands, so rescaling a vector that mixes normal and subnormal
+    entries shifts only the normal ones and silently changes the direction the
+    vector points in. No float comparison detects the condition, because
+    ``x != 0.0`` is ``False`` for every float32 subnormal, so the exponent field
+    is read directly and the sign bit masked off to keep both signed zeros
+    reading as normal.
+    """
+    width = value.dtype.itemsize
+    unsigned = np.dtype(f"uint{8 * width}")
+    magnitude = jnp.bitwise_and(
+        jax.lax.bitcast_convert_type(value, unsigned),
+        jnp.asarray((1 << (8 * width - 1)) - 1, dtype=unsigned),
+    )
+    # An IEEE binary exponent field is one wider at 2.0 than at 1.0, so the gap
+    # between their bit patterns is the smallest normal magnitude for this dtype
+    # without asking an untyped introspection helper for the mantissa width.
+    landmarks = jax.lax.bitcast_convert_type(jnp.asarray([1.0, 2.0], dtype=value.dtype), unsigned)
+    smallest_normal = landmarks[1] - landmarks[0]
+    return jnp.any((magnitude != 0) & (magnitude < smallest_normal))
+
+
 def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tuple[Array, Array]:
-    """Return a finite FLAD noise component and caller-visible validity bit."""
+    """Return a finite FLAD noise component and caller-visible validity bit.
+
+    The projection onto the gradient's span does not depend on the gradient's
+    magnitude, so when the raw divisor is unusable the inner products are retaken
+    against an exactly power-of-two rescaled copy. Every gradient whose divisor is
+    already a positive finite number is answered from that divisor unchanged, and
+    the zero-gradient reduction stays exact.
+    """
     delta = _trusted_array(perturbation, name="perturbation")
     direction = _trusted_array(gradient, name="gradient")
     if delta.shape != direction.shape or delta.ndim != 1 or delta.size < 1:
         raise ValueError("perturbation and gradient must be non-empty equal-width vectors")
-    squared_norm = jnp.vdot(direction, direction).real
-    numerator = jnp.vdot(direction, delta).real
+    # `active` below is the protocol's zero-gradient reduction, so it must answer
+    # whether the gradient is zero and nothing else. Taken on the raw gradient it
+    # cannot: for float32 entries at or below roughly 1e-20 the squares land under
+    # the subnormal floor and `jnp.vdot` accumulates exactly zero, which sent a
+    # well-conditioned direction down the zero-gradient branch and returned the
+    # perturbation with its whole gradient component still in it. The numerator
+    # survives at those scales, so only the divisor was lost. Rescaling by an exact
+    # power of two recovers it without changing the projection, because the span
+    # being projected onto is invariant to the gradient's magnitude, and the same
+    # rescale keeps the squares finite for gradients large enough to overflow them.
+    #
+    # Two conditions narrow that rescale to the gradients it repairs. It runs only
+    # where the raw divisor is unusable, so every gradient that already produced an
+    # answer keeps producing bit-for-bit that answer instead of one re-rounded on a
+    # different grid. It is also withheld from a gradient holding subnormal entries,
+    # which a power-of-two rescale moves the normal entries of while leaving the
+    # subnormal ones in place, quietly changing the direction being projected onto.
+    raw_squared_norm = jnp.vdot(direction, direction).real
+    unusable = (raw_squared_norm == 0.0) | jnp.logical_not(jnp.isfinite(raw_squared_norm))
+    _, exponent = jnp.frexp(jnp.max(jnp.abs(direction)))
+    rescale = unusable & jnp.logical_not(_subnormal_entry_present(direction))
+    scaled = jnp.where(rescale, jnp.ldexp(direction, -exponent), direction)
+    squared_norm = jnp.vdot(scaled, scaled).real
+    numerator = jnp.vdot(scaled, delta).real
     active = squared_norm > 0.0
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
     coefficient = numerator / denominator
-    projection = direction * coefficient * active.astype(delta.dtype)
+    projection = scaled * coefficient * active.astype(delta.dtype)
     candidate = delta - projection
     valid = (
         jnp.all(jnp.isfinite(delta))
         & jnp.all(jnp.isfinite(direction))
+        & jnp.all(jnp.isfinite(scaled))
+        & jnp.isfinite(squared_norm)
+        & jnp.isfinite(numerator)
+        & jnp.isfinite(coefficient)
+        & jnp.all(jnp.isfinite(projection))
+        & jnp.all(jnp.isfinite(candidate))
+    )
+    safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
+    return safe, valid
+    numerator = jnp.vdot(scaled, delta).real
+    active = squared_norm > 0.0
+    denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
+    coefficient = numerator / denominator
+    projection = scaled * coefficient * active.astype(delta.dtype)
+    candidate = delta - projection
+    valid = (
+        jnp.all(jnp.isfinite(delta))
+        & jnp.all(jnp.isfinite(direction))
+        & jnp.all(jnp.isfinite(scaled))
         & jnp.isfinite(squared_norm)
         & jnp.isfinite(numerator)
         & jnp.isfinite(coefficient)
