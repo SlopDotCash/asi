@@ -6,6 +6,7 @@ import dataclasses
 import warnings
 from fractions import Fraction
 from types import MappingProxyType
+from typing import Any, cast
 
 import chex
 import jax
@@ -955,3 +956,64 @@ def test_action_world_model_rolls_back_reduction_overflow() -> None:
     assert not bool(result.update_applied)
     assert float(result.observation_mse) == 0.0
     assert int(result.state.step_count) == 0
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-3, 1e-6, 1e-7, 1e-8, 1e-10])
+def test_observation_encode_and_decode_use_the_same_scale(scale: float) -> None:
+    """A perfectly fitted observation head must reconstruct the delta it saw.
+
+    ``targets`` normalizes by ``max(observation_scale, 1e-6)`` while the decode
+    multiplied by the raw ``observation_scale``, so below the floor a converged
+    fit reconstructed only ``observation_scale / 1e-6`` of the true delta --
+    a tenth at ``1e-7``, a hundredth at ``1e-8``. The reward leg of the same
+    function is already symmetric on the raw ``reward_scale``.
+
+    This drives the real ``predict`` path rather than replaying the decode
+    arithmetic: the learner's raw output is forced to the normalized target, so
+    ``predict`` must hand back the original next observation.
+    """
+    config = ActionConditionedWorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        observation_scale=(scale, scale),
+        predict_delta=True,
+    )
+    model = ActionConditionedWorldModel(config)
+    state = model.init(jr.key(0))
+
+    observation = jnp.zeros(2, dtype=jnp.float32)
+    next_observation = jnp.full(2, scale, dtype=jnp.float32)
+    action = jnp.asarray(0)
+
+    targets = model.targets(
+        observation,
+        action,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        next_observation,
+    )
+    normalized = np.asarray(targets[0] if isinstance(targets, tuple) else targets)
+
+    # A learner that has fitted these targets exactly returns them verbatim.
+    class _PerfectLearner:
+        def __init__(self, inner: object, values: np.ndarray) -> None:
+            self._inner = inner
+            self._values = jnp.asarray(values, dtype=jnp.float32)
+
+        def predict(self, _learner_state: object, _inputs: object) -> Any:
+            return self._values
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._inner, name)
+
+    model._learner = cast(  # type: ignore[assignment]
+        Any, _PerfectLearner(model._learner, normalized.ravel())
+    )
+
+    prediction = model.predict(state, observation, action)
+
+    chex.assert_trees_all_close(
+        prediction.next_observation,
+        next_observation,
+        rtol=1e-5,
+        atol=float(scale) * 1e-3,
+    )

@@ -831,7 +831,15 @@ class ActionConditionedWorldModel:
         )
         raw_predictions = self._learner.predict(state.learner_state, inputs)
 
-        obs_scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
+        # Pair the decode with the divisor ``targets`` actually used: it
+        # normalizes by ``max(observation_scale, 1e-6)``, so multiplying back by
+        # the raw value reconstructs only ``observation_scale / 1e-6`` of the
+        # delta once the configured scale drops below the floor. The reward leg
+        # below is already symmetric on the raw ``reward_scale``.
+        obs_scale = jnp.maximum(
+            jnp.asarray(self._observation_scale, dtype=jnp.float32),
+            jnp.asarray(1e-6, dtype=jnp.float32),
+        )
         normalized_delta = jnp.clip(
             raw_predictions[: self._config.observation_dim],
             -self._config.max_delta_scale,
