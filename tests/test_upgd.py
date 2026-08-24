@@ -1310,6 +1310,39 @@ class TestUpdateMetrics:
         assert float(passive_delta) > 0.0
         assert float(active_delta) > 0.0
 
+    @pytest.mark.parametrize("readout_input_mode", ["hidden", "hidden_plus_input"])
+    def test_two_timescale_softmax_ce_fast_trunk_gradient_updates_on_first_step(
+        self,
+        readout_input_mode: str,
+    ):
+        common = {
+            "n_heads": 3,
+            "hidden_sizes": (4,),
+            "sparsity": 0.0,
+            "step_size": 0.1,
+            "perturbation_sigma": 0.0,
+            "readout_mode": "two_timescale_simplex",
+            "readout_loss_mode": "softmax_ce",
+            "readout_input_mode": readout_input_mode,
+        }
+        learner = UPGDLearner(**common, readout_fast_trunk_gradient_multiplier=1.0)
+        state = learner.init(feature_dim=3, key=jr.key(2383))
+        observation = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32)
+        target = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32)
+
+        result = learner.update(state, observation, target)
+
+        assert any(
+            not bool(jnp.array_equal(before, after))
+            for before, after in zip(
+                state.trunk_params.weights,
+                result.state.trunk_params.weights,
+            )
+        )
+        chex.assert_tree_all_finite(result.state.trunk_params)
+        chex.assert_tree_all_finite(result.predictions)
+        chex.assert_tree_all_finite(result.metrics)
+
     def test_two_timescale_fast_head_uses_shared_bounder(self):
         common = {
             "n_heads": 3,

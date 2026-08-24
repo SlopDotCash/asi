@@ -2275,6 +2275,12 @@ class UPGDLearner:
             loss = 0.5 * jnp.sum(sq_masked) / denom
             return loss, (logits_for_loss, hidden_for_loss, loss)
 
+        def trunk_fn(
+            weights: tuple[Array, ...],
+            biases: tuple[Array, ...],
+        ) -> Array:
+            return self._trunk_forward(weights, biases, observation, slope, ln)
+
         if not use_direct_mse_loss:
             (_, (logits, hidden_for_readout, loss_value)), grads = jax.value_and_grad(
                 loss_and_aux_fn,
@@ -2288,13 +2294,6 @@ class UPGDLearner:
             )
             trunk_w_grads, trunk_b_grads, head_w_grads, head_b_grads = grads
         else:
-
-            def trunk_fn(
-                weights: tuple[Array, ...],
-                biases: tuple[Array, ...],
-            ) -> Array:
-                return self._trunk_forward(weights, biases, observation, slope, ln)
-
             raw_hidden, trunk_vjp_fn = jax.vjp(
                 trunk_fn,
                 state.trunk_params.weights,
@@ -2375,6 +2374,12 @@ class UPGDLearner:
             )
             fast_head_b_grads = tuple(fast_logit_grads[i : i + 1] for i in range(self._n_heads))
             if self._readout_fast_trunk_gradient_multiplier > 0.0:
+                if not use_direct_mse_loss:
+                    raw_hidden, trunk_vjp_fn = jax.vjp(
+                        trunk_fn,
+                        state.trunk_params.weights,
+                        state.trunk_params.biases,
+                    )
                 fast_head_cotangent = (
                     fast_head_matrix[:, : raw_hidden.shape[0]].T @ fast_logit_grads
                     if self._readout_input_mode == "hidden_plus_input" and n_trunk > 0
