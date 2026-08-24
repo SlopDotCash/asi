@@ -24,6 +24,7 @@ from alberta_framework.core.prototype_agent import (
     PrototypeAgentState,
     PrototypeTransition,
     PrototypeUpdateResult,
+    _guarded_dream_rng_root,
     _sample_one_hot_dream_observation,
 )
 from alberta_framework.core.types import DemonType, GVFSpec, create_horde_spec
@@ -704,7 +705,9 @@ def test_dream_backup_is_caused_by_predicted_discount(discount: float) -> None:
     assert agent._buffer is not None
     buffer_state = agent._buffer.add(state.buffer_state, initial_obs)
     state = state.replace(buffer_state=buffer_state)
-    action = jnp.array(0, dtype=jnp.int32)
+    dream_root = _guarded_dream_rng_root(jr.key(6))
+    _, _, action_key = jr.split(dream_root, 3)
+    action = jr.randint(action_key, (), 0, 2, dtype=jnp.int32)
     reward = jnp.array(1.2, dtype=jnp.float32)
     transition = DreamTransition(
         observation=initial_obs,

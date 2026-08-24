@@ -18,12 +18,38 @@ from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.core.prototype_agent import (
     PrototypeAgent,
     PrototypeAgentConfig,
+    _guarded_dream_rng_root,
     _sample_one_hot_dream_observation,
 )
 from alberta_framework.core.world_model import ActionConditionedWorldModelConfig
 
 OBS = jnp.array([1.0, -0.5], dtype=jnp.float32)
 N_DREAMS = 3
+
+
+def test_guarded_dream_rng_root_is_disjoint_from_future_real_stream() -> None:
+    stored_real_key = jr.key(5474)
+    dream_root = _guarded_dream_rng_root(stored_real_key)
+
+    assert not bool(jnp.array_equal(dream_root, stored_real_key))
+    dream_keys = []
+    dream_key = dream_root
+    for _ in range(N_DREAMS):
+        dream_key, sample_key, action_key = jr.split(dream_key, 3)
+        dream_keys.extend((sample_key, action_key))
+
+    future_real_key = stored_real_key
+    for _ in range(N_DREAMS + 1):
+        future_real_key, explore_key, noise_key = jr.split(future_real_key, 3)
+        assert not bool(jnp.array_equal(dream_root, future_real_key))
+        for dream_key in dream_keys:
+            assert not bool(jnp.array_equal(dream_key, explore_key))
+            assert not bool(jnp.array_equal(dream_key, noise_key))
+
+    chex.assert_trees_all_equal(
+        dream_root,
+        _guarded_dream_rng_root(stored_real_key),
+    )
 
 
 def _dream_config(
@@ -275,7 +301,7 @@ def test_sample_mode_does_not_shift_legacy_anchor_or_action_streams(
     )
 
     expected = []
-    key = root_key
+    key = _guarded_dream_rng_root(root_key)
     for _ in range(N_DREAMS):
         key, sample_key, action_key = jr.split(key, 3)
         anchor_index = jr.randint(
