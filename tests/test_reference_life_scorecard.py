@@ -694,6 +694,75 @@ def test_completed_shard_rejects_impossible_reward_lattice_total() -> None:
         scorecard.validate_scorecard_run_record(record)
 
 
+@pytest.mark.parametrize("environment", ENVIRONMENT_ROSTER)
+def test_failed_shard_rejects_window_reward_exceeding_partial_total(
+    environment: str,
+) -> None:
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == environment
+        and item.arm == "random"
+        and item.seed == SEED_ROSTER[0]
+    )
+    record = _completed_record(plan, spec)
+    horizon = plan.protocol(environment)["horizon"]
+    oracle_reward = record["outcome"]["oracle_reward_sum"] / horizon
+    window = {
+        "event_count": 1,
+        "reward_sum": 1.0,
+        "mean_reward": 1.0,
+        "mean_oracle_regret": oracle_reward - 1.0,
+    }
+    if environment == "switching_two_state":
+        windows = {"initial_a": window, "first_b": None, "return_a": None}
+        high_end_visit_count = None
+        high_end_visit_rate = None
+    else:
+        windows = {"early": window, "late": None}
+        high_end_visit_count = 0
+        high_end_visit_rate = 0.0
+    record.update(
+        {
+            "status": "failed",
+            "failure": {
+                "stage": "step",
+                "type": "RuntimeError",
+                "message": "synthetic post-step failure",
+                "accepted_events": 1,
+            },
+            "outcome": None,
+            "partial_outcome": {
+                "summary_mode": "streaming_o1_no_retained_events",
+                "configured_horizon": horizon,
+                "accepted_events": 1,
+                "reward_sum": 0.0,
+                "mean_reward": 0.0,
+                "oracle_reward_sum": oracle_reward,
+                "regret_sum": oracle_reward,
+                "parameter_change_events": 0,
+                "phase_event_counts": [1, 0],
+                "phase_reward_sums": [0.0, 0.0],
+                "windows": windows,
+                "high_end_visit_count": high_end_visit_count,
+                "high_end_visit_rate": high_end_visit_rate,
+            },
+        }
+    )
+    record["telemetry"].update(
+        {
+            "warmed_step_seconds_total": 0.0,
+            "warmed_step_count": 0,
+            "warmed_step_seconds_mean": None,
+        }
+    )
+    _redigest(record)
+
+    with pytest.raises(ValueError, match="windows exceed"):
+        scorecard.validate_scorecard_run_record(record)
+
+
 def test_completed_shard_rejects_self_asserted_zero_resource_payload() -> None:
     plan = build_development_plan()
     spec = scorecard.iter_run_specs(plan)[0]
