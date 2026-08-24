@@ -79,6 +79,10 @@ from alberta_framework.core.update_safety import (
 EVIDENCE_LEVEL = "L0"
 SCIENTIFIC_PROMOTION_ALLOWED = False
 _INT32_MAX = 2**31 - 1
+# The encoder divides observations by ``observation_scale``, so the reciprocal of every
+# admitted scale has to be a finite float32.  That holds for the normal range and fails
+# for every subnormal, where ``1 / scale`` overflows and the quotient is nan or inf.
+_SMALLEST_NORMAL_FLOAT32 = float(np.finfo(np.float32).tiny)
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -222,6 +226,11 @@ class LatentWorldModelConfig:
     ``max_encoder_update`` and skipped whenever the fresh ``collapse_score``
     exceeds ``encoder_collapse_gate_threshold`` (the anti-collapse diagnostic
     acting as a gate) or any gradient/candidate value is non-finite.
+
+    ``observation_scale`` is the per-dimension divisor the encoder applies, so
+    every entry must be a normal float32: a subnormal scale has no finite
+    reciprocal and the quotient it asks for is nan or inf.  Every admitted
+    entry is applied exactly as declared.
     """
 
     observation_dim: int
@@ -290,7 +299,7 @@ class LatentWorldModelConfig:
                 raise ValueError("observation_scale length must equal observation_dim")
             observation_scale = tuple(
                 validated_float32_scalar(
-                    f"observation_scale[{index}]", scale, positive=True
+                    f"observation_scale[{index}]", scale, lower=_SMALLEST_NORMAL_FLOAT32
                 )
                 for index, scale in enumerate(observation_scale)
             )
@@ -667,10 +676,17 @@ class LatentWorldModel:
         encoder_bias: Array,
         observation: Array,
     ) -> Float[Array, " latent_dim"]:
-        """Encode one observation with explicit (differentiable) encoder params."""
+        """Encode one observation with explicit (differentiable) encoder params.
+
+        Divides by the configured ``observation_scale`` itself.  The config admits
+        only scales whose reciprocal is a finite float32, so no floor is needed
+        here, and substituting one would normalize by a number the caller never
+        declared: the latents would shrink by the ratio between the two, which
+        ``collapse_score`` then reports as degenerate input.
+        """
         obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._config.observation_dim,))
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
-        scaled = obs / jnp.maximum(scale, jnp.asarray(1e-6, dtype=jnp.float32))
+        scaled = obs / scale
         return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
 
     @functools.partial(jax.jit, static_argnums=(0,))

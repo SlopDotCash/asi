@@ -24,6 +24,7 @@ from alberta_framework.core.latent_world_model import (
     SCIENTIFIC_PROMOTION_ALLOWED,
     LatentWorldModel,
     LatentWorldModelConfig,
+    LatentWorldModelState,
     run_latent_world_model_learning_loop,
 )
 
@@ -749,3 +750,209 @@ def test_latent_world_model_init_rejects_nonfinite_encoder_draw() -> None:
 
     with pytest.raises(ValueError, match="encoder initialization"):
         model.init(jr.key(0))
+
+
+_SMALLEST_NORMAL_FLOAT32 = float(np.finfo(np.float32).tiny)
+
+# Two observations expressed as normalized coordinates: the encoder divides by the
+# declared scale, so a scale-free encoder returns one latent for all of these.
+_DECLARED_COORDINATES = (1.5, -0.75)
+
+# Latent words at scales the retired ``max(scale, 1e-6)`` floor never altered, recorded
+# from the revision that still floored.  The repair must leave these rows alone.
+_UNFLOORED_GOLDEN_LATENTS = (
+    (1.0, (0x3F68EF62, 0xBF5AD221, 0xBF539FA8, 0xBF1A7A16)),
+    (1e-1, (0x3F68EF62, 0xBF5AD221, 0xBF539FA8, 0xBF1A7A16)),
+    (1e-3, (0x3F68EF63, 0xBF5AD221, 0xBF539FA5, 0xBF1A7A16)),
+    (1e-5, (0x3F68EF62, 0xBF5AD221, 0xBF539FA8, 0xBF1A7A16)),
+    (1e-6, (0x3F68EF62, 0xBF5AD221, 0xBF539FA8, 0xBF1A7A16)),
+)
+
+# Scales the floor silently replaced.  All are normal float32 values, so each one has a
+# finite reciprocal and the encoder can apply it exactly as declared.
+_FLOORED_SCALES = (1e-7, 1e-9, 1e-12, 1e-20, 1e-30, 1e-37)
+
+
+def _scale_probe(scale: float) -> tuple[LatentWorldModel, LatentWorldModelState]:
+    config = LatentWorldModelConfig(
+        observation_dim=2,
+        latent_dim=4,
+        n_actions=2,
+        hidden_sizes=(),
+        observation_scale=(scale, scale),
+    )
+    model = LatentWorldModel(config)
+    return model, model.init(jr.key(0))
+
+
+def _encode_declared_coordinates(
+    scale: float, coordinates: tuple[float, float] = _DECLARED_COORDINATES
+) -> np.ndarray:
+    """Encode the observation sitting at ``coordinates`` in declared-scale units."""
+    model, state = _scale_probe(scale)
+    observation = jnp.asarray([value * scale for value in coordinates], dtype=jnp.float32)
+    return np.asarray(model.encode(state, observation))
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [
+        1e-38,
+        _SMALLEST_NORMAL_FLOAT32 / 2.0,
+        1e-40,
+        float(np.finfo(np.float32).smallest_subnormal),
+        0.0,
+        -1.0,
+    ],
+)
+def test_observation_scale_rejects_scales_without_a_finite_reciprocal(scale: float) -> None:
+    """A subnormal divisor asks for a quotient float32 cannot hold, so reject it up front."""
+    with pytest.raises(ValueError, match=r"observation_scale\[0\] must be >= 1\.17549435"):
+        LatentWorldModelConfig(
+            observation_dim=2,
+            latent_dim=4,
+            n_actions=2,
+            observation_scale=(scale, 1.0),
+        )
+
+
+def test_observation_scale_admits_the_smallest_normal_float32() -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=1,
+        latent_dim=2,
+        n_actions=2,
+        observation_scale=(_SMALLEST_NORMAL_FLOAT32,),
+    )
+
+    assert config.observation_scale == (_SMALLEST_NORMAL_FLOAT32,)
+    assert all(type(value) is float for value in config.observation_scale)
+    assert math.isfinite(1.0 / config.observation_scale[0])
+
+
+@pytest.mark.parametrize("scale", _FLOORED_SCALES)
+def test_config_round_trip_preserves_a_scale_below_the_retired_floor(scale: float) -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=2,
+        latent_dim=4,
+        n_actions=2,
+        observation_scale=(scale, 1.0),
+    )
+
+    restored = LatentWorldModelConfig.from_config(config.to_config())
+
+    assert restored.observation_scale == config.observation_scale
+
+
+@pytest.mark.parametrize(("scale", "expected_words"), _UNFLOORED_GOLDEN_LATENTS)
+def test_encode_is_bit_for_bit_unchanged_where_the_floor_never_applied(
+    scale: float, expected_words: tuple[int, ...]
+) -> None:
+    """At and above the retired floor ``max(scale, 1e-6)`` was the scale, so nothing moves."""
+    latent = _encode_declared_coordinates(scale)
+
+    words = tuple(int(word) for word in latent.view(np.uint32))
+    assert words == expected_words
+
+
+@pytest.mark.parametrize("scale", _FLOORED_SCALES)
+def test_encode_applies_the_declared_observation_scale(scale: float) -> None:
+    """One declared coordinate encodes to one latent, whatever scale declares that unit."""
+    reference = _encode_declared_coordinates(1.0)
+
+    latent = _encode_declared_coordinates(scale)
+
+    chex.assert_tree_all_finite(latent)
+    np.testing.assert_allclose(latent, reference, rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("scale", (1.0, 1e-6, *_FLOORED_SCALES, _SMALLEST_NORMAL_FLOAT32))
+@pytest.mark.parametrize("coordinate", (1.0, 8.0, 1e2, 1e4, 1e6))
+def test_encode_recovers_whole_normalized_coordinates_at_every_admitted_scale(
+    scale: float, coordinate: float
+) -> None:
+    """Whole coordinates are exactly representable, so they survive the division intact."""
+    reference = _encode_declared_coordinates(1.0, (coordinate, -coordinate))
+
+    latent = _encode_declared_coordinates(scale, (coordinate, -coordinate))
+
+    chex.assert_tree_all_finite(latent)
+    np.testing.assert_allclose(latent, reference, rtol=0.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("scale", _FLOORED_SCALES)
+def test_latent_separation_matches_the_scale_that_declared_it(scale: float) -> None:
+    """Observations one declared unit apart stay one declared unit apart in latent space."""
+    expected = np.max(
+        np.abs(
+            _encode_declared_coordinates(1.0, (2.0, 2.0))
+            - _encode_declared_coordinates(1.0, (1.0, 1.0))
+        )
+    )
+
+    separation = np.max(
+        np.abs(
+            _encode_declared_coordinates(scale, (2.0, 2.0))
+            - _encode_declared_coordinates(scale, (1.0, 1.0))
+        )
+    )
+
+    assert separation == pytest.approx(float(expected), abs=1e-6)
+
+
+def _run_declared_scale_transitions(
+    scale: float, *, encoder_learning: bool, steps: int = 40
+) -> tuple[float, float, float, float]:
+    """Drive ``steps`` transitions whose observations are standard normal in declared units.
+
+    Returns the final collapse score, the final mean latent spread, the largest encoder
+    matrix movement, and the configured minimum latent spread.
+    """
+    config = LatentWorldModelConfig(
+        observation_dim=3,
+        latent_dim=6,
+        n_actions=2,
+        observation_scale=(scale,) * 3,
+        encoder_learning=encoder_learning,
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(0))
+    before = np.asarray(state.encoder_matrix).copy()
+    key = jr.key(7)
+    collapse_score = 0.0
+    latent_spread = 0.0
+    for step in range(steps):
+        key, observation_key, next_key = jr.split(key, 3)
+        observation = jr.normal(observation_key, (3,), dtype=jnp.float32) * scale
+        next_observation = jr.normal(next_key, (3,), dtype=jnp.float32) * scale
+        result = model.update(state, observation, step % 2, 0.5, 0.99, next_observation)
+        state = result.state
+        collapse_score = float(result.collapse_score)
+        latent_spread = float(result.latent_std_mean)
+    movement = float(np.max(np.abs(np.asarray(state.encoder_matrix) - before)))
+    return collapse_score, latent_spread, movement, config.min_latent_std
+
+
+@pytest.mark.parametrize("scale", _FLOORED_SCALES)
+def test_update_reports_no_collapse_at_declared_scales_below_the_retired_floor(
+    scale: float,
+) -> None:
+    """A well-conditioned stream is well-conditioned at any scale that declares its unit."""
+    collapse_score, latent_spread, _, min_latent_std = _run_declared_scale_transitions(
+        scale, encoder_learning=False
+    )
+
+    assert collapse_score == 0.0
+    assert latent_spread >= min_latent_std
+
+
+@pytest.mark.parametrize("scale", _FLOORED_SCALES)
+def test_trainable_encoder_still_learns_at_declared_scales_below_the_retired_floor(
+    scale: float,
+) -> None:
+    """The anti-collapse gate blocks every encoder step while collapse is manufactured."""
+    collapse_score, _, movement, _ = _run_declared_scale_transitions(
+        scale, encoder_learning=True
+    )
+
+    assert collapse_score == 0.0
+    assert movement > 0.0
