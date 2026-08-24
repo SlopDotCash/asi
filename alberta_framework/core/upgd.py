@@ -1995,14 +1995,33 @@ class UPGDLearner:
         previous: tuple[Array, ...],
         current: tuple[Array, ...],
     ) -> Array:
-        """Cosine alignment of two gradient tuples, zero for empty gradients."""
-        previous_norm = UPGDLearner._tuple_norm(previous)
-        current_norm = UPGDLearner._tuple_norm(current)
-        return jnp.where(
-            (previous_norm > 1e-6) & (current_norm > 1e-6),
-            UPGDLearner._tuple_dot(previous, current) / (previous_norm * current_norm + 1e-12),
-            jnp.array(0.0, dtype=jnp.float32),
+        """Cosine alignment of two gradient tuples, zero for empty gradients.
+
+        Scale-free by construction: each tuple is first normalized by its
+        max-absolute element so neither the dot product nor the norms can
+        underflow/overflow in float32, and identical gradients report
+        cosine 1.0 at every scale (issue #2389).
+        """
+        def _max_abs(xs: tuple[Array, ...]) -> Array:
+            total = jnp.array(0.0, dtype=jnp.float32)
+            for x in xs:
+                total = jnp.maximum(total, jnp.max(jnp.abs(x)))
+            return total
+
+        previous_peak = _max_abs(previous)
+        current_peak = _max_abs(current)
+        active = (previous_peak > 0.0) & (current_peak > 0.0)
+        tiny = jnp.array(1e-30, dtype=jnp.float32)
+        p_scaled = tuple(
+            x / jnp.maximum(previous_peak, tiny) for x in previous
         )
+        c_scaled = tuple(x / jnp.maximum(current_peak, tiny) for x in current)
+        cosine = UPGDLearner._tuple_dot(p_scaled, c_scaled) / (
+            UPGDLearner._tuple_norm(p_scaled)
+            * UPGDLearner._tuple_norm(c_scaled)
+            + jnp.array(1e-12, dtype=jnp.float32)
+        )
+        return jnp.where(active, cosine, jnp.array(0.0, dtype=jnp.float32))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(self, state: UPGDState, observation: Array) -> Array:
