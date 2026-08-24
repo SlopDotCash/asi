@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from alberta_framework.core.dreaming import DreamingConfig
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.core.prototype_agent import (
@@ -21,6 +22,7 @@ from alberta_framework.core.types import DemonType, GVFSpec, create_horde_spec
 from alberta_framework.core.world_model import ActionConditionedWorldModelConfig
 
 _INT32_MAX = 2**31 - 1
+_N_DREAMS_PER_STEP_MAX = 10_000
 
 
 class _HostileInt(int):
@@ -303,3 +305,39 @@ def test_prototype_valid_construction() -> None:
     assert restored == cfg
     gru = GRUPerceptionConfig(observation_dim=4, hidden_dim=4)
     assert gru.augmented_dim() == 8
+
+
+def _dreaming_cfg(n_dreams: int) -> dict[str, Any]:
+    # A world_model and permissive dreaming schedule are required before a
+    # positive n_dreams_per_step is accepted at all.
+    return {
+        "oak": _oak(obs_dim=4, n_prim=2),
+        "world_model": _world_model(observation_dim=4),
+        "dreaming": DreamingConfig(warmup_steps=1, max_model_error_ema=1e6),
+        "buffer_capacity": 20,
+        "n_dreams_per_step": n_dreams,
+    }
+
+
+def test_prototype_n_dreams_per_step_accepts_within_scan_budget() -> None:
+    # The public last-fit is 4; the boundary ceiling is 10_000 (mirrors the
+    # sibling dream-rollout ScanBudget ceiling in core.dreaming).
+    for accepted in (4, _N_DREAMS_PER_STEP_MAX):
+        cfg = _cfg(**_dreaming_cfg(accepted))
+        assert cfg.n_dreams_per_step == accepted
+        # The deserialization entry point must also accept the boundary value.
+        restored = PrototypeAgentConfig.from_config(cfg.to_config())
+        assert restored.n_dreams_per_step == accepted
+
+
+@pytest.mark.parametrize("rejected", [_N_DREAMS_PER_STEP_MAX + 1, _INT32_MAX])
+def test_prototype_n_dreams_per_step_caps_before_scan_hang(rejected: int) -> None:
+    # An INT32-legal value drives jnp.arange inside jax.lax.scan and hangs/OOMs
+    # long before any dream runs (issue #2441). Both validation sites must reject
+    # it with the field-naming _require_int error, so deserialization cannot
+    # bypass the guard.
+    with pytest.raises(ValueError, match="n_dreams_per_step must be <="):
+        _cfg(**_dreaming_cfg(rejected))
+    accepted_payload = _cfg(**_dreaming_cfg(4)).to_config()
+    with pytest.raises(ValueError, match="n_dreams_per_step must be <="):
+        PrototypeAgentConfig.from_config({**accepted_payload, "n_dreams_per_step": rejected})

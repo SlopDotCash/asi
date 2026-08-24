@@ -261,6 +261,13 @@ def feature_to_subtask_specs(
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 4_294_967_295
+# Public last-fit in tests is n_dreams_per_step=4. The value drives jnp.arange
+# inside a jax.lax.scan that materializes one float32 td-error per imagined
+# transition, so an INT32-legal ceiling hangs/OOMs long before any dream runs.
+# Cap at the sibling dream-rollout ScanBudget ceiling (core.dreaming's
+# _DREAM_ROLLOUT_BUDGET.maximum_steps == 10_000); the same defect class as #2128
+# and #2124. This leaves three orders of magnitude of headroom over the last-fit.
+_N_DREAMS_PER_STEP_MAX = 10_000
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
         int,
         np.int8,
@@ -725,7 +732,7 @@ class PrototypeAgentConfig:
                 "n_dreams_per_step",
                 self.n_dreams_per_step,
                 minimum=0,
-                maximum=_INT32_MAX,
+                maximum=_N_DREAMS_PER_STEP_MAX,
             ),
         )
         # horde_hidden_sizes: hostile-safe per-element validation
@@ -1335,7 +1342,10 @@ class PrototypeAgentConfig:
             "buffer_capacity", data.pop("buffer_capacity", 200), minimum=1, maximum=_INT32_MAX
         )
         n_dreams_per_step = _require_int(
-            "n_dreams_per_step", data.pop("n_dreams_per_step", 0), minimum=0, maximum=_INT32_MAX
+            "n_dreams_per_step",
+            data.pop("n_dreams_per_step", 0),
+            minimum=0,
+            maximum=_N_DREAMS_PER_STEP_MAX,
         )
         dream_next_observation_mode = data.pop(
             "dream_next_observation_mode",
