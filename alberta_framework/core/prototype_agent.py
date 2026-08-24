@@ -184,6 +184,12 @@ _PROTOTYPE_V2_REPLAY_MIGRATION_TAG = 0x50525632
 _PROTOTYPE_FEATURE_LIFECYCLE_KEY_TAG = 0x50464C43
 _UINT32_MAX = 2**32 - 1
 _INT32_MAX = 2**31 - 1
+# ``_dream_step`` scans ``jnp.arange(n_dreams_per_step)`` and materializes one
+# float32 td-error per imagined transition, so an INT32-legal value hangs or
+# exhausts memory long before it runs. Match the dream-rollout ceiling already
+# fixed in ``core.dreaming`` (``_DREAM_ROLLOUT_BUDGET``); the public last-fit in
+# tests is 4 dreams per step.
+_MAX_N_DREAMS_PER_STEP = 10_000
 
 # ---------------------------------------------------------------------------
 # Standalone utility
@@ -725,7 +731,7 @@ class PrototypeAgentConfig:
                 "n_dreams_per_step",
                 self.n_dreams_per_step,
                 minimum=0,
-                maximum=_INT32_MAX,
+                maximum=_MAX_N_DREAMS_PER_STEP,
             ),
         )
         # horde_hidden_sizes: hostile-safe per-element validation
@@ -1335,7 +1341,10 @@ class PrototypeAgentConfig:
             "buffer_capacity", data.pop("buffer_capacity", 200), minimum=1, maximum=_INT32_MAX
         )
         n_dreams_per_step = _require_int(
-            "n_dreams_per_step", data.pop("n_dreams_per_step", 0), minimum=0, maximum=_INT32_MAX
+            "n_dreams_per_step",
+            data.pop("n_dreams_per_step", 0),
+            minimum=0,
+            maximum=_MAX_N_DREAMS_PER_STEP,
         )
         dream_next_observation_mode = data.pop(
             "dream_next_observation_mode",

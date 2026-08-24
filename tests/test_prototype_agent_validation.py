@@ -12,6 +12,7 @@ import pytest
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig, SubtaskSpec
 from alberta_framework.core.prototype_agent import (
+    _MAX_N_DREAMS_PER_STEP,
     GRUPerceptionConfig,
     PrototypeAgent,
     PrototypeAgentConfig,
@@ -303,3 +304,30 @@ def test_prototype_valid_construction() -> None:
     assert restored == cfg
     gru = GRUPerceptionConfig(observation_dim=4, hidden_dim=4)
     assert gru.augmented_dim() == 8
+
+
+def test_n_dreams_per_step_is_capped_before_it_drives_a_scan() -> None:
+    """An INT32-legal dream count hangs the agent instead of being rejected.
+
+    ``PrototypeAgent._dream`` scans ``jnp.arange(n_dreams_per_step)`` and
+    materializes one float32 td-error per imagined transition, so a value near
+    ``_INT32_MAX`` costs an 8.6 GB output before any dream executes. The
+    config must fail closed at construction, matching the dream-rollout
+    ceiling already enforced in ``core.dreaming``.
+    """
+    # Match the cap's own message: a bare "n_dreams_per_step" would also be
+    # satisfied by the unrelated "requires the legacy world_model" guard.
+    expected = f"n_dreams_per_step must be <= {_MAX_N_DREAMS_PER_STEP}"
+    for oversized in (_INT32_MAX, _MAX_N_DREAMS_PER_STEP + 1):
+        with pytest.raises(ValueError) as excinfo:
+            _cfg(n_dreams_per_step=oversized, world_model=_world_model(4))
+        assert str(excinfo.value) == expected
+
+    # The ceiling itself, and the counts the suite actually exercises, stay legal.
+    # ``n_dreams_per_step > 0`` additionally requires the legacy world model.
+    dreaming = _cfg(
+        n_dreams_per_step=_MAX_N_DREAMS_PER_STEP,
+        world_model=_world_model(4),
+    )
+    assert dreaming.n_dreams_per_step == _MAX_N_DREAMS_PER_STEP
+    assert _cfg(n_dreams_per_step=4, world_model=_world_model(4)).n_dreams_per_step == 4
