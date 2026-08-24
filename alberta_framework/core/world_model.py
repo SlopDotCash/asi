@@ -832,6 +832,12 @@ class ActionConditionedWorldModel:
         raw_predictions = self._learner.predict(state.learner_state, inputs)
 
         obs_scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
+        # Encode (targets(), line 809) divides by safe_scale =
+        # max(observation_scale, 1e-6); decode must multiply by the same
+        # safe_scale or a perfectly fitted learner reconstructs
+        # observation_scale / max(observation_scale, 1e-6) of its target
+        # below 1e-6.
+        safe_scale = jnp.maximum(obs_scale, jnp.asarray(1e-6, dtype=jnp.float32))
         normalized_delta = jnp.clip(
             raw_predictions[: self._config.observation_dim],
             -self._config.max_delta_scale,
@@ -839,8 +845,8 @@ class ActionConditionedWorldModel:
         )
         decoded_next_observation = jnp.where(
             self._config.predict_delta,
-            safe_obs + normalized_delta * obs_scale,
-            normalized_delta * obs_scale,
+            safe_obs + normalized_delta * safe_scale,
+            normalized_delta * safe_scale,
         )
 
         has_bounds = state.step_count > 0
