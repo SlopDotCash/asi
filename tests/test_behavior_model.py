@@ -875,6 +875,12 @@ class TestBehaviorModelSequenceCeiling:
     (
         ("all-zero mass", [0.0, 0.0, 0.0]),
         ("underflowing spread", [1e38, 1.0, 1.0]),
+        # Positive totals below the old 1e-12 denominator floor: dividing by
+        # the floor rather than the true mass returned sum == mass / 1e-12.
+        ("mass below the old floor", [7.5e-13, 0.0, 0.0]),
+        ("half the old floor", [5e-13, 0.0, 0.0]),
+        ("a tenth of the old floor", [1e-13, 0.0, 0.0]),
+        ("far below the old floor", [1e-30, 0.0, 0.0]),
     ),
 )
 def test_floor_and_renormalize_returns_a_simplex_for_degenerate_mass(

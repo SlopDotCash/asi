@@ -226,16 +226,21 @@ def floor_and_renormalize_probabilities(
         return jnp.ones_like(probs) / n_actions
     clipped = jnp.maximum(probs, 0.0)
     total = jnp.sum(clipped, axis=-1, keepdims=True)
-    normalizer = jnp.maximum(total, jnp.asarray(1e-12, dtype=jnp.float32))
-    # ``clipped / normalizer`` is all zeros whenever the clipped mass is zero,
-    # and every entry underflows to zero in float32 when one entry dominates
-    # the sum. Both leave the affine step below returning ``min_probability``
-    # in every slot, which sums to ``n * min_probability`` rather than one.
-    # Fall back to the uniform distribution so the documented simplex holds.
+    # Divide by the true mass, never a floored stand-in: flooring the
+    # denominator at ``1e-12`` rescales every positive total below that floor,
+    # so ``[7.5e-13, 0, 0]`` would normalize to ``0.75`` rather than one.
+    # ``jnp.where`` still needs a safe denominator on the untaken branch to
+    # keep the gradient finite, hence ``safe_total``.
+    safe_total = jnp.where(total > 0.0, total, jnp.ones_like(total))
+    candidate = clipped / safe_total
+    # A zero total has no direction, and a single entry large enough to
+    # dominate the float32 sum makes every ratio underflow to zero; either way
+    # ``candidate`` sums to zero and the affine step below would return
+    # ``min_probability`` in every slot. Fall back to uniform only then.
     uniform = jnp.full_like(clipped, 1.0 / n_actions)
     normalized = jnp.where(
-        jnp.sum(clipped / normalizer, axis=-1, keepdims=True) > 0.0,
-        clipped / normalizer,
+        jnp.sum(candidate, axis=-1, keepdims=True) > 0.0,
+        candidate,
         uniform,
     )
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
