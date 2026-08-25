@@ -55,7 +55,6 @@ def test_switching_metric_schedule_is_constant_time_at_counter_horizon() -> None
         _switching_metric_schedule(1, 0)
 
 
-@requires_renameat2
 def test_checkpoint_validator_rejects_generation_and_zero_event_metric_forgery() -> None:
     runner = _runner()
     state, _ = _advance(runner, runner.init(), 2)
