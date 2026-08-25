@@ -71,6 +71,30 @@ def _require_exact_mode(value: object) -> str:
     return value
 
 
+def _validate_estimator_axes(
+    errors: Array,
+    feature_values: Array,
+    active_mask: Array,
+    step_size_output: float | Array,
+    active_count: float | Array,
+) -> tuple[int, int]:
+    """Reject shape broadcasts before they can change retained estimator state."""
+    error_shape = jnp.shape(errors)
+    feature_shape = jnp.shape(feature_values)
+    mask_shape = jnp.shape(active_mask)
+    if len(error_shape) != 1:
+        raise ValueError("errors must be a rank-one task vector")
+    if len(feature_shape) != 1:
+        raise ValueError("feature_values must be a rank-one feature vector")
+    if mask_shape != error_shape:
+        raise ValueError("active_mask must match errors exactly")
+    if not jnp.issubdtype(jnp.asarray(active_mask).dtype, jnp.bool_):
+        raise ValueError("active_mask must have boolean dtype")
+    if jnp.shape(step_size_output) or jnp.shape(active_count):
+        raise ValueError("step_size_output and active_count must be scalars")
+    return error_shape[0], feature_shape[0]
+
+
 class FutureUtilityEstimate(NamedTuple):
     """One-step utility estimate with an explicit transaction verdict."""
 
@@ -148,6 +172,9 @@ def one_step_output_loss_reduction_with_diagnostics(
         Non-negative per-task/per-feature predicted loss reductions with
         inactive tasks masked to zero.
     """
+    _validate_estimator_axes(
+        errors, feature_values, active_mask, step_size_output, active_count
+    )
     step_size = jnp.asarray(step_size_output, dtype=jnp.float32)
     count = jnp.asarray(active_count, dtype=jnp.float32)
     delta_prediction = (
@@ -223,6 +250,17 @@ def contribution_trace_output_loss_reduction_with_diagnostics(
     Returns:
         ``(reductions, new_contribution_trace, new_feature_energy_trace)``.
     """
+    n_tasks, n_features = _validate_estimator_axes(
+        errors, feature_values, active_mask, step_size_output, active_count
+    )
+    if jnp.shape(contribution_trace) != (n_tasks, n_features):
+        raise ValueError(
+            "contribution_trace must have shape (n_tasks, n_features)"
+        )
+    if jnp.shape(feature_energy_trace) != (n_features,):
+        raise ValueError("feature_energy_trace must match feature_values")
+    if jnp.shape(trace_decay):
+        raise ValueError("trace_decay must be a scalar")
     decay = jnp.asarray(trace_decay, dtype=jnp.float32)
     step_size = jnp.asarray(step_size_output, dtype=jnp.float32)
     count = jnp.asarray(active_count, dtype=jnp.float32)
@@ -360,6 +398,17 @@ def trace_output_loss_reduction_with_diagnostics(
         new_feature_energy_trace)``.  ``reductions`` is non-negative and masked
         for inactive tasks.
     """
+    n_tasks, n_features = _validate_estimator_axes(
+        errors, feature_values, active_mask, step_size_output, active_count
+    )
+    if jnp.shape(error_trace) != (n_tasks,):
+        raise ValueError("error_trace must match errors exactly")
+    if jnp.shape(feature_trace) != (n_features,):
+        raise ValueError("feature_trace must match feature_values")
+    if jnp.shape(feature_energy_trace) != (n_features,):
+        raise ValueError("feature_energy_trace must match feature_values")
+    if jnp.shape(trace_decay):
+        raise ValueError("trace_decay must be a scalar")
     decay = jnp.asarray(trace_decay, dtype=jnp.float32)
     step_size = jnp.asarray(step_size_output, dtype=jnp.float32)
     count = jnp.asarray(active_count, dtype=jnp.float32)
