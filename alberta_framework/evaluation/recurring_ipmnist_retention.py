@@ -876,6 +876,7 @@ def _validate_sentinel_snapshots(
     for index, (snapshot, requirement) in enumerate(zip(resolved, expected, strict=True)):
         if type(snapshot) is not SentinelProbeSnapshot:
             raise TypeError(f"sentinel_snapshots[{index}] must be SentinelProbeSnapshot")
+        SentinelProbeSnapshot.__post_init__(snapshot)
         if snapshot.ordering_key != requirement.ordering_key:
             raise ValueError("sentinel snapshots must appear once each in the exact required order")
         if snapshot.frozen_binding != requirement.frozen_binding:
@@ -1013,8 +1014,18 @@ def build_recurring_ipmnist_retention_report(
     """Validate one complete A/B/A trace and derive threshold-free metrics."""
     if type(protocol) is not RecurringIPMNISTProtocol:
         raise TypeError("protocol must be RecurringIPMNISTProtocol")
+    for phase in protocol.phases:
+        if type(phase) is not RecurringIPMNISTPhase:
+            raise TypeError("phases must contain RecurringIPMNISTPhase values")
+        RecurringIPMNISTPhase.__post_init__(phase)
+    for binding in protocol.sentinel_bindings:
+        if type(binding) is not SentinelProbeBinding:
+            raise TypeError("sentinel_bindings must contain SentinelProbeBinding values")
+        SentinelProbeBinding.__post_init__(binding)
+    RecurringIPMNISTProtocol.__post_init__(protocol)
     if type(trace) is not RecurringIPMNISTTrace:
         raise TypeError("trace must be RecurringIPMNISTTrace")
+    RecurringIPMNISTTrace.__post_init__(trace)
     if len(trace.pre_update_online_accuracy) != protocol.trace_length:
         raise ValueError(
             "the predict-before-update trace length must exactly match the A/B/A protocol"

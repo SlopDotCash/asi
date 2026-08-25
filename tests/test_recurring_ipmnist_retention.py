@@ -312,6 +312,43 @@ def test_report_is_explicitly_threshold_free_development_only_and_nonpromoting()
     assert payload["catastrophic_forgetting_absence_claimed"] is False
 
 
+def test_report_builder_revalidates_frozen_inputs() -> None:
+    protocol = _protocol()
+    trace = _trace(retaining=True)
+    snapshots = _snapshots(protocol, retaining=True)
+
+    object.__setattr__(
+        trace,
+        "pre_update_online_accuracy",
+        (0.5, *trace.pre_update_online_accuracy[1:]),
+    )
+    with pytest.raises(ValueError, match="binary"):
+        build_recurring_ipmnist_retention_report(
+            protocol=protocol,
+            trace=trace,
+            sentinel_snapshots=snapshots,
+        )
+
+    trace = _trace(retaining=True)
+    object.__setattr__(protocol.phases[0], "phase_index", False)
+    with pytest.raises(ValueError, match="phase_index must be a non-negative integer"):
+        build_recurring_ipmnist_retention_report(
+            protocol=protocol,
+            trace=trace,
+            sentinel_snapshots=snapshots,
+        )
+
+    protocol = _protocol()
+    snapshots = _snapshots(protocol, retaining=True)
+    object.__setattr__(snapshots[0], "correctness", (1, 1, 1, 1))
+    with pytest.raises(ValueError, match="canonical booleans"):
+        build_recurring_ipmnist_retention_report(
+            protocol=protocol,
+            trace=trace,
+            sentinel_snapshots=snapshots,
+        )
+
+
 @pytest.mark.parametrize("bad_accuracy", [-0.1, 0.5, 1.1, float("nan")])
 def test_trace_requires_binary_pre_update_outcomes(bad_accuracy: float) -> None:
     with pytest.raises(ValueError, match="binary"):
