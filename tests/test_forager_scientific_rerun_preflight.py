@@ -134,6 +134,28 @@ def test_local_inspection_reports_absent_and_rejects_wrong_or_hostile_output(
         preflight.inspect_local_image(runner=lambda _command: object())  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    ("status", "runtime_executable", "observed_image_id"),
+    [
+        ("exact_present", None, preflight.REQUIRED_IMAGE_ID),
+        ("runtime_unavailable", "/usr/bin/docker", None),
+        ("image_absent", "/usr/bin/docker", "sha256:" + "1" * 64),
+    ],
+)
+def test_local_image_record_rejects_impossible_runtime_and_observation_states(
+    status: preflight.LocalStatus,
+    runtime_executable: str | None,
+    observed_image_id: str | None,
+) -> None:
+    with pytest.raises(preflight.ForagerScientificRerunPreflightError):
+        preflight.LocalImageInspection(
+            status=status,
+            runtime_executable=runtime_executable,
+            observed_image_id=observed_image_id,
+            detail="invalid cross-field state",
+        )
+
+
 def test_hostile_plan_and_report_mutations_fail_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

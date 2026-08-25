@@ -152,8 +152,18 @@ class LocalImageInspection:
             type(self.runtime_executable) is not str or not self.runtime_executable
         ):
             raise ForagerScientificRerunPreflightError("invalid runtime executable")
+        if (self.status == "runtime_unavailable") != (self.runtime_executable is None):
+            raise ForagerScientificRerunPreflightError(
+                "runtime availability contradicts the executable identity"
+            )
         if self.observed_image_id is not None:
             _require_digest(self.observed_image_id, "observed image ID")
+        if self.status in {"runtime_unavailable", "image_absent"} and (
+            self.observed_image_id is not None
+        ):
+            raise ForagerScientificRerunPreflightError(
+                "unobserved image status cannot carry an image ID"
+            )
         if type(self.detail) is not str or not self.detail or len(self.detail) > 1_024:
             raise ForagerScientificRerunPreflightError("invalid local inspection detail")
         if (self.status == "exact_present") != (self.observed_image_id == REQUIRED_IMAGE_ID):
