@@ -15,7 +15,7 @@ import dataclasses
 import math
 import time
 from collections.abc import Mapping
-from typing import Literal
+from typing import Literal, cast
 
 import jax
 import jax.numpy as jnp
@@ -102,6 +102,20 @@ def _exact_int(value: object, name: str, low: int, high: int) -> int:
     if type(value) is not int or isinstance(value, bool) or not low <= value <= high:
         raise ValueError(f"{name} must be an exact int within [{low}, {high}]")
     return value
+
+
+def _digest(value: object, name: str) -> str:
+    if (
+        type(value) is not str
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ValueError(f"{name} must be a lowercase SHA-256")
+    return value
+
+
+def _mechanism_enabled(arm_id: str) -> bool:
+    return not arm_id.endswith("_off") and arm_id != "sgd_current_control"
 
 
 def _init_params(key: Array, width: int, preactivation_width: int) -> dict[str, Array]:
@@ -268,19 +282,41 @@ class LowCostArmResult:
     elapsed_ns: int
 
     def __post_init__(self) -> None:
-        if self.arm_id not in ARM_IDS:
+        if type(self.arm_id) is not str or self.arm_id not in ARM_IDS:
             raise ValueError(f"unknown arm: {self.arm_id}")
+        if (
+            type(self.mechanism_enabled) is not bool
+            or self.mechanism_enabled != _mechanism_enabled(self.arm_id)
+        ):
+            raise ValueError("mechanism flag differs from the frozen arm roster")
         _exact_int(self.preactivation_width, "preactivation_width", 1, 4096)
         _exact_int(self.persistent_bytes, "persistent_bytes", 1, 2**63 - 1)
         _exact_int(self.parameter_updates, "parameter_updates", 1, 2**63 - 1)
         _exact_int(self.model_queries, "model_queries", 1, 2**63 - 1)
         _exact_int(self.elapsed_ns, "elapsed_ns", 0, 2**63 - 1)
-        for name in ("task_accuracy", "task_loss", "dead_unit_fraction", "effective_rank"):
-            series = getattr(self, name)
-            if type(series) is not tuple or not series:
-                raise ValueError(f"{name} must be a non-empty tuple")
-            if any(type(v) is not float or not math.isfinite(v) for v in series):
-                raise ValueError(f"{name} must hold finite exact floats")
+        curves = (
+            self.task_accuracy,
+            self.task_loss,
+            self.dead_unit_fraction,
+            self.effective_rank,
+        )
+        if any(type(curve) is not tuple or not curve for curve in curves):
+            raise ValueError("diagnostic curves must be non-empty exact tuples")
+        if len({len(curve) for curve in curves}) != 1:
+            raise ValueError("diagnostic curves must have equal lengths")
+        if any(
+            type(value) is not float or not math.isfinite(value)
+            for curve in curves
+            for value in curve
+        ):
+            raise ValueError("diagnostic curves must hold finite exact floats")
+        if any(
+            not 0.0 <= value <= 1.0
+            for value in self.task_accuracy + self.dead_unit_fraction
+        ):
+            raise ValueError("probability curves must lie in [0, 1]")
+        if any(value < 0.0 for value in self.task_loss + self.effective_rank):
+            raise ValueError("loss and rank curves must be nonnegative")
 
 
 def _run_arm(
@@ -336,7 +372,7 @@ def _run_arm(
 
     return LowCostArmResult(
         arm_id=arm_id,
-        mechanism_enabled=not arm_id.endswith("_off") and arm_id != "sgd_current_control",
+        mechanism_enabled=_mechanism_enabled(arm_id),
         preactivation_width=preactivation_width,
         task_accuracy=tuple(accuracies),
         task_loss=tuple(losses),
@@ -360,17 +396,38 @@ class LowCostResult:
     development_only: bool = True
 
     def __post_init__(self) -> None:
-        if self.schema != SCHEMA:
+        if type(self.schema) is not str or self.schema != SCHEMA:
             raise ValueError("schema drift")
-        if self.profile_id not in PROFILES:
+        if type(self.profile_id) is not str or self.profile_id not in PROFILES:
             raise ValueError("unknown profile")
-        if type(self.arms) is not tuple or len(self.arms) != len(ARM_IDS):
+        if type(self.seed) is not int or self.seed not in FROZEN_SEEDS:
+            raise ValueError("seed must be an exact frozen development seed")
+        _digest(self.dataset_sha256, "dataset identity")
+        if type(self.catalog) is not LowCostCatalogEntry:
+            raise ValueError("catalog must be an exact LowCostCatalogEntry")
+        if (
+            type(self.arms) is not tuple
+            or len(self.arms) != len(ARM_IDS)
+            or any(type(arm) is not LowCostArmResult for arm in self.arms)
+        ):
             raise ValueError("every declared arm must be reported")
         if tuple(arm.arm_id for arm in self.arms) != ARM_IDS:
             raise ValueError("arm order must match the declared arm list")
-        if self.development_only is not True:
+        if type(self.development_only) is not bool or self.development_only is not True:
             raise ValueError("result must remain permanently nonpromoting")
         self.catalog.validate()
+        profile = PROFILES[self.profile_id]
+        expected_updates = profile.n_tasks * profile.examples_per_task
+        for arm in self.arms:
+            LowCostArmResult.__post_init__(arm)
+            if len(arm.task_accuracy) != profile.n_tasks:
+                raise ValueError("diagnostic curves must bind every frozen task")
+            if arm.preactivation_width != _preactivation_width(
+                cast(ArmID, arm.arm_id), profile.hidden_width
+            ):
+                raise ValueError("preactivation width differs from the frozen arm geometry")
+            if arm.parameter_updates != expected_updates:
+                raise ValueError("parameter updates differ from the frozen schedule")
 
 
 def run_comparator(

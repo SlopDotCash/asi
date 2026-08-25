@@ -1,11 +1,16 @@
 """Contract tests for the issue #1566 low-cost activation comparator lane."""
 
+import dataclasses
+import math
+
 import numpy as np
 import pytest
 
 from alberta_framework.benchmarks.low_cost_controls_ipmnist import (
     ARM_IDS,
+    FROZEN_SEEDS,
     SCHEMA,
+    LowCostArmResult,
     LowCostCatalogEntry,
     LowCostResult,
     _preactivation_width,
@@ -134,6 +139,82 @@ class TestResultContract:
                 catalog=LowCostCatalogEntry(),
                 arms=tuple(reversed(result.arms)),
             )
+
+    def test_reconstructed_result_revalidates_nested_arms(self) -> None:
+        images, labels = _fixture()
+        result = run_comparator(images, labels)
+        object.__setattr__(
+            result.arms[0],
+            "task_accuracy",
+            (math.nan, *result.arms[0].task_accuracy[1:]),
+        )
+
+        with pytest.raises(ValueError, match="diagnostic curves"):
+            dataclasses.replace(result)
+
+    @pytest.mark.parametrize(
+        ("changes", "message"),
+        [
+            ({"seed": True}, "frozen development seed"),
+            ({"seed": FROZEN_SEEDS[0] - 1}, "frozen development seed"),
+            ({"dataset_sha256": "not-a-digest"}, "dataset identity"),
+        ],
+    )
+    def test_result_rejects_malformed_schedule_identity(
+        self, changes: dict[str, object], message: str
+    ) -> None:
+        images, labels = _fixture()
+        result = run_comparator(images, labels)
+
+        with pytest.raises(ValueError, match=message):
+            dataclasses.replace(result, **changes)
+
+    def test_arm_binds_mechanism_flag_to_roster(self) -> None:
+        with pytest.raises(ValueError, match="mechanism flag"):
+            LowCostArmResult(
+                arm_id="sgd_current_control",
+                mechanism_enabled=True,
+                preactivation_width=8,
+                task_accuracy=(0.5,),
+                task_loss=(1.0,),
+                dead_unit_fraction=(0.0,),
+                effective_rank=(1.0,),
+                persistent_bytes=1,
+                parameter_updates=1,
+                model_queries=1,
+                elapsed_ns=0,
+            )
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("task_accuracy", (1.1,), "probability curves"),
+            ("dead_unit_fraction", (-0.1,), "probability curves"),
+            ("task_loss", (-0.1,), "nonnegative"),
+            ("effective_rank", (-0.1,), "nonnegative"),
+            ("task_loss", (1.0, 2.0), "equal lengths"),
+        ],
+    )
+    def test_arm_curves_are_bounded_and_equal_length(
+        self, field: str, value: tuple[float, ...], message: str
+    ) -> None:
+        fields = {
+            "arm_id": "sgd_current_control",
+            "mechanism_enabled": False,
+            "preactivation_width": 8,
+            "task_accuracy": (0.5,),
+            "task_loss": (1.0,),
+            "dead_unit_fraction": (0.0,),
+            "effective_rank": (1.0,),
+            "persistent_bytes": 1,
+            "parameter_updates": 1,
+            "model_queries": 1,
+            "elapsed_ns": 0,
+        }
+        fields[field] = value
+
+        with pytest.raises(ValueError, match=message):
+            LowCostArmResult(**fields)
 
     def test_unknown_profile_is_refused(self) -> None:
         images, labels = _fixture()
