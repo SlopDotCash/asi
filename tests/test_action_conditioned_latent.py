@@ -123,6 +123,25 @@ def test_validator_rejects_hostile_expanded_or_inconsistent_payloads(lane_result
         validate_action_latent_payload(forged_identity)
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        {"return_sum": -1.0},
+        {"return_sum": 0.5},
+        {"late_return_sum": 9.0},
+        {"return_sum": 0.0, "late_return_sum": 1.0},
+    ],
+)
+def test_validator_rejects_returns_outside_the_environment_lattice(
+    replacement: dict[str, float], lane_result
+) -> None:
+    forged = copy.deepcopy(lane_result.to_payload())
+    forged["arms"][0].update(replacement)  # type: ignore[index,union-attr]
+
+    with pytest.raises(ValueError, match="reward lattice"):
+        validate_action_latent_payload(forged)
+
+
 def test_paper_registry_is_immutable() -> None:
     with pytest.raises(TypeError):
         PINNED_RESEARCH["new"] = "mutable"  # type: ignore[index]

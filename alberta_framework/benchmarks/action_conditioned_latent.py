@@ -232,6 +232,15 @@ class ActionLatentResult:
             raise ValueError("arm/seed roster differs from the frozen matched order")
         if any(arm.environment_steps != self.protocol.steps for arm in self.arms):
             raise ValueError("all arms must consume the matched environment horizon")
+        for arm in self.arms:
+            if (
+                not 0.0 <= arm.return_sum <= float(self.protocol.steps)
+                or not arm.return_sum.is_integer()
+                or not 0.0 <= arm.late_return_sum <= float(self.protocol.phase_length)
+                or not arm.late_return_sum.is_integer()
+                or arm.late_return_sum > arm.return_sum
+            ):
+                raise ValueError("arm returns differ from the exact environment reward lattice")
         by_seed = {
             seed: [arm for arm in self.arms if arm.seed == seed]
             for seed in self.protocol.seeds
