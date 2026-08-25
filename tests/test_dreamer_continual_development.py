@@ -93,3 +93,23 @@ def test_validator_rejects_promotion_and_receipt_forgery() -> None:
     forged_identity = dataclasses.replace(result.identity, lane_source_sha256="0" * 64)
     with pytest.raises(ValueError, match="current source/runtime/registries"):
         validate_result(dataclasses.replace(result, identity=forged_identity))
+
+
+def test_validator_replays_reported_metrics() -> None:
+    result = run_development_lane(
+        seed=FROZEN_SEEDS[0],
+        steps_per_task=1,
+        replay_capacity=1,
+        imaginations_per_step=1,
+    )
+    first = result.arms[0]
+    forged_returns = dataclasses.replace(first, task_returns=(1_000_000.0,) * 3)
+    with pytest.raises(ValueError, match="deterministic replay"):
+        validate_result(dataclasses.replace(result, arms=(forged_returns, *result.arms[1:])))
+
+    forged_values = dataclasses.replace(
+        first,
+        final_action_values=(1_000_000.0, -1_000_000.0),
+    )
+    with pytest.raises(ValueError, match="deterministic replay"):
+        validate_result(dataclasses.replace(result, arms=(forged_values, *result.arms[1:])))
