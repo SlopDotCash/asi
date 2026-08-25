@@ -456,6 +456,18 @@ class SecurityRolloutStep:
         _require_rfc_json_mapping(payload, name="security rollout step")
         return payload
 
+    def _revalidated_copy(self) -> SecurityRolloutStep:
+        """Reconstruct the record before a public validator trusts its fields."""
+        return SecurityRolloutStep(
+            state=self.state,
+            action=self.action,
+            reward=self.reward,
+            next_state=self.next_state,
+            terminated=self.terminated,
+            truncated=self.truncated,
+            policy_metadata=self.policy_metadata,
+        )
+
     @classmethod
     def from_dict(cls, data: object) -> SecurityRolloutStep:
         """Reconstruct a rollout step from ``to_dict`` output."""
@@ -735,10 +747,17 @@ def validate_security_rollout(
     schema: SecurityFeatureSchema,
 ) -> None:
     """Validate that rollout transitions satisfy the active-defense contract."""
+    if type(steps) is not list and type(steps) is not tuple:
+        raise ValueError("security rollout steps must be an exact list or tuple")
+    if type(schema) is not SecurityFeatureSchema:
+        raise ValueError("schema must be an exact SecurityFeatureSchema")
     for idx, step in enumerate(steps):
+        if type(step) is not SecurityRolloutStep:
+            raise ValueError(f"invalid rollout step {idx}: wrong record type")
         try:
-            schema.validate_observation(step.state)
-            schema.validate_observation(step.next_state)
+            validated = step._revalidated_copy()
+            schema.validate_observation(validated.state)
+            schema.validate_observation(validated.next_state)
         except ValueError as exc:
             raise ValueError(f"invalid rollout step {idx}: {exc}") from exc
 

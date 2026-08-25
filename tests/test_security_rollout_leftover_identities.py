@@ -8,9 +8,11 @@ import pytest
 
 from alberta_framework.security import (
     SecurityAction,
+    SecurityFeatureSchema,
     SecurityRolloutStep,
     ThroughputMeasurement,
     to_security_gym_action,
+    validate_security_rollout,
 )
 
 
@@ -82,3 +84,26 @@ def test_real_type_gates_do_not_hash_hostile_runtime_classes() -> None:
         ThroughputMeasurement(n_events=hostile, elapsed_s=1.0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="elapsed_s"):
         ThroughputMeasurement(n_events=1, elapsed_s=hostile)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("reward", float("nan")),
+        ("action", 0),
+        ("terminated", 0),
+        ("state", [0.0, 1.0]),
+    ],
+)
+def test_validate_security_rollout_revalidates_mutated_records(
+    field: str,
+    value: object,
+) -> None:
+    step = _legal_step()
+    object.__setattr__(step, field, value)
+
+    with pytest.raises(ValueError, match="invalid rollout step 0"):
+        validate_security_rollout(
+            [step],
+            SecurityFeatureSchema(names=("first", "second")),
+        )
