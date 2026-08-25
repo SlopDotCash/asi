@@ -254,10 +254,12 @@ class JEPATransferResult:
             raise ValueError("unsupported JEPA-transfer schema")
         if type(self.protocol) is not JEPATransferProtocol:
             raise ValueError("protocol must be exact")
+        object.__setattr__(self, "protocol", dataclasses.replace(self.protocol))
         if self.research_pins != PINNED_RESEARCH_ITEMS:
             raise ValueError("research pins differ from the independently audited roster")
         if type(self.identity) is not DevelopmentIdentity:
             raise ValueError("identity must be exact")
+        object.__setattr__(self, "identity", dataclasses.replace(self.identity))
         expected = tuple(
             (arm_id, seed) for seed in self.protocol.seeds for arm_id in FROZEN_ARM_IDS
         )
@@ -265,6 +267,18 @@ class JEPATransferResult:
             type(arm) is not TransferArmReceipt for arm in self.arms
         ):
             raise ValueError("arms must be exact receipts")
+        object.__setattr__(
+            self,
+            "arms",
+            tuple(
+                dataclasses.replace(
+                    arm,
+                    resources=dataclasses.replace(arm.resources),
+                    timing=dataclasses.replace(arm.timing),
+                )
+                for arm in self.arms
+            ),
+        )
         if tuple((arm.arm_id, arm.seed) for arm in self.arms) != expected:
             raise ValueError("arm/seed roster differs from the frozen order")
         for seed_index in range(len(self.protocol.seeds)):

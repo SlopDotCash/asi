@@ -95,6 +95,35 @@ def test_result_rejects_promotion_parity_and_pin_drift(
         dataclasses.replace(result, **changes)
 
 
+@pytest.mark.parametrize(
+    ("path", "value", "message"),
+    [
+        (("arms", 0, "return_sum"), float("nan"), "finite float"),
+        (
+            ("arms", 0, "resources", "imported_pretraining_bytes"),
+            1,
+            "forbids imported",
+        ),
+        (("arms", 0, "timing", "clock"), "benchmark", "timing scope"),
+        (("identity", "workload_registry_sha256"), "0", "lowercase SHA-256"),
+    ],
+)
+def test_result_revalidates_nested_frozen_records(
+    result: lane.JEPATransferResult,
+    path: tuple[object, ...],
+    value: object,
+    message: str,
+) -> None:
+    corrupted = copy.deepcopy(result)
+    target: object = corrupted
+    for component in path[:-1]:
+        target = target[component] if type(component) is int else getattr(target, component)
+    object.__setattr__(target, path[-1], value)
+
+    with pytest.raises(ValueError, match=message):
+        dataclasses.replace(corrupted)
+
+
 def test_hostile_and_expanded_payloads_fail_closed(result: lane.JEPATransferResult) -> None:
     with pytest.raises(ValueError, match="exact dict"):
         lane.validate_jepa_transfer_payload(object())
