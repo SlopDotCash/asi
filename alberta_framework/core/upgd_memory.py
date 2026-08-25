@@ -674,8 +674,34 @@ def _active_mse(prediction: Array, target: Array) -> Array:
 
 
 def _normalize_simplex(prediction: Array) -> Array:
+    """Return a simplex over the last axis, uniform when there is no mass.
+
+    Dividing by ``max(sum(clipped), 1e-12)`` does not produce a simplex in
+    three cases, and each result is consumed as if it were a distribution:
+
+    * A zero or wholly negative input leaves the ratio at zero.  This is
+      reachable: ``UPGDLearner`` initializes ``previous_targets`` to zeros, so
+      the target-trace blend below mixes against a zero vector until the first
+      target arrives, and the blended mass becomes ``1 - trace_gate`` rather
+      than one.
+    * A positive total *below* the floor is divided by the floor instead of
+      itself, so ``[7.5e-13, 0, 0]`` normalizes to ``0.75``.
+    * A single entry large enough to dominate the float32 sum makes every
+      ratio underflow to zero.
+
+    Divide by the true total, and fall back to uniform only when the
+    normalized mass is genuinely zero.
+    """
     clipped = jnp.maximum(prediction, 0.0)
-    return clipped / jnp.maximum(jnp.sum(clipped), 1e-12)
+    total = jnp.sum(clipped, axis=-1, keepdims=True)
+    safe_total = jnp.where(total > 0.0, total, jnp.ones_like(total))
+    candidate = clipped / safe_total
+    uniform = jnp.full_like(clipped, 1.0 / clipped.shape[-1])
+    return jnp.where(
+        jnp.sum(candidate, axis=-1, keepdims=True) > 0.0,
+        candidate,
+        uniform,
+    )
 
 
 class UPGDMemoryLearner:
