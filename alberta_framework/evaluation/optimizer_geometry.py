@@ -277,24 +277,6 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     )
     safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
     return safe, valid
-    numerator = jnp.vdot(scaled, delta).real
-    active = squared_norm > 0.0
-    denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
-    coefficient = numerator / denominator
-    projection = scaled * coefficient * active.astype(delta.dtype)
-    candidate = delta - projection
-    valid = (
-        jnp.all(jnp.isfinite(delta))
-        & jnp.all(jnp.isfinite(direction))
-        & jnp.all(jnp.isfinite(scaled))
-        & jnp.isfinite(squared_norm)
-        & jnp.isfinite(numerator)
-        & jnp.isfinite(coefficient)
-        & jnp.all(jnp.isfinite(projection))
-        & jnp.all(jnp.isfinite(candidate))
-    )
-    safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
-    return safe, valid
 
 
 def muon_ogd_dual_update_transaction(
