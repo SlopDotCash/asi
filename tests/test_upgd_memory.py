@@ -11,6 +11,7 @@ from alberta_framework.core.upgd_memory import (
     UPGDMemoryConfig,
     UPGDMemoryLearner,
     UPGDMemoryState,
+    _normalize_simplex,
     run_upgd_memory_arrays,
 )
 
@@ -564,3 +565,104 @@ def test_upgd_memory_preserves_legal_closed_endpoints() -> None:
     assert allocation_endpoint.target_allocation_rate == 1.0
     assert fixed_threshold.min_novelty_threshold == 0.5
     assert fixed_threshold.max_novelty_threshold == 0.5
+
+
+# --- _normalize_simplex regression (issue #2470) ---------------------------
+#
+# ``_normalize_simplex`` is named/used as a projection onto the probability
+# simplex, but for several degenerate inputs it returned a vector whose mass
+# was not 1: all-zero/all-negative clipped mass, float32 underflow of every
+# ratio, and a positive total below the old 1e-12 floor being divided by the
+# floor instead of its true sum.  The zero case is live: ``UPGDLearner``
+# initializes ``previous_targets`` to zeros, so ``_blend_predictions`` blended
+# a proper simplex against a zero vector and silently scaled prediction mass
+# down to ``(1 - trace_gate)``.
+
+_DEGENERATE_SIMPLEX_INPUTS = [
+    [0.0, 0.0, 0.0],
+    [-1.0, -2.0, -3.0],
+    [1e38, 1.0, 1.0],
+    [7.5e-13, 0.0, 0.0],
+    [1e-30, 0.0, 0.0],
+]
+
+_UNIFORM_FALLBACK_INPUTS = [
+    [0.0, 0.0, 0.0],
+    [-1.0, -2.0, -3.0],
+]
+
+
+@pytest.mark.parametrize("raw", _DEGENERATE_SIMPLEX_INPUTS)
+def test_normalize_simplex_degenerate_inputs_are_valid_simplex(raw: list[float]) -> None:
+    """Every degenerate input must project to a finite, non-negative unit simplex."""
+    result = _normalize_simplex(jnp.asarray(raw, dtype=jnp.float32))
+
+    assert bool(jnp.all(jnp.isfinite(result))), raw
+    assert bool(jnp.all(result >= 0.0)), raw
+    assert float(jnp.sum(result)) == pytest.approx(1.0, abs=1e-5), raw
+
+
+@pytest.mark.parametrize("raw", _UNIFORM_FALLBACK_INPUTS)
+def test_normalize_simplex_falls_back_to_uniform(raw: list[float]) -> None:
+    """All-zero / all-negative mass must fall back to the uniform distribution."""
+    result = _normalize_simplex(jnp.asarray(raw, dtype=jnp.float32))
+    n = len(raw)
+    chex.assert_trees_all_close(result, jnp.full((n,), 1.0 / n, dtype=jnp.float32), atol=1e-6)
+
+
+def test_normalize_simplex_preserves_well_formed_inputs() -> None:
+    """Well-formed inputs must be returned unchanged (behavioural compatibility)."""
+    chex.assert_trees_all_close(
+        _normalize_simplex(jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32)),
+        jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32),
+        atol=1e-6,
+    )
+    chex.assert_trees_all_close(
+        _normalize_simplex(jnp.asarray([-1.0, 2.0, 1.0], dtype=jnp.float32)),
+        jnp.asarray([0.0, 2.0 / 3.0, 1.0 / 3.0], dtype=jnp.float32),
+        atol=1e-6,
+    )
+    chex.assert_trees_all_close(
+        _normalize_simplex(jnp.asarray([5.0], dtype=jnp.float32)),
+        jnp.asarray([1.0], dtype=jnp.float32),
+        atol=1e-6,
+    )
+
+
+def test_normalize_simplex_is_jit_traceable() -> None:
+    """The helper must stay JAX-traceable (it runs inside jitted predict paths)."""
+    result = jax.jit(_normalize_simplex)(jnp.zeros((4,), dtype=jnp.float32))
+    chex.assert_trees_all_close(result, jnp.full((4,), 0.25, dtype=jnp.float32), atol=1e-6)
+
+
+def test_blend_predictions_zero_trace_preserves_mass() -> None:
+    """A nonzero trace gate against all-zero ``previous_targets`` must keep unit mass.
+
+    ``linear_mse`` does not renormalize the final blend, so the silent mass
+    loss from a zero-vector trace prediction is directly observable here.
+    """
+    config = UPGDMemoryConfig(
+        feature_dim=4,
+        n_heads=3,
+        hidden_sizes=(8,),
+        readout_mode="linear_mse",
+        target_trace_blend_scale=0.8,
+        target_trace_pressure_threshold=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    state = learner.init(jr.key(0))
+    # Force the trace gate fully open while ``previous_targets`` is still zero.
+    forced = state.replace(  # type: ignore[attr-defined]
+        upgd_state=state.upgd_state.replace(  # type: ignore[attr-defined]
+            target_repeat_ema=jnp.asarray(1.0, dtype=jnp.float32),
+        )
+    )
+    upgd_prediction = jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32)
+    memory_prediction = jnp.asarray([0.5, 0.3, 0.2], dtype=jnp.float32)
+    prediction, _ = learner._blend_predictions(
+        forced,
+        upgd_prediction,
+        memory_prediction,
+        include_target_trace=True,
+    )
+    assert float(jnp.sum(prediction)) == pytest.approx(1.0, abs=1e-5)

@@ -674,8 +674,27 @@ def _active_mse(prediction: Array, target: Array) -> Array:
 
 
 def _normalize_simplex(prediction: Array) -> Array:
+    """Project ``prediction`` onto the probability simplex.
+
+    The clipped mass is divided by its *true* total (guarded only against a
+    literal zero denominator), so the resulting sum is a faithful mass check.
+    When that normalized mass is not genuinely usable -- all-zero/all-negative
+    input, a positive total so small the ratios underflow, or a single
+    float32-dominant entry that drives the remaining ratios to zero -- the
+    helper falls back to the uniform distribution ``1/n`` instead of returning
+    a vector whose mass silently differs from 1.  Kept JAX-traceable via
+    :func:`jnp.where` so it runs inside jitted prediction paths.
+    """
+    prediction = jnp.asarray(prediction, dtype=jnp.float32)
+    n = prediction.shape[-1]
     clipped = jnp.maximum(prediction, 0.0)
-    return clipped / jnp.maximum(jnp.sum(clipped), 1e-12)
+    total = jnp.sum(clipped)
+    safe_total = jnp.where(total > 0.0, total, jnp.asarray(1.0, dtype=jnp.float32))
+    normalized = clipped / safe_total
+    normalized_sum = jnp.sum(normalized)
+    usable = jnp.isfinite(normalized_sum) & (jnp.abs(normalized_sum - 1.0) <= 1e-5)
+    uniform = jnp.full_like(clipped, 1.0 / n)
+    return jnp.where(usable, normalized, uniform)
 
 
 class UPGDMemoryLearner:
