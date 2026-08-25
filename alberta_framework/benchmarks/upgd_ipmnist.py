@@ -133,6 +133,7 @@ def _require_exact_str(name: object, value: object) -> str:
 
 
 logger = logging.getLogger(__name__)
+_WINDOWS_READONLY_UNLINK = os.name == "nt"
 
 
 def _preflight_new_output(path: Path) -> Path:
@@ -145,11 +146,37 @@ def _preflight_new_output(path: Path) -> Path:
     return destination
 
 
+def _unlink_published_temporary(
+    temporary_path: Path,
+    destination: Path,
+    *,
+    published: bool,
+) -> None:
+    """Remove the private hard-link name without leaving Windows output writable."""
+
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except PermissionError:
+        if not _WINDOWS_READONLY_UNLINK:
+            raise
+        # Windows stores the read-only attribute on the shared file record, so
+        # unlinking either hard-link name is denied after chmod(0o444). Clear it
+        # only long enough to remove the private name, then restore the public
+        # destination. A concurrent pre-existing destination is never touched.
+        temporary_path.chmod(0o600)
+        try:
+            temporary_path.unlink(missing_ok=True)
+        finally:
+            if published:
+                destination.chmod(0o444)
+
+
 def atomic_write_new(path: Path, data: bytes) -> Path:
     """Publish complete bytes at a new path without replacing existing data."""
 
     destination = _preflight_new_output(path)
     temporary_path: Path | None = None
+    published = False
     try:
         with tempfile.NamedTemporaryFile(
             dir=destination.parent,
@@ -168,10 +195,15 @@ def atomic_write_new(path: Path, data: bytes) -> Path:
             raise FileExistsError(
                 f"refusing to overwrite immutable output: {destination}"
             ) from exc
+        published = True
         return destination
     finally:
         if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+            _unlink_published_temporary(
+                temporary_path,
+                destination,
+                published=published,
+            )
 
 
 def atomic_write_new_json(path: Path, value: object) -> Path:
