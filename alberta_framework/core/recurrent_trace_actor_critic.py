@@ -2070,7 +2070,11 @@ class RecurrentTraceActorCriticAgent:
         tempered_logits = logits / self._config.temperature
         probabilities = jax.nn.softmax(tempered_logits)
         key, sample_key = jr.split(state.rng_key)
-        action = jr.categorical(sample_key, tempered_logits).astype(jnp.int32)
+        action = jr.categorical(
+            sample_key,
+            tempered_logits,
+            mode="high",
+        ).astype(jnp.int32)
         return action, key, probabilities
 
     def _advance_actor(

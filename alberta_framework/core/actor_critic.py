@@ -688,7 +688,11 @@ class ActorCriticAgent:
         observation = self._observation(state, observation)
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
-        action = jr.categorical(sample_key, jnp.log(jnp.maximum(probs, 1e-8))).astype(jnp.int32)
+        action = jr.categorical(
+            sample_key,
+            jnp.log(probs),
+            mode="high",
+        ).astype(jnp.int32)
         return action, key, probs
 
     @functools.partial(jax.jit, static_argnums=(0,))

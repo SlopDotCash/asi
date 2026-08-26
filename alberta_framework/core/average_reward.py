@@ -899,7 +899,8 @@ class AverageRewardHordeActorCriticAgent:
         behavior = self.behavior_policy(state, observation)
         action = jr.categorical(
             sample_key,
-            jnp.log(jnp.maximum(behavior, 1e-8)),
+            jnp.log(behavior),
+            mode="high",
         ).astype(jnp.int32)
         target_probability = target[action]
         behavior_probability = behavior[action]
@@ -975,7 +976,7 @@ class AverageRewardHordeActorCriticAgent:
         actor_score_scale = (
             (1.0 - self._config.epsilon)
             * old_sample.target_probability
-            / jnp.maximum(old_sample.behavior_probability, 1e-8)
+            / old_sample.behavior_probability
         )
         score = (
             actor_score_scale * (action_mask - old_sample.target_policy) / self._config.temperature

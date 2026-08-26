@@ -776,12 +776,111 @@ def _make_nlhac_agent(
     return NonlinearHordeActorCriticAgent(cfg, critic)
 
 
+def _make_nlqhac_agent() -> NonlinearQHordeActorCriticAgent:
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name=f"q_{action}",
+            demon_type=DemonType.CONTROL,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+        for action in range(N_ACTIONS)
+    ]
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(16,),
+        step_size=0.03,
+    )
+    return NonlinearQHordeActorCriticAgent(
+        NonlinearQHordeActorCriticConfig(
+            n_actions=N_ACTIONS,
+            hidden_sizes=(16,),
+            actor_td_error_clip=1.0,
+            actor_gradient_clip_norm=1.0,
+        ),
+        critic,
+        actor_optimizer=Autostep(initial_step_size=0.01),
+    )
+
+
 def _init_nlhac(
     agent: NonlinearHordeActorCriticAgent,
 ) -> NonlinearHordeActorCriticState:
     state = agent.init(feature_dim=OBS_DIM, key=jr.key(0))
     state, _, _ = agent.start(state, jnp.zeros(OBS_DIM))
     return state
+
+
+def test_all_horde_actor_samplers_preserve_reported_rare_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases: list[tuple[Any, int]] = [
+        (_make_agent(), 2),
+        (_make_qhorde_agent(), 2),
+        (_make_nlhac_agent(), OBS_DIM),
+        (_make_nlqhac_agent(), OBS_DIM),
+    ]
+    observed_logits: list[jax.Array] = []
+    observed_modes: list[object] = []
+
+    def fake_categorical(
+        _key: jax.Array,
+        logits: jax.Array,
+        **kwargs: object,
+    ) -> jax.Array:
+        observed_logits.append(logits)
+        observed_modes.append(kwargs.get("mode"))
+        return jnp.asarray(0, dtype=jnp.int32)
+
+    monkeypatch.setattr(jr, "categorical", fake_categorical)
+    for agent, feature_dim in cases:
+        state = agent.init(feature_dim=feature_dim, key=jr.key(feature_dim))
+        rare_logit = jnp.log(jnp.asarray(5e-9, dtype=jnp.float32)) * agent.config.temperature
+        if hasattr(state, "actor_bias"):
+            rare_bias = jnp.full_like(state.actor_bias, rare_logit).at[0].set(0.0)
+            state = state.replace(
+                actor_weights=jnp.zeros_like(state.actor_weights),
+                actor_bias=rare_bias,
+            )
+        else:
+            rare_bias = jnp.full_like(state.actor_head_b, rare_logit).at[0].set(0.0)
+            state = state.replace(
+                actor_head_w=jnp.zeros_like(state.actor_head_w),
+                actor_head_b=rare_bias,
+            )
+        observation = jnp.zeros((feature_dim,), dtype=jnp.float32)
+        with jax.disable_jit():
+            action, _next_key, policy = agent.select_action(state, observation)
+
+        assert int(action) == 0
+        assert float(policy[1]) < 1e-8
+        chex.assert_trees_all_close(observed_logits[-1], jnp.log(policy))
+
+    assert observed_modes == ["high"] * len(cases)
+
+
+@pytest.mark.parametrize("rare_bias", [-10.0, -100.0])
+def test_nonlinear_horde_actor_learns_from_a_rare_policy_action(
+    rare_bias: float,
+) -> None:
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(81)).replace(
+        actor_head_w=jnp.zeros((N_ACTIONS, OBS_DIM), dtype=jnp.float32),
+        actor_head_b=jnp.asarray((0.0, rare_bias, rare_bias), dtype=jnp.float32),
+        last_observation=jnp.zeros((OBS_DIM,), dtype=jnp.float32),
+        last_action=jnp.asarray(1, dtype=jnp.int32),
+    )
+
+    assert float(agent.policy(state, state.last_observation)[1]) < 1e-8
+    result = agent.update(
+        state,
+        reward=jnp.asarray(1.0, dtype=jnp.float32),
+        observation=jnp.zeros((OBS_DIM,), dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert not jnp.array_equal(result.state.actor_head_b, state.actor_head_b)
 
 
 def test_nonlinear_horde_zero_discount_neutralizes_inf_next_value() -> None:
@@ -1406,32 +1505,7 @@ class TestNonlinearHordeActorCriticExport:
 
 class TestNonlinearQHordeActorCritic:
     def _agent(self) -> NonlinearQHordeActorCriticAgent:
-        demons = [
-            GVFSpec(  # type: ignore[call-arg]
-                name=f"q_{action}",
-                demon_type=DemonType.CONTROL,
-                gamma=0.0,
-                lamda=0.0,
-                cumulant_index=-1,
-            )
-            for action in range(N_ACTIONS)
-        ]
-        critic = HordeLearner(
-            create_horde_spec(demons),
-            hidden_sizes=(16,),
-            step_size=0.03,
-        )
-        cfg = NonlinearQHordeActorCriticConfig(
-            n_actions=N_ACTIONS,
-            hidden_sizes=(16,),
-            actor_td_error_clip=1.0,
-            actor_gradient_clip_norm=1.0,
-        )
-        return NonlinearQHordeActorCriticAgent(
-            cfg,
-            critic,
-            actor_optimizer=Autostep(initial_step_size=0.01),
-        )
+        return _make_nlqhac_agent()
 
     def test_actor_optimizer_must_support_mlp(self) -> None:
         demons = [
