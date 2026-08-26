@@ -303,11 +303,13 @@ def _atomic_publish(path: Path, writer: Callable[[BinaryIO], None]) -> None:
             os.fsync(stream.fileno())
         os.link(temporary, path)
         published = True
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        if os.name != "nt":
+            # Windows cannot open directory handles through os.open().
+            directory_descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
     except BaseException:
         if published:
             path.unlink(missing_ok=True)

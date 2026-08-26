@@ -649,6 +649,9 @@ def test_atomic_publication_cleans_up_link_failure(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    os.name == "nt", reason="Windows does not support directory fsync through os.open"
+)
 def test_atomic_publication_rolls_back_directory_sync_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
