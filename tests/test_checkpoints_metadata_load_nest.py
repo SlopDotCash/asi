@@ -79,3 +79,41 @@ def test_origin_recursion_class_rejects_before_loads(
     with pytest.raises(ValueError, match="nesting limit"):
         load_checkpoint_metadata(path)
     assert time.perf_counter() - started < 0.25
+
+
+def test_symlinked_metadata_deep_nest_rejects_before_loads(tmp_path: Path) -> None:
+    """Symlinked metadata/metadata must not bypass the on-disk nest preflight."""
+    learner = LinearLearner()
+    state = learner.init(3)
+    ckpt = tmp_path / "linked"
+    save_checkpoint(state, ckpt, metadata={"epoch": 1})
+
+    deep = tmp_path / "deep.json"
+    deep.write_bytes(_nested_json_bytes(16_000))
+
+    meta_path = _on_disk_metadata_path(ckpt)
+    meta_path.unlink()
+    meta_path.symlink_to(deep)
+    assert meta_path.is_symlink()
+
+    with pytest.raises(ValueError, match="nesting limit"):
+        load_checkpoint_metadata(ckpt)
+
+
+def test_symlinked_metadata_deep_nest_rejects_load_checkpoint(tmp_path: Path) -> None:
+    """Symlinked metadata bypass must not leak into load_checkpoint either."""
+    learner = LinearLearner()
+    state = learner.init(3)
+    ckpt = tmp_path / "linked-full"
+    save_checkpoint(state, ckpt, metadata={"epoch": 1})
+
+    deep = tmp_path / "deep.json"
+    deep.write_bytes(_nested_json_bytes(16_000))
+
+    meta_path = _on_disk_metadata_path(ckpt)
+    meta_path.unlink()
+    meta_path.symlink_to(deep)
+    assert meta_path.is_symlink()
+
+    with pytest.raises(ValueError, match="nesting limit"):
+        load_checkpoint(state, ckpt)

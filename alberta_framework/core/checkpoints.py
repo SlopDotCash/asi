@@ -178,7 +178,7 @@ def _preflight_on_disk_metadata(path: Path) -> None:
 
     meta_path = _on_disk_metadata_path(path)
     try:
-        if meta_path.is_symlink() or not meta_path.is_file():
+        if not meta_path.is_file():
             return
     except OSError:
         return
