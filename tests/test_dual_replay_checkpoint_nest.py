@@ -16,6 +16,7 @@ import pytest
 
 from alberta_framework.core.dual_replay import (
     _CHECKPOINT_JSON_MAX_DEPTH,
+    _CHECKPOINT_JSON_MAX_NODES,
     DUAL_REPLAY_CHECKPOINT_SCHEMA,
     MECHANISM_STATUS,
     DualReplayConfig,
@@ -81,3 +82,45 @@ def test_origin_recursion_class_rejects_before_dumps(
     with pytest.raises(ValueError, match="nesting depth"):
         DualReplayMemory.from_checkpoint_payload(_hostile_checkpoint(_nest(16_000)))
     assert time.perf_counter() - started < 0.25
+
+
+class _ListSubclass(list):
+    pass
+
+
+class _DictSubclass(dict):
+    pass
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
+def test_json_subclass_list_rejects_by_node_limit() -> None:
+    over_limit = _ListSubclass([0] * (_CHECKPOINT_JSON_MAX_NODES + 1))
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(over_limit)
+
+
+def test_json_subclass_dict_rejects_by_node_limit() -> None:
+    over_limit = _DictSubclass({str(i): i for i in range(_CHECKPOINT_JSON_MAX_NODES + 1)})
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(over_limit)
+
+
+def test_json_subclass_tuple_rejects_by_node_limit() -> None:
+    over_limit = _TupleSubclass(tuple([0] * (_CHECKPOINT_JSON_MAX_NODES + 1)))
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(over_limit)
+
+
+def test_exact_containers_reject_by_node_limit() -> None:
+    exact_list = [0] * (_CHECKPOINT_JSON_MAX_NODES + 1)
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(exact_list)
+    exact_dict = {str(i): i for i in range(_CHECKPOINT_JSON_MAX_NODES + 1)}
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(exact_dict)
+    exact_tuple = tuple([0] * (_CHECKPOINT_JSON_MAX_NODES + 1))
+    with pytest.raises(ValueError, match="resource limit"):
+        _canonical_json(exact_tuple)

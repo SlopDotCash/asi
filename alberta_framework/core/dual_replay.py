@@ -37,7 +37,7 @@ import hashlib
 import json
 import math
 import operator
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from numbers import Real
 from types import MappingProxyType
@@ -698,6 +698,10 @@ def _json_container_children(node: object) -> tuple[object, ...] | None:
         return cast(tuple[object, ...], node)
     if node_type is MappingProxyType:
         return tuple(cast(Mapping[str, Any], node).values())
+    if isinstance(node, Mapping):
+        return tuple(node.values())
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+        return tuple(node)
     return None
 
 
