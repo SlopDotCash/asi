@@ -523,6 +523,19 @@ def _deployment_state(
     )
 
 
+def _late_phase_return_sum(rewards: Sequence[float], phase_length: int) -> float:
+    """Sum rewards over the last complete SwitchingTwoState payoff phase.
+
+    The environment switches every ``phase_length`` steps.  ``rewards[-phase_length:]``
+    is that last complete phase only when ``len(rewards)`` is a multiple of
+    ``phase_length``.  Otherwise the trailing window straddles two phases and
+    silently reports a mixed-phase number on a supported protocol (``steps``
+    need only cover one A/B recurrence, not land on a phase boundary).
+    """
+    completed = (len(rewards) // phase_length) * phase_length
+    return float(sum(rewards[completed - phase_length : completed]))
+
+
 def _run_model_arm(protocol: JEPATransferProtocol, seed: int, arm_id: str) -> TransferArmReceipt:
     pretrained = None
     replay_bytes = pretraining_ns = encoder_updates = 0
@@ -593,7 +606,7 @@ def _run_model_arm(protocol: JEPATransferProtocol, seed: int, arm_id: str) -> Tr
         arm_id=arm_id,
         seed=seed,
         return_sum=float(sum(rewards)),
-        late_return_sum=float(sum(rewards[-protocol.phase_length :])),
+        late_return_sum=_late_phase_return_sum(rewards, protocol.phase_length),
         mean_prediction_loss=float(np.mean(np.asarray(losses, dtype=np.float64))),
         action_sha256=_sha(actions),
         reward_sha256=_sha(rewards, floats=True),
@@ -669,7 +682,7 @@ def _run_control(protocol: JEPATransferProtocol, seed: int, *, sarsa: bool) -> T
         arm_id="sarsa_control" if sarsa else "mechanism_off",
         seed=seed,
         return_sum=float(sum(rewards)),
-        late_return_sum=float(sum(rewards[-protocol.phase_length :])),
+        late_return_sum=_late_phase_return_sum(rewards, protocol.phase_length),
         mean_prediction_loss=None,
         action_sha256=_sha(actions),
         reward_sha256=_sha(rewards, floats=True),

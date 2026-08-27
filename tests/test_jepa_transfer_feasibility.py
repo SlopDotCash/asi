@@ -167,3 +167,35 @@ def test_result_research_pins_are_deeply_immutable(result: lane.JEPATransferResu
 def test_protocol_rejects_hostile_or_unmatched_axes(changes: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         lane.JEPATransferProtocol(**changes)  # type: ignore[arg-type]
+
+
+def test_late_return_uses_last_complete_phase_not_trailing_window() -> None:
+    """Supported unaligned protocol must not mix two payoff phases.
+
+    ``JEPATransferProtocol`` accepts ``steps=10, phase_length=4`` (covers one
+    A/B recurrence). Frozen seed 1577003 then yields a trailing 4-step window
+    that straddles phase B and the next phase A, so ``rewards[-phase_length:]``
+    silently reports 0.0 while the last complete phase sums to 1.0.
+    """
+    protocol = lane.JEPATransferProtocol(
+        steps=10,
+        phase_length=4,
+        pretraining_steps=4,
+        warmup_steps=2,
+        exploration_period=2,
+    )
+    seed = 1_577_003
+    receipt = lane._run_control(protocol, seed, sarsa=False)
+    assert receipt.late_return_sum == 1.0
+    assert receipt.return_sum == 3.0
+    # The buggy trailing slice is 0.0 on this supported seed.
+    assert receipt.late_return_sum != 0.0
+
+
+def test_late_phase_return_sum_keeps_aligned_windows() -> None:
+    aligned = (0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0)
+    assert lane._late_phase_return_sum(aligned, 4) == 1.0
+    unaligned = aligned + (0.0, 0.0)
+    assert lane._late_phase_return_sum(unaligned, 4) == 1.0
+    assert sum(unaligned[-4:]) == 0.0
+
