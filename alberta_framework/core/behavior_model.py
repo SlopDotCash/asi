@@ -225,11 +225,15 @@ def floor_and_renormalize_probabilities(
     if min_probability * n_actions >= 1.0:
         return jnp.ones_like(probs) / n_actions
     clipped = jnp.maximum(probs, 0.0)
-    normalizer = jnp.maximum(
-        jnp.sum(clipped, axis=-1, keepdims=True),
-        jnp.asarray(1e-12, dtype=jnp.float32),
-    )
-    normalized = clipped / normalizer
+    mass = jnp.sum(clipped, axis=-1, keepdims=True)
+    # A 1e-12 denominator floor on a zero (or nonpositive) mass scaled the
+    # zero vector by (1 - n*eps) and returned n*eps, not a simplex. Empty
+    # mass is the documented uniform fallback; positive mass divides by the
+    # actual sum so a tiny but nonzero vector still renormalizes to 1.
+    has_mass = mass > 0.0
+    safe_mass = jnp.where(has_mass, mass, jnp.ones_like(mass))
+    uniform = jnp.ones_like(clipped) / jnp.asarray(n_actions, dtype=jnp.float32)
+    normalized = jnp.where(has_mass, clipped / safe_mass, uniform)
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
     return jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
 

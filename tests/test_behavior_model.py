@@ -389,6 +389,40 @@ def test_probability_simplex_and_helper_invariants() -> None:
     chex.assert_trees_all_close(logs, jnp.log(selected))
 
 
+def test_floor_and_renormalize_empty_mass_is_uniform_simplex() -> None:
+    """Empty mass must report a proper simplex, not n * min_probability.
+
+    ``floor_and_renormalize_probabilities`` is the documented public helper
+    for sampling or reporting. An all-zero or all-nonpositive vector used to
+    return ``min_probability`` on every action (sum ``n * eps``) because a
+    1e-12 denominator floor scaled the zero vector by ``(1 - n * eps)``.
+    """
+    empty = floor_and_renormalize_probabilities(
+        jnp.zeros(4, dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    negative = floor_and_renormalize_probabilities(
+        jnp.array([-1.0, -2.0, -0.5, 0.0], dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    tiny = floor_and_renormalize_probabilities(
+        jnp.array([1e-20, 0.0, 0.0, 0.0], dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    occupied = floor_and_renormalize_probabilities(
+        jnp.array([0.0, 0.2, 0.3, 0.5], dtype=jnp.float32),
+        min_probability=0.01,
+    )
+
+    uniform = jnp.full((4,), 0.25, dtype=jnp.float32)
+    chex.assert_trees_all_close(empty, uniform, atol=1e-6)
+    chex.assert_trees_all_close(negative, uniform, atol=1e-6)
+    chex.assert_trees_all_close(jnp.sum(tiny), 1.0, atol=1e-6)
+    assert float(jnp.min(tiny)) >= 1e-6 - 1e-7
+    chex.assert_trees_all_close(jnp.sum(occupied), 1.0, atol=1e-6)
+    assert float(jnp.min(occupied)) >= 0.01 - 1e-7
+
+
 @pytest.mark.parametrize(
     "action",
     [
