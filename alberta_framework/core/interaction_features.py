@@ -35,6 +35,11 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, PRNGKeyArray, UInt
 
+from alberta_framework._scan_resources import (
+    ScanBudget,
+    require_jax_leading_length,
+    require_matching_jax_leading_length,
+)
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
@@ -53,6 +58,9 @@ _UINT32_MAX = 2**32 - 1
 # README / package-init public scan last-fit. Origin handed ``10**12`` to
 # ``jnp.arange`` with no reject — hang/OOM, not an INT32 leftover.
 _INTERACTION_FEATURE_LOOP_MAX_STEPS = 10_000
+_INTERACTION_FEATURE_LOOP_BUDGET = ScanBudget(
+    "interaction-feature learning-loop", _INTERACTION_FEATURE_LOOP_MAX_STEPS
+)
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -93,6 +101,37 @@ def _require_interaction_feature_loop_steps(name: str, value: object) -> int:
             f"{name} must be an integer in [1, {_INTERACTION_FEATURE_LOOP_MAX_STEPS}]"
         )
     return value
+
+
+def _require_interaction_feature_array_steps(observations: object, targets: object) -> int:
+    """Reject pre-collected scan lengths above the public last-fit before scan."""
+    if not isinstance(observations, jax.Array) or not isinstance(targets, jax.Array):
+        raise TypeError("observations and targets must be JAX arrays")
+    try:
+        num_steps = require_jax_leading_length(
+            "observations",
+            observations,
+            _INTERACTION_FEATURE_LOOP_BUDGET,
+            ranks=(2,),
+        )
+    except ValueError as error:
+        if (
+            observations.ndim == 2
+            and not 1 <= observations.shape[0] <= _INTERACTION_FEATURE_LOOP_MAX_STEPS
+        ):
+            raise ValueError(
+                "observations num_steps must be an integer in "
+                f"[1, {_INTERACTION_FEATURE_LOOP_MAX_STEPS}]"
+            ) from None
+        raise error
+    require_jax_leading_length(
+        "targets",
+        targets,
+        _INTERACTION_FEATURE_LOOP_BUDGET,
+        ranks=(2,),
+    )
+    require_matching_jax_leading_length("targets", targets, expected=num_steps)
+    return num_steps
 
 
 def _require_resource(name: str, *, scalars: int, nbytes: int) -> None:
@@ -3739,7 +3778,14 @@ def run_interaction_feature_arrays(
     observations: Array,
     targets: Array,
 ) -> InteractionFeatureLearningResult:
-    """Run an interaction-feature learner over pre-collected arrays."""
+    """Run an interaction-feature learner over pre-collected arrays.
+
+    Raises:
+        TypeError: If ``observations`` or ``targets`` is not a JAX array.
+        ValueError: If ``num_steps`` is not an exact integer in
+            ``[1, 10_000]``.
+    """
+    _require_interaction_feature_array_steps(observations, targets)
 
     def step_fn(
         carry: InteractionFeatureState,
