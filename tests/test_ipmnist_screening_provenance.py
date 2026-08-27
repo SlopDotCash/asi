@@ -684,6 +684,18 @@ def test_merge_rejects_invalid_slope_window(
         )
 
 
+def test_merge_rejects_slope_window_larger_than_task_trace(tmp_path: Path) -> None:
+    path = tmp_path / "shard.json"
+    path.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="slope_window cannot exceed n_tasks"):
+        screening.merge_shards(
+            [path],
+            control_name="upgd_w_control",
+            slope_window=SMALL.n_tasks + 1,
+        )
+
+
 def test_proxy_validation_refuses_mixed_or_mismatched_v2_provenance(
     tmp_path: Path,
 ) -> None:

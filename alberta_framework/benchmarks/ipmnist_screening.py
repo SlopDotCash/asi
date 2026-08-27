@@ -11519,6 +11519,8 @@ def merge_shards(
             f"seed sets differ across configs: {seed_sets}; "
             "merge_shards ranks configs on paired seeds only"
         )
+    if slope_window > shards[0]["config"]["n_tasks"]:
+        raise ValueError("slope_window cannot exceed n_tasks")
 
     entries: list[dict[str, Any]] = []
     for name, per_seed in sorted(by_config.items()):
