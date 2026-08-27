@@ -60,6 +60,59 @@ def test_accuracy_matrix_forgetting_and_backward_transfer() -> None:
     np.testing.assert_allclose(forward[1:], [0.05, -0.05])
 
 
+# Documented metric API: compute_forward_transfer must use the immediate
+# pre-exposure row (GEM R_{i-1,i}). A NaN there is not-evaluated, not a
+# license to backfill an older finite probe and emit a wrong FWT number.
+def test_forward_transfer_does_not_backfill_a_missing_immediate_pre_exposure() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, np.nan],
+            [0.30, 0.40],
+        ]
+    )
+    forward = compute_forward_transfer(
+        performance,
+        first_exposure=[0, 2],
+        baseline_performance=[0.50, 0.50],
+    )
+    assert np.isnan(forward[0])
+    assert np.isnan(forward[1])
+
+
+def test_forward_transfer_uses_only_the_immediate_pre_exposure_row() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, 0.60],
+            [0.30, 0.40],
+        ]
+    )
+    forward = compute_forward_transfer(
+        performance,
+        first_exposure=[0, 2],
+        baseline_performance=[0.50, 0.50],
+    )
+    assert np.isnan(forward[0])
+    assert forward[1] == pytest.approx(0.10)
+
+
+def test_forward_transfer_rejects_infinite_immediate_pre_exposure() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, np.inf],
+            [0.30, 0.40],
+        ]
+    )
+    with pytest.raises(ValueError, match="infinite evaluation immediately before first exposure"):
+        compute_forward_transfer(
+            performance,
+            first_exposure=[0, 2],
+            baseline_performance=[0.50, 0.50],
+        )
+
+
 def test_loss_matrix_normalizes_metric_directions() -> None:
     losses = np.array(
         [
