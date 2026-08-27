@@ -1224,13 +1224,24 @@ def run_gauntlet_batched(
 
 
 def ema_smooth(values: Array, halflife: float = 50.0) -> Array:
-    """Exponential-moving-average smoothing along the last axis."""
+    """Exponential-moving-average smoothing along the last axis.
+
+    Non-finite probes are treated as not evaluated: they do not enter the
+    carry, and the corresponding output is ``NaN``.  The next finite
+    observation continues from the last finite carry (or starts the EMA
+    if no finite value has been seen yet).  All-finite traces keep the
+    historical bit-identical recurrence.
+    """
     decay = 0.5 ** (1.0 / halflife)
     time_major = jnp.moveaxis(values, -1, 0)
 
     def step(carry: Array, v: Array) -> tuple[Array, Array]:
-        new = decay * carry + (1.0 - decay) * v
-        return new, new
+        finite_v = jnp.isfinite(v)
+        finite_c = jnp.isfinite(carry)
+        updated = decay * carry + (1.0 - decay) * v
+        new_carry = jnp.where(finite_v, jnp.where(finite_c, updated, v), carry)
+        out = jnp.where(finite_v, new_carry, jnp.full_like(v, jnp.nan))
+        return new_carry, out
 
     _, smoothed = jax.lax.scan(step, values[..., 0], time_major)
     return jnp.moveaxis(smoothed, 0, -1)
@@ -1238,6 +1249,10 @@ def ema_smooth(values: Array, halflife: float = 50.0) -> Array:
 
 def steps_to_criterion(sq_segment: Array, threshold: float) -> Array:
     """First step whose EMA-smoothed squared error is <= *threshold*.
+
+    Non-finite probes are not evaluated (see :func:`ema_smooth`): a later
+    finite recovery still reports its first-below-threshold step instead of
+    the segment-length "never recovered" cap.
 
     Args:
         sq_segment: Squared errors within one segment, shape ``(seg_len,)`` or
