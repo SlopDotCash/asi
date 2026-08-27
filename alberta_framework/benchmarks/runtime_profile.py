@@ -11,9 +11,8 @@ import dataclasses
 import hashlib
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import PurePosixPath
-from types import MappingProxyType
 from typing import Any, Literal, cast
 
 from alberta_framework._bounded_containers import require_bounded_container_tree
@@ -109,15 +108,10 @@ _JSON_MAX_NODES = 4096
 def _json_container_children(node: object) -> tuple[object, ...] | None:
     """Return JSON-container children, or None for a scalar leaf."""
 
-    node_type = type(node)
-    if node_type is dict:
-        return tuple(cast(dict[Any, Any], node).values())
-    if node_type is list:
-        return tuple(cast(list[Any], node))
-    if node_type is tuple:
-        return cast(tuple[object, ...], node)
-    if node_type is MappingProxyType:
+    if isinstance(node, Mapping):
         return tuple(cast(Mapping[str, Any], node).values())
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+        return tuple(cast(Sequence[Any], node))
     return None
 
 
