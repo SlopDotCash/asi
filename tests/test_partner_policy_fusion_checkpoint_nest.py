@@ -80,3 +80,64 @@ def test_origin_recursion_class_rejects_before_dumps(
     with pytest.raises(ValueError, match="nesting depth"):
         PartnerPolicyFusion.from_checkpoint_payload(_hostile_checkpoint(_nest(16_000)))
     assert time.perf_counter() - started < 0.25
+
+
+class _DictSubclass(dict):
+    pass
+
+
+class _ListSubclass(list):
+    pass
+
+
+class _TupleSubclass(tuple):
+    pass
+
+
+class _DictSubclassDict(dict):
+    """Dict subclass whose values are also a dict subclass."""
+
+
+def test_dict_subclass_bypasses_node_bound() -> None:
+    payload = _DictSubclass({str(i): i for i in range(5000)})
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes(payload)
+
+
+def test_list_subclass_bypasses_node_bound() -> None:
+    payload = _ListSubclass([0] * 5000)
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes(payload)
+
+
+def test_tuple_subclass_bypasses_node_bound() -> None:
+    payload = _TupleSubclass(tuple(range(5000)))
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes(payload)
+
+
+def test_exact_tuple_rejected_over_limit() -> None:
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes(tuple(range(5000)))
+
+
+def test_exact_list_rejected_over_limit() -> None:
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes([0] * 5000)
+
+
+def test_exact_dict_rejected_over_limit() -> None:
+    with pytest.raises(ValueError, match="resource"):
+        _canonical_json_bytes({str(i): i for i in range(5000)})
+
+
+def test_small_subclass_roundtrips() -> None:
+    payload = _DictSubclass({"schema": "test", "nested": _ListSubclass([1, 2])})
+    encoded = _canonical_json_bytes(payload)
+    assert encoded == json.dumps(
+        {"schema": "test", "nested": [1, 2]},
+        allow_nan=False,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")

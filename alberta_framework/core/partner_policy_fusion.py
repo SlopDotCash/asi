@@ -28,9 +28,8 @@ import hashlib
 import json
 import math
 import operator
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from numbers import Real
-from types import MappingProxyType
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -158,17 +157,16 @@ def _strict_float32(
 
 
 def _json_container_children(node: object) -> tuple[object, ...] | None:
-    """Return JSON-container children, or None for a scalar leaf."""
+    """Return JSON-container children, or None for a scalar leaf.
 
-    node_type = type(node)
-    if node_type is dict:
-        return tuple(cast(dict[Any, Any], node).values())
-    if node_type is list:
-        return tuple(cast(list[Any], node))
-    if node_type is tuple:
-        return cast(tuple[object, ...], node)
-    if node_type is MappingProxyType:
+    Uses :mod:`collections.abc` checks aligned with ``json.dumps`` so that
+    dict/list/tuple subclasses are treated as containers, not scalars.
+    """
+
+    if isinstance(node, Mapping):
         return tuple(cast(Mapping[str, Any], node).values())
+    if isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
+        return tuple(cast(Sequence[object], node))
     return None
 
 
