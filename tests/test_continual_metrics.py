@@ -248,6 +248,19 @@ def test_tracking_error_inherits_the_causal_running_mean_fix() -> None:
     np.testing.assert_allclose(result[2:], [1.0, 2.0, 3.0, 4.0])
 
 
+def test_tracking_error_does_not_erase_small_windows_after_large_error() -> None:
+    """A departed large error must not cancel later finite window sums."""
+    history = [
+        {"squared_error": value}
+        for value in (1e16, 1.0, 1.0, 1.0)
+    ]
+
+    result = compute_tracking_error(history, window_size=2)
+
+    assert np.isnan(result[0])
+    np.testing.assert_array_equal(result[1:], [5e15, 1.0, 1.0])
+
+
 def test_tracking_error_shorter_than_window_has_no_computable_values() -> None:
     result = compute_tracking_error(
         [{"squared_error": 2.0}, {"squared_error": 4.0}],

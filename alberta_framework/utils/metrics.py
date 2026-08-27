@@ -695,6 +695,31 @@ def compute_cumulative_error(
     return cumulative
 
 
+def _pairwise_rolling_sums(values: NDArray[np.float64], window_size: int) -> NDArray[np.float64]:
+    """Return rolling sums without subtracting nearly equal global prefixes."""
+    leaf_count = 1 << (window_size - 1).bit_length()
+    tree = np.zeros(2 * leaf_count, dtype=np.float64)
+    tree[leaf_count : leaf_count + window_size] = values[:window_size]
+    for node in range(leaf_count - 1, 0, -1):
+        tree[node] = tree[2 * node] + tree[2 * node + 1]
+
+    sums = np.empty(values.size - window_size + 1, dtype=np.float64)
+    sums[0] = tree[1]
+    slot = 0
+    for output_index, incoming in enumerate(values[window_size:], start=1):
+        node = leaf_count + slot
+        tree[node] = incoming
+        node //= 2
+        while node:
+            tree[node] = tree[2 * node] + tree[2 * node + 1]
+            node //= 2
+        sums[output_index] = tree[1]
+        slot += 1
+        if slot == window_size:
+            slot = 0
+    return sums
+
+
 def compute_running_mean(
     values: NDArray[np.float64] | list[float],
     window_size: int = 100,
@@ -734,10 +759,18 @@ def compute_running_mean(
     if scale == 0.0:
         scale = 1.0
     normalized = np.where(np.isfinite(values_arr), values_arr / scale, 0.0)
-    cumsum = np.cumsum(np.insert(normalized, 0, 0.0), dtype=np.float64)
     valid = np.isfinite(values_arr).astype(np.int64)
+    nonzero_magnitudes = np.abs(normalized[normalized != 0.0])
+    cancellation_risk = bool(
+        nonzero_magnitudes.size
+        and float(np.min(nonzero_magnitudes)) <= np.finfo(np.float64).eps
+    )
+    if cancellation_risk:
+        window_sums = _pairwise_rolling_sums(normalized, window_size)
+    else:
+        cumsum = np.cumsum(np.insert(normalized, 0, 0.0), dtype=np.float64)
+        window_sums = cumsum[window_size:] - cumsum[:-window_size]
     valid_cumsum = np.cumsum(np.insert(valid, 0, 0), dtype=np.int64)
-    window_sums = cumsum[window_size:] - cumsum[:-window_size]
     valid_counts = valid_cumsum[window_size:] - valid_cumsum[:-window_size]
     running_mean = (window_sums / window_size) * scale
     running_mean = np.where(valid_counts == window_size, running_mean, np.nan)
