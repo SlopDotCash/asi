@@ -9,12 +9,15 @@ from __future__ import annotations
 
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from alberta_framework.core.feature_discovery import (
     _FEATURE_DISCOVERY_LOOP_MAX_STEPS,
+    _require_feature_discovery_array_steps,
     _require_feature_discovery_loop_steps,
+    run_feature_discovery_arrays,
     run_feature_discovery_loop,
 )
 
@@ -104,3 +107,83 @@ def test_rejects_numpy_and_subclass_step_counts_without_index_hooks() -> None:
         _require_feature_discovery_loop_steps("num_steps", np.int64(10))
     with pytest.raises(ValueError, match="num_steps must be an integer in"):
         _require_feature_discovery_loop_steps("num_steps", _HostileInt(10))
+
+
+class _HostileArrays:
+    calls = 0
+
+    @property
+    def ndim(self) -> Any:
+        type(self).calls += 1
+        raise AssertionError("ndim hook executed")
+
+    @property
+    def shape(self) -> Any:
+        type(self).calls += 1
+        raise AssertionError("shape hook executed")
+
+
+def _spy_scan(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    seen: list[object] = []
+
+    def spy(*args: object, **kwargs: object) -> Any:
+        seen.append((args, kwargs))
+        raise AssertionError(f"jax.lax.scan must not run: {args} {kwargs}")
+
+    monkeypatch.setattr("alberta_framework.core.feature_discovery.jax.lax.scan", spy)
+    return seen
+
+
+def test_array_last_fit_length_is_accepted() -> None:
+    observations = jnp.zeros(
+        (_FEATURE_DISCOVERY_LOOP_MAX_STEPS, 2),
+        dtype=jnp.float32,
+    )
+    targets = jnp.zeros(
+        (_FEATURE_DISCOVERY_LOOP_MAX_STEPS, 1),
+        dtype=jnp.float32,
+    )
+    assert _require_feature_discovery_array_steps(observations, targets) == 10_000
+
+
+def test_array_first_overflow_rejected_before_scan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen = _spy_scan(monkeypatch)
+    observations = jnp.zeros(
+        (_FEATURE_DISCOVERY_LOOP_MAX_STEPS + 1, 2),
+        dtype=jnp.float32,
+    )
+    targets = jnp.zeros(
+        (_FEATURE_DISCOVERY_LOOP_MAX_STEPS + 1, 1),
+        dtype=jnp.float32,
+    )
+    with pytest.raises(ValueError, match="observations num_steps must be an integer in"):
+        run_feature_discovery_arrays(  # type: ignore[arg-type]
+            object(),
+            object(),
+            observations,
+            targets,
+        )
+    assert seen == []
+
+
+def test_array_gate_rejects_rank_and_length_mismatch() -> None:
+    observations = jnp.zeros((3, 2), dtype=jnp.float32)
+    with pytest.raises(ValueError, match="targets must have rank"):
+        _require_feature_discovery_array_steps(
+            observations,
+            jnp.zeros((3,), dtype=jnp.float32),
+        )
+    with pytest.raises(ValueError, match="primary sequence length"):
+        _require_feature_discovery_array_steps(
+            observations,
+            jnp.zeros((2, 1), dtype=jnp.float32),
+        )
+
+
+def test_array_gate_does_not_read_hostile_shape() -> None:
+    _HostileArrays.calls = 0
+    with pytest.raises(TypeError, match="observations and targets must be JAX arrays"):
+        _require_feature_discovery_array_steps(_HostileArrays(), _HostileArrays())
+    assert _HostileArrays.calls == 0

@@ -35,7 +35,12 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, PRNGKeyArray
 
-from alberta_framework._scan_resources import ScanBudget, require_scan_steps
+from alberta_framework._scan_resources import (
+    ScanBudget,
+    require_jax_leading_length,
+    require_matching_jax_leading_length,
+    require_scan_steps,
+)
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.future_utility import (
     bias_correct_future_utility,
@@ -90,6 +95,40 @@ def _require_int32(name: str, value: object, *, minimum: int) -> int:
 def _require_feature_discovery_loop_steps(name: str, value: object) -> int:
     """Reject scan lengths above the public last-fit before ``jnp.arange``."""
     return require_scan_steps(name, value, _FEATURE_DISCOVERY_LOOP_BUDGET)
+
+
+def _require_feature_discovery_array_steps(
+    observations: object,
+    targets: object,
+) -> int:
+    """Reject pre-collected scan lengths above the public last-fit before scan."""
+    if not isinstance(observations, jax.Array) or not isinstance(targets, jax.Array):
+        raise TypeError("observations and targets must be JAX arrays")
+    try:
+        num_steps = require_jax_leading_length(
+            "observations",
+            observations,
+            _FEATURE_DISCOVERY_LOOP_BUDGET,
+            ranks=(2,),
+        )
+    except ValueError as error:
+        if (
+            observations.ndim == 2
+            and not 1 <= observations.shape[0] <= _FEATURE_DISCOVERY_LOOP_MAX_STEPS
+        ):
+            raise ValueError(
+                "observations num_steps must be an integer in "
+                f"[1, {_FEATURE_DISCOVERY_LOOP_MAX_STEPS}]"
+            ) from None
+        raise error
+    require_jax_leading_length(
+        "targets",
+        targets,
+        _FEATURE_DISCOVERY_LOOP_BUDGET,
+        ranks=(2,),
+    )
+    require_matching_jax_leading_length("targets", targets, expected=num_steps)
+    return num_steps
 
 
 def _saturating_int32_increment(value: Array) -> Array:
@@ -1961,7 +2000,14 @@ def run_feature_discovery_arrays(
     observations: Array,
     targets: Array,
 ) -> FeatureDiscoveryLearningResult:
-    """Run a feature-discovery learner over pre-collected stream arrays."""
+    """Run a feature-discovery learner over pre-collected stream arrays.
+
+    Raises:
+        TypeError: If ``observations`` or ``targets`` is not a JAX array.
+        ValueError: If the arrays are not rank two, do not share a leading
+            length, or contain a step count outside ``[1, 10_000]``.
+    """
+    _require_feature_discovery_array_steps(observations, targets)
 
     def step_fn(
         carry: FeatureDiscoveryState,
