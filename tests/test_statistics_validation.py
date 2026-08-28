@@ -794,6 +794,24 @@ class TestOneSampleRejection:
 
 
 class TestCorrections:
+    def test_exact_decision_boundary_is_significant(self) -> None:
+        result = SignificanceResult(
+            test_name="boundary fixture",
+            statistic=1.0,
+            p_value=0.05,
+            significant=True,
+            alpha=0.05,
+            effect_size=0.0,
+            method_a="candidate",
+            method_b="control",
+        )
+        assert result.significant is True
+
+        bonferroni, corrected_alpha = bonferroni_correction([0.025, 1.0], alpha=0.05)
+        assert corrected_alpha == 0.025
+        assert bonferroni == [True, False]
+        assert holm_correction([0.025, 1.0], alpha=0.05) == [True, False]
+
     def test_bonferroni_empty_p_values(self) -> None:
         significant, corrected_alpha = bonferroni_correction([], alpha=0.05)
         assert significant == []

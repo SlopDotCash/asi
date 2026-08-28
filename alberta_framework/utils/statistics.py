@@ -158,8 +158,8 @@ class SignificanceResult(_SignificanceResultTuple):
         checked_p = _require_result_probability("p_value", p_value, strict=False)
         checked_alpha = _require_result_probability("alpha", alpha, strict=True)
         checked_significant = _require_exact_bool("significant", significant)
-        if checked_significant is not (checked_p < checked_alpha):
-            raise ValueError("significant must exactly match p_value < alpha")
+        if checked_significant is not _is_significant(checked_p, checked_alpha):
+            raise ValueError("significant must exactly match p_value <= alpha")
         return tuple.__new__(
             cls,
             (
@@ -211,6 +211,12 @@ def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
     """Reject NaN/inf samples so summaries cannot gold-plate a poisoned seed."""
     if not np.isfinite(values).all():
         raise ValueError(f"{name} must be finite")
+
+
+def _is_significant(p_value: float, alpha: float) -> bool:
+    """Return the inclusive rejection decision for a validated p-value."""
+
+    return p_value <= alpha
 
 
 def _require_sample_vector(values: object, *, name: str) -> NDArray[np.float64]:
@@ -509,7 +515,7 @@ def ttest_comparison(
         test_name=test_name,
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha_value,
+        significant=_is_significant(p_val, alpha_value),
         alpha=alpha_value,
         effect_size=effect,
         method_a=method_a,
@@ -584,7 +590,7 @@ def mann_whitney_comparison(
         test_name="Mann-Whitney U",
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha_value,
+        significant=_is_significant(p_val, alpha_value),
         alpha=alpha_value,
         effect_size=r,
         method_a=method_a,
@@ -663,7 +669,7 @@ def wilcoxon_comparison(
         test_name="Wilcoxon signed-rank",
         statistic=stat_val,
         p_value=p_val,
-        significant=p_val < alpha_value,
+        significant=_is_significant(p_val, alpha_value),
         alpha=alpha_value,
         effect_size=effect,
         method_a=method_a,
@@ -697,7 +703,7 @@ def bonferroni_correction(
     if n_tests == 0:
         return [], alpha_value
     corrected_alpha = alpha_value / n_tests
-    significant = [p < corrected_alpha for p in validated_p_values]
+    significant = [_is_significant(p, corrected_alpha) for p in validated_p_values]
     return significant, corrected_alpha
 
 
@@ -742,7 +748,7 @@ def _holm_decisions(
     for rank, raw_index in enumerate(sorted_indices):
         index = int(raw_index)
         rank_threshold = alpha / (n_tests - rank)
-        if stopped_threshold is None and p_values[index] < rank_threshold:
+        if stopped_threshold is None and _is_significant(p_values[index], rank_threshold):
             significant[index] = True
             thresholds[index] = rank_threshold
         else:
