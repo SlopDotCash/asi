@@ -4528,6 +4528,9 @@ class RLSHeadState:
 
 
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
+_WHITEN_NORM_FLOOR = 1e-12
+_NEWTON_RIDGE_REL = 1e-3
+_NEWTON_RIDGE_ABS = 1e-6
 
 
 @chex.dataclass(frozen=True)
@@ -4662,6 +4665,22 @@ def _make_rls_head_learner(
     trace_cap = hp["rls_p_trace_cap"]
     cap_enabled = trace_cap > 0.0
     resid = hp["head_resid"] != 0.0
+    resid_whiten = hp.get("resid_whiten", 0.0)
+    if not 0.0 <= resid_whiten <= 1.0:
+        raise ValueError("resid_whiten must lie in [0, 1]")
+    whiten_enabled = resid_whiten > 0.0
+    resid_newton = hp.get("resid_newton", 0.0)
+    if resid_newton not in (0.0, 1.0):
+        raise ValueError(
+            "resid_newton selects a direction and must be 0.0 or 1.0"
+        )
+    newton = resid_newton == 1.0
+    if whiten_enabled and not resid:
+        raise ValueError(
+            "resid_whiten is supported only for the residual body"
+        )
+    if whiten_enabled and _decay_to_init:
+        raise ValueError("resid_whiten and L2-Init are not composed")
     gate_scale = hp.get("gate_scale", 1.0)
     if gate_scale not in (0.0, 1.0):
         raise ValueError(
@@ -4813,19 +4832,65 @@ def _make_rls_head_learner(
         if resid:
             body = {name: params[name] for name in _RLS_HEAD_BODY}
 
-            def head_loss(
-                body_params: dict[str, Array],
-            ) -> tuple[Array, tuple[Array, Array]]:
-                merged = dict(params)
-                merged.update(body_params)
-                phi = _phi(merged, x_norm)
-                logits = state.wout.T @ phi
-                err = y_onehot - logits
-                return 0.5 * jnp.sum(err * err), (logits, phi)
+            if whiten_enabled:
+                # Preconditioned residual signal.  ``delta`` is a constant of
+                # the body (every factor below is detached), so the
+                # surrogate's gradient is exactly ``-J_phi^T delta`` — the
+                # incumbent's own gradient when ``delta = wout @ err``.  The
+                # renormalization holds ``||delta|| = ||g||`` at every
+                # ``resid_whiten``, so the direction rotates but the
+                # magnitude, and hence the frozen step-size calibration, does
+                # not move (negative result #1).
 
-            (loss, (logits, phi)), body_grads = jax.value_and_grad(
-                head_loss, has_aux=True
-            )(body)
+                def head_surrogate(
+                    body_params: dict[str, Array],
+                ) -> tuple[Array, tuple[Array, Array, Array]]:
+                    merged = dict(params)
+                    merged.update(body_params)
+                    phi = _phi(merged, x_norm)
+                    logits = state.wout.T @ phi
+                    err = y_onehot - logits
+                    surrogate_loss = 0.5 * jnp.sum(err * err)
+                    err_c = jax.lax.stop_gradient(err)
+                    g = state.wout @ err_c
+                    if newton:
+                        gram = state.wout.T @ state.wout
+                        ridge = (
+                            _NEWTON_RIDGE_REL * jnp.trace(gram) / n_classes
+                            + _NEWTON_RIDGE_ABS
+                        )
+                        precond = state.wout @ jnp.linalg.solve(
+                            gram
+                            + ridge * jnp.eye(n_classes, dtype=jnp.float32),
+                            err_c,
+                        )
+                    else:
+                        precond = state.p @ g
+                    d_dir = (1.0 - resid_whiten) * g + resid_whiten * precond
+                    scale = jnp.linalg.norm(g) / jnp.maximum(
+                        jnp.linalg.norm(d_dir), _WHITEN_NORM_FLOOR
+                    )
+                    delta = jax.lax.stop_gradient(d_dir * scale)
+                    return -jnp.dot(phi, delta), (logits, phi, surrogate_loss)
+
+                (_, (logits, phi, loss)), body_grads = jax.value_and_grad(
+                    head_surrogate, has_aux=True
+                )(body)
+            else:
+
+                def head_loss(
+                    body_params: dict[str, Array],
+                ) -> tuple[Array, tuple[Array, Array]]:
+                    merged = dict(params)
+                    merged.update(body_params)
+                    phi = _phi(merged, x_norm)
+                    logits = state.wout.T @ phi
+                    err = y_onehot - logits
+                    return 0.5 * jnp.sum(err * err), (logits, phi)
+
+                (loss, (logits, phi)), body_grads = jax.value_and_grad(
+                    head_loss, has_aux=True
+                )(body)
             if gate_enabled:
                 new_params, new_utility = _gated_sgd(
                     params,
@@ -7720,6 +7785,61 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "rls_ridge_init": 0.01, "head_resid": 1.0},
             "residual-driven body at ridge 0.01 + P reset (ridge direction "
             "probe on the residual loop)",
+        ),
+        # Preconditioned residual signal.  CEILING_ANALYSIS.md puts 0.029
+        # of the champion's error on within-task convergence speed.  The
+        # RLS head cashed in the READOUT's share of that (closed-form, ~d
+        # samples); the BODY's share is untouched — it is still gated SGD
+        # on an unconditioned feature-space error g = wout @ err.  Every
+        # preconditioner screened against that share (IDBD, Autostep,
+        # Adam+CBP) failed on continual stability, not on speed; both
+        # directions below are built from state the incumbent already
+        # carries and the shift detector already resets at boundaries, so
+        # neither adds a cross-permutation carry of its own.  Each is
+        # renormalized to ||g||, so the frozen step size still applies
+        # (negative result #1).  resid_whiten=0 is the incumbent, bitwise.
+        (
+            "rls_head_resid_l1_preset005_gn",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "resid_whiten": 1.0},
+            "body error signal whitened by the head's inverse feature "
+            "correlation (delta = P g, renormalized to ||g||) — a "
+            "heuristic, NOT Gauss-Newton: the curvature in phi is "
+            "wout @ wout.T, not the activation second moment",
+        ),
+        (
+            "rls_head_resid_l1_preset005_gn05",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "resid_whiten": 0.5},
+            "half-whitened body error signal (the interpolation hedge)",
+        ),
+        (
+            "rls_head_resid_l1_preset005_tp",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "resid_whiten": 1.0, "resid_newton": 1.0},
+            "feature-space Newton body signal (delta = wout gram^-1 err, "
+            "gram = wout.T wout ridged; the minimum-norm change in phi "
+            "that would zero the head residual), renormalized to ||g||",
+        ),
+        (
+            "rls_head_resid_l1_preset005_tp05",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "resid_whiten": 0.5, "resid_newton": 1.0},
+            "half feature-space Newton body signal (the interpolation "
+            "hedge)",
+        ),
+        # The untested cell of the head 2x2: the capped forgetting head is
+        # the best PASSENGER-head arm measured (rls_head_l0999_pcap
+        # 0.86608 vs rls_head_l1_preset005 0.86480) but has never carried
+        # the residual body signal that moved the plateau.  Forgetting runs
+        # here under BOTH wind-up guards at once (trace cap and P reset).
+        (
+            "rls_head_resid_l0999_pcap",
+            {"rls_lambda": 0.999, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "rls_p_trace_cap": 1e4},
+            "residual-driven body on a forgetting-0.999 head held bounded "
+            "by both wind-up guards (trace cap 1e4 and the detector-driven "
+            "P reset at 0.05)",
         ),
     ):
         body_update = (
