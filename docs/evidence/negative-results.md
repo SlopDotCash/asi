@@ -176,6 +176,43 @@ postmortem.
     `outputs/ipmnist_screening/gate_ablation_r2/` (20 v2 shards, `summary.json`,
     per-shard logs).
 
+19. **Whitening the residual body signal by the head's activation second
+    moment is harmful, and the correct feature-space curvature is not enough.**
+    A pre-registered 60-task, seeds 0-2 paired screen against a remeasured
+    `rls_head_resid_l1_preset005` replaced the body's error direction
+    `g = wout @ err` with an interpolation toward a preconditioned direction,
+    renormalized to `||g||` so the frozen step size still applied. The two
+    metrics are monotone in the interpolation weight and have opposite signs:
+    activation whitening (`p @ g`) measured -0.000279 at a=0.5 and -0.001461
+    at a=1, while the feature-space Newton direction
+    (`wout @ gram^-1 err`, `gram = wout.T @ wout`) measured +0.000011 at
+    a=0.5 and +0.001672 at a=1 (all three seeds improving, se 0.000299).
+    Since the arms are identical apart from the preconditioning matrix and
+    both reduce bitwise to the incumbent at a=0, this isolates the effect to
+    the choice of metric: `p` is the activation second moment, whereas the
+    loss curvature in `phi` is `wout @ wout.T`. The Newton arm is a real
+    effect and still fell in the ambiguous band below the frozen +0.002 win
+    bar, so nothing was escalated and no threshold moved. It is also ~6% of
+    the 0.0289 needed for the 0.90 target. Plasticity was unmoved across all
+    arms (0.0053-0.0178, late-window slopes ~-3e-4). Records:
+    `outputs/ipmnist_screening/precond_r1/` (21 v2 shards, `summary.json`,
+    `PREREGISTRATION.md`, `RESULTS.md`).
+
+20. **Bounded forgetting still does not pay on the residual RLS head.** The
+    untested cell of the head 2x2 — `rls_head_resid_l0999_pcap`, forgetting
+    0.999 carrying the residual body signal under BOTH wind-up guards at once
+    (trace cap 1e4 and the detector-driven P reset) — led the incumbent on
+    every task of a 3-task diagnostic (0.7774/0.8704/0.8744 vs
+    0.7324/0.8424/0.8558) and then decayed to +0.000586 at 60 tasks with one
+    of three seeds negative. The guards do prevent the float32 overflow
+    collapse of negative result #10, but they do not make `lambda < 1` pay:
+    the "wins short diagnostics, then fades" pattern reproduces at the
+    60-task horizon. Do not re-probe forgetting on this head without a
+    mechanism that changes the long-horizon behaviour, and do not rank
+    rls_head arms on 2-3 task diagnostics — the ordering inverted between 3
+    and 60 tasks in this screen. Record:
+    `outputs/ipmnist_screening/precond_r1/`.
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
