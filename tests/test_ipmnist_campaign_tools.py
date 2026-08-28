@@ -47,10 +47,36 @@ class _StringSubclass(str):
     pass
 
 
-def _shard(path: Path, *, seed: int, accuracy: float) -> None:
+def _shard(
+    path: Path,
+    *,
+    seed: int,
+    accuracy: float,
+    n_tasks: int = 2,
+    noise_mode: str | None = "step",
+    noise_pool_steps: int | None = None,
+    schema: str = "alberta.ipmnist_screening.shard.v1",
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema": schema,
+        "seed": seed,
+        "config": {
+            "hidden1": 300,
+            "hidden2": 150,
+            "input_dim": 784,
+            "n_classes": 10,
+            "n_tasks": n_tasks,
+            "task_length": 5000,
+        },
+        "per_task_accuracy": [accuracy] * n_tasks,
+    }
+    if noise_mode is not None:
+        payload["noise_mode"] = noise_mode
+    if noise_pool_steps is not None:
+        payload["noise_pool_steps"] = noise_pool_steps
     path.write_text(
-        json.dumps({"seed": seed, "per_task_accuracy": [accuracy, accuracy]}),
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -297,6 +323,124 @@ def test_frontier_requires_and_uses_exact_paired_seed_sets(tmp_path: Path) -> No
     assert {
         item["path"] for item in frontier["provenance"]["environment_specifications"]
     } == {"pyproject.toml", "uv.lock"}
+
+
+@pytest.mark.parametrize(
+    "candidate_protocol",
+    ({"n_tasks": 1}, {"noise_mode": "pool", "noise_pool_steps": 64}),
+    ids=("config", "noise-mode"),
+)
+@pytest.mark.parametrize("phase", ("screen", "confirm"))
+def test_frontier_rejects_mixed_phase_protocols(
+    tmp_path: Path,
+    candidate_protocol: dict[str, object],
+    phase: str,
+) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed in (0, 1):
+        _shard(screen / f"base_seed{seed}.json", seed=seed, accuracy=0.80)
+        _shard(screen / f"candidate_seed{seed}.json", seed=seed, accuracy=0.81)
+    target = screen if phase == "screen" else confirm
+    for seed in (0, 1):
+        _shard(target / f"base_seed{seed}.json", seed=seed, accuracy=0.80)
+        _shard(
+            target / f"candidate_seed{seed}.json",
+            seed=seed,
+            accuracy=1.0,
+            **candidate_protocol,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValueError, match=rf"{phase} protocol signatures differ"):
+        build_frontier(
+            screen,
+            confirm,
+            base="base",
+            arms=["candidate"],
+            threshold=0.1,
+        )
+
+
+def test_frontier_rejects_curve_length_that_disagrees_with_config(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    _shard(screen / "base_seed0.json", seed=0, accuracy=0.80)
+    path = screen / "base_seed0.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["config"]["n_tasks"] = 3
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="length disagrees with config n_tasks"):
+        build_frontier(screen, confirm, base="base", arms=["candidate"])
+
+
+def test_frontier_rejects_mixed_pool_sizes(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed in (0, 1):
+        _shard(
+            screen / f"base_seed{seed}.json",
+            seed=seed,
+            accuracy=0.80,
+            noise_mode="pool",
+            noise_pool_steps=64,
+        )
+        _shard(
+            screen / f"candidate_seed{seed}.json",
+            seed=seed,
+            accuracy=1.0,
+            noise_mode="pool",
+            noise_pool_steps=128,
+        )
+
+    with pytest.raises(ValueError, match="screen protocol signatures differ"):
+        build_frontier(screen, confirm, base="base", arms=["candidate"])
+
+
+def test_frontier_rejects_pool_size_drift_within_one_arm(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed, pool_steps in ((0, 64), (1, 128)):
+        _shard(
+            screen / f"base_seed{seed}.json",
+            seed=seed,
+            accuracy=0.80,
+            noise_mode="pool",
+            noise_pool_steps=pool_steps,
+        )
+
+    with pytest.raises(ValueError, match="base shards span multiple protocol signatures"):
+        build_frontier(screen, confirm, base="base", arms=["candidate"])
+
+
+def test_frontier_treats_legacy_missing_noise_mode_as_step(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    _shard(screen / "base_seed0.json", seed=0, accuracy=0.80, noise_mode=None)
+    _shard(screen / "candidate_seed0.json", seed=0, accuracy=0.81)
+
+    frontier = build_frontier(screen, confirm, base="base", arms=["candidate"])
+
+    assert frontier["results"][0]["screen_paired_delta_vs_base"] == pytest.approx(0.01)
+
+
+def test_frontier_keeps_screen_and_confirm_protocols_independent(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed in (0, 1):
+        _shard(screen / f"base_seed{seed}.json", seed=seed, accuracy=0.80, n_tasks=2)
+        _shard(screen / f"candidate_seed{seed}.json", seed=seed, accuracy=0.81, n_tasks=2)
+        _shard(confirm / f"base_seed{seed}.json", seed=seed, accuracy=0.82, n_tasks=3)
+        _shard(
+            confirm / f"candidate_seed{seed}.json",
+            seed=seed,
+            accuracy=0.83,
+            n_tasks=3,
+        )
+
+    frontier = build_frontier(screen, confirm, base="base", arms=["candidate"])
+
+    assert frontier["results"][0]["n_confirm_seeds"] == 2
 
 
 def test_frontier_rejects_mismatched_confirm_seed_sets(tmp_path: Path) -> None:

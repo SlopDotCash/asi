@@ -95,16 +95,59 @@ def _json_object(path: Path) -> dict[str, Any]:
     return load_strict_json_object(path)
 
 
-def seed_means(root: Path, config_name: str) -> dict[int, float]:
-    """Read mean per-task accuracy by seed for one campaign arm."""
+def _seed_measurements(
+    root: Path,
+    config_name: str,
+) -> tuple[dict[int, float], tuple[str, str, str, int | None] | None]:
+    """Read one arm and retain the protocol identity its means came from."""
     config_name = _safe_identifier(config_name, name="config_name")
     result: dict[int, float] = {}
+    protocol_signature: tuple[str, str, str, int | None] | None = None
     for path in sorted(root.glob(f"{config_name}_seed*.json")):
         payload = _json_object(path)
         raw_seed = payload.get("seed")
         accuracies = payload.get("per_task_accuracy")
         if type(accuracies) is not list or not accuracies:
             raise ValueError(f"{path} lacks a valid seed or per_task_accuracy")
+        schema = payload.get("schema")
+        if schema not in (
+            "alberta.ipmnist_screening.shard.v1",
+            "alberta.ipmnist_screening.shard.v2",
+        ):
+            raise ValueError(f"{path} has an unsupported screening shard schema")
+        config = payload.get("config")
+        if type(config) is not dict:
+            raise ValueError(f"{path} lacks a valid config")
+        n_tasks = config.get("n_tasks")
+        if type(n_tasks) is not int or n_tasks <= 0 or len(accuracies) != n_tasks:
+            raise ValueError(f"{path} per_task_accuracy length disagrees with config n_tasks")
+        noise_mode = payload.get(
+            "noise_mode",
+            "step" if schema == "alberta.ipmnist_screening.shard.v1" else None,
+        )
+        if type(noise_mode) is not str or noise_mode not in ("step", "pool"):
+            raise ValueError(f"{path} noise_mode must be 'step' or 'pool'")
+        noise_pool_steps = payload.get("noise_pool_steps")
+        if noise_mode == "step":
+            if noise_pool_steps is not None:
+                raise ValueError(
+                    f"{path} noise_pool_steps must be null or absent when noise_mode='step'"
+                )
+        elif type(noise_pool_steps) is not int or noise_pool_steps < 2:
+            raise ValueError(
+                f"{path} noise_pool_steps must be a built-in integer >= 2 "
+                "when noise_mode='pool'"
+            )
+        signature = (
+            schema,
+            json.dumps(config, sort_keys=True, separators=(",", ":"), allow_nan=False),
+            noise_mode,
+            noise_pool_steps,
+        )
+        if protocol_signature is None:
+            protocol_signature = signature
+        elif signature != protocol_signature:
+            raise ValueError(f"{config_name} shards span multiple protocol signatures")
         seed = require_jax_seed(raw_seed, name=f"{path} seed")
         if path.name != f"{config_name}_seed{seed}.json":
             raise ValueError(f"{path} filename disagrees with payload seed")
@@ -118,7 +161,13 @@ def seed_means(root: Path, config_name: str) -> dict[int, float]:
         if seed in result:
             raise ValueError(f"duplicate seed {seed} for {config_name}")
         result[seed] = statistics.mean(float(value) for value in values)
-    return result
+    return result, protocol_signature
+
+
+def seed_means(root: Path, config_name: str) -> dict[int, float]:
+    """Read mean per-task accuracy by seed for one campaign arm."""
+    means, _ = _seed_measurements(root, config_name)
+    return means
 
 
 def build_frontier(
@@ -140,14 +189,18 @@ def build_frontier(
         created_unix = _finite_scalar(created_unix, name="created_unix")
         if created_unix < 0:
             raise ValueError("created_unix must be nonnegative")
-    screen_base = seed_means(screen_dir, base)
-    confirm_base = seed_means(confirm_dir, base)
+    screen_base, screen_protocol = _seed_measurements(screen_dir, base)
+    confirm_base, confirm_protocol = _seed_measurements(confirm_dir, base)
     if not screen_base:
         raise ValueError(f"screen base {base!r} has no seeds")
     rows: list[dict[str, Any]] = []
     for arm in checked_arms:
-        screen = seed_means(screen_dir, arm)
-        confirm = seed_means(confirm_dir, arm)
+        screen, arm_screen_protocol = _seed_measurements(screen_dir, arm)
+        confirm, arm_confirm_protocol = _seed_measurements(confirm_dir, arm)
+        if arm_screen_protocol != screen_protocol:
+            raise ValueError(
+                f"screen protocol signatures differ for {arm!r} and base {base!r}"
+            )
         if screen.keys() != screen_base.keys():
             raise ValueError(
                 f"screen seed sets differ for {arm!r} and base {base!r}: "
@@ -167,6 +220,10 @@ def build_frontier(
         }
         row["confirmation_candidate"] = row["screen_paired_delta_vs_base"] > threshold
         if confirm:
+            if arm_confirm_protocol != confirm_protocol:
+                raise ValueError(
+                    f"confirm protocol signatures differ for {arm!r} and base {base!r}"
+                )
             if confirm.keys() != confirm_base.keys():
                 raise ValueError(
                     f"confirm seed sets differ for {arm!r} and base {base!r}: "
