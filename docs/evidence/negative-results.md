@@ -213,6 +213,35 @@ postmortem.
     and 60 tasks in this screen. Record:
     `outputs/ipmnist_screening/precond_r1/`.
 
+21. **Composing the Newton direction with gate removal cleared the 60-task
+    bar and then failed confirmation: this mechanism class decays ~3.5x with
+    horizon.** `rls_head_resid_l1_preset005_tp_nogate` combines the
+    feature-space Newton body signal with issue #1937's gate removal. The two
+    are additive with no measurable interaction (-0.000252 +/- 0.000190 at
+    n=10, t = -1.33), and additively they cleared the frozen +0.002 win bar
+    at 60 tasks: +0.002737 +/- 0.000178 with 10/10 seeds improving and the
+    weakest seed at +0.002137. The preregistered 200-task, 20-seed
+    confirmation measured **+0.000791 +/- 0.000094 with 19/20 seeds** — a
+    **3.46x decay**, failing both the +0.002 bar and the all-seeds condition.
+    No new standing best; 0.87114 stands. Both measurements are internally
+    sound, so the lesson is about the instrument: the 60-task screen
+    overstated the *effect size*, not merely its significance, because the
+    gain concentrates in early life and dilutes over a 3.3x longer horizon.
+    This extends entry 9 one rung — do not use 60-task paired effects as
+    200-task estimates for this class. It also bears on entry 18: gate
+    removal is one of the two components here, so its own +0.001712 at 60
+    tasks is likely worth substantially less at 200, and the ambiguous-band
+    rule that held it back was correct. The remeasured incumbent reproduced
+    the standing number to -0.0000658 (inside one stderr) on different
+    hardware, so the failure is a property of the arm, not the runner.
+    Neither arm degrades: late-window slopes stayed positive (8.03e-05 and
+    1.29e-04) and candidate plasticity was slightly higher (0.00745 vs
+    0.00448). Records:
+    `outputs/ipmnist_screening/precond_r2/` (40 shards, `summary.json`,
+    `summary_n10.json`, `PREREGISTRATION.md`) and
+    `outputs/ipmnist_screening/precond_confirm_r1/` (40 shards,
+    `summary.json`, `RESULTS.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
