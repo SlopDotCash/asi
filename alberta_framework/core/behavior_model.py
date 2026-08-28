@@ -231,7 +231,16 @@ def floor_and_renormalize_probabilities(
     )
     normalized = clipped / normalizer
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
-    return jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
+    floored = jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
+    # `normalized` only sums to 1 when `clipped` carries nonzero mass that
+    # survives the float32 division without underflowing. Degenerate input
+    # (all-zero, or magnitudes whose ratio underflows) leaves `normalized`
+    # summing to less than 1, so `floored` silently sums to less than 1 too
+    # (as low as `n_actions * min_probability`) instead of being a simplex.
+    # Renormalizing by its own sum guarantees an exact simplex in every case:
+    # a no-op division by ~1 for well-behaved input, and a uniform
+    # distribution rather than a near-zero vector for degenerate input.
+    return floored / jnp.sum(floored, axis=-1, keepdims=True)
 
 
 def selected_action_probabilities(

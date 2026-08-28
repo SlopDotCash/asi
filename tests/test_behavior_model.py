@@ -389,6 +389,20 @@ def test_probability_simplex_and_helper_invariants() -> None:
     chex.assert_trees_all_close(logs, jnp.log(selected))
 
 
+def test_floor_and_renormalize_probabilities_degenerate_input_is_a_simplex() -> None:
+    # All-zero mass: `clipped` sums to 0, so pre-fix this silently returned
+    # `min_probability` in every slot (summing to n * min_probability, not 1)
+    # instead of failing or falling back to a proper distribution.
+    zero_mass = floor_and_renormalize_probabilities(
+        jnp.array([0.0, 0.0, 0.0], dtype=jnp.float32),
+        min_probability=1e-6,
+    )
+    chex.assert_trees_all_close(jnp.sum(zero_mass), 1.0, atol=1e-6)
+    chex.assert_trees_all_close(
+        zero_mass, jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32), atol=1e-6
+    )
+
+
 @pytest.mark.parametrize(
     "action",
     [
