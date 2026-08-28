@@ -14,6 +14,7 @@ import pytest
 from alberta_framework.core.cumulant_discovery import (
     CumulantDiscovery,
     CumulantDiscoveryState,
+    _require_float32,
 )
 
 # =============================================================================
@@ -375,6 +376,35 @@ def test_cumulant_discovery_rejects_exact_nonzero_float32_underflow(field: str) 
     tiny = np.nextafter(np.longdouble(0), np.longdouble(1))
     with pytest.raises(ValueError, match="remain nonzero"):
         CumulantDiscovery(raw_dim=4, **{field: tiny})
+
+
+def test_require_float32_preserve_nonzero_fires_for_builtin_float() -> None:
+    # np.float32(1e-50) underflows to exactly 0.0; the guard must reject it.
+    assert np.float32(1e-50) == 0.0
+    with pytest.raises(ValueError, match="remain nonzero"):
+        _require_float32("gamma", 1e-50, lower=0.0, upper=1.0, preserve_nonzero=True)
+
+
+def test_require_float32_preserve_nonzero_fires_for_numpy_float64() -> None:
+    with pytest.raises(ValueError, match="remain nonzero"):
+        _require_float32(
+            "gamma", np.float64(1e-50), lower=0.0, upper=1.0, preserve_nonzero=True
+        )
+
+
+def test_require_float32_preserve_nonzero_accepts_representable_small_value() -> None:
+    # 1e-30 remains nonzero in float32, so it must not be over-rejected.
+    assert np.float32(1e-30) != 0.0
+    assert _require_float32(
+        "gamma", 1e-30, lower=0.0, upper=1.0, preserve_nonzero=True
+    ) == pytest.approx(1e-30)
+
+
+def test_require_float32_preserve_nonzero_false_accepts_underflow() -> None:
+    # Without the guard, an underflowing value is accepted unchanged.
+    assert _require_float32(
+        "gamma", 1e-50, lower=0.0, upper=1.0, preserve_nonzero=False
+    ) == pytest.approx(1e-50)
 
 
 def test_cumulant_discovery_resource_formula_matches_state() -> None:
