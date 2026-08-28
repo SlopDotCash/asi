@@ -1588,6 +1588,7 @@ def transfer_validation(
         "gate_small_positive",
         bool(
             gate_delta.mean() > 0.0
+            and np.all(gate_delta > 0.0)
             and gate_delta.mean() <= conditioning_delta.mean() / 2.0
         ),
         "full protocol: gate +0.011, an order below conditioning +0.061",

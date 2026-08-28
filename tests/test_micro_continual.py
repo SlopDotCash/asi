@@ -1723,6 +1723,25 @@ class TestTransferValidation:
         assert checks["gate_small_positive"]["passed"] is False
         assert report["transfer_valid"] is False
 
+    def test_gate_requires_every_paired_seed_to_improve(self):
+        ladder = _synthetic_ladder(seeds=(0, 1, 2))
+        ladder["gated_norm"] = {
+            0: np.full(8, 0.830),
+            1: np.full(8, 0.870),
+            2: np.full(8, 0.870),
+        }
+
+        report = transfer_validation(ladder)
+        checks = {check["name"]: check for check in report["checks"]}
+        gate = checks["gate_small_positive"]
+
+        assert gate["values"]["per_seed_gate_delta"] == pytest.approx(
+            [-0.010, 0.029, 0.028]
+        )
+        assert gate["values"]["all_seeds_positive"] is False
+        assert gate["passed"] is False
+        assert report["transfer_valid"] is False
+
     def test_nondecaying_adam_fails(self):
         ladder = _synthetic_ladder()
         ladder["adamw"] = {seed: np.linspace(0.70, 0.75, 8) for seed in (0, 1)}
