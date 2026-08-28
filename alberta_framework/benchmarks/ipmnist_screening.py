@@ -7821,6 +7821,22 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "gram = wout.T wout ridged; the minimum-norm change in phi "
             "that would zero the head residual), renormalized to ||g||",
         ),
+        # Composition cell.  The feature-space Newton direction (+0.001672,
+        # precond_r1) and issue #1937's gate removal (+0.001712,
+        # gate_ablation_r2) are independent modifications of the same body
+        # update that each measured a real effect and each missed the +0.002
+        # bar alone.  They have never been run together.  If the utility gate
+        # is blunting the preconditioned direction, removing it should let
+        # more of that direction through, so this cell is not merely the sum
+        # of two main effects — it is where the interaction lives.
+        (
+            "rls_head_resid_l1_preset005_tp_nogate",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "resid_whiten": 1.0, "resid_newton": 1.0, "gate_scale": 0.0},
+            "feature-space Newton body signal on the ungated body (plain "
+            "decayed SGD): the untested cell of the gate x preconditioner "
+            "2x2",
+        ),
         (
             "rls_head_resid_l1_preset005_tp05",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
