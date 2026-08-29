@@ -473,3 +473,36 @@ def test_cumulant_discovery_hostile_observation_failure_is_normalized() -> None:
     state = discovery.init(jr.key(0))
     with pytest.raises(ValueError, match="readable float32 vector"):
         discovery.cumulants(state, HostileObservation())  # type: ignore[arg-type]
+
+
+# =============================================================================
+# Issue #2720 — preserve_nonzero must reject float32 underflow for ALL
+# supported input types, including built-in float
+# =============================================================================
+
+
+class TestPreserveNonzeroNarrowing:
+    def test_builtin_float_underflow_rejected(self) -> None:
+        # 1e-50 is nonzero in float64 but exactly 0.0 in float32; the guard
+        # exists to reject precisely this, independent of the Python type.
+        with pytest.raises(ValueError, match="gamma"):
+            CumulantDiscovery(raw_dim=4, gamma=1e-50)
+        with pytest.raises(ValueError, match="replacement_rate"):
+            CumulantDiscovery(raw_dim=4, replacement_rate=1e-50)
+
+    def test_numpy_float_underflow_rejected(self) -> None:
+        with pytest.raises(ValueError, match="gamma"):
+            CumulantDiscovery(raw_dim=4, gamma=np.float64(1e-50))
+
+    def test_type_value_parity(self) -> None:
+        # The same value must produce the same verdict for float and
+        # np.float64 across the boundary region.
+        for value in (1e-50, 1e-45, 0.25):
+            outcomes = []
+            for cast_value in (value, np.float64(value)):
+                try:
+                    CumulantDiscovery(raw_dim=4, gamma=cast_value)
+                    outcomes.append("accepted")
+                except ValueError:
+                    outcomes.append("rejected")
+            assert outcomes[0] == outcomes[1], (value, outcomes)

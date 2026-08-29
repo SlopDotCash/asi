@@ -106,7 +106,11 @@ def _require_float32(
         upper_inclusive=upper_inclusive,
         positive=positive,
     )
-    if preserve_nonzero and numerator != 0 and stored == 0.0:
+    # Re-narrow before testing: validated_float32_scalar_with_ratio returns a
+    # built-in float UN-narrowed, so testing ``stored`` directly makes this
+    # guard dead for the annotated input type (issue #2720).  The re-narrowing
+    # matches option_value_duration's underflow guard.
+    if preserve_nonzero and numerator != 0 and float(np.float32(stored)) == 0.0:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
 
