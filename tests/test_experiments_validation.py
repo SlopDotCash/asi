@@ -1029,3 +1029,18 @@ def test_run_multi_seed_experiment_rejects_invalid_seed_sequences(
 def test_get_final_performance_rejects_non_builtin_positive_window(window: object) -> None:
     with pytest.raises(ValueError, match="window"):
         get_final_performance({"candidate": _two_seed_trace()}, window=window)  # type: ignore[arg-type]
+
+
+def test_get_final_performance_docstring_section_structure() -> None:
+    doc = get_final_performance.__doc__
+    assert doc is not None
+    lines = doc.split("\n")
+    sections = [
+        (line.strip(), len(line) - len(line.lstrip()))
+        for line in lines
+        if line.strip() in ("Args:", "Returns:", "Raises:")
+    ]
+    assert sections == [("Args:", 0), ("Returns:", 0), ("Raises:", 0)]
+    raises_idx = lines.index("Raises:")
+    value_error_line = lines[raises_idx + 1]
+    assert value_error_line.startswith("    ValueError:")
