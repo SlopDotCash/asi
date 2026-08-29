@@ -517,7 +517,11 @@ class SwiftTD:
         decay_triggered = tau > eta
         log_alphas = jnp.where(
             decay_triggered,
-            state.log_step_sizes + jnp.log(state.step_size_decay) * phi**2,
+            jnp.clip(
+                state.log_step_sizes + jnp.log(state.step_size_decay) * phi**2,
+                jnp.log(state.eta_min),
+                jnp.log(eta),
+            ),
             state.log_step_sizes,
         )
         h_ext = jnp.where(decay_triggered, 0.0, state.h_traces)
