@@ -8151,6 +8151,27 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "single Hungarian match at 200 post-shift samples (V8's best "
             "single-shot cell)",
         ),
+        # Match-time star (V8: timing dominates accuracy; utility is
+        # concave in identification accuracy, so an early crude match that
+        # is later refined may ride the envelope better than waiting for
+        # 200 samples).  V1's measured accuracy is ~0.40 at N=100 and
+        # ~0.20 at N=50 (interpolating its 0.197@50 / 0.619@200 cells).
+        (
+            "rls_head_resid_identmap100_r",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 100.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0},
+            "first match at 100 post-shift samples (~0.40 accuracy), "
+            "refined at 200 and 2000",
+        ),
+        (
+            "rls_head_resid_identmap50_r",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0},
+            "first match at 50 post-shift samples (~0.20 accuracy, the "
+            "aggressive endpoint), refined at 200 and 2000",
+        ),
         (
             "rls_head_resid_identmap200_r",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
