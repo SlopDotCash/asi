@@ -640,7 +640,7 @@ class QHordeActorCriticAgent:
         """Sample one action from the current softmax policy."""
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
-        action = jr.categorical(sample_key, jnp.log(jnp.maximum(probs, 1e-8))).astype(jnp.int32)
+        action = jr.categorical(sample_key, jnp.log(probs)).astype(jnp.int32)
         return action, key, probs
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -943,7 +943,7 @@ class HordeActorCriticAgent:
         """Sample one action from the current softmax policy."""
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
-        action = jr.categorical(sample_key, jnp.log(jnp.maximum(probs, 1e-8))).astype(jnp.int32)
+        action = jr.categorical(sample_key, jnp.log(probs)).astype(jnp.int32)
         return action, key, probs
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -1291,10 +1291,19 @@ def _nlhac_log_prob(
         trunk_weights, trunk_biases, obs, leaky_relu_slope, use_layer_norm
     )
     logits = head_w @ hidden + head_b
-    probs = jax.nn.softmax(logits / temperature)
-    n_actions = probs.shape[0]
-    mixed_probs = (1.0 - actor_epsilon) * probs + actor_epsilon / n_actions
-    return jnp.log(jnp.maximum(mixed_probs[action], 1e-8))
+    tempered_logits = logits / temperature
+    n_actions = tempered_logits.shape[0]
+    return cast(
+        Array,
+        jax.lax.cond(
+            actor_epsilon == 0.0,
+            lambda: jax.nn.log_softmax(tempered_logits)[action],
+            lambda: jnp.log(
+                (1.0 - actor_epsilon) * jax.nn.softmax(tempered_logits)[action]
+                + actor_epsilon / n_actions
+            ),
+        ),
+    )
 
 
 _nlhac_grad = jax.grad(_nlhac_log_prob, argnums=0)
@@ -1752,7 +1761,7 @@ class NonlinearHordeActorCriticAgent:
         """Sample one action from the current softmax policy."""
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
-        action = jr.categorical(sample_key, jnp.log(jnp.maximum(probs, 1e-8))).astype(jnp.int32)
+        action = jr.categorical(sample_key, jnp.log(probs)).astype(jnp.int32)
         return action, key, probs
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -2439,7 +2448,7 @@ class NonlinearQHordeActorCriticAgent:
         """Sample one action from the current softmax policy."""
         key, sample_key = jr.split(state.rng_key)
         probs = self.policy(state, observation)
-        action = jr.categorical(sample_key, jnp.log(jnp.maximum(probs, 1e-8))).astype(jnp.int32)
+        action = jr.categorical(sample_key, jnp.log(probs)).astype(jnp.int32)
         return action, key, probs
 
     @functools.partial(jax.jit, static_argnums=(0,))

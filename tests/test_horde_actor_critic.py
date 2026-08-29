@@ -2019,3 +2019,37 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert applied.tolist() == [False, True]
     assert final_state.step_count.dtype == jnp.int32
     assert int(final_state.step_count) == 2**31 - 1
+
+
+def test_nlhac_log_prob_and_grad_prevents_gradient_vanishing_for_low_prob_actions() -> None:
+    """_nlhac_log_prob uses exact log_softmax so policy gradients do not vanish on rare actions."""
+    from alberta_framework.core.horde_actor_critic import _nlhac_grad, _nlhac_log_prob
+
+    trunk_w: tuple[jax.Array, ...] = ()
+    trunk_b: tuple[jax.Array, ...] = ()
+    head_w = jnp.asarray([[20.0, 0.0], [-10.0, 0.0]], dtype=jnp.float32)
+    head_b = jnp.asarray([0.0, 0.0], dtype=jnp.float32)
+    actor_params = (trunk_w, trunk_b, head_w, head_b)
+    obs = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+
+    # Action 1 has probability ~ exp(-30) << 1e-8
+    log_p = _nlhac_log_prob(actor_params, obs, 1, 0.0, False, 1.0, 0.0)
+    assert jnp.isfinite(log_p)
+    np.testing.assert_allclose(float(log_p), -30.0, rtol=1e-5)
+
+    # Gradients with respect to head_b and head_w should be non-zero and finite
+    grads = _nlhac_grad(actor_params, obs, 1, 0.0, False, 1.0, 0.0)
+    grad_trunk_w, grad_trunk_b, grad_head_w, grad_head_b = grads
+    assert jnp.all(jnp.isfinite(grad_head_b))
+    assert jnp.all(jnp.isfinite(grad_head_w))
+    np.testing.assert_allclose(
+        grad_head_b, jnp.asarray([-1.0, 1.0], dtype=jnp.float32), atol=1e-5
+    )
+    np.testing.assert_allclose(
+        grad_head_w[1], jnp.asarray([1.0, 0.0], dtype=jnp.float32), atol=1e-5
+    )
+
+    # Jitted grad
+    jitted_grad = jax.jit(_nlhac_grad, static_argnums=(3, 4, 5, 6))
+    j_grads = jitted_grad(actor_params, obs, 1, 0.0, False, 1.0, 0.0)
+    np.testing.assert_allclose(j_grads[3], jnp.asarray([-1.0, 1.0], dtype=jnp.float32), atol=1e-5)

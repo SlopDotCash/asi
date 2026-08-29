@@ -595,3 +595,15 @@ def test_actor_critic_state_contract_and_counter_saturation() -> None:
     )
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 2**31 - 1
+
+
+def test_actor_critic_select_action_exact_distribution() -> None:
+    """select_action samples from exact log probabilities without artificial floor."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(2, jr.key(42))
+    weights = jnp.asarray([[100.0, 0.0], [-100.0, 0.0]], dtype=jnp.float32)
+    state = state.replace(actor_weights=weights)
+    obs = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    action, _next_key, probs = agent.select_action(state, obs)
+    assert int(action) == 0
+    assert float(probs[0]) > 0.999
