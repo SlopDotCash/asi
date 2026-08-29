@@ -135,3 +135,34 @@ where nearly all the value lives.
   variant (V8) measures the achievable version.
 - Development diagnostic, seeds 0-2, permanently nonpromoting. No claim
   beyond the consumed seeds.
+
+## V8 — the delayed-onset variant (honest identifier bound)
+
+Runner `V8_delayed_remap_runner.py`, parts in `v8_parts/`. Each task runs the
+TRUE permutation for its first N steps — the ordinary transient is paid in
+full — then switches to the partial remap, with (N, p) pairs taken from V1's
+own measurements of what is achievable at that budget.
+
+| arm | acc | vs control | all seeds + |
+|---|---|---|---|
+| control | 0.869503 | — | — |
+| N=200, p=0.62 | **0.899660** | +0.030157 ± 0.000112 | yes |
+| N=500, p=0.79 | 0.898061 | +0.028558 ± 0.000238 | yes |
+| N=2000, p=0.84 | 0.874319 | +0.004816 ± 0.000167 | yes |
+
+Two findings:
+
+1. **Timing dominates accuracy.** Identifying at 200 samples with 62%
+   accuracy beats identifying at 500 with 79%, and identifying at 2000 with
+   84% is nearly worthless — by then the gradient transient it would have
+   replaced has already been paid. This inverts V1's implicit assumption
+   that higher identification accuracy is the goal.
+2. **An honest single-shot identifier reaches 0.8997** — 0.0003 below the
+   0.90 target. This bound is conservative: the V8 oracle switches once and
+   never improves, whereas a real identifier re-matches as post-shift
+   samples accumulate (0.62 at 200 -> 0.79 at 500 -> 0.84 at 2000), riding
+   the upper envelope of these arms.
+
+Consequence: a real in-protocol identifier arm is now justified as the next
+implementation step. Development diagnostic, seeds 0-2, permanently
+nonpromoting.
