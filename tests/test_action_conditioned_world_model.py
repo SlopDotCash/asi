@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 import warnings
 from fractions import Fraction
 from types import MappingProxyType
@@ -464,7 +465,10 @@ class _FloatSpoof:
         ({"max_delta_scale": 1e100}, "max_delta_scale must remain finite once narrowed"),
         ({"reward_scale": 1e-100}, "reward_scale must remain positive once narrowed"),
         ({"max_delta_scale": 1e-100}, "max_delta_scale must remain positive once narrowed"),
-        ({"observation_scale": (1e-100, 1.0)}, "must remain positive once narrowed"),
+        (
+            {"observation_scale": (1e-100, 1.0)},
+            r"observation_scale\[0\] must be >= 1.1754943508222875e-38",
+        ),
         (
             {"utility_decay": 1.0 - 1e-10},
             r"utility_decay must remain in \[0.0, 1.0\) once narrowed",
@@ -955,3 +959,89 @@ def test_action_world_model_rolls_back_reduction_overflow() -> None:
     assert not bool(result.update_applied)
     assert float(result.observation_mse) == 0.0
     assert int(result.state.step_count) == 0
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [1e-7, 1e-9, 1e-12, 1e-20, 1e-30, float(np.finfo(np.float32).tiny)],
+)
+def test_observation_scale_targets_divide_by_declared_scale_below_retired_floor(
+    scale: float,
+) -> None:
+    # 1. With predict_delta=True
+    config_delta = ActionConditionedWorldModelConfig(
+        observation_dim=1,
+        n_actions=2,
+        hidden_sizes=(),
+        predict_delta=True,
+        observation_scale=(scale,),
+    )
+    model_delta = ActionConditionedWorldModel(config_delta)
+    obs = jnp.asarray([1.0 * scale], dtype=jnp.float32)
+    next_obs = jnp.asarray([3.0 * scale], dtype=jnp.float32)
+    targets_delta = model_delta.targets(
+        obs,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+        next_obs,
+    )
+    # Expected normalized delta is (3.0 * scale - 1.0 * scale) / scale = 2.0
+    assert math.isclose(float(targets_delta[0]), 2.0, rel_tol=1e-5)
+
+    # 2. With predict_delta=False
+    config_nodelta = ActionConditionedWorldModelConfig(
+        observation_dim=1,
+        n_actions=2,
+        hidden_sizes=(),
+        predict_delta=False,
+        observation_scale=(scale,),
+    )
+    model_nodelta = ActionConditionedWorldModel(config_nodelta)
+    targets_nodelta = model_nodelta.targets(
+        obs,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+        next_obs,
+    )
+    # Expected normalized observation target is (3.0 * scale) / scale = 3.0
+    assert math.isclose(float(targets_nodelta[0]), 3.0, rel_tol=1e-5)
+
+
+def test_observation_scale_rejects_below_smallest_normal_float32() -> None:
+    smallest_normal = float(np.finfo(np.float32).tiny)
+    subnormal = float(np.finfo(np.float32).smallest_subnormal)
+    assert subnormal < smallest_normal
+
+    for bad_scale in (subnormal, 1e-40, 1e-45, 0.0, -1.0):
+        with pytest.raises(
+            ValueError,
+            match=r"observation_scale\[0\] must (?:remain|be) >= 1.1754943508222875e-38",
+        ):
+            ActionConditionedWorldModelConfig(
+                observation_dim=1,
+                n_actions=2,
+                hidden_sizes=(),
+                observation_scale=(bad_scale,),
+            )
+
+
+def test_observation_scale_preserves_behavior_at_and_above_retired_floor() -> None:
+    for scale in (1e-6, 1e-3, 1.0, 2.0):
+        config = ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            predict_delta=True,
+            observation_scale=(scale, 2.0 * scale),
+        )
+        model = ActionConditionedWorldModel(config)
+        obs = jnp.asarray([1.0 * scale, 2.0 * scale], dtype=jnp.float32)
+        next_obs = jnp.asarray([3.0 * scale, 6.0 * scale], dtype=jnp.float32)
+        targets = model.targets(
+            obs,
+            jnp.asarray(0.0, dtype=jnp.float32),
+            jnp.asarray(0.9, dtype=jnp.float32),
+            next_obs,
+        )
+        assert math.isclose(float(targets[0]), 2.0, rel_tol=1e-5)
+        assert math.isclose(float(targets[1]), 2.0, rel_tol=1e-5)
