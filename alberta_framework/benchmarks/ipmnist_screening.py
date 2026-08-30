@@ -8156,6 +8156,30 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         # is later refined may ride the envelope better than waiting for
         # 200 samples).  V1's measured accuracy is ~0.40 at N=100 and
         # ~0.20 at N=50 (interpolating its 0.197@50 / 0.619@200 cells).
+        # Star round 2 (unit 3): the round-1 star was monotone toward
+        # earlier first matches with no accuracy floor down to ~0.20 at
+        # N=50.  Two further probes: an even earlier first match (N=25,
+        # V1-interpolated accuracy ~0.10), and a faster REFINE schedule on
+        # the confirmed N=50 arm (50/100/500 instead of the inherited
+        # 50/200/2000 — the same timing-dominates-accuracy principle
+        # applied to the second and third matches).
+        (
+            "rls_head_resid_identmap25_r",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 25.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0},
+            "first match at 25 post-shift samples (~0.10 accuracy), "
+            "refined at 200 and 2000",
+        ),
+        (
+            "rls_head_resid_identmap50_fast",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 100.0,
+             "ident_match3": 500.0},
+            "first match at 50, refined at 100 and 500 (faster refine "
+            "schedule; trades the late 2000-sample match for an early "
+            "correction)",
+        ),
         (
             "rls_head_resid_identmap100_r",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
