@@ -340,3 +340,34 @@ def test_geometry_runner_rejects_invalid_transactions(monkeypatch: pytest.Monkey
     )
     with pytest.raises(ValueError, match="transaction"):
         run_streaming_matrix_evaluation()
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [np.float32(2.938736e-39), np.float32(1.147944e-41)],
+)
+def test_spectral_matrix_sign_fails_closed_on_all_subnormal_float32(scale: np.float32) -> None:
+    """A bitwise-nonzero all-subnormal matrix must not be certified as a valid zero."""
+    base = np.array([[2.0, 1.0], [0.5, -1.0]], dtype=np.float32)
+    matrix = jnp.asarray((base * scale).astype(np.float32))
+    assert not bool(np.any(np.asarray(matrix != 0)))
+    assert float(jnp.linalg.norm(matrix)) == 0.0
+    safe, valid = spectral_matrix_sign_transaction(matrix)
+    assert bool(jnp.all(jnp.isfinite(safe)))
+    assert not bool(valid)
+    jitted_safe, jitted_valid = jax.jit(spectral_matrix_sign_transaction)(matrix)
+    assert bool(jnp.all(jnp.isfinite(jitted_safe)))
+    assert not bool(jitted_valid)
+    with pytest.raises(ValueError, match="matrix sign"):
+        spectral_matrix_sign(matrix)
+
+
+def test_spectral_matrix_sign_true_zero_remains_the_reserved_valid_answer() -> None:
+    zero = jnp.zeros((2, 2), dtype=jnp.float32)
+    safe, valid = spectral_matrix_sign_transaction(zero)
+    np.testing.assert_array_equal(safe, zero)
+    assert bool(valid)
+    signed_zero = jnp.asarray(np.array([[-0.0, 0.0], [0.0, -0.0]], dtype=np.float32))
+    signed_safe, signed_valid = spectral_matrix_sign_transaction(signed_zero)
+    assert bool(signed_valid)
+    np.testing.assert_array_equal(jnp.abs(signed_safe), jnp.zeros((2, 2), dtype=jnp.float32))

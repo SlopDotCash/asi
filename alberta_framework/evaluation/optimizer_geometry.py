@@ -159,7 +159,8 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
 
     The pinned paper defines ``f(X) = 3/2 X - 1/2 XX^T X``. Frobenius
     normalization places every singular value in its convergence interval and
-    preserves an exact zero for a zero matrix.
+    preserves an exact zero for a zero matrix. An all-subnormal float32 input
+    is reported invalid instead of being certified as that reserved zero.
     """
     value = _trusted_array(matrix, name="matrix")
     if (
@@ -186,6 +187,16 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
         x = next_x
     candidate = x.T if transposed else x
     valid = valid & jnp.all(jnp.isfinite(candidate))
+    if value.dtype == jnp.float32:
+        # Float32 subnormals survive storage and jnp.abs, but reductions and
+        # comparisons flush them to zero. Bitwise magnitude inspection is the
+        # remaining way to tell a nonzero input from the reserved zero matrix.
+        magnitude_bits = jnp.bitwise_and(
+            value.view(dtype=jnp.uint32), jnp.uint32(0x7FFFFFFF)
+        )
+        comparison_sees_mass = jnp.max(jnp.abs(value)) > jnp.asarray(0.0, dtype=value.dtype)
+        flushed_nonzero = jnp.any(magnitude_bits != jnp.uint32(0)) & (~comparison_sees_mass)
+        valid = valid & (~flushed_nonzero)
     safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
     return safe, valid
 
