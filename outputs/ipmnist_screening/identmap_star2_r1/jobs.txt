@@ -1,0 +1,9 @@
+rls_head_resid_identmap25_r 0
+rls_head_resid_identmap25_r 1
+rls_head_resid_identmap25_r 2
+rls_head_resid_identmap50_fast 0
+rls_head_resid_identmap50_fast 1
+rls_head_resid_identmap50_fast 2
+rls_head_resid_identmap50_r 0
+rls_head_resid_identmap50_r 1
+rls_head_resid_identmap50_r 2

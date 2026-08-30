@@ -213,6 +213,26 @@ postmortem.
     and 60 tasks in this screen. Record:
     `outputs/ipmnist_screening/precond_r1/`.
 
+21. **The 60-task screen overstates 200-task effect sizes in the rls_head
+    family (~3.5x).** The Newton+nogate composition won the 60-task screen
+    twice (+0.0027, 15/15 seed-diffs positive) and failed its preregistered
+    200-task confirmation at +0.0008 — a valid rejection, and a measured
+    calibration warning: treat 60-task paired effects as upper bounds until
+    confirmed at horizon. Records:
+    `outputs/ipmnist_screening/precond_r2/`.
+
+22. **The identifier match-time star is closed at 50/200/2000.** Round 2
+    probed both remaining directions from the confirmed optimum: an earlier
+    first match (N=25, ~0.10 accuracy) measured -0.000129 — the family's
+    first negative arm, locating the accuracy floor between 0.10 and 0.20 —
+    and a faster refine schedule (50/100/500) measured +0.000371, below the
+    tie floor. Neither an earlier first match nor a faster refine adds
+    anything at +/-0.0004 resolution; the round-1 monotonicity bottomed out
+    exactly at N=50. Do not re-tune the match schedule; remaining headroom
+    in this family lies elsewhere (the 0.016 to the 0.933 asymptote is
+    within-task convergence, untouched by identification). Records:
+    `outputs/ipmnist_screening/identmap_star2_r1/`.
+
 21. **Composing the Newton direction with gate removal cleared the 60-task
     bar and then failed confirmation: this mechanism class decays ~3.5x with
     horizon.** `rls_head_resid_l1_preset005_tp_nogate` combines the
