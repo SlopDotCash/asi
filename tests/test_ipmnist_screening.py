@@ -6450,3 +6450,131 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+
+class TestRLSHeadIdentMap:
+    """The online permutation-identifier arms (V7/V8 chain).
+
+    House convention: every new arm ships its bit-exact reduction pin in the
+    suite.  The mechanism was implemented before these tests (the pin was
+    verified by hand during development); the tests freeze it.
+    """
+
+    @staticmethod
+    def _ident_spec(**overrides):
+        spec = screening_spec("rls_head_resid_identmap200_r")
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_reduction_pin_bitwise(self, small_data):
+        """``ident_match_at = 0`` delegates verbatim to the incumbent."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._ident_spec(
+                ident_match_at=0.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(incumbent.per_task_loss),
+        )
+
+    def test_task0_in_run_null(self, small_data):
+        """Task 0 is bitwise the incumbent's: no reference is frozen yet,
+        so the remap stays identity for the whole first task."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        ident = run_screening_config(
+            x, y,
+            self._ident_spec(
+                ident_match_at=10.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        assert float(ident.per_task_accuracy[0]) == float(
+            incumbent.per_task_accuracy[0]
+        )
+
+    def test_match_changes_later_tasks(self):
+        """With a reachable match step the Hungarian callback fires inside
+        the scanned loop and the post-boundary trajectory diverges from the
+        incumbent (the mechanism is live, not compiled away).
+
+        ``small_data`` is iid across pixels, which makes a permutation
+        statistically invisible (identical marginals) — the detector
+        correctly never fires there.  This test gives every pixel a distinct
+        marginal mean so boundaries are detectable.
+        """
+        key = jr.key(4321)
+        kx, ky = jr.split(key)
+        offsets = jnp.linspace(-2.0, 2.0, SMALL.input_dim)
+        x = np.asarray(
+            jr.uniform(kx, (64, SMALL.input_dim), jnp.float32, -0.3, 0.3)
+            + offsets[None, :]
+        )
+        y = np.asarray(jr.randint(ky, (64,), 0, SMALL.n_classes))
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        ident = run_screening_config(
+            x, y,
+            self._ident_spec(
+                ident_match_at=10.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        later = np.asarray(ident.per_task_accuracy[1:])
+        base = np.asarray(incumbent.per_task_accuracy[1:])
+        assert not np.array_equal(later, base)
+        assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
+
+    def test_registry_arms(self):
+        """Only the two 200-task-confirmed identifier arms are registered;
+        the screened intermediates and the round-2 rejections (negative
+        result #22) are deregistered."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        expected = {
+            "rls_head_resid_identmap50_r": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0,
+            },
+            "rls_head_resid_identmap200_r": {
+                "ident_match_at": 200.0, "ident_match2": 500.0,
+                "ident_match3": 2000.0,
+            },
+        }
+        registered = {
+            name for name in SCREENING_REGISTRY if "identmap" in name
+        }
+        assert registered == set(expected)
+        for name, overrides in expected.items():
+            spec = SCREENING_REGISTRY[name]
+            assert spec.factory is _make_rls_head_identmap_learner
+            assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+            assert spec.hyperparameters["head_resid"] == 1.0
+            assert spec.hyperparameters["rls_lambda"] == 1.0
+            assert spec.hyperparameters["rls_reset_frac"] == 0.05
+            for key, value in overrides.items():
+                assert spec.hyperparameters[key] == value

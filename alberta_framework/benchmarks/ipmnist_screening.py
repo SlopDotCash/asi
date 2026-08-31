@@ -8039,77 +8039,12 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "residual-driven body at ridge 0.01 + P reset (ridge direction "
             "probe on the residual loop)",
         ),
-        # Preconditioned residual signal.  CEILING_ANALYSIS.md puts 0.029
-        # of the champion's error on within-task convergence speed.  The
-        # RLS head cashed in the READOUT's share of that (closed-form, ~d
-        # samples); the BODY's share is untouched — it is still gated SGD
-        # on an unconditioned feature-space error g = wout @ err.  Every
-        # preconditioner screened against that share (IDBD, Autostep,
-        # Adam+CBP) failed on continual stability, not on speed; both
-        # directions below are built from state the incumbent already
-        # carries and the shift detector already resets at boundaries, so
-        # neither adds a cross-permutation carry of its own.  Each is
-        # renormalized to ||g||, so the frozen step size still applies
-        # (negative result #1).  resid_whiten=0 is the incumbent, bitwise.
-        (
-            "rls_head_resid_l1_preset005_gn",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "resid_whiten": 1.0},
-            "body error signal whitened by the head's inverse feature "
-            "correlation (delta = P g, renormalized to ||g||) — a "
-            "heuristic, NOT Gauss-Newton: the curvature in phi is "
-            "wout @ wout.T, not the activation second moment",
-        ),
-        (
-            "rls_head_resid_l1_preset005_gn05",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "resid_whiten": 0.5},
-            "half-whitened body error signal (the interpolation hedge)",
-        ),
-        (
-            "rls_head_resid_l1_preset005_tp",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "resid_whiten": 1.0, "resid_newton": 1.0},
-            "feature-space Newton body signal (delta = wout gram^-1 err, "
-            "gram = wout.T wout ridged; the minimum-norm change in phi "
-            "that would zero the head residual), renormalized to ||g||",
-        ),
-        # Composition cell.  The feature-space Newton direction (+0.001672,
-        # precond_r1) and issue #1937's gate removal (+0.001712,
-        # gate_ablation_r2) are independent modifications of the same body
-        # update that each measured a real effect and each missed the +0.002
-        # bar alone.  They have never been run together.  If the utility gate
-        # is blunting the preconditioned direction, removing it should let
-        # more of that direction through, so this cell is not merely the sum
-        # of two main effects — it is where the interaction lives.
-        (
-            "rls_head_resid_l1_preset005_tp_nogate",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "resid_whiten": 1.0, "resid_newton": 1.0, "gate_scale": 0.0},
-            "feature-space Newton body signal on the ungated body (plain "
-            "decayed SGD): the untested cell of the gate x preconditioner "
-            "2x2",
-        ),
-        (
-            "rls_head_resid_l1_preset005_tp05",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "resid_whiten": 0.5, "resid_newton": 1.0},
-            "half feature-space Newton body signal (the interpolation "
-            "hedge)",
-        ),
-        # The untested cell of the head 2x2: the capped forgetting head is
-        # the best PASSENGER-head arm measured (rls_head_l0999_pcap
-        # 0.86608 vs rls_head_l1_preset005 0.86480) but has never carried
-        # the residual body signal that moved the plateau.  Forgetting runs
-        # here under BOTH wind-up guards at once (trace cap and P reset).
-        (
-            "rls_head_resid_l0999_pcap",
-            {"rls_lambda": 0.999, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "rls_p_trace_cap": 1e4},
-            "residual-driven body on a forgetting-0.999 head held bounded "
-            "by both wind-up guards (trace cap 1e4 and the detector-driven "
-            "P reset at 0.05)",
-        ),
+        # The preconditioned-residual and residual-forgetting arms
+        # screened here (gn/gn05/tp/tp05/tp_nogate, resid_l0999_pcap) were
+        # refuted or failed 200-task confirmation — negative results
+        # #19-#21 — and are deregistered.  Ledger entries, factories, and
+        # pinned outputs are retained; the shards bind the commits that ran
+        # them.
     ):
         body_update = (
             "plain decayed residual SGD (utility bookkeeping removed)"
@@ -8136,73 +8071,33 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             )
         )
     # Online permutation identification + input remap (V7/V8 chain).  V8
-    # measured that a single-shot remap at N=200 post-shift samples and V1's
-    # measured 0.62 identification accuracy lifts the incumbent to 0.8997;
-    # a refining identifier rides the upper envelope.  These arms implement
-    # the real mechanism: V1 class-conditional fingerprint accumulated
-    # online, champion shift detector on the raw stream, Hungarian match at
-    # the preregistered sample counts.  ident_match_at=0 delegates verbatim
-    # to the incumbent factory (bit-exact reduction, pinned).
+    # measured that a single-shot remap at N=200 post-shift samples and
+    # V1's measured 0.62 identification accuracy lifts the incumbent to
+    # 0.8997; a refining identifier rides the upper envelope.  The arms
+    # below are the two 200-task/20-seed CONFIRMED members of the family
+    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # intermediates (identmap200 single-shot, identmap100_r) and the
+    # round-2 rejections (identmap25_r, identmap50_fast — negative result
+    # #22) are deregistered but retained in the ledger and pinned outputs.
+    # ident_match_at=0 delegates verbatim to the incumbent factory
+    # (bit-exact reduction, pinned by tests).
     for ident_name, ident_overrides, ident_extra in (
-        (
-            "rls_head_resid_identmap200",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "ident_match_at": 200.0},
-            "single Hungarian match at 200 post-shift samples (V8's best "
-            "single-shot cell)",
-        ),
-        # Match-time star (V8: timing dominates accuracy; utility is
-        # concave in identification accuracy, so an early crude match that
-        # is later refined may ride the envelope better than waiting for
-        # 200 samples).  V1's measured accuracy is ~0.40 at N=100 and
-        # ~0.20 at N=50 (interpolating its 0.197@50 / 0.619@200 cells).
-        # Star round 2 (unit 3): the round-1 star was monotone toward
-        # earlier first matches with no accuracy floor down to ~0.20 at
-        # N=50.  Two further probes: an even earlier first match (N=25,
-        # V1-interpolated accuracy ~0.10), and a faster REFINE schedule on
-        # the confirmed N=50 arm (50/100/500 instead of the inherited
-        # 50/200/2000 — the same timing-dominates-accuracy principle
-        # applied to the second and third matches).
-        (
-            "rls_head_resid_identmap25_r",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "ident_match_at": 25.0, "ident_match2": 200.0,
-             "ident_match3": 2000.0},
-            "first match at 25 post-shift samples (~0.10 accuracy), "
-            "refined at 200 and 2000",
-        ),
-        (
-            "rls_head_resid_identmap50_fast",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "ident_match_at": 50.0, "ident_match2": 100.0,
-             "ident_match3": 500.0},
-            "first match at 50, refined at 100 and 500 (faster refine "
-            "schedule; trades the late 2000-sample match for an early "
-            "correction)",
-        ),
-        (
-            "rls_head_resid_identmap100_r",
-            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
-             "ident_match_at": 100.0, "ident_match2": 200.0,
-             "ident_match3": 2000.0},
-            "first match at 100 post-shift samples (~0.40 accuracy), "
-            "refined at 200 and 2000",
-        ),
         (
             "rls_head_resid_identmap50_r",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
              "ident_match_at": 50.0, "ident_match2": 200.0,
              "ident_match3": 2000.0},
-            "first match at 50 post-shift samples (~0.20 accuracy, the "
-            "aggressive endpoint), refined at 200 and 2000",
+            "first match at 50 post-shift samples (~0.20 accuracy), "
+            "refined at 200 and 2000 — the star optimum, 200-task "
+            "confirmed at 0.9166 (+0.00745 vs identmap200_r, 20/20 seeds)",
         ),
         (
             "rls_head_resid_identmap200_r",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
              "ident_match_at": 200.0, "ident_match2": 500.0,
              "ident_match3": 2000.0},
-            "matches at 200/500/2000 post-shift samples (rides V1's "
-            "accuracy-vs-N curve: 0.62 -> 0.79 -> 0.84)",
+            "matches at 200/500/2000 post-shift samples — 200-task "
+            "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
     ):
         specs.append(
