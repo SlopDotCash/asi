@@ -159,8 +159,10 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
 
     The pinned paper defines ``f(X) = 3/2 X - 1/2 XX^T X``. Frobenius
     normalization places every singular value in its convergence interval and
-    preserves an exact zero for a zero matrix. An all-subnormal float32 input
-    is reported invalid instead of being certified as that reserved zero.
+    preserves an exact zero for a zero matrix. A float32 input whose Frobenius
+    reduction underflows to zero (all-subnormal or tiny-normal) is reported
+    invalid instead of being certified as that reserved zero; an input with a
+    visible norm is normalized by that exact norm rather than a floor.
     """
     value = _trusted_array(matrix, name="matrix")
     if (
@@ -174,7 +176,25 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
         raise ValueError("matrix must be non-empty and steps a positive integer")
     norm = jnp.linalg.norm(value)
     valid = jnp.all(jnp.isfinite(value)) & jnp.isfinite(norm)
-    x = value / jnp.maximum(norm, jnp.asarray(1e-12, dtype=value.dtype))
+    if value.dtype == jnp.float32:
+        # Float32 reductions flush subnormals, so a bitwise-nonzero input can
+        # reduce to an exact-zero Frobenius norm and must not be certified as
+        # the reserved rank-0 answer. Magnitude bits are the only surviving
+        # signal, and they must be read from the untouched input before the
+        # fused float pipeline runs: jax.jit on jaxlib 0.7.1 collapsed the
+        # guard when the bit inspection was deferred to the end of the graph.
+        magnitude_bits = jnp.bitwise_and(
+            value.view(dtype=jnp.uint32), jnp.uint32(0x7FFFFFFF)
+        )
+        flushed_nonzero = jnp.any(magnitude_bits != jnp.uint32(0)) & (
+            norm == jnp.asarray(0.0, dtype=value.dtype)
+        )
+        valid = valid & (~flushed_nonzero)
+    # Normalize by the true norm: the reserved zero input keeps a unit
+    # divisor so x stays exactly zero, and any nonzero norm - however small -
+    # yields the correct unit-scale matrix instead of a collapsed floor.
+    divisor = jnp.where(norm == 0, jnp.asarray(1.0, dtype=value.dtype), norm)
+    x = value / divisor
     if x.shape[0] > x.shape[1]:
         x = x.T
         transposed = True
@@ -187,16 +207,6 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
         x = next_x
     candidate = x.T if transposed else x
     valid = valid & jnp.all(jnp.isfinite(candidate))
-    if value.dtype == jnp.float32:
-        # Float32 subnormals survive storage and jnp.abs, but reductions and
-        # comparisons flush them to zero. Bitwise magnitude inspection is the
-        # remaining way to tell a nonzero input from the reserved zero matrix.
-        magnitude_bits = jnp.bitwise_and(
-            value.view(dtype=jnp.uint32), jnp.uint32(0x7FFFFFFF)
-        )
-        comparison_sees_mass = jnp.max(jnp.abs(value)) > jnp.asarray(0.0, dtype=value.dtype)
-        flushed_nonzero = jnp.any(magnitude_bits != jnp.uint32(0)) & (~comparison_sees_mass)
-        valid = valid & (~flushed_nonzero)
     safe = jnp.where(valid, candidate, jnp.zeros_like(candidate))
     return safe, valid
 

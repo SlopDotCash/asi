@@ -26,7 +26,9 @@ from alberta_framework.evaluation.optimizer_geometry import (
 
 
 def _paper_ns5(matrix: jax.Array, *, steps: int) -> jax.Array:
-    value = matrix / jnp.maximum(jnp.linalg.norm(matrix), jnp.asarray(1e-12, matrix.dtype))
+    norm = jnp.linalg.norm(matrix)
+    divisor = jnp.where(norm == 0, jnp.asarray(1.0, matrix.dtype), norm)
+    value = matrix / divisor
     transposed = value.shape[0] > value.shape[1]
     if transposed:
         value = value.T
@@ -360,6 +362,52 @@ def test_spectral_matrix_sign_fails_closed_on_all_subnormal_float32(scale: np.fl
     assert not bool(jitted_valid)
     with pytest.raises(ValueError, match="matrix sign"):
         spectral_matrix_sign(matrix)
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [np.float32(5.877472e-39), np.float32(1e-20)],
+)
+def test_spectral_matrix_sign_fails_closed_on_underflowed_norm_float32(scale: np.float32) -> None:
+    """A comparison-visible input whose Frobenius reduction underflows is not certified.
+
+    Row 1 of the #2391 reproduction table has a largest entry exactly at the
+    smallest normal float32 (its squared terms still underflow), and an
+    ordinary tiny-normal matrix behaves the same way: the norm reduction
+    flushes to 0.0 even though ``matrix != 0`` sees the mass, so the reserved
+    rank-0 answer must not be certified for either.
+    """
+    base = np.array([[2.0, 1.0], [0.5, -1.0]], dtype=np.float32)
+    matrix = jnp.asarray((base * scale).astype(np.float32))
+    assert bool(np.any(np.asarray(matrix != 0)))
+    assert float(jnp.linalg.norm(matrix)) == 0.0
+    safe, valid = spectral_matrix_sign_transaction(matrix)
+    assert bool(jnp.all(jnp.isfinite(safe)))
+    assert not bool(valid)
+    jitted_safe, jitted_valid = jax.jit(spectral_matrix_sign_transaction)(matrix)
+    assert bool(jnp.all(jnp.isfinite(jitted_safe)))
+    assert not bool(jitted_valid)
+    with pytest.raises(ValueError, match="matrix sign"):
+        spectral_matrix_sign(matrix)
+
+
+def test_spectral_matrix_sign_small_visible_norm_is_correct() -> None:
+    """A small matrix with a visible norm normalizes correctly instead of collapsing.
+
+    The pinned paper normalizes by the Frobenius norm; a 1e-15-scale matrix
+    has a representable norm below the old 1e-12 divisor floor, so it must
+    still produce the unit-scale sign rather than a collapsed near-zero
+    answer certified as valid.
+    """
+    base = np.array([[2.0, 1.0], [0.5, -1.0]], dtype=np.float32)
+    matrix = jnp.asarray((base * np.float32(1e-15)).astype(np.float32))
+    assert float(jnp.linalg.norm(matrix)) > 0.0
+    safe, valid = spectral_matrix_sign_transaction(matrix)
+    assert bool(valid)
+    np.testing.assert_allclose(safe, _paper_ns5(matrix, steps=5), rtol=1e-6)
+    jitted_safe, jitted_valid = jax.jit(spectral_matrix_sign_transaction)(matrix)
+    assert bool(jitted_valid)
+    np.testing.assert_allclose(jitted_safe, _paper_ns5(matrix, steps=5), rtol=1e-6)
 
 
 def test_spectral_matrix_sign_true_zero_remains_the_reserved_valid_answer() -> None:
