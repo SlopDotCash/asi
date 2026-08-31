@@ -5032,7 +5032,8 @@ def _identmap_assignment(
         - 2.0 * ref_vec @ post_vec.T
     )
     _rows, cols = linear_sum_assignment(cost)
-    return cols.astype(np.int32)
+    assignment: np.ndarray = np.asarray(cols, dtype=np.int32)
+    return assignment
 
 
 def _make_rls_head_identmap_learner(
@@ -5196,13 +5197,16 @@ def _make_rls_head_identmap_learner(
         )
 
         def matched(_: None) -> Array:
-            return jax.pure_callback(
+            result = jax.pure_callback(
                 _identmap_assignment,
-                jax.ShapeDtypeStruct((input_dim,), jnp.int32),
+                jax.ShapeDtypeStruct(  # type: ignore[no-untyped-call]
+                    (input_dim,), jnp.int32
+                ),
                 ref_class_means, ref_marg_mean, ref_marg_std,
                 post_class_means, post_marg_mean, post_marg_std,
                 vmap_method="sequential",
             )
+            return cast(Array, result)
 
         def unmatched(_: None) -> Array:
             return remap
