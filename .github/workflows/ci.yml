@@ -111,7 +111,7 @@ jobs:
             --requirement "$RUNNER_TEMP/floor-requirements.txt" \
             'jax==0.7.1' \
             'jaxlib==0.7.1' \
-            'numpy==1.26.0' \
+            'numpy==2.1.3' \
             'pytest>=8.0'
           "$floor_python" -m pip check
 
@@ -153,7 +153,7 @@ jobs:
 
           assert jax.__version__ == "0.7.1"
           assert jaxlib.__version__ == "0.7.1"
-          assert numpy.__version__ == "1.26.0"
+          assert numpy.__version__ == "2.1.3"
           PY
 
       - name: Exercise robot-floor runtime behavior
@@ -168,12 +168,18 @@ jobs:
           sarsa_node+="TestSARSAConfigSerialization::test_agent_config_roundtrip"
           actor_node="tests/test_actor_critic.py::"
           actor_node+="test_actor_critic_update_is_jittable"
+          spectral_node="tests/test_optimizer_geometry.py::"
+          spectral_node+="test_spectral_matrix_sign_fails_closed_on_all_subnormal_float32"
+          spectral_underflow_node="tests/test_optimizer_geometry.py::"
+          spectral_underflow_node+="test_spectral_matrix_sign_fails_closed_on_underflowed_norm_float32"
           "$RUNNER_TEMP/robot-floor/bin/python" -m pytest \
             "$initializer_node" \
             "$chex_node" \
             "$optimizer_node" \
             "$sarsa_node" \
             "$actor_node" \
+            "$spectral_node" \
+            "$spectral_underflow_node" \
             -q \
             -o addopts="" \
             --strict-config \
