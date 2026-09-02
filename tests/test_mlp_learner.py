@@ -27,6 +27,8 @@ from alberta_framework import (
     run_mlp_learning_loop,
     run_mlp_learning_loop_batched,
 )
+from alberta_framework.core.baseline_optimizers import Adam as BaselineAdam
+from alberta_framework.core.baseline_optimizers import RMSprop as BaselineRMSprop
 
 
 class TestMLPLearner:
@@ -1579,3 +1581,37 @@ def test_mlp_dimensions_are_exact_canonical_and_preflighted() -> None:
         learner.init(True, jr.key(0))
     with pytest.raises(ValueError, match="resource"):
         MLPLearner(hidden_sizes=(2**26,)).init(2, jr.key(0))
+
+
+class TestBaselineOptimizerLearning:
+    """Pluggable Adam/RMSprop must descend through the MLP path.
+
+    Regression test for the inverted error contract where
+    ``update_from_gradient_checked`` folded ``-error`` into the returned step
+    while ``MLPLearner`` applied ``param += error * step``, yielding gradient
+    ascent proportional to ``-error**2``.
+    """
+
+    @pytest.mark.parametrize("make_optimizer", [BaselineAdam, BaselineRMSprop])
+    def test_mlp_learns_stationary_linear_target(self, make_optimizer):
+        learner = MLPLearner(
+            hidden_sizes=(8,),
+            optimizer=make_optimizer(step_size=0.01),
+            use_layer_norm=False,
+            sparsity=0.0,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        key = jr.key(1)
+        squared_errors = []
+        for _ in range(300):
+            key, sample_key = jr.split(key)
+            observation = jr.uniform(sample_key, (2,), minval=-1.0, maxval=1.0)
+            target = jnp.atleast_1d(3.0 * observation[0] - 2.0 * observation[1])
+            result = learner.update(state, observation, target)
+            assert bool(result.update_applied)
+            state = result.state
+            squared_errors.append(float(result.metrics[0]))
+        first = sum(squared_errors[:50]) / 50.0
+        last = sum(squared_errors[-50:]) / 50.0
+        assert math.isfinite(last)
+        assert last < first
