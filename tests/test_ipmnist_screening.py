@@ -6723,3 +6723,114 @@ class TestPlasticityCounterSaturation:
         assert "state.silence2 + 1" not in text
         assert "state.age1 + 1" not in text
         assert "cbp.age1 + 1" not in text
+class TestRLSHeadSMPrecond:
+    """Second-moment body preconditioning under the identmap frame
+    (smprecond_r1 preregistration).
+
+    House convention: the bit-exact reduction pin ships with the mechanism,
+    failing-test-first.
+    """
+
+    @staticmethod
+    def _sm_spec(**overrides):
+        spec = screening_spec("rls_head_resid_l1_preset005")
+        return replace(
+            spec,
+            name=spec.name + "_sm_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_reduction_pin_bitwise(self, small_data):
+        """``body_sm_decay = 0`` is the incumbent, bit for bit."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._sm_spec(
+                body_sm_decay=0.0, body_sm_step=0.001, body_sm_eps=1e-8
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(incumbent.per_task_loss),
+        )
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """With the second moment enabled the trajectory diverges from the
+        incumbent and stays finite."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        sm = run_screening_config(
+            x, y,
+            self._sm_spec(
+                body_sm_decay=0.999, body_sm_step=0.001, body_sm_eps=1e-8
+            ),
+            seed=7, config=SMALL,
+        )
+        acc = np.asarray(sm.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_requires_gated_residual_body(self):
+        """The preconditioner is registered for the gated residual body only."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_hp,
+        )
+
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(
+                    head_resid=0.0, body_sm_decay=0.999,
+                    body_sm_step=0.001, body_sm_eps=1e-8,
+                )
+            )
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(
+                    head_resid=1.0, gate_scale=0.0, body_sm_decay=0.999,
+                    body_sm_step=0.001, body_sm_eps=1e-8,
+                )
+            )
+
+    def test_composes_under_identmap(self, small_data):
+        """The identmap factory passes the sm knobs through to the body:
+        ``ident_match_at = 0`` + inert sm is still the incumbent bitwise."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        x, y = small_data
+        spec = screening_spec("rls_head_resid_identmap50_r")
+        composed = replace(
+            spec,
+            name=spec.name + "_sm_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 0.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, "body_sm_decay": 0.0,
+                "body_sm_step": 0.001, "body_sm_eps": 1e-8,
+            },
+        )
+        assert spec.factory is _make_rls_head_identmap_learner
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(x, y, composed, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )

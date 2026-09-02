@@ -4575,6 +4575,25 @@ class RLSHeadL2InitState:
     init_params: dict[str, Array]
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadSMState:
+    """Opt-in RLS carry plus per-weight second moments for the body.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged (the L2-Init precedent).  ``sm`` holds one second-moment EMA
+    per residual-trained body tensor; the parallel protocol head and the
+    RLS state carry no second moment.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+    sm: dict[str, Array]
+
+
 def _rls_head_hp(**overrides: float) -> dict[str, float]:
     """Champion (``sigma0_shiftnorm_d099``) constants plus RLS-head defaults.
 
@@ -4714,6 +4733,27 @@ def _make_rls_head_learner(
         raise ValueError("gate_scale=0.0 is supported only for the residual body")
     if _decay_to_init and (not resid or not gate_enabled):
         raise ValueError("L2-Init is supported only for the gated residual body")
+    sm_decay = hp.get("body_sm_decay", 0.0)
+    if not 0.0 <= sm_decay < 1.0:
+        raise ValueError("body_sm_decay must lie in [0, 1)")
+    sm_enabled = sm_decay > 0.0
+    sm_step = hp.get("body_sm_step", 0.0)
+    sm_eps = hp.get("body_sm_eps", 1e-8)
+    if sm_enabled:
+        if not resid or not gate_enabled:
+            raise ValueError(
+                "body_sm preconditioning is supported only for the gated "
+                "residual body"
+            )
+        if whiten_enabled or newton or _decay_to_init:
+            raise ValueError(
+                "body_sm preconditioning is not composed with resid_whiten, "
+                "resid_newton, or L2-Init"
+            )
+        if sm_step <= 0.0 or not math.isfinite(sm_step):
+            raise ValueError("body_sm_step must be positive and finite")
+        if sm_eps <= 0.0 or not math.isfinite(sm_eps):
+            raise ValueError("body_sm_eps must be positive and finite")
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -4730,10 +4770,29 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
+        if sm_enabled:
+            return RLSHeadSMState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+                sm={
+                    name: jnp.zeros_like(params[name])
+                    for name in _RLS_HEAD_BODY
+                },
+            )
         if _decay_to_init:
             return RLSHeadL2InitState(  # type: ignore[call-arg]
                 utility={
@@ -4828,12 +4887,14 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
-        dict[str, Array], RLSHeadState | RLSHeadL2InitState, StepMetrics
+        dict[str, Array],
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
         if _decay_to_init:
@@ -4914,7 +4975,55 @@ def _make_rls_head_learner(
                 (loss, (logits, phi)), body_grads = jax.value_and_grad(
                     head_loss, has_aux=True
                 )(body)
-            if gate_enabled:
+            if sm_enabled:
+                assert isinstance(state, RLSHeadSMState)
+                # Champion utility EMA and sigmoid gate byte-identical to
+                # _gated_sgd; only the step geometry changes: the raw body
+                # gradient is preconditioned per weight by the bias-corrected
+                # second-moment EMA before the gated, decayed step.
+                new_utility = dict(state.utility)
+                for name in _RLS_HEAD_BODY:
+                    new_utility[name] = utility_decay * state.utility[name] + (
+                        1.0 - utility_decay
+                    ) * (-body_grads[name] * params[name])
+                bias_correction = 1.0 - jnp.power(
+                    jnp.asarray(utility_decay, dtype=jnp.float32),
+                    count.astype(jnp.float32),
+                )
+                global_max = jnp.max(
+                    jnp.stack(
+                        [
+                            jnp.max(new_utility[name])
+                            for name in sorted(_RLS_HEAD_BODY)
+                        ]
+                    )
+                )
+                global_max = jnp.where(global_max == 0.0, 1.0, global_max)
+                sm_bias = 1.0 - jnp.power(
+                    jnp.asarray(sm_decay, dtype=jnp.float32),
+                    count.astype(jnp.float32),
+                )
+                new_sm = dict(state.sm)
+                new_params = dict(params)
+                for name in _RLS_HEAD_BODY:
+                    new_sm[name] = sm_decay * state.sm[name] + (
+                        1.0 - sm_decay
+                    ) * (body_grads[name] * body_grads[name])
+                    v_hat = new_sm[name] / sm_bias
+                    precond_grad = body_grads[name] / (
+                        jnp.sqrt(v_hat) + sm_eps
+                    )
+                    new_params[name] = params[name] * param_decay - sm_step * (
+                        precond_grad
+                        * (
+                            1.0
+                            - jax.nn.sigmoid(
+                                (new_utility[name] / bias_correction)
+                                / global_max
+                            )
+                        )
+                    )
+            elif gate_enabled:
                 new_params, new_utility = _gated_sgd(
                     params,
                     body_grads,
@@ -4973,6 +5082,17 @@ def _make_rls_head_learner(
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
         )
+        if sm_enabled:
+            assert isinstance(state, RLSHeadSMState)
+            return new_params, RLSHeadSMState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+                sm=new_sm,
+            ), (accuracy, loss, plasticity)
         if _decay_to_init:
             assert isinstance(state, RLSHeadL2InitState)
             return new_params, RLSHeadL2InitState(  # type: ignore[call-arg]
@@ -5010,7 +5130,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState
+    inner: RLSHeadState | RLSHeadSMState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
