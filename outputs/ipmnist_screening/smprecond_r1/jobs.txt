@@ -1,0 +1,9 @@
+rls_head_resid_sm3e4_i50r 0
+rls_head_resid_sm3e4_i50r 1
+rls_head_resid_sm3e4_i50r 2
+rls_head_resid_sm1e3_i50r 0
+rls_head_resid_sm1e3_i50r 1
+rls_head_resid_sm1e3_i50r 2
+rls_head_resid_identmap50_r 0
+rls_head_resid_identmap50_r 1
+rls_head_resid_identmap50_r 2
