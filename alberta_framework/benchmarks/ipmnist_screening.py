@@ -8303,37 +8303,13 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
-    # smprecond_r1: second-moment body preconditioning under the confirmed
-    # identmap50_r frame (PREREGISTRATION.md in that output dir).  Step
-    # sizes chosen by the preregistered 3-task viability grid (seed 0 only,
-    # tuning): 0.01 diverged to chance and is excluded; 0.0003 and 0.001
-    # are the two survivors adjacent to the diagnostic best.
-    for sm_name, sm_step in (
-        ("rls_head_resid_sm3e4_i50r", 0.0003),
-        ("rls_head_resid_sm1e3_i50r", 0.001),
-    ):
-        specs.append(
-            ScreeningSpec(
-                name=sm_name,
-                base_learner="upgd_w",
-                mechanism="rls_readout",
-                hyperparameters=_rls_head_hp(
-                    rls_lambda=1.0, rls_reset_frac=0.05, head_resid=1.0,
-                    ident_match_at=50.0, ident_match2=200.0,
-                    ident_match3=2000.0, body_sm_decay=0.999,
-                    body_sm_step=sm_step, body_sm_eps=1e-8,
-                ),
-                factory=_make_rls_head_identmap_learner,
-                frozen_probe_input=_rls_head_frozen_probe_input,
-                description=(
-                    "identmap50_r incumbent with RMSProp-class per-weight "
-                    "second-moment preconditioning of the residual body "
-                    f"gradient (b2=0.999, step {sm_step:g}, eps 1e-8) — "
-                    "targets the within-task convergence shortfall in the "
-                    "identmap-stabilized coordinate frame."
-                ),
-            )
-        )
+    # The smprecond_r1 second-moment body-preconditioning arms
+    # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
+    # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the
+    # 200-task confirmation at +0.0011 vs the frozen +0.002 bar (negative
+    # result #23) — and are deregistered.  The mechanism (body_sm_* knobs,
+    # RLSHeadSMState) and its reduction pins are retained; the shards bind
+    # the commits that ran them (PROVENANCE_HEADS.md).
     specs.append(
         ScreeningSpec(
             name="rls_head_resid_l1_preset005_l2init",

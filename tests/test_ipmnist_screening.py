@@ -6835,27 +6835,13 @@ class TestRLSHeadSMPrecond:
             np.asarray(incumbent.per_task_accuracy),
         )
 
-    def test_registry_arms(self):
-        """The two preregistered smprecond_r1 screen arms ride the identmap
-        factory with the confirmed 50/200/2000 schedule and differ from the
-        incumbent only in the second-moment knobs."""
+    def test_registry_arms_deregistered(self):
+        """The smprecond_r1 screen arms are deregistered after the failed
+        200-task confirmation (negative result #23); the mechanism and its
+        reduction pins remain."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
-            _make_rls_head_identmap_learner,
-            _rls_head_frozen_probe_input,
         )
 
-        incumbent = SCREENING_REGISTRY["rls_head_resid_identmap50_r"]
-        expected_steps = {
-            "rls_head_resid_sm3e4_i50r": 0.0003,
-            "rls_head_resid_sm1e3_i50r": 0.001,
-        }
-        for name, sm_step in expected_steps.items():
-            spec = SCREENING_REGISTRY[name]
-            assert spec.factory is _make_rls_head_identmap_learner
-            assert spec.frozen_probe_input is _rls_head_frozen_probe_input
-            hp = dict(spec.hyperparameters)
-            assert hp.pop("body_sm_decay") == 0.999
-            assert hp.pop("body_sm_step") == sm_step
-            assert hp.pop("body_sm_eps") == 1e-8
-            assert hp == dict(incumbent.hyperparameters)
+        assert "rls_head_resid_sm3e4_i50r" not in SCREENING_REGISTRY
+        assert "rls_head_resid_sm1e3_i50r" not in SCREENING_REGISTRY

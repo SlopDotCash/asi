@@ -15,6 +15,8 @@ the branch tip refuses old shards; re-run it at the recorded commit instead.
 | `identmap_star_r1/` | 498d4d36 | match-time star 60t screen (WIN x2) |
 | `identmap_star_confirm_r1/` | 498d4d36 | identmap50_r 200t confirmation (0.9166) |
 | `identmap_star2_r1/` | 9e0f7dcf | star round 2 (both arms REJECTED; neg. result #22) |
+| `smprecond_r1/` | 0bf003c8 | second-moment body precond 60t screen (sm3e4 WIN, sm1e3 rejected) |
+| `smprecond_confirm_r1/` | 03a574bb | sm3e4 200t confirmation (FAILED at +0.0011; neg. result #23) |
 
 The review-fix commit (pin tests + registry pruning) intentionally changes
 source AFTER all measurements; nothing in `outputs/` is rewritten.
