@@ -1504,11 +1504,24 @@ def _link_unnamed_file(file_fd: int, parent_fd: int, name: str) -> None:
         ctypes.c_int,
     )
     linkat.restype = ctypes.c_int
-    if linkat(file_fd, b"", parent_fd, os.fsencode(name), 0x1000) != 0:
-        error = ctypes.get_errno()
-        if error == errno.EEXIST:
-            raise FileExistsError(error, os.strerror(error), name)
-        raise OSError(error, os.strerror(error), name)
+    if linkat(file_fd, b"", parent_fd, os.fsencode(name), 0x1000) == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(error, os.strerror(error), name)
+
+    # AT_EMPTY_PATH requires CAP_DAC_READ_SEARCH on some otherwise capable
+    # Linux runtimes.  Following the procfs descriptor symlink publishes the
+    # same unnamed inode without weakening the create-only destination link.
+    if error in {errno.ENOENT, errno.EPERM}:
+        proc_fd_path = os.fsencode(f"/proc/self/fd/{file_fd}")
+        if linkat(-100, proc_fd_path, parent_fd, os.fsencode(name), 0x400) == 0:
+            return
+        fallback_error = ctypes.get_errno()
+        if fallback_error == errno.EEXIST:
+            raise FileExistsError(fallback_error, os.strerror(fallback_error), name)
+        raise OSError(fallback_error, os.strerror(fallback_error), name)
+    raise OSError(error, os.strerror(error), name)
 
 
 def write_new_json(path: Path, value: Any) -> Path:
