@@ -9,9 +9,8 @@ description = "ASI: evidence-driven JAX research for end-to-end continual learni
 readme = "README.md"
 license = "Apache-2.0"
 # Python 3.12 supports the package's PEP 695 syntax and the robot track's
-# in-process continual-RL imports. JAX 0.7.1 is the tested floor; its
-# transitive ml-dtypes>=0.5 requires NumPy >=2.1, so that is the NumPy floor
-# the robot compatibility lane pins.
+# in-process continual-RL imports. JAX 0.7.1 is the tested floor compatible
+# with the NumPy 1.26 minimum.
 requires-python = ">=3.12"
 authors = [
     { name = "J. Klawson", email = "j-klawson@users.noreply.github.com" }
@@ -29,7 +28,7 @@ classifiers = [
 dependencies = [
     "jax>=0.7.1",
     "jaxlib>=0.7.1",
-    "numpy>=2.1",
+    "numpy>=1.26",
     "scipy>=1.11",
     "chex>=0.1.86",
     "jaxtyping>=0.2.28",
