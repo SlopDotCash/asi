@@ -1367,9 +1367,13 @@ def _update_intra_option_policy(
     """Update one intra-option Q-function with a transition discount.
 
     ``terminated`` is the option's own termination decision (goal, duration,
-    or environmental termination).  It always zeros the bootstrap.  Otherwise
-    the supplied transition discount controls both bootstrapping and trace
-    carry, so fractional continuation is not silently promoted to one.
+    or environmental termination).  It zeros the bootstrap only.  The supplied
+    transition discount controls both bootstrapping and trace carry, so
+    fractional continuation is not silently promoted to one.  The incoming
+    trace is decayed by that discount even on the terminating step: the goal
+    step's TD error must still reach the earlier actions of the option
+    (``e_t = gamma_t * lambda * e_{t-1} + phi_t``); the caller clears the
+    stored trace after this update when the option's lifecycle ends.
     """
     q_i = option_policies.q_weights[option_idx]
     traces_i = option_policies.traces[option_idx]
@@ -1383,7 +1387,7 @@ def _update_intra_option_policy(
 
     alpha = jnp.asarray(step_size, dtype=jnp.float32)
     beta = jnp.asarray(avg_reward_step_size, dtype=jnp.float32)
-    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * bootstrap_discount
+    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * transition_discount
     rho = jnp.asarray(importance_ratio, dtype=jnp.float32)
 
     action_mask = jax.nn.one_hot(last_intra_action, n_primitive_actions, dtype=jnp.float32)

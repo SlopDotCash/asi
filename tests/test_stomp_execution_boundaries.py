@@ -118,6 +118,55 @@ def test_censored_boundary_bootstraps_intra_option_then_clears_trace() -> None:
     assert int(result.state.option_models.n_completions[0]) == 0
 
 
+def test_goal_termination_credits_earlier_option_steps_through_the_trace() -> None:
+    """The goal step's TD error must reach earlier option actions via the carried trace.
+
+    Accumulating traces decay by the discount *entering* the current state, not by
+    the termination that zeros the bootstrap: ``e_t = gamma_t * lambda * e_{t-1} +
+    phi_t``. Zeroing the incoming trace on the goal step turns intra-option
+    learning into TD(0) exactly where sparse pseudo-reward needs multi-step credit.
+    """
+    agent = STOMPAgent(_config(threshold=1.0, option_step_size=0.5, option_trace_decay=0.75))
+    state = _active_state(agent)
+    prior_trace = np.zeros((N_PRIMITIVE, OBS_DIM), dtype=np.float32)
+    prior_trace[1, 1] = 1.0  # an earlier option step took action 1 on feature 1
+    state = state.replace(
+        option_policies=state.option_policies.replace(
+            q_weights=jnp.zeros((1, N_PRIMITIVE, OBS_DIM), dtype=jnp.float32),
+            traces=jnp.asarray(prior_trace)[None, :, :],
+        )
+    )
+
+    discount = 0.5
+    result = agent.update(
+        state,
+        jnp.array(0.0, dtype=jnp.float32),
+        BOOTSTRAP_OBS,
+        jnp.array(discount, dtype=jnp.float32),
+        decision_observation=DECISION_OBS,
+    )
+
+    assert bool(result.option_terminated)
+    assert float(result.pseudo_reward) == 1.0
+    # q_prev = 0, bootstrap zeroed by termination, hence TD = pseudo_reward = 1.
+    td_error = 1.0
+    current = np.zeros((N_PRIMITIVE, OBS_DIM), dtype=np.float32)
+    current[0] = np.asarray(LAST_OBS)  # the goal step took action 0 on LAST_OBS
+    expected_trace = 0.75 * discount * prior_trace + current
+    expected_q = 0.5 * td_error * expected_trace
+    np.testing.assert_allclose(
+        np.asarray(result.state.option_policies.q_weights[0]),
+        expected_q,
+        rtol=0.0,
+        atol=1.0e-6,
+    )
+    # The lifecycle ended, so the stored trace is cleared only after the update.
+    np.testing.assert_array_equal(
+        np.asarray(result.state.option_policies.traces[0]),
+        np.zeros((N_PRIMITIVE, OBS_DIM), dtype=np.float32),
+    )
+
+
 def test_censored_boundary_keeps_positive_base_bellman_bootstrap() -> None:
     agent = STOMPAgent(_config())
     state = _with_base_weights(
