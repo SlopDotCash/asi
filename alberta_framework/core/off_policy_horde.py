@@ -721,6 +721,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i],
                 new_w_trace,
                 error=None,
+                param=state.trunk_params.weights[i],
             )
             trunk_steps.append(w_step)
             new_trunk_opt_states.append(new_w_opt)
@@ -738,6 +739,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i + 1],
                 new_b_trace,
                 error=None,
+                param=state.trunk_params.biases[i],
             )
             trunk_steps.append(b_step)
             new_trunk_opt_states.append(new_b_opt)
@@ -816,12 +818,14 @@ class OffPolicyHordeLearner:
                 old_w_opt,
                 new_w_trace,
                 error=error_i,
+                param=head_w,
             )
             b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
                 head_optimizer,
                 old_b_opt,
                 new_b_trace,
                 error=error_i,
+                param=head_b,
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
 

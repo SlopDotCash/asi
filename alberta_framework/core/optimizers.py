@@ -514,6 +514,16 @@ class Optimizer[
             "Only LMS, IDBD, and Autostep currently implement this."
         )
 
+    def gradient_update_requires_param(self) -> bool:
+        """Whether the shape-generic update needs the current parameter.
+
+        Most optimizers derive their update solely from the gradient, error,
+        and optimizer state. Parameter-dependent methods such as decoupled
+        weight decay override this capability so generic learners can provide
+        the parameter without changing the legacy optimizer call contract.
+        """
+        return False
+
     def update_from_gradient(
         self, state: Any, gradient: Array, error: Array | None = None
     ) -> tuple[Array, Any]:

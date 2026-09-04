@@ -985,9 +985,20 @@ def _update_from_gradient_with_diagnostics(
     gradient: Array,
     *,
     error: Array | None,
+    param: Array | None = None,
 ) -> tuple[Array, Any, Bool[Array, ""]]:
     """Use the checked optimizer boundary for an enclosing transaction."""
-    result = optimizer.update_from_gradient_checked(state, gradient, error=error)
+    if optimizer.gradient_update_requires_param():
+        if param is None:
+            raise ValueError(
+                f"{type(optimizer).__name__} requires the current parameter "
+                "for gradient updates"
+            )
+        result = optimizer.update_from_gradient_checked(
+            state, gradient, error=error, param=param
+        )
+    else:
+        result = optimizer.update_from_gradient_checked(state, gradient, error=error)
     return result.step, result.new_state, result.update_applied
 
 
@@ -1563,6 +1574,10 @@ class MLPLearner:
         # Per-parameter optimizer step from traces
         # Output layer uses head_optimizer if set (last 2 entries: weight + bias)
         n_trace_entries = len(new_traces)
+        all_params = []
+        for i in range(n_layers):
+            all_params.append(state.params.weights[i])
+            all_params.append(state.params.biases[i])
         all_steps = []
         new_opt_states = []
         optimizer_updates_applied = []
@@ -1575,6 +1590,7 @@ class MLPLearner:
                     state.optimizer_states[j],
                     new_traces[j],
                     error=error,
+                    param=all_params[j],
                 )
             )
             all_steps.append(step)
@@ -1584,10 +1600,6 @@ class MLPLearner:
         # Bounding (optional)
         bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
-            all_params = []
-            for i in range(n_layers):
-                all_params.append(state.params.weights[i])
-                all_params.append(state.params.biases[i])
             bounded_steps, bounding_metric = self._bounder.bound(
                 tuple(all_steps), error, tuple(all_params)
             )

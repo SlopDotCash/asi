@@ -16,6 +16,8 @@ forgetting_rate=0.1``), and round-trip tests use arbitrary nondefault
 values so serialization bugs cannot hide behind defaults.
 """
 
+import math
+
 import chex
 import jax.numpy as jnp
 import pytest
@@ -577,3 +579,78 @@ class TestNADALINE:
         chex.assert_tree_all_finite(result.new_state)
         chex.assert_tree_all_finite(result.weight_delta)
         chex.assert_tree_all_finite(result.bias_delta)
+
+
+# =============================================================================
+# Gradient-path error contract (MLP path)
+# =============================================================================
+
+
+class TestGradientPathErrorContract:
+    """Callers of the gradient path apply ``param += error * step``.
+
+    The framework-wide gradient-path contract
+    (:meth:`Optimizer.update_from_gradient`) returns a step that excludes the
+    error; MLP-path learners then apply ``param += error * step``.  For Adam
+    and RMSprop that application must reproduce each method's own descent
+    update for ``loss = 0.5 * error**2``, matching the linear path's moment
+    accumulation on the loss gradient ``-error * gradient``.
+    """
+
+    def test_adam_first_step_applies_descent_delta(self):
+        optimizer = Adam(step_size=0.1)
+        state = optimizer.init_for_shape((1,))
+        gradient = jnp.array([1.0])
+        error = jnp.array(0.5)
+        result = optimizer.update_from_gradient_checked(state, gradient, error=error)
+        assert bool(result.update_applied)
+        applied = float(error * result.step[0])
+        # t=1: bias-corrected m_hat = g, v_hat = g^2 for loss gradient
+        # g = -error*gradient, so the descent delta applied to the parameter
+        # is alpha * error*gradient / (|error*gradient| + eps).
+        g = float(error) * float(gradient[0])
+        expected = 0.1 * g / (abs(g) + 1e-8)
+        assert applied == pytest.approx(expected, rel=1e-5)
+
+    def test_rmsprop_first_step_applies_descent_delta(self):
+        optimizer = RMSprop(step_size=0.1, decay=0.99)
+        state = optimizer.init_for_shape((1,))
+        gradient = jnp.array([1.0])
+        error = jnp.array(0.5)
+        result = optimizer.update_from_gradient_checked(state, gradient, error=error)
+        assert bool(result.update_applied)
+        applied = float(error * result.step[0])
+        # t=1: v = (1-decay) * (error*gradient)^2, and the descent delta is
+        # alpha * error*gradient / (sqrt(v) + eps).
+        g = float(error) * float(gradient[0])
+        expected = 0.1 * g / (math.sqrt((1.0 - 0.99) * g * g) + 1e-8)
+        assert applied == pytest.approx(expected, rel=1e-4)
+
+    @pytest.mark.parametrize("make_optimizer", [Adam, RMSprop])
+    def test_scalar_regression_converges_to_target(self, make_optimizer):
+        optimizer = make_optimizer(step_size=0.1)
+        state = optimizer.init_for_shape(())
+        w = jnp.asarray(0.0, dtype=jnp.float32)
+        for _ in range(200):
+            error = jnp.asarray(1.0, dtype=jnp.float32) - w
+            result = optimizer.update_from_gradient_checked(
+                state, jnp.asarray(1.0, dtype=jnp.float32), error=error
+            )
+            assert bool(result.update_applied)
+            state = result.new_state
+            w = w + error * result.step
+        assert float(w) == pytest.approx(1.0, abs=0.05)
+
+    @pytest.mark.parametrize("make_optimizer", [Adam, RMSprop])
+    def test_zero_error_step_is_finite_and_committed(self, make_optimizer):
+        optimizer = make_optimizer(step_size=0.1)
+        state = optimizer.init_for_shape((2,))
+        gradient = jnp.array([1.0, -1.0])
+        seeded = optimizer.update_from_gradient_checked(
+            state, gradient, error=jnp.asarray(0.5, dtype=jnp.float32)
+        )
+        result = optimizer.update_from_gradient_checked(
+            seeded.new_state, gradient, error=jnp.asarray(0.0, dtype=jnp.float32)
+        )
+        assert bool(result.update_applied)
+        assert bool(jnp.all(jnp.isfinite(result.step)))
