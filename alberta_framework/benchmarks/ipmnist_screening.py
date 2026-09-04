@@ -6369,6 +6369,40 @@ def _hidden_rms_frozen_probe_input(
     )
 
 
+def _masked_forward_frozen_probe_input(
+    state: Any, observation: Array, hyperparameters: Mapping[str, float]
+) -> Array:
+    """Refuse sentinel probes for bounded-structure arms.
+
+    Their deployed forward is ``bounded_masked_logits``: hidden-1 activations
+    are multiplied by ``state.active1``, so half the width is masked from
+    initialization and the never-trained inactive units would be re-enabled by
+    the plain ``mlp_logits`` the probe harness computes. Failing closed is the
+    honest option until the harness can accept a per-arm forward function.
+    """
+    del state, observation, hyperparameters
+    raise NotImplementedError(
+        "sentinel probes are unsupported for bounded-structure arms: the deployed "
+        "forward pass masks hidden units and is not the plain protocol MLP"
+    )
+
+
+def _context_forward_frozen_probe_input(
+    state: Any, observation: Array, hyperparameters: Mapping[str, float]
+) -> Array:
+    """Refuse sentinel probes for replay arms whose prediction adds a context term.
+
+    With ``context_weight != 0`` the deployed prediction is
+    ``mlp_logits + label-attention context``; probing with ``mlp_logits`` alone
+    would score a model the arm never deploys.
+    """
+    del state, observation, hyperparameters
+    raise NotImplementedError(
+        "sentinel probes are unsupported for context-enabled replay arms: the "
+        "deployed prediction adds a label-attention context to the MLP logits"
+    )
+
+
 def _discovered_rule_frozen_probe_input(
     hyperparameters: Mapping[str, float],
 ) -> FrozenProbeInputFn:
@@ -8150,6 +8184,7 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 mechanism=mechanism,
                 hyperparameters=registered_bounded_elastic_hyperparameters(arm),
                 factory=_make_bounded_structure_learner,
+                frozen_probe_input=_masked_forward_frozen_probe_input,
                 description=(
                     description
                     + " Bounded arXiv:2608.01475v1 adaptation; not paper/code parity."
@@ -8269,6 +8304,11 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                     replay_update=replay_update, context=context
                 ),
                 factory=make_replay_context_learner,
+                frozen_probe_input=(
+                    _context_forward_frozen_probe_input
+                    if context != 0.0
+                    else _raw_frozen_probe_input
+                ),
                 description=(
                     description
                     + " Permanently nonpromoting; not a Transformer-paper reproduction."

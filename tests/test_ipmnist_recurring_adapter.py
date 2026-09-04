@@ -239,6 +239,39 @@ def test_hidden_rms_active_arms_refuse_plain_mlp_sentinel_probes() -> None:
             spec.frozen_probe_input(state, sentinel_inputs, spec.hyperparameters)
 
 
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("bounded_structure_off", "bounded-structure"),
+        ("bounded_growth", "bounded-structure"),
+        ("bounded_elastic", "bounded-structure"),
+        ("replay_context_only", "context-enabled replay"),
+        ("replay_context_full", "context-enabled replay"),
+    ],
+)
+def test_arms_whose_forward_is_not_the_plain_mlp_refuse_sentinel_probes(
+    name: str, message: str
+) -> None:
+    """The probe harness scores ``mlp_logits``; arms that deploy another forward fail closed."""
+    spec = screening_spec(name)
+    init_fn, _step_fn = spec.factory(spec.hyperparameters)
+    state = init_fn(init_mlp_params(jr.key(0), CONFIG))
+    sentinel_inputs = jnp.zeros((2, CONFIG.input_dim), dtype=jnp.float32)
+    with pytest.raises(NotImplementedError, match=message):
+        spec.frozen_probe_input(state, sentinel_inputs, spec.hyperparameters)
+
+
+@pytest.mark.parametrize("name", ["replay_context_mechanism_off", "replay_gradient_only"])
+def test_context_free_replay_arms_keep_the_raw_probe(name: str) -> None:
+    spec = screening_spec(name)
+    assert spec.hyperparameters["context_weight"] == 0.0
+    init_fn, _step_fn = spec.factory(spec.hyperparameters)
+    state = init_fn(init_mlp_params(jr.key(0), CONFIG))
+    sentinel_inputs = jnp.ones((2, CONFIG.input_dim), dtype=jnp.float32)
+    probed = spec.frozen_probe_input(state, sentinel_inputs, spec.hyperparameters)
+    np.testing.assert_array_equal(np.asarray(probed), np.asarray(sentinel_inputs))
+
+
 def test_hidden_rms_inactive_sibling_keeps_its_input_side_probe() -> None:
     spec = screening_spec("disc_r1_pscale_norms")
     assert not _hidden_rms_active(spec)
