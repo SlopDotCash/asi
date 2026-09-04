@@ -934,6 +934,44 @@ class IndependentDemonHorde:
         cumulants: Array,
         next_observation: Array,
     ) -> HordeUpdateResult:
+        """Update every demon's network, bootstrapping with its fixed gamma.
+
+        See :meth:`update_with_discounts` for the transition-discount form
+        that control adapters use to zero bootstrapping at episode boundaries.
+        """
+        return self._update_with_discounts(
+            state, observation, cumulants, next_observation, None
+        )
+
+    def update_with_discounts(
+        self,
+        state: IndependentDemonHordeState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+        discounts: Array,
+    ) -> HordeUpdateResult:
+        """Update every demon with explicit per-demon transition discounts.
+
+        The same TD update as :meth:`update`, except callers supply the
+        effective bootstrap discount for this transition (for example the
+        spec gammas zeroed on a terminal step). Per-demon trace decay keeps
+        using the fixed GVF metadata, matching :class:`HordeLearner`.
+        ``discounts`` has shape ``(n_demons,)``; a non-finite entry or one
+        outside ``[0, 1]`` rejects that demon's update.
+        """
+        return self._update_with_discounts(
+            state, observation, cumulants, next_observation, discounts
+        )
+
+    def _update_with_discounts(
+        self,
+        state: IndependentDemonHordeState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+        discounts: Array | None,
+    ) -> HordeUpdateResult:
         """Update every demon's network given observation, cumulants, next obs.
 
         Computes per-demon TD targets ``r + gamma * V(s')`` using each
@@ -964,6 +1002,16 @@ class IndependentDemonHorde:
         )
         gammas = self._horde_spec.gammas
         lamdas = self._horde_spec.lamdas
+        if discounts is None:
+            effective_discounts = gammas
+            discounts_valid = jnp.ones((n_demons,), dtype=jnp.bool_)
+        else:
+            effective_discounts = self._operand("discounts", discounts, (n_demons,))
+            discounts_valid = (
+                jnp.isfinite(effective_discounts)
+                & (effective_discounts >= 0.0)
+                & (effective_discounts <= 1.0)
+            )
 
         # 1. Per-demon V(s') for bootstrapping (each demon uses its OWN net)
         next_preds = jnp.stack(
@@ -971,7 +1019,9 @@ class IndependentDemonHorde:
         )
 
         # 2. TD targets: r + gamma * V(s'). gamma=0 must not multiply inf V(s').
-        bootstrap = jnp.where(gammas == 0.0, 0.0, gammas * next_preds)
+        bootstrap = jnp.where(
+            effective_discounts == 0.0, 0.0, effective_discounts * next_preds
+        )
         targets = cumulants + bootstrap
 
         # 3. NaN means inactive; other non-finite values are rejected heads.
@@ -1003,7 +1053,11 @@ class IndependentDemonHorde:
             )
         )
         active_mask = (
-            requested_mask & jnp.isfinite(cumulants) & jnp.isfinite(targets) & global_inputs_valid
+            requested_mask
+            & jnp.isfinite(cumulants)
+            & discounts_valid
+            & jnp.isfinite(targets)
+            & global_inputs_valid
         )
         safe_targets = jnp.where(active_mask, targets, 0.0)
 

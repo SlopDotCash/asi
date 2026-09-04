@@ -1592,11 +1592,16 @@ class AlbertaPipeline:
             horde_td_targets = ac_result.critic_result.td_targets
             components_applied = ac_result.update_applied
         else:
-            horde_result = self._horde.update(
+            # A terminal transition must not bootstrap: zero every demon's
+            # discount on termination, as the horde_ac path and Step 4 already
+            # do, instead of letting gamma > 0 demons look across the reset.
+            horde_discounts = self._horde.horde_spec.gammas * (1.0 - terminated)
+            horde_result = self._horde.update_with_discounts(
                 state.horde_state,
                 state.last_features,
                 horde_cumulants,
                 features,
+                horde_discounts,
             )
             sarsa_state = cast(SARSAState, state.control_state)
             control_result = step4_update(

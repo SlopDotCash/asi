@@ -871,6 +871,41 @@ class MixedHorde:
         next_observation: Array,
     ) -> HordeUpdateResult:
         """Update routed demons and return outputs in original demon order."""
+        return self._update_with_discounts(
+            state, observation, cumulants, next_observation, None
+        )
+
+    def update_with_discounts(
+        self,
+        state: MixedHordeState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+        discounts: Array,
+    ) -> HordeUpdateResult:
+        """Update routed demons with explicit per-demon transition discounts.
+
+        ``discounts`` has shape ``(n_demons,)`` in original demon order and is
+        split across the shared and independent paths, each applying its own
+        ``update_with_discounts``.
+        """
+        discounts = jnp.asarray(discounts, dtype=jnp.float32)
+        if discounts.shape != (self.n_demons,):
+            raise ValueError(
+                f"discounts must have shape {(self.n_demons,)}, got {discounts.shape}"
+            )
+        return self._update_with_discounts(
+            state, observation, cumulants, next_observation, discounts
+        )
+
+    def _update_with_discounts(
+        self,
+        state: MixedHordeState,
+        observation: Array,
+        cumulants: Array,
+        next_observation: Array,
+        discounts: Array | None,
+    ) -> HordeUpdateResult:
         predictions = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
         td_errors = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
         td_targets = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
@@ -883,12 +918,15 @@ class MixedHorde:
 
         if self._shared_horde is not None:
             idx = jnp.asarray(self._shared_indices, dtype=jnp.int32)
-            shared_result = self._shared_horde.update(
-                cast(MultiHeadMLPState, state.shared_state),
-                observation,
-                cumulants[idx],
-                next_observation,
-            )
+            shared_state = cast(MultiHeadMLPState, state.shared_state)
+            if discounts is None:
+                shared_result = self._shared_horde.update(
+                    shared_state, observation, cumulants[idx], next_observation
+                )
+            else:
+                shared_result = self._shared_horde.update_with_discounts(
+                    shared_state, observation, cumulants[idx], next_observation, discounts[idx]
+                )
             new_shared_state = shared_result.state
             predictions = predictions.at[idx].set(shared_result.predictions)
             td_errors = td_errors.at[idx].set(shared_result.td_errors)
@@ -904,12 +942,19 @@ class MixedHorde:
 
         if self._independent_horde is not None:
             idx = jnp.asarray(self._independent_indices, dtype=jnp.int32)
-            independent_result = self._independent_horde.update(
-                state.independent_state,
-                observation,
-                cumulants[idx],
-                next_observation,
-            )
+            independent_state = cast(Any, state.independent_state)
+            if discounts is None:
+                independent_result = self._independent_horde.update(
+                    independent_state, observation, cumulants[idx], next_observation
+                )
+            else:
+                independent_result = self._independent_horde.update_with_discounts(
+                    independent_state,
+                    observation,
+                    cumulants[idx],
+                    next_observation,
+                    discounts[idx],
+                )
             new_independent_state = independent_result.state
             predictions = predictions.at[idx].set(independent_result.predictions)
             td_errors = td_errors.at[idx].set(independent_result.td_errors)

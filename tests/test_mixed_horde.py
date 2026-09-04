@@ -17,6 +17,7 @@ import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 
 from alberta_framework import (
     DemonType,
@@ -605,3 +606,36 @@ class TestStep3RoutingDispatch:
         cfg = Step3HordeConfig(routing="mixed")
         restored = Step3HordeConfig.from_dict(cfg.to_dict())
         assert restored.routing == "mixed"
+
+
+def test_mixed_horde_update_with_discounts_routes_per_demon_discounts() -> None:
+    """Discounts are split across the shared and independent paths in demon order."""
+    demons = [
+        _gamma0_demon("shared0", 0),
+        _temporal_demon("independent1", 1, 0.9, 0.5),
+        _gamma0_demon("shared2", 2),
+    ]
+    spec = create_horde_spec(demons)
+    horde = MixedHorde(horde_spec=spec, hidden_sizes=(4,), sparsity=0.0)
+    state = horde.init(3, jr.key(0))
+    observation = jnp.asarray([0.2, -0.4, 0.1], dtype=jnp.float32)
+    cumulants = jnp.asarray([1.0, -0.5, 0.25], dtype=jnp.float32)
+    next_observation = jnp.asarray([-0.3, 0.2, 0.5], dtype=jnp.float32)
+    state = horde.update(state, observation, cumulants, next_observation).state
+
+    plain = horde.update(state, observation, cumulants, next_observation)
+    same = horde.update_with_discounts(
+        state, observation, cumulants, next_observation, spec.gammas
+    )
+    chex.assert_trees_all_close(same.td_targets, plain.td_targets)
+    chex.assert_trees_all_close(same.state, plain.state)
+
+    terminal = horde.update_with_discounts(
+        state, observation, cumulants, next_observation, jnp.zeros((3,), dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(terminal.td_targets, cumulants, atol=1e-6)
+    assert bool(terminal.update_applied)
+    with pytest.raises(ValueError, match="discounts must have shape"):
+        horde.update_with_discounts(
+            state, observation, cumulants, next_observation, jnp.zeros((2,), dtype=jnp.float32)
+        )

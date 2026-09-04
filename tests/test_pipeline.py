@@ -521,6 +521,37 @@ def test_pipeline_behavioral_learns() -> None:
     )
 
 
+def test_pipeline_sarsa_terminal_step_zeroes_horde_bootstrap() -> None:
+    """In the default sarsa mode a terminal transition must not bootstrap any GVF."""
+    config = AlbertaPipelineConfig(
+        features=Step2FeatureConfig.identity(3),
+        horde=Step3HordeConfig(gammas=(0.0, 0.5, 0.9), lamdas=(0.0, 0.5, 0.8)),
+    )
+    assert config.control_mode == "sarsa"
+    pipeline = AlbertaPipeline(config)
+    state = pipeline.init(jr.key(0), jnp.asarray([0.2, -0.1, 0.4], dtype=jnp.float32))
+    state = pipeline.update(
+        state,
+        jnp.asarray([0.1, 0.3, -0.2], dtype=jnp.float32),
+        jnp.float32(0.5),
+        jnp.float32(0.0),
+    ).state
+    observation = jnp.asarray([-0.3, 0.2, 0.1], dtype=jnp.float32)
+    cumulants = jnp.asarray([0.5, -0.2, 0.3], dtype=jnp.float32)
+    next_values = pipeline.horde.predict(state.horde_state, observation)
+    gammas = jnp.asarray(config.horde.gammas, dtype=jnp.float32)
+
+    continuing = pipeline.update(state, observation, jnp.float32(0.5), jnp.float32(0.0), cumulants)
+    terminal = pipeline.update(state, observation, jnp.float32(0.5), jnp.float32(1.0), cumulants)
+
+    chex.assert_trees_all_close(
+        continuing.horde_td_targets, cumulants + gammas * next_values, atol=1e-6
+    )
+    chex.assert_trees_all_close(terminal.horde_td_targets, cumulants, atol=1e-6)
+    # Step 4 already honoured the flag; the Horde must agree with it.
+    assert float(terminal.control_td_error) != float(continuing.control_td_error)
+
+
 def test_pipeline_cumulant_fn_overrides_default() -> None:
     """Caller-provided cumulant_fn is used instead of the default channel map."""
     sentinel = jnp.array([0.123, 0.456], dtype=jnp.float32)

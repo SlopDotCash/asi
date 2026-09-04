@@ -123,6 +123,61 @@ class TestInitShape:
 # =============================================================================
 
 
+class TestUpdateWithDiscounts:
+    """Explicit transition discounts replace the fixed gammas in the bootstrap only."""
+
+    def test_spec_gammas_reproduce_update_and_zero_discounts_stop_bootstrapping(self) -> None:
+        demons = [
+            GVFSpec(
+                name=f"d{i}",
+                demon_type=DemonType.PREDICTION,
+                gamma=gamma,
+                lamda=0.5,
+                cumulant_index=i,
+            )
+            for i, gamma in enumerate((0.9, 0.5))
+        ]
+        spec = create_horde_spec(demons)
+        horde = IndependentDemonHorde(horde_spec=spec, hidden_sizes=(4,), sparsity=0.0)
+        state = horde.init(3, jr.key(0))
+        observation = jnp.asarray([0.2, -0.4, 0.1], dtype=jnp.float32)
+        cumulants = jnp.asarray([1.0, -0.5], dtype=jnp.float32)
+        next_observation = jnp.asarray([-0.3, 0.2, 0.5], dtype=jnp.float32)
+        # Warm the traces so a discount cannot be confused with trace decay.
+        state = horde.update(state, observation, cumulants, next_observation).state
+
+        plain = horde.update(state, observation, cumulants, next_observation)
+        same = horde.update_with_discounts(
+            state, observation, cumulants, next_observation, spec.gammas
+        )
+        chex.assert_trees_all_close(same.state, plain.state)
+        chex.assert_trees_all_close(same.td_targets, plain.td_targets)
+
+        terminal = horde.update_with_discounts(
+            state,
+            observation,
+            cumulants,
+            next_observation,
+            jnp.zeros((2,), dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(terminal.td_targets, cumulants, atol=1e-6)
+        assert bool(terminal.update_applied)
+
+        rejected = horde.update_with_discounts(
+            state,
+            observation,
+            cumulants,
+            next_observation,
+            jnp.asarray([1.5, 0.5], dtype=jnp.float32),
+        )
+        assert not bool(rejected.head_updates_applied[0])
+        assert bool(rejected.head_updates_applied[1])
+        with pytest.raises(ValueError, match="discounts"):
+            horde.update_with_discounts(
+                state, observation, cumulants, next_observation, jnp.zeros((3,), jnp.float32)
+            )
+
+
 class TestIndependence:
     """Updating with cumulant only on demon 0 must leave demon 1 unchanged."""
 
