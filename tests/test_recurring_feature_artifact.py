@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,7 @@ from alberta_framework.recurring_feature_gate import (
     PHASE_TASKS,
     TASK_PAIRS,
     RecurringFeatureGateResult,
+    RecurringFeatureSeedEvidence,
     run_recurring_feature_gate,
 )
 
@@ -199,6 +201,99 @@ def test_exact_heldout_aggregate_and_deterministic_paired_intervals(
     assert recovery["lower"] == pytest.approx(67.63333333333334)
     assert recovery["upper"] == pytest.approx(76.40083333333332)
     assert all(_as_dict(interval)["sample_size"] == 30 for interval in effects.values())
+
+
+def _without_recovery(seed: RecurringFeatureSeedEvidence) -> RecurringFeatureSeedEvidence:
+    return replace(
+        seed,
+        phase_evidence=tuple(
+            replace(phase, recovery_steps=None) for phase in seed.phase_evidence
+        ),
+        task_recovery=tuple(
+            replace(
+                recovery,
+                acquisition_steps=None,
+                recurrence_steps=tuple(None for _ in recovery.recurrence_steps),
+            )
+            for recovery in seed.task_recovery
+        ),
+    )
+
+
+def test_never_recovered_seeds_build_instead_of_crashing(
+    frozen_result: RecurringFeatureGateResult,
+) -> None:
+    """Never-recovered seeds are permitted gate evidence, not artifact build errors.
+
+    One unrecovered seed shrinks the paired recovery interval to the seeds that
+    did recover and the artifact stays fully valid. When no seed recovers the
+    build used to raise from the paired bootstrap before anything was recorded;
+    it must now produce the artifact with an explicit ``unavailable`` interval
+    and a failed recurrence check, so the validator can name the missing
+    finite evidence instead of the CLI dying with a traceback.
+    """
+    retained = frozen_result.retained
+    first, *rest = retained.seeds
+
+    one_unrecovered = replace(
+        frozen_result, retained=replace(retained, seeds=(_without_recovery(first), *rest))
+    )
+    artifact = build_recurring_feature_artifact(
+        one_unrecovered,
+        gate_wall_seconds=6.5,
+        generated_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+    )
+    validation = validate_recurring_feature_artifact(artifact)
+    assert validation.valid, validation.errors
+    effects = _as_dict(_as_dict(_scientific(artifact)["aggregate"])["paired_effects"])
+    recovery = _as_dict(effects["retained_acquisition_minus_recurrence_steps"])
+    assert recovery["estimate"] is not None
+    assert recovery["sample_size"] == len(retained.seeds) - 1
+
+    none_recovered = replace(
+        frozen_result,
+        retained=replace(retained, seeds=tuple(_without_recovery(seed) for seed in retained.seeds)),
+    )
+    artifact = build_recurring_feature_artifact(
+        none_recovered,
+        gate_wall_seconds=6.5,
+        generated_at=datetime(2026, 7, 30, 12, 0, tzinfo=UTC),
+    )
+    effects = _as_dict(_as_dict(_scientific(artifact)["aggregate"])["paired_effects"])
+    recovery = _as_dict(effects["retained_acquisition_minus_recurrence_steps"])
+    assert recovery["estimate"] is None
+    assert recovery["sample_size"] == 0
+    assert recovery["unavailable_reason"] == "no paired differences"
+    checks = {
+        _as_dict(check)["name"]: _as_dict(check)
+        for check in _as_list(_as_dict(_scientific(artifact)["acceptance"])["checks"])
+    }
+    assert checks["recurrence_faster_than_acquisition"]["actual"] is None
+    assert checks["recurrence_faster_than_acquisition"]["passed"] is False
+    validation = validate_recurring_feature_artifact(artifact)
+    assert not validation.accepted
+    # v1 requires finite recovery medians, so the validator names that gap
+    # rather than the build crashing before any artifact exists.
+    assert not validation.valid
+    assert any("recurrence_faster_than_acquisition" in error or "numeric comparison" in error
+               for error in validation.errors), validation.errors
+
+
+def test_paired_interval_reports_non_finite_differences_as_unavailable() -> None:
+    """Non-finite paired differences (``inf`` NMSE) must not crash the builder."""
+    unavailable = recurring_artifact_module._paired_interval_or_unavailable(
+        [0.5, math.inf, -0.25], seed_offset=1
+    )
+    assert unavailable["estimate"] is None
+    assert unavailable["sample_size"] == 3
+    assert unavailable["finite_sample_size"] == 2
+    assert unavailable["unavailable_reason"] == "non-finite paired differences"
+    available = recurring_artifact_module._paired_interval_or_unavailable(
+        [0.5, 0.25, -0.25], seed_offset=1
+    )
+    assert available == recurring_artifact_module.paired_bootstrap_mean_interval(
+        [0.5, 0.25, -0.25], seed_offset=1
+    )
 
 
 def test_scientific_digest_is_deterministic_and_excludes_operational_metadata(

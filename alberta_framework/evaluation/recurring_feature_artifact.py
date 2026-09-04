@@ -453,6 +453,41 @@ def wilson_score_interval(successes: int, sample_size: int) -> dict[str, object]
     }
 
 
+def _paired_interval_or_unavailable(
+    differences: Sequence[float],
+    *,
+    seed_offset: int,
+) -> dict[str, object]:
+    """Descriptive paired interval, or an explicit ``unavailable`` record.
+
+    A rejecting gate legitimately carries ``inf`` NMSE (an unrecovered task) or a
+    seed that never recovers, so its paired differences can be non-finite or
+    empty. Those are evidence, not build errors: the frozen point criteria still
+    decide, and the descriptive interval is recorded as unavailable with the
+    reason instead of crashing the artifact and losing the negative result.
+    """
+
+    values = np.asarray(tuple(differences), dtype=np.float64)
+    if values.ndim == 1 and values.size > 0 and bool(np.all(np.isfinite(values))):
+        return paired_bootstrap_mean_interval(differences, seed_offset=seed_offset)
+    finite = int(np.count_nonzero(np.isfinite(values))) if values.size else 0
+    return {
+        "estimate": None,
+        "lower": None,
+        "upper": None,
+        "confidence_level": BOOTSTRAP_CONFIDENCE_LEVEL,
+        "resamples": BOOTSTRAP_RESAMPLES,
+        "sample_size": int(values.size),
+        "finite_sample_size": finite,
+        "method": "paired-percentile-bootstrap",
+        "pairing_unit": "seed",
+        "acceptance_role": "descriptive-only; frozen gate uses point criteria",
+        "unavailable_reason": (
+            "no paired differences" if values.size == 0 else "non-finite paired differences"
+        ),
+    }
+
+
 def _per_seed_recovery_medians(
     seed: RecurringFeatureSeedEvidence,
 ) -> tuple[float, float] | None:
@@ -500,24 +535,24 @@ def _paired_effect_payload(result: RecurringFeatureGateResult) -> dict[str, obje
             acquisition, recurrence = recovery
             recovery_differences.append(acquisition - recurrence)
     return {
-        "retention_rate_gain_over_no_retention": paired_bootstrap_mean_interval(
+        "retention_rate_gain_over_no_retention": _paired_interval_or_unavailable(
             retention_differences,
             seed_offset=0,
         ),
         "per_seed_maximum_critical_nmse_reduction": (
-            paired_bootstrap_mean_interval(
+            _paired_interval_or_unavailable(
                 critical_nmse_differences,
                 seed_offset=1,
             )
         ),
         "obsolete_nmse_increase_over_no_retention": (
-            paired_bootstrap_mean_interval(
+            _paired_interval_or_unavailable(
                 obsolete_nmse_differences,
                 seed_offset=2,
             )
         ),
         "retained_acquisition_minus_recurrence_steps": (
-            paired_bootstrap_mean_interval(
+            _paired_interval_or_unavailable(
                 recovery_differences,
                 seed_offset=3,
             )
@@ -636,7 +671,10 @@ def _acceptance_payload(
         result.no_retention.maximum_critical_task_median_nmse
         - result.retained.maximum_critical_task_median_nmse
     )
-    recovery_gain = (
+    # Both medians are ``inf`` when no seed recovers; the difference is then
+    # NaN, which the strict JSON digest refuses. Record the check as failed
+    # with a null actual instead of crashing the build of a rejecting gate.
+    recovery_gain = _finite_float(
         result.retained.median_acquisition_recovery_steps
         - result.retained.median_recurrence_recovery_steps
     )
@@ -1340,25 +1378,25 @@ def _recomputed_aggregate(
         ),
         "paired_effects": {
             "retention_rate_gain_over_no_retention": (
-                paired_bootstrap_mean_interval(
+                _paired_interval_or_unavailable(
                     retention_differences,
                     seed_offset=0,
                 )
             ),
             "per_seed_maximum_critical_nmse_reduction": (
-                paired_bootstrap_mean_interval(
+                _paired_interval_or_unavailable(
                     critical_nmse_differences,
                     seed_offset=1,
                 )
             ),
             "obsolete_nmse_increase_over_no_retention": (
-                paired_bootstrap_mean_interval(
+                _paired_interval_or_unavailable(
                     obsolete_differences,
                     seed_offset=2,
                 )
             ),
             "retained_acquisition_minus_recurrence_steps": (
-                paired_bootstrap_mean_interval(
+                _paired_interval_or_unavailable(
                     recovery_differences,
                     seed_offset=3,
                 )
