@@ -484,6 +484,24 @@ class TestNormalizedMLPLearner:
         chex.assert_tree_all_finite(result.metrics)
 
 
+class TestNormalizedMLPPredict:
+    """``predict`` must apply the configured normalizer exactly as ``update`` does."""
+
+    def test_predict_reproduces_the_update_prediction(self) -> None:
+        learner = MLPLearner(
+            hidden_sizes=(8,), sparsity=0.0, step_size=0.01, normalizer=EMANormalizer(decay=0.99)
+        )
+        xs = 100.0 + jr.normal(jr.key(0), (200, 2), dtype=jnp.float32)
+        ys = 0.5 * (xs[:, 0] - 100.0)
+        state = learner.init(2, jr.key(1))
+        for x, y in zip(xs, ys, strict=True):
+            state = learner.update(state, x, jnp.atleast_1d(y)).state
+        x, y = xs[-1], ys[-1]
+        result = learner.update(state, x, jnp.atleast_1d(y))
+        frozen = state.replace(normalizer_state=result.state.normalizer_state)
+        chex.assert_trees_all_close(learner.predict(frozen, x), result.prediction, atol=1e-6)
+
+
 class TestRunMLPNormalizedLearningLoop:
     """Tests for run_mlp_learning_loop with a normalized MLPLearner."""
 

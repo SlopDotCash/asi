@@ -962,3 +962,45 @@ def test_linear_family_feature_dimensions_are_exact_and_preflighted(learner) -> 
 
     with pytest.raises(ValueError, match="resource"):
         learner.init(2**26)
+
+
+class TestLinearLearnerNormalizedPredict:
+    """``predict`` must apply the configured normalizer exactly as ``update`` does."""
+
+    @staticmethod
+    def _train(normalizer: WelfordNormalizer | EMANormalizer) -> tuple:
+        learner = LinearLearner(optimizer=LMS(0.05), normalizer=normalizer)
+        # Raw features live around 100 so a prediction on un-normalized input is
+        # off by two orders of magnitude from the learned mapping.
+        xs = 100.0 + jr.normal(jr.key(0), (200, 2), dtype=jnp.float32)
+        ys = 0.5 * (xs[:, 0] - 100.0)
+        state = learner.init(2)
+        for x, y in zip(xs, ys, strict=True):
+            state = learner.update(state, x, jnp.atleast_1d(y)).state
+        return learner, state, xs[-1], ys[-1]
+
+    @pytest.mark.parametrize(
+        "normalizer", [WelfordNormalizer(), EMANormalizer(decay=0.99)], ids=["welford", "ema"]
+    )
+    def test_predict_reproduces_the_update_prediction(self, normalizer) -> None:
+        learner, state, x, y = self._train(normalizer)
+        result = learner.update(state, x, jnp.atleast_1d(y))
+        # Same weights, same normalizer statistics as the update used: the public
+        # prediction must be the prediction the update reported.
+        frozen = state.replace(normalizer_state=result.state.normalizer_state)
+        chex.assert_trees_all_close(learner.predict(frozen, x), result.prediction, atol=1e-6)
+        # And it is on the target's scale: the raw affine map ``w @ x + b`` on
+        # these features is off by roughly ``0.5 * 100``.
+        assert abs(float(learner.predict(state, x)[0]) - float(y)) < 2.0
+        raw_affine = float(jnp.dot(state.weights, x) + state.bias)
+        assert abs(raw_affine - float(y)) > 10.0
+
+    def test_predict_without_normalizer_is_the_plain_affine_map(self) -> None:
+        learner = LinearLearner(optimizer=LMS(0.1))
+        state = learner.init(3)
+        state = state.replace(
+            weights=jnp.array([1.0, -2.0, 0.5], dtype=jnp.float32),
+            bias=jnp.array(0.25, dtype=jnp.float32),
+        )
+        x = jnp.array([2.0, 1.0, 4.0], dtype=jnp.float32)
+        chex.assert_trees_all_close(learner.predict(state, x), jnp.array([2.25], dtype=jnp.float32))

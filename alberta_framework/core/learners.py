@@ -368,16 +368,30 @@ class LinearLearner:
         )
 
     def predict(self, state: LearnerState, observation: Observation) -> Prediction:
-        """Compute prediction for an observation.
+        """Compute prediction for a raw observation.
+
+        When a normalizer is configured the observation is normalized with the
+        statistics held in ``state`` first, so the prediction is the one the
+        learned weights were trained to produce. ``update`` reports the same
+        prediction for the statistics it commits.
 
         Args:
             state: Current learner state
-            observation: Input feature vector
+            observation: Raw input feature vector
 
         Returns:
-            Scalar prediction ``y = w @ x + b``
+            Scalar prediction ``y = w @ phi(x) + b`` where ``phi`` is the
+            configured normalizer (identity when none is configured)
         """
-        return jnp.atleast_1d(jnp.dot(state.weights, observation) + state.bias)
+        obs = observation
+        if self._normalizer is not None and state.normalizer_state is not None:
+            obs = self._normalizer.normalize_only(state.normalizer_state, observation)
+        return self._predict_normalized(state, obs)
+
+    @staticmethod
+    def _predict_normalized(state: LearnerState, normalized: Observation) -> Prediction:
+        """Affine map on an observation the normalizer has already processed."""
+        return jnp.atleast_1d(jnp.dot(state.weights, normalized) + state.bias)
 
     def update(
         self,
@@ -414,18 +428,7 @@ class LinearLearner:
             new_normalizer_state = normalizer_result.state
             normalizer_update_applied = normalizer_result.update_applied
 
-        prediction = self.predict(
-            LearnerState(
-                weights=state.weights,
-                bias=state.bias,
-                optimizer_state=state.optimizer_state,
-                normalizer_state=new_normalizer_state,
-                step_count=state.step_count,
-                birth_timestamp=state.birth_timestamp,
-                uptime_s=state.uptime_s,
-            ),
-            obs,
-        )
+        prediction = self._predict_normalized(state, obs)
 
         error = jnp.squeeze(target) - jnp.squeeze(prediction)
 
@@ -1454,17 +1457,24 @@ class MLPLearner:
         JIT-compiled automatically. First call triggers tracing; subsequent
         calls with the same learner instance use the cached compilation.
 
+        When a normalizer is configured the observation is normalized with the
+        statistics held in ``state`` first, matching the input ``update``
+        trains the network on.
+
         Args:
             state: Current MLP learner state
-            observation: Input feature vector
+            observation: Raw input feature vector
 
         Returns:
             Scalar prediction
         """
+        obs = observation
+        if self._normalizer is not None and state.normalizer_state is not None:
+            obs = self._normalizer.normalize_only(state.normalizer_state, observation)
         y = self._forward(
             state.params.weights,
             state.params.biases,
-            observation,
+            obs,
             self._leaky_relu_slope,
             self._use_layer_norm,
         )
