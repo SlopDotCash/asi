@@ -400,6 +400,38 @@ def test_rehashed_source_provenance_tampering_fails_current_source_binding(
     assert any("current pinned source hashes" in error for error in validation.errors)
 
 
+def test_rehashed_type_punned_seed_and_threshold_values_fail_closed(
+    benchmark_report,
+) -> None:
+    """Python equality treats 30 == 30.0; the validator must reject punned scalars."""
+    fabricated = copy.deepcopy(build_evidence_artifact(benchmark_report))
+    content = fabricated["content"]
+    assert isinstance(content, dict)
+    aggregate = content["aggregate"]
+    assert isinstance(aggregate, dict)
+    thresholds = content["thresholds"]
+    assert isinstance(thresholds, dict)
+    aggregate["seeds"] = [float(seed) for seed in aggregate["seeds"]]
+    aggregate["seed_count"] = float(aggregate["seed_count"])
+    thresholds["minimum_seed_count"] = float(thresholds["minimum_seed_count"])
+    interval = aggregate["recurrence_recovery_fraction_interval"]
+    assert isinstance(interval, dict)
+    interval["successes"] = float(interval["successes"])
+    digest = fabricated["content_digest"]
+    assert isinstance(digest, dict)
+    digest["sha256"] = scientific_content_sha256(content)
+
+    validation = validate_evidence_artifact(fabricated)
+
+    assert not validation.valid
+    assert not validation.accepted
+    errors = validation.errors
+    assert any("content.aggregate.seeds must equal held-out seeds 30-59" in e for e in errors)
+    assert any("content.aggregate.seed_count must equal 30" in e for e in errors)
+    assert any("content.thresholds.minimum_seed_count must equal" in e for e in errors)
+    assert any("successes is inconsistent with seed summaries" in e for e in errors)
+
+
 def test_rehashed_unknown_scientific_field_fails_schema(
     benchmark_report,
 ) -> None:

@@ -992,6 +992,29 @@ def test_unknown_scientific_key_fails_even_when_rehashed(
     assert any("unknown keys" in error for error in validation.errors)
 
 
+def test_type_punned_gate_values_fail_even_when_rehashed(
+    accepted_artifact: dict[str, object],
+):
+    """Python equality treats True == 1.0 and 30 == 30.0; the validator must not."""
+    changed = copy.deepcopy(accepted_artifact)
+    check = _acceptance_checks(changed)[
+        "all_seed_primary_pre_final_d_context_noninferior_to_no_retention"
+    ]
+    assert float(check["actual"]).is_integer() and float(check["threshold"]).is_integer()
+    check["actual"] = int(check["actual"])  # JSON 4 in place of 4.0
+    check["threshold"] = bool(check["threshold"]) if check["threshold"] in (0.0, 1.0) else int(
+        check["threshold"]
+    )
+    changed["scientific_payload"]["thresholds"]["minimum_seed_count"] = 30.0
+    _rehash(changed)
+    validation = validate_evidence_artifact(changed)
+    assert not validation.valid
+    assert not validation.accepted
+    errors = validation.errors
+    assert any("acceptance does not match recomputed gate" in error for error in errors)
+    assert any("thresholds are not the frozen v2 thresholds" in error for error in errors)
+
+
 def test_primitive_tamper_fails_internal_binding_even_when_rehashed(
     accepted_artifact: dict[str, object],
 ):
