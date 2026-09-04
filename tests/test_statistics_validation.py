@@ -668,7 +668,8 @@ class TestIdenticalWilcoxonRejection:
         assert result.test_name == "Wilcoxon signed-rank"
         assert result.statistic == pytest.approx(0.0)
         assert result.p_value < 1.0
-        assert result.effect_size == cohens_d([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        # Paired d_z for a constant shift: zero difference variance.
+        assert np.isposinf(result.effect_size)
 
 
 class TestOneSampleRejection:
@@ -881,6 +882,30 @@ class TestEffectSizes:
 
     def test_cohens_d_zero_variance_returns_zero(self) -> None:
         assert cohens_d([3.0, 3.0, 3.0], [3.0, 3.0, 3.0]) == 0.0
+
+    def test_paired_ttest_effect_size_is_within_pair_d_z(self) -> None:
+        # Issue #2154: shared between-seed variance must cancel. Every pair
+        # differs by exactly 1, so d_z = mean(diffs)/std(diffs, ddof=1) is
+        # huge while the pooled independent-groups d is ~0.02.
+        a = [101.0, 202.0, 303.0, 404.0]
+        b = [100.0, 200.0, 300.0, 400.0]
+        res = ttest_comparison(a, b, paired=True)
+        expected = float(np.mean(np.subtract(a, b)) / np.std(np.subtract(a, b), ddof=1))
+        assert res.effect_size == pytest.approx(expected)
+        assert res.effect_size == pytest.approx(1.9364916731037085)
+
+    def test_wilcoxon_effect_size_is_within_pair_d_z(self) -> None:
+        a = [101.0, 202.0, 303.0, 404.0]
+        b = [100.0, 200.0, 300.0, 400.0]
+        res = wilcoxon_comparison(a, b)
+        expected = float(np.mean(np.subtract(a, b)) / np.std(np.subtract(a, b), ddof=1))
+        assert res.effect_size == pytest.approx(expected)
+
+    def test_paired_d_z_constant_shift_is_signed_infinite(self) -> None:
+        res = ttest_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5], paired=True)
+        assert np.isposinf(res.effect_size)
+        wres = wilcoxon_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        assert np.isposinf(wres.effect_size)
 
     @pytest.mark.parametrize(
         "values_a, values_b, expected_sign",
