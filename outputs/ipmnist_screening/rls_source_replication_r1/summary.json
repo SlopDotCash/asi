@@ -1,0 +1,256 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "sigma0_shiftnorm_d099",
+ "created_unix": 1788504061.2915192,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-30-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.14.4"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 6,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8692688680555555,
+   "average_online_accuracy_stderr": 9.845719005333742e-05,
+   "average_plasticity_mean": 0.005321471,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_resid_l1_preset005",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 1.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 1.0,
+    "rls_p_trace_cap": 0.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.0004352372738095233,
+   "n_seeds": 3,
+   "paired_vs_control": {
+    "all_seeds_improve": true,
+    "beats_control": true,
+    "confirmation_candidate": true,
+    "control": "sigma0_shiftnorm_d099",
+    "mean_diff": 0.005306668555555505,
+    "per_seed_diff": [
+     0.005553,
+     0.00528,
+     0.005087
+    ],
+    "seeds": [
+     0,
+     1,
+     2
+    ],
+    "stderr_diff": 0.00013537421388153703
+   },
+   "per_seed_average_online_accuracy": [
+    0.869107,
+    0.869447,
+    0.869253
+   ],
+   "per_seed_late_window_slope": [
+    -0.00031857,
+    -0.00043,
+    -0.00055714
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 172.05
+  },
+  {
+   "average_online_accuracy_mean": 0.8639621995,
+   "average_online_accuracy_stderr": 0.00020444358333878367,
+   "average_plasticity_mean": 0.2947495403888889,
+   "base_learner": "upgd_w",
+   "config_name": "sigma0_shiftnorm_d099",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_beta": 1.0,
+    "hidden_rms": 0.0,
+    "local_gate": 0.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.0002128577738095264,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.863553,
+    0.864167,
+    0.864167
+   ],
+   "per_seed_late_window_slope": [
+    -7.072e-05,
+    -0.00028214,
+    -0.00028571
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 181.66
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/rls_head_resid_l1_preset005_seed0.json",
+   "seed": 0,
+   "sha256": "dfe9c35d9b82c195047d008f91162cccff6a33befcea8a026f3fab9d4316f1e3",
+   "size_bytes": 5744
+  },
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/rls_head_resid_l1_preset005_seed1.json",
+   "seed": 1,
+   "sha256": "b8f55dc05e1559881790eeb9775522433770189e5d61bbbbd8c243592d947a0a",
+   "size_bytes": 5699
+  },
+  {
+   "config_name": "rls_head_resid_l1_preset005",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/rls_head_resid_l1_preset005_seed2.json",
+   "seed": 2,
+   "sha256": "56442b8f44f142446cba54fe60585cf1c69fe401d3f534587de03ce3106a162c",
+   "size_bytes": 5738
+  },
+  {
+   "config_name": "sigma0_shiftnorm_d099",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/sigma0_shiftnorm_d099_seed0.json",
+   "seed": 0,
+   "sha256": "7d84d7ff242243d26c9c04ebb740f83c0dc1a722d368ee7bf424bd00b80c73a8",
+   "size_bytes": 5648
+  },
+  {
+   "config_name": "sigma0_shiftnorm_d099",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/sigma0_shiftnorm_d099_seed1.json",
+   "seed": 1,
+   "sha256": "2a8912f66a14de7377934b6cac822ec81b56f76a430c6f2e91d00cb7ffe6ddc1",
+   "size_bytes": 5657
+  },
+  {
+   "config_name": "sigma0_shiftnorm_d099",
+   "path": "outputs/ipmnist_screening/rls_source_replication_r1/shards/sigma0_shiftnorm_d099_seed2.json",
+   "seed": 2,
+   "sha256": "ffadc639e6bc9edea8ca3789d1537856bb17e8a19410d13649914abde9f2ad7d",
+   "size_bytes": 5630
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "c9aba7b54dedd647f8bd5f5c7bf6780b1413b676",
+  "git_object_format": "sha1",
+  "git_tree": "c55a4f2ae3ac44b34db5f738eef8d0b025584ca7",
+  "relevant_source_file_count": 230,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "bb5d8e2298fa6ac20d8bef0ff785fd945a179ce737701899a17dd26096b2d145",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}
