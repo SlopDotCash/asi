@@ -2942,7 +2942,9 @@ class UPGDLearner:
                     _skip_zero_scale(unit_gradient_decay, state.unit_gradient_emas[i])
                     + (1.0 - unit_gradient_decay) * unit_gradient_signal
                 )
-                new_unit_ages.append(state.unit_ages[i] + 1)
+                new_unit_ages.append(
+                    _saturating_int32_counter_increment(state.unit_ages[i])
+                )
             elif len(state.unit_utilities) > 0:
                 new_unit_utilities.append(state.unit_utilities[i])
                 new_unit_long_utilities.append(state.unit_long_utilities[i])

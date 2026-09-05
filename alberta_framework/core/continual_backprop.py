@@ -98,7 +98,10 @@ from alberta_framework.core.multi_head_learner import (
     MultiHeadMLPState,
     MultiHeadMLPUpdateResult,
 )
-from alberta_framework.core.normalizers import Normalizer
+from alberta_framework.core.normalizers import (
+    Normalizer,
+    _saturating_int32_counter_increment,
+)
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import TraceMode
 
@@ -441,7 +444,7 @@ def update_utility(
 
         u_l[i] <- decay * u_l[i] + (1 - decay) * |a_l[i] * g_l[i]|
 
-    Also increments every unit's age by 1.
+    Also saturating-increments every unit's int32 age.
 
     Args:
         cbp_state: Current CBP state.
@@ -481,7 +484,7 @@ def update_utility(
         u_new = decayed + (1.0 - decay) * contribution
         u_new = jnp.where(contribution_finite, u_new, cbp_state.utilities[i])
         new_utilities.append(u_new)
-        new_ages.append(cbp_state.ages[i] + 1)
+        new_ages.append(_saturating_int32_counter_increment(cbp_state.ages[i]))
 
     return cbp_state.replace(  # type: ignore[attr-defined]
         utilities=tuple(new_utilities),

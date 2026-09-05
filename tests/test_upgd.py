@@ -1571,6 +1571,33 @@ class TestUtilityTracking:
         assert float(result.state.unit_utilities[0][0]) == 0.0
         assert float(result.state.unit_replacement_counts[0]) == 1.0
 
+    def test_unit_ages_saturate_at_int32_max_and_remain_mature(self) -> None:
+        """int32 unit ages must not wrap; wraparound stops recycling."""
+        int32_max = np.iinfo(np.int32).max
+        wrapped = jnp.array(int32_max, dtype=jnp.int32) + jnp.array(1, dtype=jnp.int32)
+        assert int(wrapped) == -int32_max - 1
+
+        learner = UPGDLearner(
+            n_heads=2,
+            hidden_sizes=(4,),
+            sparsity=0.0,
+            step_size=0.0,
+            perturbation_sigma=0.0,
+            unit_replacement_rate=0.25,
+            unit_maturity_threshold=1,
+        )
+        state = learner.init(feature_dim=3, key=jr.key(11))
+        state = state.replace(  # type: ignore[attr-defined]
+            unit_utilities=(jnp.array([0.0, 10.0, 10.0, 10.0], dtype=jnp.float32),),
+            unit_ages=(jnp.full((4,), int32_max, dtype=jnp.int32),),
+        )
+        result = learner.update(state, jnp.zeros(3), jnp.zeros(2))
+        assert int(result.state.unit_ages[0][0]) == 0
+        assert int(result.state.unit_ages[0][1]) == int32_max
+        assert int(result.state.unit_ages[0][2]) == int32_max
+        assert int(result.state.unit_ages[0][3]) == int32_max
+        assert float(result.state.unit_replacement_counts[0]) == 1.0
+
     def test_stale_gradient_recycling_with_targeted_fanin_runs(self):
         learner = UPGDLearner(
             n_heads=2,

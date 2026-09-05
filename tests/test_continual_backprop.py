@@ -205,6 +205,27 @@ class TestUtilityUpdate:
         assert int(state.ages[0][1]) == 10
         assert int(state.ages[0][2]) == 10
 
+    def test_age_saturates_at_int32_max_without_losing_maturity(self) -> None:
+        """int32 ages must not wrap; wraparound makes mature units ineligible."""
+        int32_max = np.iinfo(np.int32).max
+        wrapped = jnp.array(int32_max, dtype=jnp.int32) + jnp.array(1, dtype=jnp.int32)
+        assert int(wrapped) == -int32_max - 1
+
+        cbp_state = ContinualBackpropState(  # type: ignore[call-arg]
+            utilities=(jnp.array([0.9, 0.1], dtype=jnp.float32),),
+            ages=(jnp.array([int32_max, int32_max], dtype=jnp.int32),),
+            replacement_accumulators=jnp.zeros(1, dtype=jnp.float32),
+            rng_key=jr.key(0),
+        )
+        acts = (jnp.array([1.0, 1.0], dtype=jnp.float32),)
+        grads = (jnp.array([0.1, 0.1], dtype=jnp.float32),)
+        new = update_utility(cbp_state, acts, grads, 0.9)
+        assert int(new.ages[0][0]) == int32_max
+        assert int(new.ages[0][1]) == int32_max
+        idx, has = _select_replacement_index(new.utilities[0], new.ages[0], 10, 0.9)
+        assert bool(has)
+        assert int(idx) == 1
+
     def test_inf_activation_silent_grad_holds_finite_utility(self) -> None:
         """Inf activation * a silent gradient is 0*inf = NaN utility.
 
