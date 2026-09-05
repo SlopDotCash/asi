@@ -40,35 +40,36 @@ class _HostileInt(int):
     @property
     def __class__(self) -> type[int]:  # pragma: no cover
         type(self).calls += 1
-        raise AssertionError("class hook")
+        raise AssertionError("HostileInt.__class__ must not be called")
 
     def __int__(self) -> int:  # pragma: no cover
         type(self).calls += 1
-        raise AssertionError("int hook")
+        raise AssertionError("HostileInt.__int__ must not be called")
 
     def __index__(self) -> int:  # pragma: no cover
         type(self).calls += 1
-        raise AssertionError("index hook")
-
-    def __repr__(self) -> str:  # pragma: no cover
-        type(self).calls += 1
-        raise AssertionError("repr hook")
-
-    def __float__(self) -> float:  # type: ignore[override]
-        type(self).calls += 1
-        raise AssertionError("HostileFloat hook must not leak via !r")
-
-
-class _HostileInt(int):
-    calls = 0
-
-    def __int__(self) -> int:
-        type(self).calls += 1
-        raise AssertionError("HostileInt.__int__ must not be called")
+        raise AssertionError("HostileInt.__index__ must not be called")
 
     def __repr__(self) -> str:  # pragma: no cover
         type(self).calls += 1
         raise AssertionError("HostileInt.__repr__ must not be called")
+
+
+def test_hostile_int_traps_every_documented_coercion_hook() -> None:
+    """Guard against a second definition shadowing the stronger traps.
+
+    A duplicate ``_HostileInt`` used to shadow this class while trapping only
+    ``__int__`` and ``__repr__``, so the ``__class__`` and ``__index__`` traps
+    never ran -- and ``__index__`` is precisely the hook the house integer
+    gates reach for.
+    """
+    for hook in ("__class__", "__int__", "__index__", "__repr__"):
+        assert hook in vars(_HostileInt), hook
+
+    _HostileInt.calls = 0
+    with pytest.raises(AssertionError, match=r"HostileInt\.__int__"):
+        int(_HostileInt(4))
+    assert _HostileInt.calls == 1
 
 
 def test_rejects_string_subclass_for_feature_dim() -> None:

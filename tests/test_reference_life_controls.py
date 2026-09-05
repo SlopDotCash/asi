@@ -1069,3 +1069,23 @@ def test_learning_controls_reject_increasing_epsilon_schedules(factory: object) 
             epsilon_start=0.1,
             epsilon_end=0.2,
         )
+
+
+def test_hidden_sizes_rejects_list_subclass_before_len() -> None:
+    from alberta_framework.reference_life_controls import _canonical_hidden_sizes
+
+    class HostileList(list):
+        calls = 0
+
+        def __len__(self) -> int:  # type: ignore[override]
+            type(self).calls += 1
+            raise AssertionError("HostileList.__len__ must not run")
+
+    HostileList.calls = 0
+    with pytest.raises(ValueError, match="exact tuple or list"):
+        _canonical_hidden_sizes(
+            HostileList([32]),
+            observation_dim=2,
+            n_actions=2,
+        )
+    assert HostileList.calls == 0

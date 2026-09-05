@@ -64,6 +64,24 @@ def test_inert_reduction_includes_curves_params_state_and_jacobian(
         assert inert[key] == control[key]
 
 
+def test_dead_jacobian_reports_capped_ill_conditioning() -> None:
+    inputs = np.zeros((4, 4), dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], dtype=np.int32)
+
+    dead = run_adamo_diagnostic(
+        inputs,
+        labels,
+        profile="contract-smoke",
+        seed=FROZEN_DEVELOPMENT_SEEDS[0],
+    )
+
+    for arm in dead["arms"]:
+        for diagnostic in arm["post_task_diagnostics"]:
+            assert diagnostic["jacobian_min_singular_value"] == 0.0
+            assert diagnostic["jacobian_max_singular_value"] == 0.0
+            assert diagnostic["jacobian_condition_number_clipped_1e12"] == 1e12
+
+
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [

@@ -98,6 +98,8 @@ REQUIRED_ENVIRONMENT_RNG_SCHEDULE: Final = "dedicated_environment_split_chain_v1
 
 MAX_SEED: Final = 2**31 - 1
 MAX_ACTIONS: Final = 1_024
+# Single-digit actions in [0, 3] plus commas: "0,1,...,3" fits in this last-fit.
+MAX_ACTIONS_TEXT: Final = MAX_ACTIONS * 2 - 1
 MAX_JSON_BYTES: Final = 4 * 1024 * 1024
 MAX_JSON_NODES: Final = 100_000
 MAX_JSON_DEPTH: Final = 64
@@ -2325,8 +2327,12 @@ def validate_collector_result(
 
 
 def _parse_actions_argument(value: str) -> tuple[int, ...]:
-    if not value or value.strip() != value:
+    if type(value) is not str or not value or value.strip() != value:
         raise argparse.ArgumentTypeError("actions must be a comma-separated list")
+    if len(value) > MAX_ACTIONS_TEXT:
+        raise argparse.ArgumentTypeError(
+            f"actions length must be an integer in [1, {MAX_ACTIONS_TEXT}]"
+        )
     parts = value.split(",")
     if any(not part or not part.isascii() or not part.isdecimal() for part in parts):
         raise argparse.ArgumentTypeError("actions must contain decimal integers")
