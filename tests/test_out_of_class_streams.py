@@ -68,9 +68,7 @@ def _scan_collect(stream, num_steps: int, key) -> tuple[jnp.ndarray, jnp.ndarray
         ts, new_state = stream.step(carry, idx)
         return new_state, (ts.observation, ts.target)
 
-    _, (observations, targets) = jax.lax.scan(
-        body, state, jnp.arange(num_steps)
-    )
+    _, (observations, targets) = jax.lax.scan(body, state, jnp.arange(num_steps))
     return observations, targets
 
 
@@ -83,9 +81,7 @@ class TestOutOfClassPolynomialStream:
     """Tests for the degree-3 polynomial out-of-class stream."""
 
     @pytest.mark.parametrize("active_count", [0, -1, True, 1.0, np.int64(1)])
-    def test_active_triple_count_requires_positive_builtin_int(
-        self, active_count: object
-    ) -> None:
+    def test_active_triple_count_requires_positive_builtin_int(self, active_count: object) -> None:
         with pytest.raises(ValueError, match="positive built-in integer"):
             OutOfClassPolynomialStream(
                 feature_dim=4,
@@ -477,8 +473,10 @@ class TestOutOfClassPolynomialStream:
             assert np.unique(row).size == triple_count
         threshold = jnp.sort(scores, axis=-1)[..., 1:2]
         legacy_mask = scores <= threshold
-        expected = dense_weights * legacy_mask.astype(jnp.float32) / jnp.sqrt(
-            jnp.sum(legacy_mask, axis=-1, keepdims=True)
+        expected = (
+            dense_weights
+            * legacy_mask.astype(jnp.float32)
+            / jnp.sqrt(jnp.sum(legacy_mask, axis=-1, keepdims=True))
         )
 
         np.testing.assert_array_equal(
@@ -517,24 +515,18 @@ class TestOutOfClassPolynomialStream:
             del key, kwargs
             return jnp.broadcast_to(jnp.asarray(scores, dtype=dtype), shape)
 
-        monkeypatch.setattr(
-            "alberta_framework.streams.out_of_class.jr.normal", fixed_normal
-        )
-        monkeypatch.setattr(
-            "alberta_framework.streams.out_of_class.jr.uniform", fixed_uniform
-        )
+        monkeypatch.setattr("alberta_framework.streams.out_of_class.jr.normal", fixed_normal)
+        monkeypatch.setattr("alberta_framework.streams.out_of_class.jr.uniform", fixed_uniform)
         init = jax.jit(stream.init) if compiled else stream.init
         state = init(jr.key(0))
 
         actual_mask = state.context_weights != 0.0
-        expected = jnp.broadcast_to(
-            jnp.asarray(expected_mask), state.context_weights.shape
-        )
+        expected = jnp.broadcast_to(jnp.asarray(expected_mask), state.context_weights.shape)
         chex.assert_trees_all_equal(actual_mask, expected)
 
-        observations, targets = jax.jit(
-            lambda key: _scan_collect(stream, num_steps=4, key=key)
-        )(jr.key(1))
+        observations, targets = jax.jit(lambda key: _scan_collect(stream, num_steps=4, key=key))(
+            jr.key(1)
+        )
         chex.assert_tree_all_finite((observations, targets))
 
     def test_step_shapes(self):
@@ -612,17 +604,13 @@ class TestOutOfClassPolynomialStream:
         def target_for_scale(s: jnp.ndarray) -> jnp.ndarray:
             xs = s * base_x  # (n_samples, feature_dim)
             triples = (
-                xs[:, state.triples_left]
-                * xs[:, state.triples_middle]
-                * xs[:, state.triples_right]
+                xs[:, state.triples_left] * xs[:, state.triples_middle] * xs[:, state.triples_right]
             )  # (n_samples, n_triples)
             ws = state.context_weights[0]  # (n_tasks, n_triples)
             return triples @ ws.T  # (n_samples, n_tasks)
 
         # Per-task variance at each scale, summed across tasks.
-        variances = jnp.array(
-            [jnp.var(target_for_scale(s)).item() for s in scales]
-        )
+        variances = jnp.array([jnp.var(target_for_scale(s)).item() for s in scales])
         # For a degree-3 polynomial, variance scales like s^6 (since each
         # output is a sum of triple products and var grows as the square
         # of the output magnitude scaling).  For a linear oracle it grows
@@ -711,9 +699,7 @@ class TestFrequencyMismatchStream:
         ("omega_min", "omega_max"),
         [(float("nan"), 3.0), (0.5, float("inf")), (float("inf"), float("inf"))],
     )
-    def test_frequency_bounds_must_be_finite(
-        self, omega_min: float, omega_max: float
-    ) -> None:
+    def test_frequency_bounds_must_be_finite(self, omega_min: float, omega_max: float) -> None:
         with pytest.raises(ValueError):
             FrequencyMismatchStream(omega_min=omega_min, omega_max=omega_max)
 
@@ -1078,9 +1064,7 @@ class TestCompositionalStream:
         stream = CompositionalStream(weight_scale=weight_scale)
 
         assert stream._weight_scale == weight_scale
-        assert math.copysign(1.0, stream._weight_scale) == math.copysign(
-            1.0, weight_scale
-        )
+        assert math.copysign(1.0, stream._weight_scale) == math.copysign(1.0, weight_scale)
         eager_state = stream.init(jr.key(94))
         eager_timestep, _ = stream.step(eager_state, jnp.array(0, dtype=jnp.int32))
         jit_state = jax.jit(stream.init)(jr.key(94))
@@ -1106,12 +1090,8 @@ class TestCompositionalStream:
         zero_stream = CompositionalStream(weight_scale=math.copysign(0.0, weight_scale))
 
         assert stream._weight_scale == 0.0
-        assert math.copysign(1.0, stream._weight_scale) == math.copysign(
-            1.0, weight_scale
-        )
-        chex.assert_trees_all_equal(
-            stream.init(jr.key(95)), zero_stream.init(jr.key(95))
-        )
+        assert math.copysign(1.0, stream._weight_scale) == math.copysign(1.0, weight_scale)
+        chex.assert_trees_all_equal(stream.init(jr.key(95)), zero_stream.init(jr.key(95)))
 
     @pytest.mark.parametrize("sign", [1, -1])
     @pytest.mark.parametrize(
@@ -1145,9 +1125,7 @@ class TestCompositionalStream:
         for seed in range(16):
             key = jr.key(seed)
             eager_state = stream.init(key)
-            eager_timestep, _ = stream.step(
-                eager_state, jnp.array(0, dtype=jnp.int32)
-            )
+            eager_timestep, _ = stream.step(eager_state, jnp.array(0, dtype=jnp.int32))
             jit_state = jit_init(key)
             jit_timestep, _ = jit_step(jit_state, jnp.array(0, dtype=jnp.int32))
             chex.assert_tree_all_finite(
@@ -1258,15 +1236,11 @@ class TestCompositionalStream:
             amplitude_scale=2.0,
             noise_std=0.0,
         )
-        observations, targets = _scan_collect(
-            stream, num_steps=800, key=jr.key(2)
-        )
+        observations, targets = _scan_collect(stream, num_steps=800, key=jr.key(2))
 
         # Solve y ~ Wx + b via stacking a bias column and lstsq.
         n = observations.shape[0]
-        x_bias = jnp.concatenate(
-            [observations, jnp.ones((n, 1), dtype=observations.dtype)], axis=1
-        )
+        x_bias = jnp.concatenate([observations, jnp.ones((n, 1), dtype=observations.dtype)], axis=1)
         # Use jnp.linalg.lstsq for a linear fit.  ``targets`` is (n, 1).
         sol, _, _, _ = jnp.linalg.lstsq(x_bias, targets, rcond=None)
         predictions = x_bias @ sol
@@ -1384,3 +1358,12 @@ def test_out_of_class_step_clocks_saturate(stream: object) -> None:
     )
     _, advanced = stream.step(state, jnp.asarray(0, dtype=jnp.int32))  # type: ignore[attr-defined]
     assert int(advanced.step_count) == 2**31 - 1
+
+
+@pytest.mark.parametrize(
+    "dtype_code", ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q", "e", "f", "d", "g")
+)
+def test_polynomial_stream_accepts_all_numpy_real_families_for_multiplier(dtype_code: str) -> None:
+    val = np.dtype(dtype_code).type(1)
+    s = OutOfClassPolynomialStream(feature_dim=4, noise_std=val)
+    assert s is not None

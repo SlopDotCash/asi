@@ -857,10 +857,8 @@ def _probe_policy(
     """Read-only deterministic rollout from a fixed evaluator-owned state."""
 
     state = _probe_state(world, context=context, phase_steps=config.phase_steps)
-    action_preferences = (
-        controller.action_values[:, context, 1] - controller.action_values[:, context, 0]
-    )
-    actions = np.sign(action_preferences).astype(np.float32)
+    action_indices = np.argmax(controller.action_values[:, context, :], axis=1)
+    actions = (2 * action_indices - 1).astype(np.float32)
     rewards = np.empty((config.probe_horizon,), dtype=np.float64)
     for step_index in range(config.probe_horizon):
         transition, state = step_world(state, jnp.asarray(actions))

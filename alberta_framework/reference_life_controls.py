@@ -23,6 +23,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAConfig,
@@ -86,6 +87,9 @@ _THREEFRY_IMPLEMENTATION = REFERENCE_LIFE_PRNG_IMPLEMENTATION
 _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MAX_ID_LENGTH = 256
+# Same ceiling as reference_agent string-fed JSON. Origin json.loads
+# RecursionErrors a 16_000-deep object nest before the oracle schema runs.
+_MAX_JSON_NESTING_DEPTH = 64
 _RANDOM_DOMAIN = 0x4354524C
 
 EnvironmentKind = Literal["switching_two_state", "riverswim"]
@@ -189,8 +193,8 @@ def _canonical_hidden_sizes(
     observation_dim: int,
     n_actions: int,
 ) -> tuple[int, ...]:
-    if not isinstance(value, (tuple, list)):
-        raise ValueError("hidden_sizes must be a bounded tuple or list")
+    if type(value) is not tuple and type(value) is not list:
+        raise ValueError("hidden_sizes must be an exact tuple or list")
     if len(value) > _MAX_HIDDEN_LAYERS:
         raise ValueError(f"hidden_sizes must contain at most {_MAX_HIDDEN_LAYERS} layers")
     hidden_sizes = tuple(value)
@@ -225,6 +229,26 @@ def _canonical_json(value: dict[str, Any]) -> str:
         separators=(",", ":"),
         sort_keys=True,
     )
+
+
+def _require_oracle_config_json(raw: object) -> str:
+    """Reject nesting that would RecursionError json.loads before it runs."""
+
+    if type(raw) is not str:
+        raise ValueError("oracle environment config must be canonical JSON")
+    try:
+        require_json_text_nesting(
+            raw,
+            max_depth=_MAX_JSON_NESTING_DEPTH,
+            name="oracle environment config",
+        )
+    except ValueError as exc:
+        if "nesting limit" not in str(exc):
+            raise
+        raise ValueError(
+            "oracle environment config exceeds the JSON nesting limit"
+        ) from exc
+    return raw
 
 
 def _canonical_switching_environment(
@@ -736,10 +760,13 @@ class AnalyticOracleReferenceConfig:
             self.policy_sha256
         ) is None:
             raise ValueError("oracle policy_sha256 must be a lowercase SHA-256 digest")
-        if type(self.environment_config_json) is not str:
-            raise ValueError("oracle environment config must be canonical JSON")
+        _require_oracle_config_json(self.environment_config_json)
         try:
             decoded = json.loads(self.environment_config_json)
+        except RecursionError as exc:
+            raise ValueError(
+                "oracle environment config exceeds the JSON nesting limit"
+            ) from exc
         except (TypeError, json.JSONDecodeError) as exc:
             raise ValueError("oracle environment config must be canonical JSON") from exc
         if (
@@ -845,7 +872,13 @@ class AnalyticOracleReferenceConfig:
 
     @property
     def environment_config(self) -> dict[str, Any]:
-        decoded = json.loads(self.environment_config_json)
+        _require_oracle_config_json(self.environment_config_json)
+        try:
+            decoded = json.loads(self.environment_config_json)
+        except RecursionError as exc:
+            raise ValueError(
+                "oracle environment config exceeds the JSON nesting limit"
+            ) from exc
         assert isinstance(decoded, dict)
         return decoded
 
