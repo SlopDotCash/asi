@@ -3,6 +3,6 @@
   "base_image_digest": "python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c",
   "dockerfile_sha256": "dec91565d3b697d5065137a115229ee80ecd818d2e7351ecc7f80710d306b7f6",
   "requirements_lock_sha256": "300bfe63042bd684b6024d0fbf4ad13c475c8e83181cf84eaabe3e3aeb11b509",
-  "smoke_sha256": "6befb030d75a649aafe2762620b101c86b05ea015e006212b6de769ea0500969",
+  "smoke_sha256": "8cf6101eb7aa754857248b98b6db22df29a4bb409aea129f4005dd0fbba27337",
   "patch_sha256": "25bc846908e573ff1c7d02909a9bb895570e0beafe1a928dbd0d5fd4b63835a7"
 }

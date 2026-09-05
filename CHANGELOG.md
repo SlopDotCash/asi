@@ -81,6 +81,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `upgd_memory._normalize_simplex` now returns a probability simplex for
+  zero, negative, sub-`1e-12`, and float32-overflowing inputs.  The previous
+  floored-denominator helper could drop mass (including the reachable
+  zeros `previous_targets` target-trace blend) without reporting it.
 - Canonicalized discounted-SARSA lifecycle timers at the exact-dispatch
   reference-control boundary. The first compiled update can no longer grow
   persistent numeric state by promoting two host floats into JAX leaves, so

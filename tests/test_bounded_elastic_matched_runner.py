@@ -259,6 +259,41 @@ def test_validator_rejects_identity_resource_and_roster_forgery(
         )
 
 
+def test_validator_rejects_type_punned_forgeries_that_compare_equal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python equality treats 0 == False and 1.0 == 1; the validator must not."""
+    monkeypatch.setattr(runner, "run_screening_config", _fake_run)
+    result = cast(dict[str, Any], _run_for_test(*_data(), config=SMALL))
+
+    punned = copy.deepcopy(result)
+    punned["policy"]["scientific_promotion_allowed"] = 0
+    _resign(punned)
+    with pytest.raises(ValueError, match="permanently nonpromoting"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+    punned = copy.deepcopy(result)
+    punned["development_seeds"] = [float(seed) for seed in punned["development_seeds"]]
+    _resign(punned)
+    with pytest.raises(ValueError, match="protocol roster drifted"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+    punned = copy.deepcopy(result)
+    punned["config"]["n_tasks"] = float(punned["config"]["n_tasks"])
+    _resign(punned)
+    with pytest.raises(ValueError, match="config drifted"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+
 def test_validator_reexecutes_and_rejects_self_consistent_metric_forgery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

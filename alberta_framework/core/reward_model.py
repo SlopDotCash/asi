@@ -114,6 +114,9 @@ class RLSRewardModelConfig:
             "forgetting", self.forgetting, positive=True, upper=1.0
         )
         ridge = _validated_config_float("ridge", self.ridge, positive=True)
+        minimum_ridge = float(np.finfo(np.float32).tiny)
+        if ridge < minimum_ridge:
+            raise ValueError(f"ridge must be at least {minimum_ridge} in float32")
         error_decay = _validated_config_float(
             "error_decay", self.error_decay, lower=0.0, upper=1.0, upper_inclusive=False
         )

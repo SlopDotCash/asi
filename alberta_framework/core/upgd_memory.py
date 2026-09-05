@@ -674,8 +674,40 @@ def _active_mse(prediction: Array, target: Array) -> Array:
 
 
 def _normalize_simplex(prediction: Array) -> Array:
+    """Return a probability simplex; uniform when there is no usable mass.
+
+    The previous ``clipped / max(sum(clipped), 1e-12)`` helper did not
+    return a simplex in three float32 regimes, and every call site treats
+    the result as a distribution:
+
+    * Zero or wholly-negative mass leaves the ratio at zero.  This is
+      reachable: ``UPGDLearner`` initializes ``previous_targets`` to zeros,
+      so the target-trace blend mixes a proper simplex against a zero
+      vector until a target has been observed and the blended mass
+      collapses to ``1 - trace_gate``.
+    * A positive total below the floor is divided by the floor, so
+      ``[7.5e-13, 0, 0]`` becomes ``0.75``.
+    * A single dominant finite entry can make XLA's reciprocal flush to
+      zero, so ``[1e38, 1, 1]`` becomes the zero vector.
+
+    Rescale by an exact power of two before dividing by the true total so
+    the quotient stays in the normal range and well-formed inputs stay
+    bit-identical.  Fall back to uniform only when that normalized mass is
+    genuinely zero or non-finite.  Non-finite input, including NaN, also
+    maps to uniform: the helper's contract is a simplex, not NaN
+    propagation.
+    """
     clipped = jnp.maximum(prediction, 0.0)
-    return clipped / jnp.maximum(jnp.sum(clipped), 1e-12)
+    peak = jnp.max(clipped, axis=-1, keepdims=True)
+    finite_peak = jnp.where(jnp.isfinite(peak) & (peak > 0.0), peak, 1.0)
+    _, exponent = jnp.frexp(finite_peak)
+    rescaled = jnp.ldexp(clipped, -exponent)
+    total = jnp.sum(rescaled, axis=-1, keepdims=True)
+    safe_total = jnp.where(total > 0.0, total, jnp.ones_like(total))
+    candidate = rescaled / safe_total
+    has_mass = jnp.sum(candidate, axis=-1, keepdims=True) > 0.0
+    uniform = jnp.full_like(clipped, 1.0 / clipped.shape[-1])
+    return jnp.where(has_mass, candidate, uniform)
 
 
 class UPGDMemoryLearner:

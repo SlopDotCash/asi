@@ -155,8 +155,22 @@ def forward_view_returns(
     _require_leading_length(
         "cumulants", cumulants, ndim=1, maximum=_NEXTING_MAX_STEPS
     )
-    gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
-    init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
+    # Promote to a floating computation dtype so an integer/boolean cumulant
+    # series does not truncate gamma (``asarray(0.9, int32) == 0``) or the
+    # terminal value, which would collapse the bootstrap and degenerate the
+    # reverse scan into a raw cumulant echo (or a logical-OR for booleans).
+    # Promotion is over static dtypes only, so it stays traceable under
+    # jit + vmap.
+    compute_dtype = jnp.result_type(
+        cumulants.dtype,
+        jnp.asarray(gamma).dtype,
+        jnp.asarray(terminal_value).dtype,
+    )
+    if not jnp.issubdtype(compute_dtype, jnp.floating):
+        compute_dtype = jnp.float32
+    cumulants = cumulants.astype(compute_dtype)
+    gamma_s = jnp.asarray(gamma, dtype=compute_dtype)
+    init = jnp.asarray(terminal_value, dtype=compute_dtype)
 
     def step(carry: Array, c: Array) -> tuple[Array, Array]:
         # gamma=0 must not multiply an inf later return (0*inf).
@@ -304,14 +318,25 @@ def _finite_rmse_jvp(
 
 
 def _sliding_sum(values: Array, window_size: int) -> Array:
-    prefix = jnp.cumsum(
-        jnp.concatenate(
-            [jnp.zeros((1, values.shape[1]), dtype=values.dtype), values],
-            axis=0,
-        ),
-        axis=0,
+    """Sum each trailing window directly, without a global prefix sum.
+
+    Differencing a global cumulative sum cancels catastrophically: once the
+    prefix has grown past the magnitude of later terms, those terms fall below
+    its floating-point ulp and the window difference collapses to zero. A
+    per-window reduction only ever adds the window's own terms.
+    """
+    # A concrete zero lets JAX lower this to its windowed sum, which carries
+    # forward- and reverse-mode rules; a traced init value would fall back to
+    # the generic reducer, which has no transpose rule.
+    summed: Array = jax.lax.reduce_window(
+        values,
+        np.zeros((), dtype=values.dtype),
+        jax.lax.add,
+        window_dimensions=(window_size, 1),
+        window_strides=(1, 1),
+        padding="VALID",
     )
-    return prefix[window_size:] - prefix[:-window_size]
+    return summed
 
 
 def _scaled_running_rmse_terms(

@@ -13,12 +13,15 @@ import hashlib
 import json
 import math
 import operator
+import os
 import platform
+import stat
 import time
+import zipfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import MappingProxyType
-from typing import NamedTuple, SupportsIndex, cast
+from typing import IO, NamedTuple, SupportsIndex, cast
 
 import jax
 import jax.numpy as jnp
@@ -34,6 +37,10 @@ ARM_IDS = ("sgd_control", "cbp_mechanism_off", "cbp_bounded")
 MAX_DATASET_EXAMPLES = 60_000
 INPUT_DIM = 784
 N_CLASSES = 10
+MAX_DATASET_UNCOMPRESSED_BYTES = (
+    MAX_DATASET_EXAMPLES * INPUT_DIM * 4 + MAX_DATASET_EXAMPLES * 4 + 8192
+)
+_NPZ_REQUIRED_MEMBERS = frozenset({"images.npy", "labels.npy"})
 
 
 def _runtime_identity() -> tuple[str, str, str, str]:
@@ -614,6 +621,59 @@ def _json_result(result: DiagnosticResult) -> str:
     return json.dumps(dataclasses.asdict(result), sort_keys=True, separators=(",", ":"))
 
 
+def _npy_header(buffer: IO[bytes]) -> tuple[tuple[int, ...], np.dtype]:
+    try:
+        version = np.lib.format.read_magic(buffer)
+        if version == (1, 0):
+            shape, _fortran, dtype = np.lib.format.read_array_header_1_0(buffer)
+        elif version in ((2, 0), (3, 0)):
+            shape, _fortran, dtype = np.lib.format.read_array_header_2_0(buffer)
+        else:
+            raise ValueError("dataset NPZ npy version is unsupported")
+    except (ValueError, OSError, EOFError, KeyError) as exc:
+        raise ValueError("dataset NPZ npy header is invalid") from exc
+    try:
+        parsed = tuple(int(dim) for dim in shape)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("dataset NPZ npy header is invalid") from exc
+    return parsed, np.dtype(dtype)
+
+
+def _preflight_dataset_npz(source: IO[bytes]) -> None:
+    try:
+        archive = zipfile.ZipFile(source)
+    except zipfile.BadZipFile as exc:
+        raise ValueError("dataset NPZ must be a bounded regular file") from exc
+    with archive:
+        names = archive.namelist()
+        if len(names) != 2 or set(names) != _NPZ_REQUIRED_MEMBERS:
+            raise ValueError("dataset NPZ must contain exactly images and labels")
+        uncompressed = 0
+        for info in archive.infolist():
+            if info.is_dir() or ".." in info.filename or info.filename.startswith("/"):
+                raise ValueError("dataset NPZ must contain exactly images and labels")
+            if info.file_size < 0 or info.file_size > MAX_DATASET_UNCOMPRESSED_BYTES:
+                raise ValueError("MNIST dataset size is empty or unbounded")
+            uncompressed += info.file_size
+            if uncompressed > MAX_DATASET_UNCOMPRESSED_BYTES:
+                raise ValueError("MNIST dataset size is empty or unbounded")
+        with archive.open("images.npy") as handle:
+            image_shape, image_dtype = _npy_header(handle)
+        with archive.open("labels.npy") as handle:
+            label_shape, label_dtype = _npy_header(handle)
+    if image_dtype != np.dtype(np.float32):
+        raise ValueError("images must be an exact float32 ndarray")
+    if label_dtype != np.dtype(np.int32):
+        raise ValueError("labels must be an exact int32 ndarray")
+    if (
+        len(image_shape) != 2
+        or image_shape[1] != INPUT_DIM
+        or label_shape != (image_shape[0],)
+        or not 2 <= image_shape[0] <= MAX_DATASET_EXAMPLES
+    ):
+        raise ValueError("MNIST dataset size is empty or unbounded")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path)
@@ -631,17 +691,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.dataset is None:
         parser.error("--dataset is required unless --catalog is used")
-    if (
-        args.dataset.is_symlink()
-        or not args.dataset.is_file()
-        or args.dataset.stat().st_size > 256 * 1024 * 1024
+    if not all(hasattr(os, name) for name in ("O_CLOEXEC", "O_NOFOLLOW")):
+        raise ValueError("dataset NPZ loading requires no-follow file support")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(args.dataset, flags)
+    except OSError as exc:
+        raise ValueError("dataset NPZ must be a bounded regular file") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or not 0 < opened.st_size <= 256 * 1024 * 1024
+        ):
+            raise ValueError("dataset NPZ must be a bounded regular file")
+        with os.fdopen(descriptor, "rb") as source:
+            descriptor = -1
+            _preflight_dataset_npz(source)
+            source.seek(0)
+            with np.load(source, allow_pickle=False) as payload:
+                if set(payload.files) != {"images", "labels"}:
+                    raise ValueError("dataset NPZ must contain exactly images and labels")
+                result = run_diagnostic(
+                    payload["images"], payload["labels"], seed=args.seed, profile_id=args.profile
+                )
+            final = os.fstat(source.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    if final.st_nlink != 1 or any(
+        getattr(opened, name) != getattr(final, name) for name in stable_fields
     ):
         raise ValueError("dataset NPZ must be a bounded regular file")
-    with np.load(args.dataset, allow_pickle=False) as payload:
-        if set(payload.files) != {"images", "labels"}:
-            raise ValueError("dataset NPZ must contain exactly images and labels")
-        result = run_diagnostic(
-            payload["images"], payload["labels"], seed=args.seed, profile_id=args.profile
-        )
     print(_json_result(result))
     return 0

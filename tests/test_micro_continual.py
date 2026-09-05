@@ -1876,6 +1876,36 @@ class TestCLI:
             main([*base, "--hidden1", "16", "--hidden2", "6"])
         assert path.read_bytes() == first
 
+    def test_run_refuses_to_skip_a_shard_recorded_for_another_arm_or_seed(
+        self, tmp_path: Path
+    ):
+        """The idempotent skip must bind the payload's arm and seed, not just the path name."""
+        import shutil
+
+        base = [
+            "run", "--family", "input_permutation", "--out", str(tmp_path), *self.ARGS,
+        ]
+        assert main([*base, "--arm", "sgd_raw", "--seed", "0"]) == 0
+        genuine = micro_shard_path(tmp_path, "input_permutation", "sgd_raw", 0)
+        relabeled_seed = micro_shard_path(tmp_path, "input_permutation", "sgd_raw", 7)
+        relabeled_arm = micro_shard_path(tmp_path, "input_permutation", "naive_bayes", 0)
+        shutil.copyfile(genuine, relabeled_seed)
+        shutil.copyfile(genuine, relabeled_arm)
+        with pytest.raises(
+            ValueError,
+            match=r"existing shard records arm='sgd_raw' seed=0, not the requested "
+            r"arm='sgd_raw' seed=7; use a fresh --out directory",
+        ):
+            main([*base, "--arm", "sgd_raw", "--seed", "7"])
+        with pytest.raises(
+            ValueError,
+            match=r"existing shard records arm='sgd_raw' seed=0, not the requested "
+            r"arm='naive_bayes' seed=0; use a fresh --out directory",
+        ):
+            main([*base, "--arm", "naive_bayes", "--seed", "0"])
+        assert relabeled_seed.read_bytes() == genuine.read_bytes()
+        assert relabeled_arm.read_bytes() == genuine.read_bytes()
+
     def test_ladder_partial_arms_writes_summary_only(self, tmp_path: Path):
         argv = [
             "ladder", "--family", "input_permutation", "--seeds", "0",
