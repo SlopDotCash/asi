@@ -43,3 +43,12 @@ Frozen before any r1 shard runs. Development-grade, permanently nonpromoting.
   the cheap tier here. No library source is edited, so no failing-test-first
   cycle applies. Closed lanes untouched (no v3 frozen lifecycle, no
   EMNIST/regression/IA, no forager matched campaigns).
+
+## Review clarification
+
+The plan above is retained as submitted. Its phrase “held-out seeds 3-19”
+is incorrect: all seeds 0-19 were already consumed in the retained
+`summary_rls_head_confirm.json` campaign. This run reuses development seeds
+0-2 and does not use the other consumed development seeds. None is eligible
+for scientific promotion. The plan's claimed pre-run timing is contributor-reported;
+these consistency-bound artifacts are not authenticated execution proof.

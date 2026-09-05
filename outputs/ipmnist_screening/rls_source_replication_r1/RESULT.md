@@ -6,7 +6,7 @@ Development-grade, permanently nonpromoting. Pre-registration:
 ## Decision: REPLICATED (directional, 60-task screen)
 
 `rls_head_resid_l1_preset005` minus `sigma0_shiftnorm_d099`, seeds 0-2,
-same runner, current source `c9aba7b5`, v2 schema (`summary.json`):
+same runner, source `c9aba7b5` at the time of the run, v2 schema (`summary.json`):
 
 | arm | mean | stderr | per-seed |
 |---|---|---|---|
@@ -17,7 +17,7 @@ same runner, current source `c9aba7b5`, v2 schema (`summary.json`):
 Frozen rule required mean diff > 0 with all 3 per-seed diffs > 0: met.
 The remeasured control tracks the stored 60-task screen (0.86396) exactly;
 the candidate tracks its stored screen (0.86938) within 0.00011.
-No held-out seed touched, no threshold moved, no escalation to 200-task
+No additional development seeds used, no threshold moved, no escalation to 200-task
 from this turn (needs a separate pre-registration).
 
 ## Provenance
@@ -32,3 +32,8 @@ from this turn (needs a separate pre-registration).
   first merge without it failed closed on the v2 runtime binding, then
   succeeded with matched env. No validator, threshold, or test was
   weakened. No library source edited.
+
+Review reproduced the summary exactly from the six v2 shards, excluding only
+its creation timestamp. Seeds 0-19 were previously consumed development
+seeds; see the correction in `PREREG.md`. This retained historical result is
+not a measurement of later source revisions or authenticated execution proof.
