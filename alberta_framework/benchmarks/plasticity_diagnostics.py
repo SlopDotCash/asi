@@ -691,9 +691,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.dataset is None:
         parser.error("--dataset is required unless --catalog is used")
-    if not all(hasattr(os, name) for name in ("O_CLOEXEC", "O_NOFOLLOW")):
-        raise ValueError("dataset NPZ loading requires no-follow file support")
-    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+    if args.dataset.is_symlink():
+        raise ValueError("dataset NPZ must be a bounded regular file")
+    flags = os.O_RDONLY
+    for flag in ("O_CLOEXEC", "O_NOFOLLOW", "O_BINARY"):
+        flags |= getattr(os, flag, 0)
     try:
         descriptor = os.open(args.dataset, flags)
     except OSError as exc:
@@ -702,7 +704,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         opened = os.fstat(descriptor)
         if (
             not stat.S_ISREG(opened.st_mode)
-            or opened.st_nlink != 1
             or not 0 < opened.st_size <= 256 * 1024 * 1024
         ):
             raise ValueError("dataset NPZ must be a bounded regular file")
@@ -721,7 +722,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if descriptor >= 0:
             os.close(descriptor)
     stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
-    if final.st_nlink != 1 or any(
+    if any(
         getattr(opened, name) != getattr(final, name) for name in stable_fields
     ):
         raise ValueError("dataset NPZ must be a bounded regular file")
