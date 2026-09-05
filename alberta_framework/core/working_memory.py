@@ -123,10 +123,14 @@ class WorkingMemoryConfig:
         ):
             if key in payload:
                 value = payload[key]
+                if type(value) is not list and type(value) is not tuple:
+                    raise ValueError(f"{key} must be an actual list or tuple")
+                if len(value) > _MAX_WORKING_MEMORY_DECAY_RATES:
+                    raise ValueError(
+                        f"{key} must contain at most {_MAX_WORKING_MEMORY_DECAY_RATES} rates"
+                    )
                 if type(value) is list:
                     payload[key] = tuple(value)
-                elif type(value) is not tuple:
-                    raise ValueError(f"{key} must be an actual list or tuple")
                 if any(type(item) is not float for item in payload[key]):
                     raise ValueError(f"serialized {key} values must be JSON numbers")
         for key in ("observation_dim", "action_dim", "reward_dim"):
@@ -216,6 +220,7 @@ class WorkingMemoryArrayResult:
 
 
 _INT32_MAX = 2**31 - 1
+_MAX_WORKING_MEMORY_DECAY_RATES = 1 << 12
 _FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
     int,
@@ -287,6 +292,11 @@ def _require_array(
 def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
     if type(rates) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
+    rates_tuple = cast(tuple[object, ...], rates)
+    if len(rates_tuple) > _MAX_WORKING_MEMORY_DECAY_RATES:
+        raise ValueError(
+            f"{name} must contain at most {_MAX_WORKING_MEMORY_DECAY_RATES} rates"
+        )
     return tuple(
         validated_float32_scalar(
             f"{name}[{index}]",
@@ -295,7 +305,7 @@ def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
             upper=1.0,
             upper_inclusive=False,
         )
-        for index, value in enumerate(rates)
+        for index, value in enumerate(rates_tuple)
     )
 
 
