@@ -16,6 +16,8 @@ forgetting_rate=0.1``), and round-trip tests use arbitrary nondefault
 values so serialization bugs cannot hide behind defaults.
 """
 
+import math
+
 import chex
 import jax.numpy as jnp
 import pytest
