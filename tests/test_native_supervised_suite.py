@@ -146,6 +146,26 @@ def test_validator_rejects_promotion_and_counter_forgery() -> None:
         validate_result(dataclasses.asdict(result))
 
 
+def test_validator_rejects_forged_headline_accuracy() -> None:
+    """The headline must reconstruct from the retained per-task accuracies."""
+    images, labels = _fixture(10, (4, 4))
+    result = run_native_suite(
+        "split_mnist", images, labels, seed=FROZEN_SEEDS[0], examples_per_task=2
+    )
+    original = result.arms[0]
+    forged_accuracy = 0.0 if original.online_accuracy != 0.0 else 1.0
+    forged = dataclasses.replace(
+        result,
+        arms=(
+            dataclasses.replace(original, online_accuracy=forged_accuracy),
+            *result.arms[1:],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="accuracy record mismatch"):
+        validate_result(forged)
+
+
 @pytest.mark.parametrize(
     ("seed", "count"), [(True, 1), (FROZEN_SEEDS[0], True), (0, 1), (FROZEN_SEEDS[0], 65)]
 )

@@ -315,3 +315,10 @@ def test_gradual_pair_preflights_parameter_allocation_before_initialization() ->
             config=config,
             transition_steps=1,
         )
+
+def test_gradual_ipmnist_accepts_all_numpy_integer_families() -> None:
+    from alberta_framework.benchmarks.ipmnist_gradual import GradualTransitionConfig
+    for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q"):
+        dtype_type = np.dtype(code).type
+        cfg = GradualTransitionConfig(mode="input_interpolation", transition_steps=dtype_type(10))
+        assert cfg.transition_steps == 10

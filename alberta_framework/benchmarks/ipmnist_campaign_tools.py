@@ -154,18 +154,22 @@ def build_frontier(
                 f"{sorted(screen)} != {sorted(screen_base)}"
             )
         paired_seeds = sorted(screen)
+        screen_deltas = [
+            screen[seed] - screen_base[seed] for seed in paired_seeds
+        ]
+        screen_paired_delta = statistics.mean(screen_deltas)
         row: dict[str, Any] = {
             "config_name": arm,
             "n_screen_seeds": len(paired_seeds),
             "screen_mean": statistics.mean(screen[seed] for seed in paired_seeds),
-            "screen_paired_delta_vs_base": statistics.mean(
-                screen[seed] - screen_base[seed] for seed in paired_seeds
-            ),
-            "screen_per_seed_delta": [
-                round(screen[seed] - screen_base[seed], 6) for seed in paired_seeds
-            ],
+            "screen_paired_delta_vs_base": screen_paired_delta,
+            "screen_per_seed_delta": [round(delta, 6) for delta in screen_deltas],
         }
-        row["confirmation_candidate"] = row["screen_paired_delta_vs_base"] > threshold
+        row["confirmation_candidate"] = (
+            len(paired_seeds) >= 2
+            and all(delta > 0.0 for delta in screen_deltas)
+            and screen_paired_delta > threshold
+        )
         if confirm:
             if confirm.keys() != confirm_base.keys():
                 raise ValueError(

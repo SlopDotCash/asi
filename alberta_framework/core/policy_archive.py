@@ -113,9 +113,14 @@ class BoundedPolicyArchive:
             raise ValueError("entries must be an exact tuple of PolicyEntry values")
         retained_bytes = 0
         identities: set[str] = set()
+        latent_width: int | None = None
         for entry in self.entries:
             if type(entry) is not PolicyEntry:
                 raise ValueError("entries must be an exact tuple of PolicyEntry values")
+            if latent_width is None:
+                latent_width = len(entry.latent)
+            elif len(entry.latent) != latent_width:
+                raise ValueError("all latent descriptors must have equal width")
             retained_bytes += entry.persistent_bytes
             if retained_bytes > self.byte_budget:
                 raise ValueError("entries exceed byte budget")
@@ -134,8 +139,6 @@ class BoundedPolicyArchive:
         if any(old.identity == entry.identity for old in self.entries):
             raise ValueError("entry identity already exists")
         candidates: tuple[PolicyEntry, ...]
-        if self.entries and len(entry.latent) != len(self.entries[0].latent):
-            raise ValueError("all latent descriptors must have equal width")
         if self.mode == "fixed_snapshot" and self.entries:
             return self
         if self.mode == "one_model":
@@ -143,6 +146,8 @@ class BoundedPolicyArchive:
         elif not self.entries:
             candidates = (entry,)
         else:
+            if len(entry.latent) != len(self.entries[0].latent):
+                raise ValueError("all latent descriptors must have equal width")
             distances = tuple(
                 float(np.linalg.norm(np.asarray(entry.latent) - np.asarray(old.latent)))
                 for old in self.entries

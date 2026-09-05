@@ -59,15 +59,8 @@ CAUSAL_MAP_VARIANT_KIND = "alberta_causal_map"
 _CAUSAL_MAP_RNG_NAMESPACE = 0xCA05A14
 _CAUSAL_MAP_PRNG_IMPL = "threefry2x32"
 _CAUSAL_MAP_ENVIRONMENT_PRNG_IMPL = "threefry2x32"
-_EXACT_NUMPY_INTEGER_TYPES = (
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
+_EXACT_NUMPY_INTEGER_TYPES = tuple(
+    np.dtype(code).type for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q")
 )
 _EXACT_INTEGER_TYPES = (int, *_EXACT_NUMPY_INTEGER_TYPES)
 _EXACT_REAL_TYPES = (
