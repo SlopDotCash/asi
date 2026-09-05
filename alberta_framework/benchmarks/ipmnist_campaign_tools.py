@@ -117,6 +117,12 @@ def seed_means(root: Path, config_name: str) -> dict[int, float]:
         seed = require_jax_seed(raw_seed, name=f"{path} seed")
         if path.name != f"{config_name}_seed{seed}.json":
             raise ValueError(f"{path} filename disagrees with payload seed")
+        payload_name = payload.get("config_name")
+        if payload_name is not None and payload_name != config_name:
+            raise ValueError(
+                f"{path}: config_name {payload_name!r} does not match "
+                f"expected arm {config_name!r}"
+            )
         values = np.asarray(accuracies, dtype=np.float64)
         if (
             values.ndim != 1
