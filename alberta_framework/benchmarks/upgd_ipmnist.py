@@ -111,6 +111,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework._seed_validation import (
     require_jax_seed,
     require_unique_jax_seeds,
@@ -1503,6 +1504,10 @@ def partial_payload(result: IPMNISTRunResult) -> dict[str, Any]:
     }
 
 
+_MAX_JSON_NESTING_DEPTH = 64
+
+
+
 def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         parsed: dict[str, object] = {}
@@ -1522,12 +1527,19 @@ def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
             raise ValueError(f"non-finite JSON number is forbidden: {value}")
         return parsed
 
-    payload = json.loads(
-        raw.decode("utf-8"),
-        object_pairs_hook=pairs_hook,
-        parse_constant=reject_constant,
-        parse_float=parse_float,
+    text = raw.decode("utf-8")
+    require_json_text_nesting(
+        text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
     )
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: payload must be one JSON object")
     return payload
