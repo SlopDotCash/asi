@@ -23,6 +23,46 @@ from alberta_framework.core.future_utility import (
 )
 
 
+def test_one_step_rejects_activity_mask_task_axis_broadcast() -> None:
+    with pytest.raises(ValueError, match="active_mask must match errors"):
+        one_step_output_loss_reduction_with_diagnostics(
+            errors=jnp.array([1.0, 2.0], dtype=jnp.float32),
+            feature_values=jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32),
+            active_mask=jnp.array([True]),
+            step_size_output=0.1,
+            active_count=2.0,
+        )
+
+
+def test_contribution_trace_rejects_task_axis_broadcast() -> None:
+    with pytest.raises(ValueError, match="contribution_trace must have shape"):
+        contribution_trace_output_loss_reduction_with_diagnostics(
+            errors=jnp.array([1.0, 2.0], dtype=jnp.float32),
+            feature_values=jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32),
+            active_mask=jnp.array([True, True]),
+            step_size_output=0.1,
+            active_count=2.0,
+            contribution_trace=jnp.zeros((1, 3), dtype=jnp.float32),
+            feature_energy_trace=jnp.zeros(3, dtype=jnp.float32),
+            trace_decay=0.9,
+        )
+
+
+def test_factored_trace_rejects_task_axis_broadcast() -> None:
+    with pytest.raises(ValueError, match="error_trace must match errors"):
+        trace_output_loss_reduction_with_diagnostics(
+            errors=jnp.array([1.0, 2.0], dtype=jnp.float32),
+            feature_values=jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32),
+            active_mask=jnp.array([True, True]),
+            step_size_output=0.1,
+            active_count=2.0,
+            error_trace=jnp.zeros(1, dtype=jnp.float32),
+            feature_trace=jnp.zeros(3, dtype=jnp.float32),
+            feature_energy_trace=jnp.zeros(3, dtype=jnp.float32),
+            trace_decay=0.9,
+        )
+
+
 def test_contribution_trace_matches_one_step_at_zero_decay() -> None:
     """Zero trace decay must recover the one-step LMS counterfactual exactly."""
     errors = jnp.array([2.0, 0.0], dtype=jnp.float32)
