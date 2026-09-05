@@ -13,9 +13,10 @@ import math
 import re
 import statistics
 import time
+import zipfile
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import IO, Any, cast
 
 import numpy as np
 
@@ -51,6 +52,14 @@ BUCKETS = (
     (3500, 5000),
 )
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*\Z")
+MAX_CEILING_TASKS = 200
+MAX_CEILING_TASK_LENGTH = 5_000
+MAX_CEILING_METADATA_BYTES = 16 * 1024 * 1024
+MAX_CEILING_PER_STEP_BYTES = MAX_CEILING_TASKS * MAX_CEILING_TASK_LENGTH
+MAX_CEILING_UNCOMPRESSED_BYTES = (
+    MAX_CEILING_PER_STEP_BYTES + MAX_CEILING_METADATA_BYTES + 8192
+)
+_NPZ_REQUIRED_MEMBERS = frozenset({"metadata.npy", "per_step.npy"})
 
 
 def _safe_identifier(value: object, *, name: str) -> str:
@@ -154,18 +163,22 @@ def build_frontier(
                 f"{sorted(screen)} != {sorted(screen_base)}"
             )
         paired_seeds = sorted(screen)
+        screen_deltas = [
+            screen[seed] - screen_base[seed] for seed in paired_seeds
+        ]
+        screen_paired_delta = statistics.mean(screen_deltas)
         row: dict[str, Any] = {
             "config_name": arm,
             "n_screen_seeds": len(paired_seeds),
             "screen_mean": statistics.mean(screen[seed] for seed in paired_seeds),
-            "screen_paired_delta_vs_base": statistics.mean(
-                screen[seed] - screen_base[seed] for seed in paired_seeds
-            ),
-            "screen_per_seed_delta": [
-                round(screen[seed] - screen_base[seed], 6) for seed in paired_seeds
-            ],
+            "screen_paired_delta_vs_base": screen_paired_delta,
+            "screen_per_seed_delta": [round(delta, 6) for delta in screen_deltas],
         }
-        row["confirmation_candidate"] = row["screen_paired_delta_vs_base"] > threshold
+        row["confirmation_candidate"] = (
+            len(paired_seeds) >= 2
+            and all(delta > 0.0 for delta in screen_deltas)
+            and screen_paired_delta > threshold
+        )
         if confirm:
             if confirm.keys() != confirm_base.keys():
                 raise ValueError(
@@ -212,6 +225,69 @@ def build_frontier(
     }
 
 
+def _npy_header(buffer: IO[bytes]) -> tuple[tuple[int, ...], np.dtype]:
+    try:
+        version = np.lib.format.read_magic(buffer)
+        if version == (1, 0):
+            shape, _fortran, dtype = np.lib.format.read_array_header_1_0(buffer)
+        elif version in ((2, 0), (3, 0)):
+            shape, _fortran, dtype = np.lib.format.read_array_header_2_0(buffer)
+        else:
+            raise ValueError("ceiling NPZ npy version is unsupported")
+    except (ValueError, OSError, EOFError, KeyError) as exc:
+        raise ValueError("ceiling NPZ npy header is invalid") from exc
+    try:
+        parsed = tuple(int(dim) for dim in shape)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("ceiling NPZ npy header is invalid") from exc
+    return parsed, np.dtype(dtype)
+
+
+def _preflight_ceiling_npz(path: Path) -> None:
+    if not zipfile.is_zipfile(path):
+        raise ValueError(f"{path} ceiling NPZ size is empty or unbounded")
+    try:
+        archive = zipfile.ZipFile(path)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{path} ceiling NPZ size is empty or unbounded") from exc
+    with archive:
+        names = archive.namelist()
+        if len(names) != 2 or set(names) != _NPZ_REQUIRED_MEMBERS:
+            raise ValueError(f"{path} ceiling NPZ must contain exactly metadata and per_step")
+        uncompressed = 0
+        for info in archive.infolist():
+            if info.is_dir() or ".." in info.filename or info.filename.startswith("/"):
+                raise ValueError(
+                    f"{path} ceiling NPZ must contain exactly metadata and per_step"
+                )
+            if info.file_size < 0 or info.file_size > MAX_CEILING_UNCOMPRESSED_BYTES:
+                raise ValueError(f"{path} ceiling NPZ size is empty or unbounded")
+            uncompressed += info.file_size
+            if uncompressed > MAX_CEILING_UNCOMPRESSED_BYTES:
+                raise ValueError(f"{path} ceiling NPZ size is empty or unbounded")
+        with archive.open("per_step.npy") as handle:
+            step_shape, step_dtype = _npy_header(handle)
+        with archive.open("metadata.npy") as handle:
+            metadata_shape, metadata_dtype = _npy_header(handle)
+    if step_dtype != np.dtype(np.uint8):
+        raise ValueError(f"{path} per_step must be a uint8 binary matrix")
+    if (
+        len(step_shape) != 2
+        or step_shape[1] != MAX_CEILING_TASK_LENGTH
+        or not 1 <= step_shape[0] <= MAX_CEILING_TASKS
+    ):
+        raise ValueError(f"{path} ceiling NPZ size is empty or unbounded")
+    metadata_size = 1
+    for dim in metadata_shape:
+        metadata_size *= dim
+    if (
+        metadata_dtype.kind not in {"U", "S"}
+        or metadata_size != 1
+        or metadata_dtype.itemsize * metadata_size > MAX_CEILING_METADATA_BYTES
+    ):
+        raise ValueError(f"{path} ceiling NPZ size is empty or unbounded")
+
+
 def _ceiling_runs(
     ceiling_dir: Path,
     prefix: str,
@@ -240,6 +316,7 @@ def _ceiling_runs(
             input_paths.extend((path, per_step_path))
         runs[seed] = payload
     for path in sorted(ceiling_dir.glob(f"{prefix}_seed*.npz")):
+        _preflight_ceiling_npz(path)
         with np.load(path, allow_pickle=False) as archive:
             payload = load_strict_json_object_from_text(
                 archive["metadata"].item(),
