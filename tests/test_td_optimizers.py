@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from alberta_framework import TDIDBD, AutoTDIDBD
+from alberta_framework import TDIDBD, AutoTDIDBD, TDLinearLearner
 
 
 class TestTDIDBD:
@@ -570,3 +570,156 @@ class TestTDOptimizerComparison:
         # All should produce finite updates (even if zero)
         chex.assert_tree_all_finite(tdidbd_result.weight_delta)
         chex.assert_tree_all_finite(auto_result.weight_delta)
+
+
+# =============================================================================
+# Trace decay uses the prior transition's discount (S&B 2nd ed. eqs. 12.23/12.25)
+# =============================================================================
+
+
+def _accumulating_trace(
+    observations: list[jnp.ndarray], gammas: list[float], lam: float
+) -> tuple[np.ndarray, float]:
+    """``z_t = gamma_t * lam * z_{t-1} + phi_t`` with ``gamma_t`` the discount of
+    the transition INTO ``S_t`` (1.0 before the first update); bias trace too."""
+    z = np.zeros(len(observations[0]), dtype=np.float64)
+    z_bias = 0.0
+    previous_gamma = 1.0
+    for phi, gamma in zip(observations, gammas, strict=True):
+        z = previous_gamma * lam * z + np.asarray(phi, dtype=np.float64)
+        z_bias = previous_gamma * lam * z_bias + 1.0
+        previous_gamma = gamma
+    return z, z_bias
+
+
+class TestTraceDecaysWithPriorTransitionDiscount:
+    """The discount passed to ``update`` is ``gamma_{t+1}`` (0 at terminal) and
+    belongs to the TD-error bootstrap only. The eligibility trace decays by
+    ``gamma_t``, the discount of the transition into ``S_t``, which is the
+    discount retained from the prior update. Feeding ``gamma_{t+1}`` into the
+    decay multiplied the whole in-episode trace by zero on exactly the update
+    that carries the terminal reward, so no earlier feature was ever credited.
+    """
+
+    @pytest.fixture(params=[TDIDBD, AutoTDIDBD], ids=["tdidbd", "auto_tdidbd"])
+    def optimizer(self, request):
+        # meta_step_size=0 freezes the per-weight step-sizes at 0.1, so the
+        # weight delta is exactly alpha * delta * z.
+        return request.param(initial_step_size=0.1, meta_step_size=0.0, trace_decay=1.0)
+
+    @staticmethod
+    def _run(optimizer, observations, gammas, td_errors):
+        state = optimizer.init(feature_dim=len(observations[0]))
+        results = []
+        for phi, gamma, delta in zip(observations, gammas, td_errors, strict=True):
+            result = optimizer.update(
+                state,
+                jnp.asarray(delta, dtype=jnp.float32),
+                phi,
+                jnp.zeros_like(phi),
+                jnp.asarray(gamma, dtype=jnp.float32),
+            )
+            assert bool(result.update_applied)
+            state = result.new_state
+            results.append(result)
+        return results
+
+    def test_terminal_update_credits_pre_terminal_features(self, optimizer):
+        observations = [jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0])]
+        gammas = [0.9, 0.0]
+        results = self._run(optimizer, observations, gammas, td_errors=[0.0, 1.0])
+        terminal = results[-1]
+
+        expected_z, expected_z_bias = _accumulating_trace(observations, gammas, lam=1.0)
+        np.testing.assert_allclose(terminal.new_state.eligibility_traces, expected_z, rtol=1e-6)
+        np.testing.assert_allclose(
+            float(terminal.new_state.bias_eligibility_trace), expected_z_bias, rtol=1e-6
+        )
+        np.testing.assert_allclose(terminal.weight_delta, 0.1 * 1.0 * expected_z, rtol=1e-6)
+        np.testing.assert_allclose(float(terminal.bias_delta), 0.1 * expected_z_bias, rtol=1e-6)
+        # The pre-terminal feature must receive credit for the terminal reward.
+        assert float(terminal.weight_delta[0]) > 0.0
+
+    def test_variable_discounts_decay_by_the_retained_transition_discount(self, optimizer):
+        observations = [
+            jnp.array([1.0, 0.0, 0.0]),
+            jnp.array([0.0, 1.0, 0.0]),
+            jnp.array([0.0, 0.0, 1.0]),
+        ]
+        gammas = [0.5, 0.9, 0.0]
+        results = self._run(optimizer, observations, gammas, td_errors=[0.0, 0.0, 1.0])
+        terminal = results[-1]
+
+        expected_z, expected_z_bias = _accumulating_trace(observations, gammas, lam=1.0)
+        # Neither a constant gamma nor the terminal zero: 0.5 * 0.9, 0.9, 1.0.
+        np.testing.assert_allclose(expected_z, [0.45, 0.9, 1.0])
+        np.testing.assert_allclose(terminal.new_state.eligibility_traces, expected_z, rtol=1e-6)
+        np.testing.assert_allclose(
+            float(terminal.new_state.bias_eligibility_trace), expected_z_bias, rtol=1e-6
+        )
+        np.testing.assert_allclose(terminal.weight_delta, 0.1 * expected_z, rtol=1e-6)
+
+    def test_previous_gamma_is_seeded_inert_and_advances(self, optimizer):
+        state = optimizer.init(feature_dim=2)
+        assert float(state.previous_gamma) == 1.0
+        phi = jnp.array([1.0, 0.0])
+        result = optimizer.update(
+            state, jnp.float32(0.5), phi, jnp.zeros_like(phi), jnp.float32(0.7)
+        )
+        assert bool(result.update_applied)
+        assert float(result.new_state.previous_gamma) == pytest.approx(0.7)
+
+    def test_post_terminal_update_starts_a_fresh_trace(self, optimizer):
+        observations = [jnp.array([1.0, 0.0]), jnp.array([0.0, 1.0]), jnp.array([1.0, 0.0])]
+        gammas = [0.9, 0.0, 0.9]
+        results = self._run(optimizer, observations, gammas, td_errors=[0.0, 1.0, 0.0])
+        first_of_next_episode = results[-1].new_state
+        np.testing.assert_array_equal(first_of_next_episode.eligibility_traces, observations[-1])
+        assert float(first_of_next_episode.bias_eligibility_trace) == 1.0
+
+    def test_stale_nonfinite_traces_after_terminal_do_not_block_next_episode(self):
+        # TDIDBD only: AutoTDIDBD's Algorithm 6 normalizer and effective
+        # step-size terms consume the prior trace directly, so a non-finite
+        # stale trace vetoes its update regardless of the decay.
+        optimizer = TDIDBD(initial_step_size=0.1, meta_step_size=0.0, trace_decay=1.0)
+        state = optimizer.init(feature_dim=2)
+        stale = state.replace(
+            previous_gamma=jnp.float32(0.0),
+            eligibility_traces=jnp.full(2, jnp.inf, dtype=jnp.float32),
+            bias_eligibility_trace=jnp.float32(jnp.inf),
+        )
+        phi = jnp.array([1.0, 0.0])
+        result = optimizer.update(
+            stale, jnp.float32(1.0), phi, jnp.zeros_like(phi), jnp.float32(0.9)
+        )
+        assert bool(result.update_applied)
+        np.testing.assert_array_equal(result.new_state.eligibility_traces, phi)
+        assert float(result.new_state.bias_eligibility_trace) == 1.0
+        assert float(result.new_state.previous_gamma) == pytest.approx(0.9)
+        chex.assert_tree_all_finite(result.weight_delta)
+
+    def test_single_episode_lambda_one_chain_is_monte_carlo(self):
+        """One pass over a 5-state chain with lambda=gamma=1 and reward only at
+        termination is incremental Monte Carlo: every visited state moves by
+        alpha, not only the last one."""
+        n_states, alpha = 5, 0.05
+        learner = TDLinearLearner(
+            optimizer=TDIDBD(initial_step_size=alpha, meta_step_size=0.0, trace_decay=1.0)
+        )
+        state = learner.init(n_states)
+        eye = np.eye(n_states, dtype=np.float32)
+        for t in range(n_states):
+            phi_next = (
+                jnp.asarray(eye[t + 1]) if t + 1 < n_states else jnp.zeros(n_states, jnp.float32)
+            )
+            result = learner.update(
+                state,
+                jnp.asarray(eye[t]),
+                jnp.float32(1.0 if t == n_states - 1 else 0.0),
+                phi_next,
+                jnp.float32(1.0 if t + 1 < n_states else 0.0),
+            )
+            assert bool(result.update_applied)
+            state = result.state
+        np.testing.assert_allclose(state.weights, np.full(n_states, alpha), rtol=1e-6)
+        np.testing.assert_allclose(float(state.bias), alpha * n_states, rtol=1e-6)

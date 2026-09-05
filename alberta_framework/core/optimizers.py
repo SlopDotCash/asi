@@ -1933,7 +1933,7 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
             TD-IDBD state with per-weight step-sizes, traces, and h traces
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        _require_float32_state("TDIDBD state", 3 * feature_dim + 5)
+        _require_float32_state("TDIDBD state", 3 * feature_dim + 6)
         _require_float32_update_working_set(
             "TDIDBD update working set", 22 * feature_dim + 8
         )
@@ -1948,6 +1948,7 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
             bias_log_step_size=jnp.array(jnp.log(self._initial_step_size), dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
         )
 
     def update(
@@ -1993,10 +1994,13 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
         )
         new_alphas = jnp.exp(new_log_step_sizes)
 
+        # The trace decays by the PRIOR call's discount (state.previous_gamma =
+        # gamma_t, the discount into S_t); only the TD-error bootstrap and the
+        # ordinary-gradient feature difference use this call's gamma_{t+1}.
         decay_scale = jnp.where(
-            (gamma_scalar == 0.0) | (lam == 0.0),
-            jnp.zeros_like(gamma_scalar),
-            gamma_scalar * lam,
+            (state.previous_gamma == 0.0) | (lam == 0.0),
+            jnp.zeros_like(state.previous_gamma),
+            state.previous_gamma * lam,
         )
         new_eligibility_traces = (
             _skip_zero_scale(decay_scale, state.eligibility_traces) + observation
@@ -2057,6 +2061,7 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
             bias_log_step_size=new_bias_log_step_size,
             bias_eligibility_trace=new_bias_eligibility_trace,
             bias_h_trace=new_bias_h_trace,
+            previous_gamma=gamma_scalar.astype(jnp.float32),
         )
         candidate_metrics = {
             "mean_step_size": jnp.mean(new_alphas),
@@ -2071,14 +2076,15 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
             & (jnp.all(jnp.isfinite(next_observation)) | (gamma_scalar == 0.0))
             & jnp.isfinite(gamma_scalar)
         )
+        # Leftover traces that this update discards (decay 0) must not veto it.
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=jnp.where(
-                (gamma_scalar == 0.0) | (lam == 0.0),
+                decay_scale == 0.0,
                 jnp.zeros_like(state.eligibility_traces),
                 state.eligibility_traces,
             ),
             bias_eligibility_trace=jnp.where(
-                (gamma_scalar == 0.0) | (lam == 0.0),
+                decay_scale == 0.0,
                 jnp.zeros_like(state.bias_eligibility_trace),
                 state.bias_eligibility_trace,
             ),
@@ -2150,7 +2156,7 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
             AutoTDIDBD state with per-weight step-sizes, traces, h traces, and normalizers
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        _require_float32_state("AutoTDIDBD state", 4 * feature_dim + 7)
+        _require_float32_state("AutoTDIDBD state", 4 * feature_dim + 8)
         _require_float32_update_working_set(
             "AutoTDIDBD update working set", 32 * feature_dim + 8
         )
@@ -2168,6 +2174,7 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_normalizer=jnp.array(1.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
         )
 
     def update(
@@ -2227,10 +2234,13 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
         new_log_step_sizes = jnp.clip(new_log_step_sizes, -10.0, 2.0)
         new_alphas = jnp.exp(new_log_step_sizes)
 
+        # The trace decays by the PRIOR call's discount (state.previous_gamma =
+        # gamma_t, the discount into S_t); only the TD-error bootstrap and the
+        # ordinary-gradient feature difference use this call's gamma_{t+1}.
         decay_scale = jnp.where(
-            (gamma_scalar == 0.0) | (lam == 0.0),
-            jnp.zeros_like(gamma_scalar),
-            gamma_scalar * lam,
+            (state.previous_gamma == 0.0) | (lam == 0.0),
+            jnp.zeros_like(state.previous_gamma),
+            state.previous_gamma * lam,
         )
         new_eligibility_traces = (
             _skip_zero_scale(decay_scale, state.eligibility_traces) + observation
@@ -2296,6 +2306,7 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
             bias_eligibility_trace=new_bias_eligibility_trace,
             bias_h_trace=new_bias_h_trace,
             bias_normalizer=new_bias_normalizer,
+            previous_gamma=gamma_scalar.astype(jnp.float32),
         )
         candidate_metrics = {
             "mean_step_size": jnp.mean(new_alphas),
@@ -2311,14 +2322,15 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
             & (jnp.all(jnp.isfinite(next_observation)) | (gamma_scalar == 0.0))
             & jnp.isfinite(gamma_scalar)
         )
+        # Leftover traces that this update discards (decay 0) must not veto it.
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=jnp.where(
-                (gamma_scalar == 0.0) | (lam == 0.0),
+                decay_scale == 0.0,
                 jnp.zeros_like(state.eligibility_traces),
                 state.eligibility_traces,
             ),
             bias_eligibility_trace=jnp.where(
-                (gamma_scalar == 0.0) | (lam == 0.0),
+                decay_scale == 0.0,
                 jnp.zeros_like(state.bias_eligibility_trace),
                 state.bias_eligibility_trace,
             ),

@@ -483,6 +483,11 @@ class TDIDBDState:
         bias_log_step_size: Log step-size for the bias term
         bias_eligibility_trace: Eligibility trace for the bias
         bias_h_trace: h trace for the bias term
+        previous_gamma: Discount from the prior update call, carried so the
+            eligibility traces decay by ``gamma_t`` (the discount of the
+            transition into ``S_t``) while the TD error bootstraps with
+            ``gamma_{t+1}`` (Sutton & Barto 2nd ed., eqs. 12.23/12.25).
+            Seeded to 1.0, which is inert against the zero initial traces.
     """
 
     log_step_sizes: Float[Array, " feature_dim"]
@@ -493,6 +498,7 @@ class TDIDBDState:
     bias_log_step_size: Float[Array, ""]
     bias_eligibility_trace: Float[Array, ""]
     bias_h_trace: Float[Array, ""]
+    previous_gamma: Float[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -517,6 +523,11 @@ class AutoTDIDBDState:
         bias_eligibility_trace: Eligibility trace for the bias
         bias_h_trace: h trace for the bias term
         bias_normalizer: Normalizer for the bias gradient correlation
+        previous_gamma: Discount from the prior update call, carried so the
+            eligibility traces decay by ``gamma_t`` (the discount of the
+            transition into ``S_t``) while the TD error bootstraps with
+            ``gamma_{t+1}`` (Sutton & Barto 2nd ed., eqs. 12.23/12.25).
+            Seeded to 1.0, which is inert against the zero initial traces.
     """
 
     log_step_sizes: Float[Array, " feature_dim"]
@@ -530,6 +541,7 @@ class AutoTDIDBDState:
     bias_eligibility_trace: Float[Array, ""]
     bias_h_trace: Float[Array, ""]
     bias_normalizer: Float[Array, ""]
+    previous_gamma: Float[Array, ""]
 
 
 # Union type for TD optimizer states
@@ -609,6 +621,7 @@ def create_tdidbd_state(
         bias_log_step_size=jnp.array(jnp.log(initial_step_size), dtype=jnp.float32),
         bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
         bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
+        previous_gamma=jnp.array(1.0, dtype=jnp.float32),
     )
 
 
@@ -643,6 +656,7 @@ def create_autotdidbd_state(
         bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
         bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
         bias_normalizer=jnp.array(1.0, dtype=jnp.float32),
+        previous_gamma=jnp.array(1.0, dtype=jnp.float32),
     )
 
 

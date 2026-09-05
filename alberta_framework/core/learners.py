@@ -2100,13 +2100,21 @@ class TDLinearLearner:
 
 @chex.dataclass(frozen=True)
 class TrueOnlineTDState:
-    """State for True Online TD(lambda) with Dutch traces."""
+    """State for True Online TD(lambda) with Dutch traces.
+
+    ``previous_gamma`` is the discount from the prior update call, carried so
+    the Dutch trace decays by ``gamma_t`` (the discount of the transition into
+    ``S_t``) while the TD error bootstraps with ``gamma_{t+1}`` (Sutton & Barto
+    2nd ed., eqs. 12.23/12.25). It is seeded to 1.0, which is inert against the
+    zero initial traces.
+    """
 
     weights: Float[Array, " feature_dim"]
     bias: Float[Array, ""]
     eligibility_traces: Float[Array, " feature_dim"]
     bias_eligibility_trace: Float[Array, ""]
     v_old: Float[Array, ""]
+    previous_gamma: Float[Array, ""]
     step_count: Array = None  # type: ignore[assignment]
     birth_timestamp: float = 0.0
     uptime_s: float = 0.0
@@ -2132,9 +2140,13 @@ class TrueOnlineTDLearner:
     """Linear True Online TD(lambda) learner with Dutch traces.
 
     Implements the true-online update for a linear value function with an
-    explicit bias feature. At terminal transitions (``gamma == 0``),
-    ``v_old`` is reset to zero so repeated one-step supervised transitions
-    reduce exactly to LMS.
+    explicit bias feature. The ``gamma`` passed to :meth:`update` is
+    ``gamma_{t+1}`` and enters only the TD-error bootstrap; the Dutch trace
+    decays by the prior call's discount carried in ``state.previous_gamma``,
+    so the update that carries a terminal reward still credits the traces
+    accumulated within the episode. At terminal transitions (``gamma == 0``),
+    the stored traces and ``v_old`` are reset to zero so repeated one-step
+    supervised transitions reduce exactly to LMS.
 
     References:
         van Seijen & Sutton (2014). "True Online TD(lambda)." ICML.
@@ -2152,13 +2164,14 @@ class TrueOnlineTDLearner:
     def init(self, feature_dim: int) -> TrueOnlineTDState:
         """Initialize learner state."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        _preflight_float32_resources("true-online TD state", 2 * feature_dim + 5)
+        _preflight_float32_resources("true-online TD state", 2 * feature_dim + 6)
         return TrueOnlineTDState(
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             v_old=jnp.array(0.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
             birth_timestamp=time.time(),
             uptime_s=0.0,
@@ -2190,10 +2203,13 @@ class TrueOnlineTDLearner:
 
         trace_dot = jnp.dot(state.eligibility_traces, observation)
         trace_dot = trace_dot + state.bias_eligibility_trace
+        # The Dutch trace decays by the PRIOR call's discount
+        # (state.previous_gamma = gamma_t, the discount into S_t); only the
+        # TD-error bootstrap above uses this call's gamma_{t+1}.
         decay_scale = jnp.where(
-            (gamma_scalar == 0.0) | (lamda == 0.0),
-            jnp.zeros_like(gamma_scalar),
-            gamma_scalar * lamda,
+            (state.previous_gamma == 0.0) | (lamda == 0.0),
+            jnp.zeros_like(state.previous_gamma),
+            state.previous_gamma * lamda,
         )
         trace_scale = 1.0 - alpha * _skip_zero_scale(decay_scale, trace_dot)
         new_traces = (
@@ -2224,6 +2240,7 @@ class TrueOnlineTDLearner:
             eligibility_traces=stored_traces,
             bias_eligibility_trace=stored_bias_trace,
             v_old=new_v_old,
+            previous_gamma=gamma_scalar,
             step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,

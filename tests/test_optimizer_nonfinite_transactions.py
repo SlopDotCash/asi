@@ -253,18 +253,21 @@ def test_checked_param_update_reports_internal_meta_guard(
 
 @pytest.mark.parametrize(
     ("factory", "expected_digest"),
+    # The TDIDBD/AutoTDIDBD digests cover the state tree, which now carries
+    # ``previous_gamma``; the first-step weight/bias deltas are unchanged
+    # (the seeded 1.0 is inert against zero initial traces).
     [
         (
             lambda: TDIDBD(0.02, 0.04, 0.5, True),
-            "a345406ff1f19e11a2d6d58f5829aacea6e43e27f41d487ffeeabe0affacfe6f",
+            "6b29599d10bb3cca3e2865e242c3a0dd7d48ac25962e6a83abcf96e7cf9c7e00",
         ),
         (
             lambda: TDIDBD(0.02, 0.04, 0.5, False),
-            "a345406ff1f19e11a2d6d58f5829aacea6e43e27f41d487ffeeabe0affacfe6f",
+            "6b29599d10bb3cca3e2865e242c3a0dd7d48ac25962e6a83abcf96e7cf9c7e00",
         ),
         (
             lambda: AutoTDIDBD(0.02, 0.04, 0.5, 50.0),
-            "e84c346d1530eb42df9a025c2a5744f43d09e9de266574e932b8f19c45ad257e",
+            "5169066bac6f67922563680b512a2b74baf82737078bdcc91b9ef17e262d1ed0",
         ),
         (
             lambda: SwiftTD(0.02, 0.04, 0.5, 0.1),
