@@ -16,6 +16,9 @@ from alberta_framework._scan_resources import (
     require_scan_steps,
     require_step_units,
 )
+from alberta_framework.utils.export import (
+    _significance_star_count,
+)
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -675,11 +678,8 @@ def _get_significance_marker_for_plot(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return "***"
-    elif p < 0.01:
-        return "**"
-    elif p < 0.05:
-        return "*"
-    return ""
+    stars = _significance_star_count(
+        result.p_value,
+        result.alpha,
+    )
+    return "*" * stars
