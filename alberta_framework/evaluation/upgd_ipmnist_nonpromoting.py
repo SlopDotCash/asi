@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework._seed_validation import require_unique_jax_seeds
 
 UPGD_IPMNIST_PARTIAL_SCHEMA = "upgd_ipmnist.partial.v1"
@@ -280,6 +281,10 @@ def _require_exact_str(name: object, value: object) -> str:
     return value
 
 
+_MAX_JSON_NESTING_DEPTH = 64
+
+
+
 def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         result: dict[str, object] = {}
@@ -301,12 +306,19 @@ def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
             raise ValueError("non-finite JSON number is forbidden")
         return parsed
 
-    parsed = json.loads(
-        raw.decode("utf-8"),
-        object_pairs_hook=pairs_hook,
-        parse_constant=reject_constant,
-        parse_float=parse_float,
+    text = raw.decode("utf-8")
+    require_json_text_nesting(
+        text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
     )
+    try:
+        parsed = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from exc
     if not isinstance(parsed, dict):
         raise ValueError("payload must contain one JSON object")
     return parsed
