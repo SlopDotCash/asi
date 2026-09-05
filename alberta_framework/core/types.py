@@ -33,7 +33,7 @@ _FLOAT32_TINY = float(np.finfo(np.float32).tiny)
 _FLOAT32_HALF_MIN_SUBNORMAL_DENOMINATOR = 1 << 150
 _INT32_MAX = 2**31 - 1
 _ACTUAL_REAL_SCALAR_TYPES = frozenset(
-    {float, np.float16, np.float32, np.float64, int}
+    {float, int, *(np.dtype(code).type for code in "efdg")}
 )
 
 _ACTUAL_INT_TYPES = frozenset(

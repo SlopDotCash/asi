@@ -133,6 +133,29 @@ class TestStep:
         chex.assert_tree_all_finite(recovered.utility)
         chex.assert_trees_all_close(recovered.ages, state.ages + 1)
 
+    def test_zero_gamma_does_not_multiply_overflow_v_next(self) -> None:
+        """Default gamma=0 times overflowed V(s') is 0*inf = NaN without a skip."""
+        d = CumulantDiscovery(
+            raw_dim=2, n_candidates=1, predictor_step_size=0.1, gamma=0.0
+        )
+        state = d.init(jr.key(0)).replace(  # type: ignore[attr-defined]
+            projections=jnp.array([[1.0, 0.0]], dtype=jnp.float32),
+            weights=jnp.array([[1.0e20, 0.0]], dtype=jnp.float32),
+            biases=jnp.zeros(1, dtype=jnp.float32),
+        )
+        obs = jnp.array([1.0, 0.0], dtype=jnp.float32)
+        next_obs = jnp.array([1.0e20, 0.0], dtype=jnp.float32)
+        v_next = state.weights @ next_obs + state.biases
+        assert bool(jnp.isinf(v_next[0]))
+        raw = jnp.asarray(0.0, dtype=jnp.float32) * v_next[0]
+        assert not bool(jnp.isfinite(raw))
+
+        updated = d.step(state, obs, next_obs)
+        assert not jnp.array_equal(updated.ages, state.ages)
+        chex.assert_tree_all_finite(updated.weights)
+        chex.assert_tree_all_finite(updated.biases)
+        chex.assert_tree_all_finite(updated.utility)
+
     def test_predictor_reduces_td_error(self) -> None:
         d = CumulantDiscovery(
             raw_dim=2, n_candidates=1, predictor_step_size=0.1, gamma=0.0
@@ -473,3 +496,10 @@ def test_cumulant_discovery_hostile_observation_failure_is_normalized() -> None:
     state = discovery.init(jr.key(0))
     with pytest.raises(ValueError, match="readable float32 vector"):
         discovery.cumulants(state, HostileObservation())  # type: ignore[arg-type]
+
+
+def test_require_float32_rejects_builtin_float_subnormal_underflow() -> None:
+    from alberta_framework.core.cumulant_discovery import _require_float32
+
+    with pytest.raises(ValueError, match="must remain nonzero once narrowed to float32"):
+        _require_float32("gamma", 1e-50, lower=0.0, upper=1.0, preserve_nonzero=True)

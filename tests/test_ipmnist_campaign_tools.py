@@ -299,6 +299,28 @@ def test_frontier_requires_and_uses_exact_paired_seed_sets(tmp_path: Path) -> No
     } == {"pyproject.toml", "uv.lock"}
 
 
+def test_frontier_requires_every_paired_seed_to_improve(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed, accuracy in enumerate((0.79, 0.81, 0.81)):
+        _shard(screen / f"base_seed{seed}.json", seed=seed, accuracy=0.80)
+        _shard(screen / f"candidate_seed{seed}.json", seed=seed, accuracy=accuracy)
+
+    frontier = build_frontier(
+        screen,
+        confirm,
+        base="base",
+        arms=["candidate"],
+        threshold=0.002,
+        created_unix=0.0,
+    )
+    row = frontier["results"][0]
+
+    assert row["screen_per_seed_delta"] == pytest.approx([-0.01, 0.01, 0.01])
+    assert row["screen_paired_delta_vs_base"] > 0.002
+    assert row["confirmation_candidate"] is False
+
+
 def test_frontier_rejects_mismatched_confirm_seed_sets(tmp_path: Path) -> None:
     screen = tmp_path / "screen"
     confirm = tmp_path / "confirm"
@@ -693,6 +715,22 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     assert len(summary["provenance"]["inputs"]) == 24
     assert "rule_discovery" in summary["provenance"]["sources"]
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
+
+
+def test_rule_discovery_summary_verdicts_follow_explicit_inputs(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        accuracy = 0.95 if name == CHAMPION else 0.1
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=accuracy)
+
+    summary = build_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+
+    assert summary["verdicts"]["disc_r1_verbatim"] == (
+        "screen mean 0.10000; paired vs champion -0.85000; development screen only"
+    )
+    assert summary["verdicts"]["disc_r1_pscale_norms"] == (
+        "screen mean 0.10000; paired vs champion -0.85000; development screen only"
+    )
 
 
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])

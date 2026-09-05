@@ -400,6 +400,47 @@ class TestAutostep:
         )
         assert float(effective) <= 1.0 + 1e-6
 
+    @pytest.mark.parametrize("magnitude", [3e3, 1e4, 1e5])
+    def test_overshoot_bound_holds_at_large_feature_scale(self, magnitude: float):
+        """The Algorithm 5 guarantee must survive the numerical-safety clip.
+
+        Normalization is the last operation on alpha in Mahmood et al. 2012
+        (Algorithm 5 lines 8-10), precisely so sum(alpha_i * x_i^2) <= 1 at
+        update time; a floor applied afterwards can raise alpha back above
+        the normalized value once sum(x_i^2) is large enough, turning the
+        overshoot guard into an error amplifier.
+        """
+        optimizer = Autostep(initial_step_size=0.01, meta_step_size=0.01)
+        feature_dim = 100
+        state = optimizer.init(feature_dim=feature_dim)
+
+        observation = jnp.ones(feature_dim) * magnitude
+        error = jnp.array(1.0)
+        result = optimizer.update(state, error, observation)
+
+        effective = (
+            jnp.sum(result.new_state.step_sizes * observation**2)
+            + result.new_state.bias_step_size
+        )
+        assert float(effective) <= 1.0 + 1e-4
+
+        prediction_change = float(
+            jnp.dot(result.weight_delta, observation) + result.bias_delta
+        )
+        assert abs(1.0 - prediction_change) <= 1.0 + 1e-4
+
+    def test_overshoot_bound_holds_on_gradient_path_at_large_scale(self):
+        """The shape-generic path shares the Algorithm 5 guarantee."""
+        optimizer = Autostep(initial_step_size=0.01, meta_step_size=0.01)
+        state = optimizer.init_for_shape((100,))
+        gradient = jnp.ones(100) * 1e4
+        error = jnp.array(1.0)
+
+        step, new_state = optimizer.update_from_gradient(state, gradient, error=error)
+
+        effective = float(jnp.sum(new_state.step_sizes * gradient**2))
+        assert effective <= 1.0 + 1e-4
+
     def test_normalizer_tracks_meta_gradient_not_primary(self):
         """v_i should track |δ*x*h| (meta-gradient), not |δ*x| (primary gradient)."""
         optimizer = Autostep(initial_step_size=0.1, meta_step_size=0.1)
@@ -1018,8 +1059,15 @@ class TestIDBDParamState:
         expected_h = -0.01 * 2.0 * jnp.ones(5)
         chex.assert_trees_all_close(new_state.traces, expected_h, atol=1e-6)
 
-    def test_meta_update_uses_prediction_grads_only(self):
-        """Meta-update should use z * h (no error), matching Meyer."""
+    def test_meta_update_uses_loss_gradient_correlation(self):
+        """Meta-update should use (-error * z) * h, matching Meyer.
+
+        Meyer's reference (idbd.py line 206) advances beta with
+        ``meta_lr * grad * h`` where ``grad`` is the loss gradient, so a
+        repeated identical error/gradient pair -- perfectly correlated
+        successive loss gradients -- must GROW the step-size (Sutton 1992's
+        defining property for the linear case z = x).
+        """
         optimizer = IDBD(initial_step_size=0.1, meta_step_size=0.1)
         state = optimizer.init_for_shape((3,))
 
@@ -1030,13 +1078,54 @@ class TestIDBDParamState:
         _, state = optimizer.update_from_gradient(state, z, error=error)
         log_alpha_after_1 = state.log_step_sizes
 
-        # Step 2: h = -alpha * error * z < 0, meta = z * h < 0
-        # With negative h, meta-gradient z * h < 0 -> step-size decreases
+        # Step 2: h = -alpha * error * z < 0, meta = (-error * z) * h > 0
         _, state = optimizer.update_from_gradient(state, z, error=error)
         log_alpha_after_2 = state.log_step_sizes
 
-        # Step-sizes should decrease (meta-gradient is negative)
+        assert jnp.all(log_alpha_after_2 > log_alpha_after_1)
+
+    def test_meta_update_shrinks_on_alternating_errors(self):
+        """Anti-correlated successive loss gradients must shrink step-sizes."""
+        optimizer = IDBD(initial_step_size=0.1, meta_step_size=0.1)
+        state = optimizer.init_for_shape((3,))
+        z = jnp.ones(3)
+
+        _, state = optimizer.update_from_gradient(state, z, error=jnp.array(1.0))
+        log_alpha_after_1 = state.log_step_sizes
+        _, state = optimizer.update_from_gradient(state, z, error=jnp.array(-1.0))
+        log_alpha_after_2 = state.log_step_sizes
+
         assert jnp.all(log_alpha_after_2 < log_alpha_after_1)
+
+    def test_step_size_adaptation_is_invariant_to_target_sign(self):
+        """Relabelling y -> -y mirrors the problem; alphas must not change.
+
+        The error path's step-size dynamics may depend only on gradient
+        correlations, never on the arbitrary sign convention of the target
+        (the linear ``update`` path already has this invariance).
+        """
+        optimizer = IDBD(initial_step_size=0.05, meta_step_size=0.05)
+        errors = [0.7, -0.3, 1.1, 0.4, -0.9, 0.6]
+        gradients = [
+            jnp.array([1.0, -0.5], dtype=jnp.float32),
+            jnp.array([0.3, 0.8], dtype=jnp.float32),
+            jnp.array([-0.6, 0.2], dtype=jnp.float32),
+        ] * 2
+
+        state_pos = optimizer.init_for_shape((2,))
+        state_neg = optimizer.init_for_shape((2,))
+        for error, z in zip(errors, gradients, strict=True):
+            _, state_pos = optimizer.update_from_gradient(
+                state_pos, z, error=jnp.array(error, dtype=jnp.float32)
+            )
+            _, state_neg = optimizer.update_from_gradient(
+                state_neg, z, error=jnp.array(-error, dtype=jnp.float32)
+            )
+
+        chex.assert_trees_all_close(
+            state_pos.log_step_sizes, state_neg.log_step_sizes, atol=1e-7
+        )
+        chex.assert_trees_all_close(state_pos.traces, -state_neg.traces, atol=1e-7)
 
     def test_loss_grads_mode(self):
         """loss_grads h_decay_mode should produce finite results."""

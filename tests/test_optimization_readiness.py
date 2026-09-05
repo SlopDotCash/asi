@@ -151,6 +151,33 @@ def test_readiness_rejects_nonrepresentable_squared_norms() -> None:
         )
 
 
+def test_batch_gradient_mean_survives_large_but_representable_row_norms() -> None:
+    """A representable batch mean must not be fabricated from an overflowed sum.
+
+    Summing 128 rows whose individual squared norms are near the float64 ceiling
+    overflows, and dividing infinity by the batch count keeps it infinite.  The
+    reliability ratio then silently collapses to ``0.0`` while every gated
+    output stays finite, so the receipt reports zero readiness for a real
+    gradient.
+    """
+    row_norm = 6.5e153
+    batch_gradients = np.tile(np.full(4, row_norm), (128, 1))
+    with np.errstate(over="ignore"):
+        unscaled_mean = float(np.mean(np.square(batch_gradients).sum(axis=1)))
+    assert not np.isfinite(unscaled_mean)
+
+    readiness = estimate_optimization_readiness(
+        loss=1.0,
+        full_validation_gradient=np.ones(4),
+        batch_gradients=batch_gradients,
+    )
+    expected = 4.0 * row_norm * row_norm
+    assert np.isfinite(readiness.expected_batch_gradient_squared_norm)
+    assert readiness.expected_batch_gradient_squared_norm == pytest.approx(expected, rel=1e-12)
+    assert readiness.gradient_reliability > 0.0
+    assert readiness.optimization_readiness > 0.0
+
+
 def test_energy_rank_is_scale_stable() -> None:
     assert energy_rank(np.diag([9e307, 1e307]), threshold=0.99) == 2
 
