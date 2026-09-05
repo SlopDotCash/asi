@@ -366,6 +366,23 @@ def validate_result(value: object) -> DevelopmentResult:
         )
         if receipt.persistent_bytes != expected_persistent:
             raise ValueError("persistent-byte receipt mismatch")
+        expected_arm = _run_arm(
+            value.seed,
+            value.steps_per_task,
+            value.replay_capacity,
+            value.imaginations_per_step,
+            arm.arm_id,
+        )
+        observed_arm = dataclasses.replace(
+            arm,
+            receipt=dataclasses.replace(arm.receipt, elapsed_ns=0),
+        )
+        expected_arm = dataclasses.replace(
+            expected_arm,
+            receipt=dataclasses.replace(expected_arm.receipt, elapsed_ns=0),
+        )
+        if observed_arm != expected_arm:
+            raise ValueError("deterministic replay mismatch")
     return value
 
 
