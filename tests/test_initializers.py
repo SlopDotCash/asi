@@ -104,6 +104,24 @@ class TestSparseInit:
         chex.assert_shape(weights, (32, 16))
         assert jnp.all(weights == 0)
 
+    def test_default_sparsity_keeps_one_connection_when_rounding_hits_fan_in(self):
+        """Default sparsity=0.9 on fan_in=5 must not wipe every incoming weight.
+
+        ``int(0.9 * 5 + 0.5)`` is 5, and the ``num_zeros >= fan_in`` branch
+        used to return an all-zero matrix. The constructor accepts any
+        positive ``fan_in``; it does not require
+        ``round(sparsity * fan_in) < fan_in``. One live connection per row
+        remains when the requested sparsity is below 1.
+        """
+        weights = sparse_init(jr.key(0), (4, 5), sparsity=0.9)
+
+        assert not bool(jnp.all(weights == 0))
+        zeros_per_row = jnp.sum(weights == 0, axis=1)
+        chex.assert_trees_all_close(zeros_per_row, jnp.full((4,), 4))
+        assert float(jnp.mean(weights == 0)) == pytest.approx(0.8)
+        nonzero_per_row = jnp.sum(weights != 0, axis=1)
+        chex.assert_trees_all_close(nonzero_per_row, jnp.ones((4,), dtype=nonzero_per_row.dtype))
+
     @pytest.mark.parametrize(
         "invalid_shape",
         [

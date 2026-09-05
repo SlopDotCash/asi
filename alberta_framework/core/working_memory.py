@@ -51,7 +51,7 @@ class WorkingMemoryConfig:
         include_current_action: Include the current action vector in output.
         include_current_reward: Include the current reward vector in output.
         include_traces: Include all trace banks in output.
-        include_innovations: Include current-minus-fast-trace innovations.
+        include_innovations: Include current minus the fastest trace (lowest decay, first on ties).
         gated_update: If true, trace updates are scaled by a surprise gate.
         gate_threshold: Surprise level where gated updates start opening.
         gate_temperature: Positive softness for the surprise gate.
@@ -389,6 +389,12 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
     )
 
 
+
+def _fastest_trace_index(rates: tuple[float, ...]) -> int:
+    """Return the fastest EMA row: lowest decay, first listed on ties."""
+    return min(range(len(rates)), key=lambda index: (rates[index], index))
+
+
 def _empty_or_vector(value: Array, dim: int) -> Array:
     _require_array("vector", value, shape=(dim,))
     return jnp.asarray(value)
@@ -552,10 +558,16 @@ class WorkingMemoryFeaturizer:
         """Return a zero reward vector with the configured dimension."""
         return jnp.zeros((self._config.reward_dim,), dtype=jnp.float32)
 
-    def _surprise_gate(self, traces: Array, value: Array, threshold: Array) -> Array:
+    def _surprise_gate(
+        self,
+        traces: Array,
+        value: Array,
+        threshold: Array,
+        fast_index: int,
+    ) -> Array:
         if (not self._config.gated_update) or traces.shape[0] == 0 or value.size == 0:
             return jnp.asarray(1.0, dtype=jnp.float32)
-        surprise = _root_mean_square(value - traces[0])
+        surprise = _root_mean_square(value - traces[fast_index])
         temperature = jnp.asarray(self._config.gate_temperature, dtype=jnp.float32)
         return jax.nn.sigmoid((surprise - threshold) / temperature)
 
@@ -610,11 +622,22 @@ class WorkingMemoryFeaturizer:
             )
         if cfg.include_innovations:
             if len(cfg.observation_decay_rates) > 0:
-                blocks.append(obs - state.observation_traces[0])
+                blocks.append(
+                    obs
+                    - state.observation_traces[
+                        _fastest_trace_index(cfg.observation_decay_rates)
+                    ]
+                )
             if len(cfg.action_decay_rates) > 0:
-                blocks.append(act - state.action_traces[0])
+                blocks.append(
+                    act
+                    - state.action_traces[_fastest_trace_index(cfg.action_decay_rates)]
+                )
             if len(cfg.reward_decay_rates) > 0:
-                blocks.append(rew - state.reward_traces[0])
+                blocks.append(
+                    rew
+                    - state.reward_traces[_fastest_trace_index(cfg.reward_decay_rates)]
+                )
         return jnp.concatenate(blocks, axis=0)
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -657,16 +680,21 @@ class WorkingMemoryFeaturizer:
             state.observation_traces,
             safe_obs,
             threshold,
+            _fastest_trace_index(cfg.observation_decay_rates)
+            if cfg.observation_decay_rates
+            else 0,
         )
         action_gate = outer_gate * self._surprise_gate(
             state.action_traces,
             safe_act,
             threshold,
+            _fastest_trace_index(cfg.action_decay_rates) if cfg.action_decay_rates else 0,
         )
         reward_gate = outer_gate * self._surprise_gate(
             state.reward_traces,
             safe_rew,
             threshold,
+            _fastest_trace_index(cfg.reward_decay_rates) if cfg.reward_decay_rates else 0,
         )
 
         candidate = WorkingMemoryState(

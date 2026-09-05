@@ -877,18 +877,28 @@ def _propagate_predecessor_priorities(
     td_error: Array,
     propagation_scale: float,
 ) -> Array:
-    """Propagate backup priority to predecessor transitions in the queue."""
+    """Propagate backup priority to predecessor transitions in the queue.
+
+    ``propagation_scale`` is a validated non-negative real, so ``0.0``
+    (propagation disabled) is admissible, while ``td_error`` comes from an
+    unclamped imagined rollout and can be non-finite.  The scale is skipped
+    at exactly zero: the raw ``0 * inf`` produced ``NaN``, and because
+    ``jnp.maximum`` propagates ``NaN`` that wrote ``NaN`` over every live
+    queue priority — so disabling propagation destroyed the queue instead
+    of leaving it alone.
+    """
     memory_size = memory_priorities.shape[0]
     valid = jnp.arange(memory_size, dtype=jnp.int32) < memory_count
     predecessor_distance = jnp.mean(
         (memory_next_observations - anchor_observation[None, :]) ** 2,
         axis=1,
     )
-    propagated = (
-        jnp.asarray(propagation_scale, dtype=jnp.float32)
-        * jnp.abs(td_error)
-        / (1.0 + predecessor_distance)
-    )
+    scale = jnp.asarray(propagation_scale, dtype=jnp.float32)
+    magnitude = jnp.abs(td_error)
+    # Keep the original (scale * |td|) / (1 + d) association so a non-zero
+    # scale stays bit-exact; only the zero-scale lane is short-circuited.
+    scaled = jnp.where(scale == 0.0, jnp.zeros_like(magnitude), scale * magnitude)
+    propagated = scaled / (1.0 + predecessor_distance)
     return jnp.where(valid, jnp.maximum(memory_priorities, propagated), memory_priorities)
 
 
@@ -1100,7 +1110,9 @@ def step7_update(
         def rollout_step(
             rollout_carry: tuple[DifferentialSARSAState, Array, Array, Array],
             _: Array,
-        ) -> tuple[tuple[DifferentialSARSAState, Array, Array, Array], tuple[Array, Array]]:
+        ) -> tuple[
+            tuple[DifferentialSARSAState, Array, Array, Array], tuple[Array, Array, Array]
+        ]:
             rollout_state, rollout_observation, rollout_action, rollout_key = (
                 rollout_carry
             )
@@ -1125,16 +1137,20 @@ def step7_update(
                 prediction.next_observation,
                 planned.action,
                 planned.state.rng_key,
-            ), (planned.td_error, prediction.reward)
+            ), (planned.td_error, prediction.reward, planned.update_applied)
 
         (
             (rollout_state, _rollout_observation, _rollout_action, _rollout_key),
-            (rollout_td_errors, rollout_rewards),
+            (rollout_td_errors, rollout_rewards, rollout_updates_applied),
         ) = jax.lax.scan(
             rollout_step,
             (carry_state, anchor_observation, action, key),
             jnp.arange(config.planning_rollout_depth, dtype=jnp.int32),
         )
+        # A backup counts as accepted only if the core learner actually applied
+        # every imagined update; a rolled-back update leaves the state
+        # unchanged and must not be reported as planning progress.
+        rollout_accepted = planning_ready & jnp.all(rollout_updates_applied)
         rollout_td_signal = jnp.sum(rollout_td_errors)
         root_reward = rollout_rewards[0]
         restored_state = cast(
@@ -1201,6 +1217,7 @@ def step7_update(
             jnp.where(planning_ready, behavior_prob, 0.0),
             jnp.where(planning_ready, target_prob, 0.0),
             jnp.where(planning_ready, importance_ratio, 0.0),
+            rollout_accepted,
         )
 
     (
@@ -1214,17 +1231,14 @@ def step7_update(
             planning_behavior_probs,
             planning_target_probs,
             planning_importance_ratios,
+            planning_accepted,
         ),
     ) = jax.lax.scan(
         planning_step,
         (control_after_real, memory_priorities, memory_utilities),
         jnp.arange(config.planning_steps, dtype=jnp.int32),
     )
-    planning_accepted = jnp.full(
-        (config.planning_steps,),
-        planning_ready,
-        dtype=jnp.bool_,
-    )
+    planning_accepted = planning_accepted.astype(jnp.bool_)
     new_state = Step7DynaState(
         control_state=planned_state,
         world_model_state=model_state,

@@ -1279,6 +1279,36 @@ def test_step2_config_from_dict_requires_exact_keys(config: Any) -> None:
             type(config).from_dict(malformed)
 
 
+def test_step2_smoke_final_window_mse_is_the_pre_update_mean_squared_error() -> None:
+    """The field shares Step 1's name and must carry Step 1's meaning, not the UPGD loss."""
+    from alberta_framework.steps.step2 import (
+        Step2KernelConfig,
+        collect_step2_arrays,
+        make_step2_learner,
+        make_step2_stream,
+        run_step2_smoke,
+    )
+
+    cfg = Step2KernelConfig(
+        feature_dim=4, n_heads=3, hidden_sizes=(8,), context_length=4, noise_std=0.0
+    )
+    steps, seed, final_window = 8, 0, 4
+    smoke = run_step2_smoke(cfg, steps=steps, seed=seed, final_window=final_window)
+
+    learner, stream = make_step2_learner(cfg), make_step2_stream(cfg)
+    data_key, learner_key = jr.split(jr.key(seed))
+    observations, targets = collect_step2_arrays(stream, steps=steps, key=data_key)
+    state = learner.init(cfg.feature_dim, learner_key)
+    squared_errors = []
+    for t in range(steps):
+        prediction = learner.predict(state, observations[t])
+        squared_errors.append(float(jnp.mean(jnp.square(prediction - targets[t]))))
+        state = learner.update(state, observations[t], targets[t]).state
+    expected = sum(squared_errors[-final_window:]) / final_window
+    assert expected > 0.0
+    assert smoke.final_window_mse == pytest.approx(expected, rel=1e-5)
+
+
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [

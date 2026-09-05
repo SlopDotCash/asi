@@ -824,12 +824,32 @@ class MicroArmSpec:
         )
 
 
+def _sgd_raw_param_update(
+    params: dict[str, Array],
+    grads: dict[str, Array],
+    *,
+    step_size: float,
+    weight_decay: float,
+) -> dict[str, Array]:
+    """Apply plain SGD with decoupled decay, skipping a frozen step size.
+
+    ``step_size=0`` is a supported freeze. Scaling infinite grads by that zero
+    step size evaluates ``0 * inf`` and would poison finite parameters.
+    """
+    decay = 1.0 - step_size * weight_decay
+    if step_size == 0.0:
+        return {name: params[name] for name in params}
+    return {
+        name: params[name] * decay - step_size * grads[name] for name in params
+    }
+
+
 def _make_sgd_raw_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Plain SGD (optionally with decoupled decay) on raw inputs."""
     step_size = hp["step_size"]
-    decay = 1.0 - step_size * hp["weight_decay"]
+    weight_decay = hp["weight_decay"]
 
     def init_fn(params: dict[str, Array]) -> Array:
         del params
@@ -839,10 +859,12 @@ def _make_sgd_raw_learner(
         params: dict[str, Array], state: Array, grads: dict[str, Array], key: Array
     ) -> tuple[dict[str, Array], Array]:
         del key  # deterministic
-        new_params = {
-            name: params[name] * decay - step_size * grads[name] for name in params
-        }
-        return new_params, state
+        return (
+            _sgd_raw_param_update(
+                params, grads, step_size=step_size, weight_decay=weight_decay
+            ),
+            state,
+        )
 
     return _wrap_grad_learner(init_fn, step_fn)
 
@@ -1807,12 +1829,21 @@ def _run_or_skip_shard(
 ) -> Path:
     """Idempotent shard execution: existing shards are validated and kept.
 
-    A shard is only reused when it was produced by the same stream config
-    and the same network size; anything else must go to a fresh directory.
+    A shard is only reused when its payload records the requested arm and
+    seed and it was produced by the same stream config and the same network
+    size; anything else must go to a fresh directory. The filename alone is
+    not identity: a relabelled copy must never stand in for a run that never
+    happened.
     """
     path = micro_shard_path(out_dir, config.family, arm_name, seed)
     if path.exists():
         payload = load_micro_shard(path)
+        if payload["arm_name"] != arm_name or payload["seed"] != seed:
+            raise ValueError(
+                f"{path}: existing shard records arm={payload['arm_name']!r} "
+                f"seed={payload['seed']}, not the requested arm={arm_name!r} "
+                f"seed={seed}; use a fresh --out directory"
+            )
         if payload["stream_config"] != config.to_config():
             raise ValueError(
                 f"{path}: existing shard was produced by a different stream "

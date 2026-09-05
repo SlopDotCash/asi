@@ -239,6 +239,35 @@ def test_ia_aggregation_binds_live_component_budget() -> None:
         )
 
 
+def test_ia_aggregation_fails_closed_on_a_schedule_with_no_phase_switch() -> None:
+    """One phase has no switch to recover from; the aggregate must raise, not report NaN."""
+    from alberta_framework.evaluation import continual_ia
+
+    config = ContinualIAConfig(num_steps=2, phase_length=2, recovery_window=1)
+    budgets = continual_ia._condition_budgets(
+        config, continual_ia._make_partner(config), continual_ia._make_ia(config)
+    )
+    results = []
+    for condition in CONDITION_NAMES:
+        overrides: dict[str, object] = {
+            "condition": condition,
+            "controller_budget": budgets[condition],
+        }
+        if condition in {"observe_only", "recommendation_p05", "accept_always"}:
+            accepted = np.array([False, condition == "accept_always"], dtype=np.bool_)
+            overrides.update(
+                recommendations=np.zeros(2, dtype=np.int64),
+                partner_proposals=np.zeros(2, dtype=np.int64),
+                accepted_recommendations=accepted,
+                nominal_recommendation_decisions=2,
+                nominal_accepted_recommendations=2 if condition == "accept_always" else 0,
+                executed_accepted_recommendations=int(np.count_nonzero(accepted)),
+            )
+        results.append(_legal(**overrides))
+    with pytest.raises(ValueError, match="recovery evidence is empty"):
+        aggregate_ia_evidence(results, config=config)
+
+
 def test_ia_result_preflights_retained_bytes_before_snapshot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -431,6 +431,92 @@ def test_pipeline_with_horde_ac_control_smoke() -> None:
     assert smoke.q_values_shape == (4, 2)
 
 
+def _terminating_horde_ac_config() -> AlbertaPipelineConfig:
+    """Horde-AC config with a bootstrapping value head and a live actor trace."""
+    return AlbertaPipelineConfig(
+        features=Step2FeatureConfig.identity(observation_dim=3),
+        horde=Step3HordeConfig(
+            gammas=(0.9, 0.5),
+            lamdas=(0.0, 0.0),
+            hidden_sizes=(),
+            step_size=0.05,
+            use_obgd=True,
+            obgd_kappa=1.0,
+        ),
+        control=Step4SARSAConfig(
+            n_actions=2,
+            hidden_sizes=(),
+            epsilon_start=0.0,
+            epsilon_end=0.0,
+            step_size=0.05,
+            bounder_kappa=1.0,
+        ),
+        horde_ac=HordeActorCriticPipelineConfig(
+            n_actions=2,
+            actor_step_size=0.02,
+            actor_lamda=0.8,
+            value_head_index=0,
+        ),
+        control_mode="horde_ac",
+    )
+
+
+def test_pipeline_horde_ac_honors_terminated_discount() -> None:
+    """Regression for #2344: ``horde_ac`` must honor ``terminated``.
+
+    On the ``control_mode="horde_ac"`` path the pipeline previously dropped the
+    ``terminated`` flag, so the value head bootstrapped through episode
+    boundaries and the actor eligibility trace survived every termination. This
+    checks that at a terminal transition the value head's TD target collapses to
+    the bare reward and the actor trace is zeroed, that the auxiliary demon keeps
+    its own configured gamma, and that the non-terminal path is bit-identical to
+    the pre-fix behavior.
+    """
+    config = _terminating_horde_ac_config()
+    pipeline = make_alberta_pipeline(config)
+    value_index = config.horde_ac.value_head_index
+
+    state = pipeline.init(jr.key(0), jnp.asarray([0.2, -0.1, 0.4], dtype=jnp.float32))
+    obs = jnp.asarray([0.1, 0.3, -0.2], dtype=jnp.float32)
+    reward = jnp.asarray(0.5, dtype=jnp.float32)
+    cumulants = jnp.asarray([0.5, -0.2], dtype=jnp.float32)
+
+    non_terminal = pipeline.update(
+        state, obs, reward, jnp.asarray(0.0, dtype=jnp.float32), cumulants
+    )
+    terminal = pipeline.update(
+        state, obs, reward, jnp.asarray(1.0, dtype=jnp.float32), cumulants
+    )
+
+    # (a) At termination the value head does not bootstrap: target == reward.
+    assert float(terminal.horde_td_targets[value_index]) == float(reward)
+    # The non-terminal value target genuinely bootstraps (target != reward),
+    # so the terminal collapse is a real behavioral change, not a no-op.
+    assert float(non_terminal.horde_td_targets[value_index]) != float(reward)
+
+    # (b) The actor eligibility trace is zeroed at the episode boundary.
+    terminal_trace = terminal.state.control_state.actor_trace_weights
+    np.testing.assert_array_equal(terminal_trace, jnp.zeros_like(terminal_trace))
+    # The non-terminal trace still carries accumulated eligibility.
+    non_terminal_trace = non_terminal.state.control_state.actor_trace_weights
+    assert float(jnp.max(jnp.abs(non_terminal_trace))) > 0.0
+
+    # Only the value head's discount is a per-transition control quantity:
+    # the auxiliary demon keeps its configured gamma across the boundary.
+    aux_index = 1 - value_index
+    chex.assert_trees_all_equal(
+        terminal.horde_td_targets[aux_index],
+        non_terminal.horde_td_targets[aux_index],
+    )
+
+    # (c) The ``terminated=0.0`` path is bit-exact with the pre-fix behavior:
+    # passing the value head's own gamma reduces to omitting ``discount``.
+    np.testing.assert_array_equal(
+        np.asarray(non_terminal.horde_td_targets),
+        np.asarray([0.34537804, -0.18965168], dtype=np.float32),
+    )
+
+
 def test_pipeline_with_associative_step2_smoke() -> None:
     """Associative Step 2 exposes finite probability features and updates."""
     config = _small_associative_config()

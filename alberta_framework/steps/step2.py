@@ -47,7 +47,7 @@ from alberta_framework.core.temporal_context import (
     TemporalContextConfig,
     TemporalContextFeaturizer,
 )
-from alberta_framework.core.upgd import UPGDLearner, run_upgd_arrays
+from alberta_framework.core.upgd import UPGDLearner, UPGDState, run_upgd_arrays
 from alberta_framework.core.upgd_memory import UPGDMemoryConfig, UPGDMemoryLearner
 from alberta_framework.steps._smoke_record_validation import require_step_shape
 from alberta_framework.streams.out_of_class import (
@@ -1186,6 +1186,24 @@ def collect_step2_arrays(
     return jnp.stack(observations), jnp.stack(targets)
 
 
+def _step2_pre_update_squared_errors(
+    learner: UPGDLearner,
+    state: UPGDState,
+    observations: Array,
+    targets: Array,
+) -> Array:
+    """Per-step mean squared error of the prediction made before each update."""
+
+    def step_fn(carry: UPGDState, inputs: tuple[Array, Array]) -> tuple[UPGDState, Array]:
+        observation, target = inputs
+        prediction = learner.predict(carry, observation)
+        squared_error = jnp.mean(jnp.square(prediction - target))
+        return learner.update(carry, observation, target).state, squared_error
+
+    _, squared_errors = jax.lax.scan(step_fn, state, (observations, targets))
+    return squared_errors
+
+
 def run_step2_smoke(
     config: Step2KernelConfig | None = None,
     *,
@@ -1210,7 +1228,13 @@ def run_step2_smoke(
     state = learner.init(cfg.feature_dim, learner_key)
     result = run_upgd_arrays(learner, state, observations, targets)
     result.metrics.block_until_ready()
-    window = result.metrics[-final_window:, 0]
+    # ``metrics[:, 0]`` is the UPGD training loss (``0.5 * SSE / denominator``,
+    # whose denominator depends on the readout's loss normalization), not the
+    # mean squared prediction error Step 1 reports under the same field name.
+    # Measure the pre-update MSE directly, exactly as Step 1 does.
+    squared_errors = _step2_pre_update_squared_errors(learner, state, observations, targets)
+    squared_errors.block_until_ready()
+    window = squared_errors[-final_window:]
     final_window_mse = float(jnp.mean(window))
     return Step2SmokeResult(
         config=cfg,

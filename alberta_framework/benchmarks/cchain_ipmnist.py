@@ -600,7 +600,10 @@ def cchain_ntk_diagnostics(
     cumulative = jnp.cumsum(eigenvalues)
     rank = jnp.where(
         total > 0.0,
-        jnp.searchsorted(cumulative, threshold * total, side="left") + 1,
+        jnp.minimum(
+            jnp.searchsorted(cumulative, threshold * total, side="left") + 1,
+            rows,
+        ),
         0,
     ).astype(jnp.int32)
     diagonal = jnp.diag(gram)

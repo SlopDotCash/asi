@@ -16,6 +16,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig
 from alberta_framework.evaluation.bounded_elastic_ipmnist_nonpromoting import (
     registered_bounded_elastic_hyperparameters,
 )
+from tests._forager_matched_platform import HAS_O_TMPFILE, requires_o_tmpfile
 
 SMALL = IPMNISTConfig(n_tasks=1, task_length=5000, input_dim=2, hidden1=4, hidden2=2, n_classes=2)
 
@@ -258,6 +259,41 @@ def test_validator_rejects_identity_resource_and_roster_forgery(
         )
 
 
+def test_validator_rejects_type_punned_forgeries_that_compare_equal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Python equality treats 0 == False and 1.0 == 1; the validator must not."""
+    monkeypatch.setattr(runner, "run_screening_config", _fake_run)
+    result = cast(dict[str, Any], _run_for_test(*_data(), config=SMALL))
+
+    punned = copy.deepcopy(result)
+    punned["policy"]["scientific_promotion_allowed"] = 0
+    _resign(punned)
+    with pytest.raises(ValueError, match="permanently nonpromoting"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+    punned = copy.deepcopy(result)
+    punned["development_seeds"] = [float(seed) for seed in punned["development_seeds"]]
+    _resign(punned)
+    with pytest.raises(ValueError, match="protocol roster drifted"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+    punned = copy.deepcopy(result)
+    punned["config"]["n_tasks"] = float(punned["config"]["n_tasks"])
+    _resign(punned)
+    with pytest.raises(ValueError, match="config drifted"):
+        runner._validate_bounded_elastic_matched_authorized(
+            punned, *_data(), config=SMALL, seeds=runner.TEST_ONLY_SEEDS,
+            _capability=runner._TEST_EXECUTION_CAPABILITY,
+        )
+
+
 def test_validator_reexecutes_and_rejects_self_consistent_metric_forgery(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -291,6 +327,7 @@ def test_campaign_rejects_unregistered_outcome_decisions(
         )
 
 
+@requires_o_tmpfile
 def test_writer_is_create_only_and_retains_negative_outcomes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -314,6 +351,7 @@ def test_writer_is_create_only_and_retains_negative_outcomes(
     assert not destination.with_name(f".{destination.name}.reservation").exists()
 
 
+@requires_o_tmpfile
 def test_writer_strictly_rereads_before_link_and_retains_failed_attempt(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -340,6 +378,7 @@ def test_writer_strictly_rereads_before_link_and_retains_failed_attempt(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_writer_retains_reservation_after_reexecution_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -367,6 +406,7 @@ def test_writer_retains_reservation_after_reexecution_failure(
 
 
 @pytest.mark.parametrize("replace_linked_inode", [False, True])
+@requires_o_tmpfile
 def test_post_link_failure_rolls_back_only_the_exact_published_inode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -407,6 +447,7 @@ def test_post_link_failure_rolls_back_only_the_exact_published_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_link_success_followed_by_exception_rolls_back_exact_inode(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -434,6 +475,7 @@ def test_link_success_followed_by_exception_rolls_back_exact_inode(
     assert marker.read_bytes() == b"asi-bounded-elastic-consumed-without-result-v1\n"
 
 
+@requires_o_tmpfile
 def test_writer_rejects_replaced_visible_reservation_before_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -464,6 +506,7 @@ def test_writer_rejects_replaced_visible_reservation_before_publication(
     marker.unlink()
 
 
+@requires_o_tmpfile
 def test_writer_parent_swap_does_not_publish_through_replacement(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -552,6 +595,7 @@ def test_standalone_paths_remain_disabled_after_flag_transition(
     assert not destination.parent.exists()
 
 
+@requires_o_tmpfile
 def test_transaction_reserves_before_dataset_load_or_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -579,6 +623,7 @@ def test_transaction_reserves_before_dataset_load_or_runner(
     assert marker.read_bytes() == b"prior reservation"
 
 
+@requires_o_tmpfile
 def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -615,6 +660,7 @@ def test_transaction_retains_owned_tombstone_after_first_dispatch_failure(
     assert calls == 1
 
 
+@requires_o_tmpfile
 def test_transaction_publishes_only_after_strict_reexecution(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -841,3 +887,12 @@ def test_source_identity_detects_dependency_input_mutation(
         for path, digest in original.items()
         if path != dependency_input
     )
+
+
+@pytest.mark.skipif(HAS_O_TMPFILE, reason="tests Linux-only publication refusal off Linux")
+def test_reserve_output_refuses_without_linux_descriptor_support(tmp_path: Path) -> None:
+    destination = tmp_path / "report.json"
+    with pytest.raises(
+        OSError, match="immutable output publication requires Linux descriptor support"
+    ):
+        runner._reserve_output(destination, _capability=runner._TEST_EXECUTION_CAPABILITY)

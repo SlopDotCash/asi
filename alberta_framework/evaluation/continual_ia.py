@@ -1479,6 +1479,16 @@ def aggregate_ia_evidence(
     mean_recovery: dict[IAConditionName, float] = {}
     for condition, group in groups.items():
         values = np.concatenate([result.recovery_lengths for result in group])
+        if values.size == 0:
+            # A schedule with no phase switch has nothing to recover from. The
+            # mean of an empty vector is NaN and the conditional mean below is
+            # inf, while ``all_values_finite`` only inspects rewards and phase
+            # means, so the aggregate would report a finite-looking record with
+            # non-finite recovery evidence. Fail closed instead.
+            raise ValueError(
+                f"recovery evidence is empty for condition {condition!r}; "
+                "the schedule must contain at least one phase switch"
+            )
         recovered = values >= 0
         recovery_fraction[condition] = float(np.mean(recovered))
         mean_recovery[condition] = (

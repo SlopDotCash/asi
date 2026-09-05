@@ -237,6 +237,12 @@ class _SpoofedFloat:
     def __float__(self) -> float:
         return 0.5
 
+    def __le__(self, other: float) -> bool:
+        return 0.5 <= other
+
+    def __lt__(self, other: float) -> bool:
+        return 0.5 < other
+
 
 def test_benchmark_config_rejects_class_spoofed_ewm_decay() -> None:
     with pytest.raises(ValueError, match="ewm_decay"):
@@ -840,23 +846,6 @@ def test_official_npz_import_rejects_nonfinite_ewm_decay(tmp_path: Path) -> None
         )
 
 
-class _SpoofedFloat:
-    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
-
-    @property
-    def __class__(self) -> type:  # type: ignore[override]
-        return float
-
-    def __float__(self) -> float:
-        return 0.5
-
-    def __le__(self, other: float) -> bool:
-        return 0.5 <= other
-
-    def __lt__(self, other: float) -> bool:
-        return 0.5 < other
-
-
 @pytest.mark.parametrize(
     ("kwargs", "match"),
     [
@@ -1129,6 +1118,18 @@ def test_summary_and_paired_comparison_fail_closed() -> None:
         summarize_forager_runs(
             [candidate[0], _result("alberta_horde_ac", 1, 2.0, config_id="different")]
         )
+    different_custom_metadata = [
+        dataclasses.replace(
+            candidate[0],
+            agent_metadata={"learning_rate": 0.01},
+        ),
+        dataclasses.replace(
+            candidate[1],
+            agent_metadata={"learning_rate": 0.99},
+        ),
+    ]
+    with pytest.raises(ValueError, match="configuration"):
+        summarize_forager_runs(different_custom_metadata)
     incompatible_metric = _result("alberta_horde_ac", 1, 2.0, ewm_decay=0.5)
     with pytest.raises(ValueError, match="metric contract"):
         summarize_forager_runs([candidate[0], incompatible_metric])

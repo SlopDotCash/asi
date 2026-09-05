@@ -1876,6 +1876,36 @@ class TestCLI:
             main([*base, "--hidden1", "16", "--hidden2", "6"])
         assert path.read_bytes() == first
 
+    def test_run_refuses_to_skip_a_shard_recorded_for_another_arm_or_seed(
+        self, tmp_path: Path
+    ):
+        """The idempotent skip must bind the payload's arm and seed, not just the path name."""
+        import shutil
+
+        base = [
+            "run", "--family", "input_permutation", "--out", str(tmp_path), *self.ARGS,
+        ]
+        assert main([*base, "--arm", "sgd_raw", "--seed", "0"]) == 0
+        genuine = micro_shard_path(tmp_path, "input_permutation", "sgd_raw", 0)
+        relabeled_seed = micro_shard_path(tmp_path, "input_permutation", "sgd_raw", 7)
+        relabeled_arm = micro_shard_path(tmp_path, "input_permutation", "naive_bayes", 0)
+        shutil.copyfile(genuine, relabeled_seed)
+        shutil.copyfile(genuine, relabeled_arm)
+        with pytest.raises(
+            ValueError,
+            match=r"existing shard records arm='sgd_raw' seed=0, not the requested "
+            r"arm='sgd_raw' seed=7; use a fresh --out directory",
+        ):
+            main([*base, "--arm", "sgd_raw", "--seed", "7"])
+        with pytest.raises(
+            ValueError,
+            match=r"existing shard records arm='sgd_raw' seed=0, not the requested "
+            r"arm='naive_bayes' seed=0; use a fresh --out directory",
+        ):
+            main([*base, "--arm", "naive_bayes", "--seed", "0"])
+        assert relabeled_seed.read_bytes() == genuine.read_bytes()
+        assert relabeled_arm.read_bytes() == genuine.read_bytes()
+
     def test_ladder_partial_arms_writes_summary_only(self, tmp_path: Path):
         argv = [
             "ladder", "--family", "input_permutation", "--seeds", "0",
@@ -2096,3 +2126,33 @@ def test_micro_run_result_rejects_numeric_subclasses_without_conversion_hooks() 
         _legal_micro_run_result(overall_accuracy=HostileFloat(0.5))
     with pytest.raises(ValueError, match="wall_clock_seconds"):
         _legal_micro_run_result(wall_clock_seconds=HostileFloat(1.0))
+
+
+def test_sgd_raw_zero_step_size_preserves_params_under_infinite_grads() -> None:
+    """Frozen SGD must not poison params when grads overflow to inf.
+
+    Hyperparameter freeze accepts ``step_size=0.0``. The update used to
+    evaluate ``params - 0 * grads``, which is ``0 * inf = NaN`` and destroys
+    finite parameters on a no-op step.
+    """
+    params = {"w": jnp.array([1.0, -2.0], dtype=jnp.float32)}
+    grads = {"w": jnp.array([jnp.inf, 3.0], dtype=jnp.float32)}
+    assert bool(jnp.isnan(jnp.float32(0.0) * jnp.float32(jnp.inf)))
+
+    updated = micro_continual._sgd_raw_param_update(
+        params, grads, step_size=0.0, weight_decay=0.01
+    )
+    chex.assert_trees_all_equal(updated, params)
+    assert bool(jnp.all(jnp.isfinite(updated["w"])))
+
+
+def test_sgd_raw_nonzero_step_size_still_applies_to_finite_grads() -> None:
+    params = {"w": jnp.array([1.0, -2.0], dtype=jnp.float32)}
+    grads = {"w": jnp.array([0.5, -1.0], dtype=jnp.float32)}
+    updated = micro_continual._sgd_raw_param_update(
+        params, grads, step_size=0.1, weight_decay=0.0
+    )
+    chex.assert_trees_all_close(
+        updated["w"],
+        params["w"] - 0.1 * grads["w"],
+    )

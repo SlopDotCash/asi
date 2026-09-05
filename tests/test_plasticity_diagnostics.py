@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import IO, Any
 
 import jax
 import numpy as np
 import pytest
 
+from alberta_framework.benchmarks import plasticity_diagnostics
 from alberta_framework.benchmarks.plasticity_diagnostics import (
     ARM_IDS,
     FROZEN_SEEDS,
@@ -181,3 +184,90 @@ def test_cli_runs_only_caller_supplied_bounded_npz(
     assert payload["task_protocol"] == "cumulative-input-permutation"
     assert payload["labels_permuted"] is False
     assert payload["scientific_promotion_allowed"] is False
+
+
+def test_cli_binds_preflight_to_materialized_descriptor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    images, labels = _fixture()
+    dataset = tmp_path / "mnist.npz"
+    admitted = tmp_path / "admitted.npz"
+    replacement = tmp_path / "replacement.npz"
+    np.savez(dataset, images=images, labels=labels)
+    np.savez(replacement, images=images.astype(np.float64), labels=labels)
+    admitted_inode = dataset.stat().st_ino
+    original_preflight = plasticity_diagnostics._preflight_dataset_npz
+    original_load = np.load
+    materialized_inodes: list[int] = []
+
+    def _swap_path_after_preflight(source: IO[bytes]) -> None:
+        original_preflight(source)
+        dataset.rename(admitted)
+        dataset.symlink_to(replacement.name)
+
+    def _recording_load(source: Any, *args: Any, **kwargs: Any) -> Any:
+        metadata = (
+            os.stat(source)
+            if isinstance(source, (str, os.PathLike))
+            else os.fstat(source.fileno())
+        )
+        materialized_inodes.append(metadata.st_ino)
+        return original_load(source, *args, **kwargs)
+
+    monkeypatch.setattr(
+        plasticity_diagnostics, "_preflight_dataset_npz", _swap_path_after_preflight
+    )
+    monkeypatch.setattr(np, "load", _recording_load)
+    with pytest.raises(ValueError, match="bounded regular file"):
+        main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))
+    assert materialized_inodes == [admitted_inode]
+
+
+def _npy_header_bytes(shape: tuple[int, ...], dtype: object) -> bytes:
+    from io import BytesIO
+
+    buffer = BytesIO()
+    np.lib.format.write_array_header_2_0(
+        buffer,
+        {
+            "descr": np.lib.format.dtype_to_descr(np.dtype(dtype)),
+            "fortran_order": False,
+            "shape": shape,
+        },
+    )
+    return buffer.getvalue()
+
+
+def test_cli_rejects_oversize_npy_header_before_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import zipfile
+
+    dataset = tmp_path / "oversize.npz"
+    with zipfile.ZipFile(dataset, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("images.npy", _npy_header_bytes((80_000, INPUT_DIM), np.float32))
+        archive.writestr("labels.npy", _npy_header_bytes((80_000,), np.int32))
+
+    def _forbidden_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("np.load must not run after an oversize npy header")
+
+    monkeypatch.setattr(np, "load", _forbidden_load)
+    with pytest.raises(ValueError, match="unbounded"):
+        main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))
+
+
+def test_cli_rejects_compressed_oversize_members_before_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dataset = tmp_path / "compressed-oversize.npz"
+    images = np.zeros((80_000, INPUT_DIM), dtype=np.float32)
+    labels = np.zeros((80_000,), dtype=np.int32)
+    np.savez_compressed(dataset, images=images, labels=labels)
+    del images, labels
+
+    def _forbidden_load(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("np.load must not run after an oversize compressed NPZ")
+
+    monkeypatch.setattr(np, "load", _forbidden_load)
+    with pytest.raises(ValueError, match="unbounded"):
+        main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))

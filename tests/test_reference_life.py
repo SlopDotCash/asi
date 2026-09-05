@@ -45,6 +45,7 @@ from alberta_framework.reference_life import (
     RecoveryMode,
     ReferenceLifeConfig,
     ReferenceLifeMetricsAdapter,
+    ReferenceLifeRun,
     ReferenceLifeRunner,
     SwitchingEnvironmentExecution,
     SwitchingTwoStateReferenceEnvironment,
@@ -482,6 +483,36 @@ def test_authoritative_life_crosses_phase_and_completes_at_horizon() -> None:
     )
     with pytest.raises(DecisionOwnershipError, match="completed"):
         runner.step(state)
+
+
+def test_completed_life_records_the_final_full_switching_segment() -> None:
+    agent_config = PrototypeAgentConfig(
+        oak=OaKConfig(
+            stomp=STOMPConfig(
+                subtask_specs=(),
+                observation_dim=2,
+                n_primitive_actions=2,
+                base_step_size=0.05,
+                epsilon_base=0.25,
+            )
+        )
+    )
+    runner = build_prototype_switching_life(
+        agent_config=agent_config,
+        environment_config=SwitchingTwoStateConfig(phase_length=2),  # type: ignore[call-arg]
+        lifecycle_id=_LIFECYCLE_ID,
+        seed=29,
+        max_accepted_events=6,
+    )
+
+    result = runner.run_to_completion(runner.init())
+    metrics = result.state.metrics
+
+    assert result.state.phase is LifePhase.COMPLETED
+    assert metrics.current_phase == PHASE_A
+    assert metrics.current_segment_events == 2
+    assert metrics.current_segment_reward == 0.0
+    assert metrics.latest_completed_segment_reward == (0.0, 2.0)
 
 
 def test_environment_rejects_bad_action_before_clipping_step(
@@ -954,6 +985,66 @@ class _MismatchingEnvironment(SwitchingTwoStateReferenceEnvironment):
             autoreset=False,
             regime_id=phase,
             oracle_reward=self._environment.optimal_average_reward(phase),
+        )
+
+
+class _MismatchingOnSecondEnvironment(_MismatchingEnvironment):
+    """Executor applies the commanded action once, then the wrong action."""
+
+    def execute(
+        self,
+        state: Any,
+        command: DispatchCommand,
+        *,
+        key: Any,
+    ) -> SwitchingEnvironmentExecution:
+        if int(np.asarray(state.step_count)) == 0:
+            return SwitchingTwoStateReferenceEnvironment.execute(self, state, command, key=key)
+        return super().execute(state, command, key=key)
+
+
+def test_run_to_completion_returns_a_committed_post_execution_halt() -> None:
+    """A halt after one accepted event is the runner's own valid output, not an error.
+
+    The post-execution halt commits a receipt-advanced transcript with no
+    event, so the last emitted event carries the transcript of the state the
+    halting step started from; the run must record that binding instead of
+    rejecting its own state.
+    """
+    adapter = PrototypeReferenceAdapter.from_config(_agent_config())
+    environment = _MismatchingOnSecondEnvironment(
+        SwitchingTwoStateConfig(phase_length=2),  # type: ignore[call-arg]
+        observation_spec=adapter.manifest.observation_spec,
+        action_spec=adapter.manifest.action_spec,
+    )
+    runner = ReferenceLifeRunner.create(
+        agent_adapter=adapter,
+        environment_adapter=environment,
+        lifecycle_id=_LIFECYCLE_ID,
+        seed=7,
+        max_accepted_events=4,
+    )
+
+    run = runner.run_to_completion(runner.init())
+
+    assert run.state.phase is LifePhase.HALTED
+    assert run.state.halt is not None
+    assert run.state.halt.stage is HaltStage.POST_EXECUTION_DIVERGENCE
+    assert run.state.accepted_events == 1
+    assert run.state.executed_events == 2
+    assert len(run.events) == 1
+    assert run.pre_halt_transcript_sha256 == run.events[-1].transcript_sha256
+    assert run.pre_halt_transcript_sha256 != run.state.transcript_sha256
+    assert run.state == runner.current_state
+    # The binding is exact: it is rejected for a run that did not halt this way.
+    completed_runner = _runner(horizon=1)
+    completed = completed_runner.run_to_completion(completed_runner.init())
+    assert completed.state.phase is LifePhase.COMPLETED
+    with pytest.raises(ValueError, match="only valid for a post-execution halt"):
+        ReferenceLifeRun(
+            state=completed.state,
+            events=completed.events,
+            pre_halt_transcript_sha256=completed.events[-1].transcript_sha256,
         )
 
 
