@@ -175,9 +175,10 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
 
     The pinned paper defines ``f(X) = 3/2 X - 1/2 XX^T X``. Frobenius
     normalization places every singular value in its convergence interval and
-    preserves an exact zero for a zero matrix. A matrix whose entries the
-    backend has flushed away entirely is reported invalid rather than answered
-    with the zero matrix, which is the answer reserved for a zero input.
+    preserves an exact zero for a zero matrix. The normalization divides an
+    exactly power-of-two rescaled copy by its own norm so the divisor stays
+    representable at every input magnitude.
+    A matrix whose entries the backend has flushed entirely is invalid.
     """
     value = _trusted_array(matrix, name="matrix")
     if (
@@ -204,7 +205,22 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
     valid = (
         jnp.all(jnp.isfinite(value)) & jnp.isfinite(norm) & jnp.logical_not(destroyed)
     )
-    x = value / jnp.maximum(norm, jnp.asarray(1e-12, dtype=value.dtype))
+    # `norm` remains the caller-visible overflow signal, but it cannot be the
+    # divisor: its squares underflow to zero for float32 entries near 1e-20, and
+    # a true norm under a fixed magnitude floor would divide by the floor, which
+    # leaves every singular value below the NS5 convergence interval and launders
+    # a nonzero matrix into a numerically zero sign. Rescaling by an exact power
+    # of two keeps the divisor representable without changing any quotient that
+    # was already correct, and an exact zero is preserved by the zero test.
+    _, exponent = jnp.frexp(jnp.max(jnp.abs(value)))
+    rescaled = jnp.ldexp(value, -exponent)
+    rescaled_norm = jnp.linalg.norm(rescaled)
+    positive = rescaled_norm > 0
+    x = jnp.where(
+        positive,
+        rescaled / jnp.where(positive, rescaled_norm, jnp.ones_like(rescaled_norm)),
+        jnp.zeros_like(rescaled),
+    )
     if x.shape[0] > x.shape[1]:
         x = x.T
         transposed = True
@@ -234,12 +250,15 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     direction = _trusted_array(gradient, name="gradient")
     if delta.shape != direction.shape or delta.ndim != 1 or delta.size < 1:
         raise ValueError("perturbation and gradient must be non-empty equal-width vectors")
-    squared_norm = jnp.vdot(direction, direction).real
-    numerator = jnp.vdot(direction, delta).real
+    max_abs = jnp.max(jnp.abs(direction))
+    _, exponent = jnp.frexp(max_abs)
+    scaled = jnp.ldexp(direction, -exponent)
+    squared_norm = jnp.vdot(scaled, scaled).real
+    numerator = jnp.vdot(scaled, delta).real
     active = squared_norm > 0.0
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
     coefficient = numerator / denominator
-    projection = direction * coefficient * active.astype(delta.dtype)
+    projection = scaled * coefficient * active.astype(delta.dtype)
     candidate = delta - projection
     valid = (
         jnp.all(jnp.isfinite(delta))

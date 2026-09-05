@@ -1254,7 +1254,11 @@ def build_comparison(summaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "gap": round(gap, 6),
             "reproduction_gap_flagged": bool(abs(gap) > REPRODUCTION_GAP_THRESHOLD),
         }
-    if "upgd_w" in summaries and "adamw" in summaries:
+    if (
+        "upgd_w" in summaries
+        and "adamw" in summaries
+        and summaries["upgd_w"]["seeds"] == summaries["adamw"]["seeds"]
+    ):
         comparison["upgd_w_beats_adamw"] = bool(
             summaries["upgd_w"]["average_online_accuracy_mean"]
             > summaries["adamw"]["average_online_accuracy_mean"]

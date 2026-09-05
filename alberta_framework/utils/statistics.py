@@ -230,20 +230,30 @@ def _require_sample_vector(values: object, *, name: str) -> NDArray[np.float64]:
 
 
 def _require_probability(value: object, *, name: str, strict: bool) -> float:
+    """Return ``value`` as the exact host double after checking its domain.
+
+    Probabilities here are measurement outputs (p-values) or preregistered
+    decision thresholds (alpha), not float32-consumed configuration, so the
+    stored value keeps full float64 precision; narrowing a p-value to
+    binary32 flushes anything below ~1.4e-45 to an impossible exact 0 and
+    perturbs every stored value and verdict boundary by the container type.
+    """
+    domain = "strictly between 0 and 1" if strict else "in [0, 1]"
+    message = f"{name} must be a finite real {domain}"
     if type(value) not in _ALLOWED_REAL_TYPES:
-        domain = "strictly between 0 and 1" if strict else "in [0, 1]"
-        raise ValueError(f"{name} must be a finite real {domain}")
+        raise ValueError(message)
     try:
-        if strict:
-            return validated_float32_scalar(
-                name, value, positive=True, upper=1.0, upper_inclusive=False
-            )
-        return validated_float32_scalar(
-            name, value, lower=0.0, upper=1.0, upper_inclusive=True
-        )
-    except ValueError:
-        domain = "strictly between 0 and 1" if strict else "in [0, 1]"
-        raise ValueError(f"{name} must be a finite real {domain}") from None
+        converted = float(cast(Any, value))
+    except (OverflowError, ValueError):
+        raise ValueError(message) from None
+    if not math.isfinite(converted):
+        raise ValueError(message)
+    if strict:
+        if not 0.0 < converted < 1.0:
+            raise ValueError(message)
+    elif not 0.0 <= converted <= 1.0:
+        raise ValueError(message)
+    return converted
 
 
 def _require_alpha(alpha: object) -> float:
@@ -428,6 +438,25 @@ def cohens_d(
     return float((mean_a - mean_b) / pooled_std)
 
 
+def _paired_cohens_d(values_a: NDArray[np.float64], values_b: NDArray[np.float64]) -> float:
+    """Compute Cohen's d_z from the within-pair difference distribution.
+
+    Pooled-variance Cohen's d (``cohens_d``) is wrong for paired samples: it
+    denominates by the between-seed variance in each group, which a paired
+    design shares and the paired t-test itself cancels out. d_z denominates
+    by the standard deviation of the differences instead, matching what
+    ``scipy.stats.ttest_rel`` actually tests.
+    """
+    differences = values_a - values_b
+    mean_difference = float(np.mean(differences))
+    difference_std = float(np.std(differences, ddof=1))
+    if difference_std == 0.0:
+        if mean_difference == 0.0:
+            return 0.0
+        return float(np.copysign(np.inf, mean_difference))
+    return mean_difference / difference_std
+
+
 def ttest_comparison(
     values_a: NDArray[np.float64] | list[float],
     values_b: NDArray[np.float64] | list[float],
@@ -447,7 +476,9 @@ def ttest_comparison(
         method_b: Name of second method
 
     Returns:
-        SignificanceResult with test results
+        SignificanceResult with test results. Paired tests report Cohen's
+        ``d_z`` from the within-pair differences; independent tests report
+        pooled-standard-deviation Cohen's ``d``.
 
     Raises:
         ValueError: If ``alpha`` is not a finite probability strictly between
@@ -503,7 +534,7 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = cohens_d(a, b)
+    effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -604,7 +635,11 @@ def wilcoxon_comparison(
     Caveat: the reported ``effect_size`` is Cohen's d computed on the raw
     values, not a rank-based effect size.  The standard companion to this
     test is the matched-pairs rank-biserial correlation; interpret the
-    parametric d alongside a rank test with care.
+    parametric d alongside a rank test with care.  d_z is deliberately NOT
+    used here: its denominator is zero for a perfectly consistent shift, and
+    unlike the paired t statistic -- which is itself infinite for that input --
+    a rank statistic stays finite, so an unbounded effect size beside it
+    cannot be exported by ``_preflight_significance_results``.
 
     Args:
         values_a: Values for first method
@@ -813,6 +848,8 @@ def pairwise_comparisons(
     """
     from alberta_framework.utils.experiments import AggregatedResults
 
+    if type(test) is not str:
+        raise ValueError("test is invalid")
     alpha_value = _require_alpha(alpha)
     window = _require_positive_int("window", window)
 

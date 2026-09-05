@@ -19,7 +19,7 @@ from numpy.typing import NDArray
 
 from alberta_framework._seed_validation import require_unique_jax_seeds
 from alberta_framework.utils.experiments import AggregatedResults, MetricSummary
-from alberta_framework.utils.statistics import SignificanceResult
+from alberta_framework.utils.statistics import SignificanceResult, common_final_window
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -261,6 +261,19 @@ def _preflight_export_results(
             if actual_statistics != expected_statistics:
                 raise ValueError(f"{qualified_name} statistics do not match values")
             export_cells = _checked_export_cells(export_cells, int(summary.values.size))
+
+    if metric is not None:
+        # A metric-ranked export compares the configs' final-value summaries,
+        # each averaged over min(100, n_steps) steps by aggregate_metrics; the
+        # comparison is only meaningful when that window agrees across configs.
+        common_final_window(
+            {
+                name: int(aggregate.metric_arrays[metric].shape[1])
+                for name, aggregate in results.items()
+            },
+            100,
+            metric,
+        )
 
 
 def _write_text_atomically(filepath: Path, payload: str) -> None:
@@ -723,6 +736,7 @@ def save_experiment_report(
     experiment_name: str,
     significance_results: dict[tuple[str, str], "SignificanceResult"] | None = None,
     metric: str = "squared_error",
+    lower_is_better: bool = True,
 ) -> dict[str, Path]:
     """Save a complete experiment report with all artifacts.
 
@@ -732,6 +746,7 @@ def save_experiment_report(
         experiment_name: Name for the experiment (used in filenames)
         significance_results: Optional pairwise significance test results
         metric: Primary metric to report
+        lower_is_better: Whether lower primary metric values are better
 
     Returns:
         Dictionary mapping artifact type to file path
@@ -740,6 +755,7 @@ def save_experiment_report(
     output_dir = _require_path(output_dir, name="output_dir")
     experiment_name = _require_filename_component(experiment_name)
     _require_exact_str("metric", metric)
+    lower_is_better = _require_exact_bool("lower_is_better", lower_is_better)
     if significance_results is not None:
         _preflight_significance_results(significance_results)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -764,6 +780,7 @@ def save_experiment_report(
         metric=metric,
         caption=f"{experiment_name} Results",
         label=f"tab:{experiment_name}",
+        lower_is_better=lower_is_better,
     )
     _write_text_atomically(latex_path, latex_content)
     artifacts["latex_table"] = latex_path
@@ -774,6 +791,7 @@ def save_experiment_report(
         results,
         significance_results=significance_results,
         metric=metric,
+        lower_is_better=lower_is_better,
     )
     _write_text_atomically(md_path, md_content)
     artifacts["markdown_table"] = md_path

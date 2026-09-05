@@ -984,8 +984,10 @@ def _sample_sd(values: Sequence[float]) -> float:
     return math.sqrt(math.fsum((value - average) ** 2 for value in values) / (len(values) - 1))
 
 
-def _stderr(values: Sequence[float]) -> float:
-    return _sample_sd(values) / math.sqrt(len(values)) if values else 0.0
+def _stderr(values: Sequence[float]) -> float | None:
+    if len(values) < 2:
+        return None
+    return _sample_sd(values) / math.sqrt(len(values))
 
 
 def _paired_lcb(values: Sequence[float]) -> float | None:

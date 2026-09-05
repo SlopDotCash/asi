@@ -602,6 +602,24 @@ class TestPairedTests:
         # every a_i < b_i: effect size sign must reflect a < b
         assert res.effect_size < 0.0
 
+    def test_paired_ttest_effect_size_uses_within_pair_differences(self) -> None:
+        # Large shared between-seed variation with a small, consistent
+        # per-seed shift: pooled Cohen's d (wrong for paired data) is nearly
+        # zero because the shared variation dominates its denominator, while
+        # the correct paired d_z -- computed from the differences, where the
+        # shared variation cancels -- is large.
+        a = np.asarray([101.0, 202.0, 303.0, 404.0])
+        b = np.asarray([100.0, 200.0, 300.0, 400.0])
+        differences = a - b
+
+        res = ttest_comparison(a, b, paired=True)
+
+        assert res.effect_size == pytest.approx(
+            float(np.mean(differences) / np.std(differences, ddof=1))
+        )
+        assert abs(res.effect_size) > 1.0
+        assert abs(cohens_d(a, b)) < 0.1
+
     def test_paired_ttest_rejects_identical_samples(self) -> None:
         values = [0.91, 0.88, 0.95]
         with pytest.raises(
@@ -663,12 +681,66 @@ class TestIdenticalWilcoxonRejection:
                 )
 
     def test_constant_nonzero_shift_stays_defined(self) -> None:
+        # A rank statistic stays finite for a constant per-pair shift, so the
+        # effect size beside it must stay finite too or the result cannot be
+        # exported. Wilcoxon therefore keeps pooled Cohen's d rather than d_z,
+        # whose denominator is zero for exactly this input.
         result = wilcoxon_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
 
         assert result.test_name == "Wilcoxon signed-rank"
         assert result.statistic == pytest.approx(0.0)
         assert result.p_value < 1.0
         assert result.effect_size == cohens_d([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        assert np.isfinite(result.effect_size)
+
+    def test_constant_shift_wilcoxon_survives_the_significance_export_path(
+        self,
+    ) -> None:
+        # A producer-only assertion is not enough: every public significance
+        # export path runs _preflight_significance_results, which refuses a
+        # non-finite effect size. This sends the constant-shift result through
+        # the supported table generator so the producer and exporter contracts
+        # cannot drift apart again.
+        from alberta_framework.utils.export import generate_significance_table
+
+        result = wilcoxon_comparison([1.0, 2.0, 3.0], [0.5, 1.5, 2.5])
+        results = {(result.method_a, result.method_b): result}
+
+        for table_format in ("markdown", "latex"):
+            table = generate_significance_table(results, format=table_format)
+            assert isinstance(table, str)
+            assert table
+            assert "inf" not in table.lower()
+
+    def test_zero_difference_variance_effect_size_agrees_with_the_statistic(
+        self,
+    ) -> None:
+        # A perfectly consistent shift has zero difference variance, so the
+        # paired t statistic is itself infinite. Reporting a finite effect size
+        # beside an infinite statistic would disagree with the test the effect
+        # size accompanies, so d_z carries the same signed infinity.
+        for values_a, values_b, sign in (
+            ([2.0, 3.0, 4.0], [1.0, 2.0, 3.0], 1.0),
+            ([1.0, 2.0, 3.0], [2.0, 3.0, 4.0], -1.0),
+        ):
+            result = ttest_comparison(np.asarray(values_a), np.asarray(values_b), paired=True)
+
+            assert np.isinf(result.statistic)
+            assert np.isinf(result.effect_size)
+            assert np.sign(result.statistic) == sign
+            assert np.sign(result.effect_size) == sign
+            # Never NaN: the sign of the shift stays readable.
+            assert not np.isnan(result.effect_size)
+
+    def test_zero_difference_variance_with_equal_means_is_zero(self) -> None:
+        # Zero difference variance AND a zero mean difference is a genuine null,
+        # not an infinite effect, so it must stay finite.
+        result = ttest_comparison(
+            np.asarray([1.0, 2.0, 5.0]), np.asarray([1.0, 3.0, 4.0]), paired=True
+        )
+
+        assert result.effect_size == 0.0
+        assert np.isfinite(result.effect_size)
 
 
 class TestOneSampleRejection:
@@ -1179,3 +1251,55 @@ class TestPairwiseComparisons:
     def test_common_final_window_requires_positive_integer(self, window: object) -> None:
         with pytest.raises(ValueError, match="window must be a positive integer"):
             common_final_window({"learner": 10}, window, "squared_error")
+
+
+class TestProbabilityPrecision:
+    """Stored p-values and alphas keep full float64 precision.
+
+    p-values are measurement outputs and alpha is a preregistered decision
+    threshold; neither has a float32 consumer, so narrowing them to binary32
+    corrupts the recorded artifact (anything below ~1.4e-45 flushes to an
+    impossible exact 0) and makes verdicts depend on the host container type
+    of the same real number.
+    """
+
+    def test_ttest_p_value_matches_scipy_exactly(self) -> None:
+        scipy_stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(11)
+        x = rng.normal(0.0, 1.0, 20)
+        y = x + 0.9 + rng.normal(0.0, 0.05, 20)
+        expected = float(scipy_stats.ttest_rel(x, y).pvalue)
+        result = ttest_comparison(x, y, paired=True)
+        assert result.p_value == expected
+
+    def test_extreme_p_value_is_not_flushed_to_zero(self) -> None:
+        scipy_stats = pytest.importorskip("scipy.stats")
+        rng = np.random.default_rng(20260823)
+        a = 0.010 + rng.normal(0.0, 0.00008, 20)
+        b = 0.500 + rng.normal(0.0, 0.00080, 20)
+        expected = float(scipy_stats.ttest_rel(a, b).pvalue)
+        assert 0.0 < expected < 1e-45
+        result = ttest_comparison(a, b, paired=True)
+        assert result.p_value == expected
+        assert result.p_value > 0.0
+
+    def test_alpha_is_recorded_exactly(self) -> None:
+        result = ttest_comparison(
+            np.asarray([1.0, 2.0, 4.0, 8.0]),
+            np.asarray([1.5, 2.5, 3.5, 6.0]),
+            paired=True,
+            alpha=np.float64(0.01),
+        )
+        assert result.alpha == 0.01
+
+    @pytest.mark.parametrize("correction", [bonferroni_correction, holm_correction])
+    def test_correction_verdicts_do_not_depend_on_host_container(
+        self, correction: Any
+    ) -> None:
+        boundary = 0.016666666666666663
+        assert boundary < 0.05 / 3
+        from_double = correction([np.float64(boundary)] * 3, alpha=0.05)
+        from_builtin = correction([boundary] * 3, alpha=0.05)
+        assert from_double == from_builtin
+        significant = from_double[0] if correction is bonferroni_correction else from_double
+        assert list(significant) == [True, True, True]

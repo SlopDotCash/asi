@@ -189,8 +189,8 @@ def _canonical_hidden_sizes(
     observation_dim: int,
     n_actions: int,
 ) -> tuple[int, ...]:
-    if not isinstance(value, (tuple, list)):
-        raise ValueError("hidden_sizes must be a bounded tuple or list")
+    if type(value) is not tuple and type(value) is not list:
+        raise ValueError("hidden_sizes must be an exact tuple or list")
     if len(value) > _MAX_HIDDEN_LAYERS:
         raise ValueError(f"hidden_sizes must contain at most {_MAX_HIDDEN_LAYERS} layers")
     hidden_sizes = tuple(value)

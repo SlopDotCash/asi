@@ -464,7 +464,7 @@ class _FloatSpoof:
         ({"max_delta_scale": 1e100}, "max_delta_scale must remain finite once narrowed"),
         ({"reward_scale": 1e-100}, "reward_scale must remain positive once narrowed"),
         ({"max_delta_scale": 1e-100}, "max_delta_scale must remain positive once narrowed"),
-        ({"observation_scale": (1e-100, 1.0)}, "must remain positive once narrowed"),
+        ({"observation_scale": (1e-100, 1.0)}, r"must be >= 1\.1754943508222875e-38"),
         (
             {"utility_decay": 1.0 - 1e-10},
             r"utility_decay must remain in \[0.0, 1.0\) once narrowed",
@@ -955,3 +955,26 @@ def test_action_world_model_rolls_back_reduction_overflow() -> None:
     assert not bool(result.update_applied)
     assert float(result.observation_mse) == 0.0
     assert int(result.state.step_count) == 0
+
+
+def test_action_world_model_observation_scale_targets_paired_with_decode() -> None:
+    """Target normalization uses exact scale so decoded predictions match true delta."""
+    for scale in (1.0, 1e-3, 1e-6, 1e-7, 1e-9, 1e-12, 1e-20):
+        config = ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            hidden_sizes=(),
+            step_size=0.05,
+            use_layer_norm=False,
+            predict_delta=True,
+            observation_scale=(scale,),
+        )
+        model = ActionConditionedWorldModel(config)
+        obs = jnp.asarray([1.0 * scale], dtype=jnp.float32)
+        next_obs = jnp.asarray([3.0 * scale], dtype=jnp.float32)
+        reward = jnp.asarray(0.0, dtype=jnp.float32)
+        discount = jnp.asarray(1.0, dtype=jnp.float32)
+
+        # Target normalized delta must be 2.0 exactly
+        targets = model.targets(obs, reward, discount, next_obs)
+        np.testing.assert_allclose(float(targets[0]), 2.0, rtol=1e-5)

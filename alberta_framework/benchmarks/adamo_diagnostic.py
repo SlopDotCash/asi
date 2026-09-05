@@ -113,6 +113,9 @@ def _diagnostic(params: Mapping[str, Array], sentinel: Array) -> dict[str, float
     singular = np.asarray(jnp.linalg.svd(jacobian, compute_uv=False), dtype=np.float64)
     minimum = float(np.min(singular))
     maximum = float(np.max(singular))
+    condition_number = (
+        1e12 if minimum == 0.0 else min(maximum / minimum, 1e12)
+    )
     rms_deviation = float(np.sqrt(np.mean(np.square(singular - 1.0))))
     gram_penalty = 0.0
     for value in materialized.values():
@@ -124,7 +127,7 @@ def _diagnostic(params: Mapping[str, Array], sentinel: Array) -> dict[str, float
         "jacobian_min_singular_value": minimum,
         "jacobian_max_singular_value": maximum,
         "jacobian_mean_singular_value": float(np.mean(singular)),
-        "jacobian_condition_number_clipped_1e12": maximum / max(minimum, 1e-12),
+        "jacobian_condition_number_clipped_1e12": condition_number,
         "jacobian_rms_distance_from_one": rms_deviation,
         "weight_gram_penalty": gram_penalty,
     }

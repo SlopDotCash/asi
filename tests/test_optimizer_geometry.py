@@ -334,6 +334,86 @@ def test_geometry_float32_overflow_is_invalid_not_laundered() -> None:
     assert not bool(dual_valid)
 
 
+def _floor_probe_matrix() -> jax.Array:
+    return jnp.array([[2.0, 1.0], [0.5, -1.0]], dtype=jnp.float32)
+
+
+@pytest.mark.parametrize("scale", [1e-13, 1e-15, 1e-20, 1e-25, 1e-30])
+def test_spectral_matrix_sign_is_scale_invariant_below_the_frobenius_floor(scale: float) -> None:
+    reference = _floor_probe_matrix()
+    tiny = reference * jnp.asarray(scale, dtype=jnp.float32)
+    sign, valid = spectral_matrix_sign_transaction(tiny, steps=5)
+    assert bool(valid)
+    np.testing.assert_allclose(sign, spectral_matrix_sign(reference, steps=5), rtol=1e-6)
+
+
+@pytest.mark.parametrize("exponent", [-120, -80, -45, 40])
+def test_spectral_matrix_sign_is_exactly_invariant_to_power_of_two_rescaling(
+    exponent: int,
+) -> None:
+    reference = _floor_probe_matrix()
+    np.testing.assert_array_equal(
+        spectral_matrix_sign(jnp.ldexp(reference, exponent), steps=5),
+        spectral_matrix_sign(reference, steps=5),
+    )
+
+
+def test_spectral_matrix_sign_below_the_floor_stays_orthogonal() -> None:
+    tiny = _floor_probe_matrix() * jnp.asarray(1e-20, dtype=jnp.float32)
+    assert 0.0 <= float(jnp.linalg.norm(tiny)) < 1e-12
+    assert float(jnp.max(jnp.abs(tiny))) > 0.0
+    sign, valid = spectral_matrix_sign_transaction(tiny, steps=5)
+    assert bool(valid)
+    singular = np.linalg.svd(np.asarray(sign, dtype=np.float64), compute_uv=False)
+    np.testing.assert_allclose(singular, np.ones_like(singular), rtol=1e-3)
+
+
+def test_spectral_matrix_sign_gradient_is_finite_below_the_frobenius_floor() -> None:
+    tiny = _floor_probe_matrix() * jnp.asarray(1e-25, dtype=jnp.float32)
+    jacobian = jax.jacrev(spectral_matrix_sign)(tiny)
+    assert bool(jnp.all(jnp.isfinite(jacobian)))
+
+
+def test_jit_spectral_matrix_sign_is_scale_invariant_below_the_floor() -> None:
+    reference = _floor_probe_matrix()
+    jitted = jax.jit(spectral_matrix_sign)
+    tiny = reference * jnp.asarray(1e-25, dtype=jnp.float32)
+    np.testing.assert_allclose(jitted(tiny), jitted(reference), rtol=1e-6)
+
+
+def test_muon_ogd_empty_constraints_reduces_to_ns5_below_the_floor() -> None:
+    reference = _floor_probe_matrix()
+    tiny = reference * jnp.asarray(1e-25, dtype=jnp.float32)
+    update, dual = muon_ogd_dual_update(
+        tiny,
+        jnp.zeros((0, 2, 2), dtype=jnp.float32),
+        jnp.zeros((0,), dtype=jnp.float32),
+        dual_learning_rate=0.25,
+        dual_steps=2,
+    )
+    np.testing.assert_array_equal(dual, jnp.zeros((0,), dtype=jnp.float32))
+    np.testing.assert_allclose(update, spectral_matrix_sign(reference), rtol=1e-6)
+
+
+def test_spectral_matrix_sign_zero_matrix_stays_exactly_zero_and_valid() -> None:
+    zero = jnp.zeros((3, 2), dtype=jnp.float32)
+    sign, valid = spectral_matrix_sign_transaction(zero, steps=5)
+    np.testing.assert_array_equal(sign, zero)
+    assert bool(valid)
+
+
+@pytest.mark.parametrize("dtype", [jnp.float16, jnp.bfloat16])
+def test_spectral_matrix_sign_narrow_dtype_below_the_floor_is_orthogonal(
+    dtype: jnp.dtype,
+) -> None:
+    tiny = (_floor_probe_matrix() * jnp.asarray(2.0**-20, dtype=jnp.float32)).astype(dtype)
+    sign, valid = spectral_matrix_sign_transaction(tiny, steps=5)
+    assert bool(valid)
+    assert sign.dtype == tiny.dtype
+    singular = np.linalg.svd(np.asarray(sign, dtype=np.float64), compute_uv=False)
+    np.testing.assert_allclose(singular, np.ones_like(singular), rtol=1e-2)
+
+
 def test_geometry_runner_rejects_invalid_transactions(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "alberta_framework.evaluation.optimizer_geometry._frozen_stream",
@@ -461,3 +541,26 @@ def test_geometry_magnitude_witness_sees_what_the_arithmetic_loses(
     for zero in (jnp.zeros((2, 2), dtype=entries.dtype), jnp.full((2, 2), dtype(-0.0))):
         assert not bool(_nonzero_magnitude_bits(zero))
         assert not bool(jax.jit(_nonzero_magnitude_bits)(zero))
+
+
+def test_flad_noise_component_scale_freedom() -> None:
+    delta = np.array([1.0, -2.0, 0.5, 3.0], dtype=np.float32)
+    grad = np.array([2.0, 1.0, -1.0, 0.5], dtype=np.float32)
+
+    # Reference projection in float64
+    d_f64 = np.asarray(delta, dtype=np.float64)
+    g_f64 = np.asarray(grad, dtype=np.float64)
+    ref = d_f64 - g_f64 * (float(g_f64 @ d_f64) / float(g_f64 @ g_f64))
+
+    for scale in (1.0, 1e-10, 1e-20, 1e-30):
+        scaled_grad = jnp.asarray(grad * np.float32(scale))
+        safe, valid = jax.jit(flad_noise_component_transaction)(jnp.asarray(delta), scaled_grad)
+        assert bool(valid)
+        np.testing.assert_allclose(np.asarray(safe, dtype=np.float64), ref, rtol=1e-5, atol=1e-5)
+
+    # Zero gradient returns delta bit-identically
+    safe_zero, valid_zero = jax.jit(flad_noise_component_transaction)(
+        jnp.asarray(delta), jnp.zeros_like(scaled_grad)
+    )
+    assert bool(valid_zero)
+    np.testing.assert_array_equal(safe_zero, jnp.asarray(delta))
