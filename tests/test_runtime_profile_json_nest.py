@@ -8,10 +8,8 @@ shared 32-deep JSON ceiling before dumps.
 
 from __future__ import annotations
 
-import collections.abc
 import json
 import time
-from typing import Any
 
 import pytest
 from test_runtime_profile import _matched_gpu_profile
@@ -19,7 +17,6 @@ from test_runtime_profile import _matched_gpu_profile
 from alberta_framework.benchmarks.runtime_profile import (
     _JSON_MAX_DEPTH,
     _json_copy,
-    _require_bounded_json,
     validate_environment_runtime_profile,
 )
 
