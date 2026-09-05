@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -155,15 +157,33 @@ def test_sparse_init_accepts_valid_init_types() -> None:
     assert w_normal.shape == (4, 4)
 
 
-def test_sparse_init_preflight_without_allocation() -> None:
+def test_sparse_init_preflight_without_allocation(monkeypatch: pytest.MonkeyPatch) -> None:
+    class AllocationReachedError(Exception):
+        pass
+
+    requested_shapes: list[tuple[int, int]] = []
+
+    def stop_at_allocation(
+        key: object, shape: tuple[int, int], **kwargs: object
+    ) -> NoReturn:
+        requested_shapes.append(shape)
+        assert kwargs["dtype"] == jnp.float32
+        raise AllocationReachedError
+
+    # Test the byte boundary without constructing a roughly 2 GiB matrix and
+    # its initialization intermediates. Real small-shape initialization stays
+    # covered by the tests above; this test isolates the allocation preflight.
+    monkeypatch.setattr(jr, "uniform", stop_at_allocation)
     key = jr.key(0)
-    # Large dims that would overflow int32 bytes
-    with pytest.raises(ValueError, match="byte count"):
-        sparse_init(key, (_INT32_MAX, 2))
-    with pytest.raises(ValueError, match="byte count"):
-        sparse_init(key, (50000, 50000))
-    # Legal edge passes
-    legal = _INT32_MAX // 4
-    dim = int(legal**0.5)
-    weights = sparse_init(key, (dim, dim))
-    assert weights.shape == (dim, dim)
+    max_elements = _INT32_MAX // np.dtype(np.float32).itemsize
+    for invalid_shape in ((_INT32_MAX, 2), (50_000, 50_000), (1, max_elements + 1)):
+        with pytest.raises(ValueError, match="byte count"):
+            sparse_init(key, invalid_shape)
+    assert requested_shapes == []
+
+    # The exact last representable element count passes validation and reaches
+    # the allocator with the requested shape, while one more was rejected.
+    last_fit_shape = (1, max_elements)
+    with pytest.raises(AllocationReachedError):
+        sparse_init(key, last_fit_shape)
+    assert requested_shapes == [last_fit_shape]
