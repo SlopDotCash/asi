@@ -301,6 +301,17 @@ def test_receipt_derives_metrics_and_disclaims_unverifiable_digests() -> None:
     validate_bimu_result(reported_identity)
 
 
+def test_validator_binds_zero_threshold_to_all_label_queries() -> None:
+    payload = run_bimu_development(*_tiny_data(), config=_tiny_config(), seed=37)
+    forged = deepcopy(payload)
+    forged["counters"]["label_queries"] = 0
+    forged["counters"]["optimizer_updates"] = 0
+    forged["counters"]["model_forward_queries"] = 90
+
+    with pytest.raises(ValueError, match="zero query threshold"):
+        validate_bimu_result(forged)
+
+
 @pytest.mark.parametrize(
     ("path", "value"),
     [
