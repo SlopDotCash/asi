@@ -30,6 +30,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.core.prototype_agent import PrototypeAgentConfig
 from alberta_framework.prototype_reference_adapter import (
     PrototypeReferenceAdapter,
@@ -80,6 +81,9 @@ _SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9._:-]*$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PROTOTYPE_LIFECYCLE = re.compile(r"^prototype\.[0-9a-f]{16}$")
 _MAX_ID_LENGTH = 256
+# Same ceiling as reference_agent string-fed JSON. Origin json.loads
+# RecursionErrors a 16_000-deep object nest before life-config schema runs.
+_MAX_JSON_NESTING_DEPTH = 64
 _MAX_SWITCHING_EXECUTIONS = int(np.iinfo(np.int32).max)
 RIVERSWIM_REFERENCE_MAX_STATES = 12
 _CheckpointPublishResult = TypeVar("_CheckpointPublishResult")
@@ -135,6 +139,33 @@ def _require_prototype_lifecycle_id(value: str) -> None:
         )
 
 
+def _require_config_json(raw: object, *, name: str) -> str:
+    """Reject nesting that would RecursionError json.loads before it runs."""
+    if type(raw) is not str:
+        raise ValueError(f"{name} must be canonical JSON")
+    try:
+        require_json_text_nesting(
+            raw,
+            max_depth=_MAX_JSON_NESTING_DEPTH,
+            name=name,
+        )
+    except ValueError as exc:
+        if "nesting limit" not in str(exc):
+            raise
+        raise ValueError(f"{name} exceeds the JSON nesting limit") from exc
+    return raw
+
+
+def _load_config_json(raw: object, *, name: str) -> Any:
+    text = _require_config_json(raw, name=name)
+    try:
+        return json.loads(text)
+    except RecursionError as exc:
+        raise ValueError(f"{name} exceeds the JSON nesting limit") from exc
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{name} must be canonical JSON") from exc
+
+
 def _canonical_json(value: Mapping[str, Any]) -> str:
     try:
         encoded = json.dumps(
@@ -144,9 +175,11 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
             separators=(",", ":"),
             sort_keys=True,
         )
+    except RecursionError as exc:
+        raise ValueError("reference-life configuration exceeds the JSON nesting limit") from exc
     except (TypeError, ValueError) as exc:
         raise ValueError("reference-life configuration must be canonical finite JSON") from exc
-    decoded = json.loads(encoded)
+    decoded = _load_config_json(encoded, name="reference-life configuration")
     if not isinstance(decoded, dict):
         raise ValueError("reference-life configuration must be a JSON object")
     return encoded
@@ -287,7 +320,7 @@ class ReferenceEnvironmentManifest:
             "implementation_id": implementation_id,
             "state_schema": state_schema,
             "config_sha256": config_sha256,
-            "config": json.loads(config_json),
+            "config": _load_config_json(config_json, name="environment config"),
             "observation_spec": _space_descriptor(observation_spec),
             "action_spec": _space_descriptor(action_spec),
             "max_executions": max_executions,
@@ -306,7 +339,7 @@ class ReferenceEnvironmentManifest:
 
     @property
     def config(self) -> dict[str, Any]:
-        value = json.loads(self._config_json)
+        value = _load_config_json(self._config_json, name="environment config")
         assert isinstance(value, dict)
         return value
 
@@ -685,6 +718,30 @@ class ReferenceLifeMetricsAdapter:
             current_segment_regret=segment_regret + regret,
             first_completed_segment_reward=first,
             latest_completed_segment_reward=latest,
+        )
+
+    def complete_current_segment(
+        self,
+        state: ReferenceLifeMetricsState,
+    ) -> ReferenceLifeMetricsState:
+        """Record the current switching segment when the life ends on its boundary."""
+
+        if state.config_sha256 != self.config.config_sha256:
+            raise DecisionOwnershipError("metrics state config mismatch")
+        if self.config.mode != "switching_two_phase":
+            return state
+        phase = state.current_phase
+        first = state.first_completed_segment_reward
+        if first[phase] is None:
+            first = _replace_tuple_value(first, phase, state.current_segment_reward)
+        return dataclasses.replace(
+            state,
+            first_completed_segment_reward=first,
+            latest_completed_segment_reward=_replace_tuple_value(
+                state.latest_completed_segment_reward,
+                phase,
+                state.current_segment_reward,
+            ),
         )
 
 
@@ -1551,7 +1608,7 @@ class ReferenceLifeConfig:
 
     @property
     def config(self) -> dict[str, Any]:
-        value = json.loads(self._config_json)
+        value = _load_config_json(self._config_json, name="life configuration")
         assert isinstance(value, dict)
         return value
 
@@ -2310,6 +2367,36 @@ class ReferenceLifeRunner:
         )
         return jr.fold_in(root, cursor)
 
+    def _observe_metrics(
+        self,
+        metrics: ReferenceLifeMetricsState,
+        *,
+        phase: int,
+        reward: float,
+        oracle_reward: float,
+        parameters_changed: bool,
+        next_accepted_events: int,
+    ) -> ReferenceLifeMetricsState:
+        observed = self._metrics_adapter.observe(
+            metrics,
+            phase=phase,
+            reward=reward,
+            oracle_reward=oracle_reward,
+            parameters_changed=parameters_changed,
+        )
+        if self._metrics_adapter.config.mode != "switching_two_phase":
+            return observed
+        phase_length = cast(
+            int,
+            self._environment_adapter.manifest.config["phase_length"],
+        )
+        if (
+            next_accepted_events == self.config.max_accepted_events
+            and observed.current_segment_events == phase_length
+        ):
+            return self._metrics_adapter.complete_current_segment(observed)
+        return observed
+
     def _validate_accepted_agent_update(
         self,
         update: ReferenceAgentUpdate,
@@ -3020,13 +3107,15 @@ class ReferenceLifeRunner:
                         ),
                     )
 
+            next_accepted_events = state.accepted_events + 1
             try:
-                metrics = self._metrics_adapter.observe(
+                metrics = self._observe_metrics(
                     state.metrics,
                     phase=execution.regime_id,
                     reward=transaction.reward,
                     oracle_reward=execution.oracle_reward,
                     parameters_changed=update.parameters_changed,
+                    next_accepted_events=next_accepted_events,
                 )
             except Exception as exc:
                 reason = f"metric update rejected retained outcome: {exc}"
@@ -3074,7 +3163,6 @@ class ReferenceLifeRunner:
                     transcript_sha256=transcript_sha256,
                     reason=f"post-execution transaction acceptance failed: {exc}",
                 )
-            next_accepted_events = state.accepted_events + 1
             phase = (
                 LifePhase.COMPLETED
                 if next_accepted_events == self.config.max_accepted_events
@@ -3222,13 +3310,15 @@ class ReferenceLifeRunner:
                     reason=f"accepted agent update failed recovery validation: {exc}",
                 )
 
+            next_accepted_events = state.accepted_events + 1
             try:
-                metrics = self._metrics_adapter.observe(
+                metrics = self._observe_metrics(
                     state.metrics,
                     phase=pending.regime_id,
                     reward=transaction.reward,
                     oracle_reward=pending.oracle_reward,
                     parameters_changed=update.parameters_changed,
+                    next_accepted_events=next_accepted_events,
                 )
             except (DecisionOwnershipError, RuntimeError, TypeError, ValueError) as exc:
                 reason = f"metric recovery rejected retained outcome: {exc}"
@@ -3243,7 +3333,6 @@ class ReferenceLifeRunner:
                 next_decision=update.next_decision,
                 parameters_changed=update.parameters_changed,
             )
-            next_accepted_events = state.accepted_events + 1
             phase = (
                 LifePhase.COMPLETED
                 if next_accepted_events == self.config.max_accepted_events

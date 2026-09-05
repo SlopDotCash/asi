@@ -43,6 +43,15 @@ def test_end_to_end_slice_has_metrics_information_contract_and_exact_receipts() 
     assert task_control.candidate_eligible is False
 
 
+def test_candidate_evaluation_tie_break_does_not_receive_task_identity() -> None:
+    result = run_cora_development(
+        seed=FROZEN_SEEDS[0], steps_per_task=1, replay_capacity=2
+    )
+
+    for arm in result.arms[:2]:
+        assert arm.evaluation_matrix[0] in ((1.0, 0.0, 1.0), (0.0, 1.0, 0.0))
+
+
 def test_jit_and_eager_update_paths_match_except_timing() -> None:
     compiled = run_cora_development(seed=FROZEN_SEEDS[1], steps_per_task=1)
     with jax.disable_jit():

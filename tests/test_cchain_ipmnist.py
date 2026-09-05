@@ -256,6 +256,8 @@ def test_full_logit_ntk_diagnostics_are_bounded_and_jittable() -> None:
     assert 0 <= int(eager["ntk_threshold_rank"]) <= 8
     assert float(eager["ntk_off_diagonal_abs_mean"]) >= 0.0
     assert float(eager["ntk_diagonal_mean"]) >= 0.0
+    eager_full = cchain_ntk_diagnostics(_params(), examples, energy_threshold=1.0)
+    assert 0 <= int(eager_full["ntk_threshold_rank"]) <= 8
     with pytest.raises(ValueError, match="1..4"):
         cchain_ntk_diagnostics(_params(), jnp.zeros((5, 4), dtype=jnp.float32))
 

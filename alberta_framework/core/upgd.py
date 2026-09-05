@@ -1983,24 +1983,65 @@ class UPGDLearner:
         return total
 
     @staticmethod
+    def _unit_tuple(xs: tuple[Array, ...]) -> tuple[tuple[Array, ...], Array]:
+        """Normalize a static tuple of arrays to unit L2 norm via power-of-two rescaling."""
+        if not xs:
+            return (), jnp.array(False)
+        peak = functools.reduce(
+            jnp.maximum,
+            (jnp.max(jnp.abs(x)) if x.size > 0 else jnp.array(0.0, dtype=jnp.float32) for x in xs),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        is_valid_peak = jnp.isfinite(peak) & (peak > 0.0)
+        _, exponent = jnp.frexp(peak)
+        safe_exp = jnp.where(is_valid_peak, exponent, jnp.int32(0))
+        xs_scaled = tuple(jnp.ldexp(x, -safe_exp) for x in xs)
+        scaled_sum_sq = functools.reduce(
+            operator.add,
+            (jnp.sum(jnp.square(xr)) for xr in xs_scaled),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        scaled_norm = jnp.sqrt(scaled_sum_sq)
+        is_valid = is_valid_peak & jnp.isfinite(scaled_norm) & (scaled_norm > 0.0)
+        safe_norm = jnp.where(is_valid, scaled_norm, jnp.float32(1.0))
+        unit_xs = tuple(jnp.where(is_valid, xr / safe_norm, jnp.zeros_like(xr)) for xr in xs_scaled)
+        return unit_xs, is_valid
+
+    @staticmethod
     def _tuple_norm(xs: tuple[Array, ...]) -> Array:
-        """L2 norm over a static tuple of arrays."""
-        total = jnp.array(0.0, dtype=jnp.float32)
-        for x in xs:
-            total = total + jnp.sum(jnp.square(x))
-        return jnp.sqrt(total + 1e-12)
+        """L2 norm over a static tuple of arrays with power-of-two rescaling."""
+        if not xs:
+            return jnp.array(0.0, dtype=jnp.float32)
+        peak = functools.reduce(
+            jnp.maximum,
+            (jnp.max(jnp.abs(x)) if x.size > 0 else jnp.array(0.0, dtype=jnp.float32) for x in xs),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        is_valid_peak = jnp.isfinite(peak) & (peak > 0.0)
+        _, exponent = jnp.frexp(peak)
+        safe_exp = jnp.where(is_valid_peak, exponent, jnp.int32(0))
+        scaled_sum_sq = functools.reduce(
+            operator.add,
+            (jnp.sum(jnp.square(jnp.ldexp(x, -safe_exp))) for x in xs),
+            jnp.array(0.0, dtype=jnp.float32),
+        )
+        scaled_norm = jnp.sqrt(scaled_sum_sq)
+        is_valid = is_valid_peak & jnp.isfinite(scaled_norm) & (scaled_norm > 0.0)
+        raw_norm = jnp.ldexp(scaled_norm, safe_exp)
+        return jnp.where(is_valid, raw_norm, jnp.array(0.0, dtype=jnp.float32))
 
     @staticmethod
     def _gradient_alignment(
         previous: tuple[Array, ...],
         current: tuple[Array, ...],
     ) -> Array:
-        """Cosine alignment of two gradient tuples, zero for empty gradients."""
-        previous_norm = UPGDLearner._tuple_norm(previous)
-        current_norm = UPGDLearner._tuple_norm(current)
+        """Cosine alignment of two gradient tuples, zero for empty or non-finite gradients."""
+        unit_prev, valid_prev = UPGDLearner._unit_tuple(previous)
+        unit_curr, valid_curr = UPGDLearner._unit_tuple(current)
+        dot = UPGDLearner._tuple_dot(unit_prev, unit_curr)
         return jnp.where(
-            (previous_norm > 1e-6) & (current_norm > 1e-6),
-            UPGDLearner._tuple_dot(previous, current) / (previous_norm * current_norm + 1e-12),
+            valid_prev & valid_curr,
+            jnp.clip(dot, -1.0, 1.0),
             jnp.array(0.0, dtype=jnp.float32),
         )
 

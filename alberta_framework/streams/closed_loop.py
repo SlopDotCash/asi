@@ -37,6 +37,7 @@ The state and config records are immutable chex dataclasses.
 from __future__ import annotations
 
 import itertools
+import math
 import operator
 from fractions import Fraction
 from numbers import Real
@@ -233,7 +234,28 @@ def _stationary_average_reward(
         The long-run average reward ``d @ step_rewards``.
     """
     n = transition.shape[0]
-    constraints = np.vstack([transition.T - np.eye(n), np.ones((1, n))])
+    kernel = np.asarray(transition, dtype=np.float64)
+    row_totals = np.array([math.fsum(row) for row in kernel], dtype=np.float64)
+    kernel = kernel / row_totals[:, None]
+
+    # Build the equivalent continuous-time generator from the categorical
+    # kernel's off-diagonal mass.  Forming ``P - I`` would subtract nearly
+    # equal float32 diagonal values and can overwhelm very small transition
+    # probabilities with rounding error.  The categorical sampler normalizes
+    # each stored row, so use those normalized off-diagonal weights directly
+    # and derive the diagonal from their sum.
+    generator = kernel.copy()
+    np.fill_diagonal(generator, 0.0)
+    np.fill_diagonal(
+        generator,
+        [-math.fsum(row) for row in generator],
+    )
+
+    balance = generator.T
+    equation_scales = np.max(np.abs(balance), axis=1)
+    nonzero_equations = equation_scales > 0.0
+    balance[nonzero_equations] /= equation_scales[nonzero_equations, None]
+    constraints = np.vstack([balance, np.ones((1, n))])
     targets = np.zeros(n + 1)
     targets[-1] = 1.0
     distribution, *_ = np.linalg.lstsq(constraints, targets, rcond=None)

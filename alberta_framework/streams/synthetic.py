@@ -167,6 +167,16 @@ def _require_finite_float32(name: str, value: object) -> float:
     return narrowed
 
 
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Return ``scale * value``, or exact zero where ``scale`` is zero.
+
+    A zero scale removes the term entirely, so it must contribute zero even
+    when ``value`` is non-finite.  Forming the raw product first turns
+    ``0 * inf`` into ``NaN``.
+    """
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 @chex.dataclass(frozen=True)
 class RandomWalkState:
     """State for RandomWalkStream.
@@ -932,6 +942,9 @@ class ScaledStreamWrapper:
             inner_stream: Stream to wrap (must implement ScanStream protocol)
             feature_scales: Array of scale factors, one per feature. Must have
                 shape (feature_dim,) matching the inner stream's feature_dim.
+                Values must be finite; a scale of exactly ``0.0`` suppresses
+                its channel and yields ``0.0`` regardless of what the wrapped
+                stream emitted there, including a non-finite feature.
 
         Raises:
             ValueError: If feature_scales length doesn't match inner stream's feature_dim
@@ -989,7 +1002,14 @@ class ScaledStreamWrapper:
         """
         timestep, new_inner_state = self._inner_stream.step(state.inner_state, idx)
 
-        scaled_observation = timestep.observation * self._feature_scales
+        # A zero scale suppresses the channel, so it must contribute exact
+        # zero even when the wrapped stream emits a non-finite feature.  The
+        # raw product turned that 0*inf into a NaN in a channel the caller
+        # asked to remove, and one NaN feature destroys every learner weight
+        # through the dot product.
+        scaled_observation = _skip_zero_scale(
+            self._feature_scales, timestep.observation
+        )
 
         scaled_timestep = TimeStep(
             observation=scaled_observation,

@@ -335,8 +335,20 @@ def sample_sigreg_directions(
         (cfg.n_projections, latent_dim),
         dtype=jnp.float32,
     )
+    # ``eps`` is a degeneracy floor, not a substitute denominator. Dividing a
+    # short Gaussian by ``eps`` silently returns a non-unit direction and
+    # changes the sliced SIGReg number. Renormalize after the floor so every
+    # returned row is a unit vector; exact-zero rows fall back to e_0.
+    eps = jnp.asarray(cfg.eps, dtype=jnp.float32)
     norms = jnp.linalg.norm(directions, axis=1, keepdims=True)
-    return directions / jnp.maximum(norms, jnp.asarray(cfg.eps, dtype=jnp.float32))
+    scaled = directions / jnp.maximum(norms, eps)
+    scaled_norms = jnp.linalg.norm(scaled, axis=1, keepdims=True)
+    # Second division uses the true scaled norm. Flooring it by ``eps``
+    # again would re-shorten any draw whose original norm is below ``eps``.
+    fallback = jnp.zeros_like(scaled).at[:, 0].set(1.0)
+    safe_scaled_norms = jnp.where(scaled_norms == 0.0, jnp.ones_like(scaled_norms), scaled_norms)
+    unit = scaled / safe_scaled_norms
+    return jnp.where(scaled_norms == 0.0, fallback, unit)
 
 
 def epps_pulley_gaussian_statistic(
