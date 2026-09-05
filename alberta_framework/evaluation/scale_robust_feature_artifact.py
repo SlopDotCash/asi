@@ -43,6 +43,7 @@ import jax
 import numpy as np
 from numpy.typing import NDArray
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.evaluation.scale_robust_feature import (
     ASYMPTOTIC_WINDOW_STEPS,
     CONDITION_LEGACY,
@@ -1587,36 +1588,15 @@ def _object_without_duplicates(
 _MAX_JSON_NESTING_DEPTH = 64
 
 
-def _scan_json_nesting(text: str) -> None:
-    """Reject nests that RecursionError ``json.loads`` before the parser runs."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-        if character == '"':
-            in_string = True
-        elif character in "[{":
-            depth += 1
-            if depth > _MAX_JSON_NESTING_DEPTH:
-                raise ValueError("JSON payload exceeds the nesting-depth limit")
-        elif character in "]}":
-            depth -= 1
-
 
 def load_evidence_artifact(path: Path) -> dict[str, object]:
     """Load strict JSON, rejecting duplicate keys, NaN/Infinity, and deep nests."""
 
     text = path.read_text(encoding="utf-8")
     try:
-        _scan_json_nesting(text)
+        require_json_text_nesting(
+            text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
+        )
     except ValueError as exc:
         raise ValueError(f"{path}: {exc}") from exc
     try:
