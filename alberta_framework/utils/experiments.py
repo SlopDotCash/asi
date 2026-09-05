@@ -665,7 +665,7 @@ def get_final_performance(
         Dictionary mapping config name to ``(mean, sample_std)``. A one-seed
         aggregate reports zero spread.
 
-        Raises:
+    Raises:
         ValueError: If ``window`` is not positive, a metric array has no
             time steps, any metric sample is non-finite, or ``window`` exceeds
             the shortest trace while trace lengths differ between methods.

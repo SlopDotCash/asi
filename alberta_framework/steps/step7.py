@@ -877,18 +877,28 @@ def _propagate_predecessor_priorities(
     td_error: Array,
     propagation_scale: float,
 ) -> Array:
-    """Propagate backup priority to predecessor transitions in the queue."""
+    """Propagate backup priority to predecessor transitions in the queue.
+
+    ``propagation_scale`` is a validated non-negative real, so ``0.0``
+    (propagation disabled) is admissible, while ``td_error`` comes from an
+    unclamped imagined rollout and can be non-finite.  The scale is skipped
+    at exactly zero: the raw ``0 * inf`` produced ``NaN``, and because
+    ``jnp.maximum`` propagates ``NaN`` that wrote ``NaN`` over every live
+    queue priority — so disabling propagation destroyed the queue instead
+    of leaving it alone.
+    """
     memory_size = memory_priorities.shape[0]
     valid = jnp.arange(memory_size, dtype=jnp.int32) < memory_count
     predecessor_distance = jnp.mean(
         (memory_next_observations - anchor_observation[None, :]) ** 2,
         axis=1,
     )
-    propagated = (
-        jnp.asarray(propagation_scale, dtype=jnp.float32)
-        * jnp.abs(td_error)
-        / (1.0 + predecessor_distance)
-    )
+    scale = jnp.asarray(propagation_scale, dtype=jnp.float32)
+    magnitude = jnp.abs(td_error)
+    # Keep the original (scale * |td|) / (1 + d) association so a non-zero
+    # scale stays bit-exact; only the zero-scale lane is short-circuited.
+    scaled = jnp.where(scale == 0.0, jnp.zeros_like(magnitude), scale * magnitude)
+    propagated = scaled / (1.0 + predecessor_distance)
     return jnp.where(valid, jnp.maximum(memory_priorities, propagated), memory_priorities)
 
 

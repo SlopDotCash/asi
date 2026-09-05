@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 
+from alberta_framework._strict_json import load_strict_json_object_from_text
+
 SCHEMA = "asi.clear.qualification.v1"
 PROSPECTIVE_ASSET_SCHEMA = "asi.clear100.prospective-assets.v1"
 PAPER_REVISION = "arXiv:2201.06289v3"
@@ -197,8 +199,15 @@ def _decode(raw: bytes, *, limit: int, label: str) -> Mapping[str, object]:
     if len(raw) > limit:
         raise ClearQualificationError(f"{label} exceeds its byte limit")
     try:
-        value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ClearQualificationError(f"{label} is not valid JSON") from exc
+    try:
+        value = load_strict_json_object_from_text(text, label=label)
+    except ValueError as exc:
+        detail = str(exc)
+        if "nesting-depth" in detail or "recursion" in detail:
+            raise ClearQualificationError(detail) from exc
         raise ClearQualificationError(f"{label} is not valid JSON") from exc
     return _object(value, label)
 
