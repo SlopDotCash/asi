@@ -1161,7 +1161,9 @@ def test_counters_and_welford_moments_saturate_without_wrap_eager_or_jit() -> No
         _assert_tree_finite(result)
 
 
-def test_action_sampling_uses_tempered_logits_directly() -> None:
+def test_action_sampling_uses_high_dynamic_range_tempered_logits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     config = _small_config(temperature=0.37)
     agent = RecurrentTraceActorCriticAgent(config)
     state = agent.init(feature_dim=2, key=jr.key(33))
@@ -1176,13 +1178,28 @@ def test_action_sampling_uses_tempered_logits_directly() -> None:
     )
     sampling_key = jr.key(34)
     state = state.replace(actor_params=actor_params, rng_key=sampling_key)
-    action, next_key, probabilities = agent.select_action(state)
+    original_categorical = jr.categorical
+    observed_modes: list[object] = []
+
+    def recording_categorical(
+        key: jax.Array,
+        sampling_logits: jax.Array,
+        **kwargs: object,
+    ) -> jax.Array:
+        observed_modes.append(kwargs.get("mode"))
+        return original_categorical(key, sampling_logits, **kwargs)
+
+    monkeypatch.setattr(jr, "categorical", recording_categorical)
+    with jax.disable_jit():
+        action, next_key, probabilities = agent.select_action(state)
     expected_key, sample_key = jr.split(sampling_key)
-    expected_action = jr.categorical(
+    expected_action = original_categorical(
         sample_key,
         logits / config.temperature,
+        mode="high",
     ).astype(jnp.int32)
 
+    assert observed_modes == ["high"]
     assert jnp.array_equal(action, expected_action)
     assert jnp.array_equal(jr.key_data(next_key), jr.key_data(expected_key))
     assert jnp.allclose(

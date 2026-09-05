@@ -474,6 +474,54 @@ def test_average_reward_actor_critic_behavior_policy_is_exact_epsilon_mixture() 
     )
 
 
+def test_average_reward_actor_sampling_preserves_reported_rare_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = AverageRewardHordeActorCriticAgent(
+        AverageRewardHordeActorCriticConfig(
+            n_actions=2,
+            hidden_sizes=(4,),
+            epsilon=0.0,
+        )
+    )
+    state = agent.init(2, jr.key(101)).replace(
+        actor_weights=jnp.zeros((2, 4), dtype=jnp.float32),
+        actor_bias=jnp.asarray((0.0, -20.0), dtype=jnp.float32),
+    )
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    observed_logits: list[jax.Array] = []
+    observed_modes: list[object] = []
+
+    def fake_categorical(
+        _key: jax.Array,
+        logits: jax.Array,
+        **kwargs: object,
+    ) -> jax.Array:
+        observed_logits.append(logits)
+        observed_modes.append(kwargs.get("mode"))
+        return jnp.asarray(1, dtype=jnp.int32)
+
+    monkeypatch.setattr(jr, "categorical", fake_categorical)
+    with jax.disable_jit():
+        started, action = agent.start(state, observation)
+        result = agent.update(
+            started,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            observation,
+        )
+    sample = started.last_policy_sample
+
+    assert int(action) == 1
+    assert observed_modes == ["high", "high"]
+    chex.assert_trees_all_close(
+        observed_logits[0],
+        jnp.log(sample.behavior_policy),
+    )
+    assert float(sample.behavior_policy[1]) < 1e-8
+    assert bool(result.update_applied)
+    assert float(result.actor_score_scale) == pytest.approx(1.0)
+
+
 @pytest.mark.parametrize("epsilon", [0.0, 0.3, 1.0])
 def test_average_reward_actor_critic_score_matches_mixture_derivative(
     epsilon: float,
