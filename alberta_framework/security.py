@@ -671,9 +671,13 @@ def coerce_security_action(action: object) -> SecurityAction:
         raise ValueError("security action must not be a boolean")
     if type(action) is SecurityAction:
         return action
-    if type(action) is int:
+    # Accept the same exact integer types as every other integer gate in this
+    # module. Gymnasium ``Discrete`` sampling and ``argmax`` over action values
+    # both hand callers a numpy integer, and ``to_security_gym_action`` already
+    # admits those types for ``risk_score``.
+    if any(type(action) is allowed for allowed in _ACTUAL_INT_TYPES):
         try:
-            return SecurityAction(action)
+            return SecurityAction(operator.index(cast(SupportsIndex, action)))
         except ValueError as exc:
             raise ValueError("unknown security action") from exc
     if type(action) is str:

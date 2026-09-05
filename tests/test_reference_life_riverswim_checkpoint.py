@@ -30,6 +30,7 @@ from alberta_framework.reference_life_checkpoint import (
     save_reference_life_checkpoint,
 )
 from alberta_framework.streams.closed_loop import RiverSwimConfig, RiverSwimMDP
+from tests._forager_matched_platform import requires_renameat2
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -189,6 +190,7 @@ def _rehash_bundle(path: Path) -> None:
     (path / "COMMITTED").write_text(f"{bundle_id}\n", encoding="ascii")
 
 
+@requires_renameat2
 def test_riverswim_quiescent_checkpoint_restores_exact_stochastic_continuation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
