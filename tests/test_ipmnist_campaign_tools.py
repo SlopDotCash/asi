@@ -829,7 +829,7 @@ def test_rule_discovery_summary_verdicts_follow_explicit_inputs(tmp_path: Path) 
     screen = tmp_path / "screen"
     for name in SCREEN_ARMS:
         accuracy = 0.95 if name == CHAMPION else 0.1
-        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=accuracy)
+        _rule_shard(screen / f"{name}_seed0.json", name=name, seed=0, accuracy=accuracy)
 
     summary = build_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
 
