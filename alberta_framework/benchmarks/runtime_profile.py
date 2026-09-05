@@ -111,7 +111,7 @@ def _json_container_children(node: object) -> tuple[object, ...] | None:
     if isinstance(node, Mapping):
         return tuple(cast(Mapping[str, Any], node).values())
     if isinstance(node, Sequence) and not isinstance(node, (str, bytes)):
-        return tuple(cast(Sequence[Any], node))
+        return tuple(node)
     return None
 
 
