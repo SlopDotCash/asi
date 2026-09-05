@@ -199,6 +199,24 @@ def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
         raise ValueError(f"{name} must be finite")
 
 
+def _scaled_float64_values(
+    values: NDArray[np.floating], *, name: str, axis: int | None
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Scale finite inputs before reductions that would otherwise overflow."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        work = np.asarray(values, dtype=np.float64)
+    if not np.isfinite(work).all():
+        raise ValueError(f"{name} must be representable as finite float64 values")
+    scales = np.max(np.abs(work), axis=axis, keepdims=True)
+    divisors = np.where(scales == 0.0, 1.0, scales)
+    return work / divisors, divisors
+
+
+def _require_finite_statistics(values: NDArray[np.float64], *, name: str) -> None:
+    if not np.isfinite(values).all():
+        raise ValueError(f"{name} cannot be represented as finite float64 statistics")
+
+
 def _require_sample_vector(values: object, *, name: str) -> NDArray[np.float64]:
     """Return ``values`` as a rank-1 array: exactly one sample per seed.
 
@@ -275,6 +293,7 @@ def compute_statistics(
 
     Raises:
         ValueError: If values is empty, any sample is non-finite, or
+            the result cannot be represented as finite float64 statistics, or
             ``confidence_level`` is not strictly between 0 and 1.
     """
     arr = _require_sample_vector(values, name="values")
@@ -284,12 +303,15 @@ def compute_statistics(
     _require_finite_values(arr, name="values")
     _validate_confidence_level(confidence_level)
 
-    mean = float(np.mean(arr))
-    std = float(np.std(arr, ddof=1)) if n > 1 else 0.0
-    sem = std / np.sqrt(n) if n > 1 else 0.0
-    median = float(np.median(arr))
-    q75, q25 = np.percentile(arr, [75, 25])
-    iqr = float(q75 - q25)
+    scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
+    scale = float(scale_array.item())
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = float(np.mean(scaled) * scale)
+        std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
+        sem = std / np.sqrt(n) if n > 1 else 0.0
+        median = float(np.median(scaled) * scale)
+        q75, q25 = np.percentile(scaled, [75, 25])
+        iqr = float((q75 - q25) * scale)
 
     # Compute confidence interval
     try:
@@ -301,11 +323,17 @@ def compute_statistics(
 
     if n > 1:
         t_value = float(stats.t.ppf((1 + confidence_level) / 2, n - 1))
-        margin = t_value * sem
-        ci_lower = mean - margin
-        ci_upper = mean + margin
+        with np.errstate(over="ignore", invalid="ignore"):
+            margin = t_value * sem
+            ci_lower = mean - margin
+            ci_upper = mean + margin
     else:
         ci_lower = ci_upper = mean
+
+    _require_finite_statistics(
+        np.asarray([mean, std, sem, ci_lower, ci_upper, median, iqr]),
+        name="values",
+    )
 
     return StatisticalSummary(
         mean=mean,
@@ -334,7 +362,8 @@ def compute_timeseries_statistics(
 
     Raises:
         ValueError: If metric_array is not a two-dimensional seed-by-step
-            matrix, has no seed rows, contains a non-finite sample, or
+            matrix, has no seed rows or time steps, contains a non-finite sample,
+            the result cannot be represented as finite float64 statistics, or
             ``confidence_level`` is not strictly between 0 and 1.
     """
     if metric_array.ndim != 2:
@@ -349,7 +378,9 @@ def compute_timeseries_statistics(
         raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
     _validate_confidence_level(confidence_level)
-    mean = np.mean(metric_array, axis=0)
+    scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
+    scale = scales[0]
+    mean = np.mean(scaled, axis=0) * scale
 
     if n_seeds == 1:
         # One seed has no between-seed spread estimate; return the degenerate
@@ -357,7 +388,8 @@ def compute_timeseries_statistics(
         # Student-t path below would produce all-NaN bounds (df=0).
         return mean, mean.copy(), mean.copy()
 
-    std = np.std(metric_array, axis=0, ddof=1)
+    with np.errstate(over="ignore", invalid="ignore"):
+        std = np.std(scaled, axis=0, ddof=1) * scale
     sem = std / np.sqrt(n_seeds)
 
     try:
@@ -368,9 +400,14 @@ def compute_timeseries_statistics(
         )
 
     t_value = stats.t.ppf((1 + confidence_level) / 2, n_seeds - 1)
-    margin = t_value * sem
-    ci_lower = mean - margin
-    ci_upper = mean + margin
+    with np.errstate(over="ignore", invalid="ignore"):
+        margin = t_value * sem
+        ci_lower = mean - margin
+        ci_upper = mean + margin
+
+    _require_finite_statistics(
+        np.asarray([mean, ci_lower, ci_upper]), name="metric_array"
+    )
 
     return mean, ci_lower, ci_upper
 
