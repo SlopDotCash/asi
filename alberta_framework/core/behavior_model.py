@@ -368,6 +368,10 @@ class BehaviorModelConfig:
         _resource_counts(self.n_actions, 1)
         step_size = _validated_config_float("step_size", self.step_size, lower=0.0)
         temperature = _validated_config_float("temperature", self.temperature, positive=True)
+        if temperature < float(np.finfo(np.float32).tiny):
+            raise ValueError(
+                f"temperature must be at least {np.finfo(np.float32).tiny} in float32"
+            )
         l2_penalty = _validated_config_float("l2_penalty", self.l2_penalty, lower=0.0)
         max_gradient_norm = (
             _validated_config_float(

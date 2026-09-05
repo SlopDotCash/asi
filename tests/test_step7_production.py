@@ -771,6 +771,62 @@ def test_step7_dyna_json_roundtrip() -> None:
     assert restored.planning_utility_step_size == config.planning_utility_step_size
 
 
+def test_step7_planning_accepted_tracks_the_core_learner_rollback() -> None:
+    """A planning backup the core learner rolled back must not be reported as accepted."""
+    from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
+    from alberta_framework.steps.step8 import Step8WorldModelConfig
+
+    # A deliberately divergent linear world model (LMS step 2.0) makes the core
+    # learner reject many imagined transitions on a natural run, without any
+    # state surgery.
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(n_actions=2, q_step_size=0.05),
+        world_model=Step8WorldModelConfig(
+            observation_dim=3, n_actions=2, hidden_sizes=(), step_size=2.0, use_layer_norm=False
+        ),
+        planning_steps=1,
+        planning_rollout_depth=1,
+        planning_warmup_steps=0,
+        planning_memory_size=8,
+        planning_strategy="random",
+    )
+    agent, model = make_step7_components(cfg)
+    steps = 32
+    data_key, state_key = jr.split(jr.key(0))
+    observations = jr.normal(data_key, (steps + 1, 3), dtype=jnp.float32)
+    rewards = jnp.tanh(observations[1:, 0])
+    state = init_step7_state(
+        agent, model, key=state_key, initial_observation=observations[0], memory_size=8
+    )
+    reported: list[bool] = []
+    replayed: list[bool] = []
+    for t in range(steps):
+        result = step7_update(cfg, agent, model, state, rewards[t], observations[t + 1])
+        control = result.real_control_result.state
+        # Replay the single imagined transaction through the core agent.
+        key, action_key = jr.split(control.rng_key)
+        action = jr.randint(action_key, (), 0, 2).astype(jnp.int32)
+        key, anchor_key = jr.split(key)
+        anchor_index = int(jr.randint(anchor_key, (), 0, int(result.state.memory_count)))
+        anchor = result.state.memory_observations[anchor_index]
+        prediction = model.predict(result.real_model_result.state, anchor, action)
+        temp = control.replace(last_observation=anchor, last_action=action, rng_key=key)
+        next_action, next_key = agent.select_action(temp, prediction.next_observation)
+        core = agent.update(
+            temp.replace(rng_key=next_key),
+            prediction.reward,
+            prediction.next_observation,
+            next_action=next_action,
+        )
+        reported.append(bool(result.planning_accepted[0]))
+        replayed.append(bool(core.update_applied))
+        state = result.state
+    assert not all(replayed), "the divergent model must produce at least one rollback"
+    assert reported == replayed
+    smoke = run_step7_smoke(cfg, steps=steps, seed=0)
+    assert smoke.planning_acceptance_count == sum(replayed)
+
+
 def _legal_step7_smoke_result(**overrides: object) -> Step7SmokeResult:
     payload: dict[str, object] = {
         "config": Step7DynaConfig(),

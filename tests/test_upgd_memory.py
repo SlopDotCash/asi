@@ -11,6 +11,7 @@ from alberta_framework.core.upgd_memory import (
     UPGDMemoryConfig,
     UPGDMemoryLearner,
     UPGDMemoryState,
+    _normalize_simplex,
     run_upgd_memory_arrays,
 )
 
@@ -564,3 +565,128 @@ def test_upgd_memory_preserves_legal_closed_endpoints() -> None:
     assert allocation_endpoint.target_allocation_rate == 1.0
     assert fixed_threshold.min_novelty_threshold == 0.5
     assert fixed_threshold.max_novelty_threshold == 0.5
+
+
+def _assert_simplex(normalized: jax.Array, label: str) -> None:
+    """The helper's name is its contract: non-negative, finite, sums to one."""
+    chex.assert_tree_all_finite(normalized)
+    assert float(jnp.min(normalized)) >= 0.0, label
+    chex.assert_trees_all_close(jnp.sum(normalized), 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("label", "prediction"),
+    (
+        # Reachable: UPGDLearner initializes previous_targets to zeros, so the
+        # target-trace blend mixes against this until the first target arrives.
+        ("zero mass", [0.0, 0.0, 0.0]),
+        ("wholly negative", [-1.0, -2.0, -3.0]),
+        # A single entry large enough to dominate the float32 sum makes every
+        # ratio underflow to zero when XLA flushes the reciprocal.
+        ("underflowing spread", [1e38, 1.0, 1.0]),
+        # Positive totals below the old 1e-12 denominator floor were divided by
+        # the floor rather than themselves, so this normalized to 0.75.
+        ("mass below the old floor", [7.5e-13, 0.0, 0.0]),
+        ("far below the old floor", [1e-30, 0.0, 0.0]),
+        ("overflowing equal mass", [3e38, 3e38, 3e38]),
+        ("non-finite input", [float("nan"), 0.0, 1.0]),
+    ),
+)
+def test_normalize_simplex_returns_a_simplex_for_degenerate_mass(
+    label: str,
+    prediction: list[float],
+) -> None:
+    normalized = _normalize_simplex(jnp.asarray(prediction, dtype=jnp.float32))
+    _assert_simplex(normalized, label)
+
+
+def test_normalize_simplex_zero_and_negative_mass_are_uniform() -> None:
+    """No usable mass must fall back to the uniform distribution."""
+    expected = jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32)
+    chex.assert_trees_all_close(
+        _normalize_simplex(jnp.zeros(3, dtype=jnp.float32)),
+        expected,
+    )
+    chex.assert_trees_all_close(
+        _normalize_simplex(jnp.asarray([-1.0, -2.0, -3.0], dtype=jnp.float32)),
+        expected,
+    )
+
+
+def test_normalize_simplex_preserves_dominant_overflow_direction() -> None:
+    """A finite overflow-scale peak must not fall back to uniform."""
+    overflow = _normalize_simplex(jnp.asarray([1e38, 1.0, 1.0], dtype=jnp.float32))
+    mixed = _normalize_simplex(jnp.asarray([1e38, 1e-8, 0.0], dtype=jnp.float32))
+    _assert_simplex(overflow, "overflow peak")
+    _assert_simplex(mixed, "mixed overflow peak")
+    chex.assert_trees_all_close(overflow, jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float32))
+    chex.assert_trees_all_close(mixed, jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float32))
+
+
+def test_normalize_simplex_leaves_ordinary_inputs_bit_identical() -> None:
+    """Well-formed inputs must not move, including vs the old floored formula."""
+    ordinary = jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32)
+    clipped_negative = jnp.asarray([-1.0, 2.0, 1.0], dtype=jnp.float32)
+    chex.assert_trees_all_equal(_normalize_simplex(ordinary), ordinary)
+    chex.assert_trees_all_close(
+        _normalize_simplex(clipped_negative),
+        jnp.asarray([0.0, 2.0 / 3.0, 1.0 / 3.0], dtype=jnp.float32),
+        atol=1e-6,
+    )
+    legacy = ordinary / jnp.maximum(jnp.sum(ordinary), jnp.float32(1e-12))
+    chex.assert_trees_all_equal(_normalize_simplex(ordinary), legacy)
+
+
+def test_normalize_simplex_is_jit_traceable() -> None:
+    normalized = jax.jit(_normalize_simplex)(jnp.asarray([0.25, 0.75], dtype=jnp.float32))
+    _assert_simplex(normalized, "jit ordinary")
+    chex.assert_trees_all_equal(normalized, jnp.asarray([0.25, 0.75], dtype=jnp.float32))
+
+
+def test_target_trace_blend_preserves_mass_before_the_first_target() -> None:
+    """Blending a simplex against the initial zero trace must not lose mass.
+
+    ``previous_targets`` starts as zeros, and the blend is
+    ``(1 - trace_gate) * prediction + trace_gate * trace_prediction``. When the
+    trace normalized to a zero vector the blended mass collapsed to
+    ``1 - trace_gate`` -- up to 80% of the distribution gone at the default
+    ``target_trace_blend_scale``.
+    """
+    prediction = jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32)
+    trace_prediction = _normalize_simplex(jnp.zeros(3, dtype=jnp.float32))
+
+    for trace_gate in (0.0, 0.25, 0.5, 0.8, 1.0):
+        blended = (1.0 - trace_gate) * prediction + trace_gate * trace_prediction
+        chex.assert_trees_all_close(jnp.sum(blended), 1.0, atol=1e-6)
+
+
+def test_blend_predictions_preserves_mass_on_zero_previous_targets() -> None:
+    """The live softmax_ce blend must keep unit mass when the trace is zeros."""
+    config = UPGDMemoryConfig(
+        feature_dim=2,
+        n_heads=3,
+        hidden_sizes=(4,),
+        target_trace_blend_scale=0.8,
+        target_trace_pressure_threshold=0.0,
+        confidence_logit_scale=0.0,
+        reliability_logit_scale=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    state = learner.init(jr.key(0))
+    assert bool(jnp.all(state.upgd_state.previous_targets == 0.0))
+    state = state.replace(  # type: ignore[attr-defined]
+        upgd_state=state.upgd_state.replace(  # type: ignore[attr-defined]
+            target_repeat_ema=jnp.asarray(1.0, dtype=jnp.float32),
+        )
+    )
+    upgd_prediction = jnp.asarray([0.2, 0.3, 0.5], dtype=jnp.float32)
+    memory_prediction = jnp.asarray([0.4, 0.4, 0.2], dtype=jnp.float32)
+
+    blended, _gate = learner._blend_predictions(
+        state,
+        upgd_prediction,
+        memory_prediction,
+        include_target_trace=True,
+    )
+
+    _assert_simplex(blended, "live blend")

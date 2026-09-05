@@ -1801,8 +1801,18 @@ class ReferenceLifeStep:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReferenceLifeRun:
+    """A completed or halted life with the events it emitted.
+
+    The transcript advances on every staged receipt, not only on emitted
+    events. A post-execution halt commits a known execution with no event, so
+    the final event's transcript then equals the transcript of the state the
+    halting step started from; ``pre_halt_transcript_sha256`` records it so
+    the binding stays exact for that case and is rejected everywhere else.
+    """
+
     state: ReferenceLifeState
     events: tuple[ReferenceLifeEvent, ...]
+    pre_halt_transcript_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.state) is not ReferenceLifeState:
@@ -1811,8 +1821,29 @@ class ReferenceLifeRun:
             raise ValueError("events must be an exact tuple")
         if any(type(event) is not ReferenceLifeEvent for event in self.events):
             raise ValueError("events must contain only ReferenceLifeEvent records")
-        if self.events and self.events[-1].transcript_sha256 != self.state.transcript_sha256:
-            raise ValueError("final event transcript disagrees with run state")
+        if self.pre_halt_transcript_sha256 is None:
+            if self.events and self.events[-1].transcript_sha256 != self.state.transcript_sha256:
+                raise ValueError("final event transcript disagrees with run state")
+            return
+        if (
+            type(self.pre_halt_transcript_sha256) is not str
+            or _SHA256.fullmatch(self.pre_halt_transcript_sha256) is None
+        ):
+            raise ValueError("pre_halt_transcript_sha256 must be an exact sha256 hex string")
+        if (
+            self.state.phase not in (LifePhase.HALTED, LifePhase.ABORTED)
+            or self.state.halt is None
+            or self.state.halt.stage is not HaltStage.POST_EXECUTION_DIVERGENCE
+        ):
+            raise ValueError(
+                "pre_halt_transcript_sha256 is only valid for a post-execution halt"
+            )
+        if not self.events or self.events[-1].transcript_sha256 != (
+            self.pre_halt_transcript_sha256
+        ):
+            raise ValueError("final event transcript disagrees with the pre-halt state")
+        if self.pre_halt_transcript_sha256 == self.state.transcript_sha256:
+            raise ValueError("post-execution halt must have advanced the transcript")
 
 
 @dataclasses.dataclass(slots=True)
@@ -3401,12 +3432,26 @@ class ReferenceLifeRunner:
 
         events: list[ReferenceLifeEvent] = []
         current = state
+        pre_halt_transcript: str | None = None
         while current.phase is LifePhase.QUIESCENT:
             step = self.step(current)
             if step.event is not None:
                 events.append(step.event)
+            elif (
+                events
+                and step.state.halt is not None
+                and step.state.halt.stage is HaltStage.POST_EXECUTION_DIVERGENCE
+                and step.state.transcript_sha256 != current.transcript_sha256
+            ):
+                # The halt committed a receipt-advanced transcript without an
+                # event; bind the last event to the transcript it was emitted at.
+                pre_halt_transcript = current.transcript_sha256
             current = step.state
-        return ReferenceLifeRun(state=current, events=tuple(events))
+        return ReferenceLifeRun(
+            state=current,
+            events=tuple(events),
+            pre_halt_transcript_sha256=pre_halt_transcript,
+        )
 
 
 def build_prototype_switching_life(

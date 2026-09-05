@@ -182,6 +182,28 @@ def test_rls_reward_model_rejects_values_invalid_after_float32_narrowing(
         RLSRewardModel(RLSRewardModelConfig.from_config(payload))
 
 
+def test_rls_reward_model_rejects_subnormal_ridge_before_covariance_init() -> None:
+    """An accepted ridge must remain a usable positive XLA divisor."""
+    subnormal = float(np.nextafter(np.float32(0), np.float32(1)))
+
+    with pytest.raises(ValueError, match="ridge must be at least"):
+        RLSRewardModelConfig(feature_dim=1, ridge=subnormal)
+
+    model = RLSRewardModel(
+        RLSRewardModelConfig(feature_dim=1, ridge=float(np.finfo(np.float32).tiny))
+    )
+    state = model.init()
+    result = model.update(
+        state,
+        jnp.ones((1,), dtype=jnp.float32),
+        jnp.array(1.0, dtype=jnp.float32),
+    )
+
+    chex.assert_tree_all_finite(state.covariance)
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+
+
 def test_rls_reward_model_canonicalizes_numpy_scalars() -> None:
     model = RLSRewardModel(
         RLSRewardModelConfig(
