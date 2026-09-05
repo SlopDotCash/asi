@@ -59,6 +59,11 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._scan_resources import (
+    ScanBudget,
+    require_scan_steps,
+    require_step_units,
+)
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
@@ -161,6 +166,13 @@ class Step7DynaConfig:
 
 
 _INT32_MAX = 2**31 - 1
+# Each planning arange/scan axis is capped, and the product is the imagined-step
+# envelope. Independent 10_000 caps would still allow 100 million backups.
+_STEP7_PLANNING_BUDGET = ScanBudget(
+    "step 7 planning",
+    maximum_steps=10_000,
+    maximum_step_units=10_000,
+)
 _STEP7_CONFIG_FIELDS = frozenset(
     {
         "control",
@@ -281,12 +293,21 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         minimum=0,
         maximum=_INT32_MAX,
     )
+    if planning_steps != 0:
+        planning_steps = require_scan_steps(
+            "planning_steps", planning_steps, _STEP7_PLANNING_BUDGET
+        )
     planning_rollout_depth = _require_int(
         "planning_rollout_depth",
         config.planning_rollout_depth,
         minimum=1,
         maximum=_INT32_MAX,
     )
+    planning_rollout_depth = require_scan_steps(
+        "planning_rollout_depth", planning_rollout_depth, _STEP7_PLANNING_BUDGET
+    )
+    if planning_steps > 0:
+        require_step_units(planning_steps, planning_rollout_depth, _STEP7_PLANNING_BUDGET)
     planning_warmup_steps = _require_int(
         "planning_warmup_steps",
         config.planning_warmup_steps,

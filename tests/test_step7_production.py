@@ -673,9 +673,9 @@ def test_step7_dyna_preserves_float32_boundaries() -> None:
 
 
 def test_step7_dyna_rejects_derived_work_and_memory_resources() -> None:
-    with pytest.raises(ValueError, match="derived planning evaluations"):
+    with pytest.raises(ValueError, match="step 7 planning budget"):
         Step7DynaConfig(planning_steps=2**30, planning_rollout_depth=2)
-    with pytest.raises(ValueError, match="planning output bytes"):
+    with pytest.raises(ValueError, match="step 7 planning budget"):
         Step7DynaConfig(planning_steps=2**26, planning_rollout_depth=1)
     with pytest.raises(ValueError, match="planning-memory bytes"):
         Step7DynaConfig(planning_memory_size=2**28)
