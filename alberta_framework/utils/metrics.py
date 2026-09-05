@@ -770,16 +770,10 @@ def compute_running_mean(
         scale = 1.0
     normalized = np.where(np.isfinite(values_arr), values_arr / scale, 0.0)
     valid = np.isfinite(values_arr).astype(np.int64)
-    nonzero_magnitudes = np.abs(normalized[normalized != 0.0])
-    cancellation_risk = bool(
-        nonzero_magnitudes.size
-        and float(np.min(nonzero_magnitudes)) <= np.finfo(np.float64).eps
-    )
-    if cancellation_risk:
-        window_sums = _pairwise_rolling_sums(normalized, window_size)
-    else:
-        cumsum = np.cumsum(np.insert(normalized, 0, 0.0), dtype=np.float64)
-        window_sums = cumsum[window_size:] - cumsum[:-window_size]
+    # Always reduce the current window. A per-element threshold cannot bound
+    # cancellation from a long prefix, even when each element exceeds epsilon.
+    # The ring tree costs O(n log(window_size)) time and O(window_size) storage.
+    window_sums = _pairwise_rolling_sums(normalized, window_size)
     valid_cumsum = np.cumsum(np.insert(valid, 0, 0), dtype=np.int64)
     valid_counts = valid_cumsum[window_size:] - valid_cumsum[:-window_size]
     running_mean = (window_sums / window_size) * scale

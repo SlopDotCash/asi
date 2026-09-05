@@ -450,3 +450,9 @@ def test_forward_transfer_rejects_infinite_pre_exposure(value: float) -> None:
             first_exposure=[1, 1],
             baseline_performance=[0.5, 0.5],
         )
+
+
+def test_tracking_error_preserves_small_windows_after_long_high_error_phase() -> None:
+    history = [{"squared_error": value} for value in ([1e15] * 1000 + [1.0] * 4)]
+    result = compute_tracking_error(history, window_size=2)
+    np.testing.assert_array_equal(result[-3:], [1.0, 1.0, 1.0])
