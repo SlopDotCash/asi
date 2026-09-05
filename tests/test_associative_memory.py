@@ -908,3 +908,55 @@ def test_associative_memory_json_roundtrip() -> None:
 
     assert restored == config
     assert restored.feature_family == "token_suffix_pair"
+
+
+def test_prior_coefficient_is_independent_of_feature_weight_mass() -> None:
+    """The prior enters with a small fixed weight (its documented contract).
+
+    Two states with identical priors and identical weighted-average feature
+    evidence, differing only in matched-row utility (hence total weight
+    mass), must rank the labels identically: the weight normalization
+    applies to the evidence average, never to the prior term.
+    """
+
+    def build(utility_value: float):
+        config = AssociativeMemoryConfig(
+            vocab_size=4,
+            block_size=2,
+            suffix_length=2,
+            feature_family="position_token",
+            max_features=8,
+        )
+        learner = AssociativeMemoryLearner(config)
+        state = learner.init()
+        context = jnp.asarray([0, 1], dtype=jnp.int32)
+        keys, _mask = learner.feature_keys(context)
+        keys_arr = state.keys.at[0].set(keys[0]).at[1].set(keys[1])
+        row = jnp.asarray([0.0, 0.5, 0.0, 0.0], dtype=jnp.float32)
+        values = state.values.at[0].set(row).at[1].set(row)
+        counts = state.counts.at[0].set(1).at[1].set(1)
+        utility = state.utility.at[0].set(utility_value).at[1].set(utility_value)
+        prior = jnp.asarray([10.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+        state = state.replace(
+            keys=keys_arr,
+            values=values,
+            counts=counts,
+            utility=utility,
+            prior=prior,
+            step_count=jnp.asarray(1, dtype=jnp.int32),
+            last_update=state.last_update.at[0].set(1).at[1].set(1),
+        )
+        return learner, state, context
+
+    predictions = {}
+    for utility_value in (0.0, -8.0):
+        learner, state, context = build(utility_value)
+        predictions[utility_value] = learner.predict(state, context)
+
+    high = predictions[0.0]
+    low = predictions[-8.0]
+    assert int(jnp.argmax(high.logits)) == 1
+    assert int(jnp.argmax(low.logits)) == int(jnp.argmax(high.logits))
+    prior_term_high = high.logits[0]
+    prior_term_low = low.logits[0]
+    chex.assert_trees_all_close(prior_term_high, prior_term_low, atol=1e-6)

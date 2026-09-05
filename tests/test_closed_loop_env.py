@@ -510,6 +510,28 @@ class TestRiverSwim:
         assert uniform < optimal
         assert always_left < optimal
 
+    def test_stationary_gain_preserves_tiny_categorical_transition_ratios(self):
+        """Stationary mass follows the row-normalized categorical kernel."""
+        env = RiverSwimMDP(
+            RiverSwimConfig(
+                n_states=2,
+                p_right_up=1.0e-7,
+                p_right_down=2.0e-7,
+                reward_left=0.0,
+                reward_right=1.0,
+            )
+        )
+        kernel = env.transition_tensor[RIGHT_ACTION].astype(np.float64)
+        up = kernel[0, 1] / kernel[0].sum()
+        down = kernel[1, 0] / kernel[1].sum()
+        expected_top_state_mass = up / (up + down)
+
+        assert env.policy_average_reward([RIGHT_ACTION, RIGHT_ACTION]) == pytest.approx(
+            expected_top_state_mass,
+            rel=1.0e-12,
+            abs=1.0e-12,
+        )
+
     def test_policy_gain_matches_scan_simulation(self):
         """A long scan rollout of always-right attains its analytic gain."""
         env = RiverSwimMDP(RiverSwimConfig(n_states=4))

@@ -620,8 +620,8 @@ def run_learning_loop[StreamStateT](
     ss_interval = step_size_tracking.interval if step_size_tracking else num_steps + 1
     norm_interval = normalizer_tracking.interval if normalizer_tracking else num_steps + 1
 
-    ss_num_recordings = num_steps // ss_interval if step_size_tracking else 0
-    norm_num_recordings = num_steps // norm_interval if normalizer_tracking else 0
+    ss_num_recordings = -(-num_steps // ss_interval) if step_size_tracking else 0
+    norm_num_recordings = -(-num_steps // norm_interval) if normalizer_tracking else 0
 
     # Pre-allocate step-size history arrays
     ss_history = (
@@ -1764,7 +1764,7 @@ def run_mlp_learning_loop[StreamStateT](
 
     # Tracking enabled
     norm_interval = normalizer_tracking.interval
-    norm_num_recordings = num_steps // norm_interval
+    norm_num_recordings = -(-num_steps // norm_interval)
 
     norm_means = jnp.zeros((norm_num_recordings, feature_dim), dtype=jnp.float32)
     norm_vars = jnp.zeros((norm_num_recordings, feature_dim), dtype=jnp.float32)

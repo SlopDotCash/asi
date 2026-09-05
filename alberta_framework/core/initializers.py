@@ -152,7 +152,14 @@ def sparse_init(
     if num_zeros <= 0:
         return weights
     if num_zeros >= fan_in:
-        return jnp.zeros_like(weights)
+        if sparsity_validated >= 1.0:
+            return jnp.zeros_like(weights)
+        # sparsity < 1 must keep one live incoming weight per row. The
+        # nearest-int count can equal fan_in (0.9 * 5 + 0.5 == 5.0) and
+        # the previous branch then returned an all-zero matrix.
+        num_zeros = fan_in - 1
+        if num_zeros <= 0:
+            return weights
 
     # Exact per-row sparsity without per-row random permutations.  `jr.permutation`
     # lowers to a shuffle kernel that can be very slow to compile in large suites.
