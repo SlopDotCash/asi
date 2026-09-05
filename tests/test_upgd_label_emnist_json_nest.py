@@ -23,14 +23,14 @@ def test_strict_json_object_rejects_origin_recursion_fixture(tmp_path: Path) -> 
     raw = _deep_object_bytes(10_000)
     path.write_bytes(raw)
     assert path.stat().st_size == 60_001
-    with pytest.raises(ValueError, match="nesting-depth limit"):
+    with pytest.raises(ValueError, match="JSON nesting limit"):
         _strict_json_object(path)
 
 
 def test_strict_json_object_rejects_first_over_depth_object(tmp_path: Path) -> None:
     path = tmp_path / "over.json"
     path.write_bytes(_deep_object_bytes(_MAX_JSON_NESTING_DEPTH + 1))
-    with pytest.raises(ValueError, match="nesting-depth limit"):
+    with pytest.raises(ValueError, match="JSON nesting limit"):
         _strict_json_object(path)
 
 
@@ -43,5 +43,5 @@ def test_strict_json_object_accepts_bounded_object(tmp_path: Path) -> None:
 def test_load_plan_rejects_deep_nests_before_schema_walk(tmp_path: Path) -> None:
     path = tmp_path / "plan.json"
     path.write_bytes(_deep_object_bytes(10_000))
-    with pytest.raises(ValueError, match="nesting-depth limit"):
+    with pytest.raises(ValueError, match="JSON nesting limit"):
         load_plan(path)
