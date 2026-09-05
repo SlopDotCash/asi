@@ -1,0 +1,230 @@
+{
+ "base_learner": "adamw",
+ "config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 2,
+  "task_length": 500
+ },
+ "config_name": "cchain_orthogonal_only",
+ "created_unix": 1787403946.5503478,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.1",
+   "jaxlib": "0.11.1",
+   "numpy": "2.5.2",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "6.8.0-137-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": null,
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "hyperparameters": {
+  "adaptive_coefficient": 1.0,
+  "beta1": 0.0,
+  "beta2": 0.99,
+  "churn_enabled": 1.0,
+  "coefficient_delay": 10.0,
+  "coefficient_window": 50.0,
+  "eps": 1e-08,
+  "gradient_component": 1.0,
+  "initial_coefficient": 1.0,
+  "ntk_diagnostic_examples": 4.0,
+  "ntk_energy_threshold": 0.99,
+  "reference_capacity": 32.0,
+  "snapshot_warmup_updates": 2.0,
+  "step_size": 0.0001,
+  "target_relative_loss_scale": 10000.0,
+  "weight_decay": 0.0
+ },
+ "mechanism_receipt": {
+  "adaptation_id": "online-prior-example-ring-and-one-update-snapshot.v1",
+  "allowed_boundary_information": [],
+  "allowed_task_information": [
+   "current_example_label"
+  ],
+  "arm": "cchain_orthogonal_only",
+  "comparability_gaps": [
+   "IPMNIST is continual supervised learning, not the paper's primary continual-RL setting",
+   "the official release contains RL implementations but no appendix supervised-learning source",
+   "one-example online updates replace PPO or DoubleDQN minibatch updates",
+   "a 32-example prior-stream ring replaces independently shuffled current-iteration batches",
+   "the prior-update ring excludes the current update but repeated data identities can recur",
+   "one-update parameter snapshots replace the official mutable Python model-history list",
+   "a static 50-update loss window replaces 50 host-side outer-iteration means",
+   "coefficient adaptation is evaluated per online update after ten active updates",
+   "the current 784-300-150-10 ASI MLP replaces the paper's task-specific networks",
+   "ASI's beta1=0 beta2=0.99 AdamW control replaces the official PPO Adam defaults",
+   "the empirical NTK uses every example/class logit row rather than a policy-network output",
+   "stored results are development diagnostics and cannot substantiate the paper's RL claims"
+  ],
+  "comparison_id": "asi.cchain-ipmnist.current-runner.v1",
+  "development_only": true,
+  "development_seed_protocol": [
+   0,
+   1,
+   2,
+   3,
+   4
+  ],
+  "hidden1": 300,
+  "hidden2": 150,
+  "hyperparameters": {
+   "adaptive_coefficient": 1.0,
+   "beta1": 0.0,
+   "beta2": 0.99,
+   "churn_enabled": 1.0,
+   "coefficient_delay": 10.0,
+   "coefficient_window": 50.0,
+   "eps": 1e-08,
+   "gradient_component": 1.0,
+   "initial_coefficient": 1.0,
+   "ntk_diagnostic_examples": 4.0,
+   "ntk_energy_threshold": 0.99,
+   "reference_capacity": 32.0,
+   "snapshot_warmup_updates": 2.0,
+   "step_size": 0.0001,
+   "target_relative_loss_scale": 10000.0,
+   "weight_decay": 0.0
+  },
+  "input_dim": 784,
+  "metrics": {
+   "diagnostic_updates": 998.0,
+   "final_coefficient": 10060.7548828125,
+   "mean_logit_mse": 0.00041410225426744603,
+   "mean_loss": 2.30121005,
+   "mean_online_accuracy": 0.11700001,
+   "mean_plasticity": 0.004026395,
+   "mean_probability_kl": 0.00022398292241927856,
+   "ntk_diagonal_mean": 9.777922630310059,
+   "ntk_examples": 4.0,
+   "ntk_off_diagonal_abs_mean": 1.04958975315094,
+   "ntk_threshold_rank": 35.0
+  },
+  "n_classes": 10,
+  "n_tasks": 2,
+  "observations": 1000,
+  "official_commit": "2f8bedfefb6a0a276d7709447a5cdb75cecfdaad",
+  "outcome": "inconclusive",
+  "outcome_retained": true,
+  "paper_revision": "arXiv:2506.00592v1",
+  "resources": {
+   "churn_model_queries": 1996,
+   "churn_reference_updates": 998,
+   "data_steps": 1000,
+   "environment_steps": 0,
+   "model_queries": 4000,
+   "ntk_jacobian_envelope_bytes": 90291200,
+   "ntk_model_queries": 4,
+   "optimizer_updates": 1000,
+   "persistent_bytes": 4615468,
+   "task_model_queries": 2000,
+   "timing_is_telemetry_only": true,
+   "timing_seconds": 12.62
+  },
+  "schema": "asi.cchain-ipmnist.development-result.v1",
+  "scientific_promotion_allowed": false,
+  "seed": 1,
+  "task_length": 500,
+  "updates": 1000
+ },
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "per_task_accuracy": [
+  0.12800001,
+  0.10600001
+ ],
+ "per_task_loss": [
+  2.2942555,
+  2.3081646
+ ],
+ "per_task_plasticity": [
+  0.00556152,
+  0.00249127
+ ],
+ "schema": "alberta.ipmnist_screening.shard.v2",
+ "seed": 1,
+ "source_provenance": {
+  "git_commit": "c9aba7b54dedd647f8bd5f5c7bf6780b1413b676",
+  "git_object_format": "sha1",
+  "git_tree": "c55a4f2ae3ac44b34db5f738eef8d0b025584ca7",
+  "relevant_source_file_count": 230,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "bb5d8e2298fa6ac20d8bef0ff785fd945a179ce737701899a17dd26096b2d145",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ },
+ "wall_clock_seconds": 12.62
+}
