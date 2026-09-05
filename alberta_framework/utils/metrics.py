@@ -449,7 +449,10 @@ def compute_forward_transfer(
     on a task probed *before* it is ever trained on, minus a task-specific
     baseline (in GEM, the untrained-network performance).
 
-    Task 0, and any task without a finite pre-exposure probe, receives ``NaN``.
+    Tasks first exposed at row 0, and any task whose *immediate* pre-exposure
+    checkpoint is missing, receive ``NaN``. Older finite probes are not backfilled
+    when that GEM checkpoint was not evaluated. An infinite immediate
+    pre-exposure is rejected rather than treated as a missing probe.
     The sign is normalized so positive values always mean beneficial transfer.
     """
 
@@ -470,13 +473,14 @@ def compute_forward_transfer(
     for task, first_row in enumerate(rows):
         if first_row == 0:
             continue
-        prior = matrix[:first_row, task]
-        finite_prior = prior[np.isfinite(prior)]
-        if finite_prior.size == 0:
+        # GEM FWT is R_{i-1, i} minus the task baseline: only the checkpoint
+        # immediately before first exposure. An older finite probe is not a
+        # substitute when that row is NaN (not evaluated) or divergent.
+        immediate = matrix[int(first_row) - 1, task]
+        if not np.isfinite(immediate):
             continue
-        pre_exposure = finite_prior[-1]
         transfer[task] = (
-            pre_exposure - baseline[task] if higher_is_better else baseline[task] - pre_exposure
+            immediate - baseline[task] if higher_is_better else baseline[task] - immediate
         )
     return transfer
 
