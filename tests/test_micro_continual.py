@@ -2096,3 +2096,33 @@ def test_micro_run_result_rejects_numeric_subclasses_without_conversion_hooks() 
         _legal_micro_run_result(overall_accuracy=HostileFloat(0.5))
     with pytest.raises(ValueError, match="wall_clock_seconds"):
         _legal_micro_run_result(wall_clock_seconds=HostileFloat(1.0))
+
+
+def test_sgd_raw_zero_step_size_preserves_params_under_infinite_grads() -> None:
+    """Frozen SGD must not poison params when grads overflow to inf.
+
+    Hyperparameter freeze accepts ``step_size=0.0``. The update used to
+    evaluate ``params - 0 * grads``, which is ``0 * inf = NaN`` and destroys
+    finite parameters on a no-op step.
+    """
+    params = {"w": jnp.array([1.0, -2.0], dtype=jnp.float32)}
+    grads = {"w": jnp.array([jnp.inf, 3.0], dtype=jnp.float32)}
+    assert bool(jnp.isnan(jnp.float32(0.0) * jnp.float32(jnp.inf)))
+
+    updated = micro_continual._sgd_raw_param_update(
+        params, grads, step_size=0.0, weight_decay=0.01
+    )
+    chex.assert_trees_all_equal(updated, params)
+    assert bool(jnp.all(jnp.isfinite(updated["w"])))
+
+
+def test_sgd_raw_nonzero_step_size_still_applies_to_finite_grads() -> None:
+    params = {"w": jnp.array([1.0, -2.0], dtype=jnp.float32)}
+    grads = {"w": jnp.array([0.5, -1.0], dtype=jnp.float32)}
+    updated = micro_continual._sgd_raw_param_update(
+        params, grads, step_size=0.1, weight_decay=0.0
+    )
+    chex.assert_trees_all_close(
+        updated["w"],
+        params["w"] - 0.1 * grads["w"],
+    )

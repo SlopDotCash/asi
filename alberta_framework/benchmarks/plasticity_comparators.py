@@ -567,7 +567,7 @@ def ntk_threshold_rank(jacobian: Array, *, threshold: float = 0.99) -> Array:
     total = jnp.sum(singular)
     cumulative = jnp.cumsum(singular)
     rank = jnp.searchsorted(cumulative, target * total, side="left") + 1
-    return jnp.where(total > 0, rank, 0)
+    return jnp.where(total > 0, jnp.minimum(rank, singular.shape[0]), 0)
 
 
 def smooth_leaky(value: Array, *, alpha: float, power: float, curvature: float) -> Array:
