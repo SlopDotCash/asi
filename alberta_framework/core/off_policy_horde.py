@@ -1393,58 +1393,72 @@ class NonlinearSharedGTDHordeLearner:
             # (NaN cumulant) contribute nothing this step.
             masked_rho = jnp.where(effective_mask[i], clipped_rhos[i], 0.0)
             terminated_i = discounts[i] == 0.0
+            # A zero ratio means this demon contributes nothing to the shared
+            # trunk this step. Multiplying it through an overflowed
+            # ``secondary_dot`` or gradient would form 0*inf=NaN and, because
+            # the trunk steps are summed across demons, reject the whole
+            # update for every healthy demon too. Skip the product instead.
+            rho_discount = _skip_zero_scale(masked_rho, discounts[i])
             rho_dot = jnp.where(
                 terminated_i,
                 jnp.zeros_like(secondary_dot),
-                masked_rho * discounts[i] * secondary_dot,
+                _skip_zero_scale(rho_discount, secondary_dot),
             )
             correction_trunk_w = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_trunk_w),
-                rho_dot * next_grad_trunk_w,
+                _skip_zero_scale(rho_dot, next_grad_trunk_w),
             )
             correction_trunk_b = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_trunk_b),
-                rho_dot * next_grad_trunk_b,
+                _skip_zero_scale(rho_dot, next_grad_trunk_b),
             )
             correction_head_w = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_head_w),
-                rho_dot * next_grad_head_w,
+                _skip_zero_scale(rho_dot, next_grad_head_w),
             )
             correction_head_b = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_head_b),
-                rho_dot * next_grad_head_b,
+                _skip_zero_scale(rho_dot, next_grad_head_b),
             )
-            rho_delta = masked_rho * safe_td_errors[i]
+            rho_delta = _skip_zero_scale(masked_rho, safe_td_errors[i])
 
             trunk_w_step = trunk_w_step + primary_alpha * (
-                rho_delta * grad_trunk_w - correction_trunk_w
+                _skip_zero_scale(rho_delta, grad_trunk_w) - correction_trunk_w
             )
             trunk_b_step = trunk_b_step + primary_alpha * (
-                rho_delta * grad_trunk_b - correction_trunk_b
+                _skip_zero_scale(rho_delta, grad_trunk_b) - correction_trunk_b
             )
             head_w_step = head_w_step.at[i].add(
-                primary_alpha * (rho_delta * grad_head_w - correction_head_w)
+                primary_alpha * (_skip_zero_scale(rho_delta, grad_head_w) - correction_head_w)
             )
             head_b_step = head_b_step.at[i].add(
-                primary_alpha * (rho_delta * grad_head_b - correction_head_b)
+                primary_alpha * (_skip_zero_scale(rho_delta, grad_head_b) - correction_head_b)
             )
 
             masked_beta = jnp.where(effective_mask[i], secondary_beta, 0.0)
-            sec_trunk_w = state.secondary_trunk_w[i] + masked_beta * (
-                rho_delta * grad_trunk_w - secondary_dot * grad_trunk_w
+            sec_trunk_w = state.secondary_trunk_w[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_trunk_w)
+                - _skip_zero_scale(secondary_dot, grad_trunk_w),
             )
-            sec_trunk_b = state.secondary_trunk_b[i] + masked_beta * (
-                rho_delta * grad_trunk_b - secondary_dot * grad_trunk_b
+            sec_trunk_b = state.secondary_trunk_b[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_trunk_b)
+                - _skip_zero_scale(secondary_dot, grad_trunk_b),
             )
-            sec_head_w = state.secondary_head_w[i] + masked_beta * (
-                rho_delta * grad_head_w - secondary_dot * grad_head_w
+            sec_head_w = state.secondary_head_w[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_head_w)
+                - _skip_zero_scale(secondary_dot, grad_head_w),
             )
-            sec_head_b = state.secondary_head_b[i] + masked_beta * (
-                rho_delta * grad_head_b - secondary_dot * grad_head_b
+            sec_head_b = state.secondary_head_b[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_head_b)
+                - _skip_zero_scale(secondary_dot, grad_head_b),
             )
             new_secondary_trunk_w.append(sec_trunk_w)
             new_secondary_trunk_b.append(sec_trunk_b)

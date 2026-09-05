@@ -137,6 +137,19 @@ def build_rule_discovery_summary(
     ).encode()
     maintained = dict(legacy)
     maintained["schema"] = "asi.rule_discovery.real_screen.v2"
+    screen = maintained["screen_60_task"]
+    paired = maintained["paired_vs_champion_60_task"]
+    assert isinstance(screen, dict)
+    assert isinstance(paired, dict)
+    maintained["verdicts"] = {
+        (
+            f"{name}_verbatim" if name in {"disc_r1", "disc_r2", "disc_r3"} else name
+        ): (
+            f"screen mean {screen[name]['mean']:.5f}; paired vs champion "
+            f"{paired[name]['mean']:+.5f}; development screen only"
+        )
+        for name in DISCOVERY_ARMS
+    }
     maintained["legacy_compatibility"] = {
         "schema": legacy["schema"],
         "canonical_sha256": hashlib.sha256(legacy_canonical).hexdigest(),

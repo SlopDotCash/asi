@@ -9,9 +9,11 @@ from alberta_framework.benchmarks.low_cost_controls_ipmnist import (
     LowCostCatalogEntry,
     LowCostResult,
     _preactivation_width,
+    _run_arm,
     qualification_gates,
     run_comparator,
 )
+from alberta_framework.benchmarks.plasticity_diagnostics import PROFILES
 
 
 def _fixture(rows: int = 32):
@@ -149,3 +151,25 @@ class TestResultContract:
             "aid_off",
             "deep_fourier_off",
         }
+
+
+def test_model_queries_bill_the_post_task_diagnostic_forward() -> None:
+    """Each task boundary runs a real diagnostic forward that must be billed.
+
+    `adamo_diagnostic` publishes `2 * observations + n_tasks` for the same
+    per-example-plus-post-task-diagnostic structure; this lane must agree or its
+    reported resource usage understates the comparator by one query per task.
+    """
+    profile = PROFILES["contract-smoke"]
+    tasks = tuple(
+        (
+            np.zeros((profile.examples_per_task, 784), dtype=np.float32),
+            np.zeros((profile.examples_per_task,), dtype=np.int32),
+        )
+        for _ in range(profile.n_tasks)
+    )
+
+    result = _run_arm("sgd_current_control", tasks, profile, seed=15_660)
+
+    steps = profile.n_tasks * profile.examples_per_task
+    assert result.model_queries == 2 * steps + profile.n_tasks

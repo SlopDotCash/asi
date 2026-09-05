@@ -130,6 +130,13 @@ def test_c_chain_churn_loss_and_off_reduction() -> None:
     assert int(ntk_threshold_rank(jnp.eye(3), threshold=0.66)) == 2
 
 
+def test_ntk_threshold_rank_never_exceeds_singular_dimension() -> None:
+    mat = jr.normal(jr.key(0), (20, 20), dtype=jnp.float32)
+    rank = int(ntk_threshold_rank(mat, threshold=1.0))
+    assert 1 <= rank <= 20
+    assert int(ntk_threshold_rank(jnp.zeros((10, 10), dtype=jnp.float32), threshold=1.0)) == 0
+
+
 def test_low_cost_activation_and_feature_controls() -> None:
     value = jnp.asarray([-2.0, 0.0, 2.0])
     assert jnp.allclose(smooth_leaky(value, alpha=1, power=3, curvature=5), value)

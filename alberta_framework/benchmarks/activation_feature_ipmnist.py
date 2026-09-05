@@ -122,7 +122,13 @@ def _metrics(
     key: Array,
 ) -> tuple[Array, Array, Array]:
     accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
-    after = _loss(forward(params, x, key, False), y)
+    # ``loss`` came from the training-mode forward that produced the gradient.
+    # The runner's ``_step_metrics`` applies one forward function to both sides
+    # of the plasticity ratio, so the post-update loss is scored in the same
+    # mode from the same per-step key: for ``aid`` and ``ordinary_dropout`` that
+    # re-derives the identical activation mask, leaving the parameter update as
+    # the only thing that moved.  Every mode-independent arm is unaffected.
+    after = _loss(forward(params, x, key, True), y)
     plasticity = jnp.clip(1.0 - after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0)
     return accuracy, loss, plasticity
 
@@ -672,7 +678,9 @@ def _activation_feature_result_payload(
             "gradient_evaluations": steps,
             "optimizer_scalar_updates": steps * allocated,
             "model_queries": 2 * steps,
-            "random_bernoulli_variates": steps * activation_width if stochastic else 0,
+            # Both metric forwards run in training mode, so a stochastic arm
+            # draws one mask per hidden unit in each of them.
+            "random_bernoulli_variates": 2 * steps * activation_width if stochastic else 0,
             "activation_scalar_evaluations": 2 * steps * activation_width,
             "allocated_parameter_scalars": allocated,
             "active_parameter_scalars": active,
@@ -885,7 +893,7 @@ def _validate_activation_feature_result(
         "gradient_evaluations": steps,
         "optimizer_scalar_updates": steps * allocated,
         "model_queries": 2 * steps,
-        "random_bernoulli_variates": steps * (hidden1 + hidden2) if stochastic else 0,
+        "random_bernoulli_variates": 2 * steps * (hidden1 + hidden2) if stochastic else 0,
         "activation_scalar_evaluations": 2 * steps * (hidden1 + hidden2),
         "allocated_parameter_scalars": allocated,
         "active_parameter_scalars": active,

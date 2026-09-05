@@ -222,7 +222,7 @@ class TestUtilityUpdate:
         new = update_utility(cbp_state, activations, grads, 0.9)
         assert bool(jnp.all(jnp.isfinite(new.utilities[0])))
         chex.assert_trees_all_close(new.utilities[0][0], cbp_state.utilities[0][0])
-        idx, has = _select_replacement_index(new.utilities[0], new.ages[0], 10)
+        idx, has = _select_replacement_index(new.utilities[0], new.ages[0], 10, 0.9)
         assert bool(has)
         assert int(idx) == 1
 
@@ -988,3 +988,140 @@ class TestCBPWrapperConstructorIdentities:
         payload[field] = value
         with pytest.raises(ValueError, match="serialized"):
             CBPMultiHeadMLPLearner.from_config(payload)
+
+
+# =============================================================================
+# Published bias-corrected utility (Dohare et al. 2024, Eq. 8)
+# =============================================================================
+
+
+def _warm_utility_ema(steps: int, contribution: float, decay: float) -> tuple[float, int]:
+    """Drive ``update_utility`` for ``steps`` steps on one unit.
+
+    Returns the resulting ``(utility, age)`` for a unit that saw the same
+    ``|activation * gradient|`` product on every step.
+    """
+    state = ContinualBackpropState(  # type: ignore[call-arg]
+        utilities=(jnp.zeros(1, dtype=jnp.float32),),
+        ages=(jnp.zeros(1, dtype=jnp.int32),),
+        replacement_accumulators=jnp.zeros(1, dtype=jnp.float32),
+        rng_key=jr.key(0),
+    )
+    activations = (jnp.array([contribution], dtype=jnp.float32),)
+    grads = (jnp.ones(1, dtype=jnp.float32),)
+    for _ in range(steps):
+        state = update_utility(state, activations, grads, decay)
+    return float(state.utilities[0][0]), int(state.ages[0][0])
+
+
+class TestPublishedBiasCorrectedUtility:
+    """Replacement must rank units by the *bias-corrected* utility.
+
+    Dohare, Hernandez-Garcia, Lan, Rahman, Mahmood & Sutton (2024), "Loss of
+    plasticity in deep continual learning", *Nature* 632, pp. 768-774,
+    Eq. 8::
+
+        u_hat[l, i, t] = u[l, i, t] / (1 - eta ** a[l, i, t])
+
+    where ``a`` is the *per-unit* age.  The authors' released implementation
+    (https://github.com/shibhansh/loss-of-plasticity,
+    ``lop/algos/gnt.py::GnT.update_utility`` /
+    ``GnT.test_features``) computes
+
+        bias_correction = 1 - self.decay_rate ** self.ages[layer_idx]
+        self.bias_corrected_util[layer_idx] = self.util[layer_idx] / bias_correction
+
+    and then selects with
+    ``torch.topk(-self.bias_corrected_util[i][eligible_feature_indices], ...)``.
+    ``lop/algos/cbp_linear.py`` and ``lop/algos/cbp_conv.py`` use the same
+    per-unit-age correction.
+
+    The correction does not cancel across units: every replaced unit has its
+    age reset to 0, so eligible units genuinely differ in age and therefore in
+    warm-up bias.  Ranking on the raw EMA systematically understates the
+    utility of the youngest eligible units -- exactly the units the maturity
+    threshold exists to protect (paper, Section "Continual backpropagation":
+    "initializing the outgoing weight to zero makes the new unit vulnerable to
+    immediate reinitialized as it has zero utility").
+    """
+
+    DECAY = 0.99
+    MATURITY = 100
+    # Steps chosen so the two units are genuinely distinguishable: the young
+    # unit is at exactly the maturity threshold (warm-up factor 1 - 0.99**100
+    # = 0.6340), the old unit is effectively fully warm (1 - 0.99**700
+    # = 0.99909).
+    YOUNG_STEPS = 100
+    OLD_STEPS = 700
+    YOUNG_CONTRIBUTION = 1.0
+    OLD_CONTRIBUTION = 0.9
+
+    def _crafted_layer(self) -> tuple[jnp.ndarray, jnp.ndarray, float, float]:
+        young_util, young_age = _warm_utility_ema(
+            self.YOUNG_STEPS, self.YOUNG_CONTRIBUTION, self.DECAY
+        )
+        old_util, old_age = _warm_utility_ema(
+            self.OLD_STEPS, self.OLD_CONTRIBUTION, self.DECAY
+        )
+        assert young_age == self.YOUNG_STEPS
+        assert old_age == self.OLD_STEPS
+        utility = jnp.array([young_util, old_util], dtype=jnp.float32)
+        age = jnp.array([young_age, old_age], dtype=jnp.int32)
+        return utility, age, young_util, old_util
+
+    def test_raw_and_published_rankings_actually_disagree(self) -> None:
+        """Pin that this fixture discriminates -- it cannot pass by coincidence."""
+        utility, age, young_util, old_util = self._crafted_layer()
+
+        # Raw EMAs: the young unit reads LOWER even though its steady-state
+        # contribution (1.0) is strictly larger than the old unit's (0.9).
+        assert young_util < old_util
+        assert int(jnp.argmin(utility)) == 0
+
+        # Bias-corrected utilities recover the true steady-state contributions
+        # and reverse the ranking.
+        corrected = utility / (1.0 - self.DECAY ** age.astype(jnp.float32))
+        assert float(corrected[0]) == pytest.approx(self.YOUNG_CONTRIBUTION, abs=2e-3)
+        assert float(corrected[1]) == pytest.approx(self.OLD_CONTRIBUTION, abs=2e-3)
+        assert float(corrected[0]) > float(corrected[1])
+        assert int(jnp.argmin(corrected)) == 1
+
+    def test_selector_uses_bias_corrected_utility(self) -> None:
+        utility, age, _, _ = self._crafted_layer()
+
+        idx, has_candidate = _select_replacement_index(
+            utility, age, self.MATURITY, self.DECAY
+        )
+        assert bool(has_candidate)
+        # Published rule replaces unit 1 (lowest bias-corrected utility, 0.9).
+        # The raw-EMA rule would have replaced unit 0 (see the test above).
+        assert int(idx) == 1
+
+    def test_replacement_path_reinitializes_the_published_unit(self) -> None:
+        utility, age, _, _ = self._crafted_layer()
+
+        learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(2,), sparsity=0.0)
+        mlp_state = learner.init(feature_dim=3, key=jr.key(0))
+        cbp_state = ContinualBackpropState(  # type: ignore[call-arg]
+            utilities=(utility,),
+            ages=(age,),
+            # Full budget so the single allowed replacement fires this step.
+            replacement_accumulators=jnp.ones(1, dtype=jnp.float32),
+            rng_key=jr.key(1),
+        )
+        config = ContinualBackpropConfig(
+            decay_rate=self.DECAY,
+            replacement_rate=0.0,
+            maturity_threshold=self.MATURITY,
+            enabled=True,
+        )
+
+        _new_mlp, new_cbp, replaced = replace_units_with_flags(
+            mlp_state, cbp_state, config, sparsity=0.0
+        )
+        assert bool(replaced[0])
+        # A replaced unit has its age and utility reset to 0.
+        assert int(new_cbp.ages[0][1]) == 0
+        assert float(new_cbp.utilities[0][1]) == 0.0
+        # The younger, higher-true-utility unit is untouched.
+        assert int(new_cbp.ages[0][0]) == self.YOUNG_STEPS
