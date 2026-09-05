@@ -44,12 +44,21 @@ contribution via outgoing-weight magnitudes; the gradient form here
 is mathematically related (via the chain rule) and is what the
 original Dohare implementation uses in practice.
 
+Ranking uses the paper's Eq. 8 warm-up debias,
+``u_hat_l[i] = u_l[i] / (1 - decay ** age_l[i])``, exactly as the released
+reference does (``lop/algos/gnt.py``: ``bias_correction = 1 -
+self.decay_rate ** self.ages[layer_idx]``, then ``topk`` over
+``bias_corrected_util``). The ``age`` exponent is per unit and every replaced
+unit restarts at ``age = 0``, so this correction does not cancel across units:
+ranking on the raw EMA understates recently reset units and re-replaces them.
+
 Replacement
 -----------
 On every step, ``replacement_rate * num_mature_units`` fractional
 replacements accrue per layer (units younger than ``maturity_threshold``
 earn no budget), and at most one accumulated replacement is delivered per
-step: the mature unit with the lowest utility in the layer is replaced. Replaced units have their
+step: the mature unit with the lowest bias-corrected utility in the layer is
+replaced. Replaced units have their
 incoming weights re-drawn via :func:`sparse_init` and their outgoing
 weights zeroed (so a freshly initialized unit does not destabilize the
 prediction immediately). The unit's age and utility are reset to 0.
@@ -137,6 +146,7 @@ _CBP_SINGLE_CONFIG_FIELDS = _CBP_MULTI_CONFIG_FIELDS - {
     "per_head_gamma_lamda",
 }
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {
         int,
@@ -479,25 +489,49 @@ def update_utility(
     )
 
 
+def _bias_corrected_utility(utility: Array, age: Array, decay_rate: float) -> Array:
+    """Return the warm-up-debiased utility EMA of Dohare et al. 2024, Eq. 8.
+
+    ``u_hat[i] = u[i] / (1 - decay ** age[i])``. The ``age`` exponent is
+    per unit, so the correction does not cancel across units: every replaced
+    unit restarts its EMA at 0 with ``age = 0``, and without the correction a
+    recently reset unit reads systematically lower than an equally useful
+    long-lived one.
+
+    ``1 - decay ** age`` is 0 only at ``age == 0`` (and for ``decay == 0`` it
+    is 1 for every ``age >= 1``). Age-0 units are never eligible for
+    replacement unless ``maturity_threshold == 0``; the denominator is floored
+    at the smallest positive normal float32 so that case stays finite instead
+    of producing NaN.
+    """
+    decay = jnp.asarray(decay_rate, dtype=jnp.float32)
+    correction = 1.0 - decay ** age.astype(jnp.float32)
+    return utility / jnp.maximum(correction, _FLOAT32_MIN_NORMAL)
+
+
 def _select_replacement_index(
     utility: Array,
     age: Array,
     maturity_threshold: int,
+    decay_rate: float,
 ) -> tuple[Array, Array]:
     """Pick the index of the lowest-utility mature unit, if any.
 
-    A unit is "mature" iff ``age >= maturity_threshold``. Among mature
-    units we pick the one with the smallest utility. If no mature unit
-    exists, ``selected`` is ``-1`` (sentinel) and ``has_candidate`` is
-    ``False``.
+    A unit is "mature" iff ``age >= maturity_threshold``. Among mature units
+    we pick the one with the smallest **bias-corrected** utility
+    (:func:`_bias_corrected_utility`). If no mature unit exists, ``selected``
+    is ``-1`` (sentinel) and ``has_candidate`` is ``False``.
 
     Implementation: replace the utility of immature or non-finite units
     with ``+inf`` before taking ``argmin`` so they are never chosen.
+    Eligibility is decided on the raw EMA's finiteness so the existing
+    NaN/inf fail-closed behaviour is unchanged.
 
     Args:
-        utility: Per-unit utility array, shape ``(num_units,)``.
+        utility: Per-unit raw utility EMA, shape ``(num_units,)``.
         age: Per-unit age array (same shape).
         maturity_threshold: Minimum age for eligibility.
+        decay_rate: Utility EMA decay ``eta``, used for the warm-up debias.
 
     Returns:
         Tuple ``(index, has_candidate)`` where ``index`` is the chosen
@@ -505,7 +539,9 @@ def _select_replacement_index(
     """
     mature = age >= jnp.asarray(maturity_threshold, dtype=age.dtype)
     eligible = mature & jnp.isfinite(utility)
-    masked_utility = jnp.where(eligible, utility, jnp.inf)
+    corrected = _bias_corrected_utility(utility, age, decay_rate)
+    eligible = eligible & jnp.isfinite(corrected)
+    masked_utility = jnp.where(eligible, corrected, jnp.inf)
     has_candidate = jnp.any(eligible)
     idx = jnp.argmin(masked_utility)
     selected = jnp.where(has_candidate, idx, jnp.int32(-1))
@@ -682,11 +718,13 @@ def replace_units_with_flags(
         accum = accum_arr[layer_idx] + rate * n_eligible
         # Will we replace one unit this step?
         do_replace = accum >= 1.0
-        # Pick lowest-utility mature unit from the *current* CBP state.
+        # Pick the mature unit with the lowest bias-corrected utility from the
+        # *current* CBP state.
         unit_idx, has_candidate = _select_replacement_index(
             new_cbp_state.utilities[layer_idx],
             new_cbp_state.ages[layer_idx],
             config.maturity_threshold,
+            config.decay_rate,
         )
         # Only replace if we both budgeted for it AND found a mature unit.
         gated = jnp.logical_and(do_replace, has_candidate)

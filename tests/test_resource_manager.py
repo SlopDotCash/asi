@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from types import MappingProxyType
 
@@ -859,3 +860,19 @@ def test_resource_manager_serialized_schemas_are_exact() -> None:
         invalid.update(mutation)
         with pytest.raises(ValueError, match=match):
             GeneratorMetaResourceManager.from_config(invalid)
+
+def test_learned_resource_manager_masked_baseline_centers_across_extreme_gaps() -> None:
+    manager = LearnedResourceManager(n_actions=3, n_contexts=1, exploration=0.0)
+    for gap in (0.0, 30.0, 60.0, 100.0, 200.0):
+        state = manager.init()
+        state = dataclasses.replace(
+            state,
+            log_weights=jnp.array([[gap, 0.0, 0.0]], dtype=jnp.float32),
+        )
+        losses = jnp.asarray([jnp.nan, 1.0, 3.0], dtype=jnp.float32)
+        result = manager.update(state, losses)
+        assert bool(result.update_applied)
+        # Centering baseline of 1.0 and 3.0 should give advantages +1.0 and -1.0
+        assert jnp.allclose(result.advantages[1], 1.0, atol=1e-4)
+        assert jnp.allclose(result.advantages[2], -1.0, atol=1e-4)
+
