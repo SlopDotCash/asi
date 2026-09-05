@@ -1118,6 +1118,18 @@ def test_summary_and_paired_comparison_fail_closed() -> None:
         summarize_forager_runs(
             [candidate[0], _result("alberta_horde_ac", 1, 2.0, config_id="different")]
         )
+    different_custom_metadata = [
+        dataclasses.replace(
+            candidate[0],
+            agent_metadata={"learning_rate": 0.01},
+        ),
+        dataclasses.replace(
+            candidate[1],
+            agent_metadata={"learning_rate": 0.99},
+        ),
+    ]
+    with pytest.raises(ValueError, match="configuration"):
+        summarize_forager_runs(different_custom_metadata)
     incompatible_metric = _result("alberta_horde_ac", 1, 2.0, ewm_decay=0.5)
     with pytest.raises(ValueError, match="metric contract"):
         summarize_forager_runs([candidate[0], incompatible_metric])

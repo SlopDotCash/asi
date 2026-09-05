@@ -32,6 +32,7 @@ from typing import Any, NoReturn, cast
 import jax
 import numpy as np
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.core.oak import OaKConfig
 from alberta_framework.core.options import STOMPConfig
 from alberta_framework.core.prototype_agent import PrototypeAgentConfig
@@ -129,6 +130,7 @@ REFERENCE_LIFE_SCORECARD_PLAN_V1_SHA256 = (
 # A complete 144-shard aggregate is comfortably below this limit.  Keeping
 # the cap explicit prevents validation inputs from becoming an unbounded read.
 MAX_SCORECARD_JSON_INPUT_BYTES = 64 * 1024 * 1024
+_MAX_JSON_NESTING_DEPTH = 64
 MAX_SCORECARD_AGGREGATE_INPUT_BYTES = 256 * 1024 * 1024
 
 CONTROL_GATE_T_CRITICAL = 2.201
@@ -1622,11 +1624,19 @@ def _load_json_strict_with_metadata(
             source = encoded.decode("utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError(f"{path}: strict JSON input is not UTF-8") from exc
-        payload = json.loads(
+        require_json_text_nesting(
             source,
-            object_pairs_hook=pairs_hook,
-            parse_constant=reject_constant,
+            max_depth=_MAX_JSON_NESTING_DEPTH,
+            name="scorecard JSON",
         )
+        try:
+            payload = json.loads(
+                source,
+                object_pairs_hook=pairs_hook,
+                parse_constant=reject_constant,
+            )
+        except RecursionError as exc:
+            raise ValueError("scorecard JSON exceeds the JSON nesting limit") from exc
     except ValueError:
         raise
     except (OSError, json.JSONDecodeError) as exc:

@@ -441,3 +441,35 @@ def test_sliced_sigreg_rejects_nonfinite_derived_projections() -> None:
     assert bool(jnp.isfinite(directions).all())
     with pytest.raises(ValueError, match="projected samples must be finite"):
         sliced_sigreg_loss(embeddings, directions)
+
+
+def test_sample_sigreg_directions_stay_unit_below_eps() -> None:
+    """A short Gaussian must still become a unit direction.
+
+    ``sample_sigreg_directions`` is the public sampler for sliced SIGReg.
+    The constructor accepts any positive ``eps`` floor. On origin/main a
+    one-dimensional draw whose abs-value is below that floor was divided
+    by ``eps`` and returned with norm ``|g|/eps < 1``. The sliced loss
+    then scored a collapsed projection instead of the true unit axis.
+    Frozen key 1 with ``eps=0.5`` is that supported path.
+    """
+    config = SIGRegConfig(n_projections=1, kernel_width=1.0, eps=0.5)
+    key = jr.key(1)
+    raw = jr.normal(key, (1, 1), dtype=jnp.float32)
+    assert float(jnp.abs(raw[0, 0])) < config.eps
+
+    directions = sample_sigreg_directions(key, latent_dim=1, config=config)
+    true_unit = raw / jnp.linalg.norm(raw, axis=1, keepdims=True)
+    chex.assert_trees_all_close(
+        jnp.linalg.norm(directions, axis=1),
+        jnp.ones((1,), dtype=jnp.float32),
+        atol=1.0e-5,
+    )
+    chex.assert_trees_all_close(jnp.abs(directions), jnp.abs(true_unit), atol=1.0e-5)
+
+    embeddings = jr.normal(jr.key(99), (64, 1), dtype=jnp.float32)
+    chex.assert_trees_all_close(
+        sliced_sigreg_loss(embeddings, directions, kernel_width=1.0),
+        sliced_sigreg_loss(embeddings, true_unit, kernel_width=1.0),
+        atol=1.0e-6,
+    )

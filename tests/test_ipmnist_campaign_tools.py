@@ -717,6 +717,22 @@ def test_rule_discovery_summary_uses_explicit_directories(tmp_path: Path) -> Non
     assert "ipmnist_provenance" in summary["provenance"]["sources"]
 
 
+def test_rule_discovery_summary_verdicts_follow_explicit_inputs(tmp_path: Path) -> None:
+    screen = tmp_path / "screen"
+    for name in SCREEN_ARMS:
+        accuracy = 0.95 if name == CHAMPION else 0.1
+        _shard(screen / f"{name}_seed0.json", seed=0, accuracy=accuracy)
+
+    summary = build_rule_discovery_summary(screen, tmp_path / "confirm", seeds=(0,))
+
+    assert summary["verdicts"]["disc_r1_verbatim"] == (
+        "screen mean 0.10000; paired vs champion -0.85000; development screen only"
+    )
+    assert summary["verdicts"]["disc_r1_pscale_norms"] == (
+        "screen mean 0.10000; paired vs champion -0.85000; development screen only"
+    )
+
+
 @pytest.mark.parametrize("seeds", [(), (0, 0), (True,), (-1,), (2**32,)])
 def test_rule_summary_rejects_noncanonical_or_duplicate_seeds_before_io(
     tmp_path: Path, seeds: object

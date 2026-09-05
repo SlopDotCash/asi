@@ -1573,11 +1573,23 @@ class AlbertaPipeline:
                 dtype=jnp.int32,
             )
             auxiliary_cumulants = horde_cumulants[aux_indices] if aux_indices.size else None
+            # Only the value head's discount is a per-transition control
+            # quantity. Zero it at episode boundaries so the value head does
+            # not bootstrap through termination and the actor eligibility
+            # trace decays to zero; auxiliary GVF demons keep their configured
+            # gammas. At ``terminated == 0.0`` this reproduces the value head's
+            # configured gamma bit-for-bit, so the non-terminal path is
+            # unchanged versus omitting ``discount``.
+            value_gamma = self._horde.horde_spec.gammas[value_index]
+            control_discount = jnp.where(
+                terminated == 0.0, value_gamma, jnp.zeros_like(value_gamma)
+            )
             ac_result = ac.update(
                 ac_state,
                 reward,
                 features,
                 auxiliary_cumulants=auxiliary_cumulants,
+                discount=control_discount,
             )
             new_control_state: SARSAState | HordeActorCriticState = ac_result.state
             q_values_or_policy = ac_result.policy

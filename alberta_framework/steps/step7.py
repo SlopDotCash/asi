@@ -1110,7 +1110,9 @@ def step7_update(
         def rollout_step(
             rollout_carry: tuple[DifferentialSARSAState, Array, Array, Array],
             _: Array,
-        ) -> tuple[tuple[DifferentialSARSAState, Array, Array, Array], tuple[Array, Array]]:
+        ) -> tuple[
+            tuple[DifferentialSARSAState, Array, Array, Array], tuple[Array, Array, Array]
+        ]:
             rollout_state, rollout_observation, rollout_action, rollout_key = (
                 rollout_carry
             )
@@ -1135,16 +1137,20 @@ def step7_update(
                 prediction.next_observation,
                 planned.action,
                 planned.state.rng_key,
-            ), (planned.td_error, prediction.reward)
+            ), (planned.td_error, prediction.reward, planned.update_applied)
 
         (
             (rollout_state, _rollout_observation, _rollout_action, _rollout_key),
-            (rollout_td_errors, rollout_rewards),
+            (rollout_td_errors, rollout_rewards, rollout_updates_applied),
         ) = jax.lax.scan(
             rollout_step,
             (carry_state, anchor_observation, action, key),
             jnp.arange(config.planning_rollout_depth, dtype=jnp.int32),
         )
+        # A backup counts as accepted only if the core learner actually applied
+        # every imagined update; a rolled-back update leaves the state
+        # unchanged and must not be reported as planning progress.
+        rollout_accepted = planning_ready & jnp.all(rollout_updates_applied)
         rollout_td_signal = jnp.sum(rollout_td_errors)
         root_reward = rollout_rewards[0]
         restored_state = cast(
@@ -1211,6 +1217,7 @@ def step7_update(
             jnp.where(planning_ready, behavior_prob, 0.0),
             jnp.where(planning_ready, target_prob, 0.0),
             jnp.where(planning_ready, importance_ratio, 0.0),
+            rollout_accepted,
         )
 
     (
@@ -1224,17 +1231,14 @@ def step7_update(
             planning_behavior_probs,
             planning_target_probs,
             planning_importance_ratios,
+            planning_accepted,
         ),
     ) = jax.lax.scan(
         planning_step,
         (control_after_real, memory_priorities, memory_utilities),
         jnp.arange(config.planning_steps, dtype=jnp.int32),
     )
-    planning_accepted = jnp.full(
-        (config.planning_steps,),
-        planning_ready,
-        dtype=jnp.bool_,
-    )
+    planning_accepted = planning_accepted.astype(jnp.bool_)
     new_state = Step7DynaState(
         control_state=planned_state,
         world_model_state=model_state,

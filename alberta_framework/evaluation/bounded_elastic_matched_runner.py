@@ -174,6 +174,16 @@ def _canonical(value: object) -> bytes:
     ).encode("ascii")
 
 
+def _same(actual: object, expected: object) -> bool:
+    """Type-exact equality for JSON subtrees.
+
+    Python's ``==`` treats ``0 == False`` and ``1.0 == 1`` as equal, so a
+    re-signed payload with punned scalar types would pass a plain ``!=``
+    comparison. Comparing canonical bytes rejects any byte-level drift.
+    """
+    return _canonical(actual) == _canonical(expected)
+
+
 def _json_preflight(value: object) -> None:
     pending: list[tuple[object, int]] = [(value, 0)]
     seen: set[int] = set()
@@ -721,14 +731,14 @@ def _validate_bounded_elastic_matched(
         or _screening_dataset_provenance(x, y) != _frozen_dataset_provenance()
     ):
         raise ValueError("campaign inputs differ from the frozen reviewed plan")
-    if root["config"] != _config_payload(checked_config):
+    if not _same(root["config"], _config_payload(checked_config)):
         raise ValueError("matched result config drifted")
-    if root["development_seeds"] != list(seeds) or root["arms"] != list(ARMS):
+    if not _same(root["development_seeds"], list(seeds)) or not _same(root["arms"], list(ARMS)):
         raise ValueError("matched result protocol roster drifted")
     expected_identity = _result_identity(x, y)
-    if root["identity"] != expected_identity:
+    if not _same(root["identity"], expected_identity):
         raise ValueError("matched result identity drifted")
-    if root["policy"] != _POLICY:
+    if not _same(root["policy"], _POLICY):
         raise ValueError("matched result must remain permanently nonpromoting")
     expected_roster = [(seed, arm) for seed in seeds for arm in ARMS]
     raw_rows = root["rows"]
@@ -752,7 +762,7 @@ def _validate_bounded_elastic_matched(
             or arm not in ARMS
         ):
             raise ValueError("matched row roster identity drifted")
-        if checked_row["execution_identity"] != identities[seed]:
+        if not _same(checked_row["execution_identity"], identities[seed]):
             raise ValueError("matched row execution identity drifted")
         payload = validate_bounded_elastic_development_result(checked_row["result"])
         if payload["outcome"] != "inconclusive":
@@ -766,7 +776,7 @@ def _validate_bounded_elastic_matched(
         validate_matched_bounded_elastic_results(
             [row["result"] for row in rows[offset : offset + len(ARMS)]]
         )
-    if root["aggregate"] != _aggregate(rows):
+    if not _same(root["aggregate"], _aggregate(rows)):
         raise ValueError("matched result aggregate drifted")
     unsigned = dict(root)
     claimed = unsigned.pop("result_sha256")
@@ -792,7 +802,7 @@ def _validate_bounded_elastic_matched(
             expected_resources = cast(dict[str, object], expected_payload["resources"])
             claimed_resources = cast(dict[str, object], claimed_payload["resources"])
             expected_resources["timing_seconds"] = claimed_resources["timing_seconds"]
-            if expected_payload != claimed_payload:
+            if not _same(expected_payload, claimed_payload):
                 raise ValueError("matched row disagrees with strict current-source reexecution")
         if _result_identity(x, y) != expected_identity:
             raise RuntimeError("source, runtime, or dataset changed during strict reexecution")

@@ -1319,13 +1319,22 @@ def savings_ratio(
     Values > 1 mean the learner re-entered the recurring task closer to its
     old solution than it started at first exposure — the savings measure of
     memory.  A memoryless learner scores ~1; a learner whose representation
-    isolates tasks scores >> 1.  (Early-window MSE is used rather than
-    steps-to-criterion because it stays informative for learners whose
-    asymptotic error sits near the criterion threshold.)
+    isolates tasks scores >> 1.  Identical entry windows at or below the
+    ``1e-8`` numerical floor score ``1`` (same identity as
+    :func:`savings_ratio_steps`), not ``0``.  (Early-window MSE is used
+    rather than steps-to-criterion because it stays informative for learners
+    whose asymptotic error sits near the criterion threshold.)
     """
     first = early_window_mse(sq_errors, first_segment, segment_length, window)
     revisit = early_window_mse(sq_errors, revisit_segment, segment_length, window)
-    return first / jnp.maximum(revisit, 1e-8)
+    # The 1e-8 floor only prevents a zero-denominator blow-up. When both
+    # entry windows sit at or below that floor they are indistinguishable
+    # (oracle / noiseless / underflow), so the ratio is 1 — the same
+    # identity savings_ratio_steps already uses via max(steps, 1).
+    floor = jnp.asarray(1e-8, dtype=jnp.promote_types(first.dtype, jnp.float32))
+    both_at_floor = (first <= floor) & (revisit <= floor)
+    ratio = first / jnp.maximum(revisit, floor)
+    return jnp.where(both_at_floor, jnp.ones_like(ratio), ratio)
 
 
 def savings_ratio_steps(

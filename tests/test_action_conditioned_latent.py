@@ -8,6 +8,7 @@ import dataclasses
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework.benchmarks.action_conditioned_latent import (
@@ -20,6 +21,11 @@ from alberta_framework.benchmarks.action_conditioned_latent import (
     validate_action_latent_payload,
 )
 from alberta_framework.core.latent_world_model import LatentWorldModel, LatentWorldModelConfig
+from alberta_framework.streams.closed_loop import (
+    SwitchingTwoStateConfig,
+    SwitchingTwoStateMDP,
+    SwitchingTwoStateState,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -79,6 +85,24 @@ def test_live_model_action_selector_is_jittable_and_action_conditioned() -> None
     )
     assert int(eager) in (0, 1)
     assert int(compiled) == int(eager)
+
+
+def test_next_observation_cannot_identify_phase_switched_immediate_reward() -> None:
+    """Refute an oracle-free reward adapter for the transition-only FTL model."""
+    environment = SwitchingTwoStateMDP(SwitchingTwoStateConfig(phase_length=4))
+    phase_a = SwitchingTwoStateState(
+        state_index=jnp.asarray(0, dtype=jnp.int32),
+        step_count=jnp.asarray(0, dtype=jnp.int32),
+    )
+    phase_b = phase_a.replace(step_count=jnp.asarray(4, dtype=jnp.int32))
+    action = jnp.asarray(0, dtype=jnp.int32)
+    next_a, reward_a, _ = environment.step(phase_a, action, jr.key(0))
+    next_b, reward_b, _ = environment.step(phase_b, action, jr.key(1))
+
+    np.testing.assert_array_equal(environment.observe(phase_a), environment.observe(phase_b))
+    np.testing.assert_array_equal(next_a, next_b)
+    assert float(reward_a) == 0.0
+    assert float(reward_b) == 1.0
 
 
 @pytest.mark.parametrize(

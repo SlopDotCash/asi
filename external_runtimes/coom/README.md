@@ -28,6 +28,7 @@ chmod 0733 "$receipt_dir"
 docker run --rm --network none --read-only --user 65532:65532 \
   --cap-drop ALL --security-opt no-new-privileges \
   --cpus 2 --memory 2g --pids-limit 64 \
+  --workdir /tmp \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   -v "$receipt_dir:/output" asi-coom-qualification:development \
   --output /output/receipt.json
@@ -35,6 +36,7 @@ chmod 0755 "$receipt_dir"
 docker run --rm --network none --read-only --user 65532:65532 \
   --cap-drop ALL --security-opt no-new-privileges \
   --cpus 2 --memory 2g --pids-limit 64 \
+  --workdir /tmp \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   -v "$receipt_dir:/input:ro" asi-coom-qualification:development \
   --validate-receipt /input/receipt.json
@@ -42,6 +44,9 @@ chmod 0700 "$receipt_dir"
 ```
 
 The host receipt directory above is explicitly outside the source checkout.
+The writable tmpfs working directory is required because ViZDoom creates its
+process-local `_vizdoom.ini` and `_vizdoom/` files in the current directory;
+the source tree and container root remain read-only.
 The verifier refuses to start the engine unless it is UID/GID 65532, has no
 effective Linux capabilities, has `NoNewPrivs` set, and sees exactly the eleven
 reviewed Python distributions. The command also makes network, root filesystem,

@@ -125,6 +125,12 @@ def _persistent_resources(raw_dim: int, n_candidates: int) -> dict[str, int]:
         "persistent_bytes": persistent_bytes,
     }
 
+
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Return 0 when ``scale`` is 0 so a 0*inf product cannot form."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 # =============================================================================
 # State
 # =============================================================================
@@ -398,7 +404,8 @@ class CumulantDiscovery:
         v = state.weights @ observation + state.biases  # (n,)
         v_next = state.weights @ next_observation + state.biases  # (n,)
 
-        td = cumulants + gamma * v_next - v  # (n,)
+        # Default gamma=0 still hits IEEE 0*inf when V(s') overflows.
+        td = cumulants + _skip_zero_scale(gamma, v_next) - v  # (n,)
 
         # Predictor update (per-candidate semi-gradient TD step)
         # weights_i += alpha * td_i * obs
