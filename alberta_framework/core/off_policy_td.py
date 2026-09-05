@@ -245,6 +245,11 @@ class OffPolicyTDState:
         bias: Bias term
         eligibility_traces: Per-feature importance-sampling trace ``z_t``
         bias_eligibility_trace: Bias importance-sampling trace
+        previous_gamma: Discount from the prior update call, carried so the
+            trace decays by ``gamma_t`` (the discount of the transition into
+            ``S_t``) while the TD error bootstraps with ``gamma_{t+1}``
+            (Sutton & Barto 2nd ed., eqs. 12.23/12.25). Seeded to 1.0,
+            which is inert against the zero initial traces.
         step_count: Number of updates applied
         birth_timestamp: Wall-clock seconds at init
         uptime_s: Cumulative wall-clock seconds spent in update calls
@@ -254,6 +259,7 @@ class OffPolicyTDState:
     bias: Float[Array, ""]
     eligibility_traces: Float[Array, " feature_dim"]
     bias_eligibility_trace: Float[Array, ""]
+    previous_gamma: Float[Array, ""] = None  # type: ignore[assignment]
     step_count: Int[Array, ""] = None  # type: ignore[assignment]
     birth_timestamp: float = 0.0
     uptime_s: float = 0.0
@@ -348,6 +354,7 @@ class GradientTDState:
     weights: Float[Array, " augmented_feature_dim"]
     secondary_weights: Float[Array, " augmented_feature_dim"]
     eligibility_traces: Float[Array, " augmented_feature_dim"]
+    previous_gamma: Float[Array, ""] = None  # type: ignore[assignment]
     step_count: Int[Array, ""] = None  # type: ignore[assignment]
     birth_timestamp: float = 0.0
     uptime_s: float = 0.0
@@ -389,6 +396,7 @@ def _off_policy_state_contract(state: object) -> tuple[OffPolicyTDState, int]:
     _array_metadata("state.bias", checked.bias, ())
     _array_metadata("state.eligibility_traces", checked.eligibility_traces, (feature_dim,))
     _array_metadata("state.bias_eligibility_trace", checked.bias_eligibility_trace, ())
+    _array_metadata("state.previous_gamma", checked.previous_gamma, ())
     try:
         step_shape = tuple(checked.step_count.shape)
         step_dtype = np.dtype(checked.step_count.dtype)
@@ -434,6 +442,7 @@ def _gradient_state_contract(state: object) -> tuple[GradientTDState, int]:
         raise ValueError("state augmented feature dimension must be at least two")
     for name in ("weights", "secondary_weights", "eligibility_traces"):
         _array_metadata(f"state.{name}", getattr(checked, name), (augmented_dim,))
+    _array_metadata("state.previous_gamma", checked.previous_gamma, ())
     try:
         step_shape = tuple(checked.step_count.shape)
         step_dtype = np.dtype(checked.step_count.dtype)
@@ -510,13 +519,14 @@ class OffPolicyTDLinearLearner:
     def init(self, feature_dim: int) -> OffPolicyTDState:
         """Initialize learner state with zero weights and zero traces."""
         feature_dim = _require_feature_dim(
-            feature_dim, vectors=2, fixed_scalars=3, update_vectors=9
+            feature_dim, vectors=2, fixed_scalars=4, update_vectors=9
         )
         return OffPolicyTDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
             birth_timestamp=time.time(),
             uptime_s=0.0,
@@ -597,8 +607,10 @@ class OffPolicyTDLinearLearner:
         td_error = reward_s + _skip_zero_scale(gamma_s, v_next) - v_t
 
         # Canonical per-decision IS trace.  Each transition's ratio enters once:
-        # the prior ratios are already represented in the stored trace.
-        decay = gamma_s * lam
+        # the prior ratios are already represented in the stored trace. The
+        # decay uses the PRIOR call's discount (state.previous_gamma = gamma_t,
+        # the discount into S_t); only the td_error bootstrap uses gamma_s.
+        decay = state.previous_gamma * lam
         new_e = _skip_zero_scale(
             rho_clipped, _skip_zero_scale(decay, state.eligibility_traces) + observation
         )
@@ -613,6 +625,7 @@ class OffPolicyTDLinearLearner:
             bias=state.bias + scaled_update * new_e_b,
             eligibility_traces=new_e,
             bias_eligibility_trace=new_e_b,
+            previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
@@ -969,7 +982,7 @@ class GradientTDLinearLearner:
         feature_dim = _require_feature_dim(
             feature_dim,
             vectors=3,
-            fixed_scalars=1,
+            fixed_scalars=2,
             update_vectors=15,
             augmented=True,
         )
@@ -978,6 +991,7 @@ class GradientTDLinearLearner:
             weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
             secondary_weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(augmented_dim, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
             birth_timestamp=time.time(),
             uptime_s=0.0,
@@ -1055,7 +1069,9 @@ class GradientTDLinearLearner:
         next_prediction = jnp.dot(state.weights, next_phi)
         td_error = reward_s + _skip_zero_scale(gamma_s, next_prediction) - prediction
 
-        traces = rho_clipped * (phi + _skip_zero_scale(gamma_s * lam, state.eligibility_traces))
+        traces = rho_clipped * (
+            phi + _skip_zero_scale(state.previous_gamma * lam, state.eligibility_traces)
+        )
         secondary_dot_trace = jnp.dot(state.secondary_weights, traces)
         secondary_dot_phi = jnp.dot(state.secondary_weights, phi)
 
@@ -1069,6 +1085,7 @@ class GradientTDLinearLearner:
             weights=state.weights + primary_step,
             secondary_weights=state.secondary_weights + secondary_step,
             eligibility_traces=traces,
+            previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
@@ -1082,7 +1099,9 @@ class GradientTDLinearLearner:
             & jnp.isfinite(rho_s)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
-            eligibility_traces=_zero_if_unused(gamma_s * lam, state.eligibility_traces),
+            eligibility_traces=_zero_if_unused(
+                state.previous_gamma * lam, state.eligibility_traces
+            ),
         )
         candidate_metrics = jnp.array(
             [

@@ -237,6 +237,12 @@ class _SpoofedFloat:
     def __float__(self) -> float:
         return 0.5
 
+    def __le__(self, other: float) -> bool:
+        return 0.5 <= other
+
+    def __lt__(self, other: float) -> bool:
+        return 0.5 < other
+
 
 def test_benchmark_config_rejects_class_spoofed_ewm_decay() -> None:
     with pytest.raises(ValueError, match="ewm_decay"):
@@ -838,23 +844,6 @@ def test_official_npz_import_rejects_nonfinite_ewm_decay(tmp_path: Path) -> None
             OfficialForagaxRunSpec(agent="DQN", seed=0, path=path),
             ewm_decay=math.nan,
         )
-
-
-class _SpoofedFloat:
-    """Mimics ``float`` via ``__class__`` to defeat ``isinstance`` checks."""
-
-    @property
-    def __class__(self) -> type:  # type: ignore[override]
-        return float
-
-    def __float__(self) -> float:
-        return 0.5
-
-    def __le__(self, other: float) -> bool:
-        return 0.5 <= other
-
-    def __lt__(self, other: float) -> bool:
-        return 0.5 < other
 
 
 @pytest.mark.parametrize(

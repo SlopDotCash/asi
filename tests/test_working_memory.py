@@ -117,6 +117,49 @@ def test_working_memory_trace_decay_and_feature_causality() -> None:
     chex.assert_trees_all_close(state2.observation_traces[0], jnp.asarray([0.5]))
 
 
+
+
+def test_innovation_uses_fastest_decay_not_first_listed_rate() -> None:
+    """``include_innovations`` subtracts the fastest trace, not ``traces[0]``.
+
+    Decay rates are an unordered supported tuple. The constructor accepts
+    ``(0.99, 0.0)``: 0.99 is a long-horizon EMA and 0.0 is a full replace.
+    After one write of 4.0 the slow row is 0.04 and the fast row is 4.0, so
+    the documented current-minus-fast-trace innovation is 0. Using the first
+    listed row silently returns 3.96 instead.
+    """
+    config = WorkingMemoryConfig(
+        observation_dim=1,
+        action_dim=0,
+        reward_dim=0,
+        observation_decay_rates=(0.99, 0.0),
+        action_decay_rates=(),
+        reward_decay_rates=(),
+        include_current_observation=False,
+        include_current_action=False,
+        include_current_reward=False,
+        include_traces=True,
+        include_innovations=True,
+    )
+    memory = WorkingMemoryFeaturizer(config)
+    observation = jnp.asarray([4.0])
+    state = memory.update(
+        memory.init(),
+        observation,
+        memory.zero_action(),
+        memory.zero_reward(),
+    )
+    features = memory.features(
+        state,
+        observation,
+        memory.zero_action(),
+        memory.zero_reward(),
+    )
+    chex.assert_trees_all_close(state.observation_traces[0], jnp.asarray([0.04]), atol=1e-6)
+    chex.assert_trees_all_close(state.observation_traces[1], jnp.asarray([4.0]))
+    chex.assert_trees_all_close(features, jnp.asarray([0.04, 4.0, 0.0]), atol=1e-6)
+
+
 def test_working_memory_reset_semantics() -> None:
     memory = WorkingMemoryFeaturizer(
         WorkingMemoryConfig(observation_dim=2, action_dim=1, reward_dim=1)

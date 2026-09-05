@@ -150,21 +150,9 @@ def _saturating_step_count(step_count: Array) -> Array:
     return jnp.minimum(jnp.maximum(step_count, 0), maximum - 1) + 1
 
 
-_SUPPORTED_NUMPY_REAL_SCALAR_TYPES: tuple[type[object], ...] = (
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.longlong,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.ulonglong,
-    np.float16,
-    np.float32,
-    np.float64,
-    np.longdouble,
+_SUPPORTED_NUMPY_REAL_SCALAR_TYPES: tuple[type[object], ...] = tuple(
+    np.dtype(code).type
+    for code in ("b", "B", "h", "H", "i", "I", "l", "L", "q", "Q", "e", "f", "d", "g")
 )
 
 

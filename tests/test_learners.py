@@ -962,3 +962,45 @@ def test_linear_family_feature_dimensions_are_exact_and_preflighted(learner) -> 
 
     with pytest.raises(ValueError, match="resource"):
         learner.init(2**26)
+
+
+class TestTrackingKeepsEveryRecording:
+    """History arrays must hold every (idx % interval == 0) recording.
+
+    The recording predicate fires ceil(num_steps / interval) times over
+    idx in [0, num_steps); a floor-sized allocation silently drops the
+    trailing recordings (JAX scatters out-of-bounds writes to nowhere)
+    whenever the interval does not divide num_steps.
+    """
+
+    def test_step_size_history_keeps_the_tail_recording(self, rng_key):
+        step_size = 0.05
+        stream = RandomWalkStream(feature_dim=3)
+        learner = LinearLearner(optimizer=LMS(step_size=step_size))
+        config = StepSizeTrackingConfig(interval=3)
+
+        _, _, history = run_learning_loop(
+            learner, stream, num_steps=10, key=rng_key, step_size_tracking=config
+        )
+
+        chex.assert_shape(history.step_sizes, (4, 3))
+        chex.assert_trees_all_close(
+            history.recording_indices, jnp.array([0, 3, 6, 9], dtype=jnp.int32)
+        )
+        chex.assert_trees_all_close(
+            history.step_sizes[-1], jnp.full(3, step_size, dtype=jnp.float32)
+        )
+
+    def test_normalizer_history_keeps_the_tail_recording(self, rng_key):
+        stream = RandomWalkStream(feature_dim=3)
+        learner = LinearLearner(optimizer=IDBD(), normalizer=EMANormalizer())
+        config = NormalizerTrackingConfig(interval=4)
+
+        _, _, history = run_learning_loop(
+            learner, stream, num_steps=10, key=rng_key, normalizer_tracking=config
+        )
+
+        chex.assert_shape(history.means, (3, 3))
+        chex.assert_trees_all_close(
+            history.recording_indices, jnp.array([0, 4, 8], dtype=jnp.int32)
+        )

@@ -867,11 +867,17 @@ class AssociativeMemoryLearner:
         # The decayed label-frequency prior enters with a small fixed weight:
         # it dominates only when no feature rows match (evidence is zero, so
         # the prediction falls back to base rates) and is otherwise a weak
-        # tiebreak against feature evidence scaled by ``logit_scale``.
-        logits = 0.05 * state.prior + self._config.logit_scale * evidence
+        # tiebreak against feature evidence scaled by ``logit_scale``. The
+        # weight normalization applies to the evidence sum alone, so the
+        # prior's coefficient stays fixed instead of scaling with
+        # ``1 / total_weight``.
+        scaled_evidence = self._config.logit_scale * evidence
         total_weight = jnp.sum(weights)
         if self._config.normalize_by_weight:
-            logits = jnp.where(total_weight > 0.0, logits / total_weight, logits)
+            scaled_evidence = jnp.where(
+                total_weight > 0.0, scaled_evidence / total_weight, scaled_evidence
+            )
+        logits = 0.05 * state.prior + scaled_evidence
         probabilities = _softmax(logits)
         return AssociativeMemoryPrediction(
             logits=logits,

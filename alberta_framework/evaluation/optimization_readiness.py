@@ -214,6 +214,25 @@ def _squared_norm(value: NDArray[np.float64], *, name: str) -> float:
     return result
 
 
+def _mean_squared_norm(values: NDArray[np.float64], *, name: str) -> float:
+    """Average finite squared norms without an overflowing intermediate sum.
+
+    A direct ``np.mean`` accumulates the sum before dividing, so a batch of
+    large-but-finite row norms reaches infinity even though their mean is
+    representable.  Rescaling by a power of two is exact, keeps every summand in
+    ``[0, 1]``, and therefore preserves the mean's magnitude domain.
+    """
+    maximum = float(np.max(values))
+    if maximum == 0.0:
+        return 0.0
+    _, exponent = math.frexp(maximum)
+    scaled = float(np.mean(np.ldexp(values, -exponent)))
+    result = math.ldexp(scaled, exponent)
+    if not math.isfinite(result):
+        raise ValueError(f"{name} must fit in a finite float64")
+    return result
+
+
 def estimate_optimization_readiness(
     *,
     loss: float,
@@ -258,7 +277,9 @@ def estimate_optimization_readiness(
         [_squared_norm(row, name="batch gradient") for row in gradients],
         dtype=np.float64,
     )
-    expected_squared_norm = float(np.mean(row_squared_norms))
+    expected_squared_norm = _mean_squared_norm(
+        row_squared_norms, name="expected batch gradient squared norm"
+    )
     strength = gradient_squared_norm / resolved_loss if resolved_loss > 0.0 else 0.0
     reliability = (
         gradient_squared_norm / expected_squared_norm if expected_squared_norm > 0.0 else 0.0
@@ -269,7 +290,13 @@ def estimate_optimization_readiness(
         readiness = strength * reliability
     else:
         readiness = 0.0
-    outputs = (strength, reliability, readiness)
+    outputs = (
+        gradient_squared_norm,
+        expected_squared_norm,
+        strength,
+        reliability,
+        readiness,
+    )
     if not all(math.isfinite(value) for value in outputs):
         raise ValueError("optimization-readiness outputs must be finite")
     return OptimizationReadiness(

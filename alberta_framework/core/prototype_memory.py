@@ -423,7 +423,7 @@ class PrototypeMemoryLearner:
         slot_logits = jnp.where(state.counts > 0.0, slot_logits, -jnp.inf)
         logits = jnp.max(slot_logits, axis=1)
         any_active = jnp.any(state.counts > 0.0, axis=1)
-        logits = jnp.where(any_active, logits, -1e9)
+        # Inactive classes keep -inf; only an all-empty bank becomes zeros.
         logits = jnp.where(jnp.any(any_active), logits, jnp.zeros_like(logits))
         inputs_valid = self._state_is_valid(state) & jnp.all(jnp.isfinite(x))
         return jnp.where(inputs_valid, logits, jnp.full_like(logits, jnp.nan))

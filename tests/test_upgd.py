@@ -23,7 +23,9 @@ so noise effects are unmistakable) and ``sparsity=0.5`` round-trips.
 import chex
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
+from jax import Array
 
 from alberta_framework.core.optimizers import AdaptiveObGDBounding, ObGDBounding
 from alberta_framework.core.upgd import (
@@ -2219,3 +2221,91 @@ class TestLoops:
         stream = RandomWalkStream(feature_dim=4, drift_rate=0.0, noise_std=0.05)
         result = run_upgd_loop(learner, stream, num_steps=50, key=jr.key(0))
         chex.assert_shape(result.metrics, (50, 4))
+
+
+class TestGradientAlignmentScaleInvariance:
+    """Tests that gradient alignment and tuple norms are invariant to magnitude and scale-free."""
+
+    def test_tuple_norm_scale_free(self):
+        v = (jnp.array([3.0, 4.0], dtype=jnp.float32), jnp.array([12.0], dtype=jnp.float32))
+        expected_base = 13.0  # sqrt(9 + 16 + 144) = sqrt(169) = 13.0
+        for exp in (-30, -20, -10, -5, 0, 5, 10, 20, 30):
+            scale = 10.0**exp
+            scaled_v = tuple(x * scale for x in v)
+            norm = UPGDLearner._tuple_norm(scaled_v)
+            np.testing.assert_allclose(float(norm), expected_base * scale, rtol=1e-5)
+
+        # Empty and zero cases
+        assert float(UPGDLearner._tuple_norm(())) == 0.0
+        assert float(UPGDLearner._tuple_norm((jnp.zeros((3,), dtype=jnp.float32),))) == 0.0
+
+    def test_gradient_alignment_scale_invariance(self):
+        t1 = (jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32), jnp.array([2.0], dtype=jnp.float32))
+        for exp in (-30, -20, -10, -5, -4, -2, 0, 2, 4, 5, 10, 20, 30):
+            scale = 10.0**exp
+            scaled1 = tuple(x * scale for x in t1)
+            scaled2 = tuple(x * scale for x in t1)
+            neg_scaled = tuple(-x * scale for x in t1)
+
+            cos_same = float(UPGDLearner._gradient_alignment(scaled1, scaled2))
+            cos_neg = float(UPGDLearner._gradient_alignment(scaled1, neg_scaled))
+
+            np.testing.assert_allclose(cos_same, 1.0, atol=1e-6)
+            np.testing.assert_allclose(cos_neg, -1.0, atol=1e-6)
+
+    def test_gradient_alignment_orthogonal_and_zero(self):
+        t1 = (jnp.array([1.0, 0.0], dtype=jnp.float32),)
+        t2 = (jnp.array([0.0, 1.0], dtype=jnp.float32),)
+        zero = (jnp.zeros(2, dtype=jnp.float32),)
+        empty: tuple[Array, ...] = ()
+
+        assert float(UPGDLearner._gradient_alignment(t1, t2)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(t1, zero)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(zero, t1)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(zero, zero)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(empty, t1)) == 0.0
+
+    def test_gradient_alignment_nonfinite_inputs(self):
+        t_valid = (jnp.array([1.0, 2.0], dtype=jnp.float32),)
+        t_nan = (jnp.array([1.0, jnp.nan], dtype=jnp.float32),)
+        t_inf = (jnp.array([jnp.inf, 2.0], dtype=jnp.float32),)
+
+        assert float(UPGDLearner._gradient_alignment(t_valid, t_nan)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(t_nan, t_valid)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(t_valid, t_inf)) == 0.0
+        assert float(UPGDLearner._gradient_alignment(t_inf, t_valid)) == 0.0
+
+    def test_upgd_meta_plasticity_scale_invariance_end_to_end(self):
+        for exp in (10, 6, 2, 0, -2, -6, -10):
+            scale = 10.0**exp
+            learner = UPGDLearner(
+                n_heads=1,
+                hidden_sizes=(),
+                sparsity=0.0,
+                step_size=0.0,
+                perturbation_sigma=0.0,
+                meta_plasticity_mode="gradient_alignment",
+                meta_plasticity_step_size=0.5,
+                meta_plasticity_min_multiplier=0.1,
+                meta_plasticity_max_multiplier=10.0,
+            )
+            state = learner.init(feature_dim=3, key=jr.key(16))
+            obs = jnp.array([1.0, -0.5, 0.25], dtype=jnp.float32) * scale
+            target1 = jnp.array([1.0], dtype=jnp.float32) * scale
+
+            # Step 1: seeds previous gradients (scales stay at 0.0)
+            state = learner.update(state, obs, target1).state
+            assert float(state.meta_head_weight_log_scale) == 0.0
+            assert float(state.meta_head_bias_log_scale) == 0.0
+
+            # Step 2: identical gradients -> alignment is 1.0 -> log scale increases by 0.5
+            state_same = learner.update(state, obs, target1).state
+            np.testing.assert_allclose(float(state_same.meta_head_weight_log_scale), 0.5, atol=1e-5)
+            np.testing.assert_allclose(float(state_same.meta_head_bias_log_scale), 0.5, atol=1e-5)
+
+            # Step 2 alt: reversed target -> alignment is -1.0 -> log scale decreases by 0.5
+            pred = learner.predict(state, obs)
+            target_rev = 2.0 * pred - target1
+            state_rev = learner.update(state, obs, target_rev).state
+            np.testing.assert_allclose(float(state_rev.meta_head_weight_log_scale), -0.5, atol=1e-5)
+            np.testing.assert_allclose(float(state_rev.meta_head_bias_log_scale), -0.5, atol=1e-5)
