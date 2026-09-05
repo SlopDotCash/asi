@@ -398,7 +398,7 @@ class HordeActorCriticArrayResult:
     """Result from scan-based Horde actor-critic learning.
 
     ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
-    distribution that produced ``actions[t]``, matching
+    sampling distribution (or the model policy when actions are supplied), matching
     :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
     """
 
@@ -1546,7 +1546,7 @@ class NonlinearHordeActorCriticArrayResult:
     """Result from a scan-based nonlinear Horde actor-critic loop.
 
     ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
-    distribution that produced ``actions[t]``, matching
+    sampling distribution (or the model policy when actions are supplied), matching
     :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
     """
 
@@ -2113,7 +2113,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            current_policy,
+            jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
             result.critic_result.td_errors,

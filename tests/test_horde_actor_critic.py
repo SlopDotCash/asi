@@ -2062,3 +2062,14 @@ def test_array_runner_policies_align_with_actions() -> None:
     assert not bool(
         jnp.allclose(result.policies[0], agent.policy(state, next_observations[0]))
     )
+
+
+def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = _init_nlhac(agent)
+    obs = jnp.zeros((1, OBS_DIM))
+    result = run_nonlinear_horde_actor_critic_from_arrays(
+        agent, state, obs, jnp.array([jnp.nan]), obs
+    )
+    np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
+    chex.assert_trees_all_equal(result.state, state)
