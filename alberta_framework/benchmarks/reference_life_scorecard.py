@@ -1508,11 +1508,24 @@ def _link_unnamed_file(file_fd: int, parent_fd: int, name: str) -> None:
         ctypes.c_int,
     )
     linkat.restype = ctypes.c_int
-    if linkat(file_fd, b"", parent_fd, os.fsencode(name), 0x1000) != 0:
-        error = ctypes.get_errno()
-        if error == errno.EEXIST:
-            raise FileExistsError(error, os.strerror(error), name)
-        raise OSError(error, os.strerror(error), name)
+    if linkat(file_fd, b"", parent_fd, os.fsencode(name), 0x1000) == 0:
+        return
+    error = ctypes.get_errno()
+    if error == errno.EEXIST:
+        raise FileExistsError(error, os.strerror(error), name)
+
+    # AT_EMPTY_PATH requires CAP_DAC_READ_SEARCH on some otherwise capable
+    # Linux runtimes.  Following the procfs descriptor symlink publishes the
+    # same unnamed inode without weakening the create-only destination link.
+    if error in {errno.ENOENT, errno.EPERM}:
+        proc_fd_path = os.fsencode(f"/proc/self/fd/{file_fd}")
+        if linkat(-100, proc_fd_path, parent_fd, os.fsencode(name), 0x400) == 0:
+            return
+        fallback_error = ctypes.get_errno()
+        if fallback_error == errno.EEXIST:
+            raise FileExistsError(fallback_error, os.strerror(fallback_error), name)
+        raise OSError(fallback_error, os.strerror(fallback_error), name)
+    raise OSError(error, os.strerror(error), name)
 
 
 def write_new_json(path: Path, value: Any) -> Path:
@@ -2459,6 +2472,7 @@ def _validate_partial_outcome(
         if set(windows) != {"initial_a", "first_b", "return_a"}:
             raise ValueError(f"{path}.windows does not match the A/B/A contract")
         window = protocol["post_switch_window"]
+        window_reward_sums = [0.0, 0.0]
         for name, start, phase in (
             ("initial_a", 0, 0),
             ("first_b", phase_length, 1),
@@ -2471,7 +2485,7 @@ def _validate_partial_outcome(
                     raise ValueError(f"{path}.windows.{name} must be empty")
             else:
                 rewards = [float(item) for row in payoffs[phase] for item in row]
-                _validate_metric_window(
+                window_reward_sums[phase] += _validate_metric_window(
                     value,
                     event_count=expected_count,
                     oracle_reward=oracle_rewards[phase],
@@ -2480,6 +2494,13 @@ def _validate_partial_outcome(
                     reward_values=rewards,
                     path=f"{path}.windows.{name}",
                 )
+        if any(
+            window_sum > phase_sum + 1e-9
+            for window_sum, phase_sum in zip(
+                window_reward_sums, phase_reward_values, strict=True
+            )
+        ):
+            raise ValueError(f"{path}.windows exceed their switching-phase rewards")
         if partial["high_end_visit_count"] is not None or partial[
             "high_end_visit_rate"
         ] is not None:
@@ -2505,6 +2526,7 @@ def _validate_partial_outcome(
             raise ValueError(f"{path}.phase_reward_sums violates RiverSwim rewards")
         if set(windows) != {"early", "late"}:
             raise ValueError(f"{path}.windows does not match the RiverSwim contract")
+        window_reward_sum = 0.0
         for name, start, stop in (
             ("early", 0, protocol["early_window"]),
             ("late", horizon - protocol["late_window"], horizon),
@@ -2515,7 +2537,7 @@ def _validate_partial_outcome(
                 if value is not None:
                     raise ValueError(f"{path}.windows.{name} must be empty")
             else:
-                _validate_metric_window(
+                window_reward_sum += _validate_metric_window(
                     value,
                     event_count=expected_count,
                     oracle_reward=oracle_rewards[0],
@@ -2524,6 +2546,8 @@ def _validate_partial_outcome(
                     reward_values=river_rewards,
                     path=f"{path}.windows.{name}",
                 )
+        if window_reward_sum > phase_reward_values[0] + 1e-9:
+            raise ValueError(f"{path}.windows exceed the stationary reward sum")
         visits = partial["high_end_visit_count"]
         if type(visits) is not int or not 0 <= visits <= accepted:
             raise ValueError(f"{path}.high_end_visit_count is invalid")

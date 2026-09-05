@@ -1448,6 +1448,27 @@ class TestFixedBudgetInteractionLearner:
         chex.assert_tree_all_finite(result.metrics)
         assert int(result.state.step_count) == 1
 
+    def test_square_enabled_init_produces_live_pairs_and_accepts_updates(self) -> None:
+        learner = FixedBudgetInteractionLearner(
+            n_features=8,
+            n_tasks=2,
+            candidate_count=3,
+            replacement_interval=10,
+            include_squares=True,
+        )
+        state = learner.init(feature_dim=4, key=jr.key(10))
+
+        result = learner.update(
+            state,
+            jnp.array([0.1, -0.2, 0.3, 0.4], dtype=jnp.float32),
+            jnp.array([1.0, -1.0], dtype=jnp.float32),
+        )
+
+        assert not bool(result.update_rejected)
+        assert bool(jnp.all(state.feature_left <= state.feature_right))
+        assert bool(jnp.all(state.candidate_left <= state.candidate_right))
+        assert int(result.state.step_count) == 1
+
     def test_max_utility_aggregation_does_not_dilute_rare_task_head(self) -> None:
         mean_learner = FixedBudgetInteractionLearner(
             n_features=1,

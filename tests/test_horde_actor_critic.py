@@ -776,12 +776,111 @@ def _make_nlhac_agent(
     return NonlinearHordeActorCriticAgent(cfg, critic)
 
 
+def _make_nlqhac_agent() -> NonlinearQHordeActorCriticAgent:
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name=f"q_{action}",
+            demon_type=DemonType.CONTROL,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+        for action in range(N_ACTIONS)
+    ]
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(16,),
+        step_size=0.03,
+    )
+    return NonlinearQHordeActorCriticAgent(
+        NonlinearQHordeActorCriticConfig(
+            n_actions=N_ACTIONS,
+            hidden_sizes=(16,),
+            actor_td_error_clip=1.0,
+            actor_gradient_clip_norm=1.0,
+        ),
+        critic,
+        actor_optimizer=Autostep(initial_step_size=0.01),
+    )
+
+
 def _init_nlhac(
     agent: NonlinearHordeActorCriticAgent,
 ) -> NonlinearHordeActorCriticState:
     state = agent.init(feature_dim=OBS_DIM, key=jr.key(0))
     state, _, _ = agent.start(state, jnp.zeros(OBS_DIM))
     return state
+
+
+def test_all_horde_actor_samplers_preserve_reported_rare_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cases: list[tuple[Any, int]] = [
+        (_make_agent(), 2),
+        (_make_qhorde_agent(), 2),
+        (_make_nlhac_agent(), OBS_DIM),
+        (_make_nlqhac_agent(), OBS_DIM),
+    ]
+    observed_logits: list[jax.Array] = []
+    observed_modes: list[object] = []
+
+    def fake_categorical(
+        _key: jax.Array,
+        logits: jax.Array,
+        **kwargs: object,
+    ) -> jax.Array:
+        observed_logits.append(logits)
+        observed_modes.append(kwargs.get("mode"))
+        return jnp.asarray(0, dtype=jnp.int32)
+
+    monkeypatch.setattr(jr, "categorical", fake_categorical)
+    for agent, feature_dim in cases:
+        state = agent.init(feature_dim=feature_dim, key=jr.key(feature_dim))
+        rare_logit = jnp.log(jnp.asarray(5e-9, dtype=jnp.float32)) * agent.config.temperature
+        if hasattr(state, "actor_bias"):
+            rare_bias = jnp.full_like(state.actor_bias, rare_logit).at[0].set(0.0)
+            state = state.replace(
+                actor_weights=jnp.zeros_like(state.actor_weights),
+                actor_bias=rare_bias,
+            )
+        else:
+            rare_bias = jnp.full_like(state.actor_head_b, rare_logit).at[0].set(0.0)
+            state = state.replace(
+                actor_head_w=jnp.zeros_like(state.actor_head_w),
+                actor_head_b=rare_bias,
+            )
+        observation = jnp.zeros((feature_dim,), dtype=jnp.float32)
+        with jax.disable_jit():
+            action, _next_key, policy = agent.select_action(state, observation)
+
+        assert int(action) == 0
+        assert float(policy[1]) < 1e-8
+        chex.assert_trees_all_close(observed_logits[-1], jnp.log(policy))
+
+    assert observed_modes == ["high"] * len(cases)
+
+
+@pytest.mark.parametrize("rare_bias", [-10.0, -100.0])
+def test_nonlinear_horde_actor_learns_from_a_rare_policy_action(
+    rare_bias: float,
+) -> None:
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(81)).replace(
+        actor_head_w=jnp.zeros((N_ACTIONS, OBS_DIM), dtype=jnp.float32),
+        actor_head_b=jnp.asarray((0.0, rare_bias, rare_bias), dtype=jnp.float32),
+        last_observation=jnp.zeros((OBS_DIM,), dtype=jnp.float32),
+        last_action=jnp.asarray(1, dtype=jnp.int32),
+    )
+
+    assert float(agent.policy(state, state.last_observation)[1]) < 1e-8
+    result = agent.update(
+        state,
+        reward=jnp.asarray(1.0, dtype=jnp.float32),
+        observation=jnp.zeros((OBS_DIM,), dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert not jnp.array_equal(result.state.actor_head_b, state.actor_head_b)
 
 
 def test_nonlinear_horde_zero_discount_neutralizes_inf_next_value() -> None:
@@ -1092,6 +1191,55 @@ class TestNonlinearHordeActorCriticUpdate:
         result = agent.update(state, jnp.array(1.0, dtype=jnp.float32), obs)
         assert bool(result.update_applied)
         chex.assert_tree_all_finite(result.state.actor_td_error_normalizer)
+
+    def test_small_td_error_warmup_normalizes_by_true_ema(self) -> None:
+        """Sub-1e-3 warmup errors divide by the true EMA, not a fixed floor."""
+        # With decay=0.9 the first update sets EMA = 0.1 * |td|, so the
+        # normalized actor signal is ~10 whatever the TD scale. Identical
+        # initial states mean the only difference between the two runs below
+        # is the reward, so the actor movement must match. The former 1e-3
+        # denominator floor substituted its own scale whenever |td| fell
+        # below it, weakening the small-error update by orders of magnitude.
+        critic = HordeLearner(
+            create_horde_spec(
+                [
+                    GVFSpec(  # type: ignore[call-arg]
+                        name="v",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.99,
+                        lamda=0.0,
+                        cumulant_index=0,
+                    )
+                ]
+            ),
+            hidden_sizes=(8,),
+            step_size=0.03,
+        )
+        cfg = NonlinearHordeActorCriticConfig(
+            n_actions=N_ACTIONS,
+            hidden_sizes=(8,),
+            actor_td_error_normalizer_decay=0.9,
+        )
+
+        def _first_update(reward: float):
+            agent = NonlinearHordeActorCriticAgent(cfg, critic)
+            state = agent.init(OBS_DIM, jr.key(7))
+            obs = jr.normal(jr.key(8), (OBS_DIM,))
+            state, _, _ = agent.start(state, obs)
+            before = state.actor_head_w.copy()
+            result = agent.update(state, jnp.array(reward, dtype=jnp.float32), obs)
+            return result, result.state.actor_head_w - before
+
+        small_result, small_delta = _first_update(1e-4)
+        large_result, large_delta = _first_update(1e-2)
+
+        # First update sets the stored EMA to 0.1 * |raw td| (exposed verbatim).
+        assert float(small_result.state.actor_td_error_normalizer) == pytest.approx(
+            0.1 * abs(float(small_result.td_error)), rel=1e-5
+        )
+
+        # Both normalized signals are ~10, so the actor must move equally.
+        chex.assert_trees_all_close(small_delta, large_delta, rtol=1e-4, atol=0.0)
 
     def test_policy_sums_to_one(self) -> None:
         agent = _make_nlhac_agent()
@@ -1406,32 +1554,7 @@ class TestNonlinearHordeActorCriticExport:
 
 class TestNonlinearQHordeActorCritic:
     def _agent(self) -> NonlinearQHordeActorCriticAgent:
-        demons = [
-            GVFSpec(  # type: ignore[call-arg]
-                name=f"q_{action}",
-                demon_type=DemonType.CONTROL,
-                gamma=0.0,
-                lamda=0.0,
-                cumulant_index=-1,
-            )
-            for action in range(N_ACTIONS)
-        ]
-        critic = HordeLearner(
-            create_horde_spec(demons),
-            hidden_sizes=(16,),
-            step_size=0.03,
-        )
-        cfg = NonlinearQHordeActorCriticConfig(
-            n_actions=N_ACTIONS,
-            hidden_sizes=(16,),
-            actor_td_error_clip=1.0,
-            actor_gradient_clip_norm=1.0,
-        )
-        return NonlinearQHordeActorCriticAgent(
-            cfg,
-            critic,
-            actor_optimizer=Autostep(initial_step_size=0.01),
-        )
+        return _make_nlqhac_agent()
 
     def test_actor_optimizer_must_support_mlp(self) -> None:
         demons = [
@@ -1753,6 +1876,26 @@ def test_nonlinear_horde_actor_critic_configs_accept_and_canonicalizes_numpy_int
 
 
 @pytest.mark.parametrize(
+    "config_type",
+    [
+        HordeActorCriticConfig,
+        QHordeActorCriticConfig,
+        NonlinearHordeActorCriticConfig,
+        NonlinearQHordeActorCriticConfig,
+    ],
+)
+def test_actor_configs_reject_subnormal_float32_temperature(config_type: type) -> None:
+    """An accepted softmax temperature must remain a usable XLA divisor."""
+    subnormal = float(np.nextafter(np.float32(0), np.float32(1)))
+
+    with pytest.raises(ValueError, match="temperature must be at least"):
+        config_type(n_actions=2, temperature=subnormal)
+
+    smallest_normal = float(np.finfo(np.float32).tiny)
+    assert config_type(n_actions=2, temperature=smallest_normal).temperature == smallest_normal
+
+
+@pytest.mark.parametrize(
     "config",
     [
         HordeActorCriticConfig(n_actions=2),
@@ -2019,3 +2162,57 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert applied.tolist() == [False, True]
     assert final_state.step_count.dtype == jnp.int32
     assert int(final_state.step_count) == 2**31 - 1
+
+
+def test_array_runner_policies_align_with_actions() -> None:
+    critic = HordeLearner(
+        create_horde_spec(
+            [
+                GVFSpec(  # type: ignore[call-arg]
+                    name="value",
+                    demon_type=DemonType.PREDICTION,
+                    gamma=0.9,
+                    lamda=0.0,
+                    cumulant_index=-1,
+                )
+            ]
+        ),
+        hidden_sizes=(),
+        step_size=0.5,
+        use_layer_norm=False,
+    )
+    agent = HordeActorCriticAgent(
+        HordeActorCriticConfig(n_actions=3, actor_step_size=0.5, actor_lamda=0.0),
+        critic=critic,
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        actor_weights=jnp.array([[2.0, -1.0], [0.0, 3.0], [-2.0, 0.5]], jnp.float32),
+    )
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], jnp.float32)
+    next_observations = jnp.array([[0.0, 1.0], [1.0, 1.0]], jnp.float32)
+    rewards = jnp.array([1.0, 1.0], jnp.float32)
+
+    result = run_horde_actor_critic_from_arrays(
+        agent, state, observations, rewards, next_observations
+    )
+
+    # ``policies[t]`` documents the pre-update distribution at
+    # ``observations[t]`` -- the one that produced ``actions[t]`` -- matching
+    # the discrete runner's contract.
+    chex.assert_trees_all_close(
+        result.policies[0], agent.policy(state, observations[0]), atol=1e-7
+    )
+    assert not bool(
+        jnp.allclose(result.policies[0], agent.policy(state, next_observations[0]))
+    )
+
+
+def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = _init_nlhac(agent)
+    obs = jnp.zeros((1, OBS_DIM))
+    result = run_nonlinear_horde_actor_critic_from_arrays(
+        agent, state, obs, jnp.array([jnp.nan]), obs
+    )
+    np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
+    chex.assert_trees_all_equal(result.state, state)

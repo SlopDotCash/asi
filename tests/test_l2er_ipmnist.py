@@ -325,6 +325,13 @@ def test_result_receipt_accounts_resources_and_is_permanently_nonpromoting() -> 
     with pytest.raises(ValueError, match="n_tasks"):
         validate_l2er_development_result(hostile_counter)
 
+    hostile_accuracy = deepcopy(payload)
+    hostile_metrics = hostile_accuracy["metrics"]
+    assert isinstance(hostile_metrics, dict)
+    hostile_metrics["mean_online_accuracy"] = 0.6001
+    with pytest.raises(ValueError, match="integer correct-count lattice"):
+        validate_l2er_development_result(hostile_accuracy)
+
     class HostileObject:
         def __iter__(self) -> object:
             raise AssertionError("hostile iteration must not run")
@@ -362,6 +369,28 @@ def test_matched_validator_requires_all_arms_and_axes() -> None:
     with pytest.raises(ValueError, match="exactly four"):
         validate_matched_l2er_development_results(HostileContainer())
     assert HostileMeta.calls == 0
+
+
+def test_result_validator_accepts_rounded_mean_on_integer_correct_count_lattice() -> None:
+    config = IPMNISTConfig(
+        n_tasks=3, task_length=100, input_dim=2, hidden1=2, hidden2=2, n_classes=2
+    )
+    result = ScreeningRunResult(
+        config_name="l2er_combined",
+        base_learner="upgd_w",
+        hyperparameters=dict(screening_spec("l2er_combined").hyperparameters),
+        seed=7,
+        config=config,
+        per_task_accuracy=np.asarray([0.33, 0.66, 1.0], dtype=np.float64),
+        per_task_loss=np.asarray([0.7, 0.6, 0.5], dtype=np.float64),
+        per_task_plasticity=np.asarray([0.1, 0.2, 0.3], dtype=np.float64),
+        wall_clock_seconds=1.5,
+    )
+    payload = l2er_development_result_payload(result, outcome="inconclusive")
+    metrics = payload["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["mean_online_accuracy"] * 300 == pytest.approx(199.0)
+    validate_l2er_development_result(payload)
 
 
 def test_protocol_pins_sources_and_records_material_differences() -> None:

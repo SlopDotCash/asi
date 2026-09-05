@@ -111,6 +111,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework._seed_validation import (
     require_jax_seed,
     require_unique_jax_seeds,
@@ -128,6 +129,11 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Skip ``0 * inf`` so a closed utility decay does not poison EMA state."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 def _require_exact_str(name: object, value: object) -> str:
     if type(name) is not str:
         raise ValueError("name must be an exact string")
@@ -137,6 +143,7 @@ def _require_exact_str(name: object, value: object) -> str:
 
 
 logger = logging.getLogger(__name__)
+_WINDOWS_READONLY_UNLINK = os.name == "nt"
 
 
 def _preflight_new_output(path: Path) -> Path:
@@ -149,11 +156,37 @@ def _preflight_new_output(path: Path) -> Path:
     return destination
 
 
+def _unlink_published_temporary(
+    temporary_path: Path,
+    destination: Path,
+    *,
+    published: bool,
+) -> None:
+    """Remove the private hard-link name without leaving Windows output writable."""
+
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except PermissionError:
+        if not _WINDOWS_READONLY_UNLINK:
+            raise
+        # Windows stores the read-only attribute on the shared file record, so
+        # unlinking either hard-link name is denied after chmod(0o444). Clear it
+        # only long enough to remove the private name, then restore the public
+        # destination. A concurrent pre-existing destination is never touched.
+        temporary_path.chmod(0o600)
+        try:
+            temporary_path.unlink(missing_ok=True)
+        finally:
+            if published:
+                destination.chmod(0o444)
+
+
 def atomic_write_new(path: Path, data: bytes) -> Path:
     """Publish complete bytes at a new path without replacing existing data."""
 
     destination = _preflight_new_output(path)
     temporary_path: Path | None = None
+    published = False
     try:
         with tempfile.NamedTemporaryFile(
             dir=destination.parent,
@@ -172,10 +205,15 @@ def atomic_write_new(path: Path, data: bytes) -> Path:
             raise FileExistsError(
                 f"refusing to overwrite immutable output: {destination}"
             ) from exc
+        published = True
         return destination
     finally:
         if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+            _unlink_published_temporary(
+                temporary_path,
+                destination,
+                published=published,
+            )
 
 
 def atomic_write_new_json(path: Path, value: object) -> Path:
@@ -632,15 +670,17 @@ def lean_upgd_w_update(
     step_size = hp["step_size"]
     decay = 1.0 - step_size * hp["weight_decay"]
     count = _saturating_increment(state.step)
+    beta_arr = jnp.asarray(beta, dtype=jnp.float32)
     utility = {
-        name: beta * state.utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+        name: _skip_zero_scale(beta_arr, state.utility[name])
+        + (1.0 - beta) * (-grads[name] * params[name])
         for name in params
     }
     global_max = jnp.max(
         jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
     )
     bias_correction = 1.0 - jnp.power(
-        jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        beta_arr, count.astype(jnp.float32)
     )
     new_params = {}
     for name in params:
@@ -1475,6 +1515,10 @@ def partial_payload(result: IPMNISTRunResult) -> dict[str, Any]:
     }
 
 
+_MAX_JSON_NESTING_DEPTH = 64
+
+
+
 def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         parsed: dict[str, object] = {}
@@ -1494,12 +1538,19 @@ def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
             raise ValueError(f"non-finite JSON number is forbidden: {value}")
         return parsed
 
-    payload = json.loads(
-        raw.decode("utf-8"),
-        object_pairs_hook=pairs_hook,
-        parse_constant=reject_constant,
-        parse_float=parse_float,
+    text = raw.decode("utf-8")
+    require_json_text_nesting(
+        text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
     )
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: payload must be one JSON object")
     return payload

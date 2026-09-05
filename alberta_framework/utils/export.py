@@ -529,11 +529,82 @@ def generate_latex_table(
 
     if significance_results:
         lines.append(r"\vspace{0.5em}")
-        lines.append(r"\footnotesize{$^*$ $p < 0.05$, $^{**}$ $p < 0.01$, $^{***}$ $p < 0.001$}")
+        lines.append(_significance_legend_latex(significance_results))
 
     lines.append(r"\end{table}")
 
     return "\n".join(lines)
+
+
+_LEGACY_MD_LEGEND = "\\* p < 0.05, \\*\\* p < 0.01, \\*\\*\\* p < 0.001"
+_LEGACY_LATEX_LEGEND = (
+    r"\footnotesize{$^*$ $p < 0.05$, $^{**}$ $p < 0.01$, $^{***}$ $p < 0.001$}"
+)
+_LATEX_STARS = ("", r"$^{*}$", r"$^{**}$", r"$^{***}$")
+
+
+def _all_default_alpha(
+    significance_results: dict[tuple[str, str], "SignificanceResult"],
+) -> bool:
+    """True when every stored decision threshold is the historical 0.05."""
+    return all(result.alpha == 0.05 for result in significance_results.values())
+
+
+def _significance_star_count(p_value: float, alpha: float) -> int:
+    """Star tier for one significant result, keyed to its own threshold.
+
+    The historical 0.05 threshold retains its raw-p tiers independently of
+    other comparisons. Other thresholds scale by orders of magnitude.
+    """
+    if alpha == 0.05:
+        if p_value < 0.001:
+            return 3
+        if p_value < 0.01:
+            return 2
+        return 1
+    if p_value < alpha / 100.0:
+        return 3
+    if p_value < alpha / 10.0:
+        return 2
+    return 1
+
+
+def _distinct_alphas(
+    significance_results: dict[tuple[str, str], "SignificanceResult"],
+) -> list[float]:
+    return sorted({result.alpha for result in significance_results.values()})
+
+
+def _significance_legend_markdown(
+    significance_results: dict[tuple[str, str], "SignificanceResult"],
+) -> str:
+    """Legend stating each tier's actual boundary for the alphas present."""
+    if _all_default_alpha(significance_results):
+        return _LEGACY_MD_LEGEND
+    segments = []
+    for alpha in _distinct_alphas(significance_results):
+        tier2, tier3 = (0.01, 0.001) if alpha == 0.05 else (alpha / 10.0, alpha / 100.0)
+        segments.append(
+            f"alpha = {alpha:g}: \\* p < {alpha:g}, \\*\\* p < {tier2:g}, "
+            f"\\*\\*\\* p < {tier3:g}"
+        )
+    return "; ".join(segments)
+
+
+def _significance_legend_latex(
+    significance_results: dict[tuple[str, str], "SignificanceResult"],
+) -> str:
+    """LaTeX legend stating each tier's actual boundary for the alphas present."""
+    if _all_default_alpha(significance_results):
+        return _LEGACY_LATEX_LEGEND
+    segments = []
+    for alpha in _distinct_alphas(significance_results):
+        tier2, tier3 = (0.01, 0.001) if alpha == 0.05 else (alpha / 10.0, alpha / 100.0)
+        segments.append(
+            f"alpha = {alpha:g}: $^*$ $p < {alpha:g}$, $^{{**}}$ $p < {tier2:g}$, "
+            f"$^{{***}}$ $p < {tier3:g}$"
+        )
+    return r"\footnotesize{" + "; ".join(segments) + "}"
 
 
 def _get_significance_marker(
@@ -559,14 +630,11 @@ def _get_significance_marker(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return r"$^{***}$"
-    elif p < 0.01:
-        return r"$^{**}$"
-    elif p < 0.05:
-        return r"$^{*}$"
-    return ""
+    stars = _significance_star_count(
+        result.p_value,
+        result.alpha,
+    )
+    return _LATEX_STARS[stars]
 
 
 def generate_markdown_table(
@@ -624,7 +692,7 @@ def generate_markdown_table(
 
     if significance_results:
         lines.append("")
-        lines.append("\\* p < 0.05, \\*\\* p < 0.01, \\*\\*\\* p < 0.001")
+        lines.append(_significance_legend_markdown(significance_results))
 
     return "\n".join(lines)
 
@@ -651,14 +719,11 @@ def _get_md_significance_marker(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return " ***"
-    elif p < 0.01:
-        return " **"
-    elif p < 0.05:
-        return " *"
-    return ""
+    stars = _significance_star_count(
+        result.p_value,
+        result.alpha,
+    )
+    return " " + "*" * stars
 
 
 def generate_significance_table(

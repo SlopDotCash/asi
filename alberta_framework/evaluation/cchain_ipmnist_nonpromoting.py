@@ -317,6 +317,12 @@ def validate_cchain_development_result(payload: object) -> dict[str, object]:
         raise ValueError("mechanism-off coefficient must remain exactly one")
     if arm != "cchain_mechanism_off" and metrics["final_coefficient"] < 1.0:
         raise ValueError("adaptive C-CHAIN coefficient must remain at least one")
+    if (
+        arm != "cchain_mechanism_off"
+        and active_updates < COEFFICIENT_DELAY
+        and metrics["final_coefficient"] != 1.0
+    ):
+        raise ValueError("C-CHAIN coefficient cannot adapt before its delay")
 
     resource_object = _object(outer["resources"], _RESOURCE_KEYS, context="resources")
     integer_resources = {

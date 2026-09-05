@@ -368,16 +368,30 @@ class LinearLearner:
         )
 
     def predict(self, state: LearnerState, observation: Observation) -> Prediction:
-        """Compute prediction for an observation.
+        """Compute prediction for a raw observation.
+
+        When a normalizer is configured the observation is normalized with the
+        statistics held in ``state`` first, so the prediction is the one the
+        learned weights were trained to produce. ``update`` reports the same
+        prediction for the statistics it commits.
 
         Args:
             state: Current learner state
-            observation: Input feature vector
+            observation: Raw input feature vector
 
         Returns:
-            Scalar prediction ``y = w @ x + b``
+            Scalar prediction ``y = w @ phi(x) + b`` where ``phi`` is the
+            configured normalizer (identity when none is configured)
         """
-        return jnp.atleast_1d(jnp.dot(state.weights, observation) + state.bias)
+        obs = observation
+        if self._normalizer is not None and state.normalizer_state is not None:
+            obs = self._normalizer.normalize_only(state.normalizer_state, observation)
+        return self._predict_normalized(state, obs)
+
+    @staticmethod
+    def _predict_normalized(state: LearnerState, normalized: Observation) -> Prediction:
+        """Affine map on an observation the normalizer has already processed."""
+        return jnp.atleast_1d(jnp.dot(state.weights, normalized) + state.bias)
 
     def update(
         self,
@@ -414,18 +428,7 @@ class LinearLearner:
             new_normalizer_state = normalizer_result.state
             normalizer_update_applied = normalizer_result.update_applied
 
-        prediction = self.predict(
-            LearnerState(
-                weights=state.weights,
-                bias=state.bias,
-                optimizer_state=state.optimizer_state,
-                normalizer_state=new_normalizer_state,
-                step_count=state.step_count,
-                birth_timestamp=state.birth_timestamp,
-                uptime_s=state.uptime_s,
-            ),
-            obs,
-        )
+        prediction = self._predict_normalized(state, obs)
 
         error = jnp.squeeze(target) - jnp.squeeze(prediction)
 
@@ -985,10 +988,34 @@ def _update_from_gradient_with_diagnostics(
     gradient: Array,
     *,
     error: Array | None,
+    param: Array | None = None,
 ) -> tuple[Array, Any, Bool[Array, ""]]:
-    """Use the checked optimizer boundary for an enclosing transaction."""
-    result = optimizer.update_from_gradient_checked(state, gradient, error=error)
-    return result.step, result.new_state, result.update_applied
+    """Adapt a learner's additive trace direction to the checked optimizer API.
+
+    With no separate error, shared trunks already supply an additive update
+    direction (the negative loss gradient). Baseline optimizers consume loss
+    gradients instead; reverse their input and descent step at this boundary.
+    """
+    loss_gradient_path = error is None and optimizer.gradient_update_returns_delta()
+    optimizer_gradient = -gradient if loss_gradient_path else gradient
+    if optimizer.gradient_update_requires_param():
+        if param is None:
+            raise ValueError(
+                f"{type(optimizer).__name__} requires the current parameter "
+                "for gradient updates"
+            )
+        result = optimizer.update_from_gradient_checked(
+            state, optimizer_gradient, error=error, param=param
+        )
+    else:
+        result = optimizer.update_from_gradient_checked(state, optimizer_gradient, error=error)
+    step = -result.step if loss_gradient_path else result.step
+    return step, result.new_state, result.update_applied
+
+
+def _gradient_step_error(optimizer: Any, error: Array) -> Array:
+    """Multiplier/bounder error for one optimizer's returned gradient step."""
+    return jnp.ones_like(error) if optimizer.gradient_update_returns_delta() else error
 
 
 class MLPLearner:
@@ -1454,17 +1481,24 @@ class MLPLearner:
         JIT-compiled automatically. First call triggers tracing; subsequent
         calls with the same learner instance use the cached compilation.
 
+        When a normalizer is configured the observation is normalized with the
+        statistics held in ``state`` first, matching the input ``update``
+        trains the network on.
+
         Args:
             state: Current MLP learner state
-            observation: Input feature vector
+            observation: Raw input feature vector
 
         Returns:
             Scalar prediction
         """
+        obs = observation
+        if self._normalizer is not None and state.normalizer_state is not None:
+            obs = self._normalizer.normalize_only(state.normalizer_state, observation)
         y = self._forward(
             state.params.weights,
             state.params.biases,
-            observation,
+            obs,
             self._leaky_relu_slope,
             self._use_layer_norm,
         )
@@ -1563,6 +1597,15 @@ class MLPLearner:
         # Per-parameter optimizer step from traces
         # Output layer uses head_optimizer if set (last 2 entries: weight + bias)
         n_trace_entries = len(new_traces)
+        all_params = []
+        for i in range(n_layers):
+            all_params.append(state.params.weights[i])
+            all_params.append(state.params.biases[i])
+        direct_steps = self._optimizer.gradient_update_returns_delta() or (
+            self._head_optimizer is not None
+            and self._head_optimizer.gradient_update_returns_delta()
+        )
+        step_error = jnp.ones_like(error) if direct_steps else error
         all_steps = []
         new_opt_states = []
         optimizer_updates_applied = []
@@ -1575,8 +1618,11 @@ class MLPLearner:
                     state.optimizer_states[j],
                     new_traces[j],
                     error=error,
+                    param=all_params[j],
                 )
             )
+            if direct_steps and not opt.gradient_update_returns_delta():
+                step = error * step
             all_steps.append(step)
             new_opt_states.append(new_opt)
             optimizer_updates_applied.append(optimizer_update_applied)
@@ -1584,21 +1630,17 @@ class MLPLearner:
         # Bounding (optional)
         bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
-            all_params = []
-            for i in range(n_layers):
-                all_params.append(state.params.weights[i])
-                all_params.append(state.params.biases[i])
             bounded_steps, bounding_metric = self._bounder.bound(
-                tuple(all_steps), error, tuple(all_params)
+                tuple(all_steps), step_error, tuple(all_params)
             )
             all_steps = list(bounded_steps)
 
         new_weights = []
         new_biases = []
         for i in range(n_layers):
-            new_w = state.params.weights[i] + error * all_steps[2 * i]
+            new_w = state.params.weights[i] + step_error * all_steps[2 * i]
             new_weights.append(new_w)
-            new_b = state.params.biases[i] + error * all_steps[2 * i + 1]
+            new_b = state.params.biases[i] + step_error * all_steps[2 * i + 1]
             new_biases.append(new_b)
 
         new_params = MLPParams(
@@ -2100,13 +2142,21 @@ class TDLinearLearner:
 
 @chex.dataclass(frozen=True)
 class TrueOnlineTDState:
-    """State for True Online TD(lambda) with Dutch traces."""
+    """State for True Online TD(lambda) with Dutch traces.
+
+    ``previous_gamma`` is the discount from the prior update call, carried so
+    the Dutch trace decays by ``gamma_t`` (the discount of the transition into
+    ``S_t``) while the TD error bootstraps with ``gamma_{t+1}`` (Sutton & Barto
+    2nd ed., eqs. 12.23/12.25). It is seeded to 1.0, which is inert against the
+    zero initial traces.
+    """
 
     weights: Float[Array, " feature_dim"]
     bias: Float[Array, ""]
     eligibility_traces: Float[Array, " feature_dim"]
     bias_eligibility_trace: Float[Array, ""]
     v_old: Float[Array, ""]
+    previous_gamma: Float[Array, ""]
     step_count: Array = None  # type: ignore[assignment]
     birth_timestamp: float = 0.0
     uptime_s: float = 0.0
@@ -2132,9 +2182,13 @@ class TrueOnlineTDLearner:
     """Linear True Online TD(lambda) learner with Dutch traces.
 
     Implements the true-online update for a linear value function with an
-    explicit bias feature. At terminal transitions (``gamma == 0``),
-    ``v_old`` is reset to zero so repeated one-step supervised transitions
-    reduce exactly to LMS.
+    explicit bias feature. The ``gamma`` passed to :meth:`update` is
+    ``gamma_{t+1}`` and enters only the TD-error bootstrap; the Dutch trace
+    decays by the prior call's discount carried in ``state.previous_gamma``,
+    so the update that carries a terminal reward still credits the traces
+    accumulated within the episode. At terminal transitions (``gamma == 0``),
+    the stored traces and ``v_old`` are reset to zero so repeated one-step
+    supervised transitions reduce exactly to LMS.
 
     References:
         van Seijen & Sutton (2014). "True Online TD(lambda)." ICML.
@@ -2152,13 +2206,14 @@ class TrueOnlineTDLearner:
     def init(self, feature_dim: int) -> TrueOnlineTDState:
         """Initialize learner state."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
-        _preflight_float32_resources("true-online TD state", 2 * feature_dim + 5)
+        _preflight_float32_resources("true-online TD state", 2 * feature_dim + 6)
         return TrueOnlineTDState(
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             v_old=jnp.array(0.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
             birth_timestamp=time.time(),
             uptime_s=0.0,
@@ -2190,10 +2245,13 @@ class TrueOnlineTDLearner:
 
         trace_dot = jnp.dot(state.eligibility_traces, observation)
         trace_dot = trace_dot + state.bias_eligibility_trace
+        # The Dutch trace decays by the PRIOR call's discount
+        # (state.previous_gamma = gamma_t, the discount into S_t); only the
+        # TD-error bootstrap above uses this call's gamma_{t+1}.
         decay_scale = jnp.where(
-            (gamma_scalar == 0.0) | (lamda == 0.0),
-            jnp.zeros_like(gamma_scalar),
-            gamma_scalar * lamda,
+            (state.previous_gamma == 0.0) | (lamda == 0.0),
+            jnp.zeros_like(state.previous_gamma),
+            state.previous_gamma * lamda,
         )
         trace_scale = 1.0 - alpha * _skip_zero_scale(decay_scale, trace_dot)
         new_traces = (
@@ -2224,6 +2282,7 @@ class TrueOnlineTDLearner:
             eligibility_traces=stored_traces,
             bias_eligibility_trace=stored_bias_trace,
             v_old=new_v_old,
+            previous_gamma=gamma_scalar,
             step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,

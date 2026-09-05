@@ -227,6 +227,16 @@ def validate_l2er_development_result(payload: object) -> dict[str, object]:
     }
     if normalized_metrics["mean_online_accuracy"] > 1.0:
         raise ValueError("mean_online_accuracy must lie in [0,1]")
+    correct_count = normalized_metrics["mean_online_accuracy"] * observations
+    if not math.isclose(
+        correct_count,
+        round(correct_count),
+        rel_tol=0.0,
+        abs_tol=64.0 * math.ulp(correct_count),
+    ):
+        raise ValueError(
+            "mean_online_accuracy must lie on the integer correct-count lattice"
+        )
     if normalized_metrics["mean_plasticity"] > 1.0:
         raise ValueError("mean_plasticity must lie in [0,1]")
 

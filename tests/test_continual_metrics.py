@@ -60,6 +60,59 @@ def test_accuracy_matrix_forgetting_and_backward_transfer() -> None:
     np.testing.assert_allclose(forward[1:], [0.05, -0.05])
 
 
+# Documented metric API: compute_forward_transfer must use the immediate
+# pre-exposure row (GEM R_{i-1,i}). A NaN there is not-evaluated, not a
+# license to backfill an older finite probe and emit a wrong FWT number.
+def test_forward_transfer_does_not_backfill_a_missing_immediate_pre_exposure() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, np.nan],
+            [0.30, 0.40],
+        ]
+    )
+    forward = compute_forward_transfer(
+        performance,
+        first_exposure=[0, 2],
+        baseline_performance=[0.50, 0.50],
+    )
+    assert np.isnan(forward[0])
+    assert np.isnan(forward[1])
+
+
+def test_forward_transfer_uses_only_the_immediate_pre_exposure_row() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, 0.60],
+            [0.30, 0.40],
+        ]
+    )
+    forward = compute_forward_transfer(
+        performance,
+        first_exposure=[0, 2],
+        baseline_performance=[0.50, 0.50],
+    )
+    assert np.isnan(forward[0])
+    assert forward[1] == pytest.approx(0.10)
+
+
+def test_forward_transfer_rejects_infinite_immediate_pre_exposure() -> None:
+    performance = np.array(
+        [
+            [0.10, 0.99],
+            [0.20, np.inf],
+            [0.30, 0.40],
+        ]
+    )
+    with pytest.raises(ValueError, match="performance_matrix has an infinite evaluation"):
+        compute_forward_transfer(
+            performance,
+            first_exposure=[0, 2],
+            baseline_performance=[0.50, 0.50],
+        )
+
+
 def test_loss_matrix_normalizes_metric_directions() -> None:
     losses = np.array(
         [
@@ -246,6 +299,19 @@ def test_tracking_error_inherits_the_causal_running_mean_fix() -> None:
 
     assert np.all(np.isnan(result[:2]))
     np.testing.assert_allclose(result[2:], [1.0, 2.0, 3.0, 4.0])
+
+
+def test_tracking_error_does_not_erase_small_windows_after_large_error() -> None:
+    """A departed large error must not cancel later finite window sums."""
+    history = [
+        {"squared_error": value}
+        for value in (1e16, 1.0, 1.0, 1.0)
+    ]
+
+    result = compute_tracking_error(history, window_size=2)
+
+    assert np.isnan(result[0])
+    np.testing.assert_array_equal(result[1:], [5e15, 1.0, 1.0])
 
 
 def test_tracking_error_shorter_than_window_has_no_computable_values() -> None:
@@ -437,3 +503,9 @@ def test_forward_transfer_rejects_infinite_pre_exposure(value: float) -> None:
             first_exposure=[1, 1],
             baseline_performance=[0.5, 0.5],
         )
+
+
+def test_tracking_error_preserves_small_windows_after_long_high_error_phase() -> None:
+    history = [{"squared_error": value} for value in ([1e15] * 1000 + [1.0] * 4)]
+    result = compute_tracking_error(history, window_size=2)
+    np.testing.assert_array_equal(result[-3:], [1.0, 1.0, 1.0])

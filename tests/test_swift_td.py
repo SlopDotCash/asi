@@ -32,10 +32,12 @@ from alberta_framework.core.optimizers import LMS
 from alberta_framework.core.swift_td import _require_float32_resource
 from alberta_framework.streams.alberta_plan_step1 import XDistShiftStream
 
-# =============================================================================
+# ======================================================================
+
 # Reference implementation (line-by-line port of SwiftTDNonSparse::Step
 # from https://github.com/khurramjaved96/SwiftTD, src/cpp/SwiftTD.cpp)
-# =============================================================================
+# ======================================================================
+
 
 
 class _RefSwiftTDNonSparse:
@@ -119,9 +121,11 @@ def _supervised_update(optimizer, opt_state, weights, bias, observation, target)
     return upd, weights + upd.weight_delta, bias + upd.bias_delta, td_error
 
 
-# =============================================================================
+# ======================================================================
+
 # Init and config
-# =============================================================================
+# ======================================================================
+
 
 
 class TestSwiftTDInit:
@@ -218,9 +222,11 @@ class TestSwiftTDInit:
             assert key in result.metrics
 
 
-# =============================================================================
+# ======================================================================
+
 # Exact equivalence with the reference implementation
-# =============================================================================
+# ======================================================================
+
 
 
 class TestSwiftTDMatchesReference:
@@ -279,9 +285,11 @@ class TestSwiftTDMatchesReference:
         assert max_err < 1e-3, f"trajectory diverged from reference: {max_err}"
 
 
-# =============================================================================
+# ======================================================================
+
 # Headline behaviors
-# =============================================================================
+# ======================================================================
+
 
 
 class TestSwiftTDBehavior:
@@ -447,9 +455,11 @@ class TestSwiftTDBehavior:
         assert bool(jnp.all(jnp.isfinite(result.metrics)))
 
 
-# =============================================================================
+# ======================================================================
+
 # Learning quality on XDistShiftStream
-# =============================================================================
+# ======================================================================
+
 
 _FEATURE_DIM = 10
 _NUM_RELEVANT = 3
@@ -724,6 +734,88 @@ def test_swift_td_out_of_range_discount_rolls_back(gamma: float) -> None:
     chex.assert_trees_all_equal(result.bias_delta, jnp.zeros_like(result.bias_delta))
     for value in result.metrics.values():
         chex.assert_trees_all_equal(value, jnp.zeros_like(value))
+
+
+def test_step_size_decay_clamped_to_eta_min_prevents_underflow() -> None:
+    """Strong decay from large phi must clamp log_alphas to eta_min without NaN."""
+    optimizer = SwiftTD(
+        initial_step_size=0.1,
+        meta_step_size=1e-3,
+        eta=0.1,
+        step_size_decay=0.5,
+        eta_min=1e-6,
+    )
+    state = optimizer.init(2)
+    obs = jnp.array([100.0, 100.0], dtype=jnp.float32)
+    next_obs = jnp.zeros(2, dtype=jnp.float32)
+    result = jax.jit(optimizer.update)(
+        state,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        obs,
+        next_obs,
+        jnp.asarray(0.9, dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert jnp.all(jnp.isfinite(result.weight_delta))
+    assert jnp.isfinite(result.bias_delta)
+    assert jnp.all(result.new_state.log_step_sizes >= jnp.log(result.new_state.eta_min) - 1e-6)
+    assert jnp.all(result.new_state.log_step_sizes <= jnp.log(result.new_state.eta) + 1e-6)
+    assert bool(result.metrics["decay_triggered"])
+
+
+def test_step_size_decay_maintains_eta_min_invariant_across_multiple_steps() -> None:
+    """Consecutive large-magnitude steps must stay bounded and finite."""
+    optimizer = SwiftTD(
+        initial_step_size=0.1,
+        meta_step_size=1e-3,
+        eta=0.1,
+        step_size_decay=0.1,
+        eta_min=1e-5,
+    )
+    state = optimizer.init(3)
+    update_jit = jax.jit(optimizer.update)
+
+    for i in range(10):
+        scale = float(10 ** (i % 3 + 1))
+        obs = jnp.full(3, scale, dtype=jnp.float32)
+        next_obs = jnp.full(3, scale * 0.5, dtype=jnp.float32)
+        result = update_jit(
+            state,
+            jnp.asarray(float(i + 1), dtype=jnp.float32),
+            obs,
+            next_obs,
+            jnp.asarray(0.95, dtype=jnp.float32),
+        )
+        assert bool(result.update_applied), f"Step {i} failed to apply"
+        assert jnp.all(result.new_state.log_step_sizes >= jnp.log(result.new_state.eta_min) - 1e-6)
+        assert jnp.all(result.new_state.log_step_sizes <= jnp.log(result.new_state.eta) + 1e-6)
+        state = result.new_state
+
+
+def test_step_size_decay_with_zero_meta_step_size() -> None:
+    """Decay must commit cleanly and stay clamped when meta_step_size is 0."""
+    optimizer = SwiftTD(
+        initial_step_size=0.1,
+        meta_step_size=0.0,
+        eta=0.1,
+        step_size_decay=0.5,
+        eta_min=1e-6,
+    )
+    state = optimizer.init(2)
+    obs = jnp.array([50.0, 50.0], dtype=jnp.float32)
+    next_obs = jnp.zeros(2, dtype=jnp.float32)
+    result = jax.jit(optimizer.update)(
+        state,
+        jnp.asarray(2.0, dtype=jnp.float32),
+        obs,
+        next_obs,
+        jnp.asarray(0.9, dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert jnp.all(result.new_state.log_step_sizes >= jnp.log(result.new_state.eta_min) - 1e-6)
+    assert jnp.all(result.new_state.log_step_sizes <= jnp.log(result.new_state.eta) + 1e-6)
 
 
 @pytest.mark.parametrize(

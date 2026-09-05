@@ -363,6 +363,23 @@ class TestProbabilityContracts:
 
 
 class TestTimeseriesStatistics:
+    @pytest.mark.parametrize(
+        "metric_array",
+        [
+            np.asarray(1.0, dtype=np.float64),
+            np.asarray([1.0, 2.0, 3.0], dtype=np.float64),
+            np.ones((2, 3, 4), dtype=np.float64),
+        ],
+    )
+    def test_requires_seed_by_step_matrix(
+        self, metric_array: np.ndarray[Any, np.dtype[np.float64]]
+    ) -> None:
+        with pytest.raises(
+            ValueError,
+            match=r"^metric_array must be a two-dimensional seed-by-step matrix",
+        ):
+            compute_timeseries_statistics(metric_array)
+
     def test_matches_per_column_compute_statistics(self) -> None:
         """Vectorised timeseries CI agrees with per-step scalar CI."""
         rng = np.random.default_rng(2)
@@ -382,6 +399,14 @@ class TestTimeseriesStatistics:
                 ValueError, match=r"^metric_array must contain at least one seed row$"
             ):
                 compute_timeseries_statistics(np.empty((0, 3)))
+
+    def test_zero_step_matrix_rejected_without_warnings(self) -> None:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            with pytest.raises(
+                ValueError, match=r"^metric_array must contain at least one time step$"
+            ):
+                compute_timeseries_statistics(np.empty((3, 0)))
 
     def test_nonfinite_seed_rejected_without_warnings(self) -> None:
         arr = np.array([[1.0, 2.0], [np.nan, 3.0]], dtype=np.float64)

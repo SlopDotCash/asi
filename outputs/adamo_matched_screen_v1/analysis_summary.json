@@ -1,0 +1,348 @@
+{
+  "development_only": true,
+  "inert_reduction_bit_exact_per_seed": [
+    true,
+    true,
+    true,
+    true
+  ],
+  "paired_comparisons": {
+    "adamo_l1e3_minus_adam_iso_joint_l1e3": {
+      "accuracy": {
+        "all_seeds_negative": false,
+        "all_seeds_positive": false,
+        "mean": -0.00537109375,
+        "per_seed": [
+          -0.0078125,
+          -0.013671875,
+          0.00390625,
+          -0.00390625
+        ]
+      },
+      "loss": {
+        "all_seeds_negative": false,
+        "all_seeds_positive": false,
+        "mean": 0.0016293525695800781,
+        "per_seed": [
+          0.008267104625701904,
+          -0.0015596449375152588,
+          -0.001859128475189209,
+          0.001669079065322876
+        ]
+      },
+      "plasticity": {
+        "all_seeds_negative": true,
+        "all_seeds_positive": false,
+        "mean": -0.006554924650117755,
+        "per_seed": [
+          -0.016415540128946304,
+          -0.0032805074006319046,
+          -0.0005553374066948891,
+          -0.005968313664197922
+        ]
+      }
+    },
+    "adamo_l1e3_minus_adamo_inert": {
+      "accuracy": {
+        "all_seeds_negative": false,
+        "all_seeds_positive": false,
+        "mean": 0.00390625,
+        "per_seed": [
+          0.005859375,
+          0.0,
+          0.009765625,
+          0.0
+        ]
+      },
+      "loss": {
+        "all_seeds_negative": false,
+        "all_seeds_positive": false,
+        "mean": -3.54275107383728e-05,
+        "per_seed": [
+          1.9609928131103516e-05,
+          -2.9593706130981445e-05,
+          -0.00012767314910888672,
+          -4.0531158447265625e-06
+        ]
+      },
+      "plasticity": {
+        "all_seeds_negative": false,
+        "all_seeds_positive": false,
+        "mean": 0.00021058344282209873,
+        "per_seed": [
+          -0.0003129690885543823,
+          0.0002475474029779434,
+          0.0008962107822299004,
+          1.1544674634933472e-05
+        ]
+      }
+    }
+  },
+  "per_arm": {
+    "adam_iso_joint_l1e3": {
+      "final_task_jacobian": {
+        "jacobian_condition_number_clipped_1e12": [
+          2.1206523841638893,
+          2.356000210688296,
+          2.4989847875044777,
+          2.9394330848984582
+        ],
+        "jacobian_max_singular_value": [
+          0.18599319458007812,
+          0.14263588190078735,
+          0.17204652726650238,
+          0.21520698070526123
+        ],
+        "jacobian_mean_singular_value": [
+          0.12402458414435387,
+          0.09624091014266015,
+          0.1055789202451706,
+          0.12301534488797188
+        ],
+        "jacobian_min_singular_value": [
+          0.08770564943552017,
+          0.0605415403842926,
+          0.06884656846523285,
+          0.07321377098560333
+        ],
+        "jacobian_rms_distance_from_one": [
+          0.8764802595029608,
+          0.9040962265477679,
+          0.8949293548883461,
+          0.8779296092598441
+        ],
+        "weight_gram_penalty": [
+          178.2730502030108,
+          183.53583468866225,
+          179.31232875666313,
+          183.16292344729553
+        ]
+      },
+      "mean_accuracy": 0.1650390625,
+      "mean_accuracy_per_seed": [
+        0.17578125,
+        0.169921875,
+        0.154296875,
+        0.16015625
+      ],
+      "mean_loss": 2.2756312265992165,
+      "mean_plasticity": 0.09047436970286071,
+      "resources": {
+        "data_steps": 512,
+        "environment_steps": 0,
+        "jacobian_reverse_rows": 80,
+        "logical_compute_definition": "parameter-touch units: 4*observations*parameters + jacobian_reverse_rows*parameters + active Gram matrix multiply-adds",
+        "logical_compute_units": 79781236480,
+        "model_queries": 1032,
+        "observations": 512,
+        "parameter_count": 282160,
+        "peak_gram_working_bytes": 360000,
+        "persistent_numeric_bytes": 3386040,
+        "timing_is_telemetry_only": true,
+        "timing_seconds": 3.904888460994698,
+        "updates": 512
+      }
+    },
+    "adamo_inert": {
+      "final_task_jacobian": {
+        "jacobian_condition_number_clipped_1e12": [
+          2.2781065521941595,
+          2.689472366945296,
+          2.610733008925402,
+          2.5577374969191378
+        ],
+        "jacobian_max_singular_value": [
+          0.14026851952075958,
+          0.12934133410453796,
+          0.158452108502388,
+          0.18069349229335785
+        ],
+        "jacobian_mean_singular_value": [
+          0.09454267211258412,
+          0.09141967445611954,
+          0.10017687119543553,
+          0.10895696356892585
+        ],
+        "jacobian_min_singular_value": [
+          0.06157241389155388,
+          0.04809171333909035,
+          0.060692574828863144,
+          0.07064583152532578
+        ],
+        "jacobian_rms_distance_from_one": [
+          0.9057361424114853,
+          0.9089809833934533,
+          0.9002807034465206,
+          0.891630129171065
+        ],
+        "weight_gram_penalty": [
+          224.69355241899072,
+          224.38081103492706,
+          224.6178586382824,
+          224.03191575515638
+        ]
+      },
+      "mean_accuracy": 0.15576171875,
+      "mean_accuracy_per_seed": [
+        0.162109375,
+        0.15625,
+        0.1484375,
+        0.15625
+      ],
+      "mean_loss": 2.277296006679535,
+      "mean_plasticity": 0.08370886160992086,
+      "resources": {
+        "data_steps": 512,
+        "environment_steps": 0,
+        "jacobian_reverse_rows": 80,
+        "logical_compute_definition": "parameter-touch units: 4*observations*parameters + jacobian_reverse_rows*parameters + active Gram matrix multiply-adds",
+        "logical_compute_units": 600436480,
+        "model_queries": 1032,
+        "observations": 512,
+        "parameter_count": 282160,
+        "peak_gram_working_bytes": 360000,
+        "persistent_numeric_bytes": 3386040,
+        "timing_is_telemetry_only": true,
+        "timing_seconds": 3.5084398869948927,
+        "updates": 512
+      }
+    },
+    "adamo_l1e3": {
+      "final_task_jacobian": {
+        "jacobian_condition_number_clipped_1e12": [
+          2.4504957640283136,
+          2.705126706640022,
+          2.4040756167305024,
+          2.5574335942285242
+        ],
+        "jacobian_max_singular_value": [
+          0.12896251678466797,
+          0.1277756243944168,
+          0.14788523316383362,
+          0.1807410567998886
+        ],
+        "jacobian_mean_singular_value": [
+          0.08936267904937267,
+          0.09271500296890736,
+          0.0968155212700367,
+          0.10899173244833946
+        ],
+        "jacobian_min_singular_value": [
+          0.052627112716436386,
+          0.04723461717367172,
+          0.06151438504457474,
+          0.07067282497882843
+        ],
+        "jacobian_rms_distance_from_one": [
+          0.9109348691907524,
+          0.9076767030471214,
+          0.9035907404289168,
+          0.8915956143297346
+        ],
+        "weight_gram_penalty": [
+          224.66952168086007,
+          224.33276797730866,
+          224.539431344198,
+          223.99115108673712
+        ]
+      },
+      "mean_accuracy": 0.15966796875,
+      "mean_accuracy_per_seed": [
+        0.16796875,
+        0.15625,
+        0.158203125,
+        0.15625
+      ],
+      "mean_loss": 2.2772605791687965,
+      "mean_plasticity": 0.08391944505274296,
+      "resources": {
+        "data_steps": 512,
+        "environment_steps": 0,
+        "jacobian_reverse_rows": 80,
+        "logical_compute_definition": "parameter-touch units: 4*observations*parameters + jacobian_reverse_rows*parameters + active Gram matrix multiply-adds",
+        "logical_compute_units": 79781236480,
+        "model_queries": 1032,
+        "observations": 512,
+        "parameter_count": 282160,
+        "peak_gram_working_bytes": 360000,
+        "persistent_numeric_bytes": 3386040,
+        "timing_is_telemetry_only": true,
+        "timing_seconds": 3.930786151002394,
+        "updates": 512
+      }
+    },
+    "adamw_control": {
+      "final_task_jacobian": {
+        "jacobian_condition_number_clipped_1e12": [
+          2.2781065521941595,
+          2.689472366945296,
+          2.610733008925402,
+          2.5577374969191378
+        ],
+        "jacobian_max_singular_value": [
+          0.14026851952075958,
+          0.12934133410453796,
+          0.158452108502388,
+          0.18069349229335785
+        ],
+        "jacobian_mean_singular_value": [
+          0.09454267211258412,
+          0.09141967445611954,
+          0.10017687119543553,
+          0.10895696356892585
+        ],
+        "jacobian_min_singular_value": [
+          0.06157241389155388,
+          0.04809171333909035,
+          0.060692574828863144,
+          0.07064583152532578
+        ],
+        "jacobian_rms_distance_from_one": [
+          0.9057361424114853,
+          0.9089809833934533,
+          0.9002807034465206,
+          0.891630129171065
+        ],
+        "weight_gram_penalty": [
+          224.69355241899072,
+          224.38081103492706,
+          224.6178586382824,
+          224.03191575515638
+        ]
+      },
+      "mean_accuracy": 0.15576171875,
+      "mean_accuracy_per_seed": [
+        0.162109375,
+        0.15625,
+        0.1484375,
+        0.15625
+      ],
+      "mean_loss": 2.277296006679535,
+      "mean_plasticity": 0.08370886160992086,
+      "resources": {
+        "data_steps": 512,
+        "environment_steps": 0,
+        "jacobian_reverse_rows": 80,
+        "logical_compute_definition": "parameter-touch units: 4*observations*parameters + jacobian_reverse_rows*parameters + active Gram matrix multiply-adds",
+        "logical_compute_units": 600436480,
+        "model_queries": 1032,
+        "observations": 512,
+        "parameter_count": 282160,
+        "peak_gram_working_bytes": 360000,
+        "persistent_numeric_bytes": 3386040,
+        "timing_is_telemetry_only": true,
+        "timing_seconds": 4.198586846992839,
+        "updates": 512
+      }
+    }
+  },
+  "preregistration": "https://github.com/SlopDotCash/asi/issues/1560#issuecomment-5473394736",
+  "promotion_allowed": false,
+  "receipt_sha256": {
+    "adamo_bounded-development_s15600.json": "a05794f2a25e7f18b149d8c239924bc7ffd053c1a25c5bae79be13e59f0efe68",
+    "adamo_bounded-development_s15601.json": "7222e592ac4287909590283a5964759e71b0315b5a36468b21c75afb4b9a40af",
+    "adamo_bounded-development_s15602.json": "5f1465043ba3a78f46b9bc85ffb29f6b8cbc6ed84dabb1a06fe422e9ffeff3c7",
+    "adamo_bounded-development_s15603.json": "8a0f52716806d785dc50d92904ec94358ea95476a76260c51c19b6b1e5fa948e"
+  },
+  "schema": "asi.adamo_matched_screen_analysis.v1"
+}

@@ -977,6 +977,14 @@ def _q_values_for_obs(q_weights: Array, observation: Array) -> Array:
     return q_weights @ observation
 
 
+_GUMBEL_TIE_BREAK_SCALE = jnp.asarray(1.0e-6, dtype=jnp.float32)
+
+
+def _center_q_values(q_values: Array) -> Array:
+    """Center finite Q values before float32 Gumbel noise is added."""
+    return q_values - jnp.max(q_values)
+
+
 def _select_action_epsilon_greedy(
     q_weights: Array,
     observation: Array,
@@ -987,7 +995,10 @@ def _select_action_epsilon_greedy(
     """ε-greedy action selection with Gumbel tie-breaking."""
     key, explore_key, noise_key = jr.split(key, 3)
     q_vals = _q_values_for_obs(q_weights, observation)
-    greedy = jnp.argmax(q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))).astype(jnp.int32)
+    noisy = _center_q_values(q_vals) + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(
+        noise_key, (n_actions,)
+    )
+    greedy = jnp.argmax(noisy).astype(jnp.int32)
     random_action = jr.randint(explore_key, (), 0, n_actions).astype(jnp.int32)
     explore = jr.uniform(key) < jnp.asarray(epsilon, dtype=jnp.float32)
     action = jnp.where(explore, random_action, greedy)
@@ -1002,7 +1013,10 @@ def _select_action_epsilon_greedy_from_q(
 ) -> tuple[Array, Array]:
     """ε-greedy action selection from pre-computed Q values."""
     key, explore_key, noise_key = jr.split(key, 3)
-    greedy = jnp.argmax(q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))).astype(jnp.int32)
+    noisy = _center_q_values(q_vals) + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(
+        noise_key, (n_actions,)
+    )
+    greedy = jnp.argmax(noisy).astype(jnp.int32)
     random_action = jr.randint(explore_key, (), 0, n_actions).astype(jnp.int32)
     explore = jr.uniform(key) < jnp.asarray(epsilon, dtype=jnp.float32)
     action = jnp.where(explore, random_action, greedy)
@@ -1024,7 +1038,9 @@ def _select_action_epsilon_greedy_from_q_masked(
 
     n_actions = q_vals.shape[0]
     key, explore_key, noise_key = jr.split(key, 3)
-    noisy = q_vals + 1e-6 * jr.gumbel(noise_key, (n_actions,))
+    eligible_q = jnp.where(action_mask, q_vals, -jnp.inf)
+    centered_q = eligible_q - jnp.max(eligible_q)
+    noisy = centered_q + _GUMBEL_TIE_BREAK_SCALE * jr.gumbel(noise_key, (n_actions,))
     masked_noisy = jnp.where(action_mask, noisy, -jnp.inf)
     greedy = jnp.argmax(masked_noisy).astype(jnp.int32)
     eligible_count = jnp.sum(action_mask.astype(jnp.int32))
@@ -1042,14 +1058,12 @@ def _select_action_epsilon_greedy_from_q_masked(
 
 
 def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Array:
-    """Return epsilon-greedy probabilities with uniform tie handling."""
+    """Return probabilities of the centered float32 Gumbel-max selector."""
     q = jnp.asarray(q_values, dtype=jnp.float32)
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
-    max_q = jnp.max(q)
-    greedy_mask = jnp.isclose(q, max_q, atol=1e-6, rtol=0.0).astype(jnp.float32)
-    n_greedy = jnp.maximum(jnp.sum(greedy_mask), jnp.array(1.0, dtype=jnp.float32))
-    return eps / n_actions + (1.0 - eps) * greedy_mask / n_greedy
+    greedy = jax.nn.softmax(_center_q_values(q) / _GUMBEL_TIE_BREAK_SCALE)
+    return eps / n_actions + (1.0 - eps) * greedy
 
 
 def _clipped_epsilon_greedy_importance_ratio(
@@ -1367,9 +1381,13 @@ def _update_intra_option_policy(
     """Update one intra-option Q-function with a transition discount.
 
     ``terminated`` is the option's own termination decision (goal, duration,
-    or environmental termination).  It always zeros the bootstrap.  Otherwise
-    the supplied transition discount controls both bootstrapping and trace
-    carry, so fractional continuation is not silently promoted to one.
+    or environmental termination).  It zeros the bootstrap only.  The supplied
+    transition discount controls both bootstrapping and trace carry, so
+    fractional continuation is not silently promoted to one.  The incoming
+    trace is decayed by that discount even on the terminating step: the goal
+    step's TD error must still reach the earlier actions of the option
+    (``e_t = gamma_t * lambda * e_{t-1} + phi_t``); the caller clears the
+    stored trace after this update when the option's lifecycle ends.
     """
     q_i = option_policies.q_weights[option_idx]
     traces_i = option_policies.traces[option_idx]
@@ -1383,7 +1401,7 @@ def _update_intra_option_policy(
 
     alpha = jnp.asarray(step_size, dtype=jnp.float32)
     beta = jnp.asarray(avg_reward_step_size, dtype=jnp.float32)
-    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * bootstrap_discount
+    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * transition_discount
     rho = jnp.asarray(importance_ratio, dtype=jnp.float32)
 
     action_mask = jax.nn.one_hot(last_intra_action, n_primitive_actions, dtype=jnp.float32)

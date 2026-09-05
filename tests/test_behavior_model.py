@@ -284,6 +284,29 @@ def test_config_rejects_nonfinite_or_invalid_numeric_values(
         BehaviorModelConfig(**kwargs)
 
 
+def test_temperature_rejects_subnormal_float32_before_softmax_division() -> None:
+    """An accepted temperature must remain a usable positive XLA divisor."""
+    smallest_normal = float(np.finfo(np.float32).tiny)
+
+    with pytest.raises(ValueError, match="temperature must be at least"):
+        BehaviorModelConfig(n_actions=2, temperature=float(np.nextafter(np.float32(0), 1)))
+
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2, temperature=smallest_normal))
+    state = model.init(feature_dim=1, key=jax.random.key(0))
+    result = model.update(
+        state,
+        jnp.ones((1,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    assert bool(jnp.all(jnp.isfinite(result.probabilities)))
+    assert bool(jnp.all(jnp.isfinite(result.state.weights)))
+    assert bool(jnp.all(jnp.isfinite(result.state.bias)))
+    assert bool(jnp.isfinite(result.loss))
+
+
 def test_config_and_init_reject_boolean_or_nonpositive_dimensions() -> None:
     with pytest.raises(ValueError, match="n_actions"):
         BehaviorModelConfig(n_actions=True)

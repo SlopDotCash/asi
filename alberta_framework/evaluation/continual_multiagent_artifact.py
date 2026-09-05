@@ -44,6 +44,10 @@ PROTOCOL_VERSION = "recurring-two-agent-contextual-bandit-aba.v1"
 DIGEST_ALGORITHM = "sha256"
 DIGEST_SCOPE = "$.content"
 CANONICALIZATION = "utf8-json-sort-keys-compact-no-nan"
+# Exact, separately-rounded AS241 value for inv_cdf(0.975).  The default
+# published interval must not depend on whether a host C compiler contracts
+# the polynomial's multiply-adds.
+_WILSON_95_Z_SCORE = float.fromhex("0x1.f5c0331eeff82p+0")
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SOURCE_PATHS = (
@@ -80,6 +84,11 @@ _EXPECTED_LEARNING_MASKS = {
     "learner_only": [True, False],
     "joint_adaptive": [True, True],
 }
+_EXPECTED_CONTROLLER_BUDGET = {
+    "state_scalars": 10,
+    "state_bytes": 48,
+    "action_scalars_per_step": 2,
+}
 _REQUIRED_CONDITION_FIELDS = frozenset(
     {
         "learning_mask",
@@ -99,6 +108,29 @@ _REQUIRED_CONDITION_FIELDS = frozenset(
         "recurrence_recovery_steps",
         "interference_forgetting",
         "controller_budget",
+    }
+)
+_REQUIRED_AGGREGATE_FIELDS = frozenset(
+    {
+        "seed_count",
+        "seeds",
+        "mean_prequential_reward",
+        "reward_uplift_over_frozen",
+        "reward_uplift_over_frozen_paired_interval",
+        "coadaptation_uplift_over_learner_only",
+        "coadaptation_uplift_over_learner_only_paired_interval",
+        "joint_adaptive_phase_rewards",
+        "joint_adaptive_read_only_probe_matrix",
+        "recurrent_a_probe_reward",
+        "mean_forgetting",
+        "maximum_forgetting",
+        "mean_interference_forgetting",
+        "recurrence_recovery_fraction",
+        "recurrence_recovery_fraction_interval",
+        "mean_recurrence_recovery_steps_among_recovered_seeds",
+        "mean_stability_gap",
+        "resource_budget",
+        "all_scientific_and_timing_values_finite",
     }
 )
 
@@ -211,10 +243,15 @@ def wilson_score_interval(
     if not 0.0 < confidence_level < 1.0:
         raise ValueError("confidence_level must lie in (0, 1)")
 
-    from statistics import NormalDist
-
     proportion = successes / sample_size
-    z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
+    if confidence_level == 0.95:
+        z_score = _WILSON_95_Z_SCORE
+    else:
+        # Non-protocol confidence levels retain the general convenience path;
+        # only 95% intervals are serialized by the frozen protocol.
+        from statistics import NormalDist
+
+        z_score = NormalDist().inv_cdf(0.5 + confidence_level / 2.0)
     z_squared = z_score * z_score
     denominator = 1.0 + z_squared / sample_size
     center = (proportion + z_squared / (2.0 * sample_size)) / denominator
@@ -703,6 +740,19 @@ def _required_mapping(
     return value
 
 
+def _same(actual: object, expected: object) -> bool:
+    """Type-exact equality for JSON values.
+
+    Python's ``==`` treats ``30 == 30.0`` and ``True == 1`` as equal, so a
+    re-digested artifact with punned scalar types would pass a plain ``!=``
+    comparison. Comparing canonical bytes rejects any byte-level drift.
+    """
+    try:
+        return canonical_content_bytes({"v": actual}) == canonical_content_bytes({"v": expected})
+    except (TypeError, ValueError):
+        return False
+
+
 def _finite_number(value: object) -> float | None:
     if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
@@ -718,7 +768,7 @@ def _validate_threshold_policy(
 
     canonical = _threshold_payload(AcceptanceThresholds())
     for key in ("minimum_seed_count", "evidence_seed_start"):
-        if thresholds.get(key) != canonical[key]:
+        if not _same(thresholds.get(key), canonical[key]):
             errors.append(
                 f"content.thresholds.{key} must equal the v1 canonical value"
             )
@@ -762,6 +812,95 @@ def _numbers_match(first: object, second: object) -> bool:
     )
 
 
+def _finite_vector(
+    value: object,
+    *,
+    length: int,
+    location: str,
+    errors: list[str],
+) -> list[float] | None:
+    if type(value) is not list or len(value) != length:
+        errors.append(f"{location} must be an array of {length} finite numbers")
+        return None
+    parsed = [_finite_number(item) for item in value]
+    if any(item is None for item in parsed):
+        errors.append(f"{location} must contain only finite numbers")
+        return None
+    return [float(item) for item in parsed if item is not None]
+
+
+def _finite_matrix(
+    value: object,
+    *,
+    rows: int,
+    columns: int,
+    location: str,
+    errors: list[str],
+) -> list[list[float]] | None:
+    if type(value) is not list or len(value) != rows:
+        errors.append(f"{location} must be a {rows}x{columns} finite matrix")
+        return None
+    parsed: list[list[float]] = []
+    for row_index, row in enumerate(value):
+        parsed_row = _finite_vector(
+            row,
+            length=columns,
+            location=f"{location}[{row_index}]",
+            errors=errors,
+        )
+        if parsed_row is None:
+            return None
+        parsed.append(parsed_row)
+    return parsed
+
+
+def _controller_budget(
+    value: object,
+    *,
+    location: str,
+    errors: list[str],
+) -> tuple[int, int, int] | None:
+    if type(value) is not dict or set(value) != set(_EXPECTED_CONTROLLER_BUDGET):
+        errors.append(f"{location} keys do not match the v1 controller budget")
+        return None
+    parsed: list[int] = []
+    for field_name in _EXPECTED_CONTROLLER_BUDGET:
+        field = value.get(field_name)
+        if type(field) is not int or field < 0:
+            errors.append(f"{location}.{field_name} must be a nonnegative integer")
+            return None
+        parsed.append(field)
+    if parsed[2] < 1:
+        errors.append(f"{location}.action_scalars_per_step must be positive")
+        return None
+    if value != _EXPECTED_CONTROLLER_BUDGET:
+        errors.append(f"{location} does not match the frozen v1 controller budget")
+    return parsed[0], parsed[1], parsed[2]
+
+
+def _aggregate_array_matches(actual: object, expected: np.ndarray) -> bool:
+    if expected.ndim == 1:
+        parsed_vector = _finite_vector(
+            actual,
+            length=int(expected.shape[0]),
+            location="content.aggregate array",
+            errors=[],
+        )
+        if parsed_vector is None:
+            return False
+        return bool(np.allclose(parsed_vector, expected, rtol=0.0, atol=1e-12))
+    parsed_matrix = _finite_matrix(
+        actual,
+        rows=int(expected.shape[0]),
+        columns=int(expected.shape[1]),
+        location="content.aggregate matrix",
+        errors=[],
+    )
+    return parsed_matrix is not None and bool(
+        np.allclose(parsed_matrix, expected, rtol=0.0, atol=1e-12)
+    )
+
+
 def _validate_interval_record(
     value: object,
     *,
@@ -773,13 +912,15 @@ def _validate_interval_record(
     if not isinstance(value, Mapping):
         errors.append(f"{location} must be an object")
         return
-    if value.get("sample_size") != len(_EXPECTED_EVIDENCE_SEEDS):
+    # Type-exact: ``30.0 != 30`` is False under Python equality, so a punned
+    # and re-digested interval record would pass a plain ``!=`` here.
+    if not _same(value.get("sample_size"), len(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append(f"{location}.sample_size must be 30")
-    if value.get("method") != "paired-percentile-bootstrap":
+    if not _same(value.get("method"), "paired-percentile-bootstrap"):
         errors.append(f"{location}.method must be paired-percentile-bootstrap")
-    if value.get("pairing_unit") != "seed":
+    if not _same(value.get("pairing_unit"), "seed"):
         errors.append(f"{location}.pairing_unit must be seed")
-    if value.get("resamples") != config.get("bootstrap_resamples"):
+    if not _same(value.get("resamples"), config.get("bootstrap_resamples")):
         errors.append(
             f"{location}.resamples must match content.configuration"
         )
@@ -816,12 +957,21 @@ def _validate_seed_and_aggregate_consistency(
         return
     if not isinstance(aggregate, Mapping) or not isinstance(config, Mapping):
         return
+    if set(aggregate) != _REQUIRED_AGGREGATE_FIELDS:
+        errors.append("content.aggregate keys do not match the v1 schema")
 
     observed_seeds: list[int] = []
     prequential: dict[str, list[float]] = {
         condition: [] for condition in _EXPECTED_CONDITIONS
     }
     recurrence_steps: list[int] = []
+    joint_phase_rewards: list[list[float]] = []
+    joint_probe_matrices: list[list[list[float]]] = []
+    joint_mean_forgetting: list[float] = []
+    joint_maximum_forgetting: list[float] = []
+    joint_interference_forgetting: list[float] = []
+    joint_mean_stability_gap: list[float] = []
+    budgets: list[tuple[int, int, int]] = []
     for index, raw_seed in enumerate(seed_summaries):
         location = f"content.seed_summaries[{index}]"
         if not isinstance(raw_seed, Mapping):
@@ -856,6 +1006,12 @@ def _validate_seed_and_aggregate_consistency(
                     f"{result_location} is missing fields: "
                     + ", ".join(missing_fields)
                 )
+            extra_fields = sorted(set(result) - _REQUIRED_CONDITION_FIELDS)
+            if extra_fields:
+                errors.append(
+                    f"{result_location} has unsupported fields: "
+                    + ", ".join(extra_fields)
+                )
             if result.get("learning_mask") != _EXPECTED_LEARNING_MASKS[condition]:
                 errors.append(
                     f"{result_location}.learning_mask is inconsistent "
@@ -868,6 +1024,107 @@ def _validate_seed_and_aggregate_consistency(
                 )
             else:
                 prequential[condition].append(reward)
+            for field_name in (
+                "final_probe_reward",
+                "mean_forgetting",
+                "maximum_forgetting",
+                "backward_transfer",
+                "mean_stability_gap",
+                "maximum_stability_gap",
+                "interference_forgetting",
+            ):
+                if _finite_number(result.get(field_name)) is None:
+                    errors.append(f"{result_location}.{field_name} must be finite")
+            phase_rewards = _finite_vector(
+                result.get("phase_mean_rewards"),
+                length=3,
+                location=f"{result_location}.phase_mean_rewards",
+                errors=errors,
+            )
+            probe_matrix = _finite_matrix(
+                result.get("read_only_probe_matrix"),
+                rows=3,
+                columns=2,
+                location=f"{result_location}.read_only_probe_matrix",
+                errors=errors,
+            )
+            per_task_vectors: dict[str, list[float] | None] = {}
+            for field_name in (
+                "per_task_final_performance",
+                "per_task_forgetting",
+                "per_task_backward_transfer",
+            ):
+                per_task_vectors[field_name] = _finite_vector(
+                    result.get(field_name),
+                    length=2,
+                    location=f"{result_location}.{field_name}",
+                    errors=errors,
+                )
+            if probe_matrix is not None:
+                matrix = np.asarray(probe_matrix, dtype=np.float64)
+                trajectories = (matrix[:, 0], matrix[1:, 1])
+                expected_final = np.asarray(
+                    [trajectory[-1] for trajectory in trajectories]
+                )
+                expected_forgetting = np.asarray(
+                    [
+                        max(0.0, float(np.max(trajectory) - trajectory[-1]))
+                        for trajectory in trajectories
+                    ]
+                )
+                expected_backward_transfer = np.asarray(
+                    [trajectory[-1] - trajectory[0] for trajectory in trajectories]
+                )
+                expected_vectors = {
+                    "per_task_final_performance": expected_final,
+                    "per_task_forgetting": expected_forgetting,
+                    "per_task_backward_transfer": expected_backward_transfer,
+                }
+                for field_name, expected in expected_vectors.items():
+                    actual = per_task_vectors[field_name]
+                    if actual is not None and not np.allclose(
+                        actual, expected, rtol=0.0, atol=1e-12
+                    ):
+                        errors.append(
+                            f"{result_location}.{field_name} is inconsistent "
+                            "with read_only_probe_matrix"
+                        )
+                expected_scalars = {
+                    "final_probe_reward": float(np.mean(expected_final)),
+                    "mean_forgetting": float(np.mean(expected_forgetting)),
+                    "maximum_forgetting": float(np.max(expected_forgetting)),
+                    "backward_transfer": float(np.mean(expected_backward_transfer)),
+                    "interference_forgetting": max(
+                        0.0, float(matrix[0, 0] - matrix[1, 0])
+                    ),
+                }
+                for field_name, expected_scalar in expected_scalars.items():
+                    if not _numbers_match(result.get(field_name), expected_scalar):
+                        errors.append(
+                            f"{result_location}.{field_name} is inconsistent "
+                            "with read_only_probe_matrix"
+                        )
+            recovery_lengths = result.get("recovery_lengths")
+            if (
+                type(recovery_lengths) is not list
+                or len(recovery_lengths) != 2
+                or any(type(item) is not int for item in recovery_lengths)
+            ):
+                errors.append(
+                    f"{result_location}.recovery_lengths must be two integers"
+                )
+            elif result.get("recurrence_recovery_steps") != recovery_lengths[1]:
+                errors.append(
+                    f"{result_location}.recurrence_recovery_steps is inconsistent "
+                    "with recovery_lengths"
+                )
+            budget = _controller_budget(
+                result.get("controller_budget"),
+                location=f"{result_location}.controller_budget",
+                errors=errors,
+            )
+            if budget is not None:
+                budgets.append(budget)
             if condition == "joint_adaptive":
                 recovery = result.get("recurrence_recovery_steps")
                 if type(recovery) is not int:
@@ -877,6 +1134,19 @@ def _validate_seed_and_aggregate_consistency(
                     )
                 else:
                     recurrence_steps.append(recovery)
+                if phase_rewards is not None:
+                    joint_phase_rewards.append(phase_rewards)
+                if probe_matrix is not None:
+                    joint_probe_matrices.append(probe_matrix)
+                for field_name, destination in (
+                    ("mean_forgetting", joint_mean_forgetting),
+                    ("maximum_forgetting", joint_maximum_forgetting),
+                    ("interference_forgetting", joint_interference_forgetting),
+                    ("mean_stability_gap", joint_mean_stability_gap),
+                ):
+                    numeric = _finite_number(result.get(field_name))
+                    if numeric is not None:
+                        destination.append(numeric)
 
     if tuple(observed_seeds) != _EXPECTED_EVIDENCE_SEEDS:
         errors.append(
@@ -884,11 +1154,11 @@ def _validate_seed_and_aggregate_consistency(
             "seeds 30-59 in order"
         )
     aggregate_seeds = aggregate.get("seeds")
-    if aggregate_seeds != list(_EXPECTED_EVIDENCE_SEEDS):
+    if not _same(aggregate_seeds, list(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append("content.aggregate.seeds must equal held-out seeds 30-59")
-    if aggregate.get("seed_count") != len(_EXPECTED_EVIDENCE_SEEDS):
+    if not _same(aggregate.get("seed_count"), len(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append("content.aggregate.seed_count must equal 30")
-    if aggregate_seeds != observed_seeds:
+    if not _same(aggregate_seeds, observed_seeds):
         errors.append(
             "content.aggregate.seeds must match content.seed_summaries"
         )
@@ -907,6 +1177,79 @@ def _validate_seed_and_aggregate_consistency(
                 )
     else:
         errors.append("content.aggregate.mean_prequential_reward must be an object")
+
+    seed_count = len(_EXPECTED_EVIDENCE_SEEDS)
+    if len(joint_phase_rewards) == seed_count:
+        expected_phase_rewards = np.mean(
+            np.asarray(joint_phase_rewards, dtype=np.float64), axis=0
+        )
+        if not _aggregate_array_matches(
+            aggregate.get("joint_adaptive_phase_rewards"), expected_phase_rewards
+        ):
+            errors.append(
+                "content.aggregate.joint_adaptive_phase_rewards is inconsistent "
+                "with seed summaries"
+            )
+    if len(joint_probe_matrices) == seed_count:
+        expected_probe_matrix = np.mean(
+            np.asarray(joint_probe_matrices, dtype=np.float64), axis=0
+        )
+        if not _aggregate_array_matches(
+            aggregate.get("joint_adaptive_read_only_probe_matrix"),
+            expected_probe_matrix,
+        ):
+            errors.append(
+                "content.aggregate.joint_adaptive_read_only_probe_matrix is "
+                "inconsistent with seed summaries"
+            )
+        if not _numbers_match(
+            aggregate.get("recurrent_a_probe_reward"),
+            float(expected_probe_matrix[-1, 0]),
+        ):
+            errors.append(
+                "content.aggregate.recurrent_a_probe_reward is inconsistent "
+                "with seed summaries"
+            )
+    scalar_reductions = (
+        ("mean_forgetting", joint_mean_forgetting, np.mean),
+        ("maximum_forgetting", joint_maximum_forgetting, np.max),
+        ("mean_interference_forgetting", joint_interference_forgetting, np.mean),
+        ("mean_stability_gap", joint_mean_stability_gap, np.mean),
+    )
+    for field_name, values, reduction in scalar_reductions:
+        if len(values) == seed_count and not _numbers_match(
+            aggregate.get(field_name), float(reduction(values))
+        ):
+            errors.append(
+                f"content.aggregate.{field_name} is inconsistent with seed summaries"
+            )
+
+    expected_result_count = seed_count * len(_EXPECTED_CONDITIONS)
+    resources = aggregate.get("resource_budget")
+    if not isinstance(resources, Mapping) or set(resources) != {
+        *_EXPECTED_CONTROLLER_BUDGET,
+        "identical_across_conditions",
+    }:
+        errors.append("content.aggregate.resource_budget keys do not match the v1 schema")
+    elif len(budgets) == expected_result_count:
+        expected_identical = all(budget == budgets[0] for budget in budgets[1:])
+        for index, field_name in enumerate(_EXPECTED_CONTROLLER_BUDGET):
+            if resources.get(field_name) != budgets[0][index]:
+                errors.append(
+                    f"content.aggregate.resource_budget.{field_name} is inconsistent "
+                    "with seed summaries"
+                )
+        if resources.get("identical_across_conditions") is not expected_identical:
+            errors.append(
+                "content.aggregate.resource_budget identical-across-conditions "
+                "declaration is inconsistent with seed summaries"
+            )
+    finite_declaration = aggregate.get("all_scientific_and_timing_values_finite")
+    if finite_declaration is not True:
+        errors.append(
+            "content.aggregate finiteness declaration is inconsistent with "
+            "validated seed summaries"
+        )
 
     confidence = _finite_number(config.get("confidence_level"))
     resamples = config.get("bootstrap_resamples")
@@ -1036,20 +1379,79 @@ def _validate_seed_and_aggregate_consistency(
                         "content.aggregate.recurrence_recovery_fraction_interval."
                         f"{field_name} is inconsistent with seed summaries"
                     )
-            if recovery_interval.get("successes") != successes:
+            if not _same(recovery_interval.get("successes"), successes):
                 errors.append(
                     "content.aggregate.recurrence_recovery_fraction_interval."
                     "successes is inconsistent with seed summaries"
                 )
-            if recovery_interval.get("sample_size") != len(
-                _EXPECTED_EVIDENCE_SEEDS
-            ):
+            if not _same(recovery_interval.get("sample_size"), len(_EXPECTED_EVIDENCE_SEEDS)):
                 errors.append(
                     "content.aggregate.recurrence_recovery_fraction_interval."
                     "sample_size must equal 30"
                 )
 
 
+def _validate_operational_timing_primitives(
+    value: object,
+    *,
+    maximum_update_latency_ms: object,
+    errors: list[str],
+) -> None:
+    location = "operational_diagnostics.condition_timings"
+    if type(value) is not list:
+        errors.append(f"{location} must be an array")
+        return
+    expected_pairs = [
+        (seed, condition)
+        for seed in _EXPECTED_EVIDENCE_SEEDS
+        for condition in _EXPECTED_CONDITIONS
+    ]
+    if len(value) != len(expected_pairs):
+        errors.append(f"{location} must contain exactly 90 condition records")
+    observed_pairs: list[tuple[int, str]] = []
+    p95_latencies: list[float] = []
+    expected_fields = {
+        "seed",
+        "condition",
+        "wall_seconds",
+        "mean_step_latency_ms",
+        "mean_update_latency_ms",
+        "p95_update_latency_ms",
+    }
+    for index, raw_timing in enumerate(value):
+        record_location = f"{location}[{index}]"
+        if type(raw_timing) is not dict or set(raw_timing) != expected_fields:
+            errors.append(f"{record_location} keys do not match the v1 schema")
+            continue
+        seed = raw_timing.get("seed")
+        condition = raw_timing.get("condition")
+        if type(seed) is not int or type(condition) is not str:
+            errors.append(f"{record_location} seed/condition identity is invalid")
+        else:
+            observed_pairs.append((seed, condition))
+        for field_name in (
+            "wall_seconds",
+            "mean_step_latency_ms",
+            "mean_update_latency_ms",
+            "p95_update_latency_ms",
+        ):
+            numeric = _finite_number(raw_timing.get(field_name))
+            if numeric is None or numeric < 0.0:
+                errors.append(
+                    f"{record_location}.{field_name} must be finite and nonnegative"
+                )
+            elif field_name == "p95_update_latency_ms":
+                p95_latencies.append(numeric)
+    if observed_pairs != expected_pairs:
+        errors.append(f"{location} must match the held-out seed/condition schedule")
+    if len(p95_latencies) == len(expected_pairs) and not _numbers_match(
+        maximum_update_latency_ms,
+        float(np.max(p95_latencies)),
+    ):
+        errors.append(
+            "operational_diagnostics.maximum_update_latency_ms is inconsistent "
+            "with condition timing primitives"
+        )
 def _validate_scientific_check_bindings(
     checks: Mapping[str, Mapping[str, object]],
     *,
@@ -1065,9 +1467,7 @@ def _validate_scientific_check_bindings(
     )
     resources = aggregate.get("resource_budget")
     aggregate_seeds = aggregate.get("seeds")
-    expected_schedule = float(
-        aggregate_seeds == list(_EXPECTED_EVIDENCE_SEEDS)
-    )
+    expected_schedule = float(_same(aggregate_seeds, list(_EXPECTED_EVIDENCE_SEEDS)))
     expected: dict[str, tuple[object, str, object]] = {
         "seed_count": (
             aggregate.get("seed_count"),
@@ -1373,6 +1773,14 @@ def validate_evidence_artifact(
                 "operational_diagnostics.passed is inconsistent with its checks"
             )
         operational_passed = computed_passed
+
+        _validate_operational_timing_primitives(
+            operational.get("condition_timings"),
+            maximum_update_latency_ms=operational.get(
+                "maximum_update_latency_ms"
+            ),
+            errors=errors,
+        )
 
         latency = _finite_number(
             operational.get("maximum_update_latency_ms")

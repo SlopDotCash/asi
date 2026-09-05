@@ -6,6 +6,7 @@ happen only through ``python -m alberta_framework.benchmarks.upgd_ipmnist``.
 
 import hashlib
 import json
+import stat
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -41,6 +42,67 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 
 TINY = IPMNISTConfig(n_tasks=2, task_length=200, input_dim=16, hidden1=32, hidden2=16)
 N_TRAIN = 300
+
+
+class TestAtomicWriteNew:
+    def test_publishes_read_only_destination_without_temporary_link(self, tmp_path):
+        destination = tmp_path / "result.json"
+
+        published = upgd_ipmnist.atomic_write_new(destination, b'{"ok":true}\n')
+
+        assert published == destination
+        assert destination.read_bytes() == b'{"ok":true}\n'
+        assert destination.stat().st_mode & stat.S_IWUSR == 0
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
+
+    def test_windows_readonly_cleanup_restores_public_destination(
+        self, tmp_path, monkeypatch
+    ):
+        temporary = tmp_path / ".result.json.test.tmp"
+        destination = tmp_path / "result.json"
+        temporary.write_bytes(b'{"ok":true}\n')
+        upgd_ipmnist.os.link(temporary, destination)
+        temporary.chmod(0o444)
+        original_unlink = Path.unlink
+        attempts = 0
+
+        def deny_first_unlink(path, *args, **kwargs):
+            nonlocal attempts
+            if path == temporary and attempts == 0:
+                attempts += 1
+                raise PermissionError("simulated Windows read-only hard link")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(upgd_ipmnist, "_WINDOWS_READONLY_UNLINK", True)
+        monkeypatch.setattr(Path, "unlink", deny_first_unlink)
+
+        upgd_ipmnist._unlink_published_temporary(
+            temporary,
+            destination,
+            published=True,
+        )
+
+        assert attempts == 1
+        assert not temporary.exists()
+        assert destination.read_bytes() == b'{"ok":true}\n'
+        assert destination.stat().st_mode & stat.S_IWUSR == 0
+
+    def test_concurrent_destination_is_never_changed(self, tmp_path, monkeypatch):
+        destination = tmp_path / "result.json"
+        foreign = b'{"owner":"other"}\n'
+
+        def lose_link_race(_source, target):
+            Path(target).write_bytes(foreign)
+            raise FileExistsError("simulated destination race")
+
+        monkeypatch.setattr(upgd_ipmnist.os, "link", lose_link_race)
+
+        with pytest.raises(FileExistsError, match="refusing to overwrite immutable output"):
+            upgd_ipmnist.atomic_write_new(destination, b'{"owner":"ours"}\n')
+
+        assert destination.read_bytes() == foreign
+        assert destination.stat().st_mode & stat.S_IWUSR != 0
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
 
 
 class _HostileString(str):
@@ -736,6 +798,38 @@ class TestLeanUPGDParity:
             )
 
 
+def test_zero_utility_decay_does_not_multiply_inf_utility() -> None:
+    """utility_decay=0 times poisoned utility EMA is 0*inf = NaN without a skip."""
+    params = {
+        "w": jnp.asarray([[1.0, -0.5], [0.25, 0.5]], dtype=jnp.float32),
+        "b": jnp.asarray([0.1, -0.2], dtype=jnp.float32),
+    }
+    poisoned = LeanUPGDState(
+        utility={name: jnp.full_like(value, jnp.inf) for name, value in params.items()},
+        step=jnp.asarray(3, dtype=jnp.int32),
+    )
+    grads = {name: jnp.ones_like(value) for name, value in params.items()}
+    noise = {name: jnp.zeros_like(value) for name, value in params.items()}
+    hp = {
+        "utility_decay": 0.0,
+        "step_size": 0.01,
+        "weight_decay": 0.0,
+        "noise_std": 0.0,
+    }
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    new_params, new_state = lean_upgd_w_update(params, poisoned, grads, noise, hp)
+    for name in params:
+        assert bool(jnp.all(jnp.isfinite(new_state.utility[name])))
+        assert bool(jnp.all(jnp.isfinite(new_params[name])))
+        np.testing.assert_allclose(
+            np.asarray(new_state.utility[name]),
+            np.asarray(-grads[name] * params[name]),
+            atol=1e-6,
+        )
+
+
 class TestAdamWTransaction:
     """AdamW's parameter leaves form one checked learner transaction."""
 
@@ -1427,3 +1521,18 @@ def test_ipmnist_run_result_rejects_hostile_scalar_and_seed_containers() -> None
         _legal_ipmnist_run_result(seeds=())
     with pytest.raises(ValueError, match="unique"):
         _legal_ipmnist_run_result(seeds=(0, 0))
+
+
+def test_zero_decay_recovers_utility_overflow_from_finite_updates() -> None:
+    params = {"w": jnp.array([2.0, 1.0], dtype=jnp.float32)}
+    state = LeanUPGDState(utility={"w": jnp.zeros(2)}, step=jnp.asarray(0, dtype=jnp.int32))
+    noise = {"w": jnp.zeros(2)}
+    hp = {"utility_decay": 0.0, "step_size": 0.01, "weight_decay": 0.0, "noise_std": 0.0}
+    params, state = lean_upgd_w_update(
+        params, state, {"w": jnp.array([3e38, 1.0], dtype=jnp.float32)}, noise, hp
+    )
+    assert bool(jnp.all(jnp.isfinite(params["w"])))
+    assert bool(jnp.isneginf(state.utility["w"][0]))
+    params, state = lean_upgd_w_update(params, state, {"w": jnp.ones(2)}, noise, hp)
+    assert bool(jnp.all(jnp.isfinite(params["w"])))
+    assert bool(jnp.all(jnp.isfinite(state.utility["w"])))

@@ -41,7 +41,10 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar,
     validated_float32_scalar_with_ratio,
 )
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
 from alberta_framework.core.optimizers import Autostep, AutostepParamState, optimizer_from_config
 from alberta_framework.core.update_safety import (
@@ -899,7 +902,8 @@ class AverageRewardHordeActorCriticAgent:
         behavior = self.behavior_policy(state, observation)
         action = jr.categorical(
             sample_key,
-            jnp.log(jnp.maximum(behavior, 1e-8)),
+            jnp.log(behavior),
+            mode="high",
         ).astype(jnp.int32)
         target_probability = target[action]
         behavior_probability = behavior[action]
@@ -975,7 +979,7 @@ class AverageRewardHordeActorCriticAgent:
         actor_score_scale = (
             (1.0 - self._config.epsilon)
             * old_sample.target_probability
-            / jnp.maximum(old_sample.behavior_probability, 1e-8)
+            / old_sample.behavior_probability
         )
         score = (
             actor_score_scale * (action_mask - old_sample.target_policy) / self._config.temperature
@@ -987,20 +991,23 @@ class AverageRewardHordeActorCriticAgent:
             state.actor_opt_w,
             grad_log_policy,
             error=actor_td_error,
+            param=state.actor_weights,
         )
         raw_b, new_opt_b, bias_update_applied = _update_from_gradient_with_diagnostics(
             self._actor_optimizer,
             state.actor_opt_b,
             bias_grad,
             error=actor_td_error,
+            param=state.actor_bias,
         )
+        step_error = _gradient_step_error(self._actor_optimizer, actor_td_error)
         weight_step = jnp.clip(
-            actor_td_error * raw_w,
+            step_error * raw_w,
             -self._config.actor_update_clip,
             self._config.actor_update_clip,
         )
         bias_step = jnp.clip(
-            actor_td_error * raw_b,
+            step_error * raw_b,
             -self._config.actor_update_clip,
             self._config.actor_update_clip,
         )

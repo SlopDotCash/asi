@@ -905,11 +905,18 @@ def step9_update(
             accepted,
         )
 
-    (final_ctrl, final_behavior), (dream_td_errors, dream_accepted) = jax.lax.scan(
-        dream_step,
-        (control_after_real, behavior_after_real),
-        jnp.arange(config.planning_budget, dtype=jnp.int32),
-    )
+    if config.planning_budget == 0:
+        # A zero-length scan still traces its body. Skip it so disabled planning
+        # never constructs the candidate or rollout arrays for unused axes.
+        final_ctrl, final_behavior = control_after_real, behavior_after_real
+        dream_td_errors = jnp.empty((0,), dtype=jnp.float32)
+        dream_accepted = jnp.empty((0,), dtype=jnp.bool_)
+    else:
+        (final_ctrl, final_behavior), (dream_td_errors, dream_accepted) = jax.lax.scan(
+            dream_step,
+            (control_after_real, behavior_after_real),
+            jnp.arange(config.planning_budget, dtype=jnp.int32),
+        )
 
     new_state = Step9DreamingState(
         control_state=final_ctrl,

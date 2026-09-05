@@ -1829,12 +1829,21 @@ def _run_or_skip_shard(
 ) -> Path:
     """Idempotent shard execution: existing shards are validated and kept.
 
-    A shard is only reused when it was produced by the same stream config
-    and the same network size; anything else must go to a fresh directory.
+    A shard is only reused when its payload records the requested arm and
+    seed and it was produced by the same stream config and the same network
+    size; anything else must go to a fresh directory. The filename alone is
+    not identity: a relabelled copy must never stand in for a run that never
+    happened.
     """
     path = micro_shard_path(out_dir, config.family, arm_name, seed)
     if path.exists():
         payload = load_micro_shard(path)
+        if payload["arm_name"] != arm_name or payload["seed"] != seed:
+            raise ValueError(
+                f"{path}: existing shard records arm={payload['arm_name']!r} "
+                f"seed={payload['seed']}, not the requested arm={arm_name!r} "
+                f"seed={seed}; use a fresh --out directory"
+            )
         if payload["stream_config"] != config.to_config():
             raise ValueError(
                 f"{path}: existing shard was produced by a different stream "

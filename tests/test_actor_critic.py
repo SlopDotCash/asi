@@ -54,6 +54,37 @@ def test_actor_critic_init_predict_and_start_shapes() -> None:
     assert int(next_state.last_action) in range(3)
 
 
+def test_actor_critic_sampling_preserves_reported_rare_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(feature_dim=1, key=jr.key(15)).replace(  # type: ignore[attr-defined]
+        actor_weights=jnp.zeros((2, 1), dtype=jnp.float32),
+        actor_bias=jnp.asarray((0.0, -20.0), dtype=jnp.float32),
+    )
+    observation = jnp.zeros((1,), dtype=jnp.float32)
+    observed_logits: list[jax.Array] = []
+    observed_modes: list[object] = []
+
+    def fake_categorical(
+        _key: jax.Array,
+        logits: jax.Array,
+        **kwargs: object,
+    ) -> jax.Array:
+        observed_logits.append(logits)
+        observed_modes.append(kwargs.get("mode"))
+        return jnp.asarray(0, dtype=jnp.int32)
+
+    monkeypatch.setattr(jr, "categorical", fake_categorical)
+    with jax.disable_jit():
+        action, _next_key, policy = agent.select_action(state, observation)
+
+    assert int(action) == 0
+    assert observed_modes == ["high"]
+    chex.assert_trees_all_close(observed_logits[0], jnp.log(policy))
+    assert float(policy[1]) < 1e-8
+
+
 def test_actor_critic_update_changes_actor_and_critic() -> None:
     config = ActorCriticConfig(
         n_actions=2,

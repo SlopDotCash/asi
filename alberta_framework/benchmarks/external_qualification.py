@@ -158,7 +158,18 @@ def _revision(repository: str, commit: str) -> ExternalCodeRevision:
 # label.  Empty code revisions are an explicit blocker, never permission to
 # substitute an unofficial implementation.
 EXTERNAL_QUALIFICATION_PLANS: tuple[ExternalQualificationPlan, ...] = (
-    ExternalQualificationPlan(1574, "ftl-online-agent", ("arXiv:2507.09177v1",), (), COMMON_GATES),
+    ExternalQualificationPlan(
+        1574,
+        "ftl-online-agent",
+        ("arXiv:2507.09177v1",),
+        (
+            _revision(
+                "https://github.com/sail-sg/ContinualBench.git",
+                "a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad",
+            ),
+        ),
+        COMMON_GATES,
+    ),
     ExternalQualificationPlan(
         1575,
         "action-conditioned-latent",

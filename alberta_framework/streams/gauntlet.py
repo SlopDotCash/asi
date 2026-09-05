@@ -79,6 +79,12 @@ _GAUNTLET_LOOP_MAX_STEPS = NUM_SEGMENTS * 3000
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 
+
+def _skip_zero_scale(scale: Array | float, value: Array) -> Array:
+    """Skip ``0 * inf`` so a closed context gate does not poison features."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 LIFETIME_GAUNTLET_CONFIG_SCHEMA = "alberta.lifetime-gauntlet-config.v2"
 LIFETIME_GAUNTLET_STATE_SCHEMA = "alberta.lifetime-gauntlet-state.v2"
 LIFETIME_GAUNTLET_CHECKPOINT_SCHEMA = "alberta.lifetime-gauntlet-checkpoint.v2"
@@ -530,7 +536,14 @@ class ContextGatedFeatures:
         x = timestep.observation[:d]
         ctx = timestep.observation[d:]
         base_gate = 1.0 - ctx[0] - ctx[1] if self._exclusive else 1.0
-        gated = jnp.concatenate([base_gate * x, ctx, ctx[0] * x, ctx[1] * x])
+        gated = jnp.concatenate(
+            [
+                _skip_zero_scale(base_gate, x),
+                ctx,
+                _skip_zero_scale(ctx[0], x),
+                _skip_zero_scale(ctx[1], x),
+            ]
+        )
         return TimeStep(observation=gated, target=timestep.target), new_state
 
 

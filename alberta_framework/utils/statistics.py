@@ -347,12 +347,20 @@ def compute_timeseries_statistics(
         Tuple of (mean, ci_lower, ci_upper) arrays of shape (n_steps,)
 
     Raises:
-        ValueError: If metric_array has no seed rows, any sample is
-            non-finite, or ``confidence_level`` is not strictly between 0 and 1.
+        ValueError: If metric_array is not a two-dimensional seed-by-step
+            matrix, has no seed rows, contains a non-finite sample, or
+            ``confidence_level`` is not strictly between 0 and 1.
     """
+    if metric_array.ndim != 2:
+        raise ValueError(
+            "metric_array must be a two-dimensional seed-by-step matrix "
+            f"(got shape {metric_array.shape})"
+        )
     n_seeds = metric_array.shape[0]
     if n_seeds == 0:
         raise ValueError("metric_array must contain at least one seed row")
+    if metric_array.ndim == 2 and metric_array.shape[1] == 0:
+        raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
     _validate_confidence_level(confidence_level)
     mean = np.mean(metric_array, axis=0)

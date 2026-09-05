@@ -489,3 +489,169 @@ class TestVOldPropagation:
 
         r1 = learner.update(r0.state, obs1, rewards[1], obs2, gammas[1])
         np.testing.assert_allclose(float(r1.state.v_old), expected_v_old_step2, atol=1e-6)
+
+
+# =============================================================================
+# Trace decay uses the prior transition's discount (S&B 2nd ed. eqs. 12.23/12.25)
+# =============================================================================
+
+
+def _reference_true_online_td(
+    observations: list[np.ndarray],
+    rewards: list[float],
+    next_observations: list[np.ndarray],
+    gammas: list[float],
+    *,
+    alpha: float,
+    lam: float,
+) -> tuple[np.ndarray, float]:
+    """van Seijen et al. (2016) true online TD(lambda), linear with an always-on
+    bias feature and per-transition discounts.
+
+    The Dutch trace decays by ``gamma_t * lam`` where ``gamma_t`` is the
+    discount of the transition INTO ``S_t`` (1.0 before the first update);
+    ``gamma_{t+1}`` (0 at terminal) enters only the TD-error bootstrap.
+    """
+    dim = len(observations[0]) + 1
+    w = np.zeros(dim, dtype=np.float64)
+    z = np.zeros(dim, dtype=np.float64)
+    v_old = 0.0
+    previous_gamma = 1.0
+    for x, r, x_next, gamma in zip(observations, rewards, next_observations, gammas, strict=True):
+        xa = np.append(np.asarray(x, dtype=np.float64), 1.0)
+        xna = np.append(np.asarray(x_next, dtype=np.float64), 1.0)
+        v = w @ xa
+        v_next = 0.0 if gamma == 0.0 else w @ xna
+        delta = r + gamma * v_next - v
+        decay = previous_gamma * lam
+        z = decay * z + (1.0 - alpha * decay * (z @ xa)) * xa
+        w = w + alpha * (delta + v - v_old) * z - alpha * (v - v_old) * xa
+        v_old = v_next
+        previous_gamma = gamma
+    return w[:-1], float(w[-1])
+
+
+class TestTraceDecaysWithPriorTransitionDiscount:
+    """The discount passed to ``update`` is ``gamma_{t+1}`` and belongs to the
+    TD-error bootstrap only. Decaying the Dutch trace by it multiplied the whole
+    in-episode trace by zero on the update that carries the terminal reward, so
+    lambda was silently forced to 0 exactly where credit assignment matters."""
+
+    @staticmethod
+    def _run(learner, observations, rewards, next_observations, gammas):
+        state = learner.init(len(observations[0]))
+        for x, r, x_next, gamma in zip(
+            observations, rewards, next_observations, gammas, strict=True
+        ):
+            result = learner.update(
+                state,
+                jnp.asarray(x, dtype=jnp.float32),
+                jnp.float32(r),
+                jnp.asarray(x_next, dtype=jnp.float32),
+                jnp.float32(gamma),
+            )
+            assert bool(result.update_applied)
+            state = result.state
+        return state
+
+    def test_terminal_update_credits_pre_terminal_feature(self) -> None:
+        alpha, lam = 0.1, 1.0
+        eye = np.eye(2, dtype=np.float32)
+        observations = [eye[0], eye[1]]
+        next_observations = [eye[1], np.zeros(2, dtype=np.float32)]
+        rewards = [0.0, 1.0]
+        gammas = [0.9, 0.0]
+
+        state = self._run(
+            TrueOnlineTDLearner(step_size=alpha, trace_decay=lam),
+            observations,
+            rewards,
+            next_observations,
+            gammas,
+        )
+        expected_w, expected_b = _reference_true_online_td(
+            observations, rewards, next_observations, gammas, alpha=alpha, lam=lam
+        )
+        np.testing.assert_allclose(state.weights, expected_w, rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(float(state.bias), expected_b, rtol=1e-5, atol=1e-7)
+        # The pre-terminal state's feature must be credited for the terminal reward.
+        assert float(state.weights[0]) > 0.0
+
+    def test_variable_discounts_decay_by_the_retained_transition_discount(self) -> None:
+        alpha, lam = 0.1, 0.8
+        eye = np.eye(3, dtype=np.float32)
+        observations = [eye[0], eye[1], eye[2]]
+        next_observations = [eye[1], eye[2], np.zeros(3, dtype=np.float32)]
+        rewards = [0.25, -0.5, 1.0]
+        gammas = [0.5, 0.9, 0.0]
+
+        state = self._run(
+            TrueOnlineTDLearner(step_size=alpha, trace_decay=lam),
+            observations,
+            rewards,
+            next_observations,
+            gammas,
+        )
+        expected_w, expected_b = _reference_true_online_td(
+            observations, rewards, next_observations, gammas, alpha=alpha, lam=lam
+        )
+        np.testing.assert_allclose(state.weights, expected_w, rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(float(state.bias), expected_b, rtol=1e-5, atol=1e-7)
+
+    def test_previous_gamma_is_seeded_inert_and_advances(self) -> None:
+        learner = TrueOnlineTDLearner(step_size=0.1, trace_decay=0.5)
+        state = learner.init(2)
+        assert float(state.previous_gamma) == 1.0
+        obs = jnp.array([1.0, 0.0])
+        result = learner.update(state, obs, jnp.float32(0.5), obs, jnp.float32(0.7))
+        assert bool(result.update_applied)
+        assert float(result.state.previous_gamma) == pytest.approx(0.7)
+        terminal = learner.update(
+            result.state, obs, jnp.float32(1.0), jnp.zeros(2), jnp.float32(0.0)
+        )
+        assert float(terminal.state.previous_gamma) == 0.0
+
+    def test_post_terminal_update_starts_a_fresh_trace(self) -> None:
+        learner = TrueOnlineTDLearner(step_size=0.1, trace_decay=1.0)
+        eye = np.eye(2, dtype=np.float32)
+        state = self._run(
+            learner,
+            [eye[0], eye[1]],
+            [0.0, 1.0],
+            [eye[1], np.zeros(2, dtype=np.float32)],
+            [0.9, 0.0],
+        )
+        result = learner.update(
+            state, jnp.asarray(eye[0]), jnp.float32(0.0), jnp.asarray(eye[1]), jnp.float32(0.9)
+        )
+        assert bool(result.update_applied)
+        np.testing.assert_array_equal(result.state.eligibility_traces, eye[0])
+        assert float(result.state.bias_eligibility_trace) == 1.0
+
+    def test_single_episode_lambda_one_chain_is_monte_carlo(self) -> None:
+        """One pass over the 5-state chain with lambda=gamma=1 and reward only
+        at termination is incremental Monte Carlo: every visited state's weight
+        moves, not only the last one's."""
+        n_states, alpha, lam = 5, 0.05, 1.0
+        eye = np.eye(n_states, dtype=np.float32)
+        observations = [eye[t] for t in range(n_states)]
+        next_observations = [
+            eye[t + 1] if t + 1 < n_states else np.zeros(n_states, dtype=np.float32)
+            for t in range(n_states)
+        ]
+        rewards = [1.0 if t == n_states - 1 else 0.0 for t in range(n_states)]
+        gammas = [1.0 if t + 1 < n_states else 0.0 for t in range(n_states)]
+
+        state = self._run(
+            TrueOnlineTDLearner(step_size=alpha, trace_decay=lam),
+            observations,
+            rewards,
+            next_observations,
+            gammas,
+        )
+        expected_w, expected_b = _reference_true_online_td(
+            observations, rewards, next_observations, gammas, alpha=alpha, lam=lam
+        )
+        np.testing.assert_allclose(state.weights, expected_w, rtol=1e-5, atol=1e-7)
+        np.testing.assert_allclose(float(state.bias), expected_b, rtol=1e-5, atol=1e-7)
+        assert bool(np.all(np.asarray(state.weights) > 0.0))

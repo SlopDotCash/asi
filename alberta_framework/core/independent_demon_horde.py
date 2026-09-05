@@ -764,6 +764,14 @@ class IndependentDemonHorde:
             new_traces.append(new_bt)
 
         # 4. Per-parameter optimizer step from traces
+        all_params: list[Array] = []
+        for i in range(n_layers):
+            all_params.extend((demon_state.params.weights[i], demon_state.params.biases[i]))
+        direct_steps = self._optimizer.gradient_update_returns_delta() or (
+            self._head_optimizer is not None
+            and self._head_optimizer.gradient_update_returns_delta()
+        )
+        step_error = jnp.ones_like(error) if direct_steps else error
         n_trace_entries = len(new_traces)
         all_steps: list[Array] = []
         new_opt_states: list[Any] = []
@@ -780,19 +788,18 @@ class IndependentDemonHorde:
                 demon_state.optimizer_states[j],
                 new_traces[j],
                 error=error,
+                param=all_params[j],
             )
+            if direct_steps and not opt.gradient_update_returns_delta():
+                step = error * step
             all_steps.append(step)
             new_opt_states.append(new_opt)
             optimizer_updates_applied.append(optimizer_update_applied)
 
         # 5. Optional bounding (per-demon)
         if self._bounder is not None:
-            all_params: list[Array] = []
-            for i in range(n_layers):
-                all_params.append(demon_state.params.weights[i])
-                all_params.append(demon_state.params.biases[i])
             bounded_steps, bound_scale = self._bounder.bound(
-                tuple(all_steps), error, tuple(all_params)
+                tuple(all_steps), step_error, tuple(all_params)
             )
             all_steps = list(bounded_steps)
             # Scale traces so future updates reflect the effective step
@@ -802,8 +809,8 @@ class IndependentDemonHorde:
         new_weights: list[Array] = []
         new_biases: list[Array] = []
         for i in range(n_layers):
-            new_weights.append(demon_state.params.weights[i] + error * all_steps[2 * i])
-            new_biases.append(demon_state.params.biases[i] + error * all_steps[2 * i + 1])
+            new_weights.append(demon_state.params.weights[i] + step_error * all_steps[2 * i])
+            new_biases.append(demon_state.params.biases[i] + step_error * all_steps[2 * i + 1])
 
         new_params = MLPParams(
             weights=tuple(new_weights),

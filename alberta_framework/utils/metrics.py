@@ -449,7 +449,10 @@ def compute_forward_transfer(
     on a task probed *before* it is ever trained on, minus a task-specific
     baseline (in GEM, the untrained-network performance).
 
-    Task 0, and any task without a finite pre-exposure probe, receives ``NaN``.
+    Tasks first exposed at row 0, and any task whose *immediate* pre-exposure
+    checkpoint is missing, receive ``NaN``. Older finite probes are not backfilled
+    when that GEM checkpoint was not evaluated. An infinite immediate
+    pre-exposure is rejected rather than treated as a missing probe.
     The sign is normalized so positive values always mean beneficial transfer.
     """
 
@@ -470,13 +473,14 @@ def compute_forward_transfer(
     for task, first_row in enumerate(rows):
         if first_row == 0:
             continue
-        prior = matrix[:first_row, task]
-        finite_prior = prior[np.isfinite(prior)]
-        if finite_prior.size == 0:
+        # GEM FWT is R_{i-1, i} minus the task baseline: only the checkpoint
+        # immediately before first exposure. An older finite probe is not a
+        # substitute when that row is NaN (not evaluated) or divergent.
+        immediate = matrix[int(first_row) - 1, task]
+        if not np.isfinite(immediate):
             continue
-        pre_exposure = finite_prior[-1]
         transfer[task] = (
-            pre_exposure - baseline[task] if higher_is_better else baseline[task] - pre_exposure
+            immediate - baseline[task] if higher_is_better else baseline[task] - immediate
         )
     return transfer
 
@@ -705,6 +709,31 @@ def compute_cumulative_error(
     return cumulative
 
 
+def _pairwise_rolling_sums(values: NDArray[np.float64], window_size: int) -> NDArray[np.float64]:
+    """Return rolling sums without subtracting nearly equal global prefixes."""
+    leaf_count = 1 << (window_size - 1).bit_length()
+    tree = np.zeros(2 * leaf_count, dtype=np.float64)
+    tree[leaf_count : leaf_count + window_size] = values[:window_size]
+    for node in range(leaf_count - 1, 0, -1):
+        tree[node] = tree[2 * node] + tree[2 * node + 1]
+
+    sums = np.empty(values.size - window_size + 1, dtype=np.float64)
+    sums[0] = tree[1]
+    slot = 0
+    for output_index, incoming in enumerate(values[window_size:], start=1):
+        node = leaf_count + slot
+        tree[node] = incoming
+        node //= 2
+        while node:
+            tree[node] = tree[2 * node] + tree[2 * node + 1]
+            node //= 2
+        sums[output_index] = tree[1]
+        slot += 1
+        if slot == window_size:
+            slot = 0
+    return sums
+
+
 def compute_running_mean(
     values: NDArray[np.float64] | list[float],
     window_size: int = 100,
@@ -744,10 +773,12 @@ def compute_running_mean(
     if scale == 0.0:
         scale = 1.0
     normalized = np.where(np.isfinite(values_arr), values_arr / scale, 0.0)
-    cumsum = np.cumsum(np.insert(normalized, 0, 0.0), dtype=np.float64)
     valid = np.isfinite(values_arr).astype(np.int64)
+    # Always reduce the current window. A per-element threshold cannot bound
+    # cancellation from a long prefix, even when each element exceeds epsilon.
+    # The ring tree costs O(n log(window_size)) time and O(window_size) storage.
+    window_sums = _pairwise_rolling_sums(normalized, window_size)
     valid_cumsum = np.cumsum(np.insert(valid, 0, 0), dtype=np.int64)
-    window_sums = cumsum[window_size:] - cumsum[:-window_size]
     valid_counts = valid_cumsum[window_size:] - valid_cumsum[:-window_size]
     running_mean = (window_sums / window_size) * scale
     running_mean = np.where(valid_counts == window_size, running_mean, np.nan)

@@ -4,7 +4,13 @@ This record pins Liu et al., *Continual Reinforcement Learning by Planning with 
 Models*, ICML 2025, PMLR 267:38397–38423, and arXiv `2507.09177v1` (12 July 2025). The official
 Continual Bench repository is pinned at
 `sail-sg/ContinualBench@a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad` (the `main` revision audited
-on 17 August 2026). The paper uses a sparse shallow FTL world model, CEM MPC, known changing
+on 17 August 2026). A read-only source audit on 22 August 2026 additionally bound Git tree
+`ebf540dbac186f13858f97dfe12eb0b3c823ec43`, GitHub archive SHA-256
+`7726bc3badd6ad8752845b50a98e84e8d19c549c49bacf7bda84cd3933aa6e04`, and the repository's
+MIT `LICENSE.txt` bytes at SHA-256
+`854b88f1dd8df45fc717efc3926da5d10efb6b1122b47ddbea639eb2637a867f`. These identities do
+not qualify the runtime, dependencies, MuJoCo/Meta-World assets, or execution. The paper uses a
+sparse shallow FTL world model, CEM MPC, known changing
 reward functions, six 26-dimensional MuJoCo/Meta-World-derived tasks, 600 episodes, and reports
 10–15 hours per run on one A100 plus 16 CPUs.
 

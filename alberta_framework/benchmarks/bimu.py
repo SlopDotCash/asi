@@ -1127,6 +1127,8 @@ def validate_bimu_result(value: object) -> None:
         raise ValueError("optimizer updates exceed queried labels")
     if not 0 <= parsed_counters["label_queries"] <= expected_steps:
         raise ValueError("label-query count is impossible")
+    if config.query_threshold == 0.0 and parsed_counters["label_queries"] != expected_steps:
+        raise ValueError("zero query threshold must query every observation")
     expected_forwards = (
         expected_steps * config.query_samples
         + parsed_counters["label_queries"] * config.train_samples
