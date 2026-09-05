@@ -67,21 +67,7 @@ _COMPOSITIONAL_LOOP_MAX_STEPS = 10_000
 _COMPOSITIONAL_LOOP_BUDGET = ScanBudget(
     "compositional-feature learning-loop", _COMPOSITIONAL_LOOP_MAX_STEPS
 )
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _ACTUAL_REAL_TYPES = frozenset(
     (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble)
 )

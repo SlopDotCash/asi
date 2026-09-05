@@ -213,21 +213,7 @@ _STEP12_CONFIG_FIELDS = frozenset(
 _SUBTASK_SPEC_FIELDS = frozenset(
     {"feature_index", "threshold", "pseudo_reward_scale", "max_option_steps"}
 )
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.longlong,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_payload(

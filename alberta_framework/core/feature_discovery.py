@@ -60,21 +60,7 @@ _FEATURE_DISCOVERY_LOOP_MAX_STEPS = 10_000
 _FEATURE_DISCOVERY_LOOP_BUDGET = ScanBudget(
     "feature-discovery learning-loop", _FEATURE_DISCOVERY_LOOP_MAX_STEPS
 )
-_ACTUAL_INT_TYPES = frozenset(
-    {
-        int,
-        np.int8,
-        np.int16,
-        np.int32,
-        np.int64,
-        np.longlong,
-        np.uint8,
-        np.uint16,
-        np.uint32,
-        np.uint64,
-        np.ulonglong,
-    }
-)
+_ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 
 
 def _require_int32(name: str, value: object, *, minimum: int) -> int:

@@ -46,19 +46,7 @@ _INT32_MAX: int = 2**31 - 1
 _UINT32_MAX: int = 2**32 - 1
 _MAX_PERSISTENT_STATE_BYTES: int = 256 * 1024 * 1024
 _FLOAT32_MIN_NORMAL: float = float(np.finfo(np.float32).tiny)
-_ACTUAL_INT_TYPES: tuple[type, ...] = (
-    int,
-    np.int8,
-    np.int16,
-    np.int32,
-    np.int64,
-    np.uint8,
-    np.uint16,
-    np.uint32,
-    np.uint64,
-    np.longlong,
-    np.ulonglong,
-)
+_ACTUAL_INT_TYPES: tuple[type, ...] = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 _ACTUAL_REAL_TYPES: frozenset[type] = frozenset(
     (*_ACTUAL_INT_TYPES, float, np.float16, np.float32, np.float64, np.longdouble, Fraction)
 )
