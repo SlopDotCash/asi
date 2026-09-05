@@ -485,6 +485,14 @@ def test_construct_canonicalizes_noise_std_to_float32() -> None:
     assert stream._noise_std == float(np.float32(0.1))  # noqa: SLF001
 
 
+_HAS_EXTENDED_LONGDOUBLE = np.finfo(np.longdouble).nmant > np.finfo(np.float64).nmant
+requires_extended_longdouble = pytest.mark.skipif(
+    not _HAS_EXTENDED_LONGDOUBLE,
+    reason="np.longdouble must have greater precision than float64",
+)
+
+
+@requires_extended_longdouble
 def test_construct_narrows_original_noise_real_once() -> None:
     midpoint_plus = (
         np.longdouble(1.0)
@@ -500,6 +508,7 @@ def test_construct_narrows_original_noise_real_once() -> None:
     assert stream._noise_std == float(np.float32(midpoint_plus))  # noqa: SLF001
 
 
+@requires_extended_longdouble
 def test_construct_rejects_negative_real_that_rounds_to_zero() -> None:
     below_zero = -np.nextafter(np.longdouble(0.0), np.longdouble(1.0))
     assert float(below_zero) == 0.0

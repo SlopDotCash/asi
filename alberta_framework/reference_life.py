@@ -687,6 +687,30 @@ class ReferenceLifeMetricsAdapter:
             latest_completed_segment_reward=latest,
         )
 
+    def complete_current_segment(
+        self,
+        state: ReferenceLifeMetricsState,
+    ) -> ReferenceLifeMetricsState:
+        """Record the current switching segment when the life ends on its boundary."""
+
+        if state.config_sha256 != self.config.config_sha256:
+            raise DecisionOwnershipError("metrics state config mismatch")
+        if self.config.mode != "switching_two_phase":
+            return state
+        phase = state.current_phase
+        first = state.first_completed_segment_reward
+        if first[phase] is None:
+            first = _replace_tuple_value(first, phase, state.current_segment_reward)
+        return dataclasses.replace(
+            state,
+            first_completed_segment_reward=first,
+            latest_completed_segment_reward=_replace_tuple_value(
+                state.latest_completed_segment_reward,
+                phase,
+                state.current_segment_reward,
+            ),
+        )
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ReferenceEnvironmentStart:
@@ -2310,6 +2334,36 @@ class ReferenceLifeRunner:
         )
         return jr.fold_in(root, cursor)
 
+    def _observe_metrics(
+        self,
+        metrics: ReferenceLifeMetricsState,
+        *,
+        phase: int,
+        reward: float,
+        oracle_reward: float,
+        parameters_changed: bool,
+        next_accepted_events: int,
+    ) -> ReferenceLifeMetricsState:
+        observed = self._metrics_adapter.observe(
+            metrics,
+            phase=phase,
+            reward=reward,
+            oracle_reward=oracle_reward,
+            parameters_changed=parameters_changed,
+        )
+        if self._metrics_adapter.config.mode != "switching_two_phase":
+            return observed
+        phase_length = cast(
+            int,
+            self._environment_adapter.manifest.config["phase_length"],
+        )
+        if (
+            next_accepted_events == self.config.max_accepted_events
+            and observed.current_segment_events == phase_length
+        ):
+            return self._metrics_adapter.complete_current_segment(observed)
+        return observed
+
     def _validate_accepted_agent_update(
         self,
         update: ReferenceAgentUpdate,
@@ -3020,13 +3074,15 @@ class ReferenceLifeRunner:
                         ),
                     )
 
+            next_accepted_events = state.accepted_events + 1
             try:
-                metrics = self._metrics_adapter.observe(
+                metrics = self._observe_metrics(
                     state.metrics,
                     phase=execution.regime_id,
                     reward=transaction.reward,
                     oracle_reward=execution.oracle_reward,
                     parameters_changed=update.parameters_changed,
+                    next_accepted_events=next_accepted_events,
                 )
             except Exception as exc:
                 reason = f"metric update rejected retained outcome: {exc}"
@@ -3074,7 +3130,6 @@ class ReferenceLifeRunner:
                     transcript_sha256=transcript_sha256,
                     reason=f"post-execution transaction acceptance failed: {exc}",
                 )
-            next_accepted_events = state.accepted_events + 1
             phase = (
                 LifePhase.COMPLETED
                 if next_accepted_events == self.config.max_accepted_events
@@ -3222,13 +3277,15 @@ class ReferenceLifeRunner:
                     reason=f"accepted agent update failed recovery validation: {exc}",
                 )
 
+            next_accepted_events = state.accepted_events + 1
             try:
-                metrics = self._metrics_adapter.observe(
+                metrics = self._observe_metrics(
                     state.metrics,
                     phase=pending.regime_id,
                     reward=transaction.reward,
                     oracle_reward=pending.oracle_reward,
                     parameters_changed=update.parameters_changed,
+                    next_accepted_events=next_accepted_events,
                 )
             except (DecisionOwnershipError, RuntimeError, TypeError, ValueError) as exc:
                 reason = f"metric recovery rejected retained outcome: {exc}"
@@ -3243,7 +3300,6 @@ class ReferenceLifeRunner:
                 next_decision=update.next_decision,
                 parameters_changed=update.parameters_changed,
             )
-            next_accepted_events = state.accepted_events + 1
             phase = (
                 LifePhase.COMPLETED
                 if next_accepted_events == self.config.max_accepted_events

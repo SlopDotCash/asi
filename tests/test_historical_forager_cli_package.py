@@ -31,6 +31,7 @@ from alberta_framework.benchmarks.historical_forager_provenance import (
     HISTORICAL_FORAGER_FAMILY_ID,
     HISTORICAL_FORAGER_PROVENANCE_SHA256,
 )
+from tests._forager_matched_platform import requires_o_tmpfile
 
 pytestmark = pytest.mark.integration
 
@@ -239,6 +240,7 @@ def test_historical_cli_reports_provenance_and_validates_strict_pairing(
     assert "must be a real directory" in missing.stderr
 
 
+@requires_o_tmpfile
 @pytest.mark.package
 def test_wheel_and_sdist_are_complete_and_hard_link_safe(tmp_path: Path) -> None:
     uv = shutil.which("uv")

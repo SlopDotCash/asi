@@ -378,6 +378,29 @@ def test_summary_retains_failures_and_reports_valid_baseline_failure() -> None:
     assert summary["status"] == "valid_baseline_failure"
 
 
+def test_partial_arm_summary_marks_single_seed_stderr_undefined() -> None:
+    records = _summary_records()
+    retained_seed = SEED_ROSTER[0]
+    for record in records:
+        if record["arm"] == "prototype" and record["seed"] != retained_seed:
+            record["status"] = "failed"
+            record["outcome"] = None
+            record["failure"] = {
+                "stage": "step",
+                "type": "RuntimeError",
+                "message": "synthetic shard failure",
+            }
+
+    summary = scorecard._summarize_validated_run_records(
+        build_development_plan(), records
+    )
+
+    prototype = summary["environments"]["switching_two_state"]["arms"]["prototype"]
+    assert prototype["completed_seed_count"] == 1
+    assert prototype["failed_seed_count"] == len(SEED_ROSTER) - 1
+    assert prototype["reward_sum_stderr"] is None
+
+
 @pytest.mark.skipif(
     not hasattr(os, "O_TMPFILE"),
     reason="write_new_json publishes through Linux O_TMPFILE and linkat(AT_EMPTY_PATH)",

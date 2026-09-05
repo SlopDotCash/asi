@@ -416,3 +416,37 @@ def test_continual_learning_summary_rejects_leftover_identities() -> None:
     )
     assert '"final_performance": 0.8' in dumped
     assert '"final_performance": true' not in dumped
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_prequential_performance_rejects_infinite_trace(value: float) -> None:
+    with pytest.raises(ValueError, match="online_performance must not contain infinity"):
+        compute_prequential_performance([0.5, value, 0.7])
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_stability_gap_rejects_infinite_online_trace(value: float) -> None:
+    with pytest.raises(ValueError, match="online_performance must not contain infinity"):
+        compute_stability_gap([0.5, value, 0.7], 0.8)
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_stability_gap_rejects_infinite_reference_trace(value: float) -> None:
+    with pytest.raises(ValueError, match="reference_performance must not contain infinity"):
+        compute_stability_gap([0.5, 0.6, 0.7], [0.8, value, 0.8])
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_recovery_lengths_reject_infinite_online_trace(value: float) -> None:
+    with pytest.raises(ValueError, match="online_performance must not contain infinity"):
+        compute_recovery_lengths([0.1, value, 0.9], change_points=[0], threshold=0.8, window_size=1)
+
+
+@pytest.mark.parametrize("value", [np.inf, -np.inf])
+def test_forward_transfer_rejects_infinite_pre_exposure(value: float) -> None:
+    with pytest.raises(ValueError, match="infinite evaluation"):
+        compute_forward_transfer(
+            [[value, np.nan], [0.5, 0.6]],
+            first_exposure=[1, 1],
+            baseline_performance=[0.5, 0.5],
+        )

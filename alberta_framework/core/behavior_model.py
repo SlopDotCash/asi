@@ -225,11 +225,13 @@ def floor_and_renormalize_probabilities(
     if min_probability * n_actions >= 1.0:
         return jnp.ones_like(probs) / n_actions
     clipped = jnp.maximum(probs, 0.0)
-    normalizer = jnp.maximum(
-        jnp.sum(clipped, axis=-1, keepdims=True),
-        jnp.asarray(1e-12, dtype=jnp.float32),
-    )
-    normalized = clipped / normalizer
+    max_val = jnp.max(clipped, axis=-1, keepdims=True)
+    _, exponent = jnp.frexp(max_val)
+    scaled = jnp.ldexp(clipped, -exponent)
+    total = jnp.sum(scaled, axis=-1, keepdims=True)
+    valid = (max_val > 0.0) & (total > 0.0) & jnp.isfinite(total)
+    uniform = jnp.full_like(clipped, 1.0 / n_actions)
+    normalized = jnp.where(valid, scaled / jnp.where(valid, total, 1.0), uniform)
     floor_mass = jnp.asarray(min_probability * n_actions, dtype=jnp.float32)
     return jnp.asarray(min_probability, dtype=jnp.float32) + (1.0 - floor_mass) * normalized
 
