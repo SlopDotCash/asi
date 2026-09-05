@@ -271,3 +271,29 @@ def test_cli_rejects_compressed_oversize_members_before_materialize(
     monkeypatch.setattr(np, "load", _forbidden_load)
     with pytest.raises(ValueError, match="unbounded"):
         main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0])))
+
+
+@pytest.mark.parametrize("without_posix_flags", [False, True])
+def test_cli_accepts_bounded_hardlinked_dataset_on_portable_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, without_posix_flags: bool
+) -> None:
+    images, labels = _fixture()
+    original = tmp_path / "original.npz"
+    dataset = tmp_path / "linked.npz"
+    np.savez(original, images=images, labels=labels)
+    os.link(original, dataset)
+    observed = []
+
+    def inspect_arrays(actual_images, actual_labels, **kwargs):
+        np.testing.assert_array_equal(actual_images, images)
+        np.testing.assert_array_equal(actual_labels, labels)
+        observed.append(True)
+        return None
+
+    monkeypatch.setattr(plasticity_diagnostics, "run_diagnostic", inspect_arrays)
+    monkeypatch.setattr(plasticity_diagnostics, "_json_result", lambda result: "{}")
+    if without_posix_flags:
+        monkeypatch.delattr(os, "O_NOFOLLOW", raising=False)
+        monkeypatch.delattr(os, "O_CLOEXEC", raising=False)
+    assert main(("--dataset", str(dataset), "--seed", str(FROZEN_SEEDS[0]))) == 0
+    assert observed == [True]
