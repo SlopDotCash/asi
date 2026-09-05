@@ -43,6 +43,7 @@ import jax
 import numpy as np
 from numpy.typing import NDArray
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.evaluation.scale_robust_feature import (
     ASYMPTOTIC_WINDOW_STEPS,
     CONDITION_LEGACY,
@@ -1599,15 +1600,31 @@ def _object_without_duplicates(
     return result
 
 
-def load_evidence_artifact(path: Path) -> dict[str, object]:
-    """Load strict JSON, rejecting duplicate keys and NaN/Infinity."""
+_MAX_JSON_NESTING_DEPTH = 64
 
-    loaded = json.loads(
-        path.read_text(encoding="utf-8"),
-        parse_constant=_reject_json_constant,
-        parse_float=_parse_finite_json_float,
-        object_pairs_hook=_object_without_duplicates,
-    )
+
+
+def load_evidence_artifact(path: Path) -> dict[str, object]:
+    """Load strict JSON, rejecting duplicate keys, NaN/Infinity, and deep nests."""
+
+    text = path.read_text(encoding="utf-8")
+    try:
+        require_json_text_nesting(
+            text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
+        )
+    except ValueError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    try:
+        loaded = json.loads(
+            text,
+            parse_constant=_reject_json_constant,
+            parse_float=_parse_finite_json_float,
+            object_pairs_hook=_object_without_duplicates,
+        )
+    except RecursionError as exc:
+        raise ValueError(
+            f"{path}: JSON payload exceeds the parser recursion limit"
+        ) from exc
     if not isinstance(loaded, dict):
         raise ValueError("artifact root must be an object")
     return loaded
