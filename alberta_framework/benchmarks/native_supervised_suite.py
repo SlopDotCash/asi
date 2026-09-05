@@ -491,6 +491,16 @@ def validate_result(value: object) -> SuiteResult:
     bytes_per_example = value.input_dim * 4 + 4
     for arm in value.arms:
         ArmResult.__post_init__(arm)
+        if len(arm.task_accuracies) != spec.n_tasks:
+            raise ValueError("accuracy record mismatch")
+        total_correct = 0
+        for accuracy in arm.task_accuracies:
+            correct = round(accuracy * value.examples_per_task)
+            if accuracy != correct / value.examples_per_task:
+                raise ValueError("accuracy record mismatch")
+            total_correct += correct
+        if arm.online_accuracy != total_correct / steps:
+            raise ValueError("accuracy record mismatch")
         if type(arm.receipt) is not ResourceReceipt:
             raise ValueError("receipt must be an exact ResourceReceipt")
         ResourceReceipt.__post_init__(arm.receipt)
