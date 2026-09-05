@@ -225,3 +225,52 @@ def test_numpy_risk_canonicalizes() -> None:
     assert res["risk_score"] == (5.5,)
     res2 = to_security_gym_action("pass", risk_score=np.int32(5))
     assert res2["risk_score"] == (5.0,)
+
+
+def test_coerce_admits_every_numpy_integer_action_id() -> None:
+    """Gymnasium and ``argmax`` hand callers numpy ids, so the gate must take them."""
+    families = (
+        np.int8,
+        np.int16,
+        np.int32,
+        np.int64,
+        np.uint8,
+        np.uint16,
+        np.uint32,
+        np.uint64,
+        np.longlong,
+        np.ulonglong,
+    )
+    for family in families:
+        coerced = coerce_security_action(family(3))  # type: ignore[arg-type]
+        assert coerced is SecurityAction(3)
+        assert type(coerced) is SecurityAction
+
+    # The documented producer of an action id is a discrete argmax/sample.
+    greedy = np.argmax(np.array([0.1, 0.4, 0.2, 0.9, 0.3, 0.0], dtype=np.float32))
+    assert coerce_security_action(greedy) is SecurityAction(3)  # type: ignore[arg-type]
+
+    # One call, one numpy type: ``risk_score`` already accepted it, so ``action``
+    # must too.
+    assert to_security_gym_action(np.int64(3), np.int64(3)) == {  # type: ignore[arg-type]
+        "action": 3,
+        "risk_score": (3.0,),
+    }
+
+
+def test_coerce_still_rejects_non_integer_lookalikes() -> None:
+    """Widening the integer families must not admit bools, reals, or arrays."""
+    for value in (
+        np.bool_(True),
+        np.float32(3.0),
+        np.float64(3.0),
+        np.array(3),
+        np.array([3]),
+        np.int64(99),
+    ):
+        with pytest.raises(ValueError, match="security action"):
+            coerce_security_action(value)  # type: ignore[arg-type]
+
+    # An exact-type gate keeps hostile subclasses out without touching a hook.
+    with pytest.raises(ValueError, match="security action"):
+        coerce_security_action(_HostileInt(3))  # type: ignore[arg-type]

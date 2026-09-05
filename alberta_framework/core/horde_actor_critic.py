@@ -47,7 +47,10 @@ from jaxtyping import Bool, Float, Int
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.horde import HordeLearner, HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import (
@@ -93,6 +96,14 @@ def _validated_actor_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) not in (_ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES):
         raise ValueError(f"{name} must be a finite real scalar")
     return validated_float32_scalar(name, value, **bounds)
+
+
+def _validated_actor_temperature(value: object) -> float:
+    temperature = _validated_actor_float("temperature", value, positive=True)
+    minimum = float(np.finfo(np.float32).tiny)
+    if temperature < minimum:
+        raise ValueError(f"temperature must be at least {minimum} in float32")
+    return temperature
 
 
 def _exact_config_payload(config: object, expected: frozenset[str]) -> dict[str, Any]:
@@ -306,7 +317,7 @@ class HordeActorCriticConfig:
         actor_lamda = _validated_actor_float(
             "actor_lamda", self.actor_lamda, lower=0.0, upper=1.0
         )
-        temperature = _validated_actor_float("temperature", self.temperature, positive=True)
+        temperature = _validated_actor_temperature(self.temperature)
         actor_td_error_clip = (
             _validated_actor_float(
                 "actor_td_error_clip",
@@ -381,7 +392,12 @@ class HordeActorCriticUpdateResult:
 
 @chex.dataclass(frozen=True)
 class HordeActorCriticArrayResult:
-    """Result from scan-based Horde actor-critic learning."""
+    """Result from scan-based Horde actor-critic learning.
+
+    ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
+    sampling distribution (or the model policy when actions are supplied), matching
+    :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
+    """
 
     state: HordeActorCriticState
     actions: Int[Array, " num_steps"]
@@ -424,7 +440,7 @@ class QHordeActorCriticConfig:
         actor_lamda = _validated_actor_float(
             "actor_lamda", self.actor_lamda, lower=0.0, upper=1.0
         )
-        temperature = _validated_actor_float("temperature", self.temperature, positive=True)
+        temperature = _validated_actor_temperature(self.temperature)
         actor_td_error_clip = (
             _validated_actor_float(
                 "actor_td_error_clip",
@@ -1185,8 +1201,9 @@ def run_horde_actor_critic_from_arrays(
                 last_action=fixed_action.astype(jnp.int32),
             )
             current_action = fixed_action.astype(jnp.int32)
+            current_policy = agent.policy(started_state, obs)
         else:
-            started_state, current_action, _policy = agent.start(carry, obs)
+            started_state, current_action, current_policy = agent.start(carry, obs)
         result = agent.update(
             started_state,
             reward,
@@ -1206,7 +1223,7 @@ def run_horde_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            jnp.where(update_applied, result.policy, jnp.zeros_like(result.policy)),
+            jnp.where(update_applied, current_policy, jnp.zeros_like(current_policy)),
             jnp.where(update_applied, result.value, 0.0),
             jnp.where(update_applied, result.td_error, 0.0),
             jnp.where(
@@ -1394,7 +1411,7 @@ class NonlinearHordeActorCriticConfig:
         actor_lamda = _validated_actor_float(
             "actor_lamda", self.actor_lamda, lower=0.0, upper=1.0
         )
-        temperature = _validated_actor_float("temperature", self.temperature, positive=True)
+        temperature = _validated_actor_temperature(self.temperature)
         actor_sparsity = _validated_actor_float(
             "actor_sparsity", self.actor_sparsity, lower=0.0, upper=1.0
         )
@@ -1523,7 +1540,12 @@ class NonlinearHordeActorCriticUpdateResult:
 
 @chex.dataclass(frozen=True)
 class NonlinearHordeActorCriticArrayResult:
-    """Result from a scan-based nonlinear Horde actor-critic loop."""
+    """Result from a scan-based nonlinear Horde actor-critic loop.
+
+    ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
+    sampling distribution (or the model policy when actions are supplied), matching
+    :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
+    """
 
     state: NonlinearHordeActorCriticState
     actions: Int[Array, " num_steps"]
@@ -1820,7 +1842,15 @@ class NonlinearHordeActorCriticAgent:
             actor_td_error_normalizer = _skip_zero_scale(decay, actor_td_error_normalizer) + (
                 1.0 - decay
             ) * jnp.abs(actor_td_error)
-            actor_td_error = actor_td_error / jnp.maximum(actor_td_error_normalizer, 1e-3)
+            # Divide by the EMA itself. Because the EMA always contains the
+            # (1 - decay) * |td| term, |td / EMA| <= 1 / (1 - decay), so no
+            # stability floor is needed; a fixed positive floor would silently
+            # substitute its own scale whenever the recent magnitude drops
+            # below it and distort the normalized magnitude there.
+            normalizer_denominator = jnp.where(
+                actor_td_error_normalizer > 0.0, actor_td_error_normalizer, 1.0
+            )
+            actor_td_error = actor_td_error / normalizer_denominator
 
         # Policy gradient via jax.grad through the full MLP forward pass
         actor_params = (
@@ -1873,12 +1903,14 @@ class NonlinearHordeActorCriticAgent:
                 state.actor_trunk_opt_states[2 * i],
                 new_trunk_traces[2 * i],
                 error=actor_td_error,
+                param=state.actor_trunk.weights[i],
             )
             raw_b, new_opt_b, b_update_applied = _update_from_gradient_with_diagnostics(
                 self._actor_optimizer,
                 state.actor_trunk_opt_states[2 * i + 1],
                 new_trunk_traces[2 * i + 1],
                 error=actor_td_error,
+                param=state.actor_trunk.biases[i],
             )
             new_trunk_opt_states.extend([new_opt_w, new_opt_b])
             trunk_w_steps.append(raw_w)
@@ -1890,16 +1922,19 @@ class NonlinearHordeActorCriticAgent:
             state.actor_head_opt_w,
             new_head_trace_w,
             error=actor_td_error,
+            param=state.actor_head_w,
         )
         raw_head_b, new_head_opt_b, head_b_update_applied = _update_from_gradient_with_diagnostics(
             self._actor_optimizer,
             state.actor_head_opt_b,
             new_head_trace_b,
             error=actor_td_error,
+            param=state.actor_head_b,
         )
         optimizer_updates_applied.extend((head_w_update_applied, head_b_update_applied))
         head_w_step = raw_head_w
         head_b_step = raw_head_b
+        step_error = _gradient_step_error(self._actor_optimizer, actor_td_error)
 
         bound_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._actor_bounder is not None:
@@ -1917,17 +1952,17 @@ class NonlinearHordeActorCriticAgent:
             )
             bounded_steps, bound_metric = self._actor_bounder.bound(
                 flat_steps,
-                actor_td_error,
+                step_error,
                 flat_params,
             )
             trunk_w_steps = list(bounded_steps[:n_hidden])
             trunk_b_steps = list(bounded_steps[n_hidden : 2 * n_hidden])
             head_w_step = bounded_steps[2 * n_hidden]
             head_b_step = bounded_steps[2 * n_hidden + 1]
-        trunk_w_steps = [actor_td_error * step for step in trunk_w_steps]
-        trunk_b_steps = [actor_td_error * step for step in trunk_b_steps]
-        head_w_step = actor_td_error * head_w_step
-        head_b_step = actor_td_error * head_b_step
+        trunk_w_steps = [step_error * step for step in trunk_w_steps]
+        trunk_b_steps = [step_error * step for step in trunk_b_steps]
+        head_w_step = step_error * head_w_step
+        head_b_step = step_error * head_b_step
 
         new_trunk_weights = tuple(
             w + step for w, step in zip(state.actor_trunk.weights, trunk_w_steps)
@@ -2075,7 +2110,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
         tuple[Array, Array, Array, Array, Array, Array],
     ]:
         obs, reward, next_obs, aux, disc = inputs
-        started, current_action, _policy = agent.start(carry, obs)
+        started, current_action, current_policy = agent.start(carry, obs)
         result = agent.update(started, reward, next_obs, aux, disc)
         committed_state = jax.lax.cond(
             result.update_applied,
@@ -2088,7 +2123,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            result.policy,
+            jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
             result.critic_result.td_errors,
@@ -2155,7 +2190,7 @@ class NonlinearQHordeActorCriticConfig:
         actor_lamda = _validated_actor_float(
             "actor_lamda", self.actor_lamda, lower=0.0, upper=1.0
         )
-        temperature = _validated_actor_float("temperature", self.temperature, positive=True)
+        temperature = _validated_actor_temperature(self.temperature)
         actor_sparsity = _validated_actor_float(
             "actor_sparsity", self.actor_sparsity, lower=0.0, upper=1.0
         )
@@ -2556,12 +2591,14 @@ class NonlinearQHordeActorCriticAgent:
                 state.actor_trunk_opt_states[2 * i],
                 new_trunk_traces[2 * i],
                 error=actor_signal,
+                param=state.actor_trunk.weights[i],
             )
             raw_b, new_opt_b, b_update_applied = _update_from_gradient_with_diagnostics(
                 self._actor_optimizer,
                 state.actor_trunk_opt_states[2 * i + 1],
                 new_trunk_traces[2 * i + 1],
                 error=actor_signal,
+                param=state.actor_trunk.biases[i],
             )
             new_trunk_opt_states.extend([new_opt_w, new_opt_b])
             trunk_w_steps.append(raw_w)
@@ -2573,22 +2610,25 @@ class NonlinearQHordeActorCriticAgent:
             state.actor_head_opt_w,
             new_head_trace_w,
             error=actor_signal,
+            param=state.actor_head_w,
         )
         raw_head_b, new_head_opt_b, head_b_update_applied = _update_from_gradient_with_diagnostics(
             self._actor_optimizer,
             state.actor_head_opt_b,
             new_head_trace_b,
             error=actor_signal,
+            param=state.actor_head_b,
         )
         optimizer_updates_applied.extend((head_w_update_applied, head_b_update_applied))
         head_w_step = raw_head_w
         head_b_step = raw_head_b
+        step_error = _gradient_step_error(self._actor_optimizer, actor_signal)
 
         bound_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._actor_bounder is not None:
             bounded_steps, bound_metric = self._actor_bounder.bound(
                 (*trunk_w_steps, *trunk_b_steps, head_w_step, head_b_step),
-                actor_signal,
+                step_error,
                 (
                     *state.actor_trunk.weights,
                     *state.actor_trunk.biases,
@@ -2600,10 +2640,10 @@ class NonlinearQHordeActorCriticAgent:
             trunk_b_steps = list(bounded_steps[n_hidden : 2 * n_hidden])
             head_w_step = bounded_steps[2 * n_hidden]
             head_b_step = bounded_steps[2 * n_hidden + 1]
-        trunk_w_steps = [actor_signal * step for step in trunk_w_steps]
-        trunk_b_steps = [actor_signal * step for step in trunk_b_steps]
-        head_w_step = actor_signal * head_w_step
-        head_b_step = actor_signal * head_b_step
+        trunk_w_steps = [step_error * step for step in trunk_w_steps]
+        trunk_b_steps = [step_error * step for step in trunk_b_steps]
+        head_w_step = step_error * head_w_step
+        head_b_step = step_error * head_b_step
 
         carry_traces = effective_gamma != 0.0
         updated = state.replace(  # type: ignore[attr-defined]

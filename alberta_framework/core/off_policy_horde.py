@@ -25,7 +25,10 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -707,6 +710,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i],
                 new_w_trace,
                 error=None,
+                param=state.trunk_params.weights[i],
             )
             trunk_steps.append(w_step)
             new_trunk_opt_states.append(new_w_opt)
@@ -724,6 +728,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i + 1],
                 new_b_trace,
                 error=None,
+                param=state.trunk_params.biases[i],
             )
             trunk_steps.append(b_step)
             new_trunk_opt_states.append(new_b_opt)
@@ -802,27 +807,30 @@ class OffPolicyHordeLearner:
                 old_w_opt,
                 new_w_trace,
                 error=error_i,
+                param=head_w,
             )
             b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
                 head_optimizer,
                 old_b_opt,
                 new_b_trace,
                 error=error_i,
+                param=head_b,
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
+            step_error = _gradient_step_error(head_optimizer, error_i)
 
             if self._bounder is not None:
                 bounded_head_steps, bound_scale = self._bounder.bound(
                     (w_step, b_step),
-                    error_i,
+                    step_error,
                     (head_w, head_b),
                 )
                 w_step, b_step = bounded_head_steps
                 new_w_trace = bound_scale * new_w_trace
                 new_b_trace = bound_scale * new_b_trace
 
-            new_w = head_w + error_i * w_step
-            new_b = head_b + error_i * b_step
+            new_w = head_w + step_error * w_step
+            new_b = head_b + step_error * b_step
             # Inf TD error zeros the ObGD step, then error_i * step is 0*inf=NaN.
             # Hold that head's previous finite params/traces/opt like a NaN cumulant.
             head_ok = (
@@ -1379,58 +1387,72 @@ class NonlinearSharedGTDHordeLearner:
             # (NaN cumulant) contribute nothing this step.
             masked_rho = jnp.where(effective_mask[i], clipped_rhos[i], 0.0)
             terminated_i = discounts[i] == 0.0
+            # A zero ratio means this demon contributes nothing to the shared
+            # trunk this step. Multiplying it through an overflowed
+            # ``secondary_dot`` or gradient would form 0*inf=NaN and, because
+            # the trunk steps are summed across demons, reject the whole
+            # update for every healthy demon too. Skip the product instead.
+            rho_discount = _skip_zero_scale(masked_rho, discounts[i])
             rho_dot = jnp.where(
                 terminated_i,
                 jnp.zeros_like(secondary_dot),
-                masked_rho * discounts[i] * secondary_dot,
+                _skip_zero_scale(rho_discount, secondary_dot),
             )
             correction_trunk_w = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_trunk_w),
-                rho_dot * next_grad_trunk_w,
+                _skip_zero_scale(rho_dot, next_grad_trunk_w),
             )
             correction_trunk_b = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_trunk_b),
-                rho_dot * next_grad_trunk_b,
+                _skip_zero_scale(rho_dot, next_grad_trunk_b),
             )
             correction_head_w = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_head_w),
-                rho_dot * next_grad_head_w,
+                _skip_zero_scale(rho_dot, next_grad_head_w),
             )
             correction_head_b = jnp.where(
                 terminated_i,
                 jnp.zeros_like(next_grad_head_b),
-                rho_dot * next_grad_head_b,
+                _skip_zero_scale(rho_dot, next_grad_head_b),
             )
-            rho_delta = masked_rho * safe_td_errors[i]
+            rho_delta = _skip_zero_scale(masked_rho, safe_td_errors[i])
 
             trunk_w_step = trunk_w_step + primary_alpha * (
-                rho_delta * grad_trunk_w - correction_trunk_w
+                _skip_zero_scale(rho_delta, grad_trunk_w) - correction_trunk_w
             )
             trunk_b_step = trunk_b_step + primary_alpha * (
-                rho_delta * grad_trunk_b - correction_trunk_b
+                _skip_zero_scale(rho_delta, grad_trunk_b) - correction_trunk_b
             )
             head_w_step = head_w_step.at[i].add(
-                primary_alpha * (rho_delta * grad_head_w - correction_head_w)
+                primary_alpha * (_skip_zero_scale(rho_delta, grad_head_w) - correction_head_w)
             )
             head_b_step = head_b_step.at[i].add(
-                primary_alpha * (rho_delta * grad_head_b - correction_head_b)
+                primary_alpha * (_skip_zero_scale(rho_delta, grad_head_b) - correction_head_b)
             )
 
             masked_beta = jnp.where(effective_mask[i], secondary_beta, 0.0)
-            sec_trunk_w = state.secondary_trunk_w[i] + masked_beta * (
-                rho_delta * grad_trunk_w - secondary_dot * grad_trunk_w
+            sec_trunk_w = state.secondary_trunk_w[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_trunk_w)
+                - _skip_zero_scale(secondary_dot, grad_trunk_w),
             )
-            sec_trunk_b = state.secondary_trunk_b[i] + masked_beta * (
-                rho_delta * grad_trunk_b - secondary_dot * grad_trunk_b
+            sec_trunk_b = state.secondary_trunk_b[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_trunk_b)
+                - _skip_zero_scale(secondary_dot, grad_trunk_b),
             )
-            sec_head_w = state.secondary_head_w[i] + masked_beta * (
-                rho_delta * grad_head_w - secondary_dot * grad_head_w
+            sec_head_w = state.secondary_head_w[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_head_w)
+                - _skip_zero_scale(secondary_dot, grad_head_w),
             )
-            sec_head_b = state.secondary_head_b[i] + masked_beta * (
-                rho_delta * grad_head_b - secondary_dot * grad_head_b
+            sec_head_b = state.secondary_head_b[i] + _skip_zero_scale(
+                masked_beta,
+                _skip_zero_scale(rho_delta, grad_head_b)
+                - _skip_zero_scale(secondary_dot, grad_head_b),
             )
             new_secondary_trunk_w.append(sec_trunk_w)
             new_secondary_trunk_b.append(sec_trunk_b)

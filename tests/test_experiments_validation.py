@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from decimal import Decimal
 from fractions import Fraction
@@ -537,8 +538,10 @@ class _NonfiniteFloatThatConvertsFinite(float):
 
 def _platform_longdouble_1e4000() -> np.longdouble:
     """Parse the cross-platform boundary without leaking an expected warning."""
-    with np.errstate(over="ignore", invalid="ignore"):
-        return np.longdouble("1e4000")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with np.errstate(over="ignore", invalid="ignore"):
+            return np.longdouble("1e4000")
 
 
 @pytest.mark.parametrize(
@@ -1029,3 +1032,10 @@ def test_run_multi_seed_experiment_rejects_invalid_seed_sequences(
 def test_get_final_performance_rejects_non_builtin_positive_window(window: object) -> None:
     with pytest.raises(ValueError, match="window"):
         get_final_performance({"candidate": _two_seed_trace()}, window=window)  # type: ignore[arg-type]
+
+
+def test_platform_longdouble_1e4000_emits_no_warnings() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        val = _platform_longdouble_1e4000()
+        assert val is not None

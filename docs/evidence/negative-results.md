@@ -247,6 +247,20 @@ postmortem.
     complete-prototype manifest and the not-assessed WP2 matrix: source presence
     was not an empirical gate.
 
+14. **A transition-only FTL prediction cannot truthfully supply the immediate-
+    reward control required by the action-conditioned latent lane.** In
+    `SwitchingTwoStateMDP`, phase A and phase B admit the same learner
+    observation, action, and next observation while returning rewards 0 and 1.
+    Therefore no adapter from `SparseFTLWorldModel`'s predicted next observation
+    to immediate reward can identify the correct control value without
+    privileged phase information. This closes only the environment-payoff-table
+    adapter route: an FTL control with a separately learned reward head, with its
+    state, updates, queries, and bytes charged, remains open under issue #1575.
+    The exact counterexample is retained in
+    `tests/test_action_conditioned_latent.py`; the permanently nonpromoting
+    protocol scope is recorded in
+    [`action-conditioned-latent-protocol.md`](../research/action-conditioned-latent-protocol.md).
+
 ## EMNIST transfer results
 
 1. **Bare input conditioning does not solve label permutation.**

@@ -155,8 +155,22 @@ def forward_view_returns(
     _require_leading_length(
         "cumulants", cumulants, ndim=1, maximum=_NEXTING_MAX_STEPS
     )
-    gamma_s = jnp.asarray(gamma, dtype=cumulants.dtype)
-    init = jnp.asarray(terminal_value, dtype=cumulants.dtype)
+    # Promote to a floating computation dtype so an integer/boolean cumulant
+    # series does not truncate gamma (``asarray(0.9, int32) == 0``) or the
+    # terminal value, which would collapse the bootstrap and degenerate the
+    # reverse scan into a raw cumulant echo (or a logical-OR for booleans).
+    # Promotion is over static dtypes only, so it stays traceable under
+    # jit + vmap.
+    compute_dtype = jnp.result_type(
+        cumulants.dtype,
+        jnp.asarray(gamma).dtype,
+        jnp.asarray(terminal_value).dtype,
+    )
+    if not jnp.issubdtype(compute_dtype, jnp.floating):
+        compute_dtype = jnp.float32
+    cumulants = cumulants.astype(compute_dtype)
+    gamma_s = jnp.asarray(gamma, dtype=compute_dtype)
+    init = jnp.asarray(terminal_value, dtype=compute_dtype)
 
     def step(carry: Array, c: Array) -> tuple[Array, Array]:
         # gamma=0 must not multiply an inf later return (0*inf).
@@ -215,16 +229,32 @@ def multi_channel_horizon_returns(
     Returns:
         Array of shape ``(T, C, H)`` of forward-view returns.
     """
+    gammas = _require_host_discount("gammas", gammas, ndim=1)
+    terminal_value = _require_host_finite_real("terminal_value", terminal_value)
     _require_leading_length(
         "cumulants", cumulants, ndim=2, maximum=_NEXTING_MAX_STEPS
     )
-    if isinstance(cumulants, jax.Array) and not isinstance(cumulants, jax.core.Tracer):
+    if isinstance(cumulants, jax.core.Tracer):
+        if cumulants.ndim != 2:
+            raise ValueError("cumulants must be 2-dimensional")
+    elif isinstance(cumulants, jax.Array):
+        if cumulants.ndim != 2:
+            raise ValueError("cumulants must be 2-dimensional")
         channel_count = int(cumulants.shape[1])
         if channel_count < 1 or channel_count > _NEXTING_MAX_CHANNELS:
             raise ValueError(
                 "cumulants channel count must be an integer in "
                 f"[1, {_NEXTING_MAX_CHANNELS}]"
             )
+    else:
+        array = _concrete_numeric_array("cumulants", cumulants, ndim=2)
+        if array is not None:
+            channel_count = int(array.shape[1])
+            if channel_count < 1 or channel_count > _NEXTING_MAX_CHANNELS:
+                raise ValueError(
+                    "cumulants channel count must be an integer in "
+                    f"[1, {_NEXTING_MAX_CHANNELS}]"
+                )
     _require_leading_length("gammas", gammas, ndim=1, maximum=_NEXTING_MAX_HORIZONS)
     # Vmap over channels: for each channel apply multi_horizon_returns
     def per_channel(c_series: Array) -> Array:
@@ -288,25 +318,31 @@ def _finite_rmse_jvp(
 
 
 def _sliding_sum(values: Array, window_size: int) -> Array:
-    prefix = jnp.cumsum(
-        jnp.concatenate(
-            [jnp.zeros((1, values.shape[1]), dtype=values.dtype), values],
-            axis=0,
-        ),
-        axis=0,
+    """Sum each trailing window directly, without a global prefix sum.
+
+    Differencing a global cumulative sum cancels catastrophically: once the
+    prefix has grown past the magnitude of later terms, those terms fall below
+    its floating-point ulp and the window difference collapses to zero. A
+    per-window reduction only ever adds the window's own terms.
+    """
+    # A concrete zero lets JAX lower this to its windowed sum, which carries
+    # forward- and reverse-mode rules; a traced init value would fall back to
+    # the generic reducer, which has no transpose rule.
+    summed: Array = jax.lax.reduce_window(
+        values,
+        np.zeros((), dtype=values.dtype),
+        jax.lax.add,
+        window_dimensions=(window_size, 1),
+        window_strides=(1, 1),
+        padding="VALID",
     )
-    return prefix[window_size:] - prefix[:-window_size]
-
-
-def _pad_running_window(values: Array, window_size: int) -> Array:
-    pad = jnp.broadcast_to(values[0], (window_size - 1, values.shape[1]))
-    return jnp.concatenate([pad, values], axis=0)
+    return summed
 
 
 def _scaled_running_rmse_terms(
     errors: Array, window_size: int
 ) -> tuple[Array, Array, Array]:
-    """Return one global power-of-two scale and stable sliding RMS terms."""
+    """Return one power-of-two scale and stable sliding RMS terms."""
     scale = jnp.max(jnp.abs(errors), axis=0)
     _, exponent = jnp.frexp(scale)
     scaled_errors = jnp.ldexp(errors, -exponent)
@@ -319,7 +355,7 @@ def _scaled_running_rmse_terms(
 def _finite_running_rmse(errors: Array, window_size: int) -> Array:
     """Compute a finite sliding RMSE with a scale-free derivative."""
     exponent, _, scaled_running = _scaled_running_rmse_terms(errors, window_size)
-    return _pad_running_window(jnp.ldexp(scaled_running, exponent), window_size)
+    return jnp.ldexp(scaled_running, exponent)
 
 
 @_finite_running_rmse.defjvp
@@ -332,19 +368,14 @@ def _finite_running_rmse_jvp(
     exponent, scaled_errors, scaled_running = _scaled_running_rmse_terms(
         errors, window_size
     )
-    running = _pad_running_window(
-        jnp.ldexp(scaled_running, exponent), window_size
-    )
+    running = jnp.ldexp(scaled_running, exponent)
     safe_scaled_running = jnp.where(
         scaled_running > 0.0,
         scaled_running,
         jnp.ones_like(scaled_running),
     )
     numerator = _sliding_sum(scaled_errors * errors_dot, window_size) / window_size
-    running_dot = _pad_running_window(
-        numerator / safe_scaled_running,
-        window_size,
-    )
+    running_dot = numerator / safe_scaled_running
     return running, running_dot
 
 
@@ -421,7 +452,7 @@ def per_horizon_running_rmse(
 
     Returns:
         Array of shape ``(T, H)``. The first ``window_size - 1`` rows are
-        equal to ``running_rmse[window_size - 1]``.
+        ``NaN`` because a complete causal trailing window does not exist yet.
 
     Raises:
         ValueError: If the arrays do not have identical nonempty ``(T, H)``
@@ -437,11 +468,41 @@ def per_horizon_running_rmse(
             f"(got window_size={window_size}, n_steps={n_steps})"
         )
     errors = predictions - forward_returns
-    finite_columns = jnp.all(jnp.isfinite(errors), axis=0)
-    safe_errors = jnp.where(finite_columns[None, :], errors, jnp.zeros_like(errors))
-    stable_running = _finite_running_rmse(safe_errors, window_size)
-    nonfinite = jnp.broadcast_to(
-        jnp.max(jnp.abs(errors), axis=0),
-        stable_running.shape,
+    finite_errors = jnp.isfinite(errors)
+    safe_errors = jnp.where(finite_errors, errors, jnp.zeros_like(errors))
+    stable_windows = _finite_running_rmse(safe_errors, window_size)
+    finite_counts = _sliding_sum(finite_errors.astype(jnp.int32), window_size)
+    finite_windows = finite_counts == window_size
+    nan_counts = _sliding_sum(jnp.isnan(errors).astype(jnp.int32), window_size)
+    inf_counts = _sliding_sum(jnp.isinf(errors).astype(jnp.int32), window_size)
+    nan_diagnostic = jnp.broadcast_to(
+        jnp.sum(jnp.where(jnp.isnan(errors), errors, jnp.zeros_like(errors)), axis=0),
+        stable_windows.shape,
     )
-    return jnp.where(finite_columns[None, :], stable_running, nonfinite)
+    inf_diagnostic = jnp.broadcast_to(
+        jnp.max(
+            jnp.where(jnp.isinf(errors), jnp.abs(errors), jnp.zeros_like(errors)),
+            axis=0,
+        ),
+        stable_windows.shape,
+    )
+    nonfinite_windows = jnp.where(
+        nan_counts > 0,
+        nan_diagnostic,
+        jnp.where(
+            inf_counts > 0,
+            inf_diagnostic,
+            jnp.zeros_like(stable_windows),
+        ),
+    )
+    complete_windows = jnp.where(
+        finite_windows,
+        stable_windows,
+        nonfinite_windows,
+    )
+    warmup = jnp.full(
+        (window_size - 1, errors.shape[1]),
+        jnp.nan,
+        dtype=complete_windows.dtype,
+    )
+    return jnp.concatenate([warmup, complete_windows], axis=0)

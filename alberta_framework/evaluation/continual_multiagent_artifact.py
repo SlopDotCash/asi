@@ -27,6 +27,7 @@ from typing import NoReturn
 import jax
 import numpy as np
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework.evaluation.continual_multiagent import (
     AcceptanceEvidence,
     AcceptanceThresholds,
@@ -38,6 +39,7 @@ from alberta_framework.evaluation.continual_multiagent import (
 )
 
 SCHEMA_VERSION = "alberta.continual_multiagent_evidence.v1"
+_MAX_JSON_NESTING_DEPTH = 64
 PROTOCOL_VERSION = "recurring-two-agent-contextual-bandit-aba.v1"
 DIGEST_ALGORITHM = "sha256"
 DIGEST_SCOPE = "$.content"
@@ -669,12 +671,21 @@ def _reject_duplicate_keys(
 def load_evidence_artifact(path: Path) -> dict[str, object]:
     """Load strict JSON and require a top-level object."""
 
-    parsed = json.loads(
-        path.read_text(encoding="utf-8"),
-        parse_constant=_reject_nonstandard_json_constant,
-        parse_float=_parse_finite_json_float,
-        object_pairs_hook=_reject_duplicate_keys,
+    text = path.read_text(encoding="utf-8")
+    require_json_text_nesting(
+        text,
+        max_depth=_MAX_JSON_NESTING_DEPTH,
+        name="evidence artifact",
     )
+    try:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_nonstandard_json_constant,
+            parse_float=_parse_finite_json_float,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except RecursionError as exc:
+        raise ValueError("evidence artifact exceeds the JSON nesting limit") from exc
     if not isinstance(parsed, dict):
         raise ValueError("evidence artifact must be a JSON object")
     return parsed
@@ -692,6 +703,19 @@ def _required_mapping(
     return value
 
 
+def _same(actual: object, expected: object) -> bool:
+    """Type-exact equality for JSON values.
+
+    Python's ``==`` treats ``30 == 30.0`` and ``True == 1`` as equal, so a
+    re-digested artifact with punned scalar types would pass a plain ``!=``
+    comparison. Comparing canonical bytes rejects any byte-level drift.
+    """
+    try:
+        return canonical_content_bytes({"v": actual}) == canonical_content_bytes({"v": expected})
+    except (TypeError, ValueError):
+        return False
+
+
 def _finite_number(value: object) -> float | None:
     if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
@@ -707,7 +731,7 @@ def _validate_threshold_policy(
 
     canonical = _threshold_payload(AcceptanceThresholds())
     for key in ("minimum_seed_count", "evidence_seed_start"):
-        if thresholds.get(key) != canonical[key]:
+        if not _same(thresholds.get(key), canonical[key]):
             errors.append(
                 f"content.thresholds.{key} must equal the v1 canonical value"
             )
@@ -873,11 +897,11 @@ def _validate_seed_and_aggregate_consistency(
             "seeds 30-59 in order"
         )
     aggregate_seeds = aggregate.get("seeds")
-    if aggregate_seeds != list(_EXPECTED_EVIDENCE_SEEDS):
+    if not _same(aggregate_seeds, list(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append("content.aggregate.seeds must equal held-out seeds 30-59")
-    if aggregate.get("seed_count") != len(_EXPECTED_EVIDENCE_SEEDS):
+    if not _same(aggregate.get("seed_count"), len(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append("content.aggregate.seed_count must equal 30")
-    if aggregate_seeds != observed_seeds:
+    if not _same(aggregate_seeds, observed_seeds):
         errors.append(
             "content.aggregate.seeds must match content.seed_summaries"
         )
@@ -1025,14 +1049,12 @@ def _validate_seed_and_aggregate_consistency(
                         "content.aggregate.recurrence_recovery_fraction_interval."
                         f"{field_name} is inconsistent with seed summaries"
                     )
-            if recovery_interval.get("successes") != successes:
+            if not _same(recovery_interval.get("successes"), successes):
                 errors.append(
                     "content.aggregate.recurrence_recovery_fraction_interval."
                     "successes is inconsistent with seed summaries"
                 )
-            if recovery_interval.get("sample_size") != len(
-                _EXPECTED_EVIDENCE_SEEDS
-            ):
+            if not _same(recovery_interval.get("sample_size"), len(_EXPECTED_EVIDENCE_SEEDS)):
                 errors.append(
                     "content.aggregate.recurrence_recovery_fraction_interval."
                     "sample_size must equal 30"
@@ -1054,9 +1076,7 @@ def _validate_scientific_check_bindings(
     )
     resources = aggregate.get("resource_budget")
     aggregate_seeds = aggregate.get("seeds")
-    expected_schedule = float(
-        aggregate_seeds == list(_EXPECTED_EVIDENCE_SEEDS)
-    )
+    expected_schedule = float(_same(aggregate_seeds, list(_EXPECTED_EVIDENCE_SEEDS)))
     expected: dict[str, tuple[object, str, object]] = {
         "seed_count": (
             aggregate.get("seed_count"),

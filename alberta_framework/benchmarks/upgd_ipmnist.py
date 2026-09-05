@@ -111,6 +111,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework._seed_validation import (
     require_jax_seed,
     require_unique_jax_seeds,
@@ -133,6 +134,7 @@ def _require_exact_str(name: object, value: object) -> str:
 
 
 logger = logging.getLogger(__name__)
+_WINDOWS_READONLY_UNLINK = os.name == "nt"
 
 
 def _preflight_new_output(path: Path) -> Path:
@@ -145,11 +147,37 @@ def _preflight_new_output(path: Path) -> Path:
     return destination
 
 
+def _unlink_published_temporary(
+    temporary_path: Path,
+    destination: Path,
+    *,
+    published: bool,
+) -> None:
+    """Remove the private hard-link name without leaving Windows output writable."""
+
+    try:
+        temporary_path.unlink(missing_ok=True)
+    except PermissionError:
+        if not _WINDOWS_READONLY_UNLINK:
+            raise
+        # Windows stores the read-only attribute on the shared file record, so
+        # unlinking either hard-link name is denied after chmod(0o444). Clear it
+        # only long enough to remove the private name, then restore the public
+        # destination. A concurrent pre-existing destination is never touched.
+        temporary_path.chmod(0o600)
+        try:
+            temporary_path.unlink(missing_ok=True)
+        finally:
+            if published:
+                destination.chmod(0o444)
+
+
 def atomic_write_new(path: Path, data: bytes) -> Path:
     """Publish complete bytes at a new path without replacing existing data."""
 
     destination = _preflight_new_output(path)
     temporary_path: Path | None = None
+    published = False
     try:
         with tempfile.NamedTemporaryFile(
             dir=destination.parent,
@@ -168,10 +196,15 @@ def atomic_write_new(path: Path, data: bytes) -> Path:
             raise FileExistsError(
                 f"refusing to overwrite immutable output: {destination}"
             ) from exc
+        published = True
         return destination
     finally:
         if temporary_path is not None:
-            temporary_path.unlink(missing_ok=True)
+            _unlink_published_temporary(
+                temporary_path,
+                destination,
+                published=published,
+            )
 
 
 def atomic_write_new_json(path: Path, value: object) -> Path:
@@ -1254,7 +1287,11 @@ def build_comparison(summaries: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "gap": round(gap, 6),
             "reproduction_gap_flagged": bool(abs(gap) > REPRODUCTION_GAP_THRESHOLD),
         }
-    if "upgd_w" in summaries and "adamw" in summaries:
+    if (
+        "upgd_w" in summaries
+        and "adamw" in summaries
+        and summaries["upgd_w"]["seeds"] == summaries["adamw"]["seeds"]
+    ):
         comparison["upgd_w_beats_adamw"] = bool(
             summaries["upgd_w"]["average_online_accuracy_mean"]
             > summaries["adamw"]["average_online_accuracy_mean"]
@@ -1467,6 +1504,10 @@ def partial_payload(result: IPMNISTRunResult) -> dict[str, Any]:
     }
 
 
+_MAX_JSON_NESTING_DEPTH = 64
+
+
+
 def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
         parsed: dict[str, object] = {}
@@ -1486,12 +1527,19 @@ def _decode_strict_json_object(raw: bytes, *, path: Path) -> dict[str, Any]:
             raise ValueError(f"non-finite JSON number is forbidden: {value}")
         return parsed
 
-    payload = json.loads(
-        raw.decode("utf-8"),
-        object_pairs_hook=pairs_hook,
-        parse_constant=reject_constant,
-        parse_float=parse_float,
+    text = raw.decode("utf-8")
+    require_json_text_nesting(
+        text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
     )
+    try:
+        payload = json.loads(
+            text,
+            object_pairs_hook=pairs_hook,
+            parse_constant=reject_constant,
+            parse_float=parse_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON payload exceeds the parser recursion limit") from exc
     if not isinstance(payload, dict):
         raise ValueError(f"{path}: payload must be one JSON object")
     return payload

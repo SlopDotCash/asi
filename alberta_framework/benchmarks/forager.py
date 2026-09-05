@@ -3987,39 +3987,23 @@ def summarize_forager_runs(
     def method_signature(run: ForagerRunResult) -> str:
         metadata = run.agent_metadata
         stable_metadata = {
-            "config": metadata.get("config"),
-            "result_source": metadata.get("result_source"),
-            "source_repository": metadata.get("source_repository"),
-            "source_commit": metadata.get("source_commit"),
-            "config_path": metadata.get("config_path"),
-            "attestation_state": metadata.get("attestation_state"),
-            "official_foragax_evidence": metadata.get(
-                "official_foragax_evidence"
-            ),
-            "protocol_attested": metadata.get("protocol_attested"),
-            "runtime_profile_id": metadata.get("runtime_profile_id"),
-            "environment_runtime_profile_sha256": metadata.get(
-                "environment_runtime_profile_sha256"
-            ),
-            "environment_rng_schedule": metadata.get(
-                "environment_rng_schedule"
-            ),
-            "environment_rng_schedule_sha256": metadata.get(
-                "environment_rng_schedule_sha256"
-            ),
-            "paper_search_oracle": metadata.get("paper_search_oracle"),
-            "random_backend": metadata.get("random_backend"),
-            "runner_kind": (
+            key: value
+            for key, value in metadata.items()
+            if key
+            not in {"seed", "name", "privileged", "runner", "raw_metric_trace"}
+        }
+        stable_metadata["runner"] = {
+            "kind": (
                 metadata.get("runner", {}).get("kind")
                 if isinstance(metadata.get("runner"), Mapping)
                 else None
             ),
-            "runner_batch_mode": (
+            "batch_mode": (
                 metadata.get("runner", {}).get("batch_mode")
                 if isinstance(metadata.get("runner"), Mapping)
                 else None
             ),
-            "runner_rounding_contract": (
+            "rounding_contract": (
                 metadata.get("runner", {}).get("rounding_contract")
                 if isinstance(metadata.get("runner"), Mapping)
                 else None

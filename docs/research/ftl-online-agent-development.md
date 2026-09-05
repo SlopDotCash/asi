@@ -4,7 +4,13 @@ This record pins Liu et al., *Continual Reinforcement Learning by Planning with 
 Models*, ICML 2025, PMLR 267:38397–38423, and arXiv `2507.09177v1` (12 July 2025). The official
 Continual Bench repository is pinned at
 `sail-sg/ContinualBench@a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad` (the `main` revision audited
-on 17 August 2026). The paper uses a sparse shallow FTL world model, CEM MPC, known changing
+on 17 August 2026). A read-only source audit on 22 August 2026 additionally bound Git tree
+`ebf540dbac186f13858f97dfe12eb0b3c823ec43`, GitHub archive SHA-256
+`7726bc3badd6ad8752845b50a98e84e8d19c549c49bacf7bda84cd3933aa6e04`, and the repository's
+MIT `LICENSE.txt` bytes at SHA-256
+`854b88f1dd8df45fc717efc3926da5d10efb6b1122b47ddbea639eb2637a867f`. These identities do
+not qualify the runtime, dependencies, MuJoCo/Meta-World assets, or execution. The paper uses a
+sparse shallow FTL world model, CEM MPC, known changing
 reward functions, six 26-dimensional MuJoCo/Meta-World-derived tasks, 600 episodes, and reports
 10–15 hours per run on one A100 plus 16 CPUs.
 
@@ -17,6 +23,15 @@ environment steps, accepted model updates, model queries, planner candidates, ex
 units (their sum plus environment transitions), persistent array bytes, and wall time (telemetry
 only). Logical units are an implementation-independent call count, not hardware FLOPs. Negative
 results must be retained.
+
+The planner maximizes the summed reward over the imagined rollout, matching the paper's Eq. 2
+`H`-step finite-horizon return and the per-step cost the lane actually reports. Scoring only the
+terminal imagined state optimizes a different objective than the one measured: under it the
+privileged-dynamics control degraded monotonically with deeper lookahead (-6, -22, -50, -82 at
+horizons 1-4) and lost to the learned online arm on two of four frozen seeds at the frozen default
+horizon of two, so it no longer bounded the lane. With the summed return the control holds the
+analytic optimum of -6 at every horizon on every frozen seed. Horizon one is a single imagined
+step, where the two objectives are identical.
 
 Every arm receives the same current goal for planning and no boundary or task identifier; the
 world model itself trains only on observation, action, and next observation. The validator derives

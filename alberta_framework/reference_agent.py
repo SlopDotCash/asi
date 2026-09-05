@@ -383,14 +383,14 @@ class ArrayValue:
             raise ValueError(f"unsupported dtype '{host_dtype}'") from exc
         if dtype.name not in _SUPPORTED_DTYPES or dtype.name != self.dtype:
             raise ValueError("ArrayValue dtype must be a portable canonical numeric dtype")
-        if type(self.shape) is not tuple or any(
-            type(dimension) is not int or dimension <= 0 for dimension in self.shape
-        ):
+        if type(self.shape) is not tuple:
+            raise ValueError("ArrayValue shape must be a tuple of positive dimensions or ()")
+        if len(self.shape) > _MAX_ARRAY_RANK:
+            raise ValueError(f"ArrayValue rank must be <= {_MAX_ARRAY_RANK}")
+        if any(type(dimension) is not int or dimension <= 0 for dimension in self.shape):
             raise ValueError("ArrayValue shape must be a tuple of positive dimensions or ()")
         if not isinstance(self.payload, bytes):
             raise ValueError("ArrayValue payload must be immutable bytes")
-        if len(self.shape) > _MAX_ARRAY_RANK:
-            raise ValueError(f"ArrayValue rank must be <= {_MAX_ARRAY_RANK}")
         elements = _shape_size(self.shape)
         if elements > _MAX_ARRAY_ELEMENTS:
             raise ValueError(f"ArrayValue must contain <= {_MAX_ARRAY_ELEMENTS} elements")
@@ -439,9 +439,11 @@ class SpaceSpec:
 
     def __post_init__(self) -> None:
         _require_safe_id(self.semantic_id, name="semantic_id")
-        if type(self.shape) is not tuple or any(
-            type(dimension) is not int or dimension <= 0 for dimension in self.shape
-        ):
+        if type(self.shape) is not tuple:
+            raise ValueError("shape must be a tuple of positive integer dimensions or ()")
+        if len(self.shape) > _MAX_ARRAY_RANK:
+            raise ValueError(f"space rank must be <= {_MAX_ARRAY_RANK}")
+        if any(type(dimension) is not int or dimension <= 0 for dimension in self.shape):
             raise ValueError("shape must be a tuple of positive integer dimensions or ()")
         host_dtype = _require_exact_str("dtype", self.dtype)
         try:
@@ -453,8 +455,6 @@ class SpaceSpec:
         if dtype.name != self.dtype:
             host_canonical = _require_exact_str("dtype.name", dtype.name)
             raise ValueError(f"dtype must use canonical spelling '{host_canonical}'")
-        if len(self.shape) > _MAX_ARRAY_RANK:
-            raise ValueError(f"space rank must be <= {_MAX_ARRAY_RANK}")
         if _shape_size(self.shape) > _MAX_ARRAY_ELEMENTS:
             raise ValueError(f"space must contain <= {_MAX_ARRAY_ELEMENTS} elements")
 

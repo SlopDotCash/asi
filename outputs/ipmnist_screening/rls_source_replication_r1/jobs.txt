@@ -1,0 +1,6 @@
+sigma0_shiftnorm_d099 0
+sigma0_shiftnorm_d099 1
+sigma0_shiftnorm_d099 2
+rls_head_resid_l1_preset005 0
+rls_head_resid_l1_preset005 1
+rls_head_resid_l1_preset005 2

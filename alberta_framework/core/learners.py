@@ -606,8 +606,8 @@ def run_learning_loop[StreamStateT](
     ss_interval = step_size_tracking.interval if step_size_tracking else num_steps + 1
     norm_interval = normalizer_tracking.interval if normalizer_tracking else num_steps + 1
 
-    ss_num_recordings = num_steps // ss_interval if step_size_tracking else 0
-    norm_num_recordings = num_steps // norm_interval if normalizer_tracking else 0
+    ss_num_recordings = -(-num_steps // ss_interval) if step_size_tracking else 0
+    norm_num_recordings = -(-num_steps // norm_interval) if normalizer_tracking else 0
 
     # Pre-allocate step-size history arrays
     ss_history = (
@@ -971,10 +971,34 @@ def _update_from_gradient_with_diagnostics(
     gradient: Array,
     *,
     error: Array | None,
+    param: Array | None = None,
 ) -> tuple[Array, Any, Bool[Array, ""]]:
-    """Use the checked optimizer boundary for an enclosing transaction."""
-    result = optimizer.update_from_gradient_checked(state, gradient, error=error)
-    return result.step, result.new_state, result.update_applied
+    """Adapt a learner's additive trace direction to the checked optimizer API.
+
+    With no separate error, shared trunks already supply an additive update
+    direction (the negative loss gradient). Baseline optimizers consume loss
+    gradients instead; reverse their input and descent step at this boundary.
+    """
+    loss_gradient_path = error is None and optimizer.gradient_update_returns_delta()
+    optimizer_gradient = -gradient if loss_gradient_path else gradient
+    if optimizer.gradient_update_requires_param():
+        if param is None:
+            raise ValueError(
+                f"{type(optimizer).__name__} requires the current parameter "
+                "for gradient updates"
+            )
+        result = optimizer.update_from_gradient_checked(
+            state, optimizer_gradient, error=error, param=param
+        )
+    else:
+        result = optimizer.update_from_gradient_checked(state, optimizer_gradient, error=error)
+    step = -result.step if loss_gradient_path else result.step
+    return step, result.new_state, result.update_applied
+
+
+def _gradient_step_error(optimizer: Any, error: Array) -> Array:
+    """Multiplier/bounder error for one optimizer's returned gradient step."""
+    return jnp.ones_like(error) if optimizer.gradient_update_returns_delta() else error
 
 
 class MLPLearner:
@@ -1549,6 +1573,15 @@ class MLPLearner:
         # Per-parameter optimizer step from traces
         # Output layer uses head_optimizer if set (last 2 entries: weight + bias)
         n_trace_entries = len(new_traces)
+        all_params = []
+        for i in range(n_layers):
+            all_params.append(state.params.weights[i])
+            all_params.append(state.params.biases[i])
+        direct_steps = self._optimizer.gradient_update_returns_delta() or (
+            self._head_optimizer is not None
+            and self._head_optimizer.gradient_update_returns_delta()
+        )
+        step_error = jnp.ones_like(error) if direct_steps else error
         all_steps = []
         new_opt_states = []
         optimizer_updates_applied = []
@@ -1561,8 +1594,11 @@ class MLPLearner:
                     state.optimizer_states[j],
                     new_traces[j],
                     error=error,
+                    param=all_params[j],
                 )
             )
+            if direct_steps and not opt.gradient_update_returns_delta():
+                step = error * step
             all_steps.append(step)
             new_opt_states.append(new_opt)
             optimizer_updates_applied.append(optimizer_update_applied)
@@ -1570,21 +1606,17 @@ class MLPLearner:
         # Bounding (optional)
         bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
-            all_params = []
-            for i in range(n_layers):
-                all_params.append(state.params.weights[i])
-                all_params.append(state.params.biases[i])
             bounded_steps, bounding_metric = self._bounder.bound(
-                tuple(all_steps), error, tuple(all_params)
+                tuple(all_steps), step_error, tuple(all_params)
             )
             all_steps = list(bounded_steps)
 
         new_weights = []
         new_biases = []
         for i in range(n_layers):
-            new_w = state.params.weights[i] + error * all_steps[2 * i]
+            new_w = state.params.weights[i] + step_error * all_steps[2 * i]
             new_weights.append(new_w)
-            new_b = state.params.biases[i] + error * all_steps[2 * i + 1]
+            new_b = state.params.biases[i] + step_error * all_steps[2 * i + 1]
             new_biases.append(new_b)
 
         new_params = MLPParams(
@@ -1750,7 +1782,7 @@ def run_mlp_learning_loop[StreamStateT](
 
     # Tracking enabled
     norm_interval = normalizer_tracking.interval
-    norm_num_recordings = num_steps // norm_interval
+    norm_num_recordings = -(-num_steps // norm_interval)
 
     norm_means = jnp.zeros((norm_num_recordings, feature_dim), dtype=jnp.float32)
     norm_vars = jnp.zeros((norm_num_recordings, feature_dim), dtype=jnp.float32)

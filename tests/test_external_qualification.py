@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from alberta_framework.benchmarks.external_qualification import (
@@ -52,6 +55,47 @@ def test_action_conditioned_lane_pins_official_dreamer_cdp_source() -> None:
         "a851fa3e3d70b624b094ee1810ad4bb602346092",
     )
     assert "isolated_runtime_locked" in plan.blockers
+
+
+def test_ftl_lane_pins_official_continual_bench_source_without_claiming_readiness() -> None:
+    plan = qualification_plan(1574)
+    assert plan.code_revisions == (
+        ExternalCodeRevision(
+            "https://github.com/sail-sg/ContinualBench.git",
+            "a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad",
+        ),
+    )
+    assert plan.blockers == plan.required_gates
+    assert "external_code_available_and_license_reviewed" in plan.blockers
+    assert "external_execution_separately_authorized" in plan.blockers
+
+
+def test_ftl_source_manifest_content_binds_official_revision_without_execution_claims() -> None:
+    payload = json.loads(
+        Path("external_runtimes/continual_bench/qualification-plan.json").read_bytes()
+    )
+    assert payload["schema"] == "asi.continual_bench_external_source_qualification.v1"
+    assert payload["source"] == {
+        "repository": "https://github.com/sail-sg/ContinualBench.git",
+        "commit": "a4fdb3b94a07a40d76e28d3aeab0f8ca97519dad",
+        "git_tree": "ebf540dbac186f13858f97dfe12eb0b3c823ec43",
+        "source_archive_sha256": (
+            "7726bc3badd6ad8752845b50a98e84e8d19c549c49bacf7bda84cd3933aa6e04"
+        ),
+        "license": "MIT",
+        "license_path": "LICENSE.txt",
+        "license_sha256": (
+            "854b88f1dd8df45fc717efc3926da5d10efb6b1122b47ddbea639eb2637a867f"
+        ),
+    }
+    assert payload["claims"] == {
+        "source_identity_content_bound": True,
+        "runtime_qualified": False,
+        "assets_qualified": False,
+        "external_execution_authorized": False,
+        "paper_parity_claimed": False,
+        "scientific_promotion_allowed": False,
+    }
 
 
 def test_loss_of_plasticity_lane_preserves_protocol_and_cost_blockers() -> None:

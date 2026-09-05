@@ -56,6 +56,15 @@ class TestSaveLoadRoundTrip:
         with pytest.raises(ValueError, match="does not match the restore template"):
             load_checkpoint(template, tmp_path / "empty_shape")
 
+    def test_template_dtype_cannot_silently_cast_saved_state(self, tmp_path):
+        saved = {"accepted_events": jnp.asarray(16_777_217, dtype=jnp.int32)}
+        template = {"accepted_events": jnp.asarray(0, dtype=jnp.float32)}
+
+        save_checkpoint(saved, tmp_path / "dtype_mismatch")
+
+        with pytest.raises(ValueError, match="dtype"):
+            load_checkpoint(template, tmp_path / "dtype_mismatch")
+
     def test_user_metadata_cannot_forge_empty_array_manifest(self, tmp_path):
         saved = {"x": jnp.array([42.0], dtype=jnp.float32)}
         template = {"x": jnp.empty((0,), dtype=jnp.float32)}

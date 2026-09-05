@@ -234,6 +234,7 @@ jobs:
             tests/test_actor_critic.py::test_actor_critic_update_is_jittable \
             tests/test_action_conditioned_world_model.py::test_action_conditioned_world_model_update_and_prediction_shapes \
             tests/test_actual_int_types_closure.py \
+            tests/test_ipmnist_campaign_tools.py::test_ceiling_publication_refuses_to_replace_existing_bytes \
             -q \
             -o addopts="" \
             --strict-config \

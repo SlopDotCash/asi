@@ -114,6 +114,90 @@ class TestForwardViewReturns:
         actual = jax.jit(forward_view_returns)(c, jnp.array(0.5, dtype=jnp.float32))
         chex.assert_trees_all_close(actual, jnp.array([2.75, 3.5, 3.0]))
 
+    def test_float32_output_is_byte_identical_to_expected(self) -> None:
+        """Guard the promotion fix against silently altering float32 arithmetic."""
+        c = jnp.array([1.0, 0.0, 0.0, 0.0, 1.0], dtype=jnp.float32)
+        g = forward_view_returns(c, gamma=0.9)
+        assert g.dtype == jnp.float32
+        expected = jnp.array(
+            [1.6560999, 0.7289999, 0.80999994, 0.9, 1.0], dtype=jnp.float32
+        )
+        chex.assert_trees_all_equal(g, expected)
+
+    @pytest.mark.parametrize(
+        "dtype", [jnp.int16, jnp.int32, jnp.uint8, jnp.uint32]
+    )
+    def test_integer_cumulants_match_float_and_are_not_the_echo(self, dtype) -> None:
+        """int/uint series used to truncate gamma to 0 and echo the raw cumulants."""
+        c_int = jnp.array([1, 0, 0, 0, 1], dtype=dtype)
+        g_int = forward_view_returns(c_int, gamma=0.9)
+        g_float = forward_view_returns(c_int.astype(jnp.float32), gamma=0.9)
+        assert jnp.issubdtype(g_int.dtype, jnp.floating)
+        chex.assert_trees_all_close(g_int, g_float, atol=1e-6)
+        # The pre-fix degenerate result was a raw cumulant echo [1,0,0,0,1].
+        echo = c_int.astype(jnp.float32)
+        assert not bool(jnp.allclose(g_int, echo))
+        chex.assert_trees_all_close(
+            g_int,
+            jnp.array([1.6561, 0.729, 0.81, 0.9, 1.0], dtype=jnp.float32),
+            atol=1e-4,
+        )
+
+    def test_boolean_cumulants_are_promoted_not_logical_or(self) -> None:
+        """Boolean series used to collapse to all-True via the bootstrap OR."""
+        c_bool = jnp.array([True, False, False, False, True])
+        g_bool = forward_view_returns(c_bool, gamma=0.9)
+        g_float = forward_view_returns(
+            c_bool.astype(jnp.float32), gamma=0.9
+        )
+        assert jnp.issubdtype(g_bool.dtype, jnp.floating)
+        chex.assert_trees_all_close(g_bool, g_float, atol=1e-6)
+        # Pre-fix collapse produced all-True (1.0 everywhere); reject it.
+        assert not bool(jnp.all(g_bool == 1.0))
+
+    def test_fractional_terminal_value_not_truncated_with_integer_cumulants(
+        self,
+    ) -> None:
+        c_int = jnp.array([1, 2, 3], dtype=jnp.int32)
+        g = forward_view_returns(c_int, gamma=1.0, terminal_value=7.6)
+        # G_2 = 3 + 7.6 = 10.6, G_1 = 2 + 10.6 = 12.6, G_0 = 1 + 12.6 = 13.6.
+        chex.assert_trees_all_close(
+            g, jnp.array([13.6, 12.6, 10.6], dtype=jnp.float32), atol=1e-5
+        )
+
+    def test_integer_multi_horizon_gives_distinct_decay_per_horizon(self) -> None:
+        c_int = jnp.array([1, 0, 0, 0, 1], dtype=jnp.int32)
+        gammas = jnp.array([0.5, 0.9], dtype=jnp.float32)
+        g_int = multi_horizon_returns(c_int, gammas)
+        g_float = multi_horizon_returns(c_int.astype(jnp.float32), gammas)
+        chex.assert_shape(g_int, (5, 2))
+        chex.assert_trees_all_close(g_int, g_float, atol=1e-6)
+        # Distinct decay per horizon -- not the degenerate echo in both columns.
+        assert not bool(jnp.allclose(g_int[:, 0], g_int[:, 1]))
+
+    def test_integer_multi_channel_matches_float(self) -> None:
+        c_int = jnp.array(
+            [[1, 0], [0, 0], [0, 1]], dtype=jnp.int32
+        )
+        gammas = jnp.array([0.9], dtype=jnp.float32)
+        g_int = multi_channel_horizon_returns(c_int, gammas)
+        g_float = multi_channel_horizon_returns(
+            c_int.astype(jnp.float32), gammas
+        )
+        chex.assert_shape(g_int, (3, 2, 1))
+        chex.assert_trees_all_close(g_int, g_float, atol=1e-6)
+        # Channel 1 (delayed pulse) decays distinctly from channel 0.
+        assert not bool(jnp.allclose(g_int[:, 0, 0], g_int[:, 1, 0]))
+
+    def test_per_horizon_rmse_verdict_not_inverted_by_integer_returns(self) -> None:
+        """A perfect predictor must not score worse than a degenerate echo."""
+        c_int = jnp.array([1, 0, 0, 0, 1], dtype=jnp.int32)
+        truth = forward_view_returns(c_int, gamma=0.9).reshape(-1, 1)
+        echo = c_int.astype(jnp.float32).reshape(-1, 1)
+        perfect_rmse = per_horizon_rmse(truth, truth)
+        echo_rmse = per_horizon_rmse(echo, truth)
+        assert float(perfect_rmse[0]) < float(echo_rmse[0])
+
 
 class TestMultiHorizon:
     def test_shape(self) -> None:
@@ -168,6 +252,33 @@ class TestMultiChannel:
         chex.assert_trees_all_close(g[:, 0, 0], jnp.array([1.0, 0.0, 0.0]), atol=1e-6)
         # Channel 1: G_0 = 0 + 0.9*0 + 0.81*1 = 0.81; G_1 = 0.9; G_2 = 1
         chex.assert_trees_all_close(g[:, 1, 0], jnp.array([0.81, 0.9, 1.0]), atol=1e-6)
+
+    @pytest.mark.parametrize("array_type", [np.zeros, jnp.zeros])
+    def test_channel_count_limits_checked_for_numpy_and_jax(self, array_type) -> None:
+        cumulants_legal = array_type((5, 8), dtype=np.float32)
+        gammas = jnp.array([0.5], dtype=jnp.float32)
+        g = multi_channel_horizon_returns(cumulants_legal, gammas)
+        chex.assert_shape(g, (5, 8, 1))
+
+        cumulants_too_many = array_type((5, 9), dtype=np.float32)
+        with pytest.raises(
+            ValueError,
+            match=r"cumulants channel count must be an integer in \[1, 8\]",
+        ):
+            multi_channel_horizon_returns(cumulants_too_many, gammas)
+
+    @pytest.mark.parametrize("gamma_val", [True, float("nan"), float("inf"), -0.1, 1.1])
+    def test_multi_channel_rejects_invalid_gammas(self, gamma_val: object) -> None:
+        cumulants = jnp.zeros((3, 2), dtype=jnp.float32)
+        with pytest.raises(ValueError, match="gammas"):
+            multi_channel_horizon_returns(cumulants, [cast(float, gamma_val)])
+
+    @pytest.mark.parametrize("term_val", [True, float("nan"), float("inf")])
+    def test_multi_channel_rejects_invalid_terminal_value(self, term_val: object) -> None:
+        cumulants = jnp.zeros((3, 2), dtype=jnp.float32)
+        gammas = jnp.array([0.5], dtype=jnp.float32)
+        with pytest.raises(ValueError, match="terminal_value"):
+            multi_channel_horizon_returns(cumulants, gammas, terminal_value=cast(float, term_val))
 
 
 class TestRMSE:
@@ -406,6 +517,30 @@ class TestRMSE:
 
 
 class TestRunningRMSE:
+    def test_warmup_rows_do_not_use_future_errors(self) -> None:
+        predictions = jnp.asarray([[1.0], [3.0], [5.0]], dtype=jnp.float32)
+        returns = jnp.zeros_like(predictions)
+
+        running = per_horizon_running_rmse(predictions, returns, window_size=2)
+
+        expected = np.asarray(
+            [[np.nan], [np.sqrt(5.0)], [np.sqrt(17.0)]], dtype=np.float32
+        )
+        np.testing.assert_allclose(np.asarray(running), expected, rtol=1e-6)
+
+    @pytest.mark.parametrize("nonfinite", [jnp.nan, jnp.inf])
+    def test_future_nonfinite_does_not_poison_earlier_complete_window(
+        self, nonfinite: float
+    ) -> None:
+        predictions = jnp.asarray([[1.0], [3.0], [nonfinite]], dtype=jnp.float32)
+        returns = jnp.zeros_like(predictions)
+
+        running = per_horizon_running_rmse(predictions, returns, window_size=2)
+
+        assert bool(jnp.isnan(running[0, 0]))
+        assert float(running[1, 0]) == pytest.approx(np.sqrt(5.0))
+        assert not bool(jnp.isfinite(running[2, 0]))
+
     def test_large_finite_errors_do_not_overflow(self) -> None:
         predictions = jnp.asarray([[2.0e20], [2.0e20]], dtype=jnp.float32)
         returns = jnp.zeros_like(predictions)
@@ -413,10 +548,11 @@ class TestRunningRMSE:
         with jax.debug_infs(True):
             running = per_horizon_running_rmse(predictions, returns, window_size=2)
 
-        assert bool(jnp.all(jnp.isfinite(running)))
+        assert bool(jnp.isnan(running[0, 0]))
+        assert bool(jnp.isfinite(running[1, 0]))
         np.testing.assert_allclose(
-            np.asarray(running),
-            np.full((2, 1), 2.0e20, dtype=np.float32),
+            np.asarray(running[1:]),
+            np.full((1, 1), 2.0e20, dtype=np.float32),
         )
 
     @pytest.mark.parametrize("magnitude", [2.0e20, 1.0e38, 3.0e38])
@@ -440,7 +576,8 @@ class TestRunningRMSE:
 
         chex.assert_trees_all_close(eager, expected, rtol=5e-6, atol=0.0)
         chex.assert_trees_all_close(compiled, expected, rtol=5e-6, atol=0.0)
-        chex.assert_trees_all_close(tangent, jnp.ones_like(tangent), rtol=5e-6, atol=0.0)
+        expected_tangent = jnp.asarray([[0.0], [1.0]], dtype=jnp.float32)
+        chex.assert_trees_all_close(tangent, expected_tangent, rtol=5e-6, atol=0.0)
 
     def test_zero_running_rmse_uses_zero_eager_jit_and_jvp_gradient_convention(
         self,
@@ -476,8 +613,28 @@ class TestRunningRMSE:
         preds = jnp.zeros((t, h))
         truths = jnp.ones((t, h)) * 2.0
         running = per_horizon_running_rmse(preds, truths, window_size=5)
-        # All windows should contain the same constant error
-        np.testing.assert_allclose(np.asarray(running), 2.0, atol=1e-6)
+        assert bool(jnp.all(jnp.isnan(running[:4])))
+        np.testing.assert_allclose(np.asarray(running[4:]), 2.0, atol=1e-6)
+
+    def test_running_rmse_survives_a_high_error_phase_before_a_settled_phase(self) -> None:
+        """A trailing window must not inherit cancellation from an earlier large-error phase.
+
+        A global float32 prefix sum loses every squared error that is smaller than the
+        prefix's ulp, so once 2,000 unit errors have accumulated a settled phase of
+        1e-4 errors reads as exactly zero RMSE. The window's own errors are all 1e-4,
+        so every complete settled window must report 1e-4.
+        """
+        n_steps, window = 4000, 100
+        for settled in (1e-3, 1e-4, 1e-5):
+            errors = np.full((n_steps, 1), settled, dtype=np.float32)
+            errors[:2000] = 1.0
+            running = np.asarray(
+                per_horizon_running_rmse(
+                    jnp.asarray(errors), jnp.zeros((n_steps, 1), jnp.float32), window_size=window
+                )
+            )
+            settled_windows = running[2000 + window :, 0]
+            np.testing.assert_allclose(settled_windows, settled, rtol=1e-3, atol=0.0)
 
     @pytest.mark.parametrize(
         "window_size",
@@ -550,7 +707,10 @@ class TestRunningRMSE:
         )
         expected_by_window = {
             1: np.array([[1.0, 2.0], [1.0, 2.0], [5.0, 10.0]], dtype=np.float32),
-            3: np.tile(np.array([[3.0, 6.0]], dtype=np.float32), (3, 1)),
+            3: np.array(
+                [[np.nan, np.nan], [np.nan, np.nan], [3.0, 6.0]],
+                dtype=np.float32,
+            ),
         }
 
         for window_size, expected in expected_by_window.items():
@@ -578,7 +738,8 @@ class TestRunningRMSE:
         running = per_horizon_running_rmse(predictions, returns, window_size=2)
 
         assert bool(jnp.all(jnp.isnan(running[:, 0])))
-        assert bool(jnp.all(jnp.isinf(running[:, 1])))
+        assert bool(jnp.isnan(running[0, 1]))
+        assert bool(jnp.isinf(running[1, 1]))
 
     def test_dynamic_jit_window_is_named_and_default_call_recovers(self) -> None:
         predictions = jnp.tile(jnp.array([[3.0, -4.0]], dtype=jnp.float32), (100, 1))
@@ -589,7 +750,8 @@ class TestRunningRMSE:
             compiled(predictions, returns, window_size=1)
 
         recovered = compiled(predictions, returns)
-        expected = np.tile(np.array([[3.0, 4.0]], dtype=np.float32), (100, 1))
+        expected = np.full((100, 2), np.nan, dtype=np.float32)
+        expected[-1] = np.array([3.0, 4.0], dtype=np.float32)
         np.testing.assert_array_equal(np.asarray(recovered), expected)
 
     def test_jit_rejects_broadcasting_at_the_shape_boundary(self) -> None:

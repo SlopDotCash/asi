@@ -38,6 +38,15 @@ from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 
+
+def _skip_zero_product(left: Array, right: Array) -> Array:
+    """Return 0 for zero coefficients without suppressing value derivatives."""
+    return jnp.where(
+        left == 0.0,
+        jnp.zeros_like(left),
+        left * right,
+    )
+
 PolicyGradientMode = Literal["ordinary_pg", "delightful_pg"]
 GradientCandidateSemantics = Literal["gradient", "update"]
 _FLOAT32_MAX = float(np.finfo(np.float32).max)
@@ -918,7 +927,9 @@ def _learning_value_for_gradient_audit(
             jnp.where(is_valid, scalar, jnp.array(0.0, dtype=jnp.float32))
         )
 
-    expected_paper_dg_delight = values["advantage"] * values["action_surprisal"]
+    expected_paper_dg_delight = _skip_zero_product(
+        values["advantage"], values["action_surprisal"]
+    )
     expected_paper_dg_bits = jax.lax.bitcast_convert_type(
         expected_paper_dg_delight,
         jnp.uint32,
@@ -2027,18 +2038,21 @@ def discrete_delightful_policy_gradient(
         raise ValueError("at least one policy-gradient sample is required")
 
     action_surprisal = -log_prob
-    delight = jax.lax.stop_gradient(advantage * action_surprisal)
+    # Zero advantage times infinite surprisal (-log 0) is 0*inf = NaN.
+    delight = jax.lax.stop_gradient(_skip_zero_product(advantage, action_surprisal))
     if cfg.mode == "ordinary_pg":
         sample_weights = jnp.ones_like(delight)
     else:
         temperature = jnp.asarray(cfg.temperature, dtype=jnp.float32)
         sample_weights = jax.nn.sigmoid(delight / temperature)
     sample_weights = jax.lax.stop_gradient(sample_weights)
-    actor_coefficients = jax.lax.stop_gradient(sample_weights * advantage)
+    actor_coefficients = jax.lax.stop_gradient(
+        _skip_zero_product(sample_weights, advantage)
+    )
     ordinary_coefficients = jax.lax.stop_gradient(advantage)
 
-    actor_loss = -jnp.mean(actor_coefficients * log_prob)
-    ordinary_actor_loss = -jnp.mean(ordinary_coefficients * log_prob)
+    actor_loss = -jnp.mean(_skip_zero_product(actor_coefficients, log_prob))
+    ordinary_actor_loss = -jnp.mean(_skip_zero_product(ordinary_coefficients, log_prob))
 
     flat_weights = jnp.ravel(sample_weights)
     flat_advantages = jnp.ravel(advantage)

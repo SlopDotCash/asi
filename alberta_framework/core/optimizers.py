@@ -500,13 +500,37 @@ class Optimizer[
             "Only LMS, IDBD, and Autostep currently implement this."
         )
 
+    def gradient_update_returns_delta(self) -> bool:
+        """Whether an error-supplied gradient update is a complete additive delta.
+
+        Legacy optimizers return a step to multiply by the prediction error.
+        Loss-gradient optimizers override this to preserve momentum and decay
+        even when that error is zero. With error=None all optimizers retain
+        the descent-step convention, applied by subtracting the returned step.
+        """
+        return False
+
+    def gradient_update_requires_param(self) -> bool:
+        """Whether the shape-generic update needs the current parameter.
+
+        Most optimizers derive their update solely from the gradient, error,
+        and optimizer state. Parameter-dependent methods such as decoupled
+        weight decay override this capability so generic learners can provide
+        the parameter without changing the legacy optimizer call contract.
+        """
+        return False
+
     def update_from_gradient(
         self, state: Any, gradient: Array, error: Array | None = None
     ) -> tuple[Array, Any]:
         """Compute step delta from pre-computed gradient.
 
-        The returned delta does NOT include the error -- the caller is
-        responsible for multiplying ``error * delta`` before applying.
+        By default the returned step excludes the error, so callers apply
+        ``param += error * step``. Optimizers whose
+        :meth:`gradient_update_returns_delta` is true instead return the
+        complete additive delta when error is supplied. With error=None,
+        the gradient already contains the loss signal and callers subtract
+        the returned descent step.
 
         The state type varies by subclass (e.g. ``LMSState`` for LMS,
         ``AutostepParamState`` for Autostep) so the base signature uses
@@ -846,7 +870,9 @@ class IDBD(Optimizer[IDBDState]):
         Operation order (meta-update first, then new alpha for trace):
 
         1. Compute h_decay based on mode: ``z^2`` or ``(error * z)^2``
-        2. Meta-update with OLD traces: ``log_alpha += beta * z * h``
+        2. Meta-update with OLD traces: ``log_alpha += beta * g * h``
+           where ``g = -error * z`` (loss gradient direction; ``z``
+           itself when ``error`` is None)
         3. Clip log step-sizes to ``[-10.0, 2.0]``
         4. New step-sizes: ``alpha = exp(log_alpha)``
         5. Step: ``alpha * z`` (error applied externally by caller)
@@ -862,7 +888,8 @@ class IDBD(Optimizer[IDBDState]):
             gradient: Pre-computed prediction gradient / eligibility trace
                 (same shape as state arrays)
             error: Optional prediction error scalar. When provided,
-                used for h_decay (loss_grads mode) and h-trace sign.
+                used for the meta-update and h-trace loss-gradient
+                direction, and for h_decay in loss_grads mode.
 
         Returns:
             ``(step, new_state)`` where step has the same shape as gradient
@@ -877,9 +904,13 @@ class IDBD(Optimizer[IDBDState]):
             # prediction_grads mode, or loss_grads without error
             h_decay = z**2
 
-        # 2. Meta-update with OLD traces (Meyer: prediction_grads * h, no error).
+        # 2. Meta-update with OLD traces (Meyer: loss grad * h; the loss
+        # gradient is -error * z here, z itself on the error=None trunk path).
         # Skip 0 * inf when meta-learning is disabled.
-        meta_gradient = z * state.traces
+        if error is not None:
+            meta_gradient = -jnp.squeeze(error) * z * state.traces
+        else:
+            meta_gradient = z * state.traces
         meta_delta = _skip_zero_scale(beta, meta_gradient)
 
         # 3. Clip log step-sizes; a non-finite meta-gradient (inf z against a
@@ -1248,14 +1279,16 @@ class Autostep(Optimizer[AutostepState]):
             state.step_sizes,
         )
 
-        # Eq. 6-7: M = max(Σ α_i*z_i², 1); α_i /= M
+        # Clip step-sizes for numerical safety
+        new_step_sizes = jnp.clip(new_step_sizes, 1e-8, 1.0)
+
+        # Eq. 6-7: M = max(Σ α_i*z_i², 1); α_i /= M. Normalization is the
+        # last operation on α so the overshoot bound Σ α_i*z_i² <= 1 holds
+        # at update time (Algorithm 5 lines 8-10).
         effective_terms = new_step_sizes * z_sq
         effective_step = jnp.sum(effective_terms)
         m_factor = jnp.maximum(effective_step, 1.0)
         new_step_sizes = new_step_sizes / m_factor
-
-        # Clip step-sizes for numerical safety
-        new_step_sizes = jnp.clip(new_step_sizes, 1e-8, 1.0)
 
         # Compute step: α_i * z_i (error applied externally)
         step = new_step_sizes * z
@@ -1389,17 +1422,19 @@ class Autostep(Optimizer[AutostepState]):
             state.bias_step_size,
         )
 
+        # Clip step-sizes for numerical safety
+        new_step_sizes = jnp.clip(new_step_sizes, 1e-8, 1.0)
+        new_bias_step_size = jnp.clip(new_bias_step_size, 1e-8, 1.0)
+
         # Eq. 6-7: Overshoot prevention (joint over weights + bias)
-        # M = max(Σ α_i*x_i² + α_bias*1², 1)
+        # M = max(Σ α_i*x_i² + α_bias*1², 1). Normalization is the last
+        # operation on α so the overshoot bound holds at update time
+        # (Algorithm 5 lines 8-10).
         effective_terms = new_step_sizes * x_sq
         effective_step = jnp.sum(effective_terms) + new_bias_step_size
         m_factor = jnp.maximum(effective_step, 1.0)
         new_step_sizes = new_step_sizes / m_factor
         new_bias_step_size = new_bias_step_size / m_factor
-
-        # Clip step-sizes for numerical safety
-        new_step_sizes = jnp.clip(new_step_sizes, 1e-8, 1.0)
-        new_bias_step_size = jnp.clip(new_bias_step_size, 1e-8, 1.0)
 
         # Weight update with NEW alpha: α_i * δ * x_i
         weight_delta = new_step_sizes * error_scalar * x

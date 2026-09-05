@@ -16,6 +16,9 @@ from alberta_framework._scan_resources import (
     require_scan_steps,
     require_step_units,
 )
+from alberta_framework.utils.export import (
+    _significance_star_count,
+)
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -280,6 +283,13 @@ def plot_final_performance_bars(
     names = list(results.keys())
     if not names:
         raise ValueError("plot_final_performance_bars requires at least one result")
+    from alberta_framework.utils.statistics import common_final_window
+
+    common_final_window(
+        {name: int(results[name].metric_arrays[metric].shape[1]) for name in names},
+        100,
+        metric,
+    )
     means = [results[name].summary[metric].mean for name in names]
     stds = [results[name].summary[metric].std for name in names]
     means_arr = np.asarray(means, dtype=np.float64)
@@ -668,11 +678,8 @@ def _get_significance_marker_for_plot(
     if not result.significant:
         return ""
 
-    p = result.p_value
-    if p < 0.001:
-        return "***"
-    elif p < 0.01:
-        return "**"
-    elif p < 0.05:
-        return "*"
-    return ""
+    stars = _significance_star_count(
+        result.p_value,
+        result.alpha,
+    )
+    return "*" * stars

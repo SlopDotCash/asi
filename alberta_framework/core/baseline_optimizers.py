@@ -512,8 +512,10 @@ class Adam(Optimizer[Any]):
 
     For the MLP path (:meth:`update_from_gradient`), the gradient is
     pre-computed by the caller (e.g. an eligibility trace or a VJP
-    cotangent), and the returned step does NOT include the error --
-    callers apply ``param += step`` directly.
+    cotangent).  With ``error=None`` the gradient is the loss gradient
+    and callers apply ``param -= step``; with ``error`` supplied the
+    gradient is the prediction gradient, the returned step is the complete
+    additive delta, and callers apply ``param += step``.
 
     With nonzero ``weight_decay``, the MLP path implements decoupled
     weight decay (AdamW; Loshchilov & Hutter 2019): the returned step
@@ -628,6 +630,14 @@ class Adam(Optimizer[Any]):
             eps=jnp.array(self._eps, dtype=jnp.float32),
         )
 
+    def gradient_update_requires_param(self) -> bool:
+        """Return whether decoupled weight decay needs the current parameter."""
+        return self._weight_decay != 0.0
+
+    def gradient_update_returns_delta(self) -> bool:
+        """Error-supplied updates already contain the full additive delta."""
+        return True
+
     def update_from_gradient(
         self,
         state: AdamParamState,
@@ -649,22 +659,27 @@ class Adam(Optimizer[Any]):
     ) -> ParamOptimizerUpdate:
         """Compute Adam step from a pre-computed gradient (MLP path).
 
-        The returned step has the SAME sign as the descent step, i.e.
-        callers apply ``param -= step`` to minimize loss when the
-        gradient is the loss gradient. When the gradient is the
-        prediction gradient ``dy/dw`` and the caller wants to do
-        ``param += error * step``, ``error`` should be passed so it is
-        folded into the moment EMAs.
-
         When ``error`` is ``None``, the gradient is assumed to already
-        be the loss gradient and is used as-is.
+        be the loss gradient; the returned step is the descent step and
+        callers apply ``param -= step`` to minimize loss.
+
+        When ``error`` is provided, the gradient is the prediction
+        gradient ``dy/dw``: the moment EMAs accumulate the loss gradient
+        ``-error * gradient`` (for ``loss = 0.5 * error^2``) exactly as
+        the linear :meth:`update` path does, and the returned step
+        is the complete additive delta, applied with ``param += step``.
+        The capability ``gradient_update_returns_delta`` distinguishes this
+        from legacy error-factored steps. Momentum and decoupled decay still
+        move parameters at zero error, as in the loss-gradient path.
 
         Args:
             state: Current per-parameter Adam state
             gradient: Pre-computed gradient (any shape matching state)
             error: Optional prediction error scalar. When provided, the
                 effective gradient becomes ``-error * gradient`` (loss
-                gradient direction for ``loss = 0.5 * error^2``).
+                gradient direction for ``loss = 0.5 * error^2``) and the
+                returned step is for ``param += step``
+                application.
             param: Current parameter values; required when the optimizer
                 was constructed with nonzero ``weight_decay`` so the
                 decoupled decay term ``step_size * weight_decay * param``
@@ -699,6 +714,10 @@ class Adam(Optimizer[Any]):
         step = state.step_size * m_hat / (jnp.sqrt(v_hat) + state.eps)
         if self._weight_decay != 0.0 and param is not None:
             step = step + state.step_size * self._weight_decay * param
+        if error is not None:
+            # A complete additive delta preserves momentum/AdamW decay at
+            # zero error and avoids dividing by a potentially tiny residual.
+            step = -step
 
         candidate_state = AdamParamState(
             m=new_m,
@@ -933,6 +952,10 @@ class RMSprop(Optimizer[Any]):
             eps=jnp.array(self._eps, dtype=jnp.float32),
         )
 
+    def gradient_update_returns_delta(self) -> bool:
+        """Error-supplied updates already contain the full additive delta."""
+        return True
+
     def update_from_gradient(
         self,
         state: RMSpropParamState,
@@ -952,14 +975,21 @@ class RMSprop(Optimizer[Any]):
     ) -> ParamOptimizerUpdate:
         """Compute RMSprop step from a pre-computed gradient (MLP path).
 
-        When ``error`` is supplied, the effective gradient is treated as
-        ``-error * gradient`` (loss gradient for squared error); when it
-        is ``None`` the gradient is used as-is (already a loss gradient).
+        When ``error`` is ``None``, the gradient is used as-is (already a
+        loss gradient); the returned step is the descent step and callers
+        apply ``param -= step``.
+
+        When ``error`` is supplied, the gradient is the prediction
+        gradient ``dy/dw``: the squared-gradient EMA accumulates the loss
+        gradient ``-error * gradient`` (for ``loss = 0.5 * error^2``), and
+        the returned step is the complete additive delta, applied with
+        ``param += step``. No division by the prediction error is needed.
 
         Args:
             state: Current per-parameter RMSprop state
             gradient: Pre-computed gradient (any shape matching state)
-            error: Optional prediction error scalar
+            error: Optional prediction error scalar. When provided, the
+                returned step is for ``param += step`` application.
 
         Returns:
             ``(step, new_state)`` -- step has the same shape as gradient
@@ -969,10 +999,12 @@ class RMSprop(Optimizer[Any]):
         else:
             g = gradient
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + (
-            1.0 - state.decay
-        ) * g**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
+            1.0 - self._decay, 1.0 - state.decay, g**2
+        )
         step = state.step_size * g / (jnp.sqrt(new_v) + state.eps)
+        if error is not None:
+            step = -step
 
         candidate_state = RMSpropParamState(
             v=new_v,
@@ -1027,13 +1059,12 @@ class RMSprop(Optimizer[Any]):
         g = -error_scalar * observation
         g_b = -error_scalar
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + (
-            1.0 - state.decay
-        ) * g**2
-        new_bias_v = (
-            _skip_zero_scale(self._decay, state.decay, state.bias_v)
-            + (1.0 - state.decay) * g_b**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
+            1.0 - self._decay, 1.0 - state.decay, g**2
         )
+        new_bias_v = _skip_zero_scale(
+            self._decay, state.decay, state.bias_v
+        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, g_b**2)
 
         weight_delta = -state.step_size * g / (jnp.sqrt(new_v) + state.eps)
         bias_delta = -state.step_size * g_b / (jnp.sqrt(new_bias_v) + state.eps)
@@ -1169,10 +1200,9 @@ class NADALINE(Optimizer[Any]):
             bias delta.
         """
         error_scalar = jnp.squeeze(error)
-        new_second_moment = (
-            _skip_zero_scale(self._decay, state.decay, state.feature_second_moment)
-            + (1.0 - state.decay) * observation**2
-        )
+        new_second_moment = _skip_zero_scale(
+            self._decay, state.decay, state.feature_second_moment
+        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, observation**2)
 
         denom = jnp.maximum(state.eps, new_second_moment)
         weight_delta = state.step_size * error_scalar * observation / denom

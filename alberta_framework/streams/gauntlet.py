@@ -79,6 +79,12 @@ _GAUNTLET_LOOP_MAX_STEPS = NUM_SEGMENTS * 3000
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 
+
+def _skip_zero_scale(scale: Array | float, value: Array) -> Array:
+    """Skip ``0 * inf`` so a closed context gate does not poison features."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 LIFETIME_GAUNTLET_CONFIG_SCHEMA = "alberta.lifetime-gauntlet-config.v2"
 LIFETIME_GAUNTLET_STATE_SCHEMA = "alberta.lifetime-gauntlet-state.v2"
 LIFETIME_GAUNTLET_CHECKPOINT_SCHEMA = "alberta.lifetime-gauntlet-checkpoint.v2"
@@ -530,7 +536,14 @@ class ContextGatedFeatures:
         x = timestep.observation[:d]
         ctx = timestep.observation[d:]
         base_gate = 1.0 - ctx[0] - ctx[1] if self._exclusive else 1.0
-        gated = jnp.concatenate([base_gate * x, ctx, ctx[0] * x, ctx[1] * x])
+        gated = jnp.concatenate(
+            [
+                _skip_zero_scale(base_gate, x),
+                ctx,
+                _skip_zero_scale(ctx[0], x),
+                _skip_zero_scale(ctx[1], x),
+            ]
+        )
         return TimeStep(observation=gated, target=timestep.target), new_state
 
 
@@ -1102,13 +1115,21 @@ def lifetime_scorecard(
     fresh_early = jnp.mean(per_cycle[..., :, 0, :window], axis=-1)
     recur_c_early = jnp.mean(per_cycle[..., :, 1, :window], axis=-1)
     recur_d_early = jnp.mean(per_cycle[..., :, 3, :window], axis=-1)
-    eps = 1e-8
+    floor = jnp.asarray(1e-8, dtype=jnp.promote_types(sq_errors.dtype, jnp.float32))
+    both_at_floor_c = (recur_c_early[..., :1] <= floor) & (recur_c_early[..., 1:] <= floor)
+    raw_savings_c = recur_c_early[..., :1] / jnp.maximum(recur_c_early[..., 1:], floor)
+    savings_c = jnp.where(both_at_floor_c, jnp.ones_like(raw_savings_c), raw_savings_c)
+
+    both_at_floor_d = (recur_d_early[..., :1] <= floor) & (recur_d_early[..., 1:] <= floor)
+    raw_savings_d = recur_d_early[..., :1] / jnp.maximum(recur_d_early[..., 1:], floor)
+    savings_d = jnp.where(both_at_floor_d, jnp.ones_like(raw_savings_d), raw_savings_d)
+
     return {
         "fresh_early": fresh_early,
         "recur_c_early": recur_c_early,
         "recur_d_early": recur_d_early,
-        "savings_c": recur_c_early[..., :1] / jnp.maximum(recur_c_early[..., 1:], eps),
-        "savings_d": recur_d_early[..., :1] / jnp.maximum(recur_d_early[..., 1:], eps),
+        "savings_c": savings_c,
+        "savings_d": savings_d,
         "nan_steps": jnp.sum(~jnp.isfinite(sq_errors), axis=-1),
     }
 
@@ -1311,13 +1332,22 @@ def savings_ratio(
     Values > 1 mean the learner re-entered the recurring task closer to its
     old solution than it started at first exposure — the savings measure of
     memory.  A memoryless learner scores ~1; a learner whose representation
-    isolates tasks scores >> 1.  (Early-window MSE is used rather than
-    steps-to-criterion because it stays informative for learners whose
-    asymptotic error sits near the criterion threshold.)
+    isolates tasks scores >> 1.  Identical entry windows at or below the
+    ``1e-8`` numerical floor score ``1`` (same identity as
+    :func:`savings_ratio_steps`), not ``0``.  (Early-window MSE is used
+    rather than steps-to-criterion because it stays informative for learners
+    whose asymptotic error sits near the criterion threshold.)
     """
     first = early_window_mse(sq_errors, first_segment, segment_length, window)
     revisit = early_window_mse(sq_errors, revisit_segment, segment_length, window)
-    return first / jnp.maximum(revisit, 1e-8)
+    # The 1e-8 floor only prevents a zero-denominator blow-up. When both
+    # entry windows sit at or below that floor they are indistinguishable
+    # (oracle / noiseless / underflow), so the ratio is 1 — the same
+    # identity savings_ratio_steps already uses via max(steps, 1).
+    floor = jnp.asarray(1e-8, dtype=jnp.promote_types(first.dtype, jnp.float32))
+    both_at_floor = (first <= floor) & (revisit <= floor)
+    ratio = first / jnp.maximum(revisit, floor)
+    return jnp.where(both_at_floor, jnp.ones_like(ratio), ratio)
 
 
 def savings_ratio_steps(

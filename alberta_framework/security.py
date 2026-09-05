@@ -442,6 +442,18 @@ class SecurityRolloutStep:
         _require_rfc_json_mapping(payload, name="security rollout step")
         return payload
 
+    def _revalidated_copy(self) -> SecurityRolloutStep:
+        """Reconstruct the record before a public validator trusts its fields."""
+        return SecurityRolloutStep(
+            state=self.state,
+            action=self.action,
+            reward=self.reward,
+            next_state=self.next_state,
+            terminated=self.terminated,
+            truncated=self.truncated,
+            policy_metadata=self.policy_metadata,
+        )
+
     @classmethod
     def from_dict(cls, data: object) -> SecurityRolloutStep:
         """Reconstruct a rollout step from ``to_dict`` output."""
@@ -657,9 +669,13 @@ def coerce_security_action(action: object) -> SecurityAction:
         raise ValueError("security action must not be a boolean")
     if type(action) is SecurityAction:
         return action
-    if type(action) is int:
+    # Accept the same exact integer types as every other integer gate in this
+    # module. Gymnasium ``Discrete`` sampling and ``argmax`` over action values
+    # both hand callers a numpy integer, and ``to_security_gym_action`` already
+    # admits those types for ``risk_score``.
+    if any(type(action) is allowed for allowed in _ACTUAL_INT_TYPES):
         try:
-            return SecurityAction(action)
+            return SecurityAction(operator.index(cast(SupportsIndex, action)))
         except ValueError as exc:
             raise ValueError("unknown security action") from exc
     if type(action) is str:
@@ -721,10 +737,17 @@ def validate_security_rollout(
     schema: SecurityFeatureSchema,
 ) -> None:
     """Validate that rollout transitions satisfy the active-defense contract."""
+    if type(steps) is not list and type(steps) is not tuple:
+        raise ValueError("security rollout steps must be an exact list or tuple")
+    if type(schema) is not SecurityFeatureSchema:
+        raise ValueError("schema must be an exact SecurityFeatureSchema")
     for idx, step in enumerate(steps):
+        if type(step) is not SecurityRolloutStep:
+            raise ValueError(f"invalid rollout step {idx}: wrong record type")
         try:
-            schema.validate_observation(step.state)
-            schema.validate_observation(step.next_state)
+            validated = step._revalidated_copy()
+            schema.validate_observation(validated.state)
+            schema.validate_observation(validated.next_state)
         except ValueError as exc:
             raise ValueError(f"invalid rollout step {idx}: {exc}") from exc
 

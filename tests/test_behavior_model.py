@@ -284,6 +284,29 @@ def test_config_rejects_nonfinite_or_invalid_numeric_values(
         BehaviorModelConfig(**kwargs)
 
 
+def test_temperature_rejects_subnormal_float32_before_softmax_division() -> None:
+    """An accepted temperature must remain a usable positive XLA divisor."""
+    smallest_normal = float(np.finfo(np.float32).tiny)
+
+    with pytest.raises(ValueError, match="temperature must be at least"):
+        BehaviorModelConfig(n_actions=2, temperature=float(np.nextafter(np.float32(0), 1)))
+
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2, temperature=smallest_normal))
+    state = model.init(feature_dim=1, key=jax.random.key(0))
+    result = model.update(
+        state,
+        jnp.ones((1,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    assert bool(jnp.all(jnp.isfinite(result.probabilities)))
+    assert bool(jnp.all(jnp.isfinite(result.state.weights)))
+    assert bool(jnp.all(jnp.isfinite(result.state.bias)))
+    assert bool(jnp.isfinite(result.loss))
+
+
 def test_config_and_init_reject_boolean_or_nonpositive_dimensions() -> None:
     with pytest.raises(ValueError, match="n_actions"):
         BehaviorModelConfig(n_actions=True)
@@ -868,3 +891,12 @@ class TestBehaviorModelSequenceCeiling:
         result = run_behavior_model_from_arrays(model, state, observations, actions)
         chex.assert_shape(result.probabilities, (12, 3))
         assert int(result.state.step_count) == 12
+
+def test_floor_and_renormalize_probabilities_returns_simplex_on_zero_and_extreme_mass() -> None:
+    from alberta_framework.core.behavior_model import floor_and_renormalize_probabilities
+
+    for probs in ([0.0, 0.0, 0.0], [1e38, 1.0, 1.0], [-1.0, -2.0, -3.0], [1e-30, 0.0, 0.0]):
+        out = floor_and_renormalize_probabilities(jnp.asarray(probs, dtype=jnp.float32))
+        np.testing.assert_allclose(float(jnp.sum(out)), 1.0, atol=1e-5)
+        assert np.all(np.asarray(out) >= 1e-6)
+

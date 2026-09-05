@@ -66,3 +66,30 @@ def test_world_model_smoke_result_rejects_promotion_or_arm_aliases() -> None:
             actions=result.actions,
             arms=tuple(object() for _ in range(4)),  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "match"),
+    [
+        ("prequential_losses", (-1.0, -1.0), "finite nonnegative"),
+        ("persistent_bytes", 0, "must lie"),
+    ],
+)
+def test_world_model_smoke_result_revalidates_nested_arms(
+    field: str, value: object, match: str
+) -> None:
+    result = run_native_world_model_smoke(seed=0, steps=2)
+    object.__setattr__(result.arms[0], field, value)
+
+    with pytest.raises(ValueError, match=match):
+        dataclasses.replace(result)
+
+
+def test_world_model_smoke_result_binds_arm_metrics_and_step_count() -> None:
+    result = run_native_world_model_smoke(seed=0, steps=2)
+    wrong_metric = dataclasses.replace(result.arms[0], metric_space="latent_prediction_mse")
+    with pytest.raises(ValueError, match="metric spaces"):
+        dataclasses.replace(result, arms=(wrong_metric, *result.arms[1:]))
+
+    with pytest.raises(ValueError, match="step count"):
+        dataclasses.replace(result, steps=1, actions=(0,))

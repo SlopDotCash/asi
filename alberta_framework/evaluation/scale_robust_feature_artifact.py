@@ -395,6 +395,21 @@ def canonical_scientific_bytes(payload: Mapping[str, object]) -> bytes:
     ).encode("utf-8")
 
 
+def _same(actual: object, expected: object) -> bool:
+    """Type-exact equality for JSON subtrees.
+
+    Python's ``==`` treats ``True == 1.0`` and ``30 == 30.0`` as equal, so a
+    re-digested payload with punned scalar types would pass a plain ``!=``
+    comparison. Comparing canonical bytes rejects any byte-level drift.
+    """
+    try:
+        return canonical_scientific_bytes({"v": actual}) == canonical_scientific_bytes(
+            {"v": expected}
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def scientific_payload_sha256(payload: Mapping[str, object]) -> str:
     """Hash canonical deterministic scientific content."""
 
@@ -1718,7 +1733,7 @@ def _validate_metrics(
         return
     _exact_keys(metrics, _METRIC_KEYS, f"{location}.metrics", errors)
     recomputed = _metrics_from_condition(condition)
-    if metrics != recomputed:
+    if not _same(metrics, recomputed):
         errors.append(f"{location}.metrics do not match primitive phase/pair records")
     nonfinite = _strict_int(metrics.get("total_nonfinite_steps"))
     if nonfinite is None or nonfinite < 0:
@@ -2229,11 +2244,11 @@ def validate_evidence_artifact(
             "scientific_payload",
             errors,
         )
-        if scientific.get("protocol") != _protocol_payload():
+        if not _same(scientific.get("protocol"), _protocol_payload()):
             errors.append("scientific_payload.protocol is not the frozen v2 protocol")
-        if scientific.get("configuration") != frozen_configuration_payload():
+        if not _same(scientific.get("configuration"), frozen_configuration_payload()):
             errors.append("scientific_payload.configuration is not the frozen v2 configuration")
-        if scientific.get("thresholds") != _threshold_payload():
+        if not _same(scientific.get("thresholds"), _threshold_payload()):
             errors.append("scientific_payload.thresholds are not the frozen v2 thresholds")
         memory = _validate_memory(
             scientific.get("memory_by_condition"),
@@ -2244,7 +2259,7 @@ def validate_evidence_artifact(
             errors,
         )
         recomputed_aggregate = _aggregate_payload(records)
-        if scientific.get("aggregate") != recomputed_aggregate:
+        if not _same(scientific.get("aggregate"), recomputed_aggregate):
             errors.append("scientific_payload.aggregate does not match primitive records")
         comparisons = scientific.get("comparisons")
         comparisons_mapping = _mapping(
@@ -2267,7 +2282,7 @@ def validate_evidence_artifact(
                     errors=errors,
                 )
         recomputed_comparisons = _comparisons_payload(records)
-        if comparisons != recomputed_comparisons:
+        if not _same(comparisons, recomputed_comparisons):
             errors.append("scientific_payload.comparisons do not match primitive records")
         recomputed_acceptance = _acceptance_payload(
             seed_records=records,
@@ -2276,7 +2291,7 @@ def validate_evidence_artifact(
             comparisons=recomputed_comparisons,
         )
         _validate_acceptance_shape(scientific.get("acceptance"), errors)
-        if scientific.get("acceptance") != recomputed_acceptance:
+        if not _same(scientific.get("acceptance"), recomputed_acceptance):
             errors.append("scientific_payload.acceptance does not match recomputed gate")
         accepted_by_payload = bool(recomputed_acceptance["passed"])
         _validate_source_provenance(
