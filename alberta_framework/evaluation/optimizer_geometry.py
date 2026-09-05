@@ -154,6 +154,22 @@ def orthogonal_correction(update: Array, protected_basis: Array) -> Array:
     )
 
 
+def _nonzero_magnitude_bits(value: Array) -> Array:
+    """Report whether any entry has a magnitude bit set, subnormal entries included.
+
+    No float comparison can answer this on a backend that flushes subnormal
+    operands: ``x != 0.0`` is ``False`` for every float32 subnormal, and every
+    reduction over such entries returns exactly zero, so the magnitude bit pattern
+    is the only surviving witness that the input was not a zero matrix. Masking the
+    sign bit keeps both signed zeros reading as zero.
+    """
+    width = value.dtype.itemsize
+    unsigned = np.dtype(f"uint{8 * width}")
+    bits = jax.lax.bitcast_convert_type(value, unsigned)
+    magnitude_mask = jnp.asarray((1 << (8 * width - 1)) - 1, dtype=unsigned)
+    return jnp.any(jnp.bitwise_and(bits, magnitude_mask) != 0)
+
+
 def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[Array, Array]:
     """Apply Muon-OGD v2's cubic NS5 matrix-sign approximation.
 
@@ -162,6 +178,7 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
     preserves an exact zero for a zero matrix. The normalization divides an
     exactly power-of-two rescaled copy by its own norm so the divisor stays
     representable at every input magnitude.
+    A matrix whose entries the backend has flushed entirely is invalid.
     """
     value = _trusted_array(matrix, name="matrix")
     if (
@@ -174,7 +191,20 @@ def spectral_matrix_sign_transaction(matrix: Array, *, steps: int = 5) -> tuple[
     ):
         raise ValueError("matrix must be non-empty and steps a positive integer")
     norm = jnp.linalg.norm(value)
-    valid = jnp.all(jnp.isfinite(value)) & jnp.isfinite(norm)
+    # A divisor can only recover a direction the backend still holds. Subnormal
+    # float32 operands are flushed, so `jnp.max(jnp.abs(value))` is exactly zero
+    # for a full-rank matrix whose entries are all subnormal, and every later step
+    # then agrees it is the zero matrix: the function would certify a rank-0
+    # answer for a rank-2 input. Comparing that against the bitwise witness is
+    # what separates the two cases, because no float comparison can: `x != 0.0`
+    # and `x > 0.0` are both False for such an entry. Overflow at the other end of
+    # the range is already reported invalid rather than laundered, and a magnitude
+    # the arithmetic has entirely lost gets the same disposition. Entries that are
+    # merely small keep a nonzero maximum and are untouched here.
+    destroyed = _nonzero_magnitude_bits(value) & (jnp.max(jnp.abs(value)) == 0.0)
+    valid = (
+        jnp.all(jnp.isfinite(value)) & jnp.isfinite(norm) & jnp.logical_not(destroyed)
+    )
     # `norm` remains the caller-visible overflow signal, but it cannot be the
     # divisor: its squares underflow to zero for float32 entries near 1e-20, and
     # a true norm under a fixed magnitude floor would divide by the floor, which
