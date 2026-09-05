@@ -125,6 +125,11 @@ from alberta_framework.core.update_safety import (
 )
 
 
+def _skip_zero_scale(scale: Array, value: Array) -> Array:
+    """Skip ``0 * inf`` so a closed utility decay does not poison EMA state."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 def _require_exact_str(name: object, value: object) -> str:
     if type(name) is not str:
         raise ValueError("name must be an exact string")
@@ -661,15 +666,17 @@ def lean_upgd_w_update(
     step_size = hp["step_size"]
     decay = 1.0 - step_size * hp["weight_decay"]
     count = state.step + jnp.array(1, dtype=jnp.int32)
+    beta_arr = jnp.asarray(beta, dtype=jnp.float32)
     utility = {
-        name: beta * state.utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+        name: _skip_zero_scale(beta_arr, state.utility[name])
+        + (1.0 - beta) * (-grads[name] * params[name])
         for name in params
     }
     global_max = jnp.max(
         jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
     )
     bias_correction = 1.0 - jnp.power(
-        jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
+        beta_arr, count.astype(jnp.float32)
     )
     new_params = {}
     for name in params:
