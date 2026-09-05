@@ -1219,3 +1219,16 @@ class TestPairwiseComparisons:
     def test_common_final_window_requires_positive_integer(self, window: object) -> None:
         with pytest.raises(ValueError, match="window must be a positive integer"):
             common_final_window({"learner": 10}, window, "squared_error")
+
+
+@pytest.mark.parametrize("timeseries", [False, True])
+def test_unrepresentable_maximum_spread_raises_without_runtime_warning(timeseries: bool) -> None:
+    maximum = np.finfo(np.float64).max
+    values = np.asarray([-maximum, maximum])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(ValueError, match="cannot be represented as finite float64 statistics"):
+            if timeseries:
+                compute_timeseries_statistics(values[:, None])
+            else:
+                compute_statistics(values)

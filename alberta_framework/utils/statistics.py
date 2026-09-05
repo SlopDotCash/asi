@@ -309,12 +309,13 @@ def compute_statistics(
 
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
-    mean = float(np.mean(scaled) * scale)
-    std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
-    sem = std / np.sqrt(n) if n > 1 else 0.0
-    median = float(np.median(scaled) * scale)
-    q75, q25 = np.percentile(scaled, [75, 25])
-    iqr = float((q75 - q25) * scale)
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = float(np.mean(scaled) * scale)
+        std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
+        sem = std / np.sqrt(n) if n > 1 else 0.0
+        median = float(np.median(scaled) * scale)
+        q75, q25 = np.percentile(scaled, [75, 25])
+        iqr = float((q75 - q25) * scale)
 
     # Compute confidence interval
     try:
@@ -383,7 +384,8 @@ def compute_timeseries_statistics(
         # Student-t path below would produce all-NaN bounds (df=0).
         return mean, mean.copy(), mean.copy()
 
-    std = np.std(scaled, axis=0, ddof=1) * scale
+    with np.errstate(over="ignore", invalid="ignore"):
+        std = np.std(scaled, axis=0, ddof=1) * scale
     sem = std / np.sqrt(n_seeds)
 
     try:
