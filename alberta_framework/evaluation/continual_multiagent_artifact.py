@@ -786,13 +786,15 @@ def _validate_interval_record(
     if not isinstance(value, Mapping):
         errors.append(f"{location} must be an object")
         return
-    if value.get("sample_size") != len(_EXPECTED_EVIDENCE_SEEDS):
+    # Type-exact: ``30.0 != 30`` is False under Python equality, so a punned
+    # and re-digested interval record would pass a plain ``!=`` here.
+    if not _same(value.get("sample_size"), len(_EXPECTED_EVIDENCE_SEEDS)):
         errors.append(f"{location}.sample_size must be 30")
-    if value.get("method") != "paired-percentile-bootstrap":
+    if not _same(value.get("method"), "paired-percentile-bootstrap"):
         errors.append(f"{location}.method must be paired-percentile-bootstrap")
-    if value.get("pairing_unit") != "seed":
+    if not _same(value.get("pairing_unit"), "seed"):
         errors.append(f"{location}.pairing_unit must be seed")
-    if value.get("resamples") != config.get("bootstrap_resamples"):
+    if not _same(value.get("resamples"), config.get("bootstrap_resamples")):
         errors.append(
             f"{location}.resamples must match content.configuration"
         )

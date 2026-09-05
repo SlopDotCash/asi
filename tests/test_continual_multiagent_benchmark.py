@@ -432,6 +432,44 @@ def test_rehashed_type_punned_seed_and_threshold_values_fail_closed(
     assert any("successes is inconsistent with seed summaries" in e for e in errors)
 
 
+@pytest.mark.parametrize(
+    "interval_key",
+    [
+        "reward_uplift_over_frozen_paired_interval",
+        "coadaptation_uplift_over_learner_only_paired_interval",
+    ],
+)
+@pytest.mark.parametrize("field", ["sample_size", "resamples"])
+def test_rehashed_type_punned_interval_scalars_fail_closed(
+    benchmark_report, interval_key: str, field: str
+) -> None:
+    """The paired-bootstrap interval records must be type-exact too.
+
+    ``_validate_interval_record`` is the only validator for these two aggregate
+    subtrees; a ``30.0`` sample size or ``10000.0`` resample count re-digested
+    into the artifact passed a plain ``!=`` comparison.
+    """
+    fabricated = copy.deepcopy(build_evidence_artifact(benchmark_report))
+    content = fabricated["content"]
+    assert isinstance(content, dict)
+    aggregate = content["aggregate"]
+    assert isinstance(aggregate, dict)
+    interval = aggregate[interval_key]
+    assert isinstance(interval, dict)
+    assert isinstance(interval[field], int)
+    interval[field] = float(interval[field])
+    digest = fabricated["content_digest"]
+    assert isinstance(digest, dict)
+    digest["sha256"] = scientific_content_sha256(content)
+
+    validation = validate_evidence_artifact(fabricated)
+
+    assert not validation.valid
+    assert not validation.accepted
+    location = f"content.aggregate.{interval_key}.{field}"
+    assert any(location in error for error in validation.errors), validation.errors
+
+
 def test_rehashed_unknown_scientific_field_fails_schema(
     benchmark_report,
 ) -> None:
