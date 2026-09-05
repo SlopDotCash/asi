@@ -1053,3 +1053,29 @@ def test_replacement_resets_optimizer_state_and_traces() -> None:
     chex.assert_trees_all_close(
         new_mlp.trunk_optimizer_states[0].step_sizes[1], jnp.asarray(surviving)
     )
+
+
+def test_wrapper_replacement_resets_learned_adaptation_history() -> None:
+    optimizer = Autostep(initial_step_size=0.01)
+    wrapper = CBPMultiHeadMLPLearner(
+        n_heads=1, hidden_sizes=(4, 3), optimizer=optimizer,
+        gamma=0.0, lamda=0.0, sparsity=0.0,
+        cbp_config=ContinualBackpropConfig(replacement_rate=1.0, maturity_threshold=20),
+    )
+    state = wrapper.init(3, jr.key(801))
+    for step in range(10):
+        obs = jr.normal(jr.fold_in(jr.key(802), step), (3,))
+        state = wrapper.update(state, obs, jnp.array([2.0])).state
+    state = state.replace(cbp_state=state.cbp_state.replace(
+        ages=tuple(jnp.full_like(age, 100) for age in state.cbp_state.ages),
+    ))
+    result = wrapper.update(state, jnp.array([0.3, 0.5, -0.2]), jnp.array([1.0]))
+    for layer, age in enumerate(result.state.cbp_state.ages):
+        replaced = np.flatnonzero(np.asarray(age) == 0)
+        assert len(replaced) == 1
+        unit = int(replaced[0])
+        opt = result.state.mlp_state.trunk_optimizer_states[2 * layer]
+        fresh = optimizer.init_for_shape(opt.step_sizes.shape)
+        chex.assert_trees_all_equal(opt.step_sizes[unit], fresh.step_sizes[unit])
+        chex.assert_trees_all_equal(opt.traces[unit], fresh.traces[unit])
+        np.testing.assert_array_equal(result.state.mlp_state.trunk_traces[2 * layer][unit], 0.0)
