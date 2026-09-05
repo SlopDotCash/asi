@@ -1,0 +1,22 @@
+# Mirrors the pinned Avalanche setup.py runtime requirements. NumPy and the
+# CPU-only Torch pair are fixed explicitly for one prospective Linux/x86-64
+# compatibility runtime; this is not a claim of Avalanche's default runtime.
+# GPUtil 1.4.0 publishes only the hash-pinned source archive recorded in the
+# plan; the Dockerfile's source-build exception is restricted to that package.
+typing-extensions>=4.6.0
+psutil
+gputil
+scikit-learn
+matplotlib
+numpy==1.26.4
+pytorchcv
+wandb
+tensorboard>=1.15
+tqdm
+torch @ https://download-r2.pytorch.org/whl/cpu/torch-2.2.2%2Bcpu-cp310-cp310-linux_x86_64.whl
+torchvision @ https://download-r2.pytorch.org/whl/cpu/torchvision-0.17.2%2Bcpu-cp310-cp310-linux_x86_64.whl
+torchmetrics
+gdown
+dill
+packaging
+qpsolvers[open_source_solvers]

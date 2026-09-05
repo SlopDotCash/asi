@@ -64,6 +64,11 @@ class HistoryFeatureState:
 # =============================================================================
 
 _INT32_MAX = 2**31 - 1
+# One 12-bit cardinality budget bounds direct tuple validation, serialized-list
+# normalization, and the implicit all-channel expansion before per-item work.
+_MAX_HISTORY_CONFIGURATION_ITEMS = 1 << 12
+_MAX_HISTORY_DECAY_RATES = _MAX_HISTORY_CONFIGURATION_ITEMS
+_MAX_HISTORY_CHANNELS = _MAX_HISTORY_CONFIGURATION_ITEMS
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -135,6 +140,10 @@ def _require_decay_rates(value: object) -> tuple[float, ...]:
     if type(value) is not tuple:
         raise ValueError("decay_rates must be an actual tuple")
     rates = cast(tuple[object, ...], value)
+    if len(rates) > _MAX_HISTORY_DECAY_RATES:
+        raise ValueError(
+            f"decay_rates must contain at most {_MAX_HISTORY_DECAY_RATES} rates"
+        )
     return tuple(
         validated_float32_scalar(
             f"decay_rates[{index}]",
@@ -152,6 +161,11 @@ def _require_channels(value: object, raw_dim: int) -> tuple[int, ...] | None:
         return None
     if type(value) is not tuple:
         raise ValueError("channels must be an actual tuple or None")
+    channels = cast(tuple[object, ...], value)
+    if len(channels) > _MAX_HISTORY_CHANNELS:
+        raise ValueError(
+            f"channels must contain at most {_MAX_HISTORY_CHANNELS} indices"
+        )
     return tuple(
         _require_int32(
             f"channels[{index}]",
@@ -159,7 +173,7 @@ def _require_channels(value: object, raw_dim: int) -> tuple[int, ...] | None:
             minimum=0,
             maximum=raw_dim - 1,
         )
-        for index, channel in enumerate(cast(tuple[object, ...], value))
+        for index, channel in enumerate(channels)
     )
 
 
@@ -240,6 +254,10 @@ class HistoryFeatureExtractor:
             n_channels=channel_count,
             feature_dim=feature_dim,
         )
+        if channel_count > _MAX_HISTORY_CHANNELS:
+            raise ValueError(
+                f"channels must contain at most {_MAX_HISTORY_CHANNELS} indices"
+            )
         if canonical_channels is None:
             canonical_channels = tuple(range(raw_dim))
 
@@ -376,9 +394,17 @@ class HistoryFeatureExtractor:
         config.pop("type", None)
         raw_rates = config["decay_rates"]
         if type(raw_rates) is list:
+            if len(raw_rates) > _MAX_HISTORY_DECAY_RATES:
+                raise ValueError(
+                    f"decay_rates must contain at most {_MAX_HISTORY_DECAY_RATES} rates"
+                )
             raw_rates = tuple(raw_rates)
         raw_channels = config["channels"]
         if type(raw_channels) is list:
+            if len(raw_channels) > _MAX_HISTORY_CHANNELS:
+                raise ValueError(
+                    f"channels must contain at most {_MAX_HISTORY_CHANNELS} indices"
+                )
             raw_channels = tuple(raw_channels)
         return cls(
             raw_dim=config["raw_dim"],

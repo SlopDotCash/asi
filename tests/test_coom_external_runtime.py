@@ -62,6 +62,7 @@ def test_coom_runtime_is_source_dependency_and_base_image_pinned() -> None:
     assert hashlib.sha256(patch.read_bytes()).hexdigest() in dockerfile
     assert "--require-hashes" in dockerfile
     assert "apt-get" not in dockerfile
+    assert "USER 65532:65532" in dockerfile
     assert manifest["base_image_digest"] in dockerfile
     assert manifest["dockerfile_sha256"] == hashlib.sha256(
         (ROOT / "Dockerfile").read_bytes()
@@ -104,6 +105,25 @@ def test_coom_runtime_smoke_is_bounded_external_and_nonpromoting() -> None:
     assert "EXPECTED_TRACE_SHA256" in source
     assert '_exact_keys(reset_info, frozenset(), name="reset info")' in source
     assert '_exact_keys(info, frozenset(), name="step info")' in source
+    assert "EXPECTED_DISTRIBUTIONS" in source
+    assert "_runtime_identity()" in source
+
+
+def test_coom_runbook_requires_the_reviewed_sandbox_boundary() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    for required in (
+        "--network none",
+        "--read-only",
+        "--user 65532:65532",
+        "--cap-drop ALL",
+        "--security-opt no-new-privileges",
+        "--cpus 2",
+        "--memory 2g",
+        "--pids-limit 64",
+        "noexec",
+    ):
+        assert required in readme
 
 
 def test_coom_receipt_validator_rejects_hostile_provider_payloads(
@@ -170,6 +190,11 @@ def test_coom_receipt_validator_rejects_hostile_provider_payloads(
             "python": "3.12.12",
             "python_implementation": "CPython",
             "platform": "linux-test",
+            "uid": 65532,
+            "gid": 65532,
+            "effective_capabilities_hex": "0000000000000000",
+            "no_new_privileges": True,
+            "installed_distributions": [list(item) for item in smoke.EXPECTED_DISTRIBUTIONS],
             "numpy": "1.26.4",
             "scipy": "1.11.4",
             "gymnasium": "0.28.1",
@@ -247,6 +272,19 @@ def test_coom_receipt_validator_rejects_hostile_provider_payloads(
     hostile = copy.deepcopy(receipt)
     hostile["resource_receipt"]["environment_steps"] = True
     with pytest.raises(ValueError, match="resource receipt"):
+        smoke.validate_receipt(hostile)
+
+    hostile = copy.deepcopy(receipt)
+    hostile["runtime"]["uid"] = True
+    with pytest.raises(ValueError, match="runtime uid"):
+        smoke.validate_receipt(hostile)
+    hostile = copy.deepcopy(receipt)
+    hostile["runtime"]["no_new_privileges"] = False
+    with pytest.raises(ValueError, match="process security identity"):
+        smoke.validate_receipt(hostile)
+    hostile = copy.deepcopy(receipt)
+    hostile["runtime"]["installed_distributions"].append(["unreviewed", "1.0"])
+    with pytest.raises(ValueError, match="installed distributions"):
         smoke.validate_receipt(hostile)
 
     hostile = copy.deepcopy(receipt)
@@ -387,6 +425,87 @@ def test_reward_admission_matches_real_coom_scalar_without_coercion() -> None:
     with pytest.raises(ValueError, match="exact float scalar"):
         smoke._trusted_reward(HostileReward())
     assert _TypeEqualityHook.calls == 0
+
+
+def test_runtime_identity_requires_nonroot_sandbox_and_complete_distribution_roster(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _smoke_module()
+
+    monkeypatch.setattr(smoke.os, "getuid", lambda: 0)
+    monkeypatch.setattr(smoke.os, "getgid", lambda: 0)
+    with pytest.raises(ValueError, match="UID/GID 65532"):
+        smoke._runtime_identity()
+
+    monkeypatch.setattr(smoke.os, "getuid", lambda: 65532)
+    monkeypatch.setattr(smoke.os, "getgid", lambda: 65532)
+    monkeypatch.setattr(
+        smoke.Path,
+        "read_bytes",
+        lambda _self: b"Name:\tpython\nCapEff:\t0000000000000000\nNoNewPrivs:\t1\n",
+    )
+    distributions = tuple(
+        SimpleNamespace(metadata={"Name": name}, version=version)
+        for name, version in smoke.EXPECTED_DISTRIBUTIONS
+    )
+    monkeypatch.setattr(smoke.importlib.metadata, "distributions", lambda: distributions)
+    versions = dict(smoke.EXPECTED_DISTRIBUTIONS)
+    monkeypatch.setattr(smoke.importlib.metadata, "version", versions.__getitem__)
+    identity = smoke._runtime_identity()
+    assert identity["uid"] == 65532
+    assert identity["gid"] == 65532
+    assert identity["effective_capabilities_hex"] == "0000000000000000"
+    assert identity["no_new_privileges"] is True
+    assert identity["installed_distributions"] == [
+        list(item) for item in smoke.EXPECTED_DISTRIBUTIONS
+    ]
+
+    monkeypatch.setattr(
+        smoke.importlib.metadata,
+        "distributions",
+        lambda: distributions
+        + (SimpleNamespace(metadata={"Name": "unreviewed"}, version="1.0"),),
+    )
+    with pytest.raises(ValueError, match="installed distributions"):
+        smoke._runtime_identity()
+
+
+def test_runtime_identity_rejects_twelfth_distribution_before_metadata_or_thirteenth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    smoke = _smoke_module()
+    monkeypatch.setattr(smoke.os, "getuid", lambda: 65532)
+    monkeypatch.setattr(smoke.os, "getgid", lambda: 65532)
+    monkeypatch.setattr(
+        smoke.Path,
+        "read_bytes",
+        lambda _self: b"CapEff:\t0000000000000000\nNoNewPrivs:\t1\n",
+    )
+
+    class TwelfthDistribution:
+        metadata_reads = 0
+
+        @property
+        def metadata(self) -> object:
+            type(self).metadata_reads += 1
+            raise AssertionError("twelfth distribution metadata was traversed")
+
+    yielded = 0
+
+    def distributions() -> object:
+        nonlocal yielded
+        for name, version in smoke.EXPECTED_DISTRIBUTIONS:
+            yielded += 1
+            yield SimpleNamespace(metadata={"Name": name}, version=version)
+        yielded += 1
+        yield TwelfthDistribution()
+        raise AssertionError("thirteenth distribution was requested")
+
+    monkeypatch.setattr(smoke.importlib.metadata, "distributions", distributions)
+    with pytest.raises(ValueError, match="installed distributions"):
+        smoke._runtime_identity()
+    assert yielded == len(smoke.EXPECTED_DISTRIBUTIONS) + 1
+    assert TwelfthDistribution.metadata_reads == 0
 
 
 def test_output_path_rejects_subclass_before_filesystem_hook(tmp_path: Path) -> None:

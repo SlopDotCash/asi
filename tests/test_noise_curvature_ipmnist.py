@@ -234,6 +234,71 @@ def test_end_to_end_registered_arm_and_receipt_accounting() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "arm_name",
+    [
+        "noise_curvature_fixed_adam_l2",
+        "noise_curvature_gradient_only",
+        "noise_curvature_volatility_only",
+    ],
+)
+def test_every_registered_arm_runs_end_to_end_through_the_screening_harness(
+    arm_name: str,
+) -> None:
+    """Each registered controller-mode arm must survive a real screening run.
+
+    ``noise_curvature_combined`` is the only arm exercised end to end through
+    ``run_screening_config`` elsewhere in this file. The other three modes
+    (``fixed``, ``gradient_only``, ``volatility_only``) were previously
+    reachable only through ``screening_spec``/config-construction assertions
+    or through the isolated ``noise_curvature_safe_bound`` unit math — never
+    through the real registered-arm screening entrypoint that a live
+    development run would actually invoke for these Literal-typed
+    ``controller_mode`` values.
+    """
+    data_x = np.linspace(-1.0, 1.0, 160, dtype=np.float32).reshape(40, 4)
+    data_y = np.asarray([index % 2 for index in range(40)], dtype=np.int32)
+    config = IPMNISTConfig(
+        n_tasks=1, task_length=40, input_dim=4, hidden1=3, hidden2=2, n_classes=2
+    )
+    result = run_screening_config(
+        data_x,
+        data_y,
+        screening_spec(arm_name),
+        seed=0,
+        config=config,
+    )
+    assert isinstance(result, ScreeningRunResult)
+    assert np.isfinite(result.per_task_loss).all()
+    payload = noise_curvature_development_result_payload(result, outcome="inconclusive")
+    assert payload["development_only"] is True
+    assert payload["scientific_promotion_allowed"] is False
+    assert payload["development_seed_protocol"] == list(DEVELOPMENT_SEEDS)
+    resources = payload["resources"]
+    assert isinstance(resources, dict)
+    # Query/byte accounting is architecture-driven and must not depend on
+    # which controller mode the arm's Literal selects.
+    reference = run_screening_config(
+        data_x,
+        data_y,
+        screening_spec("noise_curvature_combined"),
+        seed=0,
+        config=config,
+    )
+    reference_resources = noise_curvature_development_result_payload(
+        reference, outcome="inconclusive"
+    )["resources"]
+    assert isinstance(reference_resources, dict)
+    # `timing_seconds` is wall-clock telemetry (CLAUDE.md: "timing remains
+    # telemetry-only until a separately qualified timing protocol exists")
+    # and is expected to vary run to run; every other counter is exact.
+    assert resources.keys() == reference_resources.keys()
+    for key, value in resources.items():
+        if key == "timing_seconds":
+            continue
+        assert value == reference_resources[key], key
+
+
 def test_receipt_validator_rejects_hostile_and_derived_counter_drift() -> None:
     result = ScreeningRunResult(
         config_name="noise_curvature_combined",

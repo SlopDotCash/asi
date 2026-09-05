@@ -209,7 +209,7 @@ EXTERNAL_QUALIFICATION_PLANS: tuple[ExternalQualificationPlan, ...] = (
     ExternalQualificationPlan(
         1578,
         "native-supervised-suite",
-        ("ContinualAI/Avalanche",),
+        ("arXiv:2302.01766v1",),
         (
             _revision(
                 "https://github.com/ContinualAI/avalanche.git",

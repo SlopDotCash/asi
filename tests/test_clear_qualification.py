@@ -14,15 +14,21 @@ from alberta_framework.benchmarks.clear_qualification import (
     BUCKETS,
     CURATION_COMMIT,
     DEV_SEEDS,
+    OFFICIAL_SITE_COMMIT,
+    OFFICIAL_SITE_TREE,
+    PROSPECTIVE_ASSET_SCHEMA,
+    PROVIDER_REVISION,
     REFERENCE_COMMIT,
     SCHEMA,
     ArchiveIdentity,
     ClearDatasetReceipt,
     ClearQualificationError,
+    _decode,
     _metric_values,
     execution_config,
     load_dataset_manifest,
     main,
+    prospective_clear100_asset_plan,
     qualification_plan,
     validate_result,
     verify_dataset_manifest,
@@ -126,6 +132,74 @@ def test_cli_verifies_local_data_and_emits_only_a_nonexecuting_plan(
     assert payload["classification"] == "development-only-permanently-nonpromoting"
     assert payload["execution_authorized"] is False
     assert payload["promotion_authorized"] is False
+
+
+def test_prospective_asset_plan_binds_provider_assets_and_every_open_gate() -> None:
+    plan = prospective_clear100_asset_plan()
+    assert plan["schema_version"] == PROSPECTIVE_ASSET_SCHEMA
+    assert plan["classification"] == "prospective-source-and-asset-freeze-only"
+    assert plan["source_revisions"] == {
+        "curation": CURATION_COMMIT,
+        "reference_runner": REFERENCE_COMMIT,
+        "avalanche": AVALANCHE_COMMIT,
+        "official_site_commit": OFFICIAL_SITE_COMMIT,
+        "official_site_tree": OFFICIAL_SITE_TREE,
+    }
+    provider = plan["provider"]
+    assert isinstance(provider, dict)
+    assert provider["revision"] == PROVIDER_REVISION
+    assert provider["public_at_observation"] is True
+    assert provider["gated_at_observation"] is False
+    assert provider["license_metadata_git_oid"] == "b187bb7e7d837a367ccd0862441947ad412c77f7"
+    assets = plan["assets"]
+    assert isinstance(assets, list)
+    assert assets == [
+        {
+            "role": "provider-labeled-clear100-train-images-only",
+            "path": "clear100-train-image-only.zip",
+            "size_bytes": 3_289_951_359,
+            "lfs_sha256": "0376b952674e6ef55c3923ee4ce61e5b299fea4e29bbc4780530636e8988fd72",
+            "pointer_git_oid": "e441ed603eef45715947fe06567206bd90b26cf9",
+            "xet_hash": "f09eba2c90ad5295187b77a4af788629a908f2ea70ae2a33886ed55b9abecfb5",
+        },
+        {
+            "role": "provider-labeled-clear100-test",
+            "path": "clear100-test.zip",
+            "size_bytes": 1_640_361_665,
+            "lfs_sha256": "c939753be4e62dc7732347e5e636ea599022c82f45443ea9e7166167e467abd0",
+            "pointer_git_oid": "3a57c37f5b8beaf478b5e9a00fd38ed2454f5d6c",
+            "xet_hash": "a5fdd88c13d87116b6f1c10b41407bd68ca459ea67fb7b7df351fd07fec2ae86",
+        },
+    ]
+    assert plan["provider_archive_bytes"] == 4_930_313_024
+    assert sum(asset["size_bytes"] for asset in assets) == plan["provider_archive_bytes"]
+    claims = plan["claims"]
+    assert isinstance(claims, dict)
+    assert claims and all(value is False for value in claims.values())
+    blockers = plan["blockers"]
+    assert isinstance(blockers, list)
+    assert len(blockers) == 11
+    assert any("rights" in blocker and "takedown" in blocker for blocker in blockers)
+    assert any("split semantics" in blocker for blocker in blockers)
+    assert any("execution authorization" in blocker for blocker in blockers)
+
+
+def test_prospective_asset_cli_is_consumed_without_local_manifest(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "alberta_framework.benchmarks.clear_qualification.load_dataset_manifest",
+        lambda _path: pytest.fail("prospective asset plan touched a local manifest"),
+    )
+    assert main(("--prospective-assets",)) == 0
+    assert json.loads(capsys.readouterr().out) == prospective_clear100_asset_plan()
+
+
+def test_prospective_asset_cli_rejects_local_verification_arguments(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(("--prospective-assets", str(tmp_path / "manifest.json")))
+    with pytest.raises(SystemExit):
+        main(("--prospective-assets", "--dataset-root", str(tmp_path)))
 
 
 def test_manifest_path_read_is_metadata_gated_bounded_and_does_not_use_read_bytes(
@@ -344,3 +418,36 @@ def test_result_rejects_scalar_alias_and_unbounded_payload() -> None:
         validate_result(json.dumps(result).encode(), expected_plan=plan)
     with pytest.raises(ClearQualificationError, match="byte limit"):
         validate_result(b" " * ((1 << 20) + 1), expected_plan=plan)
+
+
+def _nested_object_bytes(depth: int) -> bytes:
+    return (b'{"a":' * depth) + b"0" + (b"}" * depth)
+
+
+def test_decode_rejects_deep_object_nest_without_recursion_error() -> None:
+    raw = _nested_object_bytes(10_000)
+    assert len(raw) < (1 << 20)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        _decode(raw, limit=1 << 20, label="dataset manifest")
+
+
+def test_verify_dataset_manifest_rejects_deep_object_nest(tmp_path: Path) -> None:
+    raw = _nested_object_bytes(10_000)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        verify_dataset_manifest(raw, root=tmp_path)
+
+
+def test_decode_rejects_one_past_strict_json_depth() -> None:
+    raw = _nested_object_bytes(65)
+    with pytest.raises(ClearQualificationError, match="nesting-depth|recursion"):
+        _decode(raw, limit=1 << 20, label="dataset manifest")
+
+
+def test_decode_accepts_shallow_object() -> None:
+    assert _decode(b'{"ok": true}', limit=1 << 20, label="dataset manifest") == {"ok": True}
+
+
+def test_decode_still_rejects_invalid_json() -> None:
+    with pytest.raises(ClearQualificationError, match="not valid JSON|JSON"):
+        _decode(b"{", limit=1 << 20, label="dataset manifest")
+

@@ -24,13 +24,29 @@ Build and execute from this directory:
 ```bash
 docker build --tag asi-coom-qualification:development .
 receipt_dir="$(mktemp -d /tmp/asi-coom-receipts.XXXXXX)"
-docker run --rm -v "$receipt_dir:/output" asi-coom-qualification:development \
+chmod 0733 "$receipt_dir"
+docker run --rm --network none --read-only --user 65532:65532 \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --cpus 2 --memory 2g --pids-limit 64 \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+  -v "$receipt_dir:/output" asi-coom-qualification:development \
   --output /output/receipt.json
-docker run --rm -v "$receipt_dir:/input:ro" asi-coom-qualification:development \
+chmod 0755 "$receipt_dir"
+docker run --rm --network none --read-only --user 65532:65532 \
+  --cap-drop ALL --security-opt no-new-privileges \
+  --cpus 2 --memory 2g --pids-limit 64 \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+  -v "$receipt_dir:/input:ro" asi-coom-qualification:development \
   --validate-receipt /input/receipt.json
+chmod 0700 "$receipt_dir"
 ```
 
 The host receipt directory above is explicitly outside the source checkout.
+The verifier refuses to start the engine unless it is UID/GID 65532, has no
+effective Linux capabilities, has `NoNewPrivs` set, and sees exactly the eleven
+reviewed Python distributions. The command also makes network, root filesystem,
+CPU, memory, process, and temporary-filesystem bounds explicit. The receipt does
+not claim that these caller-supplied limits are authenticated execution evidence.
 
 Compare `trace_sha256`, not the telemetry-only elapsed time or platform string.
 The smoke consumes seed 1582000, all eight official CO8 tasks, and two action-0

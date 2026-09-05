@@ -124,6 +124,56 @@ def test_sigreg_diagnostics_std_is_finite_at_float32_extremes() -> None:
     chex.assert_tree_all_finite(diagnostics)
 
 
+def _bhep_reference_statistic(samples: np.ndarray, kernel_width: float) -> float:
+    """Independent float64 reimplementation of the closed-form BHEP statistic.
+
+    Transcribes ``BHEP_{n,beta}`` exactly as given in Henze, N. (2021), "Tests
+    for multivariate normality -- a critical review with emphasis on
+    weighted L^2-statistics" (arXiv:2004.07332), Section 2.1:
+
+        BHEP_{n,beta} = (1/n) * sum_{j,k} exp(-beta^2 ||Y_j - Y_k||^2 / 2)
+            - 2 / (1 + beta^2)^(d/2) * sum_j exp(-beta^2 ||Y_j||^2 / (2 (1 + beta^2)))
+            + n / (1 + 2 beta^2)^(d/2)
+
+    for the univariate case ``d = 1``, citing that Baringhaus, L. & Henze, N.
+    (1988), "A Consistent Test for Multivariate Normality Based on the
+    Empirical Characteristic Function," studied the special case ``beta =
+    1``. ``epps_pulley_gaussian_statistic`` uses ``kernel_width = 1 / beta``
+    and reports ``BHEP_{n,beta} / n`` (a per-sample normalization suited to
+    use as a bounded loss rather than a raw n-scaled test statistic), clipped
+    at zero for floating-point safety.
+    """
+    x = np.asarray(samples, dtype=np.float64)
+    n = x.shape[0]
+    beta = 1.0 / kernel_width
+    diffs = x[:, None] - x[None, :]
+    term_a = np.sum(np.exp(-(beta**2) * diffs**2 / 2.0)) / n
+    term_b = (2.0 / (1.0 + beta**2) ** 0.5) * np.sum(
+        np.exp(-(beta**2) * x**2 / (2.0 * (1.0 + beta**2)))
+    )
+    term_c = n / (1.0 + 2.0 * beta**2) ** 0.5
+    return float(max((term_a - term_b + term_c) / n, 0.0))
+
+
+@pytest.mark.parametrize("kernel_width", [1.0, 0.75, 2.0])
+def test_epps_pulley_matches_closed_form_bhep_statistic(kernel_width: float) -> None:
+    """Cross-check against the published closed form, not just relative ordering.
+
+    ``kernel_width=1.0`` is beta=1, the exact case Baringhaus & Henze (1988)
+    studied; the other widths exercise the general beta dependence given in
+    Henze (2021, arXiv:2004.07332, Sec. 2.1). See
+    ``_bhep_reference_statistic`` for the transcribed formula.
+    """
+    samples = np.asarray([-1.5, 0.3, 2.0, -0.7], dtype=np.float64)
+    expected = _bhep_reference_statistic(samples, kernel_width)
+
+    actual = epps_pulley_gaussian_statistic(
+        jnp.asarray(samples, dtype=jnp.float32), kernel_width=kernel_width
+    )
+
+    assert float(actual) == pytest.approx(expected, abs=1.0e-6)
+
+
 def test_epps_pulley_statistic_penalizes_collapsed_samples() -> None:
     gaussian = jr.normal(jr.key(1), (128,), dtype=jnp.float32)
     collapsed = jnp.zeros((128,), dtype=jnp.float32)
@@ -391,3 +441,35 @@ def test_sliced_sigreg_rejects_nonfinite_derived_projections() -> None:
     assert bool(jnp.isfinite(directions).all())
     with pytest.raises(ValueError, match="projected samples must be finite"):
         sliced_sigreg_loss(embeddings, directions)
+
+
+def test_sample_sigreg_directions_stay_unit_below_eps() -> None:
+    """A short Gaussian must still become a unit direction.
+
+    ``sample_sigreg_directions`` is the public sampler for sliced SIGReg.
+    The constructor accepts any positive ``eps`` floor. On origin/main a
+    one-dimensional draw whose abs-value is below that floor was divided
+    by ``eps`` and returned with norm ``|g|/eps < 1``. The sliced loss
+    then scored a collapsed projection instead of the true unit axis.
+    Frozen key 1 with ``eps=0.5`` is that supported path.
+    """
+    config = SIGRegConfig(n_projections=1, kernel_width=1.0, eps=0.5)
+    key = jr.key(1)
+    raw = jr.normal(key, (1, 1), dtype=jnp.float32)
+    assert float(jnp.abs(raw[0, 0])) < config.eps
+
+    directions = sample_sigreg_directions(key, latent_dim=1, config=config)
+    true_unit = raw / jnp.linalg.norm(raw, axis=1, keepdims=True)
+    chex.assert_trees_all_close(
+        jnp.linalg.norm(directions, axis=1),
+        jnp.ones((1,), dtype=jnp.float32),
+        atol=1.0e-5,
+    )
+    chex.assert_trees_all_close(jnp.abs(directions), jnp.abs(true_unit), atol=1.0e-5)
+
+    embeddings = jr.normal(jr.key(99), (64, 1), dtype=jnp.float32)
+    chex.assert_trees_all_close(
+        sliced_sigreg_loss(embeddings, directions, kernel_width=1.0),
+        sliced_sigreg_loss(embeddings, true_unit, kernel_width=1.0),
+        atol=1.0e-6,
+    )

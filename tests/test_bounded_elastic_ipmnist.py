@@ -263,6 +263,7 @@ def test_protocol_fails_closed_on_missing_official_code_and_records_adaptation()
     assert BOUNDED_ELASTIC_PROTOCOL["official_repository"] is None
     differences = BOUNDED_ELASTIC_PROTOCOL["protocol_differences"]
     assert isinstance(differences, tuple)
-    assert len(differences) == 9
+    assert len(differences) == 10
+    assert any("exactly one least-active unit" in difference for difference in differences)
     assert BOUNDED_ELASTIC_PROTOCOL["development_only"] is True
     assert BOUNDED_ELASTIC_PROTOCOL["scientific_promotion_allowed"] is False

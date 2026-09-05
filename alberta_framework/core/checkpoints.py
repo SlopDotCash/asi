@@ -134,6 +134,42 @@ def _restore_empty_arrays(template: Any, restored: Any, manifest: object) -> Any
     )
 
 
+def _validate_restore_template(path: Path, template: Any) -> None:
+    """Reject shape or explicit array-dtype conversion before Orbax restore."""
+
+    saved_tree = ocp.StandardCheckpointHandler().metadata(path / "state").tree
+    saved_leaves = jax.tree.leaves(saved_tree)
+    template_leaves = jax.tree.leaves(template)
+    if len(saved_leaves) != len(template_leaves):
+        raise ValueError("checkpoint state leaf count does not match the restore template")
+
+    for index, (saved, expected) in enumerate(
+        zip(saved_leaves, template_leaves, strict=True)
+    ):
+        if hasattr(expected, "shape") and hasattr(expected, "dtype"):
+            if jnp.issubdtype(expected.dtype, jax.dtypes.prng_key):
+                key_data = jax.random.key_data(expected)
+                expected_shape = tuple(key_data.shape)
+                expected_dtype = str(key_data.dtype)
+            else:
+                expected_shape = tuple(expected.shape)
+                expected_dtype = str(expected.dtype)
+        else:
+            expected_array = np.asarray(expected)
+            expected_shape = expected_array.shape
+            expected_dtype = None
+        saved_shape = tuple(saved.shape)
+        saved_dtype = str(saved.dtype)
+        if saved_shape != expected_shape or (
+            expected_dtype is not None and saved_dtype != expected_dtype
+        ):
+            raise ValueError(
+                f"checkpoint state leaf {index} has shape {saved_shape} and dtype "
+                f"{saved_dtype}; restore template requires shape {expected_shape} and "
+                f"dtype {expected_dtype or 'its scalar type'}"
+            )
+
+
 def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
     if not issubclass(type(payload), Mapping):
         raise ValueError(f"{name} must be a mapping")
@@ -257,6 +293,7 @@ def load_checkpoint(
 
     try:
         compatible_template = _orbax_compatible_tree(state_template)
+        _validate_restore_template(path, compatible_template)
         with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
             loaded = ckptr.restore(
                 str(path),

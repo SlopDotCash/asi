@@ -1,0 +1,114 @@
+{
+  "schema": "asi.avalanche_native_suite.prospective_runtime.v1",
+  "qualification_issue": 1578,
+  "authority": {
+    "paper_revision": "arXiv:2302.01766v1",
+    "repository": "https://github.com/ContinualAI/avalanche.git",
+    "commit": "eb075be393e1f458b2c352514ff6c17b5a2c0f4e",
+    "git_tree": "fdfe9d9b4578587bf83a3970eaaf9701bb3db2a6",
+    "source_archive_sha256": "c039c1d5cf61c2c14150a7c2bdeeca8be9045ee231e34dd041245fb018658b29",
+    "license": "MIT",
+    "license_sha256": "9d4c6640ecd8cb9e3fe55eb923517fb75a241b74949817121399260c8f549243",
+    "required_file_sha256": {
+      "LICENSE": "9d4c6640ecd8cb9e3fe55eb923517fb75a241b74949817121399260c8f549243",
+      "setup.py": "66b7f34624ab101c45bc37355ff1eb02abb6fab7a0b6073652b97d5cc632d83a",
+      "requirements.txt": "c547da1112162d52d40623011dad04565db1fc0975f6484158eb43ebff6792b9",
+      "avalanche/__init__.py": "283a8e49b16e3f41af74c6296026bb5d0e18dcde2b880c5d852fbcdecf7fbb54",
+      "avalanche/benchmarks/classic/cmnist.py": "8baa37c7dc8774879e3c699eb88d5fdfa3bb18bb7421c9065c084a82d1b75f86",
+      "avalanche/benchmarks/classic/ccifar100.py": "5e0da4a67a68570a1ee2c651ff218c9c45f4482706be38142914d91810df61f9"
+    }
+  },
+  "qualification_inputs": {
+    "base_image_digest": "python:3.10.14-slim-bookworm@sha256:45360d9eb0ff89a954085c2b36883b65b08d1549aa9ede50e48bdcadf34d2f3f",
+    "dockerfile_sha256": "3a46c739f60952dd71f69cc191632ecd7643a71780a460f8bb48929d24573b9f",
+    "requirements_in_sha256": "ee1999d77202779e6b1e7ea29c23b8ca435a004b91ed6505d7faa210ee545a21",
+    "requirements_lock_sha256": "9f9e2943b528d7fa692dc2e91e96f7085d38df879e4e35bdc3958542763e40dd",
+    "fetch_source_sha256": "8b0b39cd5b24948f213755d370bd2262188b0ae2b7bf432a66bc8b127203eed5",
+    "verify_runtime_sha256": "61922591ec3f0bcf4f4b26282149402329cebe46fab124fc6aa2136571c50cc1"
+  },
+  "runtime": {
+    "platform": "linux-x86_64",
+    "python": "3.10.14",
+    "python_implementation": "CPython",
+    "uid": 65532,
+    "gid": 65532,
+    "home": "/tmp/asi-runtime-home",
+    "xdg_cache_home": "/tmp/asi-runtime-cache",
+    "matplotlib_config_dir": "/tmp/asi-matplotlib",
+    "pip": "23.0.1",
+    "setuptools": "84.0.0",
+    "wheel": "0.44.0",
+    "accelerator": "cpu",
+    "torch": "2.2.2+cpu",
+    "torchvision": "0.17.2+cpu",
+    "numpy": "1.26.4",
+    "avalanche": "0.6.0a",
+    "source_install": "exact read-only archive on PYTHONPATH, not an installed distribution",
+    "source_build_exceptions": [
+      {
+        "distribution": "gputil",
+        "version": "1.4.0",
+        "source_url": "https://files.pythonhosted.org/packages/ed/0e/5c61eedde9f6c87713e89d794f01e378cfd9565847d4576fa627d758c554/GPUtil-1.4.0.tar.gz",
+        "source_sha256": "099e52c65e512cdfa8c8763fca67f5a5c2afb63469602d5dcb4d296b3661efb9",
+        "source_bytes": 5545,
+        "build_backend": "legacy distutils setup.py",
+        "declared_license": "MIT",
+        "license_evidence": "package metadata only; the source archive omits license text"
+      }
+    ],
+    "compatibility_deviations": [
+      "pinned audited 2025 source commit identifies itself as 0.6.0a and is not the 0.6.0 PyPI release",
+      "qualification fixes a CPU-only Torch 2.2.2, torchvision 0.17.2, and NumPy 1.26.4 compatibility tuple where upstream declares open ranges",
+      "the dependency lock resolves upstream's otherwise unbounded setup requirements at the qualification audit date"
+    ],
+    "future_invocation_requirements": [
+      "reviewed prospective plan authorization",
+      "digest-pinned built image",
+      "network disabled",
+      "read-only root filesystem",
+      "separately approved exact dataset archives mounted read-only",
+      "NEW create-only output path as the only writable bind mount",
+      "protocol-frozen tmpfs byte, mode, path, and ownership values",
+      "all Linux capabilities dropped, no-new-privileges, and no host device mounts",
+      "protocol-frozen CPU affinity and quota, memory and swap, PID, and host wall-clock caps",
+      "CPU-only environment and no visible NVIDIA devices"
+    ]
+  },
+  "prospective_diagnostic": {
+    "families": [
+      "SplitMNIST",
+      "RotatedMNIST",
+      "SplitCIFAR100",
+      "existing ASI IPMNIST"
+    ],
+    "avalanche_scenario_construction_only": true,
+    "dataset_in_image": false,
+    "dataset_downloaded": false,
+    "workload_executed": false,
+    "receipt_created": false,
+    "parity_verified": false
+  },
+  "claims": {
+    "runtime_build_verified": false,
+    "bit_reproducible_image_claimed": false,
+    "external_workload_executed": false,
+    "execution_attested": false,
+    "negative_outcome_retained": false,
+    "avalanche_parity_claimed": false,
+    "performance_metrics_computed": false,
+    "scientific_promotion_allowed": false,
+    "external_execution_authorized": false
+  },
+  "blockers": [
+    "independent review of this prospective runtime plan",
+    "successful exact image build and immutable image digest capture",
+    "exact MNIST and CIFAR-100 archive bytes, licenses, splits, and tensor identities",
+    "Avalanche task membership, class order, transforms, normalization, and augmentation parity",
+    "boundary and task information policy",
+    "mechanism-off exact reduction and matched controls",
+    "seed, example-order, update, query, and exact sandbox resource budgets",
+    "persistent bytes, data steps, model queries, and timing receipt",
+    "create-only durable success and failure receipts",
+    "untouched scientific seeds and separate promotion protocol"
+  ]
+}

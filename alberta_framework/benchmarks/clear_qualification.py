@@ -20,11 +20,17 @@ from dataclasses import asdict, dataclass
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 
+from alberta_framework._strict_json import load_strict_json_object_from_text
+
 SCHEMA = "asi.clear.qualification.v1"
+PROSPECTIVE_ASSET_SCHEMA = "asi.clear100.prospective-assets.v1"
 PAPER_REVISION = "arXiv:2201.06289v3"
 CURATION_COMMIT = "620cab4a7d99921fde73b67b53879470533cb39a"
 REFERENCE_COMMIT = "75d5d2e7d412a787e0decf0417a4868c56691252"
 AVALANCHE_COMMIT = "eb075be393e1f458b2c352514ff6c17b5a2c0f4e"
+OFFICIAL_SITE_COMMIT = "fa2f22e6bcaa47d4512acbcf4ec1643ad9dc66b2"
+OFFICIAL_SITE_TREE = "19c7f8a68d867dab7e6b7236227797773873eec7"
+PROVIDER_REVISION = "b518a845a98f1c913497ab98a19727cb65b74e65"
 DATASET_NAME = "clear100"
 BUCKETS = tuple(range(1, 11))
 YEARS = tuple(range(2005, 2015))
@@ -38,6 +44,104 @@ MAX_RESULT_BYTES = 1 << 20
 
 class ClearQualificationError(ValueError):
     """A CLEAR setup or result record failed closed."""
+
+
+def prospective_clear100_asset_plan() -> Mapping[str, object]:
+    """Return the reviewed source/asset freeze without fetching or executing anything."""
+    assets = [
+        {
+            "role": "provider-labeled-clear100-train-images-only",
+            "path": "clear100-train-image-only.zip",
+            "size_bytes": 3_289_951_359,
+            "lfs_sha256": "0376b952674e6ef55c3923ee4ce61e5b299fea4e29bbc4780530636e8988fd72",
+            "pointer_git_oid": "e441ed603eef45715947fe06567206bd90b26cf9",
+            "xet_hash": "f09eba2c90ad5295187b77a4af788629a908f2ea70ae2a33886ed55b9abecfb5",
+        },
+        {
+            "role": "provider-labeled-clear100-test",
+            "path": "clear100-test.zip",
+            "size_bytes": 1_640_361_665,
+            "lfs_sha256": "c939753be4e62dc7732347e5e636ea599022c82f45443ea9e7166167e467abd0",
+            "pointer_git_oid": "3a57c37f5b8beaf478b5e9a00fd38ed2454f5d6c",
+            "xet_hash": "a5fdd88c13d87116b6f1c10b41407bd68ca459ea67fb7b7df351fd07fec2ae86",
+        },
+    ]
+    return {
+        "schema_version": PROSPECTIVE_ASSET_SCHEMA,
+        "issue": 1579,
+        "classification": "prospective-source-and-asset-freeze-only",
+        "dataset": DATASET_NAME,
+        "protocol": "streaming-near-future",
+        "paper_revision": PAPER_REVISION,
+        "source_revisions": {
+            "curation": CURATION_COMMIT,
+            "reference_runner": REFERENCE_COMMIT,
+            "avalanche": AVALANCHE_COMMIT,
+            "official_site_commit": OFFICIAL_SITE_COMMIT,
+            "official_site_tree": OFFICIAL_SITE_TREE,
+        },
+        "provider": {
+            "repository": "https://huggingface.co/datasets/elvishelvis6/"
+            "CLEAR-Continual_Learning_Benchmark",
+            "revision": PROVIDER_REVISION,
+            "access_observed_utc_date": "2026-08-20",
+            "public_at_observation": True,
+            "gated_at_observation": False,
+            "disabled_at_observation": False,
+            "declared_license": "CC-BY-4.0",
+            "license_metadata_path": "README.md",
+            "license_metadata_git_oid": "b187bb7e7d837a367ccd0862441947ad412c77f7",
+            "license_metadata_size_bytes": 27,
+            "license_declaration_source": "https://clear-benchmark.github.io/",
+            "license_deed": "https://creativecommons.org/licenses/by/4.0/",
+        },
+        "assets": assets,
+        "provider_archive_bytes": 4_930_313_024,
+        "selected_semantics": {
+            "labeled_buckets": list(BUCKETS),
+            "years": list(YEARS),
+            "bucket_zero_pretraining": "excluded",
+            "sample_counts": "unverified-until-bounded-local-inspection",
+            "class_bucket_split": "unverified-until-bounded-local-inspection",
+        },
+        "claims": {
+            "archives_downloaded": False,
+            "local_size_and_sha256_verified": False,
+            "archive_contents_inspected": False,
+            "rights_and_takedown_reviewed": False,
+            "split_semantics_verified": False,
+            "runtime_qualified": False,
+            "workload_executed": False,
+            "receipt_created": False,
+            "parity_verified": False,
+            "execution_authorized": False,
+            "performance_claimed": False,
+            "promotion_authorized": False,
+            "authenticated_execution_attested": False,
+        },
+        "blockers": [
+            "Review YFCC/Flickr asset rights, takedown behavior, privacy and moral-rights "
+            "limits, and approved storage before acquisition.",
+            "Obtain explicit owner authorization before any multi-gigabyte download.",
+            "Download both revision-pinned archives into approved storage and reverify each "
+            "exact local size and SHA-256.",
+            "Safely inventory bounded regular archive members and independently verify image, "
+            "label, class, bucket, year, and train/test split semantics.",
+            "Qualify the exact runtime and dependency lock before building or importing "
+            "a provider.",
+            "Implement and review a prospective runner with exact image decoding, transforms, "
+            "normalization, task boundaries, metrics, and control/mechanism-off parity.",
+            "Freeze matched development seeds, arms, budgets, failure retention, and resource "
+            "ceilings before execution.",
+            "Require bounded resource receipts for archive, persistent state, accelerator, "
+            "preprocessing, observations, updates, model queries, and telemetry-only timing.",
+            "Require durable create-only success or failure receipts bound to source, assets, "
+            "runtime, plan, and execution identity.",
+            "Review any future run plan and grant exact execution authorization separately.",
+            "Keep untouched scientific seeds and all promotion gates outside this "
+            "prospective lane.",
+        ],
+    }
 
 
 def _canonical(value: object) -> bytes:
@@ -95,8 +199,15 @@ def _decode(raw: bytes, *, limit: int, label: str) -> Mapping[str, object]:
     if len(raw) > limit:
         raise ClearQualificationError(f"{label} exceeds its byte limit")
     try:
-        value = json.loads(raw)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ClearQualificationError(f"{label} is not valid JSON") from exc
+    try:
+        value = load_strict_json_object_from_text(text, label=label)
+    except ValueError as exc:
+        detail = str(exc)
+        if "nesting-depth" in detail or "recursion" in detail:
+            raise ClearQualificationError(detail) from exc
         raise ClearQualificationError(f"{label} is not valid JSON") from exc
     return _object(value, label)
 
@@ -535,9 +646,21 @@ def validate_result(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("--dataset-root", required=True, type=Path)
+    parser.add_argument("manifest", nargs="?", type=Path)
+    parser.add_argument("--dataset-root", type=Path)
+    parser.add_argument(
+        "--prospective-assets",
+        action="store_true",
+        help="print the nonexecuting revision-pinned CLEAR-100 asset plan",
+    )
     args = parser.parse_args(argv)
+    if args.prospective_assets:
+        if args.manifest is not None or args.dataset_root is not None:
+            parser.error("--prospective-assets does not accept a manifest or dataset root")
+        print(_canonical(prospective_clear100_asset_plan()).decode())
+        return 0
+    if args.manifest is None or args.dataset_root is None:
+        parser.error("manifest and --dataset-root are required for local verification")
     raw = load_dataset_manifest(args.manifest)
     receipt = verify_dataset_manifest(raw, root=args.dataset_root)
     print(_canonical(qualification_plan(receipt)).decode())

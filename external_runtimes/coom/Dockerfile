@@ -23,6 +23,8 @@ COPY Dockerfile /opt/qualification/Dockerfile.source
 COPY qualification-manifest.json /opt/qualification/qualification-manifest.json
 COPY smoke.py /opt/qualification/smoke.py
 
-ENV PYTHONPATH=/opt/coom
+ENV HOME=/tmp \
+    PYTHONPATH=/opt/coom
+USER 65532:65532
 WORKDIR /opt/coom
 ENTRYPOINT ["python", "/opt/qualification/smoke.py"]

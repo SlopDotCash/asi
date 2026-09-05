@@ -28,6 +28,8 @@ BOUNDED_ELASTIC_PROTOCOL = MappingProxyType(
             "ASI begins with half of hidden layer 1 active and caps growth at its configured width",
             "growth and pruning occur at each known 5,000-example boundary",
             "elastic pruning uses the prior task's online activation sums, not a future 5% sample",
+            "ASI elastic events prune exactly one least-active unit and grow exactly one unit; "
+            "the paper removes zero or more units estimated dead at a boundary",
             "a pruned slot is freshly initialized before it is reactivated",
             "ASI uses 5,000 MNIST examples per task, not the paper's 10,000/40,000 lanes",
             "ASI inputs are [-1,1], while the paper uses [0,1] MNIST/FMNIST",

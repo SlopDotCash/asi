@@ -14,6 +14,12 @@ nonpromoting, and retained when negative.
   at `75d5d2e7d412a787e0decf0417a4868c56691252`.
 - Avalanche adapter and metric implementation: `ContinualAI/avalanche` at
   `eb075be393e1f458b2c352514ff6c17b5a2c0f4e`.
+- Official project site source: `clear-benchmark/clear-benchmark.github.io` at
+  commit `fa2f22e6bcaa47d4512acbcf4ec1643ad9dc66b2`, tree
+  `19c7f8a68d867dab7e6b7236227797773873eec7`.
+- Public, ungated provider repository:
+  `elvishelvis6/CLEAR-Continual_Learning_Benchmark` at revision
+  `b518a845a98f1c913497ab98a19727cb65b74e65`.
 
 CLEAR derives natural temporal buckets from YFCC100M imagery spanning
 2004–2014. Bucket 0 is the optional unlabeled/pretraining bucket; the selected
@@ -22,15 +28,22 @@ streaming: the accuracy matrix is used to measure the near future, including
 the superdiagonal `next_domain` metric. It is not the alternate within-bucket
 70:30 IID protocol.
 
-The project site labels its material CC BY, and the two codebases have their
-own repository licenses. That is not sufficient evidence that every underlying
-Flickr/YFCC asset is redistributable or still available. The current Avalanche
-adapter downloads archives from a mutable Hugging Face `main` URL with
-`checksum=None`; the authors' download script instead names S3 archives. No
-reviewed provider revision or provider-published archive SHA-256 was found.
-Those are explicit blockers, not values to infer. A local qualification receipt
-therefore records caller-computed archive SHA-256 values while preserving
-`provider_archive_checksums_published: false`.
+The project site declares CC BY 4.0, and the provider repository carries the
+`license:cc-by-4.0` tag. That does not establish that every underlying
+Flickr/YFCC asset remains redistributable or available: privacy, publicity,
+moral-rights, takedown, and approved-storage review remain explicit blockers.
+The revision above exposes exact Git LFS identities for the selected archives:
+
+- `clear100-train-image-only.zip`: 3,289,951,359 bytes, SHA-256
+  `0376b952674e6ef55c3923ee4ce61e5b299fea4e29bbc4780530636e8988fd72`.
+- `clear100-test.zip`: 1,640,361,665 bytes, SHA-256
+  `c939753be4e62dc7732347e5e636ea599022c82f45443ea9e7166167e467abd0`.
+
+These are provider metadata identities, not local download verification or
+proof of archive contents and split semantics. The existing v1 local manifest
+field remains `provider_archive_checksums_published: false` because changing
+that historical schema would silently change its meaning; a separate
+prospective asset-plan schema records the newly reviewed provider identities.
 
 ## Frozen development comparison
 
@@ -50,6 +63,17 @@ summaries: accuracy, in-domain, next-domain, forward transfer, and backward
 transfer.
 
 ## Local manifest and CLI
+
+Print the content-closed prospective source/asset freeze without reading a
+dataset manifest or archive, accessing the network, or executing a workload:
+
+```bash
+.venv/bin/asi-clear-qualification --prospective-assets
+```
+
+This output is a plan-only prerequisite record. It is not a download receipt,
+runtime qualification, execution authorization, run result, parity result, or
+authenticated attestation.
 
 Create a JSON file with this exact shape and locally computed byte identities:
 
@@ -84,13 +108,16 @@ hash drift, and oversized manifests. It never extracts or writes data.
 
 ## Remaining comparability gates
 
-- Resolve a content-addressed provider snapshot and published checksums, or
-  archive an independently reviewed acquisition receipt.
-- Review YFCC/Flickr asset terms, takedown behavior, and approved storage.
+- Review YFCC/Flickr asset terms, privacy/publicity/moral-rights limits,
+  takedown behavior, and approved storage; obtain explicit acquisition
+  authorization.
+- Download both revision-pinned archives only into approved storage, then
+  independently verify their exact local sizes and SHA-256 values.
 - Parse the prepared metadata and independently verify class and bucket counts;
-  archive-byte identity alone does not prove semantic split parity.
-- Implement a runner outside the #1578 native-suite adapter, then add image,
-  label, transform, metric, JIT/parity, and end-to-end tests.
+  provider metadata identity alone does not prove semantic split parity.
+- Qualify the exact runtime and implement a reviewed runner outside the #1578
+  native-suite adapter, then add image, label, transform, metric, JIT/parity,
+  and end-to-end tests before seeking separate execution authorization.
 - Receipt exact model, optimizer, accelerator, preprocessing, and optional
   bucket-0 pretraining costs. The selected control excludes bucket-0
   pretraining; any use needs a separately matched no-pretraining ablation.

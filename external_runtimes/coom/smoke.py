@@ -36,6 +36,19 @@ PATCHED_REWARD_WRAPPER_SHA256 = (
     "0ab457a6bc95dc2551b2c81608d1619549e56ced47e2c85949c39b87b8b5a8cf"
 )
 EXPECTED_TRACE_SHA256 = "c74968494ccebaaeac4bc1e0c0f1db7546ac5091b831c05a4c0c727266da696f"
+EXPECTED_DISTRIBUTIONS = (
+    ("Farama-Notifications", "0.0.6"),
+    ("cloudpickle", "3.1.2"),
+    ("gymnasium", "0.28.1"),
+    ("jax-jumpy", "1.0.0"),
+    ("numpy", "1.26.4"),
+    ("opencv-python-headless", "4.11.0.86"),
+    ("pip", "25.0.1"),
+    ("pygame-ce", "2.5.8"),
+    ("scipy", "1.11.4"),
+    ("typing_extensions", "4.16.0"),
+    ("vizdoom", "1.3.0"),
+)
 TASK_NAMES = (
     "pitfall-default",
     "arms_dealer-default",
@@ -51,6 +64,7 @@ STEPS_PER_TASK = 2
 _QUALIFICATION_ROOT = Path("/opt/qualification")
 _MAX_MANIFEST_BYTES = 8192
 _MAX_RECEIPT_BYTES = 1024 * 1024
+_MAX_PROC_STATUS_BYTES = 64 * 1024
 
 
 def _array_sha256(value: np.ndarray) -> str:
@@ -81,6 +95,64 @@ def _asset_manifest() -> tuple[int, int, str]:
 
 def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _runtime_identity() -> dict[str, object]:
+    """Validate the exact non-root runtime before importing or starting COOM."""
+
+    if not hasattr(os, "getuid") or not hasattr(os, "getgid"):
+        raise ValueError("COOM qualification requires Linux process identities")
+    uid = os.getuid()
+    gid = os.getgid()
+    if uid != 65532 or gid != 65532:
+        raise ValueError("COOM qualification requires exact UID/GID 65532")
+
+    status_raw = Path("/proc/self/status").read_bytes()
+    if len(status_raw) > _MAX_PROC_STATUS_BYTES:
+        raise ValueError("process status exceeds its byte limit")
+    fields: dict[bytes, bytes] = {}
+    for line in status_raw.splitlines():
+        if b":" not in line:
+            continue
+        key, value = line.split(b":", 1)
+        if key in (b"CapEff", b"NoNewPrivs"):
+            if key in fields:
+                raise ValueError("process status contains duplicate security fields")
+            fields[key] = value.strip()
+    if fields != {b"CapEff": b"0000000000000000", b"NoNewPrivs": b"1"}:
+        raise ValueError("COOM qualification requires no capabilities and NoNewPrivs")
+
+    distributions: list[tuple[str, str]] = []
+    for index, distribution in enumerate(importlib.metadata.distributions()):
+        if index >= len(EXPECTED_DISTRIBUTIONS):
+            raise ValueError("installed distributions exceed the exact runtime roster")
+        name = distribution.metadata["Name"]
+        version = distribution.version
+        distributions.append(
+            (
+                _exact_str(name, name="installed distribution name"),
+                _exact_str(version, name="installed distribution version"),
+            )
+        )
+    installed = tuple(sorted(distributions))
+    if len(installed) != len(set(installed)) or installed != EXPECTED_DISTRIBUTIONS:
+        raise ValueError("installed distributions differ from the exact runtime roster")
+
+    return {
+        "python": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+        "uid": uid,
+        "gid": gid,
+        "effective_capabilities_hex": fields[b"CapEff"].decode("ascii"),
+        "no_new_privileges": True,
+        "installed_distributions": [list(item) for item in installed],
+        "numpy": importlib.metadata.version("numpy"),
+        "scipy": importlib.metadata.version("scipy"),
+        "gymnasium": importlib.metadata.version("gymnasium"),
+        "vizdoom": importlib.metadata.version("vizdoom"),
+        "opencv_python_headless": importlib.metadata.version("opencv-python-headless"),
+    }
 
 
 def _git_object(kind: bytes, payload: bytes) -> bytes:
@@ -612,6 +684,11 @@ def validate_receipt(receipt: object) -> None:
             "gymnasium",
             "vizdoom",
             "opencv_python_headless",
+            "uid",
+            "gid",
+            "effective_capabilities_hex",
+            "no_new_privileges",
+            "installed_distributions",
         },
         name="runtime",
     )
@@ -625,9 +702,37 @@ def validate_receipt(receipt: object) -> None:
         "opencv_python_headless": "4.11.0.86",
     }
     for name in runtime:
-        _exact_str(runtime[name], name=f"runtime {name}", maximum=256)
+        if name not in {"uid", "gid", "no_new_privileges", "installed_distributions"}:
+            _exact_str(runtime[name], name=f"runtime {name}", maximum=256)
     if any(runtime[name] != value for name, value in expected_versions.items()):
         raise ValueError("runtime versions differ from the hash-locked qualification")
+    if (
+        _exact_int(runtime["uid"], name="runtime uid") != 65532
+        or _exact_int(runtime["gid"], name="runtime gid") != 65532
+        or _exact_str(
+            runtime["effective_capabilities_hex"], name="effective capabilities"
+        )
+        != "0000000000000000"
+        or _exact_bool(runtime["no_new_privileges"], name="no_new_privileges") is not True
+    ):
+        raise ValueError("runtime process security identity differs")
+    installed_value = runtime["installed_distributions"]
+    if type(installed_value) is not list or len(installed_value) != len(
+        EXPECTED_DISTRIBUTIONS
+    ):
+        raise ValueError("installed distributions differ from the exact runtime roster")
+    installed: list[tuple[str, str]] = []
+    for item in installed_value:
+        if type(item) is not list or len(item) != 2:
+            raise ValueError("installed distribution entries must be exact pairs")
+        installed.append(
+            (
+                _exact_str(item[0], name="installed distribution name"),
+                _exact_str(item[1], name="installed distribution version"),
+            )
+        )
+    if tuple(installed) != EXPECTED_DISTRIBUTIONS:
+        raise ValueError("installed distributions differ from the exact runtime roster")
     trace = _exact_keys(
         root["trace"],
         {"seed", "sequence", "steps_per_task", "fixed_action", "frame_skip", "resize", "records"},
@@ -768,6 +873,7 @@ def validate_receipt(receipt: object) -> None:
 
 def build_receipt() -> dict[str, object]:
     qualification_inputs = _load_qualification_manifest()
+    runtime = _runtime_identity()
     root = Path("/opt/coom")
     if _source_tree_sha1(root) != SOURCE_TREE:
         raise SystemExit("COOM source archive does not reconstruct the pinned Git tree")
@@ -813,16 +919,7 @@ def build_receipt() -> dict[str, object]:
             "patched_reward_wrapper_sha256": PATCHED_REWARD_WRAPPER_SHA256,
             "qualification_patch_scope": "gym RewardWrapper import only",
         },
-        "runtime": {
-            "python": platform.python_version(),
-            "python_implementation": platform.python_implementation(),
-            "platform": platform.platform(),
-            "numpy": importlib.metadata.version("numpy"),
-            "scipy": importlib.metadata.version("scipy"),
-            "gymnasium": importlib.metadata.version("gymnasium"),
-            "vizdoom": importlib.metadata.version("vizdoom"),
-            "opencv_python_headless": importlib.metadata.version("opencv-python-headless"),
-        },
+        "runtime": runtime,
         "trace": trace,
         "trace_sha256": hashlib.sha256(trace_bytes).hexdigest(),
         "resource_receipt": {

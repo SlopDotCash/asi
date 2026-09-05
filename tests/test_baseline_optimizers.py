@@ -462,6 +462,61 @@ class TestRMSprop:
         chex.assert_trees_all_equal(result.new_state, state)
         chex.assert_trees_all_equal(result.step, jnp.zeros(3, dtype=jnp.float32))
 
+    def test_unit_decay_does_not_multiply_inf_squared_gradient(self):
+        """decay=1 freezes the EMA, so an overflowing square must not enter it."""
+        optimizer = RMSprop(step_size=0.01, decay=1.0)
+        state = optimizer.init(feature_dim=3)
+        observation = jnp.full(3, 1e30, dtype=jnp.float32)
+        error = jnp.asarray(1.0, dtype=jnp.float32)
+        raw = (1.0 - state.decay) * (-error * observation) ** 2
+        assert not bool(jnp.all(jnp.isfinite(raw)))
+
+        result = optimizer.update(state, error, observation)
+
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.new_state)
+        chex.assert_tree_all_finite(result.weight_delta)
+        chex.assert_tree_all_finite(result.bias_delta)
+        chex.assert_trees_all_equal(result.new_state.v, state.v)
+        chex.assert_trees_all_equal(result.new_state.bias_v, state.bias_v)
+
+    def test_unit_decay_still_applies_an_ordinary_update(self):
+        """A frozen EMA keeps producing the ordinary normalized descent step."""
+        optimizer = RMSprop(step_size=0.01, decay=1.0)
+        state = optimizer.init(feature_dim=2).replace(
+            v=jnp.full(2, 4.0, dtype=jnp.float32),
+        )
+
+        result = optimizer.update(
+            state,
+            jnp.asarray(0.5, dtype=jnp.float32),
+            jnp.ones(2, dtype=jnp.float32),
+        )
+
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(result.new_state.v, state.v)
+        expected = 0.01 * 0.5 / (2.0 + float(state.eps))
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full(2, expected, dtype=jnp.float32),
+            rtol=1e-6,
+        )
+
+    def test_unit_decay_does_not_poison_the_per_parameter_moment(self):
+        """The checked MLP path shares the frozen-EMA guard."""
+        optimizer = RMSprop(step_size=0.01, decay=1.0)
+        state = optimizer.init_for_shape((2, 3))
+
+        result = optimizer.update_from_gradient_checked(
+            state,
+            jnp.full((2, 3), 1e30, dtype=jnp.float32),
+        )
+
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.step)
+        chex.assert_tree_all_finite(result.new_state)
+        chex.assert_trees_all_equal(result.new_state.v, state.v)
+
 
 # =============================================================================
 # NADALINE
@@ -577,3 +632,52 @@ class TestNADALINE:
         chex.assert_tree_all_finite(result.new_state)
         chex.assert_tree_all_finite(result.weight_delta)
         chex.assert_tree_all_finite(result.bias_delta)
+
+    def test_unit_decay_does_not_multiply_inf_squared_feature(self):
+        """decay=1 freezes E[x^2], so an overflowing square must not enter it."""
+        optimizer = NADALINE(step_size=0.01, decay=1.0)
+        state = optimizer.init(feature_dim=3).replace(
+            feature_second_moment=jnp.full(3, 4.0, dtype=jnp.float32),
+        )
+        observation = jnp.full(3, 1e30, dtype=jnp.float32)
+        raw = (1.0 - state.decay) * observation**2
+        assert not bool(jnp.all(jnp.isfinite(raw)))
+
+        result = optimizer.update(
+            state,
+            jnp.asarray(0.5, dtype=jnp.float32),
+            observation,
+        )
+
+        assert bool(result.update_applied)
+        chex.assert_tree_all_finite(result.new_state)
+        chex.assert_tree_all_finite(result.weight_delta)
+        chex.assert_tree_all_finite(result.bias_delta)
+        chex.assert_trees_all_equal(
+            result.new_state.feature_second_moment,
+            state.feature_second_moment,
+        )
+
+    def test_unit_decay_still_normalizes_by_the_frozen_moment(self):
+        """A frozen E[x^2] keeps producing the ordinary normalized step."""
+        optimizer = NADALINE(step_size=0.01, decay=1.0)
+        state = optimizer.init(feature_dim=2).replace(
+            feature_second_moment=jnp.full(2, 4.0, dtype=jnp.float32),
+        )
+
+        result = optimizer.update(
+            state,
+            jnp.asarray(0.5, dtype=jnp.float32),
+            jnp.full(2, 2.0, dtype=jnp.float32),
+        )
+
+        assert bool(result.update_applied)
+        chex.assert_trees_all_close(
+            result.new_state.feature_second_moment,
+            state.feature_second_moment,
+        )
+        chex.assert_trees_all_close(
+            result.weight_delta,
+            jnp.full(2, 0.01 * 0.5 * 2.0 / 4.0, dtype=jnp.float32),
+            rtol=1e-6,
+        )

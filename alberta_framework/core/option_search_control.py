@@ -423,9 +423,21 @@ class OptionSearchControl:
     ) -> None:
         self._agent = stomp_agent
         self._config = config or OptionSearchControlConfig()
-        if self._agent.config.n_options < 1:
+        n_options = self._agent.config.n_options
+        if type(n_options) is not int:
+            raise ValueError(
+                f"n_options must be an integer in [1, {_MAX_BACKUP_BUDGET}] "
+                "for option-search arange work"
+            )
+        if n_options < 1:
             raise ValueError("option search control requires at least one option")
-        candidate_slots = self._agent.config.n_options * self._config.backup_budget
+        if n_options > _MAX_BACKUP_BUDGET:
+            raise ValueError(
+                f"n_options must be an integer in [1, {_MAX_BACKUP_BUDGET}] "
+                "for option-search arange work"
+            )
+        self._n_options = n_options
+        candidate_slots = n_options * self._config.backup_budget
         if candidate_slots > _MAX_CANDIDATE_DIAGNOSTIC_SLOTS:
             raise ValueError(
                 "backup_budget * n_options exceeds the option-search "
@@ -442,7 +454,7 @@ class OptionSearchControl:
     def resource_budget(self) -> OptionSearchControlResourceBudget:
         """Return exact logical work maxima for one call."""
 
-        n_options = self._agent.config.n_options
+        n_options = self._n_options
         backup_budget = self._config.backup_budget
         candidate_slots = n_options * backup_budget
         # Dense logical payload: decision observation; eighteen boolean scalar
@@ -589,7 +601,7 @@ class OptionSearchControl:
         models = state.option_models
         if not isinstance(models, OptionModelsState):
             return False
-        n_options = self._agent.config.n_options
+        n_options = self._n_options
         observation_dim = self._agent.config.observation_dim
         return (
             _array_has_contract(models.cumreward_ema, (n_options,), jnp.float32)
@@ -647,7 +659,7 @@ class OptionSearchControl:
             jnp.isfinite(observation)
         )
         budget = self._config.backup_budget
-        n_options = self._agent.config.n_options
+        n_options = self._n_options
         matrix_shape = (budget, n_options)
         return OptionSearchControlDiagnostics(
             decision_observation=jnp.where(values_finite, observation, 0.0),
@@ -709,7 +721,7 @@ class OptionSearchControl:
         """Evaluate all option targets and residuals from one learner state."""
 
         models = state.option_models
-        n_options = self._agent.config.n_options
+        n_options = self._n_options
         base_values = self._agent.base_learner.predict(
             learner_state,
             observation,
@@ -869,7 +881,7 @@ class OptionSearchControl:
         )
 
         budget = self._config.backup_budget
-        n_options = self._agent.config.n_options
+        n_options = self._n_options
         matrix_shape = (budget, n_options)
         completion_supported_log = jnp.zeros(matrix_shape, dtype=jnp.bool_)
         semantics_valid_log = jnp.zeros(matrix_shape, dtype=jnp.bool_)

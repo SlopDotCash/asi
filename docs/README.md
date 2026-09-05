@@ -56,6 +56,7 @@ The package overview and development entry points are in
 ## Runbooks
 
 - [`runbooks/foragax-open-screen.md`](runbooks/foragax-open-screen.md)
+- [`runbooks/bimu-matched-development.md`](runbooks/bimu-matched-development.md)
 
 Runbooks retain their stated issuance and promotion boundaries. An unissued or
 development-only runbook does not authorize a scientific result.
