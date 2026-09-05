@@ -271,3 +271,47 @@ def test_v2_shard_roundtrip_revalidates_nested_receipt(
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="metrics drift"):
         ipmnist_screening.load_shard(path)
+
+
+def test_skip_zero_scale_repairs_zero_times_inf() -> None:
+    from alberta_framework.benchmarks import replay_frozen_ipmnist as mod
+
+    value = jnp.array([jnp.inf, 2.0], dtype=jnp.float32)
+    assert bool(jnp.isnan(jnp.float32(0.0) * jnp.float32(jnp.inf)))
+    repaired = mod._skip_zero_scale(0.0, value)
+    np.testing.assert_array_equal(repaired, jnp.zeros_like(value))
+    finite = jnp.array([1.0, -2.0], dtype=jnp.float32)
+    np.testing.assert_allclose(mod._skip_zero_scale(0.5, finite), 0.5 * finite)
+
+
+def test_replay_weight_zero_does_not_poison_task_gradient() -> None:
+    from alberta_framework.benchmarks import replay_frozen_ipmnist as mod
+
+    task = jnp.array([1.0, -1.0], dtype=jnp.float32)
+    replay = jnp.array([jnp.inf, 3.0], dtype=jnp.float32)
+    combined = task + mod._skip_zero_scale(0.0, replay)
+    np.testing.assert_array_equal(combined, task)
+
+
+def test_mechanism_zero_feature_step_is_exact_zero_under_infinite_grad() -> None:
+    from alberta_framework.benchmarks import replay_frozen_ipmnist as mod
+
+    feature_gradient = jnp.array([jnp.inf, 1.0], dtype=jnp.float32)
+    update_scale = jnp.asarray(1.0, dtype=jnp.float32)
+    step = mod._skip_zero_scale(0.0 * 1e-2, update_scale * feature_gradient)
+    np.testing.assert_array_equal(step, jnp.zeros_like(feature_gradient))
+
+
+def test_disabled_replay_ignores_overflow_from_finite_stored_examples() -> None:
+    from alberta_framework.benchmarks.replay_frozen_ipmnist import replay_hyperparameters
+
+    params = init_mlp_params(jr.key(4), _config())
+    params = {**params, "w1": jnp.full_like(params["w1"], 2.0)}
+    init, step = make_replay_context_learner(replay_hyperparameters(replay_update=0.0, context=0.0))
+    state = init(params)
+    state = state.replace(
+        examples=jnp.full_like(state.examples, 3e38),
+        count=jnp.asarray(1, dtype=jnp.int32),
+    )
+    _, result, _ = step(params, state, jnp.zeros(4), jnp.asarray(0), jr.key(5))
+    assert int(result.update_count) == 1

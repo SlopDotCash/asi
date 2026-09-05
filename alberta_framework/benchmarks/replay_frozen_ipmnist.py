@@ -49,6 +49,14 @@ _DOMAIN_PROL: Final = 0x50524F4C
 _INT32_MAX: Final = (1 << 31) - 1
 
 
+def _skip_zero_scale(scale: float, value: Array) -> Array:
+    """Keep finite multiplication exact while repairing zero-scaled poison."""
+    product = jnp.asarray(scale, dtype=value.dtype) * value
+    if scale != 0.0:
+        return product
+    return jnp.where(jnp.isfinite(value), product, jnp.zeros_like(value))
+
+
 @chex.dataclass(frozen=True, mappable_dataclass=False)
 class ReplayContextState:
     optimizer_state: dict[str, Any]
@@ -180,7 +188,8 @@ def make_replay_context_learner(
 
         replay_gradient = jax.grad(replay_loss)(params)
         combined = {
-            name: task_gradient[name] + hp["replay_weight"] * replay_gradient[name]
+            name: task_gradient[name]
+            + _skip_zero_scale(hp["replay_weight"], replay_gradient[name])
             for name in _PARAM_KEYS
         }
         update = adam_step(params, state.optimizer_state, combined, jr.key(0))
@@ -322,16 +331,15 @@ def make_frozen_feature_learner(hp: Mapping[str, float]) -> tuple[Any, Any]:
             inverse = state.inverse_covariance
             if method == 2:
                 feature_gradient = state.readout @ (-error)
-                prompt = (
-                    state.prompt
-                    - mechanism * hp["head_step_size"] * update_scale * feature_gradient
+                # mechanism=0 is the declared mechanism-off reduction; skip
+                # before ``0 * inf`` poisons prompt/scale/shift.
+                feature_step = _skip_zero_scale(
+                    mechanism * hp["head_step_size"],
+                    update_scale * feature_gradient,
                 )
-                scale = state.scale - mechanism * hp[
-                    "head_step_size"
-                ] * update_scale * feature_gradient * (phi - state.shift)
-                shift = (
-                    state.shift - mechanism * hp["head_step_size"] * update_scale * feature_gradient
-                )
+                prompt = state.prompt - feature_step
+                scale = state.scale - feature_step * (phi - state.shift)
+                shift = state.shift - feature_step
             else:
                 prompt, scale, shift = state.prompt, state.scale, state.shift
         candidate = FrozenFeatureState(  # type: ignore[call-arg]
