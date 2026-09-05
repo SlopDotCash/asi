@@ -179,6 +179,7 @@ _PROTOTYPE_CHECKPOINT_SCHEMA_V2 = "alberta.prototype_agent.v2"
 _PROTOTYPE_CHECKPOINT_SCHEMA_V1 = "alberta.prototype_agent.v1"
 _PROTOTYPE_EMPTY_ARRAY_CODEC = "alberta.prototype_agent.empty_array_projection.v1"
 _PROTOTYPE_SUPPORTED_PRNG_IMPLS = frozenset({"threefry2x32", "rbg"})
+_GUARDED_DREAM_STREAM_TAG = 0x44524D53
 _DREAM_NEXT_OBSERVATION_STREAM_TAG = 0x44524D4F
 _PROTOTYPE_V2_REPLAY_MIGRATION_TAG = 0x50525632
 _PROTOTYPE_FEATURE_LIFECYCLE_KEY_TAG = 0x50464C43
@@ -188,6 +189,11 @@ _INT32_MAX = 2**31 - 1
 # ---------------------------------------------------------------------------
 # Standalone utility
 # ---------------------------------------------------------------------------
+
+
+def _guarded_dream_rng_root(stored_real_key: Array) -> Array:
+    """Derive dreaming randomness without consuming the future real stream."""
+    return jr.fold_in(stored_real_key, _GUARDED_DREAM_STREAM_TAG)
 
 
 def feature_to_subtask_specs(
@@ -5457,13 +5463,14 @@ class PrototypeAgent:
         rng_key: Array,
     ) -> tuple[OaKState, Float[Array, " n_dreams"]]:
         n_prim = self._config.oak.n_primitive_actions
+        dream_root = _guarded_dream_rng_root(rng_key)
         sample_one_hot = (
             self._config.dream_next_observation_mode == "sample_one_hot"
         )
         dream_observation_root = (
-            jr.fold_in(rng_key, _DREAM_NEXT_OBSERVATION_STREAM_TAG)
+            jr.fold_in(dream_root, _DREAM_NEXT_OBSERVATION_STREAM_TAG)
             if sample_one_hot
-            else rng_key
+            else dream_root
         )
 
         def _dream_step(
@@ -5536,7 +5543,7 @@ class PrototypeAgent:
 
         (new_oak_state, _), dream_td_errors = jax.lax.scan(
             _dream_step,
-            (oak_state, rng_key),
+            (oak_state, dream_root),
             jnp.arange(self._config.n_dreams_per_step),
         )
         return new_oak_state, dream_td_errors
