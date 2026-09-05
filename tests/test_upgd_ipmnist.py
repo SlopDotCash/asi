@@ -6,6 +6,7 @@ happen only through ``python -m alberta_framework.benchmarks.upgd_ipmnist``.
 
 import hashlib
 import json
+import stat
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -41,6 +42,67 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 
 TINY = IPMNISTConfig(n_tasks=2, task_length=200, input_dim=16, hidden1=32, hidden2=16)
 N_TRAIN = 300
+
+
+class TestAtomicWriteNew:
+    def test_publishes_read_only_destination_without_temporary_link(self, tmp_path):
+        destination = tmp_path / "result.json"
+
+        published = upgd_ipmnist.atomic_write_new(destination, b'{"ok":true}\n')
+
+        assert published == destination
+        assert destination.read_bytes() == b'{"ok":true}\n'
+        assert destination.stat().st_mode & stat.S_IWUSR == 0
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
+
+    def test_windows_readonly_cleanup_restores_public_destination(
+        self, tmp_path, monkeypatch
+    ):
+        temporary = tmp_path / ".result.json.test.tmp"
+        destination = tmp_path / "result.json"
+        temporary.write_bytes(b'{"ok":true}\n')
+        upgd_ipmnist.os.link(temporary, destination)
+        temporary.chmod(0o444)
+        original_unlink = Path.unlink
+        attempts = 0
+
+        def deny_first_unlink(path, *args, **kwargs):
+            nonlocal attempts
+            if path == temporary and attempts == 0:
+                attempts += 1
+                raise PermissionError("simulated Windows read-only hard link")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(upgd_ipmnist, "_WINDOWS_READONLY_UNLINK", True)
+        monkeypatch.setattr(Path, "unlink", deny_first_unlink)
+
+        upgd_ipmnist._unlink_published_temporary(
+            temporary,
+            destination,
+            published=True,
+        )
+
+        assert attempts == 1
+        assert not temporary.exists()
+        assert destination.read_bytes() == b'{"ok":true}\n'
+        assert destination.stat().st_mode & stat.S_IWUSR == 0
+
+    def test_concurrent_destination_is_never_changed(self, tmp_path, monkeypatch):
+        destination = tmp_path / "result.json"
+        foreign = b'{"owner":"other"}\n'
+
+        def lose_link_race(_source, target):
+            Path(target).write_bytes(foreign)
+            raise FileExistsError("simulated destination race")
+
+        monkeypatch.setattr(upgd_ipmnist.os, "link", lose_link_race)
+
+        with pytest.raises(FileExistsError, match="refusing to overwrite immutable output"):
+            upgd_ipmnist.atomic_write_new(destination, b'{"owner":"ours"}\n')
+
+        assert destination.read_bytes() == foreign
+        assert destination.stat().st_mode & stat.S_IWUSR != 0
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
 
 
 class _HostileString(str):
