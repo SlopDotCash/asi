@@ -15,7 +15,8 @@ acceptance criteria of [#1560](https://github.com/SlopDotCash/asi/issues/1560)
   bound in every receipt.
 - Retention: verbatim receipts in `receipts/` (sha256 manifest inside
   `analysis_summary.json`); analysis implementation in `analyze_adamo.py`
-  implements the frozen plan and nothing else.
+  reproduces the descriptive summaries. The all-positive/all-negative flags
+  are descriptive sign checks, not preregistered decision thresholds.
 - Measured on a clean tree at main head `c9aba7b54dedd647f8bd5f5c7bf6780b1413b676`
   (receipts bind the exact adapter/runner bytes by SHA-256). Runtime: CPU,
   JAX 0.11.0, NumPy 2.5.1, Python 3.14.4.
@@ -53,11 +54,10 @@ per-task accuracy trajectories and final `parameter_sha256`):
 | loss | +0.008267, -0.001560, -0.001859, +0.001669 | +0.001629 | no |
 | plasticity | -0.016416, -0.003281, -0.000555, -0.005968 | -0.006555 | **yes** |
 
-No arm shows an all-seeds-positive paired improvement; the only frozen rule
-that fires is the decoupled-vs-joint plasticity contrast (all seeds negative
-for the decoupled form: joint moment mixing moved faster and lost accuracy
-meanwhile — direction-consistent with, but far weaker than, a plasticity/
-accuracy trade-off claim, so it is recorded, not claimed).
+Neither paired comparison has accuracy improvement on every seed. Plasticity
+is lower for the decoupled form than joint moment mixing on all four seeds.
+These are descriptive observations; the preregistration established no
+all-seeds-sign acceptance rule or scientific win gate.
 
 ## Jacobian / isometry readout (final task, sentinel row zero)
 
@@ -79,12 +79,27 @@ without an accuracy benefit.
 
 data steps 512, updates 512, observations 512, model queries 1032, Jacobian
 reverse rows 80, parameters 282,160, persistent numeric bytes 3,386,040, peak
-Gram working bytes 360,000, logical compute 600,436,480 parameter-touch units;
-timing telemetry-only (about 4.4 s/arm on this CPU runner, about 22 s per
-four-arm seed run).
+Gram working bytes 360,000. Logical compute differs substantially by arm:
+
+| arms | logical compute units per run |
+|---|---:|
+| `adamw_control`, `adamo_inert` | 600,436,480 |
+| `adamo_l1e3`, `adam_iso_joint_l1e3` | 79,781,236,480 |
+
+The accounting includes parameter touches and active Gram matrix multiply-adds.
+The active mechanisms therefore use about 133 times the logical compute of
+the reduction control at this matched data/update budget. Timing remains
+telemetry-only; the records do not establish equal compute or latency.
 
 ## Declared identity
 
 Provider `zai`, model `glm-5.3-flash`, client `Claude Code`; self-reported.
-A signed measured-run receipt and its private trace cover the session that
-produced these artifacts.
+The contributor reports a measured-run receipt and private trace. They were
+not independently authenticated in this review; the retained files and hashes
+establish consistency, not execution attestation.
+
+Review reproduced `analysis_summary.json` exactly from all four receipts and
+matched their adapter/runner hashes to `c9aba7b5`. The current strict validator
+rejects these historical receipts on runtime drift (recorded Python 3.14.4
+versus the project review runtime); its gate was not weakened. This retention
+is not current-validator acceptance or a new measured run.
