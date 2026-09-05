@@ -1012,3 +1012,36 @@ def test_step9_smoke_result_rejects_leftover_identities() -> None:
     assert '"seed": true' not in dumped
     assert '"finite": 1' not in dumped
     assert '"dream_acceptance_count": true' not in dumped
+
+
+def test_zero_planning_budget_never_traces_dream_scan(monkeypatch: pytest.MonkeyPatch) -> None:
+    import jax
+
+    cfg = Step9DreamingConfig(
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=0,
+        dream_candidate_count=5_000,
+        dream_rollout_horizon=5_000,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    state = init_step9_state(
+        agent, model, buffer, key=jr.key(5), initial_observation=jnp.zeros(2)
+    )
+    original_scan = jax.lax.scan
+
+    def reject_dream_scan(function: Any, *args: Any, **kwargs: Any) -> Any:
+        assert function.__name__ != "dream_step", "disabled planning traced a dream scan"
+        return original_scan(function, *args, **kwargs)
+
+    monkeypatch.setattr(jax.lax, "scan", reject_dream_scan)
+    result = step9_update(
+        cfg, agent, model, buffer, state, jnp.float32(1.0), jnp.zeros(2)
+    )
+    chex.assert_shape(result.dream_td_errors, (0,))
+    chex.assert_shape(result.dream_accepted, (0,))
+    assert result.dream_td_errors.dtype == jnp.float32
+    assert result.dream_accepted.dtype == jnp.bool_
+    assert int(result.state.step_count) == 1
