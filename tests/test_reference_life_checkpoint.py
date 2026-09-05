@@ -34,6 +34,7 @@ from alberta_framework.reference_life_checkpoint import (
     save_reference_life_checkpoint,
 )
 from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig
+from tests._forager_matched_platform import HAS_RENAMEAT2, requires_renameat2
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -188,6 +189,8 @@ def _assert_typed_exact(left: object, right: object, *, path: str = "state") -> 
 def saved_case(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path]:
+    if not HAS_RENAMEAT2:
+        pytest.skip("atomic no-replace rename requires Linux renameat2")
     runner = _runner()
     state, _ = _advance(runner, runner.init(), 2)
     assert state.phase is LifePhase.QUIESCENT
@@ -394,6 +397,7 @@ def test_publish_failure_and_existing_generation_leave_runner_unchanged(
     assert not tuple(parent.glob(".*.staging-*"))
 
 
+@requires_renameat2
 def test_post_commit_lock_cleanup_failure_returns_committed_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -503,6 +507,7 @@ def test_save_through_ancestor_symlink_into_generation_is_rejected(
     assert restored_runner.current_state is restored_state
 
 
+@requires_renameat2
 def test_checkpoint_filesystem_publication_stays_inside_runner_barrier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -573,3 +578,12 @@ def test_checkpoint_filesystem_publication_stays_inside_runner_barrier(
     restored_runner, restored_state = load_reference_life_checkpoint(checkpoint)
     _assert_semantic_state_exact(restored_state, barrier)
     assert restored_runner.current_state is restored_state
+
+
+@pytest.mark.skipif(HAS_RENAMEAT2, reason="tests Linux-only publication refusal off Linux")
+def test_save_reference_life_checkpoint_refuses_off_linux(tmp_path: Path) -> None:
+    runner = _runner()
+    state, _ = _advance(runner, runner.init(), 2)
+    with pytest.raises(OSError, match="atomic no-replace rename requires Linux renameat2"):
+        save_reference_life_checkpoint(runner, state, tmp_path)
+    assert not any(p.name.startswith("generation-") for p in tmp_path.iterdir())

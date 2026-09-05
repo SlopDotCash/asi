@@ -969,9 +969,9 @@ class RMSprop(Optimizer[Any]):
         else:
             g = gradient
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + (
-            1.0 - state.decay
-        ) * g**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
+            1.0 - self._decay, 1.0 - state.decay, g**2
+        )
         step = state.step_size * g / (jnp.sqrt(new_v) + state.eps)
 
         candidate_state = RMSpropParamState(
@@ -1027,13 +1027,12 @@ class RMSprop(Optimizer[Any]):
         g = -error_scalar * observation
         g_b = -error_scalar
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + (
-            1.0 - state.decay
-        ) * g**2
-        new_bias_v = (
-            _skip_zero_scale(self._decay, state.decay, state.bias_v)
-            + (1.0 - state.decay) * g_b**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
+            1.0 - self._decay, 1.0 - state.decay, g**2
         )
+        new_bias_v = _skip_zero_scale(
+            self._decay, state.decay, state.bias_v
+        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, g_b**2)
 
         weight_delta = -state.step_size * g / (jnp.sqrt(new_v) + state.eps)
         bias_delta = -state.step_size * g_b / (jnp.sqrt(new_bias_v) + state.eps)
@@ -1169,10 +1168,9 @@ class NADALINE(Optimizer[Any]):
             bias delta.
         """
         error_scalar = jnp.squeeze(error)
-        new_second_moment = (
-            _skip_zero_scale(self._decay, state.decay, state.feature_second_moment)
-            + (1.0 - state.decay) * observation**2
-        )
+        new_second_moment = _skip_zero_scale(
+            self._decay, state.decay, state.feature_second_moment
+        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, observation**2)
 
         denom = jnp.maximum(state.eps, new_second_moment)
         weight_delta = state.step_size * error_scalar * observation / denom

@@ -220,6 +220,7 @@ from alberta_framework.benchmarks.upgd_ipmnist import (
 )
 from alberta_framework.core.adamo import AdamO, AdamOConfig, isometry_gradient
 from alberta_framework.core.baseline_optimizers import Adam
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     select_transaction,
@@ -495,6 +496,11 @@ def _sorted_flat_noise(
     }
 
 
+def _skip_zero_scale(scale: Array | float, value: Array) -> Array:
+    """Skip ``0 * inf`` so a closed EMA/momentum decay does not poison state."""
+    return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
+
+
 def _upgd_utility_and_gate(
     params: dict[str, Array],
     grads: dict[str, Array],
@@ -505,7 +511,8 @@ def _upgd_utility_and_gate(
     """UPGD utility EMA update + global-max sigmoid gate (lean-step equations)."""
     beta = utility_decay
     new_utility = {
-        name: beta * utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+        name: _skip_zero_scale(beta, utility[name])
+        + (1.0 - beta) * (-grads[name] * params[name])
         for name in params
     }
     global_max = jnp.max(jnp.stack([jnp.max(new_utility[name]) for name in sorted(params)]))
@@ -2151,7 +2158,7 @@ def _make_upgd_ema_norm_ext_learner(
         noise = _sorted_flat_noise(key, params, noise_std)
         count = state.step + jnp.array(1, dtype=jnp.int32)
         utility = {
-            name: utility_decay * state.utility[name]
+            name: _skip_zero_scale(utility_decay, state.utility[name])
             + (1.0 - utility_decay) * (-grads[name] * params[name])
             for name in params
         }
@@ -2355,7 +2362,7 @@ def _make_adaptive_norm_sigma0_learner(
         )
         count = state.step + jnp.array(1, dtype=jnp.int32)
         utility = {
-            name: utility_decay * state.utility[name]
+            name: _skip_zero_scale(utility_decay, state.utility[name])
             + (1.0 - utility_decay) * (-grads[name] * params[name])
             for name in params
         }
@@ -2769,7 +2776,7 @@ def _make_discovered_rule_learner(
                 1.0 - shifted[:, None].astype(jnp.float32)
             )
         utility = {
-            name: utility_decay * prev_utility[name]
+            name: _skip_zero_scale(utility_decay, prev_utility[name])
             + (1.0 - utility_decay) * (-grads[name] * params[name])
             for name in params
         }
@@ -3066,7 +3073,8 @@ def upgd_w_localgate_update(
     decay = 1.0 - step_size * hp["weight_decay"]
     count = state.step + jnp.array(1, dtype=jnp.int32)
     utility = {
-        name: beta * state.utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+        name: _skip_zero_scale(beta, state.utility[name])
+        + (1.0 - beta) * (-grads[name] * params[name])
         for name in params
     }
     bias_correction = 1.0 - jnp.power(
@@ -3232,8 +3240,8 @@ def _cbp_update(
     decay = hp["cbp_decay_rate"]
     util1 = decay * cbp.util1 + (1.0 - decay) * jnp.abs(a1 * da1)
     util2 = decay * cbp.util2 + (1.0 - decay) * jnp.abs(a2 * da2)
-    age1 = cbp.age1 + 1
-    age2 = cbp.age2 + 1
+    age1 = _saturating_int32_counter_increment(cbp.age1)
+    age2 = _saturating_int32_counter_increment(cbp.age2)
     key1, key2 = jr.split(key)
     maturity = int(hp["cbp_maturity_threshold"])
     rate = hp["cbp_replacement_rate"]
@@ -4020,8 +4028,10 @@ def _make_muon_gate_learner(
             keep = 1.0 - gate[name]
             g = grads[name]
             if params[name].ndim == 2:
-                momentum = mu * state.momentum[name] + g
-                direction = _newton_schulz_orthogonalize(g + mu * momentum, ns_steps)
+                momentum = _skip_zero_scale(mu, state.momentum[name]) + g
+                direction = _newton_schulz_orthogonalize(
+                    g + _skip_zero_scale(mu, momentum), ns_steps
+                )
                 m_dim, n_dim = params[name].shape
                 scale = math.sqrt(max(m_dim, n_dim) / min(m_dim, n_dim))
                 new_params[name] = params[name] * param_decay - step_size * (
@@ -4099,11 +4109,15 @@ def _make_lion_gate_learner(
         new_momentum: dict[str, Array] = {}
         for name in params:
             g = grads[name]
-            interpolated = beta1 * state.momentum[name] + (1.0 - beta1) * g
+            interpolated = _skip_zero_scale(beta1, state.momentum[name]) + (
+                1.0 - beta1
+            ) * g
             new_params[name] = params[name] * param_decay - step_size * (
                 (1.0 - gate[name]) * jnp.sign(interpolated)
             )
-            new_momentum[name] = beta2 * state.momentum[name] + (1.0 - beta2) * g
+            new_momentum[name] = _skip_zero_scale(beta2, state.momentum[name]) + (
+                1.0 - beta2
+            ) * g
         metrics = _step_metrics(new_params, x_norm, y, loss, logits)
         return new_params, LionGateState(  # type: ignore[call-arg]
             utility=utility, step=count, momentum=new_momentum, norm=new_norm
@@ -4741,7 +4755,7 @@ def _make_rls_head_learner(
         over ``names``; other tensors pass through with untouched utility."""
         new_utility = dict(utility)
         for name in names:
-            new_utility[name] = utility_decay * utility[name] + (
+            new_utility[name] = _skip_zero_scale(utility_decay, utility[name]) + (
                 1.0 - utility_decay
             ) * (-grads[name] * params[name])
         bias_correction = 1.0 - jnp.power(
@@ -5463,7 +5477,7 @@ def _make_norm_rmsprop_gate_learner(
         new_v: dict[str, Array] = {}
         for name in params:
             g = grads[name]
-            v = rho * state.v[name] + (1.0 - rho) * g * g
+            v = _skip_zero_scale(rho, state.v[name]) + (1.0 - rho) * g * g
             direction = g / (jnp.sqrt(v) + rms_epsilon)
             new_params[name] = params[name] * param_decay - step_size * (
                 direction * (1.0 - gate[name])
@@ -5581,10 +5595,10 @@ def _make_norm_apollo_gate_learner(
             g = grads[name]
             if params[name].ndim == 2:
                 stat = jnp.mean(g * g, axis=0)
-                v = rho * state.vchan[name] + (1.0 - rho) * stat
+                v = _skip_zero_scale(rho, state.vchan[name]) + (1.0 - rho) * stat
                 denom = jnp.sqrt(v)[None, :] + apollo_epsilon
             else:
-                v = rho * state.vchan[name] + (1.0 - rho) * (g * g)
+                v = _skip_zero_scale(rho, state.vchan[name]) + (1.0 - rho) * (g * g)
                 denom = jnp.sqrt(v) + apollo_epsilon
             new_params[name] = params[name] * param_decay - step_size * (
                 (g / denom) * (1.0 - gate[name])
@@ -5660,7 +5674,9 @@ def _make_sgd_momentum_gate_learner(
         new_params: dict[str, Array] = {}
         new_momentum: dict[str, Array] = {}
         for name in params:
-            momentum = mu * state.momentum[name] + (1.0 - mu) * grads[name]
+            momentum = _skip_zero_scale(mu, state.momentum[name]) + (
+                1.0 - mu
+            ) * grads[name]
             m_hat = momentum / correction
             new_params[name] = params[name] * param_decay - step_size * (
                 m_hat * (1.0 - gate[name])
@@ -5989,12 +6005,16 @@ def _make_snr_ema_norm_learner(
         }
         fired1 = a1 > 0.0
         fired2 = a2 > 0.0
-        silence1 = jnp.where(fired1, 0, state.silence1 + 1)
-        silence2 = jnp.where(fired2, 0, state.silence2 + 1)
+        silence1 = jnp.where(
+            fired1, 0, _saturating_int32_counter_increment(state.silence1)
+        )
+        silence2 = jnp.where(
+            fired2, 0, _saturating_int32_counter_increment(state.silence2)
+        )
         rate1 = rate_decay * state.rate1 + (1.0 - rate_decay) * fired1.astype(jnp.float32)
         rate2 = rate_decay * state.rate2 + (1.0 - rate_decay) * fired2.astype(jnp.float32)
-        age1 = state.age1 + 1
-        age2 = state.age2 + 1
+        age1 = _saturating_int32_counter_increment(state.age1)
+        age2 = _saturating_int32_counter_increment(state.age2)
         key1, key2 = jr.split(key)
         new_params, silence1, rate1, age1, _ = snr_maybe_reset_layer(
             new_params, silence1, rate1, age1, _CBP_LAYERS[0], key1, hp
@@ -6178,7 +6198,8 @@ def _make_sigma0_gated_l2init_learner(
         decay_factor = 1.0 - step_size * hp["weight_decay"]
         count = state.step + jnp.array(1, dtype=jnp.int32)
         utility = {
-            name: beta * state.utility[name] + (1.0 - beta) * (-grads[name] * params[name])
+            name: _skip_zero_scale(beta, state.utility[name])
+            + (1.0 - beta) * (-grads[name] * params[name])
             for name in params
         }
         global_max = jnp.max(
@@ -6269,9 +6290,9 @@ def _make_cpr_ipmnist_learner(
         for name in params:
             magnitude = jnp.abs(grads[name])
             score = magnitude / (jnp.mean(magnitude) + norm_epsilon)
-            utility[name] = (
-                utility_decay * state.utility[name] + (1.0 - utility_decay) * score
-            )
+            utility[name] = _skip_zero_scale(utility_decay, state.utility[name]) + (
+                1.0 - utility_decay
+            ) * score
         sgd_params = {
             name: params[name] - step_size * grads[name] for name in params
         }

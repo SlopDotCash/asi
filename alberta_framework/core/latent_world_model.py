@@ -290,7 +290,9 @@ class LatentWorldModelConfig:
                 raise ValueError("observation_scale length must equal observation_dim")
             observation_scale = tuple(
                 validated_float32_scalar(
-                    f"observation_scale[{index}]", scale, positive=True
+                    f"observation_scale[{index}]",
+                    scale,
+                    lower=float(np.finfo(np.float32).tiny),
                 )
                 for index, scale in enumerate(observation_scale)
             )
@@ -670,7 +672,7 @@ class LatentWorldModel:
         """Encode one observation with explicit (differentiable) encoder params."""
         obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._config.observation_dim,))
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
-        scaled = obs / jnp.maximum(scale, jnp.asarray(1e-6, dtype=jnp.float32))
+        scaled = obs / scale
         return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
 
     @functools.partial(jax.jit, static_argnums=(0,))
