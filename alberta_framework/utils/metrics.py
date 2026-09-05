@@ -477,10 +477,6 @@ def compute_forward_transfer(
         # immediately before first exposure. An older finite probe is not a
         # substitute when that row is NaN (not evaluated) or divergent.
         immediate = matrix[int(first_row) - 1, task]
-        if np.isinf(immediate):
-            raise ValueError(
-                f"task {task} has an infinite evaluation immediately before first exposure"
-            )
         if not np.isfinite(immediate):
             continue
         transfer[task] = (

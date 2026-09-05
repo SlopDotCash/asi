@@ -105,7 +105,7 @@ def test_forward_transfer_rejects_infinite_immediate_pre_exposure() -> None:
             [0.30, 0.40],
         ]
     )
-    with pytest.raises(ValueError, match="infinite evaluation immediately before first exposure"):
+    with pytest.raises(ValueError, match="performance_matrix has an infinite evaluation"):
         compute_forward_transfer(
             performance,
             first_exposure=[0, 2],
