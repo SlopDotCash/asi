@@ -139,11 +139,22 @@ class BoundedPolicyArchive:
             return None
         if len(latent) != len(self.entries[0].latent):
             raise ValueError("query latent width must match retained entries")
-        distances = tuple(
-            float(np.linalg.norm(np.asarray(latent) - np.asarray(entry.latent)))
-            for entry in self.entries
-        )
-        return self.entries[int(np.argmin(np.asarray(distances)))]
+        # math.dist scales its reduction, preserving both tiny and huge finite norms.
+        distances = tuple(math.dist(latent, entry.latent) for entry in self.entries)
+        if all(math.isinf(distance) for distance in distances):
+            # Distances themselves can exceed float64. A common scale preserves
+            # their ordering; use it only when no finite candidate can be nearest.
+            scale = max(
+                abs(value)
+                for values in (latent, *(entry.latent for entry in self.entries))
+                for value in values
+            )
+            query = tuple(value / scale for value in latent)
+            distances = tuple(
+                math.dist(query, tuple(value / scale for value in entry.latent))
+                for entry in self.entries
+            )
+        return self.entries[min(range(len(distances)), key=distances.__getitem__)]
 
     def add(self, entry: PolicyEntry) -> BoundedPolicyArchive:
         """Return the deterministic successor archive."""
