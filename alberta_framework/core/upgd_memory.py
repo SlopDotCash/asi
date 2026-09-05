@@ -964,10 +964,12 @@ class UPGDMemoryLearner:
             upgd_loss_ema = state.upgd_loss_ema
             memory_loss_ema = state.memory_loss_ema
         reliability_delta = upgd_loss_ema - memory_loss_ema
+        confidence_scale = jnp.asarray(self._config.confidence_logit_scale, dtype=jnp.float32)
+        reliability_scale = jnp.asarray(self._config.reliability_logit_scale, dtype=jnp.float32)
         logit = (
             state.memory_logit
-            + self._config.confidence_logit_scale * confidence_delta
-            + self._config.reliability_logit_scale * reliability_delta
+            + _skip_zero_scale(confidence_scale, confidence_delta)
+            + _skip_zero_scale(reliability_scale, reliability_delta)
         )
         return active_memory * jax.nn.sigmoid(logit)
 
@@ -980,7 +982,10 @@ class UPGDMemoryLearner:
         include_target_trace: bool,
     ) -> tuple[Array, Array]:
         gate = self._blend_gate(state, upgd_prediction, memory_prediction)
-        prediction = (1.0 - gate) * upgd_prediction + gate * memory_prediction
+        forget_upgd = 1.0 - gate
+        prediction = _skip_zero_scale(forget_upgd, upgd_prediction) + _skip_zero_scale(
+            gate, memory_prediction
+        )
         if self._config.readout_mode == "softmax_ce":
             prediction = _normalize_simplex(prediction)
         trace_scale = jnp.where(
@@ -999,7 +1004,10 @@ class UPGDMemoryLearner:
         )
         trace_gate = trace_scale * trace_pressure
         trace_prediction = _normalize_simplex(state.upgd_state.previous_targets)
-        prediction = (1.0 - trace_gate) * prediction + trace_gate * trace_prediction
+        forget_trace = 1.0 - trace_gate
+        prediction = _skip_zero_scale(forget_trace, prediction) + _skip_zero_scale(
+            trace_gate, trace_prediction
+        )
         if self._config.readout_mode == "softmax_ce":
             prediction = _normalize_simplex(prediction)
         return prediction, gate

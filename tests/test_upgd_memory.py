@@ -280,6 +280,90 @@ def test_zero_reliability_decay_does_not_relax_consumed_non_ema_state() -> None:
     chex.assert_trees_all_equal(result.predictions, jnp.zeros((2,), dtype=jnp.float32))
 
 
+def test_unit_blend_gate_one_does_not_multiply_inf_upgd_prediction() -> None:
+    """A fully open blend gate must not let 0 * inf poison the memory path."""
+    config = UPGDMemoryConfig(
+        feature_dim=2,
+        n_heads=2,
+        hidden_sizes=(4,),
+        slots_per_class=2,
+        confidence_logit_scale=0.0,
+        reliability_logit_scale=0.0,
+        target_trace_blend_scale=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    initial = learner.init(jr.key(6))
+    active_memory = initial.memory_state.replace(  # type: ignore[attr-defined]
+        counts=jnp.ones_like(initial.memory_state.counts)
+    )
+    state = initial.replace(  # type: ignore[attr-defined]
+        memory_state=active_memory,
+        memory_logit=jnp.asarray(90.0, dtype=jnp.float32),
+    )
+    memory_prediction = jnp.asarray([0.2, 0.8], dtype=jnp.float32)
+    upgd_prediction = jnp.full((2,), jnp.inf, dtype=jnp.float32)
+    gate = learner._blend_gate(state, upgd_prediction, memory_prediction)
+    assert float(gate) == pytest.approx(1.0)
+    raw = (1.0 - gate) * upgd_prediction
+    assert not bool(jnp.all(jnp.isfinite(raw)))
+
+    prediction, returned_gate = learner._blend_predictions(
+        state,
+        upgd_prediction,
+        memory_prediction,
+        include_target_trace=False,
+    )
+
+    chex.assert_trees_all_close(returned_gate, gate)
+    chex.assert_trees_all_close(prediction, memory_prediction)
+
+
+def test_unit_trace_gate_one_does_not_multiply_inf_blended_prediction() -> None:
+    """A fully open trace gate must not let 0 * inf poison target-trace blending."""
+    config = UPGDMemoryConfig(
+        feature_dim=2,
+        n_heads=2,
+        hidden_sizes=(4,),
+        slots_per_class=2,
+        readout_mode="softmax_ce",
+        confidence_logit_scale=0.0,
+        reliability_logit_scale=0.0,
+        target_trace_blend_scale=1.0,
+        target_trace_pressure_threshold=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    initial = learner.init(jr.key(7))
+    active_memory = initial.memory_state.replace(  # type: ignore[attr-defined]
+        counts=jnp.ones_like(initial.memory_state.counts)
+    )
+    trace_targets = jnp.asarray([0.7, 0.3], dtype=jnp.float32)
+    upgd_state = initial.upgd_state.replace(  # type: ignore[attr-defined]
+        previous_targets=trace_targets,
+        target_repeat_ema=jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    state = initial.replace(  # type: ignore[attr-defined]
+        memory_state=active_memory,
+        memory_logit=jnp.asarray(-90.0, dtype=jnp.float32),
+        upgd_state=upgd_state,
+    )
+    memory_prediction = jnp.asarray([0.2, 0.8], dtype=jnp.float32)
+    upgd_prediction = jnp.full((2,), jnp.inf, dtype=jnp.float32)
+    trace_prediction = jnp.asarray([0.7, 0.3], dtype=jnp.float32)
+    gate = learner._blend_gate(state, upgd_prediction, memory_prediction)
+    assert float(gate) == pytest.approx(0.0)
+    raw = (1.0 - jnp.asarray(1.0, dtype=jnp.float32)) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    prediction, _gate = learner._blend_predictions(
+        state,
+        upgd_prediction,
+        memory_prediction,
+        include_target_trace=True,
+    )
+
+    chex.assert_trees_all_close(prediction, trace_prediction, atol=1e-6)
+
+
 _INVALID_UPGD_MEMORY_CONFIGS: tuple[dict[str, object], ...] = (
     {"feature_dim": 0, "n_heads": 2},
     {"feature_dim": -1, "n_heads": 2},
@@ -565,6 +649,27 @@ def test_upgd_memory_preserves_legal_closed_endpoints() -> None:
     assert allocation_endpoint.target_allocation_rate == 1.0
     assert fixed_threshold.min_novelty_threshold == 0.5
     assert fixed_threshold.max_novelty_threshold == 0.5
+
+
+def test_public_prediction_ignores_overflow_in_fully_gated_finite_head() -> None:
+    config = UPGDMemoryConfig(
+        feature_dim=2, n_heads=2, hidden_sizes=(), slots_per_class=2,
+        readout_mode="linear_mse", confidence_logit_scale=0.0,
+        reliability_logit_scale=0.0, initial_memory_logit=90.0,
+        target_trace_blend_scale=0.0,
+    )
+    learner = UPGDMemoryLearner(config)
+    initial = learner.init(jr.key(1))
+    heads = initial.upgd_state.head_params.replace(
+        weights=tuple(jnp.full_like(w, 3e38) for w in initial.upgd_state.head_params.weights)
+    )
+    state = initial.replace(
+        upgd_state=initial.upgd_state.replace(head_params=heads),
+        memory_state=initial.memory_state.replace(counts=jnp.ones_like(initial.memory_state.counts)),
+    )
+    chex.assert_tree_all_finite(heads)
+    prediction = learner.predict(state, jnp.array([2.0, 2.0], dtype=jnp.float32))
+    chex.assert_trees_all_close(prediction, jnp.array([0.5, 0.5], dtype=jnp.float32))
 
 
 def _assert_simplex(normalized: jax.Array, label: str) -> None:
