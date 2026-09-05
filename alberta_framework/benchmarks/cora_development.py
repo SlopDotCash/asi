@@ -232,7 +232,7 @@ def _evaluate(
             query_index = block * len(TASK_TARGETS) + task_id
             action = int(jr.randint(_rng_key(seed, 1, query_index), (), 0, 2))
         else:
-            action = _greedy(shared, (block + task_id) % 2)
+            action = _greedy(shared, (seed + block) % 2)
         returns.append(float(action == target))
     return tuple(returns)
 

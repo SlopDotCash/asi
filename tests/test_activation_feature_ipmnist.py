@@ -11,6 +11,7 @@ from alberta_framework.benchmarks.activation_feature_ipmnist import (
     ACTIVATION_FEATURE_SOURCES,
     ACTIVATION_FEATURE_SPECS,
     DEVELOPMENT_SEEDS,
+    _aid_forward,
     _preflight_activation_feature_resources,
     activation_feature_result_payload,
     activation_feature_spec,
@@ -18,8 +19,12 @@ from alberta_framework.benchmarks.activation_feature_ipmnist import (
     validate_activation_feature_result,
     validate_matched_activation_feature_results,
 )
-from alberta_framework.benchmarks.ipmnist_screening import run_screening_config, screening_spec
-from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig
+from alberta_framework.benchmarks.ipmnist_screening import (
+    ema_normalize,
+    run_screening_config,
+    screening_spec,
+)
+from alberta_framework.benchmarks.upgd_ipmnist import _PLASTICITY_LOSS_FLOOR, IPMNISTConfig
 
 SMALL = IPMNISTConfig(n_tasks=2, task_length=4, input_dim=4, hidden1=4, hidden2=4, n_classes=2)
 
@@ -169,6 +174,56 @@ def test_factories_are_jittable_and_aid_is_deterministic_per_seed() -> None:
     np.testing.assert_array_equal(compiled[2][1], eager[2][1])
 
 
+def _stochastic_probe_params() -> dict[str, jnp.ndarray]:
+    keys = jax.random.split(jax.random.key(2), 6)
+    shapes = ((6, 8), (8,), (8, 8), (8,), (8, 3), (3,))
+    widths = (0.9, 0.3, 0.9, 0.3, 0.9, 0.3)
+    names = ("w1", "b1", "w2", "b2", "w3", "b3")
+    return {
+        name: jax.random.normal(key, shape) * width
+        for name, key, shape, width in zip(names, keys, shapes, widths, strict=True)
+    }
+
+
+@pytest.mark.parametrize("arm", ["aid", "ordinary_dropout"])
+def test_stochastic_arm_plasticity_holds_the_step_activation_mask_fixed(arm: str) -> None:
+    """Both sides of the plasticity ratio must use one activation rule.
+
+    The lane keeps ``run_screening_config``'s online metrics, and that runner's
+    ``_step_metrics`` evaluates ``loss`` and ``loss_after`` with a single
+    forward function, so plasticity isolates the parameter update.  ``aid`` and
+    ``ordinary_dropout`` are the only registered arms whose forward depends on
+    ``training``: their pre-update loss comes from a sampled mask, so the
+    post-update loss has to be scored under that same sampled mask rather than
+    under the deterministic evaluation rule.
+    """
+    params = _stochastic_probe_params()
+    x = jnp.asarray([1.0, -2.0, 0.5, 0.25, -0.75, 1.5], dtype=jnp.float32)
+    y = jnp.asarray(2, dtype=jnp.int32)
+    key = jax.random.key(2)
+    spec = activation_feature_spec(arm)
+    init, step = spec.factory(spec.hyperparameters)
+    state = init(params)
+    params_after, _next_state, (_accuracy, loss, plasticity) = step(params, state, x, y, key)
+
+    x_norm, _next_norm = ema_normalize(state.norm, x, 0.99, 1e-8)
+    ordinary = arm == "ordinary_dropout"
+    denominator = jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR)
+
+    def ratio(training: bool) -> float:
+        after = -jax.nn.log_softmax(
+            _aid_forward(params_after, x_norm, key, training, expected=False, ordinary=ordinary)
+        )[y]
+        return float(jnp.clip(1.0 - after / denominator, 0.0, 1.0))
+
+    mask_matched = ratio(True)
+    evaluation_rule = ratio(False)
+    # The two rules must actually disagree here, or this pins nothing.
+    assert abs(mask_matched - evaluation_rule) > 0.5
+    assert 0.0 < mask_matched < 1.0 and 0.0 < evaluation_rule < 1.0
+    assert float(plasticity) == pytest.approx(mask_matched, abs=1e-6)
+
+
 def test_activation_shard_is_independent_of_ambient_default_prng() -> None:
     x, y = _data()
     with jax.default_prng_impl("threefry2x32"):
@@ -190,7 +245,8 @@ def test_result_receipt_is_exact_bounded_and_permanently_nonpromoting() -> None:
     assert payload["development_seed_protocol"] == list(DEVELOPMENT_SEEDS)
     assert payload["resources"]["data_steps"] == 8
     assert payload["resources"]["model_queries"] == 16
-    assert payload["resources"]["random_bernoulli_variates"] == 64
+    # Two training-mode forwards per step, each masking hidden1 + hidden2 units.
+    assert payload["resources"]["random_bernoulli_variates"] == 128
     assert validate_activation_feature_result(copy.deepcopy(payload)) == payload
 
     hostile = copy.deepcopy(payload)

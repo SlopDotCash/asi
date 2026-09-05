@@ -8,6 +8,7 @@ import math
 import os
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -18,6 +19,7 @@ from alberta_framework.utils.export import (
     export_to_json,
     generate_latex_table,
     generate_markdown_table,
+    results_to_dataframe,
     save_experiment_report,
 )
 
@@ -451,6 +453,33 @@ def test_report_preflight_rejects_before_output_directory_mutation(
     assert list(existing.iterdir()) == [sentinel]
 
 
+def test_report_preserves_higher_is_better_table_direction(tmp_path: Path) -> None:
+    weak = _constant_result("weak", 0.2)
+    strong = _constant_result("strong", 0.9)
+    results = {
+        name: result._replace(
+            metric_arrays={"accuracy": result.metric_arrays[_METRIC]},
+            summary={"accuracy": result.summary[_METRIC]},
+        )
+        for name, result in (("weak", weak), ("strong", strong))
+    }
+
+    artifacts = save_experiment_report(
+        results,
+        tmp_path,
+        "accuracy_comparison",
+        metric="accuracy",
+        lower_is_better=False,
+    )
+
+    assert "| weak | 0.2000 ± 0.0000 |" in artifacts["markdown_table"].read_text()
+    assert "| strong | **0.9000** ± 0.0000 |" in artifacts["markdown_table"].read_text()
+    assert r"weak & 0.2000 $\pm$ 0.0000" in artifacts["latex_table"].read_text()
+    assert r"strong & \textbf{0.9000} $\pm$ 0.0000" in artifacts[
+        "latex_table"
+    ].read_text()
+
+
 @pytest.mark.parametrize("mode", ["summary_csv", "timeseries_csv", "json"])
 def test_shared_preflight_accepts_uint32_seed_boundaries(mode: str, tmp_path: Path) -> None:
     result = _timeseries_result()._replace(seeds=[0, (1 << 32) - 1])
@@ -581,3 +610,67 @@ def test_export_rejects_boolean_summary_statistics(
 
     with pytest.raises(ValueError, match="refusing to export boolean as numeric measurement"):
         generate_markdown_table(results)
+
+
+class TestCrossConfigFinalWindow:
+    """Metric-ranked exports must not compare means over different horizons."""
+
+    @staticmethod
+    def _aggregate(name: str, n_steps: int, settled: float):
+        from alberta_framework.core.optimizers import LMSState
+        from alberta_framework.core.types import LearnerState
+        from alberta_framework.utils import experiments as ex
+
+        state = LearnerState(
+            weights=jnp.zeros(1),
+            bias=jnp.zeros(()),
+            optimizer_state=LMSState(step_size=jnp.asarray(0.1)),
+            step_count=jnp.asarray(0),
+        )
+        trace = [5.0] * (n_steps - n_steps // 2) + [settled] * (n_steps // 2)
+        runs = [
+            ex.SingleRunResult(
+                config_name=name,
+                seed=seed,
+                metrics_history=[{"squared_error": float(v)} for v in trace],
+                final_state=state,
+            )
+            for seed in (0, 1, 2, 3)
+        ]
+        return ex.aggregate_metrics(runs)
+
+    def _unequal_results(self):
+        return {
+            "short": self._aggregate("short", 20, 0.10),
+            "long": self._aggregate("long", 500, 0.11),
+        }
+
+    def test_tables_fail_closed_on_unequal_final_windows(self) -> None:
+        results = self._unequal_results()
+        with pytest.raises(ValueError, match="final steps"):
+            generate_markdown_table(results, metric="squared_error")
+        with pytest.raises(ValueError, match="final steps"):
+            generate_latex_table(results, metric="squared_error")
+        with pytest.raises(ValueError, match="final steps"):
+            results_to_dataframe(results, metric="squared_error")
+
+    def test_plot_bars_fails_closed_on_unequal_final_windows(self) -> None:
+        pytest.importorskip("matplotlib")
+        from alberta_framework.utils.visualization import plot_final_performance_bars
+
+        with pytest.raises(ValueError, match="final steps"):
+            plot_final_performance_bars(self._unequal_results(), metric="squared_error")
+
+    def test_equal_windows_still_export(self) -> None:
+        results = {
+            "short": self._aggregate("short", 40, 0.10),
+            "long": self._aggregate("long", 60, 0.11),
+        }
+        with pytest.raises(ValueError, match="final steps"):
+            generate_markdown_table(results, metric="squared_error")
+        equal = {
+            "short": self._aggregate("short", 200, 0.10),
+            "long": self._aggregate("long", 500, 0.11),
+        }
+        table = generate_markdown_table(equal, metric="squared_error")
+        assert "short" in table and "long" in table
