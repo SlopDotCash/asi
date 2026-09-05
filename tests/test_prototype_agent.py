@@ -185,6 +185,44 @@ class TestPrototypeAgentConfigValidation:
         with pytest.raises(ValueError, match="n_dreams_per_step"):
             PrototypeAgentConfig(oak=_oak_cfg(), n_dreams_per_step=-1)
 
+    def test_n_dreams_per_step_rejects_scan_budget_overflow(self) -> None:
+        with pytest.raises(ValueError, match="n_dreams_per_step must be <= 10000"):
+            PrototypeAgentConfig(
+                oak=_oak_cfg(),
+                world_model=_wm_cfg(),
+                n_dreams_per_step=2**31 - 1,
+            )
+        with pytest.raises(ValueError, match="n_dreams_per_step must be <= 10000"):
+            PrototypeAgentConfig(
+                oak=_oak_cfg(),
+                world_model=_wm_cfg(),
+                n_dreams_per_step=10_001,
+            )
+
+    def test_n_dreams_per_step_accepts_budget_boundary_and_last_fit(self) -> None:
+        boundary = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            world_model=_wm_cfg(),
+            n_dreams_per_step=10_000,
+        )
+        last_fit = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            world_model=_wm_cfg(),
+            n_dreams_per_step=4,
+        )
+        assert boundary.n_dreams_per_step == 10_000
+        assert last_fit.n_dreams_per_step == 4
+
+    def test_from_config_rejects_oversized_n_dreams_per_step(self) -> None:
+        payload = PrototypeAgentConfig(
+            oak=_oak_cfg(),
+            world_model=_wm_cfg(),
+            n_dreams_per_step=4,
+        ).to_config()
+        payload["n_dreams_per_step"] = 2**31 - 1
+        with pytest.raises(ValueError, match="n_dreams_per_step must be <= 10000"):
+            PrototypeAgentConfig.from_config(payload)
+
     def test_dreams_require_world_model(self) -> None:
         with pytest.raises(ValueError, match="world_model"):
             PrototypeAgentConfig(oak=_oak_cfg(), n_dreams_per_step=2, world_model=None)

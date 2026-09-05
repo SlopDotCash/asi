@@ -49,6 +49,7 @@ import numpy as np
 from jax import Array
 from jaxtyping import Bool, Float, Int, UInt
 
+from alberta_framework._scan_resources import ScanBudget
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
@@ -266,6 +267,12 @@ def feature_to_subtask_specs(
 
 
 _INT32_MAX = 2**31 - 1
+# Public last-fit in tests is 4 dreams per step. Origin handed INT32_MAX to
+# jnp.arange with no last-fit reject — hang/OOM, not an INT32 leftover.
+_PROTOTYPE_DREAM_STEP_BUDGET = ScanBudget(
+    "prototype dreams per step",
+    maximum_steps=10_000,
+)
 _UINT32_MAX = 4_294_967_295
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
         int,
@@ -731,7 +738,7 @@ class PrototypeAgentConfig:
                 "n_dreams_per_step",
                 self.n_dreams_per_step,
                 minimum=0,
-                maximum=_INT32_MAX,
+                maximum=_PROTOTYPE_DREAM_STEP_BUDGET.maximum_steps,
             ),
         )
         # horde_hidden_sizes: hostile-safe per-element validation
@@ -1341,7 +1348,10 @@ class PrototypeAgentConfig:
             "buffer_capacity", data.pop("buffer_capacity", 200), minimum=1, maximum=_INT32_MAX
         )
         n_dreams_per_step = _require_int(
-            "n_dreams_per_step", data.pop("n_dreams_per_step", 0), minimum=0, maximum=_INT32_MAX
+            "n_dreams_per_step",
+            data.pop("n_dreams_per_step", 0),
+            minimum=0,
+            maximum=_PROTOTYPE_DREAM_STEP_BUDGET.maximum_steps,
         )
         dream_next_observation_mode = data.pop(
             "dream_next_observation_mode",
