@@ -25,6 +25,7 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
+from alberta_framework._bounded_containers import require_json_text_nesting
 from alberta_framework._seed_validation import require_unique_jax_seeds
 
 UPGD_IPMNIST_PARTIAL_SCHEMA = "upgd_ipmnist.partial.v1"
@@ -283,29 +284,6 @@ def _require_exact_str(name: object, value: object) -> str:
 _MAX_JSON_NESTING_DEPTH = 64
 
 
-def _scan_json_nesting(text: str) -> None:
-    """Reject nests that RecursionError ``json.loads`` before the parser runs."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-        if character == '"':
-            in_string = True
-        elif character in "[{":
-            depth += 1
-            if depth > _MAX_JSON_NESTING_DEPTH:
-                raise ValueError("JSON payload exceeds the nesting-depth limit")
-        elif character in "]}":
-            depth -= 1
-
 
 def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
     def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -329,7 +307,9 @@ def _decode_strict_json_object(raw: bytes) -> dict[str, object]:
         return parsed
 
     text = raw.decode("utf-8")
-    _scan_json_nesting(text)
+    require_json_text_nesting(
+        text, max_depth=_MAX_JSON_NESTING_DEPTH, name="JSON payload"
+    )
     try:
         parsed = json.loads(
             text,
