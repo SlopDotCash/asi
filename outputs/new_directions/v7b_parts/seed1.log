@@ -1,0 +1,8 @@
+relevant pixels: 507/784
+seed 1 control  avg=0.869830 plast=0.00497 (112s)
+seed 1 p000     avg=0.870480 plast=0.00542 (100s)
+seed 1 p062     avg=0.918723 plast=0.00464 (98s)
+seed 1 p079     avg=0.926143 plast=0.00273 (99s)
+seed 1 p090     avg=0.928310 plast=0.00132 (97s)
+seed 1 p100     avg=0.931360 plast=0.00109 (100s)
+wrote outputs/new_directions/v7b_parts/V7b_seed1.json

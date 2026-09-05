@@ -4542,6 +4542,9 @@ class RLSHeadState:
 
 
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
+_WHITEN_NORM_FLOOR = 1e-12
+_NEWTON_RIDGE_REL = 1e-3
+_NEWTON_RIDGE_ABS = 1e-6
 
 
 @chex.dataclass(frozen=True)
@@ -4676,6 +4679,22 @@ def _make_rls_head_learner(
     trace_cap = hp["rls_p_trace_cap"]
     cap_enabled = trace_cap > 0.0
     resid = hp["head_resid"] != 0.0
+    resid_whiten = hp.get("resid_whiten", 0.0)
+    if not 0.0 <= resid_whiten <= 1.0:
+        raise ValueError("resid_whiten must lie in [0, 1]")
+    whiten_enabled = resid_whiten > 0.0
+    resid_newton = hp.get("resid_newton", 0.0)
+    if resid_newton not in (0.0, 1.0):
+        raise ValueError(
+            "resid_newton selects a direction and must be 0.0 or 1.0"
+        )
+    newton = resid_newton == 1.0
+    if whiten_enabled and not resid:
+        raise ValueError(
+            "resid_whiten is supported only for the residual body"
+        )
+    if whiten_enabled and _decay_to_init:
+        raise ValueError("resid_whiten and L2-Init are not composed")
     gate_scale = hp.get("gate_scale", 1.0)
     if gate_scale not in (0.0, 1.0):
         raise ValueError(
@@ -4827,19 +4846,65 @@ def _make_rls_head_learner(
         if resid:
             body = {name: params[name] for name in _RLS_HEAD_BODY}
 
-            def head_loss(
-                body_params: dict[str, Array],
-            ) -> tuple[Array, tuple[Array, Array]]:
-                merged = dict(params)
-                merged.update(body_params)
-                phi = _phi(merged, x_norm)
-                logits = state.wout.T @ phi
-                err = y_onehot - logits
-                return 0.5 * jnp.sum(err * err), (logits, phi)
+            if whiten_enabled:
+                # Preconditioned residual signal.  ``delta`` is a constant of
+                # the body (every factor below is detached), so the
+                # surrogate's gradient is exactly ``-J_phi^T delta`` — the
+                # incumbent's own gradient when ``delta = wout @ err``.  The
+                # renormalization holds ``||delta|| = ||g||`` at every
+                # ``resid_whiten``, so the direction rotates but the
+                # magnitude, and hence the frozen step-size calibration, does
+                # not move (negative result #1).
 
-            (loss, (logits, phi)), body_grads = jax.value_and_grad(
-                head_loss, has_aux=True
-            )(body)
+                def head_surrogate(
+                    body_params: dict[str, Array],
+                ) -> tuple[Array, tuple[Array, Array, Array]]:
+                    merged = dict(params)
+                    merged.update(body_params)
+                    phi = _phi(merged, x_norm)
+                    logits = state.wout.T @ phi
+                    err = y_onehot - logits
+                    surrogate_loss = 0.5 * jnp.sum(err * err)
+                    err_c = jax.lax.stop_gradient(err)
+                    g = state.wout @ err_c
+                    if newton:
+                        gram = state.wout.T @ state.wout
+                        ridge = (
+                            _NEWTON_RIDGE_REL * jnp.trace(gram) / n_classes
+                            + _NEWTON_RIDGE_ABS
+                        )
+                        precond = state.wout @ jnp.linalg.solve(
+                            gram
+                            + ridge * jnp.eye(n_classes, dtype=jnp.float32),
+                            err_c,
+                        )
+                    else:
+                        precond = state.p @ g
+                    d_dir = (1.0 - resid_whiten) * g + resid_whiten * precond
+                    scale = jnp.linalg.norm(g) / jnp.maximum(
+                        jnp.linalg.norm(d_dir), _WHITEN_NORM_FLOOR
+                    )
+                    delta = jax.lax.stop_gradient(d_dir * scale)
+                    return -jnp.dot(phi, delta), (logits, phi, surrogate_loss)
+
+                (_, (logits, phi, loss)), body_grads = jax.value_and_grad(
+                    head_surrogate, has_aux=True
+                )(body)
+            else:
+
+                def head_loss(
+                    body_params: dict[str, Array],
+                ) -> tuple[Array, tuple[Array, Array]]:
+                    merged = dict(params)
+                    merged.update(body_params)
+                    phi = _phi(merged, x_norm)
+                    logits = state.wout.T @ phi
+                    err = y_onehot - logits
+                    return 0.5 * jnp.sum(err * err), (logits, phi)
+
+                (loss, (logits, phi)), body_grads = jax.value_and_grad(
+                    head_loss, has_aux=True
+                )(body)
             if gate_enabled:
                 new_params, new_utility = _gated_sgd(
                     params,
@@ -4918,6 +4983,263 @@ def _make_rls_head_learner(
             p=new_p,
             wout=new_wout,
         ), (accuracy, loss, plasticity)
+
+    return init_fn, full_step
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadIdentState:
+    """Incumbent state plus the online permutation-identification carry.
+
+    ``inner`` is the unmodified incumbent state.  ``raw_norm``/``raw_fast``
+    run the champion's shift detector on the RAW input stream (the incumbent's
+    own detector sees the remapped stream, whose shifts include the remap
+    landing).  ``ref_*`` accumulate task-0 class-conditional / marginal
+    statistics until the first detected boundary freezes them; ``post_*``
+    re-accumulate after every detected boundary.  ``remap`` is the current
+    estimated inverse permutation composed with the reference layout
+    (identity until the first match of each task).
+    """
+
+    inner: RLSHeadState
+    raw_norm: EMANormState
+    raw_fast: Array
+    ref_class_sums: Array
+    ref_class_count: Array
+    ref_sq_sums: Array
+    ref_frozen: Array
+    post_class_sums: Array
+    post_class_count: Array
+    post_sq_sums: Array
+    since_shift: Array
+    remap: Array
+
+
+def _identmap_assignment(
+    ref_class_means: np.ndarray,
+    ref_marg_mean: np.ndarray,
+    ref_marg_std: np.ndarray,
+    post_class_means: np.ndarray,
+    post_marg_mean: np.ndarray,
+    post_marg_std: np.ndarray,
+) -> np.ndarray:
+    """Hungarian assignment of post-shift positions to reference positions.
+
+    V1's fingerprint: per-position class-conditional means plus marginal
+    mean/std, each dimension z-scored across positions independently per
+    side, Euclidean cost, ``linear_sum_assignment``.  Runs on the host via
+    ``jax.pure_callback`` exactly once per matching step.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    def fingerprint(cm: np.ndarray, mm: np.ndarray, ms: np.ndarray) -> np.ndarray:
+        vec = np.concatenate([cm.T, mm[:, None], ms[:, None]], axis=1)
+        mu = vec.mean(axis=0, keepdims=True)
+        sd = vec.std(axis=0, keepdims=True)
+        return (vec - mu) / np.maximum(sd, 1e-8)
+
+    ref_vec = fingerprint(ref_class_means, ref_marg_mean, ref_marg_std)
+    post_vec = fingerprint(post_class_means, post_marg_mean, post_marg_std)
+    cost = (
+        (ref_vec**2).sum(axis=1)[:, None]
+        + (post_vec**2).sum(axis=1)[None, :]
+        - 2.0 * ref_vec @ post_vec.T
+    )
+    _rows, cols = linear_sum_assignment(cost)
+    assignment: np.ndarray = np.asarray(cols, dtype=np.int32)
+    return assignment
+
+
+def _make_rls_head_identmap_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Incumbent + online permutation identification and input remap.
+
+    The V7/V8 oracle chain measured that a partially correct input remap
+    delivered at ~200 post-shift samples is worth ~+0.030 to the incumbent
+    (V8: N=200 at V1's measured 0.62 identification accuracy scored
+    0.8997), and that timing dominates accuracy.  This arm builds the real
+    mechanism: V1's class-conditional fingerprint estimated online, the
+    champion's own shift detector run on the raw stream, and a Hungarian
+    assignment at ``ident_match_at`` samples after each detected boundary
+    (optional re-matches at ``ident_match2``/``ident_match3`` refine the map
+    as accuracy improves with N per V1's curve).  Prediction and learning
+    then see ``x[remap]``.  Labels are consumed post-prediction, which the
+    protocol permits.  ``ident_match_at = 0`` delegates verbatim to
+    :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
+    """
+    match1 = float(hp["ident_match_at"])
+    if match1 == 0.0:
+        return _make_rls_head_learner(hp)
+    match2 = float(hp.get("ident_match2", 0.0))
+    match3 = float(hp.get("ident_match3", 0.0))
+    ident_frac = float(hp.get("ident_reset_frac", 0.05))
+    if hp["head_resid"] == 0.0:
+        raise ValueError("identmap is registered for the residual arm only")
+    inner_init, inner_step = _make_rls_head_learner(hp)
+
+    def raw_normalize(
+        state: EMANormState, fast_mean: Array, x: Array
+    ) -> tuple[Array, EMANormState, Array, Array]:
+        return shift_adaptive_normalize(
+            state, fast_mean, x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+
+    def init_fn(params: dict[str, Array]) -> RLSHeadIdentState:
+        input_dim = params["w1"].shape[0]
+        n_classes = params["w3"].shape[1]
+        return RLSHeadIdentState(  # type: ignore[call-arg]
+            inner=inner_init(params),
+            raw_norm=EMANormState(  # type: ignore[call-arg]
+                mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                var=jnp.ones(input_dim, dtype=jnp.float32),
+                count=jnp.zeros(input_dim, dtype=jnp.float32),
+            ),
+            raw_fast=jnp.zeros(input_dim, dtype=jnp.float32),
+            ref_class_sums=jnp.zeros((n_classes, input_dim), dtype=jnp.float32),
+            ref_class_count=jnp.zeros((n_classes,), dtype=jnp.float32),
+            ref_sq_sums=jnp.zeros((input_dim,), dtype=jnp.float32),
+            ref_frozen=jnp.zeros((), dtype=jnp.bool_),
+            post_class_sums=jnp.zeros((n_classes, input_dim), dtype=jnp.float32),
+            post_class_count=jnp.zeros((n_classes,), dtype=jnp.float32),
+            post_sq_sums=jnp.zeros((input_dim,), dtype=jnp.float32),
+            since_shift=jnp.array(-(2**30), dtype=jnp.int32),
+            remap=jnp.arange(input_dim, dtype=jnp.int32),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: RLSHeadIdentState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], RLSHeadIdentState, StepMetrics]:
+        input_dim = x.shape[0]
+        n_classes = state.ref_class_sums.shape[0]
+        x_r = x[state.remap]
+        new_params, new_inner, metrics = inner_step(
+            params, state.inner, x_r, y, key
+        )
+        _x_norm, new_raw_norm, new_raw_fast, shifted = raw_normalize(
+            state.raw_norm, state.raw_fast, x
+        )
+        trigger = jnp.mean(shifted.astype(jnp.float32)) >= ident_frac
+        onehot = jax.nn.one_hot(y, n_classes, dtype=jnp.float32)
+        class_incr = jnp.outer(onehot, x)
+        keep_ref = jnp.logical_and(
+            jnp.logical_not(state.ref_frozen), jnp.logical_not(trigger)
+        )
+        ref_class_sums = jnp.where(
+            keep_ref, state.ref_class_sums + class_incr, state.ref_class_sums
+        )
+        ref_class_count = jnp.where(
+            keep_ref, state.ref_class_count + onehot, state.ref_class_count
+        )
+        ref_sq_sums = jnp.where(
+            keep_ref, state.ref_sq_sums + x * x, state.ref_sq_sums
+        )
+        ref_frozen = jnp.logical_or(state.ref_frozen, trigger)
+        post_class_sums = jnp.where(
+            trigger,
+            class_incr,
+            jnp.where(
+                state.ref_frozen,
+                state.post_class_sums + class_incr,
+                state.post_class_sums,
+            ),
+        )
+        post_class_count = jnp.where(
+            trigger,
+            onehot,
+            jnp.where(
+                state.ref_frozen,
+                state.post_class_count + onehot,
+                state.post_class_count,
+            ),
+        )
+        post_sq_sums = jnp.where(
+            trigger,
+            x * x,
+            jnp.where(
+                state.ref_frozen, state.post_sq_sums + x * x, state.post_sq_sums
+            ),
+        )
+        since = jnp.where(
+            trigger, jnp.array(1, jnp.int32), state.since_shift + 1
+        )
+        remap = jnp.where(
+            trigger, jnp.arange(input_dim, dtype=jnp.int32), state.remap
+        )
+        do_match = jnp.logical_and(
+            ref_frozen,
+            jnp.logical_or(
+                since == int(match1),
+                jnp.logical_or(
+                    since == int(match2) if match2 else jnp.bool_(False),
+                    since == int(match3) if match3 else jnp.bool_(False),
+                ),
+            ),
+        )
+
+        ref_n = jnp.sum(ref_class_count)
+        post_n = jnp.sum(post_class_count)
+        ref_class_means = ref_class_sums / jnp.maximum(
+            ref_class_count[:, None], 1.0
+        )
+        post_class_means = post_class_sums / jnp.maximum(
+            post_class_count[:, None], 1.0
+        )
+        ref_marg_mean = jnp.sum(ref_class_sums, axis=0) / jnp.maximum(ref_n, 1.0)
+        post_marg_mean = jnp.sum(post_class_sums, axis=0) / jnp.maximum(
+            post_n, 1.0
+        )
+        ref_marg_std = jnp.sqrt(
+            jnp.maximum(
+                ref_sq_sums / jnp.maximum(ref_n, 1.0) - ref_marg_mean**2, 0.0
+            )
+        )
+        post_marg_std = jnp.sqrt(
+            jnp.maximum(
+                post_sq_sums / jnp.maximum(post_n, 1.0) - post_marg_mean**2, 0.0
+            )
+        )
+
+        def matched(_: None) -> Array:
+            result = jax.pure_callback(
+                _identmap_assignment,
+                jax.ShapeDtypeStruct(  # type: ignore[no-untyped-call]
+                    (input_dim,), jnp.int32
+                ),
+                ref_class_means, ref_marg_mean, ref_marg_std,
+                post_class_means, post_marg_mean, post_marg_std,
+                vmap_method="sequential",
+            )
+            return cast(Array, result)
+
+        def unmatched(_: None) -> Array:
+            return remap
+
+        remap = jax.lax.cond(do_match, matched, unmatched, None)
+        return new_params, RLSHeadIdentState(  # type: ignore[call-arg]
+            inner=new_inner,
+            raw_norm=new_raw_norm,
+            raw_fast=new_raw_fast,
+            ref_class_sums=ref_class_sums,
+            ref_class_count=ref_class_count,
+            ref_sq_sums=ref_sq_sums,
+            ref_frozen=ref_frozen,
+            post_class_sums=post_class_sums,
+            post_class_count=post_class_count,
+            post_sq_sums=post_sq_sums,
+            since_shift=since,
+            remap=remap,
+        ), metrics
 
     return init_fn, full_step
 
@@ -7776,6 +8098,12 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "residual-driven body at ridge 0.01 + P reset (ridge direction "
             "probe on the residual loop)",
         ),
+        # The preconditioned-residual and residual-forgetting arms
+        # screened here (gn/gn05/tp/tp05/tp_nogate, resid_l0999_pcap) were
+        # refuted or failed 200-task confirmation — negative results
+        # #19-#21 — and are deregistered.  Ledger entries, factories, and
+        # pinned outputs are retained; the shards bind the commits that ran
+        # them.
     ):
         body_update = (
             "plain decayed residual SGD (utility bookkeeping removed)"
@@ -7798,6 +8126,51 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                     "penultimate features — " + rls_extra + ". One-hot LS "
                     "regression + argmax by design (softmax/logistic "
                     "targets admit no exact RLS recursion)."
+                ),
+            )
+        )
+    # Online permutation identification + input remap (V7/V8 chain).  V8
+    # measured that a single-shot remap at N=200 post-shift samples and
+    # V1's measured 0.62 identification accuracy lifts the incumbent to
+    # 0.8997; a refining identifier rides the upper envelope.  The arms
+    # below are the two 200-task/20-seed CONFIRMED members of the family
+    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # intermediates (identmap200 single-shot, identmap100_r) and the
+    # round-2 rejections (identmap25_r, identmap50_fast — negative result
+    # #22) are deregistered but retained in the ledger and pinned outputs.
+    # ident_match_at=0 delegates verbatim to the incumbent factory
+    # (bit-exact reduction, pinned by tests).
+    for ident_name, ident_overrides, ident_extra in (
+        (
+            "rls_head_resid_identmap50_r",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0},
+            "first match at 50 post-shift samples (~0.20 accuracy), "
+            "refined at 200 and 2000 — the star optimum, 200-task "
+            "confirmed at 0.9166 (+0.00745 vs identmap200_r, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap200_r",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 200.0, "ident_match2": 500.0,
+             "ident_match3": 2000.0},
+            "matches at 200/500/2000 post-shift samples — 200-task "
+            "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+    ):
+        specs.append(
+            ScreeningSpec(
+                name=ident_name,
+                base_learner="upgd_w",
+                mechanism="rls_readout",
+                hyperparameters=_rls_head_hp(**ident_overrides),
+                factory=_make_rls_head_identmap_learner,
+                frozen_probe_input=_rls_head_frozen_probe_input,
+                description=(
+                    "Residual RLS-head incumbent behind an online "
+                    "permutation identifier: " + ident_extra + ". Labels "
+                    "consumed post-prediction (protocol-legal)."
                 ),
             )
         )

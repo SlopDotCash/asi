@@ -1,0 +1,6 @@
+relevant pixels: 507/784
+seed 2 control  avg=0.869493 plast=0.00561 (101s)
+seed 2 N200_p062 avg=0.899837 plast=0.00561 (106s)
+seed 2 N500_p078 avg=0.898363 plast=0.00696 (106s)
+seed 2 N2000_p084 avg=0.874353 plast=0.00766 (109s)
+wrote outputs/new_directions/v8_parts/V8_seed2.json
