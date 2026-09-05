@@ -1317,11 +1317,11 @@ def test_optimizer_state_allocations_are_preflighted_at_exact_byte_bounds() -> N
     with pytest.raises(ValueError, match="ObGD state byte count"):
         ObGD().init(obgd_last + 1)
 
-    td_last = (float32_scalar_limit - 5) // 3
+    td_last = (float32_scalar_limit - 6) // 3
     with pytest.raises(ValueError, match="TDIDBD state byte count"):
         TDIDBD().init(td_last + 1)
 
-    auto_td_last = (float32_scalar_limit - 7) // 4
+    auto_td_last = (float32_scalar_limit - 8) // 4
     with pytest.raises(ValueError, match="AutoTDIDBD state byte count"):
         AutoTDIDBD().init(auto_td_last + 1)
 
@@ -1340,8 +1340,8 @@ def test_optimizer_parameter_shape_products_are_preflighted_without_allocation()
         (Autostep(), 3 * 4 + 5),
         (AutostepGTDLambda(), 4 * 4 + 7),
         (ObGD(), 4 + 5),
-        (TDIDBD(), 3 * 4 + 5),
-        (AutoTDIDBD(), 4 * 4 + 7),
+        (TDIDBD(), 3 * 4 + 6),
+        (AutoTDIDBD(), 4 * 4 + 8),
     ],
 )
 def test_optimizer_vector_state_resource_formulas_are_exact(
