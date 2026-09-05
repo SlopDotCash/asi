@@ -118,7 +118,11 @@ from alberta_framework._seed_validation import (
 )
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.baseline_optimizers import Adam
-from alberta_framework.core.canonical_upgd import CanonicalUPGD, CanonicalUPGDConfig
+from alberta_framework.core.canonical_upgd import (
+    CanonicalUPGD,
+    CanonicalUPGDConfig,
+    _saturating_increment,
+)
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     select_transaction,
@@ -665,7 +669,7 @@ def lean_upgd_w_update(
     beta = hp["utility_decay"]
     step_size = hp["step_size"]
     decay = 1.0 - step_size * hp["weight_decay"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _saturating_increment(state.step)
     beta_arr = jnp.asarray(beta, dtype=jnp.float32)
     utility = {
         name: _skip_zero_scale(beta_arr, state.utility[name])

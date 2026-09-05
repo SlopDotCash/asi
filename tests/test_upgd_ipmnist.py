@@ -756,6 +756,47 @@ class TestLeanUPGDParity:
                     err_msg=f"step {step} utility {name}",
                 )
 
+    def test_int32_max_clock_saturates_with_canonical(self) -> None:
+        """Plain +1 wraps the lean clock; CanonicalUPGD saturates.
+
+        A wrapped count poisons ``1 - beta**count`` and diverges the
+        protecting gate. This is not a modulo event schedule (#2381).
+        """
+        int32_max = np.iinfo(np.int32).max
+        wrapped = jnp.array(int32_max, dtype=jnp.int32) + jnp.array(1, dtype=jnp.int32)
+        assert int(wrapped) == -int32_max - 1
+
+        hp = dict(UPGD_W_PROTOCOL_HYPERPARAMETERS)
+        shapes = {"w1": (3, 2), "b1": (2,)}
+        params = {
+            name: 0.1 * jnp.ones(shape, dtype=jnp.float32) for name, shape in shapes.items()
+        }
+        grads = {
+            name: 0.01 * jnp.ones(shape, dtype=jnp.float32) for name, shape in shapes.items()
+        }
+        noise = {name: jnp.zeros(shape, dtype=jnp.float32) for name, shape in shapes.items()}
+        canonical = canonical_upgd_w(hp)
+        canonical_state = canonical.init(params).replace(  # type: ignore[attr-defined]
+            step=jnp.asarray(int32_max, dtype=jnp.int32)
+        )
+        canonical_update = canonical.update(
+            canonical_state, params, grads, jr.key(0), noise=noise
+        )
+        lean_state = LeanUPGDState(
+            utility={name: jnp.zeros_like(value) for name, value in params.items()},
+            step=jnp.asarray(int32_max, dtype=jnp.int32),
+        )
+        lean_params, lean_next = lean_upgd_w_update(params, lean_state, grads, noise, hp)
+        assert int(lean_next.step) == int32_max
+        assert int(canonical_update.state.step) == int32_max
+        for name in shapes:
+            np.testing.assert_allclose(
+                np.asarray(lean_params[name]),
+                np.asarray(canonical_update.params[name]),
+                atol=1e-6,
+                err_msg=name,
+            )
+
 
 def test_zero_utility_decay_does_not_multiply_inf_utility() -> None:
     """utility_decay=0 times poisoned utility EMA is 0*inf = NaN without a skip."""
