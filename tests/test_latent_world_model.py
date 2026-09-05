@@ -749,3 +749,33 @@ def test_latent_world_model_init_rejects_nonfinite_encoder_draw() -> None:
 
     with pytest.raises(ValueError, match="encoder initialization"):
         model.init(jr.key(0))
+
+
+def test_latent_world_model_observation_scale_normalizes_without_floor() -> None:
+    """Observation scale below 1e-6 normalizes by exact configured scale."""
+    key = jr.key(42)
+    latents = []
+    for scale in (1.0, 1e-6, 1e-9, 1e-20):
+        config = LatentWorldModelConfig(
+            observation_dim=2,
+            latent_dim=4,
+            n_actions=2,
+            observation_scale=(scale, scale),
+        )
+        model = LatentWorldModel(config)
+        state = model.init(key)
+        obs = jnp.asarray([1.5 * scale, -0.75 * scale], dtype=jnp.float32)
+        latents.append(np.asarray(model.encode(state, obs)))
+
+    for i in range(1, len(latents)):
+        np.testing.assert_allclose(latents[i], latents[0], atol=1e-6)
+
+    # Subnormal scale whose float32 reciprocal overflows to inf must be rejected
+    subnormal = float(np.finfo(np.float32).smallest_subnormal)
+    with pytest.raises(ValueError, match="observation_scale"):
+        LatentWorldModelConfig(
+            observation_dim=1,
+            latent_dim=2,
+            n_actions=2,
+            observation_scale=(subnormal,),
+        )

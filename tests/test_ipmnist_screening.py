@@ -109,6 +109,88 @@ SMALL = IPMNISTConfig(
 )
 
 
+def test_zero_utility_decay_does_not_multiply_inf_utility() -> None:
+    """utility_decay=0 times poisoned utility EMA is 0*inf = NaN without a skip."""
+    params = {
+        "w": jnp.asarray([[1.0, -0.5], [0.25, 0.5]], dtype=jnp.float32),
+        "b": jnp.asarray([0.1, -0.2], dtype=jnp.float32),
+    }
+    poisoned = {name: jnp.full_like(value, jnp.inf) for name, value in params.items()}
+    grads = {name: jnp.ones_like(value) for name, value in params.items()}
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+
+    new_utility, gate = _upgd_utility_and_gate(
+        params,
+        grads,
+        poisoned,
+        jnp.asarray(3, dtype=jnp.int32),
+        0.0,
+    )
+    for name in params:
+        assert bool(jnp.all(jnp.isfinite(new_utility[name])))
+        assert bool(jnp.all(jnp.isfinite(gate[name])))
+        np.testing.assert_allclose(
+            np.asarray(new_utility[name]),
+            np.asarray(-grads[name] * params[name]),
+            atol=1e-6,
+        )
+
+def test_zero_lion_beta_does_not_multiply_inf_momentum() -> None:
+    """lion_beta1/beta2=0 times poisoned momentum is 0*inf = NaN without a skip."""
+    from alberta_framework.benchmarks.ipmnist_screening import (
+        LionGateState,
+        _init_input_norm_state,
+    )
+
+    params = init_mlp_params(jr.key(0), SMALL)
+    hp = dict(screening_spec("lion_gate").hyperparameters)
+    hp["lion_beta1"] = 0.0
+    hp["lion_beta2"] = 0.0
+    _, step_fn = _make_lion_gate_learner(hp)
+    state = LionGateState(  # type: ignore[call-arg]
+        utility={name: jnp.zeros_like(value) for name, value in params.items()},
+        step=jnp.asarray(2, dtype=jnp.int32),
+        momentum={name: jnp.full_like(value, jnp.inf) for name, value in params.items()},
+        norm=_init_input_norm_state(params),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+    x = jr.normal(jr.key(1), (SMALL.input_dim,))
+    y = jnp.asarray(0, dtype=jnp.int32)
+    new_params, new_state, _ = step_fn(params, state, x, y, jr.key(2))
+    for name in params:
+        assert bool(jnp.all(jnp.isfinite(new_state.momentum[name])))
+        assert bool(jnp.all(jnp.isfinite(new_params[name])))
+
+
+def test_zero_rms_rho_does_not_multiply_inf_second_moment() -> None:
+    """rms_rho=0 times poisoned second-moment EMA is 0*inf = NaN without a skip."""
+    from alberta_framework.benchmarks.ipmnist_screening import (
+        NormRMSGateState,
+        _init_input_norm_state,
+    )
+
+    params = init_mlp_params(jr.key(0), SMALL)
+    hp = dict(screening_spec("norm_rmsprop_gate").hyperparameters)
+    hp["rms_rho"] = 0.0
+    _, step_fn = _make_norm_rmsprop_gate_learner(hp)
+    state = NormRMSGateState(  # type: ignore[call-arg]
+        utility={name: jnp.zeros_like(value) for name, value in params.items()},
+        step=jnp.asarray(2, dtype=jnp.int32),
+        v={name: jnp.full_like(value, jnp.inf) for name, value in params.items()},
+        norm=_init_input_norm_state(params),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
+    assert not bool(jnp.isfinite(raw))
+    x = jr.normal(jr.key(1), (SMALL.input_dim,))
+    y = jnp.asarray(0, dtype=jnp.int32)
+    new_params, new_state, _ = step_fn(params, state, x, y, jr.key(2))
+    for name in params:
+        assert bool(jnp.all(jnp.isfinite(new_state.v[name])))
+        assert bool(jnp.all(jnp.isfinite(new_params[name])))
+
+
 def _test_source_provenance(
     *, source_sha256: str = "3" * 64,
 ) -> dict[str, object]:
@@ -6450,3 +6532,42 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+class TestPlasticityCounterSaturation:
+    """Per-unit plasticity counters must saturate via the declared helper.
+
+    ``state.silence*`` and ``state.age*``/``cbp.age*`` are ``int32`` lifetime
+    counters that reset to ``0`` on firing/replacement but grow
+    monotonically otherwise. A plain ``+ 1`` wraps ``2147483647 -> -2147483648``;
+    the canonical ``_saturating_int32_counter_increment`` caps at ``2147483647``.
+    """
+
+    def test_plasticity_counters_saturate(self):
+        import jax.numpy as jnp
+
+        from alberta_framework.core.normalizers import (
+            _saturating_int32_counter_increment,
+        )
+
+        int_max = jnp.array(2_147_483_647, dtype=jnp.int32)
+        assert int(_saturating_int32_counter_increment(int_max)) == 2_147_483_647
+        assert int(int_max + jnp.array(1, dtype=jnp.int32)) == -2_147_483_648
+        # silence path: where(fired,0, inc(silence))
+        fired = jnp.array(False)
+        silence = jnp.array(2_147_483_647, dtype=jnp.int32)
+        plain = jnp.where(fired, 0, silence + jnp.array(1, dtype=jnp.int32))
+        safe = jnp.where(fired, 0, _saturating_int32_counter_increment(silence))
+        assert int(plain) == -2_147_483_648
+        assert int(safe) == 2_147_483_647
+
+    def test_helper_is_reused_by_name(self):
+        text = Path("alberta_framework/benchmarks/ipmnist_screening.py").read_text()
+        assert (
+            "from alberta_framework.core.normalizers import _saturating_int32_counter_increment"
+            in text
+        )
+        # per-unit sites must use helper
+        assert "state.silence1 + 1" not in text
+        assert "state.silence2 + 1" not in text
+        assert "state.age1 + 1" not in text
+        assert "cbp.age1 + 1" not in text
