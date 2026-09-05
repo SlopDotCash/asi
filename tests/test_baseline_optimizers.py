@@ -587,14 +587,10 @@ class TestNADALINE:
 
 
 class TestGradientPathErrorContract:
-    """Callers of the gradient path apply ``param += error * step``.
+    """Baseline optimizers advertise complete error-supplied additive deltas.
 
-    The framework-wide gradient-path contract
-    (:meth:`Optimizer.update_from_gradient`) returns a step that excludes the
-    error; MLP-path learners then apply ``param += error * step``.  For Adam
-    and RMSprop that application must reproduce each method's own descent
-    update for ``loss = 0.5 * error**2``, matching the linear path's moment
-    accumulation on the loss gradient ``-error * gradient``.
+    Applying these deltas must match a loss-gradient update, including the
+    momentum trajectory at zero residual. Legacy optimizers remain factored.
     """
 
     def test_adam_first_step_applies_descent_delta(self):
@@ -604,7 +600,7 @@ class TestGradientPathErrorContract:
         error = jnp.array(0.5)
         result = optimizer.update_from_gradient_checked(state, gradient, error=error)
         assert bool(result.update_applied)
-        applied = float(error * result.step[0])
+        applied = float(result.step[0])
         # t=1: bias-corrected m_hat = g, v_hat = g^2 for loss gradient
         # g = -error*gradient, so the descent delta applied to the parameter
         # is alpha * error*gradient / (|error*gradient| + eps).
@@ -619,7 +615,7 @@ class TestGradientPathErrorContract:
         error = jnp.array(0.5)
         result = optimizer.update_from_gradient_checked(state, gradient, error=error)
         assert bool(result.update_applied)
-        applied = float(error * result.step[0])
+        applied = float(result.step[0])
         # t=1: v = (1-decay) * (error*gradient)^2, and the descent delta is
         # alpha * error*gradient / (sqrt(v) + eps).
         g = float(error) * float(gradient[0])
@@ -638,7 +634,7 @@ class TestGradientPathErrorContract:
             )
             assert bool(result.update_applied)
             state = result.new_state
-            w = w + error * result.step
+            w = w + result.step
         assert float(w) == pytest.approx(1.0, abs=0.05)
 
     @pytest.mark.parametrize("make_optimizer", [Adam, RMSprop])

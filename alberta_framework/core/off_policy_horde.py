@@ -25,7 +25,10 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -828,19 +831,20 @@ class OffPolicyHordeLearner:
                 param=head_b,
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
+            step_error = _gradient_step_error(head_optimizer, error_i)
 
             if self._bounder is not None:
                 bounded_head_steps, bound_scale = self._bounder.bound(
                     (w_step, b_step),
-                    error_i,
+                    step_error,
                     (head_w, head_b),
                 )
                 w_step, b_step = bounded_head_steps
                 new_w_trace = bound_scale * new_w_trace
                 new_b_trace = bound_scale * new_b_trace
 
-            new_w = head_w + error_i * w_step
-            new_b = head_b + error_i * b_step
+            new_w = head_w + step_error * w_step
+            new_b = head_b + step_error * b_step
             # Inf TD error zeros the ObGD step, then error_i * step is 0*inf=NaN.
             # Hold that head's previous finite params/traces/opt like a NaN cumulant.
             head_ok = (

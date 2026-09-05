@@ -987,7 +987,14 @@ def _update_from_gradient_with_diagnostics(
     error: Array | None,
     param: Array | None = None,
 ) -> tuple[Array, Any, Bool[Array, ""]]:
-    """Use the checked optimizer boundary for an enclosing transaction."""
+    """Adapt a learner's additive trace direction to the checked optimizer API.
+
+    With no separate error, shared trunks already supply an additive update
+    direction (the negative loss gradient). Baseline optimizers consume loss
+    gradients instead; reverse their input and descent step at this boundary.
+    """
+    loss_gradient_path = error is None and optimizer.gradient_update_returns_delta()
+    optimizer_gradient = -gradient if loss_gradient_path else gradient
     if optimizer.gradient_update_requires_param():
         if param is None:
             raise ValueError(
@@ -995,11 +1002,17 @@ def _update_from_gradient_with_diagnostics(
                 "for gradient updates"
             )
         result = optimizer.update_from_gradient_checked(
-            state, gradient, error=error, param=param
+            state, optimizer_gradient, error=error, param=param
         )
     else:
-        result = optimizer.update_from_gradient_checked(state, gradient, error=error)
-    return result.step, result.new_state, result.update_applied
+        result = optimizer.update_from_gradient_checked(state, optimizer_gradient, error=error)
+    step = -result.step if loss_gradient_path else result.step
+    return step, result.new_state, result.update_applied
+
+
+def _gradient_step_error(optimizer: Any, error: Array) -> Array:
+    """Multiplier/bounder error for one optimizer's returned gradient step."""
+    return jnp.ones_like(error) if optimizer.gradient_update_returns_delta() else error
 
 
 class MLPLearner:
@@ -1578,6 +1591,11 @@ class MLPLearner:
         for i in range(n_layers):
             all_params.append(state.params.weights[i])
             all_params.append(state.params.biases[i])
+        direct_steps = self._optimizer.gradient_update_returns_delta() or (
+            self._head_optimizer is not None
+            and self._head_optimizer.gradient_update_returns_delta()
+        )
+        step_error = jnp.ones_like(error) if direct_steps else error
         all_steps = []
         new_opt_states = []
         optimizer_updates_applied = []
@@ -1593,6 +1611,8 @@ class MLPLearner:
                     param=all_params[j],
                 )
             )
+            if direct_steps and not opt.gradient_update_returns_delta():
+                step = error * step
             all_steps.append(step)
             new_opt_states.append(new_opt)
             optimizer_updates_applied.append(optimizer_update_applied)
@@ -1601,16 +1621,16 @@ class MLPLearner:
         bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
             bounded_steps, bounding_metric = self._bounder.bound(
-                tuple(all_steps), error, tuple(all_params)
+                tuple(all_steps), step_error, tuple(all_params)
             )
             all_steps = list(bounded_steps)
 
         new_weights = []
         new_biases = []
         for i in range(n_layers):
-            new_w = state.params.weights[i] + error * all_steps[2 * i]
+            new_w = state.params.weights[i] + step_error * all_steps[2 * i]
             new_weights.append(new_w)
-            new_b = state.params.biases[i] + error * all_steps[2 * i + 1]
+            new_b = state.params.biases[i] + step_error * all_steps[2 * i + 1]
             new_biases.append(new_b)
 
         new_params = MLPParams(
