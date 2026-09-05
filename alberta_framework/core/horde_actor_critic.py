@@ -406,7 +406,12 @@ class HordeActorCriticUpdateResult:
 
 @chex.dataclass(frozen=True)
 class HordeActorCriticArrayResult:
-    """Result from scan-based Horde actor-critic learning."""
+    """Result from scan-based Horde actor-critic learning.
+
+    ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
+    sampling distribution (or the model policy when actions are supplied), matching
+    :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
+    """
 
     state: HordeActorCriticState
     actions: Int[Array, " num_steps"]
@@ -1210,8 +1215,9 @@ def run_horde_actor_critic_from_arrays(
                 last_action=fixed_action.astype(jnp.int32),
             )
             current_action = fixed_action.astype(jnp.int32)
+            current_policy = agent.policy(started_state, obs)
         else:
-            started_state, current_action, _policy = agent.start(carry, obs)
+            started_state, current_action, current_policy = agent.start(carry, obs)
         result = agent.update(
             started_state,
             reward,
@@ -1231,7 +1237,7 @@ def run_horde_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            jnp.where(update_applied, result.policy, jnp.zeros_like(result.policy)),
+            jnp.where(update_applied, current_policy, jnp.zeros_like(current_policy)),
             jnp.where(update_applied, result.value, 0.0),
             jnp.where(update_applied, result.td_error, 0.0),
             jnp.where(
@@ -1548,7 +1554,12 @@ class NonlinearHordeActorCriticUpdateResult:
 
 @chex.dataclass(frozen=True)
 class NonlinearHordeActorCriticArrayResult:
-    """Result from a scan-based nonlinear Horde actor-critic loop."""
+    """Result from a scan-based nonlinear Horde actor-critic loop.
+
+    ``policies[t]`` is the pre-update policy at ``observations[t]`` — the
+    sampling distribution (or the model policy when actions are supplied), matching
+    :class:`~alberta_framework.core.actor_critic.ActorCriticArrayResult`.
+    """
 
     state: NonlinearHordeActorCriticState
     actions: Int[Array, " num_steps"]
@@ -2113,7 +2124,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
         tuple[Array, Array, Array, Array, Array, Array],
     ]:
         obs, reward, next_obs, aux, disc = inputs
-        started, current_action, _policy = agent.start(carry, obs)
+        started, current_action, current_policy = agent.start(carry, obs)
         result = agent.update(started, reward, next_obs, aux, disc)
         committed_state = jax.lax.cond(
             result.update_applied,
@@ -2126,7 +2137,7 @@ def run_nonlinear_horde_actor_critic_from_arrays(
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
-            result.policy,
+            jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
             result.critic_result.td_errors,
