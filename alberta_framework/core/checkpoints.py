@@ -216,8 +216,10 @@ def _preflight_on_disk_metadata(path: Path) -> None:
     try:
         if not meta_path.is_file():
             return
-    except OSError:
-        return
+    except OSError as error:
+        # A stat that fails must not skip the gates: Orbax would still open
+        # and ``json.loads`` whatever is there without any nesting preflight.
+        raise ValueError("checkpoint metadata is unreadable") from error
     with meta_path.open("rb") as stream:
         raw = stream.read(_JSON_MAX_BYTES + 1)
     if len(raw) > _JSON_MAX_BYTES:

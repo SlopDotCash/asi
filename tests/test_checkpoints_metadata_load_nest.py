@@ -117,3 +117,23 @@ def test_symlinked_metadata_deep_nest_rejects_load_checkpoint(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="nesting limit"):
         load_checkpoint(state, ckpt)
+
+
+def test_unreadable_metadata_parent_fails_closed(tmp_path: Path) -> None:
+    """A stat failure must raise, not skip the preflight and hand Orbax the file."""
+    import os
+
+    if os.geteuid() == 0:
+        pytest.skip("mode bits do not restrict root")
+    ckpt = tmp_path / "unreadable"
+    (ckpt / "metadata").mkdir(parents=True)
+    _write_hostile_metadata(ckpt, 16_000)
+    parent = ckpt / "metadata"
+    parent.chmod(0)
+    try:
+        with pytest.raises(ValueError, match="checkpoint metadata is unreadable"):
+            load_checkpoint_metadata(ckpt)
+        with pytest.raises(ValueError, match="checkpoint metadata is unreadable"):
+            load_checkpoint(LinearLearner().init(3), ckpt)
+    finally:
+        parent.chmod(0o755)
