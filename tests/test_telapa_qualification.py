@@ -31,15 +31,24 @@ def _result() -> dict[str, Any]:
     return run_smoke(TeLAPASmokeConfig(steps=8, phase_length=2))
 
 
-def test_catalog_fails_closed_without_immutable_anonymous_revision() -> None:
+def test_catalog_binds_public_revision_but_fails_closed_without_license_file() -> None:
     catalog = TeLAPACatalogEntry()
     catalog.validate()
-    assert catalog.repository_revision is None
-    assert catalog.repository_tree_digest is None
-    assert catalog.immutable_external_source_established is False
+    assert catalog.disclosed_repository == "https://github.com/lute47lillo/telapa_collas2026"
+    assert catalog.repository_revision == "a4dc16ed0ea015b1b8efb271e4d664931adccd3e"
+    assert catalog.repository_tree_digest == "e58072c9c87f984ec9644c7a8fb18e4ce9455286"
+    assert catalog.source_archive_sha256 == (
+        "25a77241a99a83002a91e282f6a969670f2cb968d2ad685229a904e43a5a926b"
+    )
+    assert catalog.source_archive_bytes == 8_621_070
+    assert catalog.immutable_external_source_established is True
+    assert catalog.readme_declared_license == "MIT"
+    assert catalog.license_file_present is False
+    assert catalog.license_review_complete is False
+    assert catalog.source_bytes_vendored is False
     assert catalog.paper_parity_allowed is False
-    with pytest.raises(ValueError, match="fail closed"):
-        TeLAPACatalogEntry(immutable_external_source_established=True).validate()
+    with pytest.raises(ValueError, match="license"):
+        TeLAPACatalogEntry(license_review_complete=True).validate()
 
 
 def test_latent_descriptor_is_jittable_and_deterministic() -> None:
@@ -111,6 +120,26 @@ def test_matched_axes_and_exact_resource_receipts() -> None:
         assert receipt["environment_state_persistent_bytes"] == 8
         assert receipt["timing"] is None
         assert receipt["timing_policy"] == "telemetry_only"
+        assert isinstance(record["reward_sum"], float)
+        assert isinstance(record["mean_reward"], float)
+
+
+def test_diverse_arm_queries_prior_archive_by_current_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    queries: list[tuple[float, ...]] = []
+    original = telapa.BoundedPolicyArchive.retrieve_nearest
+
+    def tracked(
+        archive: telapa.BoundedPolicyArchive, latent: tuple[float, ...]
+    ) -> telapa.PolicyEntry | None:
+        queries.append(latent)
+        return original(archive, latent)
+
+    monkeypatch.setattr(telapa.BoundedPolicyArchive, "retrieve_nearest", tracked)
+    run_smoke(TeLAPASmokeConfig(steps=8, phase_length=2))
+    # run_smoke performs the matrix once, then its strict validator replays it.
+    assert len(queries) == len(telapa.FROZEN_DEVELOPMENT_SEEDS) * 4 * 2
 
 
 @pytest.mark.parametrize(

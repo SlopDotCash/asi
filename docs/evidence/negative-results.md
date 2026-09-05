@@ -361,6 +361,20 @@ postmortem.
     protocol scope is recorded in
     [`action-conditioned-latent-protocol.md`](../research/action-conditioned-latent-protocol.md).
 
+15. **The bounded TeLAPA-inspired diverse archive does not beat its fixed-
+    snapshot control.** The reviewed-source development smoke ran seeds
+    1586000, 1586001, and 1586002 for 32 matched environment steps. Every seed
+    produced reward sums 13 for `diverse_archive`, 12 for `one_model`, and 15
+    for both `fixed_snapshot` and its exact-behavior `mechanism_off` reduction.
+    The diverse archive therefore improved by 1 reward over the latest-model
+    control but regressed by 2 rewards against the stronger fixed control on
+    every seed. This synthetic, short-horizon, permanently nonpromoting result
+    establishes no TeLAPA, transfer, or paper-parity claim and does not justify
+    advancing the archive mechanism. Record:
+    [`development_result_pr2257_review.v2.json`](../../outputs/telapa_qualification/development_result_pr2257_review.v2.json).
+    This append-only review replay preserves all twelve original arm records;
+    the original `development_result_pr2257.v2.json` remains as historical provenance.
+
 ## EMNIST transfer results
 
 1. **Bare input conditioning does not solve label permutation.**

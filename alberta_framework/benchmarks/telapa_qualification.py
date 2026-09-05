@@ -1,9 +1,9 @@
 """Bounded TeLAPA-inspired policy-archive qualification smoke.
 
 This development lane deliberately tests ASI's archive primitive in the live
-``SwitchingTwoStateMDP`` stream.  It is not an implementation or reproduction
-of TeLAPA: the anonymous paper repository has no established immutable source
-identity, and this lane has neither PPO/MAP-Elites nor a learned embedder.
+``SwitchingTwoStateMDP`` stream. It is not an implementation or reproduction
+of TeLAPA: the public paper repository lacks its declared license file, and
+this lane has neither PPO/MAP-Elites nor a learned embedder.
 """
 
 from __future__ import annotations
@@ -33,10 +33,16 @@ from alberta_framework.benchmarks.development_provenance import (
 from alberta_framework.core.policy_archive import BoundedPolicyArchive, PolicyEntry
 from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig, SwitchingTwoStateMDP
 
-SCHEMA = "asi.telapa_qualification_smoke.development.v1"
+SCHEMA = "asi.telapa_qualification_smoke.development.v2"
 PAPER_REVISION = "arXiv:2604.15414v1"
 PAPER_DATE = "2026-04-16"
-DISCLOSED_REPOSITORY = "https://anonymous.4open.science/r/telapa-map_elites-54E8/"
+DISCLOSED_REPOSITORY = "https://github.com/lute47lillo/telapa_collas2026"
+REPOSITORY_REVISION = "a4dc16ed0ea015b1b8efb271e4d664931adccd3e"
+REPOSITORY_TREE = "e58072c9c87f984ec9644c7a8fb18e4ce9455286"
+SOURCE_ARCHIVE_SHA256 = "25a77241a99a83002a91e282f6a969670f2cb968d2ad685229a904e43a5a926b"
+SOURCE_ARCHIVE_BYTES = 8_621_070
+README_SHA256 = "c1ac75ece6ddb3eb67ead1779053c1f2c51283d4e389af75073e9ce9ec052438"
+ENVIRONMENT_SHA256 = "8b2b9fe39fb7103ed090a429799ada34443b58dcd185e20b32e99913f6553a77"
 _MAX_JSON_BYTES = 1_000_000
 _MAX_JSON_DEPTH = 64
 _MAX_JSON_NODES = 50_000
@@ -150,9 +156,17 @@ class TeLAPACatalogEntry:
     paper_revision: str = PAPER_REVISION
     paper_revision_date: str = PAPER_DATE
     disclosed_repository: str = DISCLOSED_REPOSITORY
-    repository_revision: None = None
-    repository_tree_digest: None = None
-    immutable_external_source_established: bool = False
+    repository_revision: str = REPOSITORY_REVISION
+    repository_tree_digest: str = REPOSITORY_TREE
+    source_archive_sha256: str = SOURCE_ARCHIVE_SHA256
+    source_archive_bytes: int = SOURCE_ARCHIVE_BYTES
+    readme_sha256: str = README_SHA256
+    environment_sha256: str = ENVIRONMENT_SHA256
+    immutable_external_source_established: bool = True
+    readme_declared_license: str = "MIT"
+    license_file_present: bool = False
+    license_review_complete: bool = False
+    source_bytes_vendored: bool = False
     paper_parity_allowed: bool = False
     paper_mechanism: str = (
         "per-task policy neighborhoods, MAP-Elites illumination, few-shot retrieval, "
@@ -189,15 +203,30 @@ class TeLAPACatalogEntry:
             or self.disclosed_repository != DISCLOSED_REPOSITORY
         ):
             raise ValueError("TeLAPA catalog identity mismatch")
-        if self.repository_revision is not None or self.repository_tree_digest is not None:
-            raise ValueError("unverified anonymous source must not acquire an immutable identity")
+        if (
+            self.repository_revision != REPOSITORY_REVISION
+            or self.repository_tree_digest != REPOSITORY_TREE
+            or self.source_archive_sha256 != SOURCE_ARCHIVE_SHA256
+            or type(self.source_archive_bytes) is not int
+            or self.source_archive_bytes != SOURCE_ARCHIVE_BYTES
+            or self.readme_sha256 != README_SHA256
+            or self.environment_sha256 != ENVIRONMENT_SHA256
+        ):
+            raise ValueError("TeLAPA public immutable identity mismatch")
         if (
             type(self.immutable_external_source_established) is not bool
-            or self.immutable_external_source_established
+            or not self.immutable_external_source_established
+            or self.readme_declared_license != "MIT"
+            or type(self.license_file_present) is not bool
+            or self.license_file_present
+            or type(self.license_review_complete) is not bool
+            or self.license_review_complete
+            or type(self.source_bytes_vendored) is not bool
+            or self.source_bytes_vendored
             or type(self.paper_parity_allowed) is not bool
             or self.paper_parity_allowed
         ):
-            raise ValueError("anonymous source provenance must fail closed")
+            raise ValueError("missing TeLAPA license file must fail closed")
         if (
             type(self.paper_mechanism) is not str
             or type(self.development_adapter) is not str
@@ -398,6 +427,7 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
     phase_observations: list[np.ndarray] = []
     phase_actions: list[int] = []
     phase_rewards: list[float] = []
+    reward_sum = 0.0
     archive_queries = 0
     descriptor_queries = 0
     boundary_disclosures = 0
@@ -414,6 +444,7 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
         phase_observations.append(observation)
         phase_actions.append(action)
         phase_rewards.append(reward)
+        reward_sum += reward
         if (step + 1) % config.phase_length == 0:
             descriptor = np.asarray(
                 rollout_latent_descriptor(
@@ -430,6 +461,11 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
             if fixed_anchor is None:
                 fixed_anchor = snapshot
             if arm != "mechanism_off":
+                retrieved = None
+                if arm == "diverse_archive":
+                    query = tuple(float(value) for value in descriptor)
+                    archive_queries += len(archive.entries)
+                    retrieved = archive.retrieve_nearest(query)
                 archive = archive.add(
                     PolicyEntry(
                         identity=f"seed-{seed}-boundary-{step + 1}",
@@ -438,13 +474,15 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
                         score=score,
                     )
                 )
-                archive_queries += len(archive.entries)
                 if arm == "diverse_archive":
-                    selected = max(archive.entries, key=lambda entry: (entry.score, entry.identity))
-                    policy = _decode_policy(selected.policy_bytes)
+                    policy = _decode_policy(
+                        snapshot if retrieved is None else retrieved.policy_bytes
+                    )
                 elif arm == "one_model":
+                    archive_queries += len(archive.entries)
                     policy = _decode_policy(archive.entries[-1].policy_bytes)
                 else:
+                    archive_queries += len(archive.entries)
                     policy = _decode_policy(archive.entries[0].policy_bytes)
             else:
                 # Exact archive-off reduction of the fixed-snapshot behavior.
@@ -465,6 +503,8 @@ def _run_arm(config: TeLAPASmokeConfig, seed: int, arm: Arm) -> dict[str, Any]:
         "reward_sha256": _digest(rewards),
         "initial_policy_sha256": hashlib.sha256(initial_policy).hexdigest(),
         "final_policy_sha256": hashlib.sha256(_policy_bytes(policy)).hexdigest(),
+        "reward_sum": float(reward_sum),
+        "mean_reward": float(reward_sum / config.steps),
         "archive_entry_count": len(archive.entries) if arm != "mechanism_off" else 0,
         "resource_receipt": {
             "environment_steps": config.steps,
@@ -651,7 +691,7 @@ def validate_result(value: object) -> None:
     record_keys = {
         "arm", "seed", "observation_sha256", "action_sha256", "reward_sha256",
         "initial_policy_sha256", "final_policy_sha256", "archive_entry_count",
-        "resource_receipt",
+        "reward_sum", "mean_reward", "resource_receipt",
     }
     receipt_keys = {
         "environment_steps", "observations_consumed", "policy_updates", "policy_queries",
@@ -684,6 +724,9 @@ def validate_result(value: object) -> None:
                 or any(c not in "0123456789abcdef" for c in digest)
             ):
                 raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+        for field in ("reward_sum", "mean_reward"):
+            if type(record[field]) is not float or not math.isfinite(record[field]):
+                raise ValueError(f"{field} must be a finite exact float")
         if (
             type(record["archive_entry_count"]) is not int
             or not 0

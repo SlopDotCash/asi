@@ -62,10 +62,49 @@ def test_archive_preflights_host_dimensions() -> None:
         )
 
 
+def test_diverse_archive_retrieves_nearest_latent_deterministically() -> None:
+    first = _entry("first", (0.0, 0.0), 1.0)
+    tied = _entry("tied", (2.0, 0.0), 2.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024,
+        min_latent_distance=0.1,
+        entries=(first, tied),
+    )
+
+    assert archive.retrieve_nearest((1.0, 0.0)) is first
+    with pytest.raises(ValueError, match="latent width"):
+        archive.retrieve_nearest((1.0,))
+    with pytest.raises(ValueError, match="finite float"):
+        archive.retrieve_nearest((float("nan"), 0.0))
+
+
+def test_empty_archive_has_no_nearest_policy() -> None:
+    archive = BoundedPolicyArchive(byte_budget=1024, min_latent_distance=0.1)
+    assert archive.retrieve_nearest((0.0, 0.0)) is None
+
+
 def test_protocol_is_nonpromoting() -> None:
     assert POLICY_ARCHIVE_PROTOCOL["paper_revision"] == "arXiv:2604.15414v1"
     assert POLICY_ARCHIVE_PROTOCOL["controls"] == ("one_model", "fixed_snapshot")
     assert POLICY_ARCHIVE_PROTOCOL["scientific_promotion_allowed"] is False
+
+
+@pytest.mark.parametrize(
+    "query,far,near",
+    [
+        ((0.0,), (2e200,), (1e200,)),
+        ((0.0,), (2e-200,), (1e-200,)),
+        ((1e308,), (-1e308,), (-9e307,)),
+        ((1e308, 0.0), (1e308, 2e-200), (1e308, 1e-200)),
+    ],
+)
+def test_nearest_archive_preserves_finite_extreme_distances(query, far, near) -> None:
+    first = _entry("far", far, 1.0)
+    second = _entry("near", near, 1.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024, min_latent_distance=0.0, entries=(first, second)
+    )
+    assert archive.retrieve_nearest(query) is second
 
 
 def test_archive_constructor_enforces_equal_latent_width() -> None:
