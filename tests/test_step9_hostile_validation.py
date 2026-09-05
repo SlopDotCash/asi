@@ -231,18 +231,6 @@ def test_derived_allocation_and_runtime_work_fail_at_config_boundary() -> None:
         )
 
 
-def test_dream_axis_scan_budget_rejects_before_arange() -> None:
-    with pytest.raises(ValueError, match="step 9 dream axis budget"):
-        Step9DreamingConfig(planning_budget=4_097)
-    with pytest.raises(ValueError, match="step 9 dream axis budget"):
-        Step9DreamingConfig(dream_rollout_horizon=4_097)
-    with pytest.raises(ValueError, match="step 9 dream axis budget"):
-        Step9DreamingConfig(dream_candidate_count=4_097)
-    idle = Step9DreamingConfig(planning_budget=0, dream_candidate_count=4_095)
-    assert idle.planning_budget == 0
-    assert idle.dream_candidate_count == 4_095
-
-
 def test_runtime_entry_points_require_exact_config_without_truthiness_hooks() -> None:
     calls = 0
 

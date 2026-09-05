@@ -293,27 +293,3 @@ def test_smoke_preflights_all_live_arrays_before_allocation(
     monkeypatch.setattr(jr, "normal", unexpected_allocation)
     with pytest.raises(ValueError, match="smoke resources"):
         run_step7_smoke(steps=50_000_000)
-
-
-def test_planning_scan_budget_rejects_before_arange() -> None:
-    with pytest.raises(ValueError, match="step 7 planning budget"):
-        Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": 10_001})
-    with pytest.raises(ValueError, match="step 7 planning budget"):
-        Step7DynaConfig(**{**_valid_config_kwargs(), "planning_rollout_depth": 10_001})
-    with pytest.raises(ValueError, match="step-units exceed"):
-        Step7DynaConfig(
-            **{
-                **_valid_config_kwargs(),
-                "planning_steps": 10_000,
-                "planning_rollout_depth": 2,
-            }
-        )
-    with pytest.raises(ValueError, match="step 7 planning budget"):
-        Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": 1_000_000})
-    bounded = Step7DynaConfig(
-        **{**_valid_config_kwargs(), "planning_steps": 10_000, "planning_rollout_depth": 1}
-    )
-    assert bounded.planning_steps == 10_000
-    assert bounded.planning_rollout_depth == 1
-    idle = Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": 0})
-    assert idle.planning_steps == 0

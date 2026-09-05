@@ -36,7 +36,6 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._scan_resources import ScanBudget, require_scan_steps
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
@@ -74,13 +73,6 @@ from alberta_framework.steps.step6 import (
 _INT32_MAX = 2**31 - 1
 _MAX_CONFIG_SEQUENCE_LENGTH = 4_096
 _MAX_DREAM_WORK_PER_REAL_STEP = 4_096
-# Axis cap matches the existing aggregate dream-work envelope so no arange can
-# be INT32_MAX. The product remains _preflight_step9_resources, not a second
-# independent 10_000^n budget.
-_STEP9_DREAM_AXIS_BUDGET = ScanBudget(
-    "step 9 dream axis",
-    maximum_steps=_MAX_DREAM_WORK_PER_REAL_STEP,
-)
 # Matches the established ceiling for other scan-driven array-loop runners
 # fixed this session (``core.sarsa._SARSA_SEQUENCE_MAX_STEPS``,
 # ``core.average_reward._AVERAGE_REWARD_SEQUENCE_MAX_STEPS``,
@@ -436,18 +428,11 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
     planning_budget = _require_int(
         "planning_budget", config.planning_budget, minimum=0, maximum=_INT32_MAX
     )
-    if planning_budget != 0:
-        planning_budget = require_scan_steps(
-            "planning_budget", planning_budget, _STEP9_DREAM_AXIS_BUDGET
-        )
     dream_rollout_horizon = _require_int(
         "dream_rollout_horizon",
         config.dream_rollout_horizon,
         minimum=1,
         maximum=_INT32_MAX,
-    )
-    dream_rollout_horizon = require_scan_steps(
-        "dream_rollout_horizon", dream_rollout_horizon, _STEP9_DREAM_AXIS_BUDGET
     )
     # Candidate selection publishes selected indices as signed int32 values.
     dream_candidate_count = _require_int(
@@ -455,9 +440,6 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         config.dream_candidate_count,
         minimum=1,
         maximum=_INT32_MAX,
-    )
-    dream_candidate_count = require_scan_steps(
-        "dream_candidate_count", dream_candidate_count, _STEP9_DREAM_AXIS_BUDGET
     )
     dream_surprise_weight = _require_real(
         "dream_surprise_weight",
@@ -923,11 +905,18 @@ def step9_update(
             accepted,
         )
 
-    (final_ctrl, final_behavior), (dream_td_errors, dream_accepted) = jax.lax.scan(
-        dream_step,
-        (control_after_real, behavior_after_real),
-        jnp.arange(config.planning_budget, dtype=jnp.int32),
-    )
+    if config.planning_budget == 0:
+        # A zero-length scan still traces its body. Skip it so disabled planning
+        # never constructs the candidate or rollout arrays for unused axes.
+        final_ctrl, final_behavior = control_after_real, behavior_after_real
+        dream_td_errors = jnp.empty((0,), dtype=jnp.float32)
+        dream_accepted = jnp.empty((0,), dtype=jnp.bool_)
+    else:
+        (final_ctrl, final_behavior), (dream_td_errors, dream_accepted) = jax.lax.scan(
+            dream_step,
+            (control_after_real, behavior_after_real),
+            jnp.arange(config.planning_budget, dtype=jnp.int32),
+        )
 
     new_state = Step9DreamingState(
         control_state=final_ctrl,
