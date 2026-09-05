@@ -25,7 +25,10 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import (
     AnyOptimizer,
     MultiHeadMLPLearner,
@@ -721,6 +724,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i],
                 new_w_trace,
                 error=None,
+                param=state.trunk_params.weights[i],
             )
             trunk_steps.append(w_step)
             new_trunk_opt_states.append(new_w_opt)
@@ -738,6 +742,7 @@ class OffPolicyHordeLearner:
                 state.trunk_optimizer_states[2 * i + 1],
                 new_b_trace,
                 error=None,
+                param=state.trunk_params.biases[i],
             )
             trunk_steps.append(b_step)
             new_trunk_opt_states.append(new_b_opt)
@@ -816,27 +821,30 @@ class OffPolicyHordeLearner:
                 old_w_opt,
                 new_w_trace,
                 error=error_i,
+                param=head_w,
             )
             b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
                 head_optimizer,
                 old_b_opt,
                 new_b_trace,
                 error=error_i,
+                param=head_b,
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
+            step_error = _gradient_step_error(head_optimizer, error_i)
 
             if self._bounder is not None:
                 bounded_head_steps, bound_scale = self._bounder.bound(
                     (w_step, b_step),
-                    error_i,
+                    step_error,
                     (head_w, head_b),
                 )
                 w_step, b_step = bounded_head_steps
                 new_w_trace = bound_scale * new_w_trace
                 new_b_trace = bound_scale * new_b_trace
 
-            new_w = head_w + error_i * w_step
-            new_b = head_b + error_i * b_step
+            new_w = head_w + step_error * w_step
+            new_b = head_b + step_error * b_step
             # Inf TD error zeros the ObGD step, then error_i * step is 0*inf=NaN.
             # Hold that head's previous finite params/traces/opt like a NaN cumulant.
             head_ok = (

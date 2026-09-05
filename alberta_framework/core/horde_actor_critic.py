@@ -47,7 +47,10 @@ from jaxtyping import Bool, Float, Int
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.horde import HordeLearner, HordeUpdateResult
 from alberta_framework.core.initializers import sparse_init
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.multi_head_learner import MultiHeadMLPLearner, MultiHeadMLPState
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import (
@@ -1903,12 +1906,14 @@ class NonlinearHordeActorCriticAgent:
                 state.actor_trunk_opt_states[2 * i],
                 new_trunk_traces[2 * i],
                 error=actor_td_error,
+                param=state.actor_trunk.weights[i],
             )
             raw_b, new_opt_b, b_update_applied = _update_from_gradient_with_diagnostics(
                 self._actor_optimizer,
                 state.actor_trunk_opt_states[2 * i + 1],
                 new_trunk_traces[2 * i + 1],
                 error=actor_td_error,
+                param=state.actor_trunk.biases[i],
             )
             new_trunk_opt_states.extend([new_opt_w, new_opt_b])
             trunk_w_steps.append(raw_w)
@@ -1920,16 +1925,19 @@ class NonlinearHordeActorCriticAgent:
             state.actor_head_opt_w,
             new_head_trace_w,
             error=actor_td_error,
+            param=state.actor_head_w,
         )
         raw_head_b, new_head_opt_b, head_b_update_applied = _update_from_gradient_with_diagnostics(
             self._actor_optimizer,
             state.actor_head_opt_b,
             new_head_trace_b,
             error=actor_td_error,
+            param=state.actor_head_b,
         )
         optimizer_updates_applied.extend((head_w_update_applied, head_b_update_applied))
         head_w_step = raw_head_w
         head_b_step = raw_head_b
+        step_error = _gradient_step_error(self._actor_optimizer, actor_td_error)
 
         bound_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._actor_bounder is not None:
@@ -1947,17 +1955,17 @@ class NonlinearHordeActorCriticAgent:
             )
             bounded_steps, bound_metric = self._actor_bounder.bound(
                 flat_steps,
-                actor_td_error,
+                step_error,
                 flat_params,
             )
             trunk_w_steps = list(bounded_steps[:n_hidden])
             trunk_b_steps = list(bounded_steps[n_hidden : 2 * n_hidden])
             head_w_step = bounded_steps[2 * n_hidden]
             head_b_step = bounded_steps[2 * n_hidden + 1]
-        trunk_w_steps = [actor_td_error * step for step in trunk_w_steps]
-        trunk_b_steps = [actor_td_error * step for step in trunk_b_steps]
-        head_w_step = actor_td_error * head_w_step
-        head_b_step = actor_td_error * head_b_step
+        trunk_w_steps = [step_error * step for step in trunk_w_steps]
+        trunk_b_steps = [step_error * step for step in trunk_b_steps]
+        head_w_step = step_error * head_w_step
+        head_b_step = step_error * head_b_step
 
         new_trunk_weights = tuple(
             w + step for w, step in zip(state.actor_trunk.weights, trunk_w_steps)
@@ -2586,12 +2594,14 @@ class NonlinearQHordeActorCriticAgent:
                 state.actor_trunk_opt_states[2 * i],
                 new_trunk_traces[2 * i],
                 error=actor_signal,
+                param=state.actor_trunk.weights[i],
             )
             raw_b, new_opt_b, b_update_applied = _update_from_gradient_with_diagnostics(
                 self._actor_optimizer,
                 state.actor_trunk_opt_states[2 * i + 1],
                 new_trunk_traces[2 * i + 1],
                 error=actor_signal,
+                param=state.actor_trunk.biases[i],
             )
             new_trunk_opt_states.extend([new_opt_w, new_opt_b])
             trunk_w_steps.append(raw_w)
@@ -2603,22 +2613,25 @@ class NonlinearQHordeActorCriticAgent:
             state.actor_head_opt_w,
             new_head_trace_w,
             error=actor_signal,
+            param=state.actor_head_w,
         )
         raw_head_b, new_head_opt_b, head_b_update_applied = _update_from_gradient_with_diagnostics(
             self._actor_optimizer,
             state.actor_head_opt_b,
             new_head_trace_b,
             error=actor_signal,
+            param=state.actor_head_b,
         )
         optimizer_updates_applied.extend((head_w_update_applied, head_b_update_applied))
         head_w_step = raw_head_w
         head_b_step = raw_head_b
+        step_error = _gradient_step_error(self._actor_optimizer, actor_signal)
 
         bound_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._actor_bounder is not None:
             bounded_steps, bound_metric = self._actor_bounder.bound(
                 (*trunk_w_steps, *trunk_b_steps, head_w_step, head_b_step),
-                actor_signal,
+                step_error,
                 (
                     *state.actor_trunk.weights,
                     *state.actor_trunk.biases,
@@ -2630,10 +2643,10 @@ class NonlinearQHordeActorCriticAgent:
             trunk_b_steps = list(bounded_steps[n_hidden : 2 * n_hidden])
             head_w_step = bounded_steps[2 * n_hidden]
             head_b_step = bounded_steps[2 * n_hidden + 1]
-        trunk_w_steps = [actor_signal * step for step in trunk_w_steps]
-        trunk_b_steps = [actor_signal * step for step in trunk_b_steps]
-        head_w_step = actor_signal * head_w_step
-        head_b_step = actor_signal * head_b_step
+        trunk_w_steps = [step_error * step for step in trunk_w_steps]
+        trunk_b_steps = [step_error * step for step in trunk_b_steps]
+        head_w_step = step_error * head_w_step
+        head_b_step = step_error * head_b_step
 
         carry_traces = effective_gamma != 0.0
         updated = state.replace(  # type: ignore[attr-defined]

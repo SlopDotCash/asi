@@ -514,13 +514,37 @@ class Optimizer[
             "Only LMS, IDBD, and Autostep currently implement this."
         )
 
+    def gradient_update_returns_delta(self) -> bool:
+        """Whether an error-supplied gradient update is a complete additive delta.
+
+        Legacy optimizers return a step to multiply by the prediction error.
+        Loss-gradient optimizers override this to preserve momentum and decay
+        even when that error is zero. With error=None all optimizers retain
+        the descent-step convention, applied by subtracting the returned step.
+        """
+        return False
+
+    def gradient_update_requires_param(self) -> bool:
+        """Whether the shape-generic update needs the current parameter.
+
+        Most optimizers derive their update solely from the gradient, error,
+        and optimizer state. Parameter-dependent methods such as decoupled
+        weight decay override this capability so generic learners can provide
+        the parameter without changing the legacy optimizer call contract.
+        """
+        return False
+
     def update_from_gradient(
         self, state: Any, gradient: Array, error: Array | None = None
     ) -> tuple[Array, Any]:
         """Compute step delta from pre-computed gradient.
 
-        The returned delta does NOT include the error -- the caller is
-        responsible for multiplying ``error * delta`` before applying.
+        By default the returned step excludes the error, so callers apply
+        ``param += error * step``. Optimizers whose
+        :meth:`gradient_update_returns_delta` is true instead return the
+        complete additive delta when error is supplied. With error=None,
+        the gradient already contains the loss signal and callers subtract
+        the returned descent step.
 
         The state type varies by subclass (e.g. ``LMSState`` for LMS,
         ``AutostepParamState`` for Autostep) so the base signature uses

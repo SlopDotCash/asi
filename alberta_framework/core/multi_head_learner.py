@@ -32,7 +32,10 @@ from jaxtyping import Bool, Float, UInt
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
 from alberta_framework.core.initializers import sparse_init
-from alberta_framework.core.learners import _update_from_gradient_with_diagnostics
+from alberta_framework.core.learners import (
+    _gradient_step_error,
+    _update_from_gradient_with_diagnostics,
+)
 from alberta_framework.core.normalizers import (
     AnyNormalizerState,
     Normalizer,
@@ -1221,7 +1224,8 @@ class MultiHeadMLPLearner:
             new_trunk_traces.append(new_wt)
             w_step, new_w_opt, w_update_applied = _update_from_gradient_with_diagnostics(
                 self._optimizer,
-                state.trunk_optimizer_states[2 * i], new_wt, error=None
+                state.trunk_optimizer_states[2 * i], new_wt, error=None,
+                param=state.trunk_params.weights[i],
             )
             trunk_steps.append(w_step)
             new_trunk_opt_states.append(new_w_opt)
@@ -1239,7 +1243,8 @@ class MultiHeadMLPLearner:
             new_trunk_traces.append(new_bt)
             b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
                 self._optimizer,
-                state.trunk_optimizer_states[2 * i + 1], new_bt, error=None
+                state.trunk_optimizer_states[2 * i + 1], new_bt, error=None,
+                param=state.trunk_params.biases[i],
             )
             trunk_steps.append(b_step)
             new_trunk_opt_states.append(new_b_opt)
@@ -1317,26 +1322,27 @@ class MultiHeadMLPLearner:
             # Optimizer step (with error for meta-learning)
             head_opt = self._head_optimizer if self._head_optimizer is not None else self._optimizer
             w_step, new_w_opt, w_update_applied = _update_from_gradient_with_diagnostics(
-                head_opt, old_w_opt, new_w_trace, error=error_i
+                head_opt, old_w_opt, new_w_trace, error=error_i, param=head_w
             )
             b_step, new_b_opt, b_update_applied = _update_from_gradient_with_diagnostics(
-                head_opt, old_b_opt, new_b_trace, error=error_i
+                head_opt, old_b_opt, new_b_trace, error=error_i, param=head_b
             )
             optimizer_updates_applied.extend((w_update_applied, b_update_applied))
 
+            step_error = _gradient_step_error(head_opt, error_i)
             # Head bounding — scale traces by the bounding factor so that
             # future trace-based updates reflect the effective step magnitude
             if self._bounder is not None:
                 bounded_head_steps, bound_scale = self._bounder.bound(
-                    (w_step, b_step), error_i, (head_w, head_b)
+                    (w_step, b_step), step_error, (head_w, head_b)
                 )
                 w_step, b_step = bounded_head_steps
                 new_w_trace = bound_scale * new_w_trace
                 new_b_trace = bound_scale * new_b_trace
 
             # Apply: param += error_i * step
-            new_w = head_w + error_i * w_step
-            new_b = head_b + error_i * b_step
+            new_w = head_w + step_error * w_step
+            new_b = head_b + step_error * b_step
 
             # Mask: for inactive heads, keep old state
             new_w = jnp.where(active_mask[i], new_w, head_w)
