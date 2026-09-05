@@ -1026,3 +1026,29 @@ def test_official_typed_rng_jit_scan_checkpoint_and_resources(tmp_path) -> None:
     assert resources.source_commit == OFFICIAL_ADAUPGD_COMMIT
     assert resources.source_path == OFFICIAL_ADAUPGD_PATH
     assert measure_official_adaupgd_state_nbytes(loop_state) == 40
+
+
+def test_saturated_protecting_gate_skips_overflowed_ada_direction() -> None:
+    """gate=1 times an overflowed adaptive direction is 0*inf=NaN without a skip."""
+    from alberta_framework.core.canonical_upgd import _skip_zero_scale
+
+    gate = jnp.asarray(1.0, dtype=jnp.float32)
+    adaptive = jnp.asarray(jnp.inf, dtype=jnp.float32)
+    raw = (adaptive + 0.0) * (1.0 - gate)
+    assert not bool(jnp.isfinite(raw))
+    fixed = _skip_zero_scale(1.0 - gate, adaptive + 0.0)
+    assert bool(jnp.isfinite(fixed))
+    chex.assert_trees_all_close(fixed, jnp.zeros_like(adaptive))
+
+    one_minus = jnp.asarray(0.0, dtype=jnp.float32)
+    first = jnp.asarray(jnp.inf, dtype=jnp.float32)
+    second = jnp.asarray(1.0, dtype=jnp.float32)
+    eps = jnp.asarray(1e-8, dtype=jnp.float32)
+    pert = jnp.asarray(jnp.inf, dtype=jnp.float32)
+    raw_official = first * one_minus / (jnp.sqrt(second) + eps) + pert * one_minus
+    assert not bool(jnp.isfinite(raw_official))
+    fixed_official = (
+        _skip_zero_scale(one_minus, first) / (jnp.sqrt(second) + eps)
+        + _skip_zero_scale(one_minus, pert)
+    )
+    assert bool(jnp.isfinite(fixed_official))
