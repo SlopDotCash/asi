@@ -449,8 +449,8 @@ def compute_forward_transfer(
     on a task probed *before* it is ever trained on, minus a task-specific
     baseline (in GEM, the untrained-network performance).
 
-    Task 0, and any task whose *immediate* pre-exposure checkpoint is not a
-    finite number, receives ``NaN``. Older finite probes are not backfilled
+    Tasks first exposed at row 0, and any task whose *immediate* pre-exposure
+    checkpoint is missing, receive ``NaN``. Older finite probes are not backfilled
     when that GEM checkpoint was not evaluated. An infinite immediate
     pre-exposure is rejected rather than treated as a missing probe.
     The sign is normalized so positive values always mean beneficial transfer.
