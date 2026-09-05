@@ -79,12 +79,11 @@ def test_legal_rls_update_identity_is_unchanged() -> None:
 
 
 def test_rls_exact_last_legal_update_width_and_first_overflow() -> None:
-    scalar_limit = _INT32_MAX // 4
-    # 5*d^2 + 7*d + 8 <= scalar_limit.
-    last_legal = (math.isqrt(20 * scalar_limit - 111) - 7) // 10
-    assert 5 * last_legal * last_legal + 7 * last_legal + 8 <= scalar_limit
+    # 57*d^2 + 28*d + 32 <= signed-int32 byte limit.
+    last_legal = (math.isqrt(28**2 + 4 * 57 * (_INT32_MAX - 32)) - 28) // (2 * 57)
+    assert 57 * last_legal**2 + 28 * last_legal + 32 <= _INT32_MAX
     first_overflowing = last_legal + 1
-    assert 5 * first_overflowing * first_overflowing + 7 * first_overflowing + 8 > scalar_limit
+    assert 57 * first_overflowing**2 + 28 * first_overflowing + 32 > _INT32_MAX
     _preflight_update_working_set(last_legal)
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_update_working_set(first_overflowing)
@@ -111,3 +110,12 @@ def test_rls_feature_dim_rejects_hostile_integer_surrogates(feature_dim: object)
 
 def test_rls_actual_numpy_integer_dimension_remains_supported() -> None:
     assert RLSRewardModelConfig(feature_dim=np.int64(4)).feature_dim == 4  # type: ignore[arg-type]
+
+
+def test_rls_symmetrization_gather_working_set_is_charged() -> None:
+    # The five float matrix banks alone fit; the gather-based symmetrizer's
+    # indices, gathered/scaled values, sum, and diagonal mask do not.
+    dim = 8_000
+    assert 4 * (5 * dim * dim + 7 * dim + 8) <= _INT32_MAX
+    with pytest.raises(ValueError, match="update working set byte count"):
+        _preflight_update_working_set(dim)

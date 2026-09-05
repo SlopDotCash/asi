@@ -67,15 +67,15 @@ def _preflight_state_resources(feature_dim: int) -> None:
 
 
 def _preflight_update_working_set(feature_dim: int) -> None:
-    # The update retains the source covariance, the rank-one outer product,
-    # the proposed unsymmetrized covariance, the symmetrized covariance, and
-    # the transaction-selected covariance as five logical matrix banks.  The
-    # width terms are x, source weights, Px, gain, proposed weights, selected
-    # weights, and the neutralized gain returned to the caller.  In
-    # particular, the selected result is a distinct logical buffer even when
-    # an execution backend can sometimes donate/alias it.
-    update_scalars = 5 * feature_dim * feature_dim + 7 * feature_dim + 8
-    if 4 * update_scalars > _INT32_MAX:
+    # Logical arrays, independently of backend donation/fusion: five covariance
+    # banks (source, outer, unsymmetrized, symmetrized, selected), plus the
+    # symmetrizer's two gathered values, two half-scaled values, and sum.
+    # Its i/j/min/max int32 index grids and diagonal boolean mask also count.
+    # Seven float32 vectors and eight scalars retain the existing update terms.
+    matrix_cells = feature_dim * feature_dim
+    update_bytes = 4 * (10 * matrix_cells + 7 * feature_dim + 8)
+    update_bytes += (4 * 4 + 1) * matrix_cells
+    if update_bytes > _INT32_MAX:
         raise ValueError(
             "reward-model update working set byte count must fit signed int32"
         )
@@ -107,7 +107,7 @@ def _symmetrize_matrix(matrix: Array) -> Array:
     """Enforce exact float32 matrix symmetry without intermediate addition overflow."""
     half = jnp.asarray(0.5, dtype=matrix.dtype)
     n = matrix.shape[0]
-    i, j = jnp.indices((n, n))
+    i, j = jnp.indices((n, n), dtype=jnp.int32)
     i_min = jnp.minimum(i, j)
     j_max = jnp.maximum(i, j)
     val_a = matrix[i_min, j_max]
