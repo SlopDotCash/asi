@@ -567,6 +567,29 @@ class TestIDBDCombo:
         np.testing.assert_array_equal(guarded.log_alpha["w1"], state.log_alpha["w1"])
         assert bool(jnp.all(jnp.isfinite(guarded.log_alpha["w1"])))
 
+    def test_utility_clock_saturates_at_int32_max(self) -> None:
+        """UPGD bias clocks must not wrap; modulo event schedules stay plain +1."""
+        int32_max = np.iinfo(np.int32).max
+        wrapped = jnp.array(int32_max, dtype=jnp.int32) + jnp.array(1, dtype=jnp.int32)
+        assert int(wrapped) == -int32_max - 1
+
+        params = init_mlp_params(jr.key(0), SMALL)
+        hp = dict(UPGD_W_PROTOCOL_HYPERPARAMETERS)
+        hp.update({"meta_step_size": 0.0, "initial_step_size": hp["step_size"]})
+        init_fn, _ = _make_upgd_idbd_learner(hp)
+        state = init_fn(params).replace(step=jnp.asarray(int32_max, dtype=jnp.int32))
+        grads = {name: 0.01 * jnp.ones_like(value) for name, value in params.items()}
+        noise = {name: jnp.zeros_like(value) for name, value in params.items()}
+        new_params, new_state = upgd_idbd_update(params, state, grads, noise, hp)
+        assert int(new_state.step) == int32_max
+        for name in params:
+            assert bool(jnp.all(jnp.isfinite(new_params[name])))
+            assert bool(jnp.all(jnp.isfinite(new_state.utility[name])))
+
+        source = Path("alberta_framework/benchmarks/ipmnist_screening.py").read_text()
+        assert "next_step = state.step + jnp.asarray(1, dtype=jnp.int32)" in source
+        assert "new_step = state.step + jnp.asarray(1, dtype=jnp.int32)" in source
+
 
 class TestAutostepCombo:
     def test_nonfinite_gated_gradient_does_not_poison_meta_state(self):

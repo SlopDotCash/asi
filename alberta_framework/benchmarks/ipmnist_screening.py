@@ -501,6 +501,15 @@ def _skip_zero_scale(scale: Array | float, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _next_utility_clock(step: Array) -> Array:
+    """Saturating +1 for UPGD ``1 - beta**count`` clocks.
+
+    Do not use this for modulo event schedules such as
+    ``bounded_structure_update`` or CPR ``reset_frequency``.
+    """
+    return _saturating_int32_counter_increment(step)
+
+
 def _upgd_utility_and_gate(
     params: dict[str, Array],
     grads: dict[str, Array],
@@ -1132,7 +1141,7 @@ def upgd_idbd_update(
     """
     wd = hp["weight_decay"]
     meta = hp["meta_step_size"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
         params, grads, state.utility, count, hp["utility_decay"]
     )
@@ -1189,7 +1198,7 @@ def upgd_idbd_swift_update(
     meta = hp["meta_step_size"]
     eta = hp["swift_eta"]
     log_eps = math.log(hp["swift_eps"])
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
         params, grads, state.utility, count, hp["utility_decay"]
     )
@@ -1310,7 +1319,7 @@ def upgd_autostep_update(
     wd = hp["weight_decay"]
     mu = hp["meta_step_size"]
     tau = hp["tau"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
         params, grads, state.utility, count, hp["utility_decay"]
     )
@@ -1486,7 +1495,7 @@ def upgd_w_fade_head_update(
     theta = hp["fade_theta_lambda"]
     fade_alpha = hp["fade_alpha"]
     hidden_decay = 1.0 - step_size * hp["weight_decay"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
         params, grads, state.utility, count, hp["utility_decay"]
     )
@@ -1568,7 +1577,7 @@ def upgd_l2init_update(
     """Lean UPGD-W step whose decoupled decay pulls toward the initial weights."""
     step_size = hp["step_size"]
     wd = hp["weight_decay"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
         params, grads, state.utility, count, hp["utility_decay"]
     )
@@ -2156,7 +2165,7 @@ def _make_upgd_ema_norm_ext_learner(
                 utility=reduced_lean.utility, step=reduced_lean.step, norm=new_norm
             ), metrics
         noise = _sorted_flat_noise(key, params, noise_std)
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility = {
             name: _skip_zero_scale(utility_decay, state.utility[name])
             + (1.0 - utility_decay) * (-grads[name] * params[name])
@@ -2360,7 +2369,7 @@ def _make_adaptive_norm_sigma0_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility = {
             name: _skip_zero_scale(utility_decay, state.utility[name])
             + (1.0 - utility_decay) * (-grads[name] * params[name])
@@ -2768,7 +2777,7 @@ def _make_discovered_rule_learner(
             (loss, logits), grads = jax.value_and_grad(loss_fn, has_aux=True)(
                 params, x_used, y
             )
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         prev_utility = state.utility
         if f_ureset:
             prev_utility = dict(prev_utility)
@@ -3071,7 +3080,7 @@ def upgd_w_localgate_update(
     beta = hp["utility_decay"]
     step_size = hp["step_size"]
     decay = 1.0 - step_size * hp["weight_decay"]
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     utility = {
         name: _skip_zero_scale(beta, state.utility[name])
         + (1.0 - beta) * (-grads[name] * params[name])
@@ -3642,7 +3651,7 @@ def _make_guarded_cbp_adam_learner(
         )
         _, _, a1, z2, a2 = _forward_with_activations(params, x)
         da1, da2 = _activation_loss_grads(params, logits, y, z2)
-        clock = state.step + jnp.array(1, dtype=jnp.int32)
+        clock = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, clock, hp["utility_decay"]
         )
@@ -3765,7 +3774,7 @@ def upgd_alpha_utility_update(
     decay = 1.0 - step_size * hp["weight_decay"]
     meta = hp["meta_step_size"]
     la0 = math.log(hp["initial_step_size"])
-    count = state.step + jnp.array(1, dtype=jnp.int32)
+    count = _next_utility_clock(state.step)
     new_log_alpha: dict[str, Array] = {}
     new_trace: dict[str, Array] = {}
     for name in params:
@@ -3929,7 +3938,7 @@ def _make_colnorm_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, count, utility_decay
         )
@@ -4018,7 +4027,7 @@ def _make_muon_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, count, utility_decay
         )
@@ -4101,7 +4110,7 @@ def _make_lion_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, count, utility_decay
         )
@@ -4837,7 +4846,7 @@ def _make_rls_head_learner(
             state.norm, state.fast_mean, x
         )
         count = (
-            state.step + jnp.array(1, dtype=jnp.int32)
+            _next_utility_clock(state.step)
             if gate_enabled
             else state.step
         )
@@ -5701,7 +5710,7 @@ def _make_norm_adam_fastv_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        clock = state.step + jnp.array(1, dtype=jnp.int32)
+        clock = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, clock, utility_decay
         )
@@ -5791,7 +5800,7 @@ def _make_norm_rmsprop_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        clock = state.step + jnp.array(1, dtype=jnp.int32)
+        clock = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, clock, utility_decay
         )
@@ -5907,7 +5916,7 @@ def _make_norm_apollo_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        clock = state.step + jnp.array(1, dtype=jnp.int32)
+        clock = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, clock, utility_decay
         )
@@ -5986,7 +5995,7 @@ def _make_sgd_momentum_gate_learner(
         (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
             params, x_norm, y
         )
-        clock = state.step + jnp.array(1, dtype=jnp.int32)
+        clock = _next_utility_clock(state.step)
         utility, gate = _upgd_utility_and_gate(
             params, grads, state.utility, clock, utility_decay
         )
@@ -6518,7 +6527,7 @@ def _make_sigma0_gated_l2init_learner(
         beta = hp["utility_decay"]
         step_size = hp["step_size"]
         decay_factor = 1.0 - step_size * hp["weight_decay"]
-        count = state.step + jnp.array(1, dtype=jnp.int32)
+        count = _next_utility_clock(state.step)
         utility = {
             name: _skip_zero_scale(beta, state.utility[name])
             + (1.0 - beta) * (-grads[name] * params[name])
