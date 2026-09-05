@@ -116,6 +116,26 @@ def test_hostile_str_for_planning_steps_without_repr_leak() -> None:
     assert "!r" not in str(exc.value)
 
 
+def test_scan_loop_lengths_reject_before_arange_and_accept_budget_boundary() -> None:
+    last_fit = 10_000
+    cfg = Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": last_fit})
+    assert cfg.planning_steps == last_fit
+    cfg = Step7DynaConfig(
+        **{
+            **_valid_config_kwargs(),
+            "planning_steps": 0,
+            "planning_rollout_depth": last_fit,
+        }
+    )
+    assert cfg.planning_rollout_depth == last_fit
+    with pytest.raises(ValueError, match="10000"):
+        Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": 10**9})
+    with pytest.raises(ValueError, match="10000"):
+        Step7DynaConfig(
+            **{**_valid_config_kwargs(), "planning_rollout_depth": last_fit + 1}
+        )
+
+
 def test_rejects_bool_and_hostile_int() -> None:
     with pytest.raises(ValueError, match="must be an integer"):
         Step7DynaConfig(**{**_valid_config_kwargs(), "planning_steps": True})  # type: ignore[arg-type]

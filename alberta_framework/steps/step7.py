@@ -59,6 +59,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._scan_resources import ScanBudget, require_scan_steps
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
@@ -161,6 +162,7 @@ class Step7DynaConfig:
 
 
 _INT32_MAX = 2**31 - 1
+_STEP7_PLANNING_LOOP_BUDGET = ScanBudget("Step 7 planning", maximum_steps=10_000)
 _STEP7_CONFIG_FIELDS = frozenset(
     {
         "control",
@@ -262,6 +264,15 @@ def _require_int(
     return number
 
 
+def _require_planning_scan_steps(
+    name: str, value: object, *, minimum: int
+) -> int:
+    canonical = _require_int(name, value, minimum=minimum, maximum=_INT32_MAX)
+    if canonical == 0:
+        return 0
+    return require_scan_steps(name, canonical, _STEP7_PLANNING_LOOP_BUDGET)
+
+
 def _require_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be a built-in bool")
@@ -275,17 +286,15 @@ def _validate_planning_config(config: Step7DynaConfig) -> None:
         raise ValueError("control must be an actual Step6DifferentialSARSAConfig")
     if type(config.world_model) is not Step8WorldModelConfig:
         raise ValueError("world_model must be an actual Step8WorldModelConfig")
-    planning_steps = _require_int(
+    planning_steps = _require_planning_scan_steps(
         "planning_steps",
         config.planning_steps,
         minimum=0,
-        maximum=_INT32_MAX,
     )
-    planning_rollout_depth = _require_int(
+    planning_rollout_depth = _require_planning_scan_steps(
         "planning_rollout_depth",
         config.planning_rollout_depth,
         minimum=1,
-        maximum=_INT32_MAX,
     )
     planning_warmup_steps = _require_int(
         "planning_warmup_steps",

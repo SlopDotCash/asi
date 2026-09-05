@@ -231,6 +231,17 @@ def test_derived_allocation_and_runtime_work_fail_at_config_boundary() -> None:
         )
 
 
+def test_dream_loop_lengths_reject_before_arange() -> None:
+    with pytest.raises(ValueError, match="10000"):
+        Step9DreamingConfig(planning_budget=10**9)
+    with pytest.raises(ValueError, match="10000"):
+        Step9DreamingConfig(dream_rollout_horizon=10_001)
+    with pytest.raises(ValueError, match="10000"):
+        Step9DreamingConfig(dream_candidate_count=10_001)
+    cfg = Step9DreamingConfig(planning_budget=0)
+    assert cfg.planning_budget == 0
+
+
 def test_runtime_entry_points_require_exact_config_without_truthiness_hooks() -> None:
     calls = 0
 

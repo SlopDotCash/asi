@@ -36,6 +36,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
+from alberta_framework._scan_resources import ScanBudget, require_scan_steps
 from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
@@ -84,6 +85,7 @@ _MAX_DREAM_WORK_PER_REAL_STEP = 4_096
 # additionally includes model-based dreaming rollouts, so this module is at
 # least as exposed to the hang as its siblings.
 _STEP9_SEQUENCE_MAX_STEPS = 10_000
+_STEP9_DREAM_LOOP_BUDGET = ScanBudget("Step 9 dreaming", maximum_steps=10_000)
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -285,6 +287,13 @@ def _require_int(
     return number
 
 
+def _require_dream_scan_steps(name: str, value: object, *, minimum: int) -> int:
+    canonical = _require_int(name, value, minimum=minimum, maximum=_INT32_MAX)
+    if canonical == 0:
+        return 0
+    return require_scan_steps(name, canonical, _STEP9_DREAM_LOOP_BUDGET)
+
+
 def _require_bool(name: str, value: object) -> bool:
     if type(value) is not bool:
         raise ValueError(f"{name} must be a built-in bool")
@@ -425,21 +434,19 @@ def _validate_dreaming_config(config: Step9DreamingConfig) -> None:
         "behavior_model_step_size",
         config.behavior_model_step_size,
     )
-    planning_budget = _require_int(
-        "planning_budget", config.planning_budget, minimum=0, maximum=_INT32_MAX
+    planning_budget = _require_dream_scan_steps(
+        "planning_budget", config.planning_budget, minimum=0
     )
-    dream_rollout_horizon = _require_int(
+    dream_rollout_horizon = _require_dream_scan_steps(
         "dream_rollout_horizon",
         config.dream_rollout_horizon,
         minimum=1,
-        maximum=_INT32_MAX,
     )
     # Candidate selection publishes selected indices as signed int32 values.
-    dream_candidate_count = _require_int(
+    dream_candidate_count = _require_dream_scan_steps(
         "dream_candidate_count",
         config.dream_candidate_count,
         minimum=1,
-        maximum=_INT32_MAX,
     )
     dream_surprise_weight = _require_real(
         "dream_surprise_weight",
