@@ -1102,13 +1102,21 @@ def lifetime_scorecard(
     fresh_early = jnp.mean(per_cycle[..., :, 0, :window], axis=-1)
     recur_c_early = jnp.mean(per_cycle[..., :, 1, :window], axis=-1)
     recur_d_early = jnp.mean(per_cycle[..., :, 3, :window], axis=-1)
-    eps = 1e-8
+    floor = jnp.asarray(1e-8, dtype=jnp.promote_types(sq_errors.dtype, jnp.float32))
+    both_at_floor_c = (recur_c_early[..., :1] <= floor) & (recur_c_early[..., 1:] <= floor)
+    raw_savings_c = recur_c_early[..., :1] / jnp.maximum(recur_c_early[..., 1:], floor)
+    savings_c = jnp.where(both_at_floor_c, jnp.ones_like(raw_savings_c), raw_savings_c)
+
+    both_at_floor_d = (recur_d_early[..., :1] <= floor) & (recur_d_early[..., 1:] <= floor)
+    raw_savings_d = recur_d_early[..., :1] / jnp.maximum(recur_d_early[..., 1:], floor)
+    savings_d = jnp.where(both_at_floor_d, jnp.ones_like(raw_savings_d), raw_savings_d)
+
     return {
         "fresh_early": fresh_early,
         "recur_c_early": recur_c_early,
         "recur_d_early": recur_d_early,
-        "savings_c": recur_c_early[..., :1] / jnp.maximum(recur_c_early[..., 1:], eps),
-        "savings_d": recur_d_early[..., :1] / jnp.maximum(recur_d_early[..., 1:], eps),
+        "savings_c": savings_c,
+        "savings_d": savings_d,
         "nan_steps": jnp.sum(~jnp.isfinite(sq_errors), axis=-1),
     }
 

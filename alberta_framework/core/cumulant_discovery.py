@@ -106,7 +106,8 @@ def _require_float32(
         upper_inclusive=upper_inclusive,
         positive=positive,
     )
-    if preserve_nonzero and numerator != 0 and stored == 0.0:
+    narrowed = float(np.float32(stored))
+    if preserve_nonzero and numerator != 0 and narrowed == 0.0:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
 

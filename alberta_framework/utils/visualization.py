@@ -280,6 +280,13 @@ def plot_final_performance_bars(
     names = list(results.keys())
     if not names:
         raise ValueError("plot_final_performance_bars requires at least one result")
+    from alberta_framework.utils.statistics import common_final_window
+
+    common_final_window(
+        {name: int(results[name].metric_arrays[metric].shape[1]) for name in names},
+        100,
+        metric,
+    )
     means = [results[name].summary[metric].mean for name in names]
     stds = [results[name].summary[metric].std for name in names]
     means_arr = np.asarray(means, dtype=np.float64)

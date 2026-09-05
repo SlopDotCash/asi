@@ -1278,6 +1278,26 @@ class TestPartialMerge:
 
 
 class TestSummariesAndComparison:
+    def test_cross_learner_comparison_is_omitted_for_disjoint_seed_schedules(self):
+        comparison = build_comparison(
+            {
+                "upgd_w": {"average_online_accuracy_mean": 0.9, "seeds": [0]},
+                "adamw": {"average_online_accuracy_mean": 0.1, "seeds": [1]},
+            }
+        )
+
+        assert "upgd_w_beats_adamw" not in comparison
+
+    def test_cross_learner_comparison_is_retained_for_matching_seed_schedules(self):
+        comparison = build_comparison(
+            {
+                "upgd_w": {"average_online_accuracy_mean": 0.9, "seeds": [0, 1]},
+                "adamw": {"average_online_accuracy_mean": 0.1, "seeds": [0, 1]},
+            }
+        )
+
+        assert comparison["upgd_w_beats_adamw"] is True
+
     def test_summary_and_comparison_flag_logic(self):
         data_x, data_y = _synthetic_dataset(4, N_TRAIN, TINY.input_dim, TINY.n_classes)
         result = run_ipmnist(data_x, data_y, "upgd_w", seeds=(0, 1), config=TINY)
