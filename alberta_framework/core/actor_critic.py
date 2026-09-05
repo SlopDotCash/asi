@@ -36,6 +36,7 @@ from jaxtyping import Bool, Float, Int
 
 from alberta_framework._float32 import round_real_to_float32
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import Bounder, bounder_from_config
 from alberta_framework.core.update_safety import (
     checked_integer_action_array,
@@ -853,7 +854,7 @@ class ActorCriticAgent:
             actor_trace_bias=stored_actor_trace_bias,
             critic_trace_weights=stored_critic_trace_weights,
             critic_trace_bias=stored_critic_trace_bias,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         # Reject the complete transition if its inputs or proposed persistent
         # state are non-finite. The result carries the rejection explicitly.
@@ -1694,7 +1695,7 @@ class ContinuousActorCriticAgent:
             log_sigma_trace=stored_log_sigma_trace,
             critic_trace_weights=stored_critic_trace_weights,
             critic_trace_bias=stored_critic_trace_bias,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         inputs_valid = (
             jnp.isfinite(jnp.squeeze(reward))

@@ -66,6 +66,7 @@ from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 
 _INT32_MAX = 2**31 - 1
 _MAX_PERSISTENT_STATE_BYTES = 256 * 1024 * 1024
@@ -417,7 +418,7 @@ class CumulantDiscovery:
             weights=proposed_weights,
             biases=proposed_biases,
             utility=proposed_utility,
-            ages=jnp.minimum(state.ages, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + 1,
+            ages=_saturating_int32_counter_increment(state.ages),
             key=state.key,
         )
         # Inf next obs makes 0 @ inf = NaN in V(s') at zero init, then

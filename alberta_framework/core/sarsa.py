@@ -44,6 +44,7 @@ from alberta_framework.core.normalizers import (
     EMANormalizerState,
     Normalizer,
     WelfordNormalizerState,
+    _saturating_int32_counter_increment,
 )
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import (
@@ -1013,7 +1014,7 @@ class SARSAAgent:
 
         # Epsilon decay
         cfg = self._sarsa_config
-        new_step_count = jnp.minimum(state.step_count, _INT32_MAX - 1) + 1
+        new_step_count = _saturating_int32_counter_increment(state.step_count)
         new_epsilon = jax.lax.cond(
             cfg.epsilon_decay_steps > 0,
             lambda: jnp.maximum(

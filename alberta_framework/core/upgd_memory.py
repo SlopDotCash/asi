@@ -29,6 +29,7 @@ from jax import Array
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.optimizers import ObGDBounding
 from alberta_framework.core.prototype_memory import (
     PrototypeMemoryConfig,
@@ -1075,13 +1076,7 @@ class UPGDMemoryLearner:
             state.upgd_state, safe_observation, safe_update_target
         )
         safe_upgd_state = upgd_result.state.replace(
-            step_count=(
-                jnp.minimum(
-                    state.upgd_state.step_count,
-                    jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
-                )
-                + 1
-            )
+            step_count=_saturating_int32_counter_increment(state.upgd_state.step_count)
         )
         memory_result = self._memory.update_with_novelty_threshold(
             state.memory_state,
@@ -1122,13 +1117,7 @@ class UPGDMemoryLearner:
                 + one_minus_decay * blended_loss
             ),
             allocation_ema=next_allocation_ema,
-            step_count=(
-                jnp.minimum(
-                    state.step_count,
-                    jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32),
-                )
-                + 1
-            ),
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         metrics = jnp.asarray(
             [

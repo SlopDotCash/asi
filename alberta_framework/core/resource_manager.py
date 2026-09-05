@@ -42,6 +42,7 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar_with_ratio
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
     neutralize_array,
@@ -635,7 +636,7 @@ class LearnedResourceManager:
             log_weights=new_log_weights,
             loss_ema=new_loss_ema,
             action_counts=new_counts,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         checked_log_weights = _mask_unused_history(
             state.log_weights,
@@ -1271,7 +1272,7 @@ class GeneratorMetaResourceManager:
             log_weights=new_log_weights,
             reward_ema=new_reward_ema,
             action_counts=new_counts,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
         )
         checked_log_weights = _mask_unused_history(
             state.log_weights,

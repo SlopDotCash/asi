@@ -66,6 +66,7 @@ from jax import Array
 from jaxtyping import Bool, Float, Int
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
+from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import Observation
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
@@ -626,7 +627,7 @@ class OffPolicyTDLinearLearner:
             eligibility_traces=new_e,
             bias_eligibility_trace=new_e_b,
             previous_gamma=gamma_s,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -856,7 +857,7 @@ class ETDLinearLearner:
             follow_on_trace=follow_on,
             emphasis=emphasis,
             previous_rho=rho_s,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
@@ -1086,7 +1087,7 @@ class GradientTDLinearLearner:
             secondary_weights=state.secondary_weights + secondary_step,
             eligibility_traces=traces,
             previous_gamma=gamma_s,
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )

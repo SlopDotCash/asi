@@ -54,7 +54,10 @@ from alberta_framework.core.learners import (
     AnyOptimizer,
     _update_from_gradient_with_diagnostics,
 )
-from alberta_framework.core.normalizers import Normalizer
+from alberta_framework.core.normalizers import (
+    Normalizer,
+    _saturating_int32_counter_increment,
+)
 from alberta_framework.core.optimizers import LMS, Bounder
 from alberta_framework.core.types import (
     AutostepParamState,
@@ -877,7 +880,7 @@ class IndependentDemonHorde:
             normalizer_state=masked_normalizer_state,
             step_count=jnp.where(
                 commit,
-                jnp.minimum(demon_state.step_count, _INT32_MAX - 1) + 1,
+                _saturating_int32_counter_increment(demon_state.step_count),
                 demon_state.step_count,
             ),
             birth_timestamp=demon_state.birth_timestamp,
@@ -1050,7 +1053,7 @@ class IndependentDemonHorde:
         )
         proposed_state = IndependentDemonHordeState(
             demon_states=tuple(new_demon_states),
-            step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
+            step_count=_saturating_int32_counter_increment(state.step_count),
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
         )
