@@ -879,3 +879,39 @@ def test_step7_smoke_result_rejects_leftover_identities() -> None:
     assert '"seed": true' not in dumped
     assert '"finite": 1' not in dumped
     assert '"planning_acceptance_count": true' not in dumped
+
+
+def test_zero_importance_ratio_does_not_multiply_overflowing_planning_delta() -> None:
+    """Finite opposite endpoints can overflow their difference even when rho is zero."""
+    from alberta_framework.core.average_reward import (
+        DifferentialSARSAAgent,
+        DifferentialSARSAConfig,
+    )
+    from alberta_framework.steps.step7 import _apply_planning_importance_correction
+
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+    old = agent.init(3, jr.key(0))
+    maximum = jnp.finfo(jnp.float32).max
+    old = old.replace(q_weights=jnp.full_like(old.q_weights, -maximum))
+    planned = old.replace(  # type: ignore[attr-defined]
+        q_weights=jnp.full_like(old.q_weights, maximum),
+        q_bias=jnp.full_like(old.q_bias, maximum),
+        q_trace_weights=jnp.full_like(old.q_trace_weights, maximum),
+        q_trace_bias=jnp.full_like(old.q_trace_bias, maximum),
+        average_reward=jnp.asarray(maximum, dtype=jnp.float32),
+    )
+    raw = jnp.asarray(0.0, dtype=jnp.float32) * (
+        jnp.asarray(maximum, dtype=jnp.float32) - jnp.asarray(-maximum, dtype=jnp.float32)
+    )
+    assert not bool(jnp.isfinite(raw))
+
+    corrected = _apply_planning_importance_correction(
+        old, planned, jnp.asarray(0.0, dtype=jnp.float32)
+    )
+    chex.assert_trees_all_close(corrected.q_weights, old.q_weights)
+    chex.assert_trees_all_close(corrected.q_bias, old.q_bias)
+    chex.assert_trees_all_close(corrected.q_trace_weights, old.q_trace_weights)
+    chex.assert_trees_all_close(corrected.q_trace_bias, old.q_trace_bias)
+    chex.assert_trees_all_close(corrected.average_reward, old.average_reward)
+    chex.assert_tree_all_finite(corrected.q_weights)
+    chex.assert_tree_all_finite(corrected.average_reward)
