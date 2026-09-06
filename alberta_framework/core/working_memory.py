@@ -124,19 +124,8 @@ class WorkingMemoryConfig:
             if key in payload:
                 value = payload[key]
                 if type(value) is list:
-                    if len(value) > _MAX_WORKING_MEMORY_DECAY_RATES:
-                        raise ValueError(
-                            f"{key} must contain at most "
-                            f"{_MAX_WORKING_MEMORY_DECAY_RATES} rates"
-                        )
                     payload[key] = tuple(value)
-                elif type(value) is tuple:
-                    if len(value) > _MAX_WORKING_MEMORY_DECAY_RATES:
-                        raise ValueError(
-                            f"{key} must contain at most "
-                            f"{_MAX_WORKING_MEMORY_DECAY_RATES} rates"
-                        )
-                else:
+                elif type(value) is not tuple:
                     raise ValueError(f"{key} must be an actual list or tuple")
                 if any(type(item) is not float for item in payload[key]):
                     raise ValueError(f"serialized {key} values must be JSON numbers")
@@ -228,11 +217,6 @@ class WorkingMemoryArrayResult:
 
 _INT32_MAX = 2**31 - 1
 _FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
-# One 12-bit cardinality budget bounds direct tuple validation and serialized-list
-# normalization before any per-rate float validation, mirroring
-# ``HistoryFeatureExtractor`` and ``HordeSpec``.
-_MAX_WORKING_MEMORY_CONFIGURATION_ITEMS = 1 << 12
-_MAX_WORKING_MEMORY_DECAY_RATES = _MAX_WORKING_MEMORY_CONFIGURATION_ITEMS
 _ACTUAL_INT_TYPES: tuple[type, ...] = (int, *(np.dtype(code).type for code in "bBhHiIlLqQpP"))
 
 
@@ -291,10 +275,6 @@ def _require_array(
 def _validate_decay_rates(name: str, rates: object) -> tuple[float, ...]:
     if type(rates) is not tuple:
         raise ValueError(f"{name} must be an actual tuple")
-    if len(rates) > _MAX_WORKING_MEMORY_DECAY_RATES:
-        raise ValueError(
-            f"{name} must contain at most {_MAX_WORKING_MEMORY_DECAY_RATES} rates"
-        )
     return tuple(
         validated_float32_scalar(
             f"{name}[{index}]",
