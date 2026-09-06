@@ -119,6 +119,28 @@ def test_riverswim_checkpoint_validator_rejects_sub_tolerance_metric_forgery() -
         runner.validate_checkpoint_state(forged_oracle)
 
 
+@pytest.mark.parametrize("forged_reward", [-1.0, 3.0])
+def test_riverswim_checkpoint_validator_rejects_reward_outside_configured_bounds(
+    forged_reward: float,
+) -> None:
+    runner = _runner()
+    state, _ = _advance(runner, runner.init(), 2)
+    oracle_reward = state.metrics.oracle_reward_sum
+    forged_metrics = dataclasses.replace(
+        state.metrics,
+        reward_sum=forged_reward,
+        regret_sum=oracle_reward - forged_reward,
+        phase_reward_sums=(forged_reward, 0.0),
+        phase_regret_sums=(oracle_reward - forged_reward, 0.0),
+        current_segment_reward=forged_reward,
+        current_segment_regret=oracle_reward - forged_reward,
+    )
+    forged: ReferenceLifeState = dataclasses.replace(state, metrics=forged_metrics)
+
+    with pytest.raises(ValueError, match="reward bounds"):
+        runner.validate_checkpoint_state(forged)
+
+
 def _assert_typed_exact(left: object, right: object, *, path: str = "value") -> None:
     if isinstance(left, jax.Array) or isinstance(right, jax.Array):
         assert isinstance(left, jax.Array) and isinstance(right, jax.Array), path

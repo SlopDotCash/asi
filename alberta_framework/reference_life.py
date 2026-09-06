@@ -2260,6 +2260,27 @@ class ReferenceLifeRunner:
             expected_segment_events = accepted
             expected_oracle_reward = accepted * oracle_reward
             oracle_reward_must_match_bitwise = True
+            reward_left = float(environment_config["reward_left"])
+            reward_right = float(environment_config["reward_right"])
+            minimum_step_reward = min(0.0, reward_left, reward_right)
+            maximum_step_reward = max(0.0, reward_left, reward_right)
+            maximum_magnitude = max(abs(minimum_step_reward), abs(maximum_step_reward))
+            # Metrics add one canonical float32 reward at a time in binary64.
+            # Gamma_n is a conservative forward-error allowance for that fixed
+            # sequential accumulation, including the endpoint multiplication.
+            relative_error = accepted * np.finfo(np.float64).eps
+            summation_slack = (
+                accepted
+                * maximum_magnitude
+                * relative_error
+                / (1.0 - relative_error)
+            )
+            minimum_reward = accepted * minimum_step_reward - summation_slack
+            maximum_reward = accepted * maximum_step_reward + summation_slack
+            if not minimum_reward <= metrics.reward_sum <= maximum_reward:
+                raise DecisionOwnershipError(
+                    "checkpoint RiverSwim reward total is outside configured reward bounds"
+                )
             stationary_exact_pairs = (
                 (metrics.current_segment_reward, metrics.reward_sum),
                 (metrics.current_segment_regret, metrics.regret_sum),
