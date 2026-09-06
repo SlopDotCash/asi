@@ -2108,6 +2108,38 @@ def _validate_metric_window(
     return reward_sum
 
 
+def _validate_riverswim_reward_visit_consistency(
+    *,
+    reward_sum: float,
+    event_count: int,
+    high_end_visit_count: int,
+    protocol: Mapping[str, Any],
+    path: str,
+) -> None:
+    """Reject reward totals that require more high-end decisions than visits."""
+
+    initial_high_end = int(protocol["initial_state"] == protocol["n_states"] - 1)
+    high_end_decision_bound = min(
+        event_count,
+        high_end_visit_count + initial_high_end,
+    )
+    non_high_end_maximum = max(
+        0.0,
+        float(np.float32(protocol["reward_left"])),
+    )
+    right_end_reward = float(np.float32(protocol["reward_right"]))
+    reward_upper_bound = (
+        event_count * non_high_end_maximum
+        + high_end_decision_bound
+        * max(0.0, right_end_reward - non_high_end_maximum)
+    )
+    tolerance = 1e-9 * max(1.0, abs(reward_sum), abs(reward_upper_bound))
+    if reward_sum > reward_upper_bound + tolerance:
+        raise ValueError(
+            f"{path} right-end rewards exceed high-end visits bound"
+        )
+
+
 def _validate_completed_outcome(
     outcome: Any,
     *,
@@ -2337,6 +2369,13 @@ def _validate_completed_outcome(
         )
         if not _numerically_equal(rate, visits / horizon):
             raise ValueError(f"{path}.high_end_visit_rate is inconsistent")
+        _validate_riverswim_reward_visit_consistency(
+            reward_sum=reward_sum,
+            event_count=horizon,
+            high_end_visit_count=visits,
+            protocol=protocol,
+            path=path,
+        )
     else:
         raise ValueError(f"{path} has an unsupported environment")
 
@@ -2559,6 +2598,13 @@ def _validate_partial_outcome(
             rate_value = _require_finite_number(rate, path=f"{path}.high_end_visit_rate")
             if not _numerically_equal(rate_value, visits / accepted):
                 raise ValueError(f"{path}.high_end_visit_rate is inconsistent")
+        _validate_riverswim_reward_visit_consistency(
+            reward_sum=reward_sum,
+            event_count=accepted,
+            high_end_visit_count=visits,
+            protocol=protocol,
+            path=path,
+        )
     else:
         raise ValueError(f"{path} has an unsupported environment")
     expected_oracle = math.fsum(

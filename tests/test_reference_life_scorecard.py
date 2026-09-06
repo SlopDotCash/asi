@@ -717,6 +717,90 @@ def test_completed_shard_rejects_impossible_reward_lattice_total() -> None:
         scorecard.validate_scorecard_run_record(record)
 
 
+def test_completed_riverswim_shard_rejects_right_rewards_without_high_end_visits() -> None:
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == "riverswim"
+        and item.arm == "random"
+        and item.seed == SEED_ROSTER[0]
+    )
+    record = _completed_record(plan, spec)
+    outcome = record["outcome"]
+    horizon = outcome["accepted_events"]
+    outcome["reward_sum"] = float(horizon)
+    outcome["mean_reward"] = 1.0
+    outcome["phase_reward_sums"] = [float(horizon), 0.0]
+    outcome["regret_sum"] = outcome["oracle_reward_sum"] - float(horizon)
+    outcome["high_end_visit_count"] = 0
+    outcome["high_end_visit_rate"] = 0.0
+    _redigest(record)
+
+    with pytest.raises(ValueError, match="right-end rewards exceed high-end visits"):
+        scorecard.validate_scorecard_run_record(record)
+
+
+def test_partial_riverswim_shard_rejects_right_reward_before_reaching_high_end() -> None:
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == "riverswim"
+        and item.arm == "random"
+        and item.seed == SEED_ROSTER[0]
+    )
+    record = _completed_record(plan, spec)
+    horizon = plan.protocol("riverswim")["horizon"]
+    oracle_reward = record["outcome"]["oracle_reward_sum"] / horizon
+    record.update(
+        {
+            "status": "failed",
+            "failure": {
+                "stage": "step",
+                "type": "RuntimeError",
+                "message": "synthetic post-step failure",
+                "accepted_events": 1,
+            },
+            "outcome": None,
+            "partial_outcome": {
+                "summary_mode": "streaming_o1_no_retained_events",
+                "configured_horizon": horizon,
+                "accepted_events": 1,
+                "reward_sum": 1.0,
+                "mean_reward": 1.0,
+                "oracle_reward_sum": oracle_reward,
+                "regret_sum": oracle_reward - 1.0,
+                "parameter_change_events": 0,
+                "phase_event_counts": [1, 0],
+                "phase_reward_sums": [1.0, 0.0],
+                "windows": {
+                    "early": {
+                        "event_count": 1,
+                        "reward_sum": 1.0,
+                        "mean_reward": 1.0,
+                        "mean_oracle_regret": oracle_reward - 1.0,
+                    },
+                    "late": None,
+                },
+                "high_end_visit_count": 0,
+                "high_end_visit_rate": 0.0,
+            },
+        }
+    )
+    record["telemetry"].update(
+        {
+            "warmed_step_seconds_total": 0.0,
+            "warmed_step_count": 0,
+            "warmed_step_seconds_mean": None,
+        }
+    )
+    _redigest(record)
+
+    with pytest.raises(ValueError, match="right-end rewards exceed high-end visits"):
+        scorecard.validate_scorecard_run_record(record)
+
+
 @pytest.mark.parametrize("environment", ENVIRONMENT_ROSTER)
 def test_failed_shard_rejects_window_reward_exceeding_partial_total(
     environment: str,
