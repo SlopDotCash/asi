@@ -93,6 +93,34 @@ def test_checkpoint_validator_rejects_generation_and_zero_event_metric_forgery()
             runner.validate_checkpoint_state(forged)
 
 
+def test_checkpoint_validator_rejects_switching_current_segment_forgery() -> None:
+    runner = _runner()
+    state, _ = _advance(runner, runner.init(), 1)
+
+    assert state.metrics.current_segment_reward in (0.0, 1.0)
+    assert state.metrics.current_segment_regret in (0.0, 1.0)
+    for field, forged_values in (
+        (
+            "current_segment_reward",
+            (1.0 - state.metrics.current_segment_reward, 123.0),
+        ),
+        (
+            "current_segment_regret",
+            (1.0 - state.metrics.current_segment_regret, -123.0),
+        ),
+    ):
+        for forged_value in forged_values:
+            forged = dataclasses.replace(
+                state,
+                metrics=dataclasses.replace(
+                    state.metrics,
+                    **{field: forged_value},
+                ),
+            )
+            with pytest.raises(ValueError, match="current segment"):
+                runner.validate_checkpoint_state(forged)
+
+
 def _agent_config() -> PrototypeAgentConfig:
     return PrototypeAgentConfig(
         oak=OaKConfig(
