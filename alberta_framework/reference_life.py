@@ -568,7 +568,7 @@ class ReferenceLifeMetricsState:
             value = getattr(self, name)
             if type(value) is not int or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
-        if self.current_phase not in (0, 1):
+        if type(self.current_phase) is not int or self.current_phase not in (0, 1):
             raise ValueError("current_phase must be 0 or 1")
         pairs = (
             self.phase_event_counts,
@@ -579,8 +579,8 @@ class ReferenceLifeMetricsState:
         )
         if any(len(values) != 2 for values in pairs):
             raise ValueError("phase and segment metric tuples must have length two")
-        if any(value < 0 for value in self.phase_event_counts):
-            raise ValueError("phase event counts must be nonnegative")
+        if any(type(value) is not int or value < 0 for value in self.phase_event_counts):
+            raise ValueError("phase event counts must be nonnegative integers")
         if self.parameter_change_events > self.accepted_events:
             raise ValueError("parameter changes cannot exceed accepted events")
         if sum(self.phase_event_counts) != self.accepted_events:
