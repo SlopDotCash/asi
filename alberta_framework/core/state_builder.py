@@ -1023,9 +1023,9 @@ class FixedTraceStateBuilderConfig:
         act_decays = data["action_decay_rates"]
         out_decays = data["outcome_decay_rates"]
         if (
-            not isinstance(obs_decays, (list, tuple))
-            or not isinstance(act_decays, (list, tuple))
-            or not isinstance(out_decays, (list, tuple))
+            type(obs_decays) not in (list, tuple)
+            or type(act_decays) not in (list, tuple)
+            or type(out_decays) not in (list, tuple)
         ):
             raise ValueError("decay rates must be lists or tuples")
         return cls(
