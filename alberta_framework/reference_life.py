@@ -244,6 +244,30 @@ def _switching_metric_schedule(
     )
 
 
+def _within_sequential_sum_bounds(
+    value: float,
+    *,
+    event_count: int,
+    minimum_step_value: float,
+    maximum_step_value: float,
+) -> bool:
+    """Bound one binary64 sequential sum of finite canonical step values."""
+
+    maximum_magnitude = max(abs(minimum_step_value), abs(maximum_step_value))
+    relative_error = event_count * float(np.finfo(np.float64).eps)
+    summation_slack = (
+        event_count
+        * maximum_magnitude
+        * relative_error
+        / (1.0 - relative_error)
+    )
+    return (
+        event_count * minimum_step_value - summation_slack
+        <= value
+        <= event_count * maximum_step_value + summation_slack
+    )
+
+
 class LifePhase(enum.Enum):
     QUIESCENT = "quiescent"
     HALTED = "halted"
@@ -2249,6 +2273,45 @@ class ReferenceLifeRunner:
                 expected_phase_counts[0] * oracle_rewards[0]
                 + expected_phase_counts[1] * oracle_rewards[1]
             )
+            current_payoffs = tuple(
+                float(value) for value in payoff_matrices[expected_current_phase].flat
+            )
+            current_oracle = oracle_rewards[expected_current_phase]
+            current_regrets = tuple(current_oracle - reward for reward in current_payoffs)
+            if not _within_sequential_sum_bounds(
+                metrics.current_segment_reward,
+                event_count=expected_segment_events,
+                minimum_step_value=min(current_payoffs),
+                maximum_step_value=max(current_payoffs),
+            ) or not _within_sequential_sum_bounds(
+                metrics.current_segment_regret,
+                event_count=expected_segment_events,
+                minimum_step_value=min(current_regrets),
+                maximum_step_value=max(current_regrets),
+            ):
+                raise DecisionOwnershipError(
+                    "checkpoint current segment metrics are outside configured payoff bounds"
+                )
+            if expected_phase_switches < 2:
+                first_visit_pairs = (
+                    (
+                        metrics.current_segment_reward,
+                        metrics.phase_reward_sums[expected_current_phase],
+                    ),
+                    (
+                        metrics.current_segment_regret,
+                        metrics.phase_regret_sums[expected_current_phase],
+                    ),
+                )
+                if any(
+                    type(segment) is not float
+                    or type(phase_total) is not float
+                    or struct.pack(">d", segment) != struct.pack(">d", phase_total)
+                    for segment, phase_total in first_visit_pairs
+                ):
+                    raise DecisionOwnershipError(
+                        "checkpoint current segment metrics do not match their first phase visit"
+                    )
         elif environment_kind == "riverswim":
             if metrics_mode != "stationary":
                 raise DecisionOwnershipError("checkpoint RiverSwim metrics mode is invalid")
