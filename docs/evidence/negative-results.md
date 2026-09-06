@@ -262,6 +262,38 @@ postmortem.
     `outputs/ipmnist_screening/precond_confirm_r1/` (40 shards,
     `summary.json`, `RESULTS.md`).
 
+23. **Second-moment body preconditioning under the identmap frame is real
+    and too small: it fails the 200-task bar with a 4.66x horizon decay.**
+    The first mechanism probe of the 0.016 within-task convergence residue
+    after the match-time closure (#22): RMSProp-class per-weight
+    preconditioning of the residual body gradient (b2 0.999, eps 1e-8),
+    gated and decayed exactly as the incumbent, composed under the
+    confirmed identmap50_r identifier — the hypothesis being that the
+    identmap-stabilized coordinate frame keeps second moments valid across
+    boundaries, unlocking the step-size adaptation the historical Adam
+    negatives (all pre-identmap) could not sustain. Step-size calibration
+    (3-task, seed 0 only): 0.01 diverged to chance, 0.003 weak, 0.0003 and
+    0.001 entered the screen. The 60-task cliff is sharp: sm_step 0.0003
+    won +0.005236 on all three seeds while 0.001 lost -0.004799 on all
+    three (with doubled plasticity — the noise-amplification failure mode
+    onset). The preregistered 200-task, 20-seed confirmation measured
+    **+0.0011243 ± 0.000109 with 20/20 seeds positive** — a genuine effect
+    at 10.3x stderr that misses the frozen +0.002 bar. The 60t->200t decay
+    is 4.66x, steeper than #21's 3.5x, refuting the preregistered
+    prediction that a within-task-convergence mechanism decays less than
+    an early-life-transient one: even under a stable input frame, the
+    preconditioner's gain concentrates in early life, consistent with
+    per-weight step adaptation having little to add once body features
+    mature. Do not re-probe this mechanism with a smaller step size or a
+    boundary reset without reasoning that changes the late-life behaviour;
+    the remaining 0.015 to the 0.933 asymptote is not reachable by step
+    geometry alone on this evidence. Both arms are deregistered; the
+    mechanism and its reduction pins are retained. Records:
+    `outputs/ipmnist_screening/smprecond_r1/` (calibration + 9 shards,
+    `PREREGISTRATION.md`, `RESULTS.md`) and
+    `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
+    `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

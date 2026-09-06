@@ -1,0 +1,14 @@
+{
+  "arm": "incumbent_ref",
+  "spec_name": "rls_head_resid_identmap50_r",
+  "seed": 0,
+  "n_tasks": 3,
+  "task_length": 5000,
+  "per_task_accuracy": [
+    0.7324000000953674,
+    0.8925999999046326,
+    0.8989999890327454
+  ],
+  "mean_accuracy": 0.8413333296775818,
+  "finite": true
+}

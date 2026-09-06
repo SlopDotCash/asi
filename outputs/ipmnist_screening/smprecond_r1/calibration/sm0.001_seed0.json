@@ -1,0 +1,14 @@
+{
+  "arm": "sm0.001",
+  "spec_name": "rls_head_resid_identmap50_r_sm0.001",
+  "seed": 0,
+  "n_tasks": 3,
+  "task_length": 5000,
+  "per_task_accuracy": [
+    0.8479999899864197,
+    0.9095999598503113,
+    0.9121999740600586
+  ],
+  "mean_accuracy": 0.8899333079655966,
+  "finite": true
+}
