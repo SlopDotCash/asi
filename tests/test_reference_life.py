@@ -165,12 +165,33 @@ def test_reference_life_host_integer_identities_fail_before_comparison_hooks() -
             recovery_attempts=hostile,
         ),
         lambda: dataclasses.replace(state, accepted_events=hostile),
+        lambda: dataclasses.replace(
+            state.metrics, phase_event_counts=(hostile, 0)
+        ),
+        lambda: dataclasses.replace(state.metrics, current_phase=hostile),
     )
     for check in checks:
         _HostileInt.hook_calls = 0
-        with pytest.raises(ValueError, match="integer|count|uint32|nonnegative"):
+        with pytest.raises(ValueError, match="integer|count|uint32|nonnegative|phase"):
             check()
         assert _HostileInt.hook_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    (
+        ({"phase_event_counts": (0.0, 0)}, "phase event counts"),
+        ({"current_phase": False}, "current_phase"),
+    ),
+)
+def test_metric_schedule_fields_require_canonical_integers(
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    metrics = ReferenceLifeMetricsAdapter().init(initial_phase=0)
+
+    with pytest.raises(ValueError, match=message):
+        dataclasses.replace(metrics, **changes)
 
 
 def test_switching_execution_rejects_boolean_decoded_action(
