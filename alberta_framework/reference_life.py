@@ -2111,6 +2111,28 @@ class ReferenceLifeRunner:
             raise DecisionOwnershipError(f"{name} must be a scalar int32")
         return int(array)
 
+    @staticmethod
+    def _sequential_sum_bounds(
+        *,
+        event_count: int,
+        minimum_step_value: float,
+        maximum_step_value: float,
+    ) -> tuple[float, float]:
+        """Bound a binary64 sequential sum of configured finite step values."""
+
+        maximum_magnitude = max(abs(minimum_step_value), abs(maximum_step_value))
+        relative_error = event_count * float(np.finfo(np.float64).eps)
+        summation_slack = (
+            event_count
+            * maximum_magnitude
+            * relative_error
+            / (1.0 - relative_error)
+        )
+        return (
+            event_count * minimum_step_value - summation_slack,
+            event_count * maximum_step_value + summation_slack,
+        )
+
     def validate_checkpoint_state(self, state: ReferenceLifeState) -> None:
         """Validate the exact cross-component quiescent checkpoint boundary."""
 
@@ -2231,6 +2253,30 @@ class ReferenceLifeRunner:
             )
             if any(payoff.shape != (2, 2) for payoff in payoff_matrices):
                 raise DecisionOwnershipError("checkpoint environment payoff schedule is invalid")
+            completed_segment_reward_bounds = tuple(
+                self._sequential_sum_bounds(
+                    event_count=phase_length,
+                    minimum_step_value=min(float(value) for value in payoff.flat),
+                    maximum_step_value=max(float(value) for value in payoff.flat),
+                )
+                for payoff in payoff_matrices
+            )
+            for phase, (minimum_reward, maximum_reward) in enumerate(
+                completed_segment_reward_bounds
+            ):
+                completed_rewards = (
+                    metrics.first_completed_segment_reward[phase],
+                    metrics.latest_completed_segment_reward[phase],
+                )
+                if any(
+                    reward is not None
+                    and not minimum_reward <= reward <= maximum_reward
+                    for reward in completed_rewards
+                ):
+                    raise DecisionOwnershipError(
+                        "checkpoint completed-segment rewards are outside configured "
+                        "payoff bounds"
+                    )
             oracle_rewards = tuple(
                 max(
                     float(payoff[0, 0]),
