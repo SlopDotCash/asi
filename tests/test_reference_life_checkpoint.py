@@ -132,6 +132,27 @@ def _advance(
     return state, tuple(steps)
 
 
+def test_checkpoint_validator_rejects_completed_segment_reward_forgery() -> None:
+    runner = _runner()
+    state, _ = _advance(runner, runner.init(), 5)
+
+    for phase in (0, 1):
+        assert state.metrics.first_completed_segment_reward[phase] is not None
+        assert state.metrics.latest_completed_segment_reward[phase] is not None
+        for field, forged_value in (
+            ("first_completed_segment_reward", 123.0),
+            ("latest_completed_segment_reward", -123.0),
+        ):
+            values = list(getattr(state.metrics, field))
+            values[phase] = forged_value
+            forged = dataclasses.replace(
+                state,
+                metrics=dataclasses.replace(state.metrics, **{field: tuple(values)}),
+            )
+            with pytest.raises(ValueError, match="completed-segment rewards"):
+                runner.validate_checkpoint_state(forged)
+
+
 def _assert_semantic_state_exact(
     left: ReferenceLifeState,
     right: ReferenceLifeState,
