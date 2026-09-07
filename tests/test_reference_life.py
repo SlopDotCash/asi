@@ -196,6 +196,27 @@ def test_switching_execution_rejects_boolean_decoded_action(
         )
 
 
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    (
+        ({"reward_sum": False}, "metric accumulators"),
+        ({"phase_reward_sums": (0, 0.0)}, "metric accumulators"),
+        (
+            {"first_completed_segment_reward": (False, None)},
+            "optional segment metrics",
+        ),
+    ),
+)
+def test_metric_values_require_canonical_floats(
+    changes: dict[str, object],
+    message: str,
+) -> None:
+    metrics = ReferenceLifeMetricsAdapter().init(initial_phase=0)
+
+    with pytest.raises(ValueError, match=message):
+        dataclasses.replace(metrics, **changes)
+
+
 def _corrupt_accepted_update(
     update: PrototypeAdapterUpdate,
     *,

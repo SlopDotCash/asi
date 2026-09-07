@@ -593,8 +593,12 @@ class ReferenceLifeMetricsState:
             *self.first_completed_segment_reward,
             *self.latest_completed_segment_reward,
         )
-        if any(value is not None and not math.isfinite(value) for value in optional):
-            raise ValueError("optional segment metrics must be finite when present")
+        if any(
+            value is not None
+            and (type(value) is not float or not math.isfinite(value))
+            for value in optional
+        ):
+            raise ValueError("optional segment metrics must be finite floats when present")
         numeric = (
             self.reward_sum,
             self.oracle_reward_sum,
@@ -604,8 +608,8 @@ class ReferenceLifeMetricsState:
             self.current_segment_reward,
             self.current_segment_regret,
         )
-        if not all(math.isfinite(value) for value in numeric):
-            raise ValueError("metric accumulators must be finite")
+        if any(type(value) is not float or not math.isfinite(value) for value in numeric):
+            raise ValueError("metric accumulators must be finite floats")
 
 
 class ReferenceLifeMetricsAdapter:
