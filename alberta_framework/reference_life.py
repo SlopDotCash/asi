@@ -2208,6 +2208,25 @@ class ReferenceLifeRunner:
         )
         if decision.observation != environment_observation:
             raise DecisionOwnershipError("checkpoint decision does not observe environment state")
+        if accepted == 0:
+            root_key = jr.key(
+                self.config.seed,
+                impl=REFERENCE_LIFE_PRNG_IMPLEMENTATION,
+            )
+            _, initial_environment_key = jr.split(root_key, 2)
+            expected_start = self._environment_adapter.init(initial_environment_key)
+            if environment_observation != expected_start.observation:
+                raise DecisionOwnershipError(
+                    "checkpoint initial observation differs from seeded initialization"
+                )
+            expected_transcript = _initial_transcript(
+                self.config,
+                expected_start.observation,
+            )
+            if state.transcript_sha256 != expected_transcript:
+                raise DecisionOwnershipError(
+                    "checkpoint initial transcript differs from seeded initialization"
+                )
 
         metrics = state.metrics
         environment_config = self._environment_adapter.manifest.config

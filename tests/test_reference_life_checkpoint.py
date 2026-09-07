@@ -185,6 +185,23 @@ def _assert_typed_exact(left: object, right: object, *, path: str = "state") -> 
     assert type(left) is type(right) and left == right, path
 
 
+def test_checkpoint_validator_rejects_forged_initial_transcript() -> None:
+    runner = _runner()
+    state = runner.init()
+    forged_digest = "0" * 64
+    assert state.transcript_sha256 != forged_digest
+    checkpoint_state = dataclasses.replace(
+        state,
+        commit_generation=1,
+        checkpoint_generation=1,
+    )
+    runner.validate_checkpoint_state(checkpoint_state)
+    forged = dataclasses.replace(checkpoint_state, transcript_sha256=forged_digest)
+
+    with pytest.raises(ValueError, match="initial transcript"):
+        runner.validate_checkpoint_state(forged)
+
+
 @pytest.fixture(scope="module")
 def saved_case(
     tmp_path_factory: pytest.TempPathFactory,
