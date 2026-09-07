@@ -25,6 +25,7 @@ import threading
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol, TypeVar, cast
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -1873,6 +1874,37 @@ def _initial_transcript(
     )
 
 
+def _jax_trees_exact(left: Any, right: Any) -> bool:
+    """Compare the complete typed bytes of two JAX-state PyTrees."""
+
+    left_leaves, left_structure = jax.tree_util.tree_flatten(left)
+    right_leaves, right_structure = jax.tree_util.tree_flatten(right)
+    if cast(Any, left_structure) != right_structure or len(left_leaves) != len(right_leaves):
+        return False
+    for left_leaf, right_leaf in zip(left_leaves, right_leaves, strict=True):
+        if not isinstance(left_leaf, jax.Array) or not isinstance(right_leaf, jax.Array):
+            return False
+        if left_leaf.shape != right_leaf.shape or left_leaf.dtype != right_leaf.dtype:
+            return False
+        if jax.dtypes.issubdtype(  # type: ignore[attr-defined]
+            left_leaf.dtype, jax.dtypes.prng_key
+        ):
+            if str(jax.random.key_impl(left_leaf)) != str(jax.random.key_impl(right_leaf)):
+                return False
+            left_array = np.asarray(jax.random.key_data(left_leaf))
+            right_array = np.asarray(jax.random.key_data(right_leaf))
+        else:
+            left_array = np.asarray(left_leaf)
+            right_array = np.asarray(right_leaf)
+        if (
+            left_array.dtype != right_array.dtype
+            or left_array.shape != right_array.shape
+            or left_array.tobytes(order="C") != right_array.tobytes(order="C")
+        ):
+            return False
+    return True
+
+
 def _advance_transcript(
     previous_digest: str,
     *,
@@ -2203,6 +2235,28 @@ class ReferenceLifeRunner:
             raise DecisionOwnershipError("checkpoint current decision lineage is inconsistent")
         if decision.observation_id != expected_observation_id:
             raise DecisionOwnershipError("checkpoint decision observation identity is inconsistent")
+        if accepted == 0:
+            root_key = jr.key(
+                self.config.seed,
+                impl=REFERENCE_LIFE_PRNG_IMPLEMENTATION,
+            )
+            agent_key, _ = jr.split(root_key, 2)
+            canonical_agent = self._agent_adapter.init(
+                agent_key,
+                lifecycle_id=state.lifecycle_id,
+            )
+            canonical_agent, canonical_decision = self._agent_adapter.start(
+                canonical_agent,
+                observation_id=expected_observation_id,
+                observation=decision.observation,
+            )
+            if not _jax_trees_exact(
+                agent_state.agent_state,
+                canonical_agent.agent_state,
+            ) or decision != canonical_decision:
+                raise DecisionOwnershipError(
+                    "checkpoint seeded initial agent state is inconsistent"
+                )
         environment_observation = self._environment_adapter.current_observation(
             state.environment_state
         )
