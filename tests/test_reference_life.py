@@ -225,6 +225,24 @@ def _corrupt_accepted_update(
     raise AssertionError(f"unknown test defect: {defect}")
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "phase_event_counts",
+        "phase_reward_sums",
+        "phase_regret_sums",
+        "first_completed_segment_reward",
+        "latest_completed_segment_reward",
+    ),
+)
+def test_metric_pair_fields_require_tuple_containers(field: str) -> None:
+    metrics = ReferenceLifeMetricsAdapter().init(initial_phase=0)
+    list_value = list(getattr(metrics, field))
+
+    with pytest.raises(ValueError, match="tuple containers"):
+        dataclasses.replace(metrics, **{field: list_value})
+
+
 def test_pure_transaction_reducer_has_no_hidden_current_state() -> None:
     adapter = PrototypeReferenceAdapter.from_config(_agent_config())
     agent_state = adapter.init(jr.key(7), lifecycle_id=_LIFECYCLE_ID)

@@ -556,6 +556,15 @@ class ReferenceLifeMetricsState:
     latest_completed_segment_reward: tuple[float | None, float | None]
 
     def __post_init__(self) -> None:
+        pair_containers = (
+            self.phase_event_counts,
+            self.phase_reward_sums,
+            self.phase_regret_sums,
+            self.first_completed_segment_reward,
+            self.latest_completed_segment_reward,
+        )
+        if any(type(values) is not tuple for values in pair_containers):
+            raise ValueError("phase and segment metrics must use tuple containers")
         if self.schema != REFERENCE_LIFE_METRICS_SCHEMA:
             raise ValueError("unsupported reference-life metrics schema")
         _require_digest(self.config_sha256, name="config_sha256")
