@@ -2245,6 +2245,24 @@ class ReferenceLifeRunner:
                 expected_phase_switches,
                 expected_segment_events,
             ) = _switching_metric_schedule(accepted, phase_length)
+            expected_completed_presence = (
+                expected_phase_switches >= 1,
+                expected_phase_switches >= 2,
+            )
+            if any(
+                expected_phase_counts[phase] != 0
+                and (
+                    (metrics.first_completed_segment_reward[phase] is not None)
+                    != expected_present
+                    or (metrics.latest_completed_segment_reward[phase] is not None)
+                    != expected_present
+                )
+                for phase, expected_present in enumerate(expected_completed_presence)
+            ):
+                raise DecisionOwnershipError(
+                    "checkpoint completed-segment presence does not match "
+                    "the environment schedule"
+                )
             expected_oracle_reward = (
                 expected_phase_counts[0] * oracle_rewards[0]
                 + expected_phase_counts[1] * oracle_rewards[1]
