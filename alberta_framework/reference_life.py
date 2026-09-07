@@ -131,6 +131,31 @@ def _require_finite_real(name: str, value: object) -> float:
     return number
 
 
+def _within_configured_sum_bounds(
+    value: float,
+    *,
+    event_count: int,
+    step_values: tuple[float, ...],
+) -> bool:
+    """Bound one binary64 sequential sum of configured finite step values."""
+
+    minimum_step_value = min(step_values)
+    maximum_step_value = max(step_values)
+    maximum_magnitude = max(abs(minimum_step_value), abs(maximum_step_value))
+    relative_error = event_count * float(np.finfo(np.float64).eps)
+    summation_slack = (
+        event_count
+        * maximum_magnitude
+        * relative_error
+        / (1.0 - relative_error)
+    )
+    return (
+        event_count * minimum_step_value - summation_slack
+        <= value
+        <= event_count * maximum_step_value + summation_slack
+    )
+
+
 def _require_prototype_lifecycle_id(value: str) -> None:
     if type(value) is not str or _PROTOTYPE_LIFECYCLE.fullmatch(value) is None:
         raise ValueError(
@@ -2299,6 +2324,26 @@ class ReferenceLifeRunner:
                     "checkpoint zero-event phase metrics must be exact positive zero "
                     "with no completed-segment values"
                 )
+        if environment_kind == "switching_two_state":
+            for phase, (count, payoff) in enumerate(
+                zip(expected_phase_counts, payoff_matrices, strict=True)
+            ):
+                phase_rewards = tuple(float(value) for value in payoff.flat)
+                phase_regrets = tuple(
+                    oracle_rewards[phase] - reward for reward in phase_rewards
+                )
+                if not _within_configured_sum_bounds(
+                    metrics.phase_reward_sums[phase],
+                    event_count=count,
+                    step_values=phase_rewards,
+                ) or not _within_configured_sum_bounds(
+                    metrics.phase_regret_sums[phase],
+                    event_count=count,
+                    step_values=phase_regrets,
+                ):
+                    raise DecisionOwnershipError(
+                        "checkpoint phase totals are outside configured payoff bounds"
+                    )
         oracle_reward_matches = (
             struct.pack(">d", metrics.oracle_reward_sum)
             == struct.pack(">d", expected_oracle_reward)

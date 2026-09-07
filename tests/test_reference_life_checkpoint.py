@@ -587,3 +587,19 @@ def test_save_reference_life_checkpoint_refuses_off_linux(tmp_path: Path) -> Non
     with pytest.raises(OSError, match="atomic no-replace rename requires Linux renameat2"):
         save_reference_life_checkpoint(runner, state, tmp_path)
     assert not any(p.name.startswith("generation-") for p in tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("field", ("phase_reward_sums", "phase_regret_sums"))
+def test_checkpoint_validator_rejects_impossible_switching_phase_totals(field: str) -> None:
+    runner = _runner()
+    state, _ = _advance(runner, runner.init(), 5)
+
+    original = getattr(state.metrics, field)
+    forged_values = (123.0, sum(original) - 123.0)
+    forged = dataclasses.replace(
+        state,
+        metrics=dataclasses.replace(state.metrics, **{field: forged_values}),
+    )
+
+    with pytest.raises(ValueError, match="phase totals.*payoff bounds"):
+        runner.validate_checkpoint_state(forged)
