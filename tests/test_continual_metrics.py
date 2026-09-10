@@ -60,6 +60,28 @@ def test_accuracy_matrix_forgetting_and_backward_transfer() -> None:
     np.testing.assert_allclose(forward[1:], [0.05, -0.05])
 
 
+def test_forward_transfer_is_keyed_on_first_exposure_row_not_task_index() -> None:
+    """FWT skips a task with no pre-exposure checkpoint, whatever its index.
+
+    GEM FWT is performance on a task probed before it is trained on, so the
+    skip is ``first_exposure == 0``, not ``task == 0``. Task 0 is skipped
+    only under the conventional ordering where it is trained first.
+    """
+
+    matrix = np.array(
+        [[0.5, 0.6, 0.7], [0.9, 0.9, 0.9], [0.95, 0.95, 0.95]],
+        dtype=np.float64,
+    )
+    baseline = np.array([0.1, 0.1, 0.1], dtype=np.float64)
+
+    # Task 0 is trained second, so row 0 is a genuine pre-exposure probe.
+    forward = compute_forward_transfer(matrix, [1, 0, 0], baseline)
+
+    assert forward[0] == pytest.approx(0.4)
+    assert np.isnan(forward[1])
+    assert np.isnan(forward[2])
+
+
 # Documented metric API: compute_forward_transfer must use the immediate
 # pre-exposure row (GEM R_{i-1,i}). A NaN there is not-evaluated, not a
 # license to backfill an older finite probe and emit a wrong FWT number.
