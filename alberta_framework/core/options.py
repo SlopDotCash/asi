@@ -1057,12 +1057,40 @@ def _select_action_epsilon_greedy_from_q_masked(
     return action, key
 
 
+def _gumbel_max_greedy_probabilities(q_values: Array) -> Array:
+    """Return exact float32 Gumbel-max greedy probabilities for finite Q.
+
+    Under ``jax.jit`` on XLA:CPU, ``softmax(centered_q / _GUMBEL_TIE_BREAK_SCALE)``
+    can return NaN for finite Q even though ``_center_q_values`` already
+    subtracted the maximum (SlopDotCash/asi#2886): XLA turns the length-one
+    ``q_weights @ observation`` contraction into an elementwise multiply that is
+    recomputed inside both softmax fusions, and the contracted
+    multiply-then-subtract leaves a rounding residual at the argmax instead of
+    an exact zero.  The fixed 1e-6 scale is not a power of two, so the residual
+    ``|q / 1e-6| * 2**-24`` overflows the exponential once ``|q|`` reaches a few
+    thousand — reachable with default configuration and ordinary finite
+    observations.  The compiled NaN importance ratio then fails the update
+    finiteness gate on every transition and the agent livelocks while eager
+    evaluation keeps learning.
+
+    Both shifts below are exact (softmax is shift invariant) and each blocks one
+    of the two recomputations; the incoming ``_center_q_values`` centering stays
+    because the Gumbel-noise selectors share it.  Gradients are unaffected: the
+    ``stop_gradient`` maxima are piecewise constant almost everywhere, so the
+    construction has exactly the softmax gradient of the plain expression.
+    """
+    q = jnp.asarray(q_values, dtype=jnp.float32)
+    scaled = _center_q_values(q) / _GUMBEL_TIE_BREAK_SCALE
+    centered = scaled - jax.lax.stop_gradient(jnp.max(scaled))
+    return jax.nn.softmax(centered - jax.lax.stop_gradient(jnp.max(centered)))
+
+
 def _epsilon_greedy_action_probabilities(q_values: Array, epsilon: Array) -> Array:
     """Return probabilities of the centered float32 Gumbel-max selector."""
     q = jnp.asarray(q_values, dtype=jnp.float32)
     n_actions = q.shape[0]
     eps = jnp.asarray(epsilon, dtype=jnp.float32)
-    greedy = jax.nn.softmax(_center_q_values(q) / _GUMBEL_TIE_BREAK_SCALE)
+    greedy = _gumbel_max_greedy_probabilities(q)
     return eps / n_actions + (1.0 - eps) * greedy
 
 
