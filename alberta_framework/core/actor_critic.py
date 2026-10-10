@@ -358,14 +358,16 @@ def _validated_bounder_result(
 
 
 def _require_key(key: object) -> Array:
-    if not isinstance(key, jax.Array):
-        raise ValueError("key must be a Threefry JAX key")
+    """Require one typed scalar Threefry key; reject legacy raw uint32 words."""
+    if not isinstance(key, jax.Array) or tuple(key.shape) != ():
+        raise ValueError("key must be a typed scalar Threefry JAX key")
     try:
+        implementation = str(jr.key_impl(cast(Any, key)))
         data = jr.key_data(cast(Any, key))
     except Exception as error:
-        raise ValueError("key must be a Threefry JAX key") from error
-    if data.shape != (2,) or data.dtype != jnp.uint32:
-        raise ValueError("key must be a Threefry JAX key")
+        raise ValueError("key must be a typed scalar Threefry JAX key") from error
+    if implementation != "threefry2x32" or data.shape != (2,) or data.dtype != jnp.uint32:
+        raise ValueError("key must be a typed scalar Threefry JAX key")
     return key
 
 
