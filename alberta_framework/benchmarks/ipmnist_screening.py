@@ -8325,6 +8325,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
+        (
+            "rls_head_resid_identmap50_r_nogate_idet003_s005625",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "gate_scale": 0.0,
+             "ident_reset_frac": 0.03, "step_size": 0.005625},
+            "the identmap50_r schedule (50/200/2000) with the residual "
+            "body trained by plain decayed SGD (gate_scale 0) at the "
+            "0.03 identifier trigger (the standing ungated idet003 "
+            "composition) and the body step size lowered to 0.005625: "
+            "lowering the step from 0.01 to 0.0075 gained tightly on "
+            "every seed (+0.00645 paired), so the next -25% bracket "
+            "below the new standing best at 0.0075 was never screened "
+            "on any ungated composition",
+        ),
     ):
         specs.append(
             ScreeningSpec(
