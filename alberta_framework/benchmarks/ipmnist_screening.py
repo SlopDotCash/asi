@@ -8112,6 +8112,16 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "plus a third closed-form member, linear RLS over normalized "
             "pixels (probe c: lin_rls pipeline verbatim)",
         ),
+        (
+            "nb_ensemble_nbreset_rls3",
+            {"ens_nb_reset": 1.0, "ens_use_rls": 1.0},
+            "plus BOTH single-flag additions composed: detector-driven NB "
+            "anneal-clock resets (probe b) AND the third linear-RLS member "
+            "(probe c) — each screened alone (nbreset +0.0018, rls3 "
+            "+0.0001 over the base ensemble) but never together; with both "
+            "flags at 0 the arm reduces bit-exactly to nb_ensemble_champion "
+            "(pinned)",
+        ),
     ):
         specs.append(
             ScreeningSpec(

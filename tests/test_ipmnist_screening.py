@@ -6963,6 +6963,109 @@ class TestNBEnsemble:
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
 
 
+class TestNBEnsembleCombo:
+    """Composition pin for ``nb_ensemble_nbreset_rls3``: probe (b) NB resets
+    and probe (c) linear-RLS third member composed on the base ensemble.
+
+    Each flag was screened alone (nbreset +0.0018, rls3 +0.0001 over
+    ``nb_ensemble_champion``); the composition is a separate registry arm.
+    Its reduction pin: the same factory fed the combo hyperparameters with
+    both mechanism flags at 0 follows ``nb_ensemble_champion`` bit-for-bit.
+    """
+
+    def _hp(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import _nb_ensemble_hp
+
+        return _nb_ensemble_hp(**overrides)
+
+    def _factory(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        return _make_nb_ensemble_learner(self._hp(**overrides))
+
+    def _stream(self, n_steps=12, seed=3):
+        key = jr.key(seed)
+        xs, ys = [], []
+        for step in range(n_steps):
+            key, kx = jr.split(key)
+            xs.append(
+                jr.uniform(kx, (SMALL.input_dim,), jnp.float32, -1.0, 1.0)
+                * (1.0 + step % 3)
+            )
+            ys.append(jnp.array(step % SMALL.n_classes, jnp.int32))
+        return xs, ys
+
+    def test_registry_config(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        spec = screening_spec("nb_ensemble_nbreset_rls3")
+        assert spec.mechanism == "transient_ensemble"
+        assert spec.factory is _make_nb_ensemble_learner
+        assert spec.noise_update is None
+        hp = spec.hyperparameters
+        assert hp["ens_nb_reset"] == 1.0
+        assert hp["ens_use_rls"] == 1.0
+        # Every other constant is verbatim the base ensemble arm.
+        base = screening_spec("nb_ensemble_champion").hyperparameters
+        assert set(hp) == set(base)
+        for k in base:
+            if k not in ("ens_nb_reset", "ens_use_rls"):
+                assert hp[k] == base[k], k
+
+    def test_inert_flags_reduce_to_base_ensemble_bitwise(self):
+        combo = screening_spec("nb_ensemble_nbreset_rls3").hyperparameters
+        inert = {**combo, "ens_nb_reset": 0.0, "ens_use_rls": 0.0}
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        base_init, base_step = self._factory()
+        combo_init, combo_step = _make_nb_ensemble_learner(inert)
+        params = init_mlp_params(jr.key(5), SMALL)
+        base_params, combo_params = params, params
+        base_state, combo_state = base_init(params), combo_init(params)
+        xs, ys = self._stream()
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            base_params, base_state, m_base = base_step(
+                base_params, base_state, x, y, jr.key(step)
+            )
+            combo_params, combo_state, m_combo = combo_step(
+                combo_params, combo_state, x, y, jr.key(step)
+            )
+            for n in params:
+                np.testing.assert_array_equal(
+                    np.asarray(combo_params[n]), np.asarray(base_params[n])
+                )
+            np.testing.assert_array_equal(
+                np.asarray(combo_state.member_acc), np.asarray(base_state.member_acc)
+            )
+            for a, b in zip(m_combo, m_base):
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    def test_combo_carries_both_mechanisms(self):
+        ens_init, _ = self._factory(ens_nb_reset=1.0, ens_use_rls=1.0)
+        params = init_mlp_params(jr.key(3), SMALL)
+        state = ens_init(params)
+        assert state.rls is not None
+        assert state.member_acc.shape == (3,)
+        assert state.det_norm is not None
+        assert state.det_fast is not None
+
+    def test_combo_smoke_runs_finite(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec("nb_ensemble_nbreset_rls3"), seed=2, config=SMALL
+        )
+        acc = np.asarray(result.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
 class TestRLSHeadIdentMap:
     """The online permutation-identifier arms (V7/V8 chain).
 
