@@ -8325,6 +8325,26 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
+        (
+            "rls_head_resid_identmap50_r_nogate_idet003",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "gate_scale": 0.0,
+             "ident_reset_frac": 0.03},
+            "the identmap50_r schedule (50/200/2000) with the residual "
+            "body trained by plain decayed SGD (gate_scale 0, the "
+            "standing ungated composition) and the identifier's own "
+            "shift-detector trigger at the more sensitive 0.03 fraction "
+            "instead of the 0.05 default (ident_reset_frac, distinct "
+            "from the head's rls_reset_frac, which stays 0.05): the "
+            "detector calibration puts the within-task maximum at "
+            "0.018 and a typical boundary at 0.061, so a boundary whose "
+            "shifted fraction lands in [0.03, 0.05) currently never "
+            "triggers a remap at all; whether catching those weaker "
+            "boundaries for the identifier helps or hurts was never "
+            "screened — the 0.03 fraction was only ever probed on the "
+            "head's P reset, where it lost",
+        ),
     ):
         specs.append(
             ScreeningSpec(
