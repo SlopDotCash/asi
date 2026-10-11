@@ -8299,9 +8299,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
-    # 0.8997; a refining identifier rides the upper envelope.  The arms
-    # below are the two 200-task/20-seed CONFIRMED members of the family
-    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of
+    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
+    # the third is a registered 60-task screen of the gated chain's
+    # head-axis ridge cell (rls_ridge_init 0.1 -> 0.03 on the gated
+    # idet003_s0031640625_r01 best, wave_identmap50_r_idet003_s0031640625_
+    # r02/), and the fourth registers the gated chain's first reset-axis
+    # cell: the head P-reset detector threshold rls_reset_frac lowered
+    # 0.05 -> 0.03 on the r02 incumbent (wave ..._r02_preset003/) — an
+    # axis never swept on the identified chain, whose 0.05 default was
+    # calibrated on the pre-identmap champion's un-remapped inner stream;
+    # the screened
     # intermediates (identmap200 single-shot, identmap100_r) and the
     # round-2 rejections (identmap25_r, identmap50_fast — negative result
     # #22) are deregistered but retained in the ledger and pinned outputs.
@@ -8324,6 +8333,50 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r01 composition (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.1 — the gated"
+            " chain's best measured screen, PR #3122) with the RLS head's"
+            " initial and reset ridge lowered 0.1 -> 0.03, the smallest"
+            " cell of the new head axis: P0 becomes ~33*I, so earliest and"
+            " post-reset gains rise further and the head converges even"
+            " faster to each task's least-squares solution; the ridge-star"
+            " collapse (negative result #10) was measured at lambda 0.999"
+            " under forgetting wind-up, a mechanism absent at lambda 1.0"
+            " (P nonincreasing PSD), and the P-trace cap stays disabled as"
+            " in the parent",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.03, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r02 incumbent (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.03 — the gated"
+            " chain's best measured screen, PR #3123) with the head P-reset"
+            " detector threshold rls_reset_frac lowered 0.05 -> 0.03, the"
+            " first cell of the reset axis: the level-triggered reset holds"
+            " P at I/ridge through every above-threshold step, so the lower"
+            " threshold lengthens each hold around the initial shift and the"
+            " match-induced alignment changes of the 50/200/2000-sample remap"
+            " refinements and catches weaker disturbances; the 0.05 default"
+            " was calibrated at a 2.8x margin over the within-task detector"
+            " maximum of the PRE-identmap champion, whose inner detector"
+            " watched the un-remapped stream, so the axis is unmeasured on"
+            " the identified chain; 0.03 is the trigger-axis measured optimum"
+            " for this detector family on the raw stream (PRs #3115/#3116/"
+            " #3119), and lambda 1.0 keeps the head P nonincreasing outside"
+            " reset windows so no wind-up collapse (negative results #10/"
+            " #20) can recur",
         ),
     ):
         specs.append(

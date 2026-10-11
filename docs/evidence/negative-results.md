@@ -295,6 +295,39 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Lowering the head P-reset threshold loses on the identified gated
+    chain: the reset axis is bracketed at the pre-identmap calibration
+    value.** The first cell of the gated chain's reset axis —
+    `rls_reset_frac` 0.05 -> 0.03 on the `..._idet003_s0031640625_r02`
+    incumbent (PR #3123) — measured -0.00039 +/- 0.00016 (paired, ~2.4
+    sigma) with 3/3 seeds negative. The 0.05 default was calibrated at a
+    2.8x margin over the within-task detector maximum of the pre-identmap
+    champion, whose inner detector watched the un-remapped stream; on the
+    identmap chain the inner detector watches `x[remap]`, whose statistics
+    step-change at each match-induced remap refinement (50/200/2000
+    samples), so the calibration premise was stale and the axis genuinely
+    unmeasured. The loss concentrates late (tasks 31-60 diffs
+    -0.00106/-0.00089/-0.00041)
+    while the early block is slightly positive — the longer level-
+    triggered holds re-inflate the `33*I` head through the recovery tails
+    of each disturbance window and the large updates on partially
+    misaligned inputs land as steady-state cost, the same tail trade the
+    ridge axis measured to saturation at its r02 cell (PR #3123). Task 0
+    is bit-identical to the parent on every seed (no within-task inner-
+    stream event reached even 0.03 through 5,000 steps), so the upward
+    direction is closed structurally: raising the threshold would only
+    truncate the recovery tails of genuine windows, giving back the r02
+    early-gain win. The axis is measured closed at 0.05; do not re-probe
+    `rls_reset_frac` on this chain without a mechanism that changes
+    post-disturbance recovery behaviour. With this closure the gated
+    chain's named single-knob axes are all measured (ridge saturated,
+    body step at its monotone boundary, trigger peaked, match schedule
+    closed by #22, reset bracketed); new movement needs a new mechanism
+    class. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/`
+    (3 candidate shards binding commit `3286e2c2`, repro shards,
+    `summary.json`, `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
