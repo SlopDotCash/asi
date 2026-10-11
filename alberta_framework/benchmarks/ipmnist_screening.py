@@ -4629,6 +4629,25 @@ class RLSHeadSMState:
     sm: dict[str, Array]
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadMomentumState:
+    """Opt-in RLS carry plus body momentum for the gated residual body.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged (the L2-Init and second-moment precedents).  ``momentum``
+    holds one bias-corrected EMA per residual-trained body tensor; the
+    parallel protocol head and the RLS state carry no momentum.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+    momentum: dict[str, Array]
+
+
 def _rls_head_hp(**overrides: float) -> dict[str, float]:
     """Champion (``sigma0_shiftnorm_d099``) constants plus RLS-head defaults.
 
@@ -4790,6 +4809,21 @@ def _make_rls_head_learner(
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
 
+    body_momentum = hp.get("body_momentum", 0.0)
+    if not 0.0 <= body_momentum < 1.0:
+        raise ValueError("body_momentum must lie in [0, 1)")
+    momentum_enabled = body_momentum > 0.0
+    if momentum_enabled:
+        if not resid or not gate_enabled:
+            raise ValueError(
+                "body momentum is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init:
+            raise ValueError(
+                "body momentum is not composed with resid_whiten, "
+                "resid_newton, body_sm preconditioning, or L2-Init"
+            )
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -4805,7 +4839,9 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> (
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadMomentumState
+    ):
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
@@ -4843,6 +4879,25 @@ def _make_rls_head_learner(
                 p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
                 init_params={name: params[name] for name in _RLS_HEAD_BODY},
+            )
+        if momentum_enabled:
+            return RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+                momentum={
+                    name: jnp.zeros_like(params[name])
+                    for name in _RLS_HEAD_BODY
+                },
             )
         return RLSHeadState(  # type: ignore[call-arg]
             utility={name: jnp.zeros_like(value) for name, value in params.items()},
@@ -4922,13 +4977,18 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: (
+            RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadMomentumState
+        ),
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        (
+            RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+            | RLSHeadMomentumState
+        ),
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5058,6 +5118,58 @@ def _make_rls_head_learner(
                             )
                         )
                     )
+            elif momentum_enabled:
+                assert isinstance(state, RLSHeadMomentumState)
+                # Champion utility EMA and sigmoid gate byte-identical to
+                # _gated_sgd (including the closed-EMA skip guard); only the
+                # descent direction changes: the bias-corrected momentum EMA
+                # of the raw body gradient (the sgd_momentum_gate EMA form,
+                # which keeps m_hat at raw-gradient scale instead of the
+                # heavy-ball 1/(1-mu) sum) replaces the raw gradient in the
+                # gated, decayed step.  At body_momentum = 0 this branch is
+                # never built, so the incumbent path stays byte-for-byte.
+                new_utility = dict(state.utility)
+                for name in _RLS_HEAD_BODY:
+                    new_utility[name] = _skip_zero_scale(
+                        utility_decay, state.utility[name]
+                    ) + (1.0 - utility_decay) * (
+                        -body_grads[name] * params[name]
+                    )
+                bias_correction = 1.0 - jnp.power(
+                    jnp.asarray(utility_decay, dtype=jnp.float32),
+                    count.astype(jnp.float32),
+                )
+                global_max = jnp.max(
+                    jnp.stack(
+                        [
+                            jnp.max(new_utility[name])
+                            for name in sorted(_RLS_HEAD_BODY)
+                        ]
+                    )
+                )
+                global_max = jnp.where(global_max == 0.0, 1.0, global_max)
+                mom_bias = 1.0 - jnp.power(
+                    jnp.asarray(body_momentum, dtype=jnp.float32),
+                    count.astype(jnp.float32),
+                )
+                new_momentum = dict(state.momentum)
+                new_params = dict(params)
+                for name in _RLS_HEAD_BODY:
+                    new_momentum[name] = (
+                        body_momentum * state.momentum[name]
+                        + (1.0 - body_momentum) * body_grads[name]
+                    )
+                    mom_hat = new_momentum[name] / mom_bias
+                    new_params[name] = params[name] * param_decay - step_size * (
+                        mom_hat
+                        * (
+                            1.0
+                            - jax.nn.sigmoid(
+                                (new_utility[name] / bias_correction)
+                                / global_max
+                            )
+                        )
+                    )
             elif gate_enabled:
                 new_params, new_utility = _gated_sgd(
                     params,
@@ -5138,6 +5250,17 @@ def _make_rls_head_learner(
                 p=new_p,
                 wout=new_wout,
                 init_params=state.init_params,
+            ), (accuracy, loss, plasticity)
+        if momentum_enabled:
+            assert isinstance(state, RLSHeadMomentumState)
+            return new_params, RLSHeadMomentumState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+                momentum=new_momentum,
             ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
@@ -8324,6 +8447,20 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_mom9",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "body_momentum": 0.9},
+            "classical bias-corrected EMA momentum (mu 0.9) on the gated "
+            "residual body — the confirmed identmap50_r composition with "
+            "no other change: the family's named remaining headroom is "
+            "within-task convergence (negative result #22), the live "
+            "step-size brackets show plain noise reduction still pays "
+            "here, and momentum has never been measured on this head "
+            "(the sgd_momentum_gate loss was on the pre-identmap "
+            "cross-entropy champion family)",
         ),
     ):
         specs.append(
