@@ -7079,6 +7079,10 @@ class TestRLSHeadIdentMap:
                 "ident_match_at": 50.0, "ident_match2": 200.0,
                 "ident_match3": 2000.0, "body_momentum": 0.9,
             },
+            "rls_head_resid_identmap50_r_mom99": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "body_momentum": 0.99,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name

@@ -8462,6 +8462,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "(the sgd_momentum_gate loss was on the pre-identmap "
             "cross-entropy champion family)",
         ),
+        (
+            "rls_head_resid_identmap50_r_mom99",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "body_momentum": 0.99},
+            "classical bias-corrected EMA momentum (mu 0.99) on the gated "
+            "residual body — the confirmed identmap50_r composition with "
+            "no other change: the mu-bracket completion named by negative "
+            "result #24 (mu 0.9 measured null-to-negative and closed at "
+            "this composition; higher mu explicitly left unmeasured and "
+            "unclaimed), probing whether a ~100-step averaging window — "
+            "which now spans the 50-sample first match and the 200-sample "
+            "refinement of the identifier — changes the body-noise "
+            "picture the mu 0.9 window could not",
+        ),
     ):
         specs.append(
             ScreeningSpec(
