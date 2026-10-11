@@ -4698,6 +4698,62 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_identmap_l2init_hp() -> dict[str, float]:
+    """Frozen cell: the gated chain's r02 incumbent plus body L2-Init."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0,
+            rls_reset_frac=0.05,
+            head_resid=1.0,
+            ident_match_at=50.0,
+            ident_match2=200.0,
+            ident_match3=2000.0,
+            ident_reset_frac=0.03,
+            step_size=0.0031640625,
+            rls_ridge_init=0.03,
+        ),
+        "decay_to_init": 1.0,
+    }
+
+
+def _make_rls_head_identmap_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Build the gated chain's body-only L2-Init cell, failing closed on drift.
+
+    ``decay_to_init = 0.0`` delegates to the incumbent identmap factory so
+    the reduction to the r02 parent stays pinnable bit-for-bit; the
+    registered cell is the frozen ``1.0`` endpoint.
+    """
+    expected = _rls_head_identmap_l2init_hp()
+    if set(hp) != set(expected):
+        raise ValueError(
+            "frozen L2-Init configuration requires exactly the registered keys"
+        )
+    invalid = [
+        name
+        for name, expected_value in expected.items()
+        if name != "decay_to_init"
+        and (
+            type(hp[name]) is not float
+            or not math.isfinite(hp[name])
+            or hp[name].hex() != expected_value.hex()
+        )
+    ]
+    flag = hp["decay_to_init"]
+    if type(flag) is not float or flag not in (0.0, 1.0):
+        invalid.append("decay_to_init")
+    if invalid:
+        raise ValueError(
+            "frozen L2-Init configuration differs at: " + ", ".join(invalid)
+        )
+    base_hp = dict(hp)
+    del base_hp["decay_to_init"]
+    return _make_rls_head_identmap_learner(
+        base_hp, _decay_to_init=flag == 1.0
+    )
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -5165,7 +5221,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -5216,6 +5272,8 @@ def _identmap_assignment(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5234,13 +5292,15 @@ def _make_rls_head_identmap_learner(
     """
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, _decay_to_init=_decay_to_init)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(
+        hp, _decay_to_init=_decay_to_init
+    )
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -8394,6 +8454,35 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    # The gated chain's body-only L2-Init cell: the r02 incumbent verbatim
+    # plus the issue-#14 decay-to-initialization endpoint on the four
+    # residual body tensors.  The endpoint's own entry
+    # (rls_head_resid_l1_preset005_l2init) remains code-only; this is the
+    # first measured L2-Init composition in the rls_head family, screened
+    # on the chain incumbent because negative results #23/#24 both
+    # localize the chain's recent axis costs in the late-life tail.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_identmap_l2init_hp(),
+            factory=_make_rls_head_identmap_l2init_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "The gated idet003_s0031640625_r02 incumbent (identmap50_r"
+                " schedule 50/200/2000, utility gate kept, identifier"
+                " trigger 0.03, body step 0.0031640625, head ridge 0.03 —"
+                " the gated chain's best measured screen, PR #3123) with"
+                " decoupled L2-to-initialization on w1/b1/w2/b2 only (the"
+                " issue-#14 endpoint at its frozen decay_to_init=1.0);"
+                " w3/b3 and the RLS recursion are unchanged. L2-Init"
+                " combats late-life plasticity loss, the tail where the"
+                " chain's recent axis closures (#23 preconditioner, #24"
+                " reset) both measured their costs."
+            ),
+        )
+    )
     # The smprecond_r1 second-moment body-preconditioning arms
     # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
     # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the

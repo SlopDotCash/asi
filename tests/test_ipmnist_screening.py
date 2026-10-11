@@ -7058,11 +7058,13 @@ class TestRLSHeadIdentMap:
 
     def test_registry_arms(self):
         """The two 200-task-confirmed identifier arms, the gated
-        idet003_s0031640625_r02 ridge screen, and the gated r02_preset003
-        reset-axis screen are registered; the screened intermediates and
-        the round-2 rejections (negative result #22) are deregistered."""
+        idet003_s0031640625_r02 ridge screen, the gated r02_preset003
+        reset-axis screen, and the gated chain's body-only L2-Init cell
+        are registered; the screened intermediates and the round-2
+        rejections (negative result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
+            _make_rls_head_identmap_l2init_learner,
             _make_rls_head_identmap_learner,
             _rls_head_frozen_probe_input,
         )
@@ -7092,7 +7094,10 @@ class TestRLSHeadIdentMap:
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
         }
-        assert registered == set(expected)
+        l2init_name = (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        assert registered == set(expected) | {l2init_name}
         for name, overrides in expected.items():
             spec = SCREENING_REGISTRY[name]
             assert spec.factory is _make_rls_head_identmap_learner
@@ -7101,6 +7106,18 @@ class TestRLSHeadIdentMap:
             assert spec.hyperparameters["rls_lambda"] == 1.0
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
+        l2init_spec = SCREENING_REGISTRY[l2init_name]
+        assert l2init_spec.factory is _make_rls_head_identmap_l2init_learner
+        assert l2init_spec.frozen_probe_input is _rls_head_frozen_probe_input
+        assert (
+            l2init_spec.hyperparameters
+            == {
+                **SCREENING_REGISTRY[
+                    "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+                ].hyperparameters,
+                "decay_to_init": 1.0,
+            }
+        )
 
 class TestRLSHeadIdentMapIdet003S0031640625R02:
     """Gated idet003_s0031640625_r01 composition at RLS head ridge 0.03.
@@ -7381,6 +7398,260 @@ class TestRLSHeadIdentMapIdet003S0031640625R02Preset003:
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02L2Init:
+    """Gated r02 incumbent plus the issue-#14 body L2-Init endpoint.
+
+    The chain's named single-knob axes are all measured (negative result
+    #24) and both recent axis closures localize their costs in the
+    late-life tail (#23/#24), so this cell composes the never-screened
+    code-only ``rls_head_resid_l1_preset005_l2init`` endpoint onto the
+    chain incumbent: decoupled decay pulls w1/b1/w2/b2 toward their
+    initial values at the unchanged weight-decay rate; w3/b3 and the RLS
+    recursion are untouched.  ``decay_to_init = 0.0`` is the inert
+    delegation branch that keeps the reduction to the r02 parent
+    bit-exactly pinnable; the registered cell is the frozen ``1.0``
+    endpoint.
+    """
+
+    _BODY = ("w1", "b1", "w2", "b2")
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_l2init_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        ]
+        assert spec.factory is _make_rls_head_identmap_l2init_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert spec.hyperparameters == {
+            **parent.hyperparameters, "decay_to_init": 1.0,
+        }
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_reset_frac"] == 0.05
+        assert spec.hyperparameters["head_resid"] == 1.0
+        assert spec.hyperparameters["rls_lambda"] == 1.0
+        assert spec.hyperparameters["ident_reset_frac"] == 0.03
+        assert spec.hyperparameters["step_size"] == 0.0031640625
+        assert spec.hyperparameters["rls_ridge_init"] == 0.03
+
+    def test_init_state_binds_body_init(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            RLSHeadIdentState,
+            RLSHeadL2InitState,
+        )
+
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        init_fn, _ = spec.factory(spec.hyperparameters)
+        params = TestRLSHeadL2Init._manual_params()
+        state = init_fn(params)
+        assert type(state) is RLSHeadIdentState
+        assert type(state.inner) is RLSHeadL2InitState
+        assert set(state.inner.init_params) == set(self._BODY)
+        for name in self._BODY:
+            np.testing.assert_array_equal(
+                np.asarray(state.inner.init_params[name]),
+                np.asarray(params[name]),
+            )
+
+    def test_decay_off_parent_pin_bitwise(self, small_data):
+        """``decay_to_init = 0.0`` reduces bit-exactly to the registered
+        r02 parent (the delegation branch)."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(
+            x, y, parent, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(decay_to_init=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_off_l2init_pin_bitwise(self, small_data):
+        """Identifier disabled follows the gated non-identifier learner
+        at the same step and ridge with L2-Init active: the identmap
+        wrapper's delegation passes the L2-Init flag through and the
+        ident keys never leak into the inner learner."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        base = screening_spec("rls_head_resid_l1_preset005")
+        expected_spec = replace(
+            base,
+            name=base.name + "_l2init_s0031640625_r02_test",
+            factory=lambda hp: _make_rls_head_learner(
+                hp, _decay_to_init=True
+            ),
+            hyperparameters={
+                **base.hyperparameters,
+                "step_size": 0.0031640625,
+                "rls_ridge_init": 0.03,
+            },
+        )
+        expected = run_screening_config(
+            x, y, expected_spec, seed=7, config=SMALL,
+        )
+
+        def ident_off_factory(hp):
+            ident_off = {
+                **hp,
+                "ident_match_at": 0.0,
+                "ident_match2": 0.0,
+                "ident_match3": 0.0,
+            }
+            return _make_rls_head_identmap_learner(
+                ident_off, _decay_to_init=True
+            )
+
+        pinned_spec = replace(
+            self._spec(),
+            name=self._spec().name + "_identoff",
+            factory=ident_off_factory,
+        )
+        pinned = run_screening_config(
+            x, y, pinned_spec, seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_l2init_engages_and_stays_finite(self, small_data):
+        """The pull term is live, not a label: one step moves exactly the
+        four residual body tensors (w3/b3 are untouched), and the full
+        run diverges from the r02 parent in the post-update loss while
+        staying finite.  At this fixture's scale the argmax accuracy can
+        stay bitwise equal — the loss is the engagement observable."""
+        import jax
+        import jax.numpy as jnp
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _rls_head_identmap_l2init_hp,
+        )
+
+        hp = {
+            key: value
+            for key, value in _rls_head_identmap_l2init_hp().items()
+            if key != "decay_to_init"
+        }
+        init_plain, step_plain = _make_rls_head_identmap_learner(
+            hp, _decay_to_init=False
+        )
+        init_l2i, step_l2i = _make_rls_head_identmap_learner(
+            hp, _decay_to_init=True
+        )
+        params = {
+            "w1": jnp.full(
+                (SMALL.input_dim, SMALL.hidden1), 0.05, jnp.float32
+            ),
+            "b1": jnp.full((SMALL.hidden1,), 0.10, jnp.float32),
+            "w2": jnp.full(
+                (SMALL.hidden1, SMALL.hidden2), 0.04, jnp.float32
+            ),
+            "b2": jnp.full((SMALL.hidden2,), 0.10, jnp.float32),
+            "w3": jnp.full(
+                (SMALL.hidden2, SMALL.n_classes), 0.03, jnp.float32
+            ),
+            "b3": jnp.full((SMALL.n_classes,), 0.02, jnp.float32),
+        }
+        x_step = jnp.asarray(small_data[0][0])
+        y_step = jnp.asarray(small_data[1][0])
+        key = jax.random.key(3)
+        new_plain, _, _ = step_plain(
+            params, init_plain(params), x_step, y_step, key
+        )
+        new_l2i, _, _ = step_l2i(
+            params, init_l2i(params), x_step, y_step, key
+        )
+        for name in ("w1", "b1", "w2", "b2"):
+            assert not np.array_equal(
+                np.asarray(new_plain[name]), np.asarray(new_l2i[name])
+            ), name
+        for name in ("w3", "b3"):
+            np.testing.assert_array_equal(
+                np.asarray(new_plain[name]), np.asarray(new_l2i[name])
+            )
+
+        x, y = small_data
+        parent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+            ),
+            seed=7, config=SMALL,
+        )
+        assert not np.array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(parent.per_task_loss),
+        )
+        assert np.all(np.isfinite(np.asarray(pinned.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(pinned.per_task_loss)))
+
+    def test_factory_rejects_drift(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_l2init_learner,
+        )
+
+        hp = dict(
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+            ).hyperparameters
+        )
+        with pytest.raises(ValueError, match="differs at"):
+            _make_rls_head_identmap_l2init_learner(
+                {**hp, "decay_to_init": 0.5}
+            )
+        with pytest.raises(ValueError, match="registered keys"):
+            _make_rls_head_identmap_l2init_learner({**hp, "extra": 1.0})
+        with pytest.raises(ValueError, match="differs at"):
+            _make_rls_head_identmap_l2init_learner(
+                {**hp, "step_size": 0.01}
+            )
 
 
 class TestPlasticityCounterSaturation:
