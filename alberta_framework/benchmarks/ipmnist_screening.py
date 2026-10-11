@@ -8325,6 +8325,20 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
+        (
+            "rls_head_resid_identmap200_r_nogate",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 200.0, "ident_match2": 500.0,
+             "ident_match3": 2000.0, "gate_scale": 0.0},
+            "the identmap200_r schedule (200/500/2000) with the "
+            "residual body trained by plain decayed SGD (gate_scale 0): "
+            "the gate ablation (negative result #18) measured gate "
+            "removal at +0.001712 +/- 0.000174 (n=10, all seeds positive) "
+            "on the non-identmap incumbent, below its frozen +0.002 bar, "
+            "at ~2.9x lower body cost; whether the effect transfers "
+            "when the body trains on remapped inputs was unmeasured "
+            "for this confirmed schedule",
+        ),
     ):
         specs.append(
             ScreeningSpec(

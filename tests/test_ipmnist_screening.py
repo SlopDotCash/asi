@@ -7057,8 +7057,9 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms are registered;
-        the screened intermediates and the round-2 rejections (negative
+        """Only the two 200-task-confirmed identifier arms plus the
+        identmap200_r gate-ablation composition are registered; the
+        screened intermediates and the round-2 rejections (negative
         result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
@@ -7072,6 +7073,10 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0,
             },
             "rls_head_resid_identmap200_r": {
+                "ident_match_at": 200.0, "ident_match2": 500.0,
+                "ident_match3": 2000.0,
+            },
+            "rls_head_resid_identmap200_r_nogate": {
                 "ident_match_at": 200.0, "ident_match2": 500.0,
                 "ident_match3": 2000.0,
             },
@@ -7089,6 +7094,98 @@ class TestRLSHeadIdentMap:
             assert spec.hyperparameters["rls_reset_frac"] == 0.05
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
+
+
+class TestRLSHeadIdentMap200Nogate:
+    """Composition pin for ``rls_head_resid_identmap200_r_nogate``: the
+    confirmed identmap200_r arm with the residual body's utility gate
+    removed (``gate_scale`` 0).
+
+    Gate removal on the non-identmap incumbent measured +0.001712
+    +/- 0.000174 (n=10, all seeds positive; negative result #18) and
+    ~2.9x lower body cost.  Its reduction pins: the same spec fed
+    ``gate_scale`` 1 follows ``rls_head_resid_identmap200_r`` bit-for-bit,
+    and with the identifier disabled (``ident_match_at`` 0) follows
+    ``rls_head_resid_l1_preset005_nogate`` bit-for-bit.
+    """
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec("rls_head_resid_identmap200_r_nogate")
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_config(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = screening_spec("rls_head_resid_identmap200_r_nogate")
+        assert spec.base_learner == "upgd_w"
+        assert spec.mechanism == "rls_readout"
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        assert spec.noise_update is None
+        parent = screening_spec("rls_head_resid_identmap200_r")
+        assert set(spec.hyperparameters) == set(parent.hyperparameters)
+        for key, value in parent.hyperparameters.items():
+            expected = 0.0 if key == "gate_scale" else value
+            assert spec.hyperparameters[key] == expected, key
+
+    def test_gate_on_reduces_to_identmap200r_bitwise(self, small_data):
+        x, y = small_data
+        parent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_identmap200_r"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(gate_scale=1.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(parent.per_task_loss),
+        )
+
+    def test_match_off_reduces_to_nogate_incumbent_bitwise(self, small_data):
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005_nogate"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._spec(
+                ident_match_at=0.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(incumbent.per_task_loss),
+        )
+
+    def test_smoke_runs_finite(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec("rls_head_resid_identmap200_r_nogate"),
+            seed=2, config=SMALL,
+        )
+        acc = np.asarray(result.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
 class TestPlasticityCounterSaturation:
