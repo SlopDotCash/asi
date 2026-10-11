@@ -8299,9 +8299,15 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
-    # 0.8997; a refining identifier rides the upper envelope.  The arms
-    # below are the two 200-task/20-seed CONFIRMED members of the family
-    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of
+    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
+    # the third is a registered 60-task screen of the gated chain's next
+    # head axis: the RLS head's initial/reset ridge lowered to 0.1 on
+    # the gated idet003_s0031640625 best (wave_identmap50_r_idet003_
+    # s0031640625_r01/), the first ridge cell measured at lambda 1.0,
+    # where the head P matrix is nonincreasing PSD and the lambda-0.999
+    # wind-up collapse (negative result #10) cannot recur; the screened
     # intermediates (identmap200 single-shot, identmap100_r) and the
     # round-2 rejections (identmap25_r, identmap50_fast — negative result
     # #22) are deregistered but retained in the ledger and pinned outputs.
@@ -8324,6 +8330,25 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r01",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.1},
+            "the gated idet003_s0031640625 composition (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625 — the gated chain's best"
+            " measured screen, PR #3120) with the RLS head's initial and"
+            " reset ridge lowered 1.0 -> 0.1: P0 becomes 10*I, so earliest"
+            " and post-reset gains rise ~10x and the head converges faster"
+            " to each task's least-squares solution — the within-task"
+            " convergence residue negative result #22 names as the family's"
+            " remaining headroom; the ridge-star collapse (negative result"
+            " #10) was measured at lambda 0.999 under forgetting wind-up, a"
+            " mechanism absent at lambda 1.0 (P nonincreasing PSD, trace <="
+            " n/ridge = 1500, far below the 1e4 cap)",
         ),
     ):
         specs.append(
