@@ -295,6 +295,29 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Classical body momentum on the confirmed identmap50_r residual head
+    adds nothing: mean paired delta −0.00030 vs the gated-SGD parent.**
+    The cheapest unmeasured noise-reduction baseline on the
+    `rls_head_resid_identmap50_r` head, whose named remaining headroom
+    is within-task convergence (#22): classical bias-corrected EMA
+    momentum (µ 0.9) on the gated residual body gradient, gate
+    arithmetic byte-identical to the incumbent `_gated_sgd` — only the
+    descent direction changes. Mechanism precedent: the
+    `sgd_momentum_gate` EMA form, which predates the identmap family, so
+    the mechanism had never been measured on this head. Standard
+    screening scale, 60 tasks × 5,000 steps, seeds 0–2,
+    `noise_mode=step`: mean 0.91113 vs the parent's 0.91142 —
+    **−0.00030 paired delta, paired stderr 0.00017, 2 of 3 seeds
+    negative**; the only positive seed is +0.00004, within noise of
+    zero. Consistent with the family precedent: this head's noise
+    reduction is already carried by the RLS protocol head and the
+    utility gate, so EMA averaging of the body's descent direction
+    adds nothing measurable and slightly overshoots. Do not retry this
+    mechanism at this composition; higher µ values are unmeasured and
+    unclaimed. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_mom9/` (3 shards,
+    `summary.json`, `README.md` with the full protocol and table).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
