@@ -4756,6 +4756,13 @@ def _make_rls_head_learner(
         raise ValueError(
             "resid_whiten is supported only for the residual body"
         )
+    if newton and not whiten_enabled:
+        raise ValueError(
+            "resid_newton selects the preconditioner direction of the "
+            "whitened residual signal and requires resid_whiten > 0.0; "
+            "without whitening it is never read, so the configuration "
+            "would silently run the unmodified incumbent"
+        )
     if whiten_enabled and _decay_to_init:
         raise ValueError("resid_whiten and L2-Init are not composed")
     gate_scale = hp.get("gate_scale", 1.0)

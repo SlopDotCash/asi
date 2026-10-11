@@ -5774,6 +5774,29 @@ class TestRLSHead:
         with pytest.raises(ValueError, match="residual"):
             self._factory(gate_scale=0.0)
 
+    def test_resid_newton_without_whiten_is_rejected(self):
+        """``resid_newton=1`` is read only inside the ``resid_whiten > 0``
+        branch, so without whitening it is a dead knob: a 12-step run with
+        ``resid_newton=1.0, resid_whiten=0.0`` reproduced the plain residual
+        incumbent bit-for-bit (max param and readout diff 0.0), while the
+        whitened pair diverged.  Fail closed like the neighbouring
+        composition guards instead of silently running the incumbent."""
+        with pytest.raises(ValueError, match="resid_newton"):
+            self._factory(head_resid=1.0, resid_newton=1.0)
+
+    def test_resid_newton_without_residual_body_is_rejected(self):
+        with pytest.raises(ValueError, match="resid_newton"):
+            self._factory(head_resid=0.0, resid_newton=1.0)
+
+    def test_resid_newton_with_whiten_is_accepted(self):
+        """The one live composition: whitening selects the preconditioner
+        and ``resid_newton`` picks its Newton direction."""
+        init_fn, _step_fn = self._factory(
+            head_resid=1.0, resid_whiten=1.0, resid_newton=1.0
+        )
+        params = init_mlp_params(jr.key(5), SMALL)
+        init_fn(params)
+
     def test_gate_off_two_step_plain_sgd_and_identical_head(self):
         """The ablation does only decayed SGD on the residual body.
 
