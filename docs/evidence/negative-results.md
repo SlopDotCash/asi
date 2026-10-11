@@ -328,6 +328,38 @@ postmortem.
     (3 candidate shards binding commit `3286e2c2`, repro shards,
     `summary.json`, `README.md`).
 
+25. **Decay-toward-init (L2-Init) loses uniformly on the identified gated
+    chain: the first new-mechanism-class probe after #24 is a decisive
+    rejection.** The never-screened code-only issue-#14 endpoint
+    (`rls_head_resid_l1_preset005_l2init`, PR #183) composed onto the
+    `..._idet003_s0031640625_r02` incumbent (PR #3123) as
+    `..._r02_l2init` — decoupled decay pulls `w1/b1/w2/b2` toward their
+    initial values at the unchanged weight-decay rate; gate, step, RLS
+    recursion, `w3/b3`, and every identifier constant verbatim the
+    parent — measured -0.01117 +/- 0.000018 (paired stderr) with 3/3
+    seeds negative (~600 sigma), the family's largest screen loss to
+    date. The loss is uniform across the whole life (task blocks 1-10
+    -0.0067/-0.0082, 11-30 -0.0124/-0.0126, 31-60 -0.0118/-0.0121),
+    mean plasticity drops 0.700/0.691/0.701 -> 0.597/0.589/0.594, and
+    the last-15-task slopes stay at the parent's plateau, so L2-Init's
+    premise (trade early diversity for late-life retention) never
+    appears: there is no early phase where the candidate is competitive
+    and no late phase where it recovers. Mechanism reading: the chain's
+    decay term is ungated, so swapping its target from zero to the
+    random task-0 draw taxes every step of learning equally; on an
+    identified-input, gated, small-step body whose RLS head re-solves to
+    the current features, that drag erodes the matured feature map
+    faster than the head can compensate, and the late-life plasticity
+    loss L2-Init targets is absent here (parent slopes ~0, plasticity
+    ~0.70). Do not re-probe decay-toward-init on this chain with a
+    smaller pull strength or a gate-modulated pull without reasoning
+    that changes the uniform erosion of matured features. Wall-clock per
+    shard is unchanged (64.2-64.5 s vs 64.9-65.6 s, sequential).
+    Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/`
+    (3 candidate shards binding commit `2a50483e`, control repro shard,
+    `summary.json`, `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
