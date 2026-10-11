@@ -2426,6 +2426,139 @@ def _make_upgd_shiftnorm_learner(
     )
 
 
+@chex.dataclass(frozen=True)
+class UPGDShiftnormGatedL2InitState:
+    """Champion adaptive-norm state plus a frozen copy of the initial
+    parameters (see :func:`_make_shiftnorm_gated_l2init_learner`)."""
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    init_params: dict[str, Array]
+
+
+def _make_shiftnorm_gated_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """``sigma0_shiftnorm_d099`` champion plus an additive, utility-gated
+    pull toward the initial weights.
+
+    The pull term is the one registered for ``sigma0_ndecay099_gated_l2init``
+    (CCBP / Calibrated-Partial-Resets-style graded reset, gated by the
+    learner's own UPGD utility gate; see
+    :func:`_make_sigma0_gated_l2init_learner`), transplanted onto the
+    shift-triggered re-conditioning champion body: the champion's slow/fast
+    EMA statistics, shift detector, utility gate, and decoupled decay are
+    unchanged, and the only new term is
+    ``step_size * l2init_pull_scale * (1 - gate) * (w - w_0)``, concentrated
+    on low-utility (unprotected) parameters. The campaign report identifies
+    decay-toward-init as the one published mechanism additive on top of this
+    conditioning family, and the gated form improved every seed over its
+    ``sigma0_ndecay099`` base; this arm measures the same isolated marginal
+    contribution on the shiftnorm champion.
+
+    ``l2init_pull_scale = 0`` (the default) is inert: the step delegates to
+    the champion factory's own step function with the identical state, so
+    the trajectory is bit-exact against ``sigma0_shiftnorm_d099`` (pinned
+    by a unit test) rather than relying on floating-point cancellation of
+    a zero term.
+    """
+    pull_scale = hp.get("l2init_pull_scale", 0.0)
+    base_init, base_step = _make_upgd_shiftnorm_learner(hp)
+    step_size = hp["step_size"]
+    utility_decay = hp["utility_decay"]
+    param_decay = 1.0 - step_size * hp["weight_decay"]
+
+    def init_fn(params: dict[str, Array]) -> UPGDShiftnormGatedL2InitState:
+        base_state = base_init(params)
+        return UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+            utility=base_state.utility,
+            step=base_state.step,
+            norm=base_state.norm,
+            fast_mean=base_state.fast_mean,
+            init_params={name: value for name, value in params.items()},
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: UPGDShiftnormGatedL2InitState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], UPGDShiftnormGatedL2InitState, StepMetrics]:
+        if pull_scale == 0.0:
+            # Exact champion path: delegate to the champion factory's own
+            # step with the identical adaptive-norm state.
+            base_state = UPGDAdaptiveNormState(  # type: ignore[call-arg]
+                utility=state.utility,
+                step=state.step,
+                norm=state.norm,
+                fast_mean=state.fast_mean,
+            )
+            base_params, new_base, metrics = base_step(params, base_state, x, y, key)
+            return (
+                base_params,
+                UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+                    utility=new_base.utility,
+                    step=new_base.step,
+                    norm=new_base.norm,
+                    fast_mean=new_base.fast_mean,
+                    init_params=state.init_params,
+                ),
+                metrics,
+            )
+        x_norm, new_norm, new_fast, _ = shift_adaptive_normalize(
+            state.norm,
+            state.fast_mean,
+            x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        count = _next_utility_clock(state.step)
+        utility = {
+            name: _skip_zero_scale(utility_decay, state.utility[name])
+            + (1.0 - utility_decay) * (-grads[name] * params[name])
+            for name in params
+        }
+        bias_correction = 1.0 - jnp.power(
+            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+        )
+        global_max = jnp.max(
+            jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
+        )
+        new_params: dict[str, Array] = {}
+        for name in params:
+            gate = jax.nn.sigmoid((utility[name] / bias_correction) / global_max)
+            pull = pull_scale * (1.0 - gate) * (params[name] - state.init_params[name])
+            new_params[name] = (
+                params[name] * param_decay
+                - step_size * pull
+                - step_size * (grads[name] * (1.0 - gate))
+            )
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return (
+            new_params,
+            UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+                utility=utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                init_params=state.init_params,
+            ),
+            metrics,
+        )
+
+    return init_fn, full_step
+
+
 def _make_upgd_warmnorm_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
@@ -7834,6 +7967,31 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    specs.append(
+        ScreeningSpec(
+            name="sigma0_shiftnorm_d099_gated_l2init",
+            base_learner="upgd_w",
+            mechanism="gated_l2_init",
+            hyperparameters=_sigma0_ext_hp(
+                norm_decay=0.99,
+                fast_decay=0.9,
+                shift_k=1.0,
+                shift_delta=0.02,
+                shift_refractory=0.0,
+                l2init_pull_scale=0.01,
+            ),
+            factory=_make_shiftnorm_gated_l2init_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "sigma0_shiftnorm_d099 champion plus an additive utility-gated pull "
+                "toward init (the gated-L2-init term registered for "
+                "sigma0_ndecay099_gated_l2init, transplanted onto the shift-triggered "
+                "re-conditioning body; l2init_pull_scale=0.01, matching the repo's "
+                "established L2-Init regularization strength); l2init_pull_scale=0 "
+                "reduces bit-exactly to the champion."
+            ),
+        )
+    )
     specs.append(
         ScreeningSpec(
             name="sigma0_warmnorm",

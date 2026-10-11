@@ -54,6 +54,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_rff_rls_learner,
     _make_sgd_ema_norm_learner,
     _make_sgd_momentum_gate_learner,
+    _make_shiftnorm_gated_l2init_learner,
     _make_sigma0_gated_l2init_learner,
     _make_snr_ema_norm_learner,
     _make_upgd_alpha_utility_learner,
@@ -4650,6 +4651,139 @@ class TestGatedL2Init:
         x = jr.normal(jr.key(90), (SMALL.input_dim,))
         y = jnp.array(2, jnp.int32)
         spec = screening_spec("sigma0_ndecay099_gated_l2init")
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        state = init_fn(params)
+        p_a, _, _ = step_fn(params, state, x, y, jr.key(0))
+        p_b, _, _ = step_fn(params, state, x, y, jr.key(987654))
+        for n in params:
+            np.testing.assert_array_equal(np.asarray(p_a[n]), np.asarray(p_b[n]), err_msg=n)
+
+
+class TestShiftnormGatedL2Init:
+    """``sigma0_shiftnorm_d099_gated_l2init``: the gated-L2-init pull term
+    of ``sigma0_ndecay099_gated_l2init`` transplanted onto the
+    shift-triggered re-conditioning champion body (see
+    :func:`alberta_framework.benchmarks.ipmnist_screening._make_shiftnorm_gated_l2init_learner`)."""
+
+    def test_registry_binds_ema_frozen_probe_input(self):
+        spec = screening_spec("sigma0_shiftnorm_d099_gated_l2init")
+        assert spec.frozen_probe_input is _ema_frozen_probe_input
+
+    def test_pull_scale_zero_reduces_to_shiftnorm_champion_bitwise(self):
+        """``l2init_pull_scale=0`` delegates to the champion factory's own
+        step, so the trajectory equals ``sigma0_shiftnorm_d099``
+        bit-for-bit (same normalizer, same gate, same decay)."""
+        hp = dict(screening_spec("sigma0_shiftnorm_d099_gated_l2init").hyperparameters)
+        hp["l2init_pull_scale"] = 0.0
+        init_fn, step_fn = _make_shiftnorm_gated_l2init_learner(hp)
+        champion = screening_spec("sigma0_shiftnorm_d099")
+        init_ref, step_ref = champion.factory(champion.hyperparameters)
+        params = init_mlp_params(jr.key(29), SMALL)
+        s_ours = init_fn(params)
+        s_ref = init_ref(params)
+        p_ours = p_ref = params
+        key = jr.key(43)
+        for i in range(5):
+            x = jr.normal(jr.fold_in(key, i), (SMALL.input_dim,)) + 0.1
+            y = jnp.array(i % SMALL.n_classes, jnp.int32)
+            p_ours, s_ours, _ = step_fn(p_ours, s_ours, x, y, jr.key(600 + i))
+            p_ref, s_ref, _ = step_ref(p_ref, s_ref, x, y, jr.key(600 + i))
+            for n in p_ours:
+                np.testing.assert_array_equal(
+                    np.asarray(p_ours[n]), np.asarray(p_ref[n]), err_msg=n
+                )
+
+    def test_registered_pull_scale_hand_computed(self):
+        """The registered arm equals a hand-computed shift-normalize ->
+        grad -> gate -> ``w*(1-lr*wd) - lr*pull_scale*(1-gate)*(w-w0) -
+        lr*(1-gate)*grad`` trajectory."""
+        hp = screening_spec("sigma0_shiftnorm_d099_gated_l2init").hyperparameters
+        assert hp["l2init_pull_scale"] == 0.01
+        init_fn, step_fn = _make_shiftnorm_gated_l2init_learner(hp)
+        params = init_mlp_params(jr.key(14), SMALL)
+        w0 = {n: v for n, v in params.items()}
+        state = init_fn(params)
+        ref_params = params
+        ref_utility = {n: jnp.zeros_like(v) for n, v in params.items()}
+        norm_state = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim),
+            var=jnp.ones(SMALL.input_dim),
+            count=jnp.zeros(SMALL.input_dim),
+        )
+        fast_mean = jnp.zeros(SMALL.input_dim)
+        key = jr.key(15)
+        for i in range(4):
+            x = jr.normal(jr.fold_in(key, i), (SMALL.input_dim,)) * 2.0 + 0.5
+            y = jnp.array(i % SMALL.n_classes, jnp.int32)
+            params, state, _ = step_fn(params, state, x, y, jr.key(500 + i))
+            x_norm, norm_state, fast_mean, _ = shift_adaptive_normalize(
+                norm_state,
+                fast_mean,
+                x,
+                decay=hp["norm_decay"],
+                fast_decay=hp["fast_decay"],
+                epsilon=hp["norm_epsilon"],
+                shift_k=hp["shift_k"],
+                shift_delta=hp["shift_delta"],
+                shift_refractory=hp["shift_refractory"],
+            )
+            _, grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+                ref_params, x_norm, y
+            )
+            beta = hp["utility_decay"]
+            ref_utility = {
+                n: beta * ref_utility[n] + (1.0 - beta) * (-grads[n] * ref_params[n])
+                for n in ref_params
+            }
+            count = i + 1
+            bias_correction = 1.0 - beta**count
+            global_max = jnp.max(
+                jnp.stack([jnp.max(ref_utility[n]) for n in sorted(ref_params)])
+            )
+            new_ref: dict[str, jnp.ndarray] = {}
+            for n in ref_params:
+                gate = jax.nn.sigmoid((ref_utility[n] / bias_correction) / global_max)
+                pull = hp["l2init_pull_scale"] * (1.0 - gate) * (ref_params[n] - w0[n])
+                new_ref[n] = (
+                    ref_params[n] * (1.0 - hp["step_size"] * hp["weight_decay"])
+                    - hp["step_size"] * pull
+                    - hp["step_size"] * (grads[n] * (1.0 - gate))
+                )
+            ref_params = new_ref
+            for n in ref_params:
+                # Independently reordered floating-point ops can diverge by
+                # a few ULP; the bit-exact contract lives in
+                # test_pull_scale_zero_reduces_to_shiftnorm_champion_bitwise.
+                np.testing.assert_allclose(
+                    np.asarray(params[n]),
+                    np.asarray(ref_params[n]),
+                    atol=1e-6,
+                    rtol=1e-5,
+                    err_msg=n,
+                )
+
+    def test_nonzero_pull_diverges_from_champion_and_stays_finite(self, small_data):
+        """The registered arm's trajectory differs from the champion's and
+        remains finite over a tiny-protocol smoke run."""
+        x, y = small_data
+        champion = run_screening_config(
+            x, y, screening_spec("sigma0_shiftnorm_d099"), seed=19, config=SMALL
+        )
+        result = run_screening_config(
+            x, y, screening_spec("sigma0_shiftnorm_d099_gated_l2init"), seed=19, config=SMALL
+        )
+        assert np.all(np.isfinite(result.per_task_accuracy))
+        assert np.all(np.isfinite(result.per_task_loss))
+        assert not np.array_equal(result.per_task_loss, champion.per_task_loss)
+
+    def test_key_is_unused_for_no_extra_randomness(self):
+        """The arm draws no perturbation noise (noise_std=0 by inheritance
+        from ``_sigma0_ext_hp``): different RNG keys must still reach an
+        identical result."""
+        params = init_mlp_params(jr.key(3), SMALL)
+        x = jr.normal(jr.key(90), (SMALL.input_dim,))
+        y = jnp.array(2, jnp.int32)
+        spec = screening_spec("sigma0_shiftnorm_d099_gated_l2init")
         init_fn, step_fn = spec.factory(spec.hyperparameters)
         state = init_fn(params)
         p_a, _, _ = step_fn(params, state, x, y, jr.key(0))
