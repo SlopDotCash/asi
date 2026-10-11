@@ -6360,6 +6360,121 @@ class TestRLSHead:
         assert nogate_hp == {**incumbent_hp, "gate_scale": 0.0}
 
 
+class TestRLSHeadCombo:
+    """Composition pin for ``rls_head_l0999_preset005_pcap``: the two
+    wave-2 wind-up salvages composed on the forgetting-0.999 RLS head.
+
+    Each guard was screened alone (detector-driven P reset at 0.05:
+    0.86484; P trace cap 1e4: 0.86608); the composition is a separate
+    registry arm.  Its reduction pins: the same factory fed the combo
+    hyperparameters with the cap disabled (0) follows
+    ``rls_head_l0999_preset005`` bit-for-bit, with the reset made
+    untriggerable (2.0) follows ``rls_head_l0999_pcap`` bit-for-bit, and
+    with both inert follows the plain ``rls_head_l0999`` head bit-for-bit.
+    """
+
+    def _factory(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_hp,
+        )
+
+        return _make_rls_head_learner(_rls_head_hp(**overrides))
+
+    def _stream(self, n_steps=12, seed=3):
+        key = jr.key(seed)
+        xs, ys = [], []
+        for step in range(n_steps):
+            key, kx = jr.split(key)
+            xs.append(
+                jr.uniform(kx, (SMALL.input_dim,), jnp.float32, -1.0, 1.0)
+                * (1.0 + step % 3)
+            )
+            ys.append(jnp.array(step % SMALL.n_classes, jnp.int32))
+        return xs, ys
+
+    def _run_pair(self, factory_a, factory_b, n_steps=12):
+        params = init_mlp_params(jr.key(5), SMALL)
+        params_a = params_b = params
+        state_a, state_b = factory_a[0](params), factory_b[0](params)
+        xs, ys = self._stream(n_steps=n_steps)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params_a, state_a, m_a = factory_a[1](
+                params_a, state_a, x, y, jr.key(step)
+            )
+            params_b, state_b, m_b = factory_b[1](
+                params_b, state_b, x, y, jr.key(step)
+            )
+            for n in params:
+                np.testing.assert_array_equal(
+                    np.asarray(params_a[n]), np.asarray(params_b[n])
+                )
+            np.testing.assert_array_equal(
+                np.asarray(state_a.p), np.asarray(state_b.p)
+            )
+            np.testing.assert_array_equal(
+                np.asarray(state_a.wout), np.asarray(state_b.wout)
+            )
+            for a, b in zip(m_a, m_b):
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    def test_registry_config(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_frozen_probe_input,
+            _rls_head_hp,
+        )
+
+        spec = screening_spec("rls_head_l0999_preset005_pcap")
+        assert spec.base_learner == "upgd_w"
+        assert spec.mechanism == "rls_readout"
+        assert spec.factory is _make_rls_head_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        assert spec.noise_update is None
+        assert spec.hyperparameters == _rls_head_hp(
+            rls_lambda=0.999, rls_reset_frac=0.05, rls_p_trace_cap=1e4
+        )
+        # Every other constant is verbatim the plain l0999 head arm.
+        base = screening_spec("rls_head_l0999").hyperparameters
+        hp = spec.hyperparameters
+        assert set(hp) == set(base)
+        for k in base:
+            if k not in ("rls_reset_frac", "rls_p_trace_cap"):
+                assert hp[k] == base[k], k
+
+    def test_cap_off_reduces_to_preset_parent_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=0.05, rls_p_trace_cap=0.0
+        )
+        parent = self._factory(rls_lambda=0.999, rls_reset_frac=0.05)
+        self._run_pair(combo, parent)
+
+    def test_reset_off_reduces_to_pcap_parent_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=2.0, rls_p_trace_cap=1e4
+        )
+        parent = self._factory(rls_lambda=0.999, rls_p_trace_cap=1e4)
+        self._run_pair(combo, parent)
+
+    def test_both_inert_reduces_to_plain_head_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=2.0, rls_p_trace_cap=0.0
+        )
+        plain = self._factory(rls_lambda=0.999)
+        self._run_pair(combo, plain)
+
+    def test_combo_smoke_runs_finite(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec("rls_head_l0999_preset005_pcap"),
+            seed=2, config=SMALL,
+        )
+        acc = np.asarray(result.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
 class TestRLSHeadL2Init:
     """Issue #14's body-only L2-to-initialization code prerequisite."""
 

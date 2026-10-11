@@ -8204,6 +8204,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "salvages the forgetting mechanism as a bounded probe)",
         ),
         (
+            "rls_head_l0999_preset005_pcap",
+            {
+                "rls_lambda": 0.999, "rls_reset_frac": 0.05,
+                "rls_p_trace_cap": 1e4,
+            },
+            "forgetting 0.999 with BOTH wind-up/staleness guards composed: "
+            "detector-driven P reset at 0.05 plus the P trace cap 1e4 (the "
+            "two wave-2 salvages screened only in isolation: preset005 "
+            "0.86484, pcap 0.86608; whether the reset makes the cap "
+            "redundant or the two compose was unmeasured)",
+        ),
+        (
             "rls_head_resid_l1_preset005",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0},
             "residual-driven body on the wind-up-immune head (probe c "
