@@ -2463,3 +2463,32 @@ def test_state_resource_budget_matches_optional_state_trees(
     budget = config.state_resource_budget(7)
     assert budget["state_scalars"] == sum(int(leaf.size) for leaf in leaves)
     assert budget["state_nbytes"] == sum(int(leaf.nbytes) for leaf in leaves)
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("alpha,kappa,signal", [(1e30, 1e10, 1.0), (1e20, 1e20, -1e10)])
+def test_obgd_finite_bound_overflow_retains_step(
+    compiled: bool, alpha: float, kappa: float, signal: float
+) -> None:
+    config = _small_config(actor_alpha=alpha, actor_kappa=kappa)
+    traces = {"weight": jnp.ones(1, dtype=jnp.float32)}
+    update = jax.jit(obgd_update, static_argnames=("alpha", "kappa")) if compiled else obgd_update
+    result = update(
+        traces, jnp.asarray(signal, dtype=jnp.float32),
+        alpha=config.actor_alpha, kappa=config.actor_kappa,
+    )
+    expected_step = 1.0 / float(np.float32(kappa)) / max(abs(signal), 1.0)
+    assert bool(result.update_applied)
+    np.testing.assert_allclose(result.step_size, expected_step, rtol=3e-6, atol=0.0)
+    np.testing.assert_allclose(
+        result.updates["weight"], [expected_step * signal], rtol=3e-6, atol=0.0
+    )
+
+
+@pytest.mark.parametrize("alpha,kappa", [(0.0, 2.0), (0.5, 0.0)])
+def test_obgd_zero_factors_keep_unbounded_rule(alpha: float, kappa: float) -> None:
+    traces = {"weight": jnp.asarray([2.0], dtype=jnp.float32)}
+    result = obgd_update(traces, jnp.asarray(3.0), alpha=alpha, kappa=kappa)
+    assert bool(result.update_applied)
+    assert float(result.scale) == 1.0
+    assert float(result.step_size) == alpha
+    np.testing.assert_array_equal(result.updates["weight"], [alpha * 6.0])
