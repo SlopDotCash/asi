@@ -876,10 +876,10 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
                 jnp.zeros_like(state.var),
                 state.var,
             )
-            candidate_var = (
-                state.momentum * var_for_update
-                + one_minus_m * (centered * centered)
-            )
+            # Apply the variance weight before squaring so a finite weighted
+            # variance does not overflow in the unweighted intermediate.
+            weighted_centered = jnp.sqrt(one_minus_m) * centered
+            candidate_var = state.momentum * var_for_update + weighted_centered * weighted_centered
             new_var = jnp.where(
                 is_first,
                 jnp.ones_like(state.var),
@@ -1021,7 +1021,7 @@ def migrate_legacy_normalizer_state(
     fields = _legacy_state_mapping(legacy_state)
     current_names = {
         field.name
-        for field in dataclasses.fields(state_class)  # type: ignore[arg-type]
+        for field in dataclasses.fields(state_class)
     }
     legacy_names = current_names - {"sample_count_words"}
     supplied_names = set(fields)
