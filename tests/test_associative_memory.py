@@ -5,6 +5,7 @@ import math
 from fractions import Fraction
 
 import chex
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -1054,3 +1055,27 @@ def test_newly_allocated_row_is_not_born_as_the_eviction_victim() -> None:
     occupied = after[after != 0.0]
     if occupied.size:
         assert int(after.argmin()) not in set(newborn)
+
+@pytest.mark.parametrize("write_lr", [1.0, 1.0e8])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_balanced_large_writes_keep_uniform_cross_entropy(
+    write_lr: float, compiled: bool
+) -> None:
+    """Equal class evidence must retain log(2) loss at any common offset."""
+    config = AssociativeMemoryConfig(
+        vocab_size=2, block_size=2, suffix_length=2,
+        feature_family="position_token", max_features=4,
+        write_lr=write_lr, retention=1.0, utility_lr=0.0,
+    )
+    learner = AssociativeMemoryLearner(config)
+    context = jnp.array([0, 1], dtype=jnp.int32)
+    with jax.disable_jit(disable=not compiled):
+        state = learner.init()
+        for label in (0, 1):
+            result = learner.update(state, context, jnp.asarray(label, dtype=jnp.int32))
+            assert bool(result.update_applied)
+            state = result.state
+        result = learner.update(state, context, jnp.asarray(0, dtype=jnp.int32))
+    assert bool(result.update_applied)
+    np.testing.assert_allclose(result.predictions, [0.5, 0.5], rtol=1e-6)
+    np.testing.assert_allclose(result.metrics[0], np.log(2.0), rtol=1e-6)
