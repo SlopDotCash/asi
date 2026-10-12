@@ -43,7 +43,7 @@ def _require_float32_in_unit(name: str, value: object) -> float:
     if type(value) not in _ALLOWED_REAL_TYPES:
         raise ValueError(f"{name} must be a real number")
     stored, numerator, denominator = validated_float32_scalar_with_ratio(
-        name, value
+        name, value, lower=0.0, upper=1.0
     )
     if not math.isfinite(stored):
         raise ValueError(f"{name} must be finite")
