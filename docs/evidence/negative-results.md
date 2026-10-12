@@ -406,6 +406,51 @@ postmortem.
     shards bit-exact against the retained r02 prefixes, calibration-bracket
     table in the wave README, `summary.json`, `README.md`).
 
+27. **A diagonal per-direction adaptive head loses a small uniform margin on
+    the identified gated chain: the RLS head's cross-direction coupling is
+    load-bearing at the margin.** Negative result #26's named escape class
+    ("a second-order or per-direction adaptive head") and theory §6.6's
+    removability question, one cell further than #26:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead` (local
+    registration commit `e562e60b`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced only the head's full Sherman-Morrison `P` with a
+    diagonal per-direction gain accumulator — each coordinate runs its own
+    scalar RLS on the shared one-hot squared-loss residual,
+    `K_j = p_j*phi_j/(lambda + p_j*phi_j^2)`, `p_j` nonincreasing at
+    `lambda = 1` (no wind-up), O(m) state and work per step instead of
+    O(m^2), the detector-driven reset keeping its parent meaning and the
+    trace cap rejected at build time. No new hyperparameter and no
+    calibration: on a single-active-direction `phi` the diagonal gain is
+    bitwise the full head's gain, so the only removed mechanism is the
+    cross-direction denominator coupling `phi^T P phi`. The preregistered
+    60-task screen measured **-0.00096 +/- 0.00010 (paired stderr) with 3/3
+    seeds negative**: candidate 0.94811/0.94752/0.94727 vs the parent's
+    0.94896/0.94867/0.94814 — still +0.16987 above the plain control and
+    ~0.50 above #26's SGD-head collapse. The deficit is uniform across
+    life (block diffs -0.0005 to -0.0017 in every block of every seed,
+    slightly larger early) and the within-task fit itself is slower: task 0
+    — before any detected boundary — measures 0.8358-0.8436 vs the parent's
+    0.8444-0.8526, consistent with the coupling pooling excitation across
+    simultaneously active directions the way the ridge axis's saturation
+    picture implies. Plasticity is unchanged (0.713-0.721 vs 0.691-0.701)
+    and wall-clock per shard drops (61.7-61.9 s vs 64.8-65.6 s, sequential)
+    — the O(m) head is measurably cheaper, just 0.001 worse here.
+    Conclusions: the per-direction second-order structure carries
+    essentially all of the head's rapid within-task fit (#26's collapse is
+    fully explained by the missing adaptive gain), but the O(d^2) head is
+    not freely removable at O(d) cost — a diagonal second-order head
+    retains ~99.9% of the incumbent's level and loses on every seed. Head
+    ladder on the chain: full Sherman-Morrison 0.94859 > diagonal 0.94763 >
+    plain SGD 0.45005. Any future head replacement must keep cross-direction
+    coupling (e.g. factored/low-rank curvature); scalar-step and
+    diagonal-head retries without new coupling structure are closed. Do
+    not re-probe this class on this chain without a mechanism that adds
+    coupling at sub-O(d^2) cost, not a retuned diagonal. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/`
+    (3 candidate shards binding commit `e562e60b`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, `summary.json`,
+    `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
