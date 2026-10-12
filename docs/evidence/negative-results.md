@@ -547,6 +547,60 @@ postmortem.
     shards bit-exact against the retained r02 prefixes, `summary.json`,
     `README.md`).
 
+30. **A sliding window of the 8 most recent Sherman-Morrison downdate
+    directions lands exactly at the scalar-pooling level: bounded-rank
+    curvature sketches do not capture the coupling that carries the RLS
+    head's margin.** Negative result #29 named the one open escape — a
+    low-rank *matrix* factorization of `P` carrying cross-feature
+    directional structure. Measured directly:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank` (local
+    registration commit `d068ddbf`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced the head's dense `P` with the factored carry
+    ``P = diag(p) + sum_r s_r [outer(u_r, u_r) - diag(u_r^2)]``: with
+    `rls_lambda` 1 every step is still the exact symmetric downdate
+    ``P <- P - outer(v, v)``, `v = P phi / sqrt(1 + phi^T P phi)`; the
+    diagonal absorbs every downdate's diagonal footprint exactly and a
+    sliding window of `R = 8` recent downdate directions carries the
+    cross-direction (off-diagonal) structure; dropping the oldest
+    direction forgets exactly its cross coupling (O(8m) state and work
+    per step). One new pinned constant, the window size (`rls_head_rank`
+    8; `m = 151`, so 8*151 stored floats vs 151^2). Nothing is dropped
+    before step 8 and an un-dropped window is mathematically the full
+    head (pinned by test up to float reduction order); on a
+    single-active-direction `phi` the window terms cancel at the active
+    coordinate and the active gain reduces to the diagonal head's. The
+    preregistered 60-task screen measured **-0.00114 (paired stderr
+    0.00020) with 3/3 seeds negative**: candidate 0.94742/0.94769/0.94723
+    vs the parent's 0.94896/0.94867/0.94814 — still +0.16969 above the
+    plain control, and **dead even with the pooled-denominator cell**
+    (#29's 0.94744; secondary candidate comparison +0.000003 mean, 2/3
+    seeds positive). The deficit is uniform across the run (per-10-task
+    block diffs bounded in -0.0024..+0.0001; early/late -0.00124/-0.00183,
+    -0.00093/-0.00103, -0.00121/-0.00061; task 0 measures 0.8344/0.8418/
+    0.8412 vs the parent's 0.8444/0.8526/0.8526). Plasticity is unchanged
+    (0.714/0.712/0.717 vs 0.700/0.691/0.701) and wall-clock per shard
+    does **not** drop (63.7-65.7 s vs 64.8-65.6 s, sequential) — at
+    `m = 151` the factored matvec saves nothing against the dense matmul,
+    so this cell is not even a cost win, just 0.00114 worse. Conclusions:
+    the head ladder is measured at five cells and is flat below the full
+    head — full 0.94859 > block (G=4) 0.94827 > diagonal 0.94763 > pooled
+    0.94744 ≈ low-rank window (R=8) 0.94745 — so keeping the last 8 exact
+    downdate directions' cross coupling recovers none of the full head's
+    margin: the load-bearing cross-direction structure is either older
+    than the window or denser than any rank-8 sketch of this exact-downdate
+    form, not recent-curvature mixing alone. Sub-O(m^2) retries of this
+    family are closed on this chain: neither scalar pooling (#29),
+    block-local coupling (#28), diagonal (#27), nor a sliding window of
+    exact downdate directions recovers the full head's level. Do not
+    re-probe sliding-window rank sketches on this chain without a
+    mechanism that identifies which cross-direction structure is
+    load-bearing (e.g. measured direction importance, not recency).
+    Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_lowrank/`
+    (3 candidate shards binding commit `d068ddbf`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, `summary.json`,
+    `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
