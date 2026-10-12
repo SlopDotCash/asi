@@ -4646,7 +4646,35 @@ class RLSHeadGDiagState:
     wout: Array
 
 
-_RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
+@chex.dataclass(frozen=True)
+class RLSHeadLowRankState:
+    """Opt-in RLS carry with a rank-R low-rank + diagonal head.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  The inverse feature-correlation matrix is represented in
+    factored form ``P = diag(p) + sum_r s_r [outer(u_r, u_r) - diag(u_r^2)]``:
+    ``p`` is the (h2+1,) diagonal accumulator that absorbs every downdate's
+    diagonal exactly, ``u`` is the (n_dirs, h2+1) stack of stored
+    Sherman-Morrison downdate directions and ``s`` their (n_dirs,) weights
+    (``-1.0`` live, ``0.0`` empty).  With ``rls_lambda = 1`` every step is
+    the exact symmetric downdate ``P <- P - outer(v, v)`` with
+    ``v = P phi / sqrt(1 + phi^T P phi)``, so each step appends ``v`` and
+    drops the oldest direction: dropping forgets exactly the dropped
+    direction's cross-direction (off-diagonal) structure while ``p`` keeps
+    every downdate's diagonal footprint (a sliding-window rank-R curvature
+    sketch).  The state stays O(n_dirs * m); ``P phi`` and ``phi^T P phi```
+    keep dense cross-direction mixing over the window.  ``wout`` is
+    unchanged in shape.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    u: Array
+    s: Array
+    wout: Array
 
 
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
@@ -5048,6 +5076,44 @@ def _make_rls_head_learner(
             " rls_head_diag: each flag replaces the head recursion and"
             " their pairwise compositions are unmeasured cells"
         )
+    head_rank = hp.get("rls_head_rank", 0.0)
+    if head_rank < 0.0 or not float(head_rank).is_integer():
+        raise ValueError(
+            "rls_head_rank is a direction count: it must be a whole"
+            " number of stored directions, 0.0 (off) or >= 1"
+        )
+    rank_head = head_rank >= 1.0
+    if rank_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_rank is pinned to rls_lambda 1.0: below 1 the"
+                " diagonal and low-rank accumulators wind up unboundedly"
+                " along unexcited directions exactly like the full"
+                " matrix, and no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError(
+                "rls_head_rank is supported only for the residual body"
+            )
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_rank is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_rank is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_rank does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+    if (block_head or diag_head or gdiag_head) and rank_head:
+        raise ValueError(
+            "rls_head_rank does not compose with rls_head_block,"
+            " rls_head_diag, or rls_head_gdiag: each flag replaces the"
+            " head recursion and their compositions are unmeasured cells"
+        )
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5067,6 +5133,7 @@ def _make_rls_head_learner(
     ) -> (
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
         | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+        | RLSHeadLowRankState
     ):
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
@@ -5143,6 +5210,23 @@ def _make_rls_head_learner(
                 ),
                 fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
                 p=jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
+        if rank_head:
+            return RLSHeadLowRankState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32),
+                u=jnp.zeros((int(head_rank), m), dtype=jnp.float32),
+                s=jnp.zeros((int(head_rank),), dtype=jnp.float32),
                 wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
             )
         if _decay_to_init:
@@ -5240,14 +5324,16 @@ def _make_rls_head_learner(
     def full_step(
         params: dict[str, Array],
         state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
-        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState,
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+        | RLSHeadLowRankState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
-        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState,
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+        | RLSHeadLowRankState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5524,6 +5610,54 @@ def _make_rls_head_learner(
                     jnp.eye(block, dtype=jnp.float32)[None, :, :] / ridge_init,
                     new_p,
                 )
+        elif rank_head:
+            assert isinstance(state, RLSHeadLowRankState)
+            # Sliding-window low-rank head (the cost cell negative result #29
+            # leaves open: #27/#28/#29 measured that directional mixing carries
+            # the head's value, and the full P is O(m^2) state and work per
+            # step).  With lambda 1 each step is the exact symmetric
+            # Sherman-Morrison downdate P <- P - outer(v, v) with
+            # v = P phi / sqrt(1 + phi^T P phi): the diagonal accumulator p
+            # absorbs every downdate's diagonal exactly, and a sliding window
+            # of the R most recent downdate directions carries the
+            # cross-direction (off-diagonal) structure; dropping the oldest
+            # direction forgets exactly its cross coupling.  Matvec
+            # P phi = p*phi + U^T(s*(U phi)) - phi*(s @ (U*U)) is O(R*m) per
+            # step; at R >= the number of steps nothing is ever dropped and
+            # the recursion is mathematically the full head's (pinned by
+            # test, up to float reduction order).  On a single-active-
+            # direction phi the window terms cancel at the active
+            # coordinate, so the active gain reduces to the diagonal head's
+            # (ulp-level float cancellation residue only).
+            # rls_head_rank is the one new constant (the window size);
+            # lambda, ridge, reset, gate, step, and the residual feedback are
+            # the incumbent's verbatim constants.  The detector-driven reset
+            # restores the whole P (p to 1/ridge_init, window cleared) and
+            # keeps wout; the cap is rejected at build time as in the parent.
+            u_phi = state.u @ phi
+            pp = (
+                state.p * phi
+                + state.u.T @ (state.s * u_phi)
+                - phi * (state.s @ (state.u * state.u))
+            )
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            downdate = pp / jnp.sqrt(rls_lambda + phi @ pp)
+            new_p = state.p - downdate * downdate
+            new_u = jnp.concatenate([state.u[1:], downdate[None, :]], axis=0)
+            new_s = jnp.concatenate(
+                [state.s[1:], jnp.full((1,), -1.0, dtype=jnp.float32)],
+                axis=0,
+            )
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.full_like(new_p, 1.0 / ridge_init),
+                    new_p,
+                )
+                new_u = jnp.where(trigger, jnp.zeros_like(new_u), new_u)
+                new_s = jnp.where(trigger, jnp.zeros_like(new_s), new_s)
         else:
             pp = state.p @ phi
             gain = pp / (rls_lambda + phi @ pp)
@@ -5601,6 +5735,18 @@ def _make_rls_head_learner(
                 p=new_p,
                 wout=new_wout,
             ), (accuracy, loss, plasticity)
+        if rank_head:
+            assert isinstance(state, RLSHeadLowRankState)
+            return new_params, RLSHeadLowRankState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                u=new_u,
+                s=new_s,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
@@ -5630,6 +5776,7 @@ class RLSHeadIdentState:
     inner: (
         RLSHeadState | RLSHeadSMState | RLSHeadL2InitState
         | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+        | RLSHeadLowRankState
     )
     raw_norm: EMANormState
     raw_fast: Array
@@ -9199,6 +9346,62 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 " (§6.6); if it stays at the diagonal cell, the residual"
                 " deficit is directional mixing and the ladder closes with"
                 " the O(m) endpoint measured."
+            ),
+        )
+    )
+    # The sliding-window low-rank head: the cost cell negative result #29
+    # names — directional mixing carries the head's value, the full P is
+    # O(m^2) per step, and every measured cheaper cell (scalar pooled,
+    # diagonal, block-local) lands below the full head. This arm keeps
+    # dense cross-direction mixing over a bounded window of recent
+    # Sherman-Morrison downdate directions.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_rank=8.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Sliding-window low-rank head (the cost cell negative"
+                " result #29 leaves open): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r"
+                " schedule 50/200/2000, utility gate kept, identifier"
+                " trigger 0.03, body step 0.0031640625, head ridge 0.03"
+                " — the gated chain's best measured screen, PR #3123)"
+                " with the head's dense Sherman-Morrison P replaced by a"
+                " diagonal accumulator plus a sliding window of the 8 most"
+                " recent exact downdate directions: each step is still the"
+                " exact symmetric downdate P <- P - outer(v, v) with"
+                " v = P phi / sqrt(1 + phi^T P phi), so the diagonal keeps"
+                " every downdate's footprint and the window carries the"
+                " cross-direction mixing that #29 measured to be the"
+                " head's value — O(8*m) state and work per step instead of"
+                " O(m^2), with the window never dropping before step 8 and"
+                " exactness to the full head whenever nothing has been"
+                " dropped yet (pinned by test). One new pinned constant:"
+                " the window size rls_head_rank 8 (m = 151, so 8*151"
+                " stored floats vs 151^2); lambda, ridge, reset, gate, step,"
+                " and the residual feedback are the incumbent's verbatim"
+                " constants; on a single-active-direction phi the window"
+                " terms cancel at the active coordinate and the active gain"
+                " reduces to the diagonal head's. If the window recovers"
+                " the full head's level, the head's value fits in a bounded"
+                " recent-curvature sketch and a sub-O(m^2) head is viable;"
+                " if it degrades with dropping, the ladder closes with the"
+                " full head measured as load-bearing at O(m^2) cost."
             ),
         )
     )

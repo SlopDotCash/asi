@@ -7116,6 +7116,12 @@ class TestRLSHeadIdentMap:
                 "step_size": 0.0031640625, "rls_ridge_init": 0.03,
                 "rls_reset_frac": 0.05, "rls_head_gdiag": 1.0,
             },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_rank": 8.0,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8735,6 +8741,277 @@ class TestRLSHeadIdentMapIdet003S0031640625R02Gdiag:
         x, y = small_data
         result = run_screening_config(
             x, y, screening_spec(self.GDIAG), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Lowrank:
+    """Sliding-window low-rank head on the r02 incumbent.
+
+    Negative result #29 closes scalar-pooling retries and names the one
+    open escape: a low-rank *matrix* factorization of P that carries
+    cross-feature directional structure. This arm is that cell: with
+    lambda 1 every Sherman-Morrison step is the exact symmetric downdate
+    ``P <- P - outer(v, v)`` with ``v = P phi / sqrt(1 + phi^T P phi)``,
+    so the head keeps a diagonal accumulator (every downdate's diagonal
+    footprint) plus a sliding window of the R most recent downdate
+    directions (the recent cross-direction structure). Nothing is
+    dropped before step R, so an un-dropped window is mathematically the
+    full head; the approximation is exactly the forgetting of dropped
+    directions' cross coupling.
+    """
+
+    LOWRANK = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Lowrank.LOWRANK
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    @staticmethod
+    def _factored_p(state):
+        """Reconstruct the dense P from the factored (p, u, s) carry."""
+        u = np.asarray(state.u)
+        s = np.asarray(state.s)
+        m = u.shape[1]
+        p_hat = np.diag(np.asarray(state.p))
+        p_hat += np.einsum("r,ri,rj->ij", s, u, u)
+        p_hat -= (s[:, None] * u * u).sum(axis=0)[:, None] * np.eye(m)
+        return p_hat
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.LOWRANK]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_rank"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_rank"] == 8.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_rank = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_rank=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_undropped_window_matches_full_head(self):
+        """The exactness pin: with the window larger than the number of
+        steps nothing is ever dropped, and the factored recursion is
+        mathematically the full head's — wout and the reconstructed
+        factored P track the dense head's over a boundary-heavy stream.
+        The two graphs are not bitwise (the dense head resymmetrizes P
+        each step, the factored form stays symmetric by construction),
+        and the residual feedback loop amplifies that 1-ulp gap roughly
+        tenfold per step to a ~3e-2 plateau by step 12 — the tolerances
+        sit just above that measured plateau, so structural errors
+        (wrong window term, wrong denominator) fail orders of
+        magnitude earlier."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec(rls_head_rank=64.0).hyperparameters
+        lr_init, lr_step = _make_rls_head_learner(hp)
+        full_init, full_step = _make_rls_head_learner(
+            {**hp, "rls_head_rank": 0.0}
+        )
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = lr_init(params)
+        full_state = full_init(params)
+        xs, ys = TestRLSHead()._stream(n_steps=12, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, _ = lr_step(params, state, x, y, jr.key(step))
+            params, full_state, _ = full_step(
+                params, full_state, x, y, jr.key(step)
+            )
+            np.testing.assert_allclose(
+                np.asarray(state.wout), np.asarray(full_state.wout),
+                rtol=2e-2, atol=5e-2,
+            )
+        np.testing.assert_allclose(
+            self._factored_p(state), np.asarray(full_state.p),
+            rtol=5e-2, atol=0.5,
+        )
+
+    def test_active_direction_gain_reduces_to_diagonal(self):
+        """The documented reduction: with one active direction the
+        window terms cancel at the active coordinate (up to ulp-level
+        float cancellation), so the active gain matches the diagonal
+        head's — with a populated window, not just an empty one."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_vec = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        u = jr.normal(jr.key(0), (4, m), dtype=jnp.float32)
+        s = -jnp.ones((4,), jnp.float32)
+        u_phi = u @ phi
+        pp = (
+            p_vec * phi
+            + u.T @ (s * u_phi)
+            - phi * (s @ (u * u))
+        )
+        gain_lowrank = pp / (1.0 + phi @ pp)
+        pp_diag = p_vec * phi
+        gain_diag = pp_diag / (1.0 + p_vec * phi * phi)
+        np.testing.assert_allclose(
+            float(gain_lowrank[active]), float(gain_diag[active]),
+            rtol=0, atol=1e-5,
+        )
+        # The inactive coordinates do mix (the mechanism is live).
+        inactive = [k for k in range(m) if k != active]
+        assert not np.allclose(
+            np.asarray(gain_lowrank)[inactive],
+            np.asarray(gain_diag)[inactive],
+        )
+
+    def test_sliding_window_advances_and_refuses_windup(self):
+        """The window fills (all weights -1), the oldest direction is
+        dropped once steps exceed the rank, the diagonal accumulator
+        never winds up (lambda 1), and every carry stays finite."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        rank = int(hp["rls_head_rank"])
+        xs, ys = TestRLSHead()._stream(n_steps=rank + 3, seed=13)
+        u0_at_fill = None
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= -1e-4)
+            assert np.all(np.isfinite(np.asarray(state.u)))
+            assert np.isfinite(float(metrics[1]))
+            if step + 1 == rank:
+                u0_at_fill = np.asarray(state.u)[0].copy()
+                assert np.all(np.asarray(state.s) == -1.0)
+        assert u0_at_fill is not None
+        # Two steps past the fill: the oldest stored direction was
+        # dropped and replaced by newer downdates.
+        assert not np.allclose(np.asarray(state.u)[0], u0_at_fill)
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The low-rank cell runs the whole harness finite, in range,
+        and off both the frozen-head degenerate and the incumbent's
+        trajectory."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        lowrank = run_screening_config(
+            x, y, screening_spec(self.LOWRANK), seed=7, config=SMALL,
+        )
+        acc = np.asarray(lowrank.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composition_guards(self):
+        """The low-rank cell is scoped to the plain gated residual body
+        at lambda 1 and never composes with the other head flags:
+        invalid endpoints and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_rank": 2.5}, "whole number"),
+            ({"rls_head_rank": -1.0}, "whole number"),
+            (
+                {"rls_head_rank": 8.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_rank": 8.0, "head_resid": 0.0}, "residual body"),
+            (
+                {"rls_head_rank": 8.0, "gate_scale": 0.0},
+                "gated residual body",
+            ),
+            ({"rls_head_rank": 8.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_rank": 8.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_rank": 8.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_rank": 8.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_p_trace_cap": 100.0},
+                "trace cap",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_diag": 1.0},
+                "does not compose with rls_head_block",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_block": 4.0},
+                "does not compose with rls_head_block",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_gdiag": 1.0},
+                "does not compose with rls_head_block",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.LOWRANK), seed=7, config=SMALL,
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
