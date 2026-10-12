@@ -7057,8 +7057,9 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms are registered;
-        the screened intermediates and the round-2 rejections (negative
+        """Only the two 200-task-confirmed identifier arms plus the gated
+        idet003_s005625 step-size triple screen are registered; the
+        screened intermediates and the round-2 rejections (negative
         result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
@@ -7075,6 +7076,11 @@ class TestRLSHeadIdentMap:
                 "ident_match_at": 200.0, "ident_match2": 500.0,
                 "ident_match3": 2000.0,
             },
+            "rls_head_resid_identmap50_r_idet003_s005625": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.005625,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7089,6 +7095,148 @@ class TestRLSHeadIdentMap:
             assert spec.hyperparameters["rls_reset_frac"] == 0.05
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
+
+
+class TestRLSHeadIdentMapIdet003S005625:
+    """Gated idet003 composition at body step size 0.005625.
+
+    The gated idet003 screen (PR #3115) measured the identifier trigger
+    axis peak at 0.03; the ungated chain (PRs #3109-#3111) measured the
+    body step axis improving monotonically from the champion-calibrated
+    0.01 down through 0.005625.  This arm is their composition on the
+    gated chain, the gate + trigger + step triple named unmeasured in
+    the idet002 wave README (PR #3116).  This class pins the bit-exact
+    reductions: step restored (0.01) follows the gated idet003
+    composition, trigger restored (0.05) follows the gated identmap50_r
+    composition at the same step, and identifier disabled follows the
+    gated non-identifier incumbent at the same step.
+    """
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s005625"
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[
+            "rls_head_resid_identmap50_r_idet003_s005625"
+        ]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec("rls_head_resid_identmap50_r")
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "ident_reset_frac"
+        }
+        for key, value in parent.hyperparameters.items():
+            expected = value
+            if key == "step_size":
+                expected = 0.005625
+            assert spec.hyperparameters[key] == expected, key
+        assert spec.hyperparameters["ident_reset_frac"] == 0.03
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_reset_frac"] == 0.05
+
+    def test_step_restored_pin_bitwise(self, small_data):
+        """``step_size = 0.01`` follows the gated idet003 composition."""
+        x, y = small_data
+        base = screening_spec("rls_head_resid_identmap50_r")
+        idet003 = replace(
+            base,
+            name=base.name + "_idet003_test",
+            hyperparameters={**base.hyperparameters, "ident_reset_frac": 0.03},
+        )
+        expected = run_screening_config(
+            x, y, idet003, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(step_size=0.01), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_frac_restored_pin_bitwise(self, small_data):
+        """``ident_reset_frac = 0.05`` follows the gated composition
+        at the same step size."""
+        x, y = small_data
+        base = screening_spec("rls_head_resid_identmap50_r")
+        s005625 = replace(
+            base,
+            name=base.name + "_s005625_test",
+            hyperparameters={**base.hyperparameters, "step_size": 0.005625},
+        )
+        expected = run_screening_config(
+            x, y, s005625, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(ident_reset_frac=0.05), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_off_pin_bitwise(self, small_data):
+        """Identifier disabled follows the gated incumbent at the same
+        step size."""
+        x, y = small_data
+        incumbent = screening_spec("rls_head_resid_l1_preset005")
+        incumbent_s = replace(
+            incumbent,
+            name=incumbent.name + "_s005625_test",
+            hyperparameters={
+                **incumbent.hyperparameters, "step_size": 0.005625,
+            },
+        )
+        expected = run_screening_config(
+            x, y, incumbent_s, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._spec(
+                ident_match_at=0.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y,
+            screening_spec("rls_head_resid_identmap50_r_idet003_s005625"),
+            seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
 class TestPlasticityCounterSaturation:
