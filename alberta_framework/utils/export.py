@@ -240,6 +240,20 @@ def _preflight_export_results(
                     float(np.min(summary.values)),
                     float(np.max(summary.values)),
                 )
+            # Recover reductions whose intermediate sum/squares leave float64.
+            # Keep ordinary exact validation unchanged, including its rounding.
+            if (
+                not all(math.isfinite(value) for value in expected_statistics)
+                or (expected_statistics[1] == 0.0 and np.ptp(summary.values) > 0.0)
+            ):
+                scale = float(np.max(np.abs(summary.values)))
+                scaled = summary.values / scale if scale else summary.values
+                expected_statistics = (
+                    float(np.mean(scaled) * scale),
+                    float(np.std(scaled, ddof=1) * scale) if seed_count > 1 else 0.0,
+                    expected_statistics[2],
+                    expected_statistics[3],
+                )
             actual_statistics = tuple(
                 float(_exported_number(value))
                 for value in (summary.mean, summary.std, summary.min, summary.max)

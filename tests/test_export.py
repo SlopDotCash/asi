@@ -674,3 +674,33 @@ class TestCrossConfigFinalWindow:
         }
         table = generate_markdown_table(equal, metric="squared_error")
         assert "short" in table and "long" in table
+
+
+@pytest.mark.parametrize("scale", [1e308, 1e-200])
+def test_exports_validate_finite_scaled_summary(tmp_path: Path, scale: float) -> None:
+    values = np.asarray([scale, scale / 2], dtype=np.float64)
+    scaled = values / scale
+    summary = MetricSummary(
+        mean=float(np.mean(scaled) * scale),
+        std=float(np.std(scaled, ddof=1) * scale),
+        min=float(values.min()),
+        max=float(values.max()),
+        n_seeds=2,
+        values=values,
+    )
+    result = AggregatedResults(
+        config_name="finite", seeds=[17, 29],
+        metric_arrays={_METRIC: values.reshape(2, 1)},
+        summary={_METRIC: summary},
+    )
+    results = {"finite": result}
+    export_to_json(results, tmp_path / "finite.json")
+    export_to_csv(results, tmp_path / "finite.csv")
+    payload = json.loads((tmp_path / "finite.json").read_text())
+    assert payload["finite"]["summary"][_METRIC]["std"] == summary.std
+    assert payload["finite"]["summary"][_METRIC]["values"] == values.tolist()
+    invalid = summary._replace(std=summary.std / 2)
+    bad = result._replace(summary={_METRIC: invalid})
+    with pytest.raises(ValueError, match="statistics do not match values"):
+        export_to_json({"finite": bad}, tmp_path / "bad.json")
+    assert not (tmp_path / "bad.json").exists()
