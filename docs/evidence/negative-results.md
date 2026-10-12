@@ -360,6 +360,52 @@ postmortem.
     (3 candidate shards binding commit `2a50483e`, control repro shard,
     `summary.json`, `README.md`).
 
+26. **A matched-gradient SGD head cannot replace the RLS head on the
+    identified gated chain: the residual's geometry alone does not carry
+    the body lift.** Theory §6.3/§6.6's control
+    (`rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead`, local
+    registration commit `ec23f65a`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced only the Sherman-Morrison head update with plain
+    decayed SGD on the same one-hot squared loss, the residual entering in
+    the RLS gain's sign so both rules descend the same loss; the head step
+    was calibrated on a seed-0 3-task bracket (0.0001-0.4 all finite,
+    accuracy rising monotonically to a flat optimum at 0.05-0.1; the
+    parallel-head family's 0.01 constant is mis-scaled for the body's
+    hidden-feature head input), and the registered endpoint took the
+    bracket's best cell 0.1 with weight_decay 0.01 verbatim. The preregistered
+    60-task screen measured **-0.49854 +/- 0.00349 (paired stderr) with 3/3
+    seeds negative**: candidate 0.44358/0.45230/0.45426 vs the parent's
+    0.94896/0.94867/0.94814 — **0.33 below even the plain `upgd_w_control`**
+    (0.77776). The deficit is a lower asymptote, not a transient: task
+    blocks sit at 0.29-0.33 (1-10), 0.47-0.48 (11-30), and 0.475-0.48
+    (31-60) vs the parent's 0.925 -> 0.954, and task 0 — before any detected
+    boundary — is 0.117-0.125 vs the parent's 0.844-0.853, so the within-task
+    fit itself collapses: plain SGD at its calibrated-best step cannot match
+    exact second-order within-task convergence in 5,000 steps, and the body
+    then trains on the resulting poor residual (the stable, non-overflowing
+    analogue of #11's feedback failure; mean plasticity drops
+    0.700/0.691/0.701 -> 0.213/0.216/0.216). No instability artifact is
+    present: every loss is finite, per-seed minima are the candidates' own
+    task-0 values, and wall-clock per shard is unchanged (62.5-63.4 s vs
+    64.8-65.6 s, sequential). Conclusions: the convergence-shortfall account
+    is confirmed on the identified chain — the stable head's rapid exact fit,
+    not the residual's geometry alone, carries the body lift — and the O(d^2)
+    RLS head is not removable at this horizon by an O(d) SGD head at its
+    best calibrated step. The conclusion is invariant across the whole stable
+    bracket (every cell 0.0001-0.4 measured far below the parent; best 3-task
+    cell 0.171). A pre-publication registration draft had the residual
+    entering with the wrong sign (gradient ascent); the 3-task calibration
+    probes caught it (chance-level accuracy, non-finite loss at steps >= 0.003)
+    and the sign was fixed and the registration amended before any 60-task
+    shard was retained. Do not re-probe plain-SGD-head replacements on this
+    chain without a mechanism that changes within-task convergence rate
+    (e.g., a second-order or per-direction adaptive head), not merely a
+    step-size retune. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/`
+    (3 candidate shards binding commit `ec23f65a`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, calibration-bracket
+    table in the wave README, `summary.json`, `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
