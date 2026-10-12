@@ -863,3 +863,37 @@ def test_delta_next_latent_remains_bounded_by_the_delta_clip() -> None:
     step = np.asarray(prediction.next_latent) - latent
     assert float(np.max(np.abs(raw))) > config.max_latent_delta
     assert float(np.max(np.abs(step))) <= config.max_latent_delta + 1e-6
+
+
+@pytest.mark.parametrize("disabled", [True, False])
+@pytest.mark.parametrize("value", [1.5e19, -1.5e19, 0.5, 1e-18, 2e19, float("nan")])
+def test_latent_update_surprise_reduction_preserves_finite_errors(
+    disabled: bool, value: float,
+) -> None:
+    import jax
+
+    model = LatentWorldModel(LatentWorldModelConfig(
+        observation_dim=2, n_actions=2, latent_dim=2, hidden_sizes=(),
+        step_size=1e-20, predict_delta=False,
+    ))
+    state = model.init(jr.key(0))
+    heads = state.learner_state.head_params
+    heads = heads.replace(
+        weights=tuple(jnp.zeros_like(w) for w in heads.weights),
+        biases=tuple(jnp.full_like(b, value if i < 2 else 0.0)
+                     for i, b in enumerate(heads.biases)),
+    )
+    state = state.replace(learner_state=state.learner_state.replace(head_params=heads))
+    observation = jnp.zeros(2, dtype=jnp.float32)
+    with jax.disable_jit(disabled):
+        result = model.update(
+            state, observation, jnp.int32(0), jnp.float32(0), jnp.float32(0), observation,
+        )
+    if math.isfinite(value) and abs(value) < 1.8e19:
+        assert bool(result.update_applied)
+        np.testing.assert_allclose(float(result.surprise), value**2, rtol=2e-6, atol=0)
+        assert int(result.state.step_count) == 1
+    else:
+        assert not bool(result.update_applied)
+        assert int(result.state.step_count) == 0
+        assert float(result.surprise) == 0.0
