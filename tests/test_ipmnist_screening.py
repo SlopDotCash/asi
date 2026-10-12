@@ -7110,6 +7110,12 @@ class TestRLSHeadIdentMap:
                 "step_size": 0.0031640625, "rls_ridge_init": 0.03,
                 "rls_reset_frac": 0.05, "rls_head_block": 4.0,
             },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_gdiag": 1.0,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8503,6 +8509,232 @@ class TestRLSHeadIdentMapIdet003S0031640625R02Blockhead:
         x, y = small_data
         result = run_screening_config(
             x, y, screening_spec(self.BLOCKHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Gdiag:
+    """Globally-pooled-denominator diagonal head on the r02 incumbent.
+
+    Negative results #27/#28 close scalar-step, diagonal, and block-local
+    head retries and leave exactly one named open cell: global coupling
+    structure at sub-O(d^2) cost. #27's own deficit hypothesis names the
+    mechanism — the diagonal head loses the cross-direction denominator
+    coupling that pools excitation across simultaneously active
+    directions. This arm keeps the diagonal O(m) state and restores only
+    that pooling: the per-direction numerator gain is divided by the
+    diagonal-trace global excitation sum_k p_k*phi_k^2 (the full head's
+    phi^T P phi with P diagonal) instead of the per-coordinate
+    p_j*phi_j^2. No new hyperparameter; on a single-active-direction phi
+    the pooled denominator reduces to the per-coordinate one and the
+    step is bitwise the diagonal head's (and the full head's).
+    """
+
+    GDIAG = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Gdiag.GDIAG
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.GDIAG]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_gdiag"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_gdiag"] == 1.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_gdiag = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_gdiag=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_single_direction_gain_is_bitwise_diagonal_gain(self):
+        """The documented reduction: with one active direction the
+        pooled denominator reduces to the per-coordinate one, so the
+        gdiag gain equals the diagonal head's gain exactly (and the full
+        Sherman-Morrison gain, per #27's pin)."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        gain_gdiag = pp_diag / (1.0 + jnp.sum(p_diag * phi * phi))
+        np.testing.assert_array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_diag)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_full)
+        )
+
+    def test_multi_direction_gain_differs_from_diagonal(self):
+        """The mechanism is live exactly where the diagonal head is
+        wrong: with two simultaneous active directions the pooled
+        denominator is the diagonal-trace global excitation — equal to
+        the full head's phi^T P phi at the initial isotropic P (where
+        the off-diagonal terms vanish) — and the resulting gain differs
+        from the diagonal head's per-coordinate denominators."""
+        m = 8
+        phi = jnp.zeros((m,), jnp.float32).at[2].set(0.75).at[5].set(1.25)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        gain_gdiag = pp_diag / (1.0 + jnp.sum(p_diag * phi * phi))
+        # Reduction order may shift the pooled sum by a float32 ulp
+        # against the matmul form; the identity is asserted well inside
+        # one ulp of the largest term.
+        np.testing.assert_allclose(
+            np.asarray(gain_gdiag), np.asarray(gain_full),
+            rtol=0, atol=1e-6,
+        )
+        assert not np.array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_diag)
+        )
+
+    def test_accumulator_nonincreasing_and_finite(self):
+        """At lambda 1 the pooled cell's per-direction accumulator is
+        nonincreasing in every coordinate (no wind-up) and stays finite
+        across a boundary-heavy stream."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        xs, ys = TestRLSHead()._stream(n_steps=24, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= 0.0)
+            assert np.isfinite(float(metrics[1]))
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The pooled cell runs the whole harness finite, in range, and
+        off both the frozen-head degenerate and the incumbent's
+        trajectory."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        gdiag = run_screening_config(
+            x, y, screening_spec(self.GDIAG), seed=7, config=SMALL,
+        )
+        acc = np.asarray(gdiag.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composition_guards(self):
+        """The pooled cell is scoped to the plain gated residual body at
+        lambda 1 and never composes with the other head flags: invalid
+        endpoints and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_gdiag": 0.5}, "must be 0.0 or 1.0"),
+            (
+                {"rls_head_gdiag": 1.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_gdiag": 1.0, "head_resid": 0.0}, "residual body"),
+            (
+                {"rls_head_gdiag": 1.0, "gate_scale": 0.0},
+                "gated residual body",
+            ),
+            ({"rls_head_gdiag": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_gdiag": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_p_trace_cap": 100.0},
+                "trace cap",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_diag": 1.0},
+                "does not compose with rls_head_block or",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_block": 4.0},
+                "does not compose with rls_head_block or",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.GDIAG), seed=7, config=SMALL,
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))

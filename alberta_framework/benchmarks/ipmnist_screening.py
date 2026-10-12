@@ -4625,6 +4625,27 @@ class RLSHeadDiagState:
     wout: Array
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadGDiagState:
+    """Opt-in RLS carry with a globally-pooled-denominator diagonal head.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  ``p`` is the (h2+1,) per-direction inverse self-energy
+    vector of the pooled-denominator diagonal head: the diagonal
+    restriction of the full Sherman-Morrison ``P`` whose per-step gain
+    denominator pools every active direction's excitation into the
+    scalar ``sum_j p_j*phi_j^2`` (the diagonal-trace form of the full
+    head's ``phi^T P phi``); ``wout`` is unchanged in shape.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 
 
@@ -4990,6 +5011,43 @@ def _make_rls_head_learner(
             " per-block recursion at one block per coordinate already"
             " is the diagonal head"
         )
+    head_gdiag = hp.get("rls_head_gdiag", 0.0)
+    if head_gdiag not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_gdiag selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    gdiag_head = head_gdiag == 1.0
+    if gdiag_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_gdiag is pinned to rls_lambda 1.0: below 1 the"
+                " per-direction accumulator winds up unboundedly along"
+                " unexcited directions exactly like the full matrix, and"
+                " no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError(
+                "rls_head_gdiag is supported only for the residual body"
+            )
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_gdiag is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_gdiag is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_gdiag does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+    if (block_head or diag_head) and gdiag_head:
+        raise ValueError(
+            "rls_head_gdiag does not compose with rls_head_block or"
+            " rls_head_diag: each flag replaces the head recursion and"
+            " their pairwise compositions are unmeasured cells"
+        )
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5006,7 +5064,10 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState:
+    ) -> (
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+    ):
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
@@ -5056,6 +5117,21 @@ def _make_rls_head_learner(
 
         if diag_head:
             return RLSHeadDiagState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
+        if gdiag_head:
+            return RLSHeadGDiagState(  # type: ignore[call-arg]
                 utility={
                     name: jnp.zeros_like(value) for name, value in params.items()
                 },
@@ -5164,13 +5240,14 @@ def _make_rls_head_learner(
     def full_step(
         params: dict[str, Array],
         state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
-        | RLSHeadDiagState | RLSHeadBlockState,
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5373,6 +5450,39 @@ def _make_rls_head_learner(
                     jnp.full_like(new_p, 1.0 / ridge_init),
                     new_p,
                 )
+        elif gdiag_head:
+            # Globally-pooled-denominator diagonal head (the coupling cell
+            # negative results #27/#28 leave open): the diagonal head's
+            # per-direction numerator with the denominator replaced by the
+            # diagonal-trace form of the full head's global excitation
+            # phi^T P phi = sum_j p_j*phi_j^2, gain
+            # K_j = p_j*phi_j / (lambda + sum_k p_k*phi_k^2), accumulator
+            # p_j <- (p_j - K_j*phi_j*p_j)/lambda. The off-diagonal P
+            # entries never exist (the numerator coupling and the
+            # off-diagonal denominator terms are removed, O(m) state and
+            # work per step), but every active direction still pools its
+            # excitation into one shared denominator, so simultaneously
+            # active features again share estimation gain — the exact
+            # mechanism #27 hypothesized the diagonal head's deficit comes
+            # from losing. On a single-active-direction phi the pooled
+            # denominator reduces to p_j*phi_j^2 and the step is BITWISE
+            # the diagonal head's (and the full head's). No new
+            # hyperparameter: lambda, ridge, reset, gate, step, and the
+            # body's residual feedback are the incumbent's verbatim
+            # constants; the detector-driven reset keeps its parent
+            # meaning (restore per-direction gain, keep wout); the cap
+            # guard is rejected at build time.
+            pp = state.p * phi
+            gain = pp / (rls_lambda + jnp.sum(state.p * phi * phi))
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - gain * pp) / rls_lambda
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.full_like(new_p, 1.0 / ridge_init),
+                    new_p,
+                )
         elif block_head:
             # Block-factored head (negative result #27's named escape
             # class: coupling at sub-O(d^2) cost): the head coordinates
@@ -5481,6 +5591,16 @@ def _make_rls_head_learner(
                 p=new_p,
                 wout=new_wout,
             ), (accuracy, loss, plasticity)
+        if gdiag_head:
+            assert isinstance(state, RLSHeadGDiagState)
+            return new_params, RLSHeadGDiagState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
@@ -5507,7 +5627,10 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState | RLSHeadDiagState | RLSHeadBlockState
+    inner: (
+        RLSHeadState | RLSHeadSMState | RLSHeadL2InitState
+        | RLSHeadDiagState | RLSHeadBlockState | RLSHeadGDiagState
+    )
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -9023,6 +9146,62 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    # The globally-pooled-denominator diagonal head: the coupling cell the
+    # head ladder leaves open after #28 — global coupling structure at
+    # O(m) state, directly testing #27's stated hypothesis that the
+    # diagonal cell's deficit comes from losing the cross-direction
+    # excitation pooling.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_gdiag=1.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Globally-pooled-denominator diagonal head (the coupling"
+                " cell negative results #27/#28 leave open): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r"
+                " schedule 50/200/2000, utility gate kept, identifier"
+                " trigger 0.03, body step 0.0031640625, head ridge 0.03"
+                " — the gated chain's best measured screen, PR #3123)"
+                " with the head's Sherman-Morrison P replaced by a"
+                " diagonal per-direction gain accumulator whose per-step"
+                " gain denominator is the diagonal-trace form of the full"
+                " head's global excitation, K_j = p_j*phi_j / (lambda +"
+                " sum_k p_k*phi_k^2): the off-diagonal P entries never"
+                " exist (O(m) state and work per step), but every active"
+                " direction pools its excitation into one shared"
+                " denominator, so simultaneously active features again"
+                " share estimation gain — the exact mechanism #27"
+                " hypothesized the diagonal cell's deficit (-0.00096)"
+                " comes from losing, and the first global-coupling cell at"
+                " O(m) cost after #28 closed block-local retries. No new"
+                " tuned constant: lambda, ridge, reset, gate, step, and"
+                " the body's residual feedback are all the incumbent's"
+                " verbatim constants; on a single-active-direction phi the"
+                " pooled denominator reduces to p_j*phi_j^2 and the step"
+                " is bitwise the diagonal head's. If the pooled cell"
+                " recovers the full head's level, the head ladder's value"
+                " is scalar excitation pooling and an O(m) head is viable"
+                " (§6.6); if it stays at the diagonal cell, the residual"
+                " deficit is directional mixing and the ladder closes with"
+                " the O(m) endpoint measured."
+            ),
+        )
+    )
     specs.append(
         ScreeningSpec(
             name="norm_rmsprop_gate",
