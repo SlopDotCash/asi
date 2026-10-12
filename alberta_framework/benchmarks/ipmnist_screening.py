@@ -4698,6 +4698,62 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_identmap_l2init_hp() -> dict[str, float]:
+    """Frozen cell: the gated chain's r02 incumbent plus body L2-Init."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0,
+            rls_reset_frac=0.05,
+            head_resid=1.0,
+            ident_match_at=50.0,
+            ident_match2=200.0,
+            ident_match3=2000.0,
+            ident_reset_frac=0.03,
+            step_size=0.0031640625,
+            rls_ridge_init=0.03,
+        ),
+        "decay_to_init": 1.0,
+    }
+
+
+def _make_rls_head_identmap_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Build the gated chain's body-only L2-Init cell, failing closed on drift.
+
+    ``decay_to_init = 0.0`` delegates to the incumbent identmap factory so
+    the reduction to the r02 parent stays pinnable bit-for-bit; the
+    registered cell is the frozen ``1.0`` endpoint.
+    """
+    expected = _rls_head_identmap_l2init_hp()
+    if set(hp) != set(expected):
+        raise ValueError(
+            "frozen L2-Init configuration requires exactly the registered keys"
+        )
+    invalid = [
+        name
+        for name, expected_value in expected.items()
+        if name != "decay_to_init"
+        and (
+            type(hp[name]) is not float
+            or not math.isfinite(hp[name])
+            or hp[name].hex() != expected_value.hex()
+        )
+    ]
+    flag = hp["decay_to_init"]
+    if type(flag) is not float or flag not in (0.0, 1.0):
+        invalid.append("decay_to_init")
+    if invalid:
+        raise ValueError(
+            "frozen L2-Init configuration differs at: " + ", ".join(invalid)
+        )
+    base_hp = dict(hp)
+    del base_hp["decay_to_init"]
+    return _make_rls_head_identmap_learner(
+        base_hp, _decay_to_init=flag == 1.0
+    )
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -4727,6 +4783,10 @@ def _make_rls_head_learner(
     4. Sherman-Morrison RLS with forgetting ``rls_lambda`` (symmetrized P,
        the rff_rls equations), then the optional detector-driven P reset
        (``mean(shifted) >= rls_reset_frac`` => ``p = eye/ridge``, wout kept).
+       The opt-in ``rls_head_sgd = 1`` matched-gradient control replaces
+       exactly this head update with plain decayed SGD on the same one-hot
+       squared loss (``rls_head_sgd_step``, calibrated on a seed-0 3-task
+       bracket); P is then never touched and the reset/cap compile out.
 
     The harness RNG key is deliberately unused (sigma-0 family, closed-form
     head).
@@ -4789,6 +4849,28 @@ def _make_rls_head_learner(
             raise ValueError("body_sm_step must be positive and finite")
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
+
+    head_sgd = hp.get("rls_head_sgd", 0.0)
+    if head_sgd not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_sgd selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    sgd_head = head_sgd == 1.0
+    head_sgd_step = hp.get("rls_head_sgd_step", 0.01)
+    head_param_decay = 1.0 - head_sgd_step * weight_decay
+    if sgd_head:
+        if not math.isfinite(head_sgd_step) or head_sgd_step < 0.0:
+            raise ValueError("rls_head_sgd_step must be nonnegative and finite")
+        if not resid:
+            raise ValueError("rls_head_sgd is supported only for the residual body")
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_sgd is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init:
+            raise ValueError(
+                "rls_head_sgd is scoped to the plain gated residual body"
+            )
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5093,25 +5175,39 @@ def _make_rls_head_learner(
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
         err = y_onehot - logits
-        pp = state.p @ phi
-        gain = pp / (rls_lambda + phi @ pp)
-        new_wout = state.wout + jnp.outer(gain, err)
-        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
-        new_p = 0.5 * (new_p + new_p.T)
-        if reset_enabled:
-            m = new_p.shape[0]
-            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
-            new_p = jnp.where(
-                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+        if sgd_head:
+            # Matched-gradient control: the same pre-update one-hot residual
+            # drives a plain decayed-SGD head update; only the head's
+            # estimation rule changes. The residual err = y - logits enters
+            # with the same sign as the RLS gain update (+ outer(gain, err)),
+            # so both rules descend the same squared loss. P is never read or
+            # written, so the detector-driven reset and the trace cap have no
+            # effect and compile out of this graph.
+            new_wout = (
+                state.wout * head_param_decay
+                + head_sgd_step * jnp.outer(phi, err)
             )
-        if cap_enabled:
-            # Covariance wind-up guard: exponential forgetting grows P as
-            # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
-            # float32 overflow and prediction collapse (wave-1 measurement:
-            # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
-            # horizon).  Rescale P to the trace cap whenever it exceeds it;
-            # under the cap the step is bitwise untouched.
-            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+            new_p = state.p
+        else:
+            pp = state.p @ phi
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+            new_p = 0.5 * (new_p + new_p.T)
+            if reset_enabled:
+                m = new_p.shape[0]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+                )
+            if cap_enabled:
+                # Covariance wind-up guard: exponential forgetting grows P as
+                # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
+                # float32 overflow and prediction collapse (wave-1 measurement:
+                # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
+                # horizon).  Rescale P to the trace cap whenever it exceeds it;
+                # under the cap the step is bitwise untouched.
+                new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
         err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
@@ -5165,7 +5261,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -5216,6 +5312,8 @@ def _identmap_assignment(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5234,13 +5332,15 @@ def _make_rls_head_identmap_learner(
     """
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, _decay_to_init=_decay_to_init)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(
+        hp, _decay_to_init=_decay_to_init
+    )
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -8299,9 +8399,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
-    # 0.8997; a refining identifier rides the upper envelope.  The arms
-    # below are the two 200-task/20-seed CONFIRMED members of the family
-    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of
+    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
+    # the third is a registered 60-task screen of the gated chain's
+    # head-axis ridge cell (rls_ridge_init 0.1 -> 0.03 on the gated
+    # idet003_s0031640625_r01 best, wave_identmap50_r_idet003_s0031640625_
+    # r02/), and the fourth registers the gated chain's first reset-axis
+    # cell: the head P-reset detector threshold rls_reset_frac lowered
+    # 0.05 -> 0.03 on the r02 incumbent (wave ..._r02_preset003/) — an
+    # axis never swept on the identified chain, whose 0.05 default was
+    # calibrated on the pre-identmap champion's un-remapped inner stream;
+    # the screened
     # intermediates (identmap200 single-shot, identmap100_r) and the
     # round-2 rejections (identmap25_r, identmap50_fast — negative result
     # #22) are deregistered but retained in the ledger and pinned outputs.
@@ -8325,6 +8434,50 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r01 composition (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.1 — the gated"
+            " chain's best measured screen, PR #3122) with the RLS head's"
+            " initial and reset ridge lowered 0.1 -> 0.03, the smallest"
+            " cell of the new head axis: P0 becomes ~33*I, so earliest and"
+            " post-reset gains rise further and the head converges even"
+            " faster to each task's least-squares solution; the ridge-star"
+            " collapse (negative result #10) was measured at lambda 0.999"
+            " under forgetting wind-up, a mechanism absent at lambda 1.0"
+            " (P nonincreasing PSD), and the P-trace cap stays disabled as"
+            " in the parent",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.03, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r02 incumbent (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.03 — the gated"
+            " chain's best measured screen, PR #3123) with the head P-reset"
+            " detector threshold rls_reset_frac lowered 0.05 -> 0.03, the"
+            " first cell of the reset axis: the level-triggered reset holds"
+            " P at I/ridge through every above-threshold step, so the lower"
+            " threshold lengthens each hold around the initial shift and the"
+            " match-induced alignment changes of the 50/200/2000-sample remap"
+            " refinements and catches weaker disturbances; the 0.05 default"
+            " was calibrated at a 2.8x margin over the within-task detector"
+            " maximum of the PRE-identmap champion, whose inner detector"
+            " watched the un-remapped stream, so the axis is unmeasured on"
+            " the identified chain; 0.03 is the trigger-axis measured optimum"
+            " for this detector family on the raw stream (PRs #3115/#3116/"
+            " #3119), and lambda 1.0 keeps the head P nonincreasing outside"
+            " reset windows so no wind-up collapse (negative results #10/"
+            " #20) can recur",
+        ),
     ):
         specs.append(
             ScreeningSpec(
@@ -8341,6 +8494,35 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    # The gated chain's body-only L2-Init cell: the r02 incumbent verbatim
+    # plus the issue-#14 decay-to-initialization endpoint on the four
+    # residual body tensors.  The endpoint's own entry
+    # (rls_head_resid_l1_preset005_l2init) remains code-only; this is the
+    # first measured L2-Init composition in the rls_head family, screened
+    # on the chain incumbent because negative results #23/#24 both
+    # localize the chain's recent axis costs in the late-life tail.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_identmap_l2init_hp(),
+            factory=_make_rls_head_identmap_l2init_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "The gated idet003_s0031640625_r02 incumbent (identmap50_r"
+                " schedule 50/200/2000, utility gate kept, identifier"
+                " trigger 0.03, body step 0.0031640625, head ridge 0.03 —"
+                " the gated chain's best measured screen, PR #3123) with"
+                " decoupled L2-to-initialization on w1/b1/w2/b2 only (the"
+                " issue-#14 endpoint at its frozen decay_to_init=1.0);"
+                " w3/b3 and the RLS recursion are unchanged. L2-Init"
+                " combats late-life plasticity loss, the tail where the"
+                " chain's recent axis closures (#23 preconditioner, #24"
+                " reset) both measured their costs."
+            ),
+        )
+    )
     # The smprecond_r1 second-moment body-preconditioning arms
     # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
     # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the
@@ -8362,6 +8544,60 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "L2-to-initialization on w1/b1/w2/b2 only; w3/b3 and the "
                 "RLS recursion are unchanged. This registry entry has no "
                 "result artifact and does not authorize execution."
+            ),
+        )
+    )
+    # The matched-gradient head control: the r02 incumbent verbatim with the
+    # Sherman-Morrison head update replaced by plain decayed SGD on the same
+    # one-hot squared loss.  Theory §6.3 names exactly this control as the
+    # way to separate the residual's geometry from the stable head's rapid
+    # fit, and §6.6 asks whether the O(d^2) RLS head is removable.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_sgd=1.0,
+                rls_head_sgd_step=0.1,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Matched-gradient control (ipmnist-theory §6.3): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r schedule"
+                " 50/200/2000, utility gate kept, identifier trigger 0.03,"
+                " body step 0.0031640625, head ridge 0.03 — the gated"
+                " chain's best measured screen, PR #3123) with the"
+                " Sherman-Morrison head update replaced by plain decayed SGD"
+                " on the same one-hot squared loss. The head step is"
+                " calibrated, not ported: a seed-0 3-task bracket measured a"
+                " wide stable range (0.0001-0.4 all finite; accuracy rises"
+                " monotonically to a flat optimum at 0.05-0.1 and declines at"
+                " 0.2/0.4), and the registered endpoint takes the bracket's"
+                " best cell 0.1 with weight_decay 0.01 verbatim — the"
+                " parallel-head family's 0.01 constant is mis-scaled for the"
+                " body's hidden-feature head input and was not carried over."
+                " The body still trains on the head's own pre-update residual"
+                " gradient, so only the head's estimation rule changes; the"
+                " detector-driven P reset and trace cap compile out (P is"
+                " never touched), and rls_ridge_init stays 0.03 verbatim"
+                " though it no longer affects dynamics. If the body lift"
+                " survives, the residual's geometry — not the stable head's"
+                " rapid fit — carries it and the O(d^2) RLS head (§6.6) is"
+                " removable at no accuracy cost; if it collapses, the"
+                " convergence-shortfall account is confirmed on the identified"
+                " chain. Falsifiable prediction from CEILING_ANALYSIS: collapse"
+                " toward the pre-RLS champion plateau."
             ),
         )
     )
