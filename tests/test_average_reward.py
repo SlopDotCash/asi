@@ -1414,3 +1414,28 @@ class TestAverageRewardSequenceCeiling:
                 learner, state, observations, rewards, next_observations
             )
         assert seen == []
+
+
+@pytest.mark.parametrize("temperature,bias,expected", [
+    (1e-10, [1e30, 1e30], [0.5, 0.5]),
+    (1e-10, [1e30, -1e30], [1.0, 0.0]),
+    (4.0, [3e38, -3e38], [1.0, 0.0]),
+    (1e-20, [20.0, 20.0], [0.5, 0.5]),
+])
+def test_average_reward_actor_temperature_policy_is_finite(
+    temperature: float, bias: list[float], expected: list[float]
+) -> None:
+    agent = AverageRewardHordeActorCriticAgent(AverageRewardHordeActorCriticConfig(
+        n_actions=2, hidden_sizes=(), temperature=temperature, logit_clip=3e38, epsilon=0.2,
+    ))
+    state = agent.init(1, jr.key(0)).replace(actor_bias=jnp.asarray(bias, dtype=jnp.float32))
+    observation = jnp.ones(1, dtype=jnp.float32)
+    for disable_jit in (True, False):
+        with jax.disable_jit(disable_jit):
+            target = agent.policy(state, observation)
+            np.testing.assert_allclose(target, expected, rtol=1e-6, atol=1e-6)
+            behavior = agent.behavior_policy(state, observation)
+            np.testing.assert_allclose(behavior, 0.8 * np.asarray(expected) + 0.1, atol=1e-6)
+            sample, _ = agent.sample_policy(state, observation)
+            np.testing.assert_allclose(sample.target_policy, target, atol=1e-6)
+            np.testing.assert_allclose(sample.behavior_policy, behavior, atol=1e-6)
