@@ -7098,6 +7098,12 @@ class TestRLSHeadIdentMap:
                 "rls_reset_frac": 0.05, "rls_head_sgd": 1.0,
                 "rls_head_sgd_step": 0.1,
             },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_diag": 1.0,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7881,6 +7887,307 @@ class TestRLSHeadIdentMapIdet003S0031640625R02Sgdhead:
         x, y = small_data
         result = run_screening_config(
             x, y, screening_spec(self.SGDHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Diaghead:
+    """Per-direction adaptive head on the r02 incumbent.
+
+    Negative result #26 proved the stable head's rapid exact fit is
+    load-bearing and names the only justified further head-replacement
+    probe: a second-order or per-direction adaptive head. This arm keeps
+    the incumbent verbatim and replaces the full Sherman-Morrison P with
+    a diagonal per-direction gain accumulator — each coordinate runs its
+    own scalar RLS on the shared residual (gain
+    K_j = p_j*phi_j / (lambda + p_j*phi_j^2)); O(m) state instead of
+    O(m^2), no new hyperparameter, no calibration bracket. On a
+    single-active-direction phi the gain is bitwise the full head's, so
+    the only removed mechanism is the cross-direction denominator
+    coupling phi^T P phi.
+    """
+
+    DIAGHEAD = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Diaghead.DIAGHEAD
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.DIAGHEAD]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_diag"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_diag"] == 1.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_diag = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_diag=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_infinite_ridge_is_frozen_degenerate(self):
+        """``rls_ridge_init = inf`` starts the diagonal accumulator at
+        zero: every prediction is the constant argmax of the zero vector
+        (class 0) and the pre-update loss is 0.5 per step — the same
+        measurable degenerate the full-P head documents."""
+        hp = {
+            **self._spec().hyperparameters,
+            "rls_ridge_init": float("inf"),
+        }
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        xs, ys = TestRLSHead()._stream(n_steps=8, seed=11)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            assert not np.any(np.asarray(state.wout))
+            expected_acc = 1.0 if int(y) == 0 else 0.0
+            assert float(metrics[0]) == expected_acc
+            assert float(metrics[1]) == 0.5
+
+    def test_first_update_is_exact_per_direction_rls(self):
+        """With the body frozen (step_size=0) and the detector-driven reset
+        at its untriggerable sentinel
+        (``rls_reset_frac = 2.0``, the documented bitwise no-reset path —
+        the fresh-stream shift detector fires on step 0 at any finite
+        threshold), the first head step is exactly the documented
+        per-direction recursion:
+        K_j = p_j*phi_j / (1 + p_j*phi_j^2),
+        wout_1 = wout_0 + outer(K, y_onehot), p_1 = p_0 - K*(p_0*phi) —
+        each coordinate its own scalar RLS on the shared residual."""
+        import jax
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            EMANormState,
+            _make_rls_head_learner,
+            shift_adaptive_normalize,
+        )
+
+        hp = self._spec(step_size=0.0, rls_reset_frac=2.0).hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        x, y = next(iter(zip(*TestRLSHead()._stream(n_steps=1, seed=11))))
+        norm = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim, jnp.float32),
+            var=jnp.ones(SMALL.input_dim, jnp.float32),
+            count=jnp.zeros(SMALL.input_dim, jnp.float32),
+        )
+        x_norm, _, _, _ = shift_adaptive_normalize(
+            norm, jnp.zeros(SMALL.input_dim, jnp.float32), x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        m = SMALL.hidden2 + 1
+        phi = jnp.concatenate(
+            [a2 / jnp.sqrt(m), jnp.ones((1,))], axis=None
+        ).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(int(y), SMALL.n_classes, dtype=jnp.float32)
+        p0 = jnp.full((m,), 1.0 / hp["rls_ridge_init"], jnp.float32)
+        pp = p0 * phi
+        expected_gain = pp / (1.0 + p0 * phi * phi)
+        expected_wout = state.wout + jnp.outer(expected_gain, y_onehot)
+        expected_p = p0 - expected_gain * pp
+        _, state2, _ = step_fn(params, state, x, y, jr.key(0))
+        # The elementwise recursion enters XLA's fused multiply chains, so
+        # individual products can shift by 1-2 float32 ulp (and the
+        # reset-out compilation re-fuses the gain chain); the pin asserts
+        # the update identity well inside one ulp of the largest term.
+        np.testing.assert_allclose(
+            np.asarray(state2.wout), np.asarray(expected_wout),
+            rtol=0, atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(state2.p), np.asarray(expected_p),
+            rtol=0, atol=1e-6,
+        )
+
+    def test_single_direction_gain_is_bitwise_full_rls_gain(self):
+        """The documented reduction: with one active direction the
+        diagonal head's gain equals the full Sherman-Morrison gain exactly
+        (the removed coupling phi^T P phi exists only across simultaneous
+        directions)."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        np.testing.assert_array_equal(
+            np.asarray(gain_diag), np.asarray(gain_full)
+        )
+
+    def test_accumulator_nonincreasing_and_finite(self):
+        """At lambda 1 the per-direction accumulator is nonincreasing in
+        every excited-or-unexcited coordinate (no wind-up) and stays
+        finite across a boundary-heavy stream."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        xs, ys = TestRLSHead()._stream(n_steps=24, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= 0.0)
+            assert np.isfinite(float(metrics[1]))
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The diagonal head runs the whole harness finite, in range, and
+        off both the frozen-head degenerate and the incumbent's
+        trajectory. (The 3x30 toy config is too short for either head to
+        clear the chance floor reliably — the full-P incumbent itself
+        measures 0.10-0.27 here — so no above-chance claim is pinned.)
+        """
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        diag = run_screening_config(
+            x, y, screening_spec(self.DIAGHEAD), seed=7, config=SMALL,
+        )
+        acc = np.asarray(diag.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composes_under_identmap(self, small_data):
+        """The identmap factory delegates to the diag-enabled body learner:
+        ``ident_match_at = 0`` is bitwise the direct diag learner."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        spec = screening_spec(self.DIAGHEAD)
+        composed = replace(
+            spec,
+            name=spec.name + "_nomatch",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 0.0, "ident_match2": 0.0,
+                "ident_match3": 0.0,
+            },
+        )
+        assert spec.factory is _make_rls_head_identmap_learner
+        direct = run_screening_config(x, y, spec, seed=7, config=SMALL)
+        pinned = run_screening_config(x, y, composed, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(direct.per_task_accuracy),
+        )
+        init_fn, _ = _make_rls_head_learner(spec.hyperparameters)
+        params = init_mlp_params(jr.key(6), SMALL)
+        assert init_fn(params).p.ndim == 1
+
+    def test_composition_guards(self):
+        """The diagonal head is scoped to the plain gated residual body at
+        lambda 1: invalid endpoint values and untested compositions fail at
+        build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_diag": 0.5}, "must be 0.0 or 1.0"),
+            (
+                {"rls_head_diag": 1.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_diag": 1.0, "head_resid": 0.0}, "residual body"),
+            ({"rls_head_diag": 1.0, "gate_scale": 0.0}, "gated residual body"),
+            ({"rls_head_diag": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_diag": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_diag": 1.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_diag": 1.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            ({"rls_head_diag": 1.0, "rls_p_trace_cap": 100.0}, "trace cap"),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.DIAGHEAD), seed=7, config=SMALL,
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))

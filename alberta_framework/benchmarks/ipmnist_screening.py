@@ -4585,6 +4585,27 @@ class RLSHeadState:
     wout: Array
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadDiagState:
+    """Opt-in RLS carry with a diagonal per-direction gain accumulator.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  ``p`` is the (h2+1,) per-direction inverse self-energy
+    vector of the diagonal head (the diagonal restriction of the full
+    Sherman-Morrison ``P``); ``wout`` is unchanged in shape.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+
+_RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -4872,6 +4893,36 @@ def _make_rls_head_learner(
                 "rls_head_sgd is scoped to the plain gated residual body"
             )
 
+    head_diag = hp.get("rls_head_diag", 0.0)
+    if head_diag not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_diag selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    diag_head = head_diag == 1.0
+    if diag_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_diag is pinned to rls_lambda 1.0: below 1 the"
+                " per-direction accumulator winds up unboundedly along"
+                " unexcited directions exactly like the full matrix, and"
+                " no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError("rls_head_diag is supported only for the residual body")
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_diag is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_diag is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_diag does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -4887,7 +4938,7 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
@@ -4909,6 +4960,21 @@ def _make_rls_head_learner(
                     name: jnp.zeros_like(params[name])
                     for name in _RLS_HEAD_BODY
                 },
+            )
+        if diag_head:
+            return RLSHeadDiagState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
             )
         if _decay_to_init:
             return RLSHeadL2InitState(  # type: ignore[call-arg]
@@ -5004,13 +5070,13 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5188,6 +5254,31 @@ def _make_rls_head_learner(
                 + head_sgd_step * jnp.outer(phi, err)
             )
             new_p = state.p
+        elif diag_head:
+            # Per-direction adaptive head (negative result #26's named
+            # escape class): each coordinate runs its own scalar RLS on the
+            # shared pre-update one-hot residual, gain
+            # K_j = p_j*phi_j / (lambda + p_j*phi_j^2), accumulator
+            # p_j <- (p_j - K_j*phi_j*p_j)/lambda. This is the diagonal
+            # restriction of the Sherman-Morrison recursion: on a
+            # single-active-direction phi it is BITWISE the full head's gain,
+            # and with many simultaneous directions it drops exactly the
+            # cross-direction denominator coupling phi^T P phi that pairs
+            # active features use to share estimation gain. O(m) state and
+            # work per step instead of O(m^2). The detector-driven reset
+            # keeps its parent meaning (restore per-direction gain, keep
+            # wout); the cap guard is rejected at build time.
+            pp = state.p * phi
+            gain = pp / (rls_lambda + state.p * phi * phi)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - gain * pp) / rls_lambda
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.full_like(new_p, 1.0 / ridge_init),
+                    new_p,
+                )
         else:
             pp = state.p @ phi
             gain = pp / (rls_lambda + phi @ pp)
@@ -5235,6 +5326,16 @@ def _make_rls_head_learner(
                 wout=new_wout,
                 init_params=state.init_params,
             ), (accuracy, loss, plasticity)
+        if diag_head:
+            assert isinstance(state, RLSHeadDiagState)
+            return new_params, RLSHeadDiagState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
@@ -5261,7 +5362,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState | RLSHeadDiagState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -8598,6 +8699,57 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 " convergence-shortfall account is confirmed on the identified"
                 " chain. Falsifiable prediction from CEILING_ANALYSIS: collapse"
                 " toward the pre-RLS champion plateau."
+            ),
+        )
+    )
+    # The per-direction adaptive head (negative result #26's named escape
+    # class): the r02 incumbent verbatim with the head's full Sherman-
+    # Morrison P replaced by a diagonal per-direction gain accumulator —
+    # each coordinate runs its own scalar RLS on the shared residual.
+    # Theory §6.6 asks whether the O(d^2) head is removable; #26 removed
+    # the adaptive gain (plain SGD collapses) and this cell removes the
+    # off-diagonal coupling instead, the only remaining O(d) second-order
+    # head between the two.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_diag=1.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Per-direction adaptive head (negative result #26's named"
+                " escape class): the gated idet003_s0031640625_r02 incumbent"
+                " (identmap50_r schedule 50/200/2000, utility gate kept,"
+                " identifier trigger 0.03, body step 0.0031640625, head"
+                " ridge 0.03 — the gated chain's best measured screen, PR"
+                " #3123) with the head's full Sherman-Morrison P replaced by"
+                " a diagonal per-direction gain accumulator: each coordinate"
+                " runs its own scalar RLS on the shared one-hot squared-loss"
+                " residual, K_j = p_j*phi_j / (lambda + p_j*phi_j^2),"
+                " p_j nonincreasing at lambda 1 (no wind-up), O(m) state and"
+                " work per step instead of O(m^2). No new hyperparameter and"
+                " no calibration: lambda, ridge, reset, gate, step, and the"
+                " body's residual feedback are all the incumbent's verbatim"
+                " constants, and on a single-active-direction phi the gain is"
+                " bitwise the full head's — the only removed mechanism is the"
+                " cross-direction denominator coupling phi^T P phi. If the"
+                " body lift survives, the O(d^2) head (§6.6) is removable at"
+                " O(d) cost; if it collapses, the off-diagonal coupling is"
+                " load-bearing and the head-axis closure (negative results"
+                " #25/#26) extends to the whole second-order family."
             ),
         )
     )
