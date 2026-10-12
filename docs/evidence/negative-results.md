@@ -499,6 +499,54 @@ postmortem.
     shards bit-exact against the retained prior-wave prefixes,
     `summary.json`, `README.md`).
 
+29. **Restoring only the global scalar excitation pooling lands BELOW the
+    plain diagonal: the RLS head's coupling value is carried by directional
+    mixing, not by pooling.** Negative result #27's stated deficit
+    hypothesis ("the coupling pools excitation across simultaneously active
+    directions the way the ridge axis's saturation picture implies")
+    measured directly, one minimal cell further:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag` (local
+    registration commit `4d648e0b`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced the head's Sherman-Morrison `P` with a diagonal
+    per-direction accumulator whose gain denominator is the diagonal-trace
+    form of the full head's global excitation,
+    `K_j = p_j*phi_j / (lambda + sum_k p_k*phi_k^2)` — the off-diagonal `P`
+    entries never exist (O(m) state and work per step), but every active
+    direction pools its excitation into one shared denominator, the exact
+    mechanism #27 named and the first global-coupling cell at O(m) cost
+    after #28 closed block-local retries. No new hyperparameter; on a
+    single-active-direction `phi` the step is bitwise the diagonal head's
+    (pinned by test). The preregistered 60-task screen measured **-0.00115
+    (paired stderr 0.00004) with 3/3 seeds negative**: candidate
+    0.94777/0.94761/0.94695 vs the parent's 0.94896/0.94867/0.94814 — still
+    +0.16968 above the plain control, and **0.00019 below the plain
+    diagonal cell** (#27's 0.94763; paired candidate comparison 2/3 seeds
+    negative). The deficit is slightly larger early (tasks 0-29 vs 30-59:
+    -0.00126/-0.00112, -0.00140/-0.00073, -0.00151/-0.00087; task 0 measures
+    0.8310/0.8364/0.8392 vs the parent's 0.8444/0.8526/0.8526) — with many
+    simultaneously active hidden directions the shared denominator shrinks
+    every gain by the total activity, behaving like an input-dependent
+    ridge inflation largest exactly where the full head's coupling helps
+    most. Plasticity is unchanged (0.715/0.715/0.722 vs 0.700/0.691/0.701)
+    and wall-clock per shard drops (60.8-61.2 s vs 64.8-65.6 s, sequential).
+    Conclusions: the head ladder is measured at four cells and is not
+    monotone in coupling amount — full 0.94859 > block (G=4) 0.94827 >
+    diagonal 0.94763 > pooled-denominator diagonal 0.94744 — so #27's
+    scalar-pooling explanation of the diagonal's deficit is refuted:
+    restoring that pooling alone recovers none of the full head's margin
+    and is a small net cost on this feature geometry. The coupling's value
+    lives in the off-diagonal numerator/accumulator mixing that moves
+    cross-direction information through `P`. Any future sub-O(d^2) head
+    replacement must carry cross-feature directional structure (e.g. a
+    low-rank matrix factorization of `P`), not a scalar denominator
+    normalization; scalar-pooled and block-local retries are closed. Do not
+    re-probe scalar pooled denominators on this chain without a mechanism
+    that changes the numerator's cross-direction information flow. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_gdiag/`
+    (3 candidate shards binding commit `4d648e0b`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, `summary.json`,
+    `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
