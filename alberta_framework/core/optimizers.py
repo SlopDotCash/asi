@@ -16,7 +16,7 @@ References:
 import operator
 from abc import ABC, abstractmethod
 from math import prod
-from typing import Any, SupportsIndex, cast
+from typing import TYPE_CHECKING, Any, SupportsIndex, cast
 
 import chex
 import jax.numpy as jnp
@@ -46,6 +46,14 @@ from alberta_framework.core.update_safety import (
     select_transaction,
     zero_if_collapsed_infinity,
 )
+
+if TYPE_CHECKING:
+    from alberta_framework.core.baseline_optimizers import (
+        AdaGainState,
+        AdamState,
+        NadalineState,
+        RMSpropState,
+    )
 
 
 def _require_exact_str(name: object, value: object) -> str:
@@ -385,7 +393,8 @@ class OptimizerUpdate:
     weight_delta: Float[Array, " feature_dim"]
     bias_delta: Float[Array, ""]
     new_state: (
-        LMSState | IDBDState | AutostepState | AutostepGTDLambdaState | ObGDState | IDBDParamState
+        "LMSState | IDBDState | AutostepState | AutostepGTDLambdaState | ObGDState | IDBDParamState"
+        " | AdaGainState | AdamState | RMSpropState | NadalineState"
     )
     metrics: dict[str, Array]
     update_applied: Bool[Array, ""]
