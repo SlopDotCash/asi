@@ -1143,6 +1143,11 @@ class RecurrentLatentWorldModelEnsemble:
         variances = jnp.stack([item[3] for item in member_outputs], axis=0)
         epistemic = jnp.var(means, axis=0)
         mean_variance = jnp.mean(variances, axis=0)
+        mean_raw = jnp.mean(raw, axis=0)
+        # Recover finite member means when only their reduction overflows.
+        scaled_mean_raw = jnp.sum(raw / self._config.ensemble_size, axis=0)
+        recover_raw = jnp.all(jnp.isfinite(raw), axis=0) & ~jnp.isfinite(mean_raw)
+        mean_raw = jnp.where(recover_raw, scaled_mean_raw, mean_raw)
         warmup = state.event_count >= self._config.uncertainty_warmup_steps
         finite = (
             jnp.all(jnp.isfinite(next_hidden))
@@ -1160,7 +1165,7 @@ class RecurrentLatentWorldModelEnsemble:
         uncertainty_available = finite & warmup
         return RecurrentLatentWorldModelPrediction(
             member_raw_outputs=raw,
-            mean_raw_output=jnp.mean(raw, axis=0),
+            mean_raw_output=mean_raw,
             member_mean_predictions=means,
             mean_prediction=jnp.mean(means, axis=0),
             member_next_observations=means[:, : self._config.observation_dim],
