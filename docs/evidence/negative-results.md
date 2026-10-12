@@ -451,6 +451,54 @@ postmortem.
     shards bit-exact against the retained r02 prefixes, `summary.json`,
     `README.md`).
 
+28. **A block-factored head (coupling at sub-O(d^2) cost) loses a smaller
+    but still uniform margin on the identified gated chain: the RLS head's
+    cross-block coupling is load-bearing, and its value scales with the
+    coupled-pair fraction.** Negative result #27's named escape class
+    ("coupling at sub-O(d^2) cost, e.g. factored/low-rank curvature"), one
+    interior cell further:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead` (local
+    registration commit `5c96b398`) kept the r02 incumbent (PR #3123)
+    verbatim and restricted the head's full Sherman-Morrison `P` to `G = 4`
+    contiguous blocks of the `m = 151` head coordinates (38/38/38/37, tail
+    zero-padded inert): each block an exact Sherman-Morrison RLS on the
+    shared one-hot squared-loss residual with per-block denominators, the
+    parent's symmetrization, reset meaning, and every other constant — the
+    block count `G` being the measured axis itself (`G = 1` bitwise the
+    full head by a pinned test; `G = m` exactly the #27 diagonal).
+    Within-block cross-direction coupling is kept exactly; the removed
+    mechanism is solely the cross-block coupling (8,550 of 11,325
+    coordinate pairs, ~75.5%), at O(m^2/4) state and measurably lower
+    wall-clock. The preregistered 60-task screen measured **-0.00032
+    (paired stderr 0.00008) with 3/3 seeds negative**: candidate
+    0.94848/0.94840/0.94794 vs the parent's 0.94896/0.94867/0.94814 —
+    still +0.17051 above the plain control and one third of #27's diagonal
+    deficit. The profile differs from #27's: task blocks 1-10 are mixed
+    (+0.00078/+0.00022/-0.00000; task 0 bit-identical on seed 0) while
+    blocks 11-30 and 31-60 are negative on every seed, so within-block
+    coupling carries essentially all of the rapid within-task fit and the
+    cross-block coupling is worth a small uniform steady-state margin.
+    Plasticity is unchanged (0.706-0.712 vs 0.691-0.701), all losses are
+    finite, and wall-clock per shard drops (62.4-62.5 s vs 64.8-65.6 s,
+    sequential). Conclusions: the G ladder is now measured at both
+    endpoints and an interior cell — full 0.94859 (G = 1) > block 0.94827
+    (G = 4) > diagonal 0.94763 (G = m) — with the loss shrinking smoothly
+    as the coupled-pair fraction grows, so the cross-block coupling's
+    ~0.001 value is roughly proportional to the fraction of pairs it
+    couples. Negative #27's escape class is measured and rejected: a
+    block-local exact-RLS replacement does not retain the incumbent's
+    level. Any future sub-O(d^2) head replacement must pool excitation
+    globally (e.g. a low-rank/factored global curvature), not
+    block-locally; scalar-step (#26), diagonal (#27), and block-local
+    retries without global coupling structure are closed. Do not re-probe
+    this class on this chain without a mechanism that adds global coupling
+    structure at sub-O(d^2) cost, not a different block partition or
+    count. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_blockhead/`
+    (3 candidate shards binding commit `5c96b398`, control + 3 parent repro
+    shards bit-exact against the retained prior-wave prefixes,
+    `summary.json`, `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

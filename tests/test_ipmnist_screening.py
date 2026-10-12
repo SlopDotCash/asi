@@ -7104,6 +7104,12 @@ class TestRLSHeadIdentMap:
                 "step_size": 0.0031640625, "rls_ridge_init": 0.03,
                 "rls_reset_frac": 0.05, "rls_head_diag": 1.0,
             },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_block": 4.0,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
