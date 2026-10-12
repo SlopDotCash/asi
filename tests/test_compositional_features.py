@@ -1632,3 +1632,20 @@ def test_compositional_init_rejects_hostile_and_derived_parent_resources() -> No
     )
     with pytest.raises(ValueError, match="recursive parent construction byte count"):
         recursive_with_composition.init(30_000, jr.key(0))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("losses", [(1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 0.0)])
+def test_finite_candidate_selector_retains_finite_center(losses, compiled) -> None:
+    selector = FiniteCandidateSelector(n_candidates=4, learning_rate=2e38)
+    update = jax.jit(selector.update) if compiled else selector.update
+    result = update(selector.init(), jnp.asarray(losses, dtype=jnp.float32))
+    raw = -float(np.float32(2e38)) * np.asarray(losses, dtype=np.float64)
+    expected = raw - raw.mean()
+    assert int(result.state.step_count) == 1
+    np.testing.assert_allclose(result.state.log_weights, expected, rtol=1e-6, atol=0.0)
+    np.testing.assert_array_equal(result.state.cumulative_loss, losses)
+    np.testing.assert_array_equal(result.state.action_counts, np.ones(4, dtype=np.int32))
+    probabilities = selector.probabilities(result.state)
+    assert bool(jnp.all(jnp.isfinite(probabilities)))
+    np.testing.assert_allclose(float(probabilities.sum()), 1.0, rtol=1e-6)
