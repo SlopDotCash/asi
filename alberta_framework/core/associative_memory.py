@@ -539,8 +539,9 @@ def _masked_softmax(logits: Array, mask: Array) -> Array:
 def _cross_entropy_from_logits(logits: Array, label: Array) -> Array:
     safe_label = jnp.clip(label.astype(jnp.int32), 0, logits.shape[0] - 1)
     shifted = logits - jnp.max(logits)
-    log_z = jnp.log(jnp.sum(jnp.exp(shifted))) + jnp.max(logits)
-    return log_z - logits[safe_label]
+    # Keep the common offset cancelled before the final subtraction.
+    # Adding it back first can round away a nonzero log-partition.
+    return jnp.log(jnp.sum(jnp.exp(shifted))) - shifted[safe_label]
 
 
 class AssociativeMemoryLearner:
