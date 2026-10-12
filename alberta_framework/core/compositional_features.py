@@ -782,7 +782,12 @@ class FiniteCandidateSelector:
             update_finite = finite
 
         log_weights = state.log_weights - self._learning_rate * update_losses
-        log_weights = log_weights - jnp.mean(log_weights)
+        center = jnp.mean(log_weights)
+        # A finite mean can have an overflowing reduction sum.
+        center = jnp.where(
+            jnp.isfinite(center), center, jnp.sum(log_weights / self._n_candidates)
+        )
+        log_weights = log_weights - center
         cumulative_loss = state.cumulative_loss + jnp.where(
             update_finite,
             jnp.nan_to_num(bounded_losses, nan=0.0),
