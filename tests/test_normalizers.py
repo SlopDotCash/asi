@@ -921,3 +921,28 @@ class TestNormalizerStateNbytesFormulaValidation:
             normalizer_state_nbytes_formula(
                 "EMANormalizer", ClassSpoof()  # type: ignore[arg-type]
             )
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("momentum", [0.99, 0.9, 1.0])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_streaming_batch_finite_weighted_variance_before_square(compiled, momentum, sign):
+    import jax
+
+    normalizer = StreamingBatchNormalizer(momentum=momentum)
+    state = normalizer.update_only(normalizer.init(1), jnp.zeros(1, dtype=jnp.float32))
+    observation = jnp.asarray([sign * 2e19], dtype=jnp.float32)
+    update = normalizer.normalize_with_diagnostics
+    if compiled:
+        update = jax.jit(update)
+    result = update(state, observation)
+    stored_momentum = float(state.momentum)
+    expected_var = stored_momentum + (1.0 - stored_momentum) * float(observation[0]) ** 2
+    assert bool(result.update_applied)
+    assert int(result.state.sample_count) == 2
+    np.testing.assert_allclose(result.state.var, [expected_var], rtol=3e-6, atol=0)
+    np.testing.assert_allclose(
+        result.state.mean, (1.0 - stored_momentum) * np.asarray(observation), rtol=3e-6
+    )
+    assert bool(jnp.all(jnp.isfinite(result.normalized)))
+
