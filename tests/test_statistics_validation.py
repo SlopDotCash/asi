@@ -1381,3 +1381,22 @@ class TestProbabilityPrecision:
         assert from_double == from_builtin
         significant = from_double[0] if correction is bonferroni_correction else from_double
         assert list(significant) == [True, True, True]
+
+
+@pytest.mark.parametrize("statistic", ["mean", "median"])
+@pytest.mark.parametrize("value", [1.0e308, -1.0e308, 0.0])
+def test_bootstrap_large_constant_finite(statistic: str, value: float) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = bootstrap_ci([value, value], statistic=statistic, n_bootstrap=32)
+    assert result == (value, value, value)
+
+
+@pytest.mark.parametrize("statistic", ["mean", "median"])
+def test_bootstrap_opposite_extremes_finite(statistic: str) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        point, lower, upper = bootstrap_ci(
+            [-1.0e308, 1.0e308], statistic=statistic, n_bootstrap=100
+        )
+    assert (point, lower, upper) == (0.0, -1.0e308, 1.0e308)
