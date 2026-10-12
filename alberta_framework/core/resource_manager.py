@@ -488,7 +488,7 @@ class LearnedResourceManager:
     def init(self) -> LearnedResourceManagerState:
         """Create an initial uniform-allocation state."""
         shape = (self._n_contexts, self._n_actions)
-        return LearnedResourceManagerState(  # type: ignore[call-arg]
+        return LearnedResourceManagerState(
             log_weights=jnp.zeros(shape, dtype=jnp.float32),
             loss_ema=jnp.zeros(shape, dtype=jnp.float32),
             action_counts=jnp.zeros(shape, dtype=jnp.int32),
@@ -617,7 +617,14 @@ class LearnedResourceManager:
             _skip_zero_scale(self._discount, old_context_logits) + self._learning_rate * advantages
         )
         # Remove an arbitrary additive constant for numerical stability.
-        new_context_logits = new_context_logits - jnp.mean(new_context_logits)
+        center = jnp.mean(new_context_logits)
+        # A finite mean can overflow in the reduction before division.
+        center = jnp.where(
+            jnp.isfinite(center),
+            center,
+            jnp.sum(new_context_logits / self._n_actions),
+        )
+        new_context_logits = new_context_logits - center
         new_log_weights = state.log_weights.at[context].set(new_context_logits)
 
         old_ema = state.loss_ema[context]
@@ -631,7 +638,7 @@ class LearnedResourceManager:
         count_increments = valid_actions & (old_counts < _INT32_MAX)
         new_counts = state.action_counts.at[context].add(count_increments.astype(jnp.int32))
 
-        candidate_state = LearnedResourceManagerState(  # type: ignore[call-arg]
+        candidate_state = LearnedResourceManagerState(
             log_weights=new_log_weights,
             loss_ema=new_loss_ema,
             action_counts=new_counts,
@@ -647,7 +654,7 @@ class LearnedResourceManager:
             context,
             valid_actions & jnp.asarray(self._loss_decay == 0.0, dtype=jnp.bool_),
         )
-        previous_checked = LearnedResourceManagerState(  # type: ignore[call-arg]
+        previous_checked = LearnedResourceManagerState(
             log_weights=checked_log_weights,
             loss_ema=checked_loss_ema,
             action_counts=state.action_counts,
@@ -663,7 +670,7 @@ class LearnedResourceManager:
             & jnp.all(jnp.isfinite(adjusted))
             & jnp.all(jnp.isfinite(advantages))
         )
-        return LearnedResourceManagerUpdateResult(  # type: ignore[call-arg]
+        return LearnedResourceManagerUpdateResult(
             state=select_transaction(update_applied, candidate_state, state),
             weights=neutralize_array(update_applied, weights),
             adjusted_losses=neutralize_array(update_applied, adjusted),
@@ -1006,7 +1013,7 @@ class GeneratorMetaResourceManager:
         # overflowing reduction when every legal preference is near FLT_MAX.
         initial = initial - jnp.max(initial)
         log_weights = jnp.broadcast_to(initial, shape)
-        return GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
+        return GeneratorMetaResourceManagerState(
             log_weights=log_weights,
             reward_ema=jnp.zeros(shape, dtype=jnp.float32),
             action_counts=jnp.zeros(shape, dtype=jnp.int32),
@@ -1094,7 +1101,7 @@ class GeneratorMetaResourceManager:
             dtype=jnp.float32,
         )
         imprints = jnp.asarray(self._imprint_scales, dtype=jnp.float32)
-        return GeneratorMetaResourceDecision(  # type: ignore[call-arg]
+        return GeneratorMetaResourceDecision(
             action=jnp.where(selection_valid, action, -1),
             weights=jnp.where(
                 selection_valid,
@@ -1267,7 +1274,7 @@ class GeneratorMetaResourceManager:
         count_increments = finite & (old_counts < _INT32_MAX)
         new_counts = state.action_counts.at[context].add(count_increments.astype(jnp.int32))
 
-        candidate_state = GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
+        candidate_state = GeneratorMetaResourceManagerState(
             log_weights=new_log_weights,
             reward_ema=new_reward_ema,
             action_counts=new_counts,
@@ -1283,7 +1290,7 @@ class GeneratorMetaResourceManager:
             context,
             finite & jnp.asarray(self._reward_decay == 0.0, dtype=jnp.bool_),
         )
-        previous_checked = GeneratorMetaResourceManagerState(  # type: ignore[call-arg]
+        previous_checked = GeneratorMetaResourceManagerState(
             log_weights=checked_log_weights,
             reward_ema=checked_reward_ema,
             action_counts=state.action_counts,
@@ -1300,7 +1307,7 @@ class GeneratorMetaResourceManager:
             & jnp.all(jnp.isfinite(adjusted))
             & jnp.all(jnp.isfinite(advantages))
         )
-        return GeneratorMetaResourceUpdateResult(  # type: ignore[call-arg]
+        return GeneratorMetaResourceUpdateResult(
             state=select_transaction(update_applied, candidate_state, state),
             weights=neutralize_array(update_applied, weights),
             adjusted_rewards=neutralize_array(update_applied, adjusted),
