@@ -4585,6 +4585,28 @@ class RLSHeadState:
     wout: Array
 
 
+
+@chex.dataclass(frozen=True)
+class RLSHeadBlockState:
+    """Opt-in RLS carry with a block-factored gain accumulator.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  ``p`` is the (n_blocks, block, block) stack of per-block
+    inverse feature-correlation matrices of the block-diagonal head (the
+    block restriction of the full Sherman-Morrison ``P``); ``wout`` is
+    unchanged in shape.  Coordinates beyond ``m`` in the padded last
+    blocks stay at the initial ridge value and are inert (their ``phi``
+    entries are zero, so they never enter a gain or a denominator).
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+
 @chex.dataclass(frozen=True)
 class RLSHeadDiagState:
     """Opt-in RLS carry with a diagonal per-direction gain accumulator.
@@ -4893,6 +4915,46 @@ def _make_rls_head_learner(
                 "rls_head_sgd is scoped to the plain gated residual body"
             )
 
+    head_block = hp.get("rls_head_block", 0.0)
+    if head_block != 0.0 and (
+        not math.isfinite(head_block)
+        or head_block < 1.0
+        or head_block != int(head_block)
+    ):
+        raise ValueError(
+            "rls_head_block selects a block count and must be a positive"
+            " integer (0.0 selects the plain full-P path)"
+        )
+    # The plain full-P path (including the explicit 1.0 reduction cell) is
+    # untouched code: only block counts above one compile the block graph.
+    block_head = head_block > 1.0
+    n_blocks = int(head_block) if block_head else 0
+    if block_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_block is pinned to rls_lambda 1.0: below 1 the"
+                " per-block accumulators wind up unboundedly along"
+                " unexcited directions exactly like the full matrix, and"
+                " no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError(
+                "rls_head_block is supported only for the residual body"
+            )
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_block is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_block is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_block does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+
     head_diag = hp.get("rls_head_diag", 0.0)
     if head_diag not in (0.0, 1.0):
         raise ValueError(
@@ -4922,6 +4984,12 @@ def _make_rls_head_learner(
                 "rls_head_diag does not compose with the P trace cap: the"
                 " registered arm keeps the cap disabled as in the parent"
             )
+    if block_head and diag_head:
+        raise ValueError(
+            "rls_head_block does not compose with rls_head_diag: the"
+            " per-block recursion at one block per coordinate already"
+            " is the diagonal head"
+        )
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -4938,7 +5006,7 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
@@ -4961,6 +5029,31 @@ def _make_rls_head_learner(
                     for name in _RLS_HEAD_BODY
                 },
             )
+        if block_head:
+            if n_blocks > m:
+                raise ValueError(
+                    "rls_head_block exceeds the head width: block count"
+                    " must not exceed the number of head coordinates"
+                )
+            padded = n_blocks * -(-m // n_blocks)
+            return RLSHeadBlockState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.tile(
+                    jnp.eye(padded // n_blocks, dtype=jnp.float32) / ridge_init,
+                    (n_blocks, 1, 1),
+                ),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
+
         if diag_head:
             return RLSHeadDiagState(  # type: ignore[call-arg]
                 utility={
@@ -5070,13 +5163,14 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+        | RLSHeadDiagState | RLSHeadBlockState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5279,6 +5373,47 @@ def _make_rls_head_learner(
                     jnp.full_like(new_p, 1.0 / ridge_init),
                     new_p,
                 )
+        elif block_head:
+            # Block-factored head (negative result #27's named escape
+            # class: coupling at sub-O(d^2) cost): the head coordinates
+            # are partitioned into ``n_blocks`` contiguous groups and each
+            # group runs its own exact Sherman-Morrison RLS on the shared
+            # pre-update one-hot residual, gain
+            # K_b = P_b phi_b / (lambda + phi_b^T P_b phi_b), accumulator
+            # P_b <- (P_b - outer(K_b, P_b phi_b))/lambda with the parent's
+            # per-update symmetrization. This is the block-diagonal
+            # restriction of the recursion: within-block coupling is kept
+            # exactly, and the only removed mechanism is the cross-block
+            # coupling (off-block P entries never exist, and each block's
+            # denominator sees only its own slice). O(m^2/G) state and
+            # work per step; at one block per coordinate it is exactly the
+            # diagonal head, and the flag is rejected at build time
+            # alongside it. The tail is zero-padded to equal block sizes;
+            # padded coordinates carry zero phi entries, so they never
+            # enter a gain or a denominator and stay inert. The
+            # detector-driven reset keeps its parent meaning (restore every
+            # block's gain, keep wout); the cap guard is rejected at build
+            # time.
+            block = -(-phi.shape[0] // n_blocks)
+            pad = block * n_blocks - phi.shape[0]
+            phi_b = jnp.reshape(
+                jnp.concatenate([phi, jnp.zeros((pad,), jnp.float32)]),
+                (n_blocks, block),
+            )
+            pp = jnp.einsum("gij,gj->gi", state.p, phi_b)
+            gain = pp / (rls_lambda + jnp.sum(phi_b * pp, axis=1))[:, None]
+            new_wout = state.wout + jnp.outer(
+                jnp.reshape(gain, (block * n_blocks,))[: phi.shape[0]], err
+            )
+            new_p = (state.p - gain[:, :, None] * pp[:, None, :]) / rls_lambda
+            new_p = 0.5 * (new_p + jnp.transpose(new_p, (0, 2, 1)))
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.eye(block, dtype=jnp.float32)[None, :, :] / ridge_init,
+                    new_p,
+                )
         else:
             pp = state.p @ phi
             gain = pp / (rls_lambda + phi @ pp)
@@ -5326,6 +5461,16 @@ def _make_rls_head_learner(
                 wout=new_wout,
                 init_params=state.init_params,
             ), (accuracy, loss, plasticity)
+        if block_head:
+            assert isinstance(state, RLSHeadBlockState)
+            return new_params, RLSHeadBlockState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
         if diag_head:
             assert isinstance(state, RLSHeadDiagState)
             return new_params, RLSHeadDiagState(  # type: ignore[call-arg]
@@ -5362,7 +5507,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState | RLSHeadDiagState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState | RLSHeadDiagState | RLSHeadBlockState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -8750,6 +8895,65 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 " O(d) cost; if it collapses, the off-diagonal coupling is"
                 " load-bearing and the head-axis closure (negative results"
                 " #25/#26) extends to the whole second-order family."
+            ),
+        )
+    )
+    # The block-factored head (negative result #27's named escape class):
+    # the r02 incumbent verbatim with the head's full Sherman-Morrison P
+    # restricted to G contiguous blocks — each block runs its own exact
+    # Sherman-Morrison RLS on the shared residual, keeping within-block
+    # cross-direction coupling and dropping only the cross-block coupling,
+    # the named "coupling at sub-O(d^2) cost" mechanism between the full
+    # head and the measured diagonal cell.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_block=4.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Block-factored head (negative result #27's named escape"
+                " class: coupling at sub-O(d^2) cost): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r schedule"
+                " 50/200/2000, utility gate kept, identifier trigger 0.03,"
+                " body step 0.0031640625, head ridge 0.03 — the gated"
+                " chain's best measured screen, PR #3123) with the head's"
+                " full Sherman-Morrison P restricted to 4 contiguous blocks"
+                " of the m = h2+1 = 151 head coordinates (38/38/38/37, the"
+                " tail zero-padded to equal sizes): each block runs its own"
+                " exact Sherman-Morrison RLS on the shared one-hot"
+                " squared-loss residual, K_b = P_b phi_b / (lambda +"
+                " phi_b^T P_b phi_b), P_b <- (P_b - outer(K_b, P_b"
+                " phi_b))/lambda with the parent's per-update"
+                " symmetrization — within-block cross-direction coupling is"
+                " kept exactly and the only removed mechanism is the"
+                " cross-block coupling. O(m^2/G) = 5776 state entries (~25%"
+                " of the full head's 22801) and work per step. No new"
+                " tuned constant: lambda, ridge, reset, gate, step, and the"
+                " body's residual feedback are all the incumbent's verbatim"
+                " constants, and the block count G is the measured axis"
+                " itself (G = 1 is bitwise the full head, G = m is exactly"
+                " the diagonal cell). At one block per coordinate the"
+                " recursion is the diagonal head; the diag flag is rejected"
+                " at build time alongside it. If G = 4 retains the"
+                " incumbent's level, cross-direction coupling is needed only"
+                " locally and a sub-O(d^2) head is viable (§6.6); if it"
+                " loses toward the diagonal cell, coupling is global on this"
+                " feature geometry and the head ladder closes with a"
+                " measured interpolation point."
             ),
         )
     )
