@@ -104,12 +104,13 @@ def _preflight_history_resources(
         float32_scalars=feature_dim,
     )
     # Charge source/product/zero/carried/contribution/proposed/finite-mask/
-    # selected trace banks; raw/finite/zero/safe observation vectors; channel
+    # selected trace banks, plus the equality mask and fixed-point selection;
+    # raw/finite/zero/safe observation vectors; channel
     # indices and tracked observations; decay temporaries; the returned output;
     # and scalar predicates. Every logical element is charged at four bytes,
     # conservatively covering float32, int32, and boolean arrays.
     step_scalars = (
-        8 * trace_scalars
+        10 * trace_scalars
         + 4 * raw_dim
         + 2 * n_channels
         + 3 * n_decays
@@ -284,7 +285,7 @@ class HistoryFeatureExtractor:
         traces = jnp.zeros(
             (len(self._decay_rates), len(self._channels)), dtype=jnp.float32
         )
-        return HistoryFeatureState(traces=traces)  # type: ignore[call-arg]
+        return HistoryFeatureState(traces=traces)
 
     def _require_state_contract(self, state: HistoryFeatureState) -> None:
         if type(state) is not HistoryFeatureState:
@@ -349,6 +350,10 @@ class HistoryFeatureExtractor:
         # decay=0 times an inf stored trace is 0*inf = NaN. Skip that product.
         carried = jnp.where(decay == 0.0, jnp.zeros_like(state.traces), decay * state.traces)
         proposed_traces = carried + (1.0 - decay) * obs_tracked[None, :]
+        # Equal inputs are an EMA fixed point; intermediate products may flush to zero.
+        proposed_traces = jnp.where(
+            state.traces == obs_tracked[None, :], state.traces, proposed_traces
+        )
         traces_finite = jnp.all(jnp.isfinite(proposed_traces))
         new_traces = jnp.where(
             observation_valid & traces_finite, proposed_traces, state.traces
@@ -361,7 +366,7 @@ class HistoryFeatureExtractor:
         else:
             augmented = flat_traces
 
-        return augmented, HistoryFeatureState(traces=new_traces)  # type: ignore[call-arg]
+        return augmented, HistoryFeatureState(traces=new_traces)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to dict."""
