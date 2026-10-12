@@ -499,3 +499,18 @@ def test_phase_code_stays_exact_across_the_int32_lifetime(
     cycles = np.float64(step_count % f32_period) / f32_period
     expected = np.asarray([np.sin(2.0 * np.pi * cycles), np.cos(2.0 * np.pi * cycles)])
     np.testing.assert_allclose(features[1:], expected, rtol=0.0, atol=1e-4)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("value", [np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 2.0])
+def test_temporal_ema_preserves_equal_input_fixed_point(compiled, value):
+    """Equal normal inputs must not vanish when weighted terms are subnormal."""
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=1, ema_decay=0.5, periods=())
+    )
+    observation = jnp.full((1,), value, dtype=jnp.float32)
+    state = featurizer.init().replace(observation_ema=observation)
+    with jax.disable_jit(not compiled):
+        updated = featurizer.update(state, observation)
+    np.testing.assert_array_equal(np.asarray(updated.observation_ema), np.asarray(observation))
+    assert int(updated.step_count) == 1

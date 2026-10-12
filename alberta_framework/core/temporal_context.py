@@ -229,6 +229,7 @@ def _temporal_context_update_working_set_bytes(
         + 4 * input_dim
         + 4 * input_dim
         + 4 * input_dim
+        + 5 * input_dim  # Equal-input mask and fixed-point selection.
         + 8 * input_dim * int(include_delta)
         + 4 * phase_dim
         + 4 * product_dim
@@ -570,6 +571,8 @@ class TemporalContextFeaturizer:
             decay * state.observation_ema,
         )
         proposed_ema = decayed_ema + (1.0 - decay) * obs
+        # Equal inputs are an exact EMA fixed point, including tiny normals.
+        proposed_ema = jnp.where(state.observation_ema == obs, obs, proposed_ema)
         proposed = TemporalContextState(
             observation_ema=proposed_ema,
             step_count=jnp.minimum(
