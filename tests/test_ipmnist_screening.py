@@ -7059,9 +7059,10 @@ class TestRLSHeadIdentMap:
     def test_registry_arms(self):
         """The two 200-task-confirmed identifier arms, the gated
         idet003_s0031640625_r02 ridge screen, the gated r02_preset003
-        reset-axis screen, and the gated chain's body-only L2-Init cell
-        are registered; the screened intermediates and the round-2
-        rejections (negative result #22) are deregistered."""
+        reset-axis screen, the gated chain's matched-gradient head control,
+        and the gated chain's body-only L2-Init cell are registered; the
+        screened intermediates and the round-2 rejections (negative result
+        #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_l2init_learner,
@@ -7089,6 +7090,13 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.0031640625, "rls_ridge_init": 0.03,
                 "rls_reset_frac": 0.03,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_sgd": 1.0,
+                "rls_head_sgd_step": 0.1,
             },
         }
         registered = {
@@ -7692,6 +7700,192 @@ class TestPlasticityCounterSaturation:
         assert "state.silence2 + 1" not in text
         assert "state.age1 + 1" not in text
         assert "cbp.age1 + 1" not in text
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Sgdhead:
+    """Matched-gradient head control on the r02 incumbent.
+
+    Theory §6.3 (open hypotheses) asks whether the RLS-residual body lift
+    comes from the residual's geometry or from the stable head's rapid fit,
+    and §6.6 asks whether the O(d^2) RLS head is removable. This arm keeps
+    the incumbent verbatim and swaps only the head's estimation rule:
+    Sherman-Morrison -> plain decayed SGD on the same one-hot squared loss
+    (head step calibrated on a seed-0 3-task bracket: 0.0001-0.4 all
+    finite, flat optimum at 0.05-0.1, registered endpoint 0.1 with
+    weight_decay 0.01 verbatim). The body still trains on the head's own
+    pre-update residual gradient, so the error signal is matched exactly.
+    Pins: flag off is bitwise the incumbent path, the zero-step head is the
+    documented degenerate frozen head, the first update is exact decayed
+    SGD on the residual, and the composition guards reject untested
+    envelopes.
+    """
+
+    SGDHEAD = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead"
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(TestRLSHeadIdentMapIdet003S0031640625R02Sgdhead.SGDHEAD)
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.SGDHEAD]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_sgd",
+            "rls_head_sgd_step",
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_sgd"] == 1.0
+        assert spec.hyperparameters["rls_head_sgd_step"] == 0.1
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_sgd = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the control is a build-time branch, so the flag-off
+        compiled graph is the unchanged RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y,
+            self._spec(rls_head_sgd=0.0, rls_head_sgd_step=0.1),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_zero_step_head_is_frozen_degenerate(self):
+        """``rls_head_sgd_step = 0`` freezes the head at wout = 0: every
+        prediction is the constant argmax of the zero vector (class 0) and
+        the pre-update loss is 0.5 per step — the same measurable degenerate
+        the infinite-ridge pin uses for the RLS head."""
+        hp = self._spec(rls_head_sgd_step=0.0).hyperparameters
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        xs, ys = TestRLSHead()._stream(n_steps=8, seed=11)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            assert not np.any(np.asarray(state.wout))
+            expected_acc = 1.0 if int(y) == 0 else 0.0
+            assert float(metrics[0]) == expected_acc
+            assert float(metrics[1]) == 0.5
+
+    def test_first_update_is_exact_decayed_sgd_on_residual(self):
+        """With the body frozen (step_size=0) the head update is exactly
+        ``wout * (1 - step*weight_decay) + step * outer(onehot - logits,
+        phi)`` — descent on the same one-hot squared loss the RLS head
+        solves, with the residual entering in the RLS gain's sign."""
+        import jax
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            EMANormState,
+            _make_rls_head_learner,
+            shift_adaptive_normalize,
+        )
+
+        hp = self._spec(step_size=0.0).hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        x, y = next(iter(zip(*TestRLSHead()._stream(n_steps=1, seed=11))))
+        norm = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim, jnp.float32),
+            var=jnp.ones(SMALL.input_dim, jnp.float32),
+            count=jnp.zeros(SMALL.input_dim, jnp.float32),
+        )
+        x_norm, _, _, _ = shift_adaptive_normalize(
+            norm, jnp.zeros(SMALL.input_dim, jnp.float32), x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        m = SMALL.hidden2 + 1
+        phi = jnp.concatenate(
+            [a2 / jnp.sqrt(m), jnp.ones((1,))], axis=None
+        ).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(int(y), SMALL.n_classes, dtype=jnp.float32)
+        expected = (
+            state.wout * (1.0 - hp["rls_head_sgd_step"] * hp["weight_decay"])
+            + hp["rls_head_sgd_step"] * jnp.outer(phi, y_onehot)
+        )
+        _, state2, _ = step_fn(params, state, x, y, jr.key(0))
+        # The scalar head step enters XLA's fused multiply chain, so changing
+        # the registered constant can shift individual products by 1-2 ulp
+        # even though the formula is unchanged. The pin asserts the update
+        # identity at a 3-ulp tolerance; the flag-off and registry pins stay
+        # bitwise.
+        np.testing.assert_allclose(
+            np.asarray(state2.wout), np.asarray(expected), rtol=0, atol=3e-10
+        )
+        np.testing.assert_array_equal(
+            np.asarray(state2.p), np.asarray(state.p)
+        )
+
+    def test_composition_guards(self):
+        """The control is scoped to the plain gated residual body: invalid
+        endpoint values and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_sgd": 0.5}, "must be 0.0 or 1.0"),
+            ({"rls_head_sgd": 1.0, "head_resid": 0.0}, "residual body"),
+            ({"rls_head_sgd": 1.0, "gate_scale": 0.0}, "gated residual body"),
+            ({"rls_head_sgd": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_sgd": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_sgd": 1.0, "rls_head_sgd_step": -0.1},
+                "nonnegative and finite",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.SGDHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
 class TestRLSHeadSMPrecond:
     """Second-moment body preconditioning under the identmap frame
     (smprecond_r1 preregistration).

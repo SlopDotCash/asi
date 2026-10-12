@@ -4783,6 +4783,10 @@ def _make_rls_head_learner(
     4. Sherman-Morrison RLS with forgetting ``rls_lambda`` (symmetrized P,
        the rff_rls equations), then the optional detector-driven P reset
        (``mean(shifted) >= rls_reset_frac`` => ``p = eye/ridge``, wout kept).
+       The opt-in ``rls_head_sgd = 1`` matched-gradient control replaces
+       exactly this head update with plain decayed SGD on the same one-hot
+       squared loss (``rls_head_sgd_step``, calibrated on a seed-0 3-task
+       bracket); P is then never touched and the reset/cap compile out.
 
     The harness RNG key is deliberately unused (sigma-0 family, closed-form
     head).
@@ -4845,6 +4849,28 @@ def _make_rls_head_learner(
             raise ValueError("body_sm_step must be positive and finite")
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
+
+    head_sgd = hp.get("rls_head_sgd", 0.0)
+    if head_sgd not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_sgd selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    sgd_head = head_sgd == 1.0
+    head_sgd_step = hp.get("rls_head_sgd_step", 0.01)
+    head_param_decay = 1.0 - head_sgd_step * weight_decay
+    if sgd_head:
+        if not math.isfinite(head_sgd_step) or head_sgd_step < 0.0:
+            raise ValueError("rls_head_sgd_step must be nonnegative and finite")
+        if not resid:
+            raise ValueError("rls_head_sgd is supported only for the residual body")
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_sgd is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init:
+            raise ValueError(
+                "rls_head_sgd is scoped to the plain gated residual body"
+            )
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5149,25 +5175,39 @@ def _make_rls_head_learner(
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
         err = y_onehot - logits
-        pp = state.p @ phi
-        gain = pp / (rls_lambda + phi @ pp)
-        new_wout = state.wout + jnp.outer(gain, err)
-        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
-        new_p = 0.5 * (new_p + new_p.T)
-        if reset_enabled:
-            m = new_p.shape[0]
-            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
-            new_p = jnp.where(
-                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+        if sgd_head:
+            # Matched-gradient control: the same pre-update one-hot residual
+            # drives a plain decayed-SGD head update; only the head's
+            # estimation rule changes. The residual err = y - logits enters
+            # with the same sign as the RLS gain update (+ outer(gain, err)),
+            # so both rules descend the same squared loss. P is never read or
+            # written, so the detector-driven reset and the trace cap have no
+            # effect and compile out of this graph.
+            new_wout = (
+                state.wout * head_param_decay
+                + head_sgd_step * jnp.outer(phi, err)
             )
-        if cap_enabled:
-            # Covariance wind-up guard: exponential forgetting grows P as
-            # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
-            # float32 overflow and prediction collapse (wave-1 measurement:
-            # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
-            # horizon).  Rescale P to the trace cap whenever it exceeds it;
-            # under the cap the step is bitwise untouched.
-            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+            new_p = state.p
+        else:
+            pp = state.p @ phi
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+            new_p = 0.5 * (new_p + new_p.T)
+            if reset_enabled:
+                m = new_p.shape[0]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+                )
+            if cap_enabled:
+                # Covariance wind-up guard: exponential forgetting grows P as
+                # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
+                # float32 overflow and prediction collapse (wave-1 measurement:
+                # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
+                # horizon).  Rescale P to the trace cap whenever it exceeds it;
+                # under the cap the step is bitwise untouched.
+                new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
         err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
@@ -8504,6 +8544,60 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "L2-to-initialization on w1/b1/w2/b2 only; w3/b3 and the "
                 "RLS recursion are unchanged. This registry entry has no "
                 "result artifact and does not authorize execution."
+            ),
+        )
+    )
+    # The matched-gradient head control: the r02 incumbent verbatim with the
+    # Sherman-Morrison head update replaced by plain decayed SGD on the same
+    # one-hot squared loss.  Theory §6.3 names exactly this control as the
+    # way to separate the residual's geometry from the stable head's rapid
+    # fit, and §6.6 asks whether the O(d^2) RLS head is removable.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_sgd=1.0,
+                rls_head_sgd_step=0.1,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Matched-gradient control (ipmnist-theory §6.3): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r schedule"
+                " 50/200/2000, utility gate kept, identifier trigger 0.03,"
+                " body step 0.0031640625, head ridge 0.03 — the gated"
+                " chain's best measured screen, PR #3123) with the"
+                " Sherman-Morrison head update replaced by plain decayed SGD"
+                " on the same one-hot squared loss. The head step is"
+                " calibrated, not ported: a seed-0 3-task bracket measured a"
+                " wide stable range (0.0001-0.4 all finite; accuracy rises"
+                " monotonically to a flat optimum at 0.05-0.1 and declines at"
+                " 0.2/0.4), and the registered endpoint takes the bracket's"
+                " best cell 0.1 with weight_decay 0.01 verbatim — the"
+                " parallel-head family's 0.01 constant is mis-scaled for the"
+                " body's hidden-feature head input and was not carried over."
+                " The body still trains on the head's own pre-update residual"
+                " gradient, so only the head's estimation rule changes; the"
+                " detector-driven P reset and trace cap compile out (P is"
+                " never touched), and rls_ridge_init stays 0.03 verbatim"
+                " though it no longer affects dynamics. If the body lift"
+                " survives, the residual's geometry — not the stable head's"
+                " rapid fit — carries it and the O(d^2) RLS head (§6.6) is"
+                " removable at no accuracy cost; if it collapses, the"
+                " convergence-shortfall account is confirmed on the identified"
+                " chain. Falsifiable prediction from CEILING_ANALYSIS: collapse"
+                " toward the pre-RLS champion plateau."
             ),
         )
     )
