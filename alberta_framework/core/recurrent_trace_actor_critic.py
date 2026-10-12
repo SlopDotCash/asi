@@ -1374,6 +1374,14 @@ def obgd_update(
     denominator = jnp.maximum(1.0, bound_term)
     scale = jnp.reciprocal(denominator)
     step_size = alpha_array * scale
+    # The bound product can overflow even when its alpha-cancelled step fits.
+    # Keep the ordinary path unchanged; divide the remaining factors separately.
+    overflow_step = (
+        jnp.reciprocal(kappa_array) / jnp.maximum(jnp.abs(signal), 1.0) / z_sum
+    )
+    bound_overflow = jnp.isposinf(bound_term)
+    step_size = jnp.where(bound_overflow, overflow_step, step_size)
+    scale = jnp.where(bound_overflow, step_size / alpha_array, scale)
     proposed_updates = jax.tree_util.tree_map(
         lambda trace: step_size * signal * trace,
         traces,
