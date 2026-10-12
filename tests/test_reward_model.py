@@ -450,3 +450,24 @@ def test_rls_reward_model_covariance_symmetrization_avoids_finite_overflow() -> 
     cov_out = np.array(result.state.covariance)
     assert np.all(np.isfinite(cov_out))
     assert np.array_equal(cov_out, cov_out.T)
+
+
+
+@pytest.mark.parametrize("value", [np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 0.25])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rls_reward_model_preserves_equal_covariance_entries(
+    value: float, compiled: bool
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
+    covariance = jnp.array([[1.0, value], [value, 1.0]], dtype=jnp.float32)
+    state = RLSRewardModelState(
+        weights=jnp.zeros(2, dtype=jnp.float32),
+        covariance=covariance,
+        abs_error_ema=jnp.array(0.0, dtype=jnp.float32),
+        step_count=jnp.array(0, dtype=jnp.int32),
+    )
+    with jax.disable_jit(not compiled):
+        result = model.update(state, jnp.zeros(2, dtype=jnp.float32), jnp.float32(0.0))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_array_equal(result.state.covariance, covariance)

@@ -56,7 +56,7 @@ def _preflight_update_working_set(feature_dim: int) -> None:
     # Logical arrays, independently of backend donation/fusion: five covariance
     # banks (source, outer, unsymmetrized, symmetrized, selected), plus the
     # symmetrizer's two gathered values, two half-scaled values, and sum.
-    # Its i/j/min/max int32 index grids and diagonal boolean mask also count.
+    # Its i/j/min/max int32 index grids and equality boolean mask also count.
     # Seven float32 vectors and eight scalars retain the existing update terms.
     matrix_cells = feature_dim * feature_dim
     update_bytes = 4 * (10 * matrix_cells + 7 * feature_dim + 8)
@@ -98,7 +98,8 @@ def _symmetrize_matrix(matrix: Array) -> Array:
     j_max = jnp.maximum(i, j)
     val_a = matrix[i_min, j_max]
     val_b = matrix[j_max, i_min]
-    return jnp.where(i_min == j_max, val_a, half * val_a + half * val_b)
+    # Equal entries already are symmetric; halving tiny normal values can flush to zero.
+    return jnp.where(val_a == val_b, val_a, half * val_a + half * val_b)
 
 
 @dataclass(frozen=True)
