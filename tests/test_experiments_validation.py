@@ -1039,3 +1039,31 @@ def test_platform_longdouble_1e4000_emits_no_warnings() -> None:
         warnings.simplefilter("error")
         val = _platform_longdouble_1e4000()
         assert val is not None
+
+
+@pytest.mark.parametrize(
+    "values, expected_mean, expected_std",
+    [
+        ([1e308, 1e308], 1e308, 0.0),
+        ([-1e308, -1e308], -1e308, 0.0),
+        ([0.0, 2e200], 1e200, np.sqrt(2.0) * 1e200),
+        ([0.0, 2e-200], 1e-200, np.sqrt(2.0) * 1e-200),
+        ([0.0, 0.0], 0.0, 0.0),
+    ],
+)
+def test_finite_aggregate_reductions_preserve_scale(
+    values: list[float], expected_mean: float, expected_std: float
+) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = aggregate_metrics([_single_run(i, [value] * 3) for i, value in enumerate(values)])
+        summary = result.summary["squared_error"]
+        performance = get_final_performance({"candidate": result}, window=3)["candidate"]
+        mean, lower, upper = get_metric_timeseries(result)
+    np.testing.assert_allclose(summary.values, values, rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose([summary.mean, summary.std], [expected_mean, expected_std],
+                               rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(performance, [expected_mean, expected_std], rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(mean, expected_mean, rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(lower, expected_mean - expected_std, rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(upper, expected_mean + expected_std, rtol=1e-14, atol=0.0)
