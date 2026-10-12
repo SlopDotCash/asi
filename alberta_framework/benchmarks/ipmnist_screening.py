@@ -4585,6 +4585,49 @@ class RLSHeadState:
     wout: Array
 
 
+
+@chex.dataclass(frozen=True)
+class RLSHeadBlockState:
+    """Opt-in RLS carry with a block-factored gain accumulator.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  ``p`` is the (n_blocks, block, block) stack of per-block
+    inverse feature-correlation matrices of the block-diagonal head (the
+    block restriction of the full Sherman-Morrison ``P``); ``wout`` is
+    unchanged in shape.  Coordinates beyond ``m`` in the padded last
+    blocks stay at the initial ridge value and are inert (their ``phi``
+    entries are zero, so they never enter a gain or a denominator).
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadDiagState:
+    """Opt-in RLS carry with a diagonal per-direction gain accumulator.
+
+    This distinct state keeps the incumbent :class:`RLSHeadState` schema
+    unchanged.  ``p`` is the (h2+1,) per-direction inverse self-energy
+    vector of the diagonal head (the diagonal restriction of the full
+    Sherman-Morrison ``P``); ``wout`` is unchanged in shape.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+
+_RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
+
+
 _RLS_HEAD_BODY = ("w1", "b1", "w2", "b2")
 _WHITEN_NORM_FLOOR = 1e-12
 _NEWTON_RIDGE_REL = 1e-3
@@ -4698,6 +4741,62 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_identmap_l2init_hp() -> dict[str, float]:
+    """Frozen cell: the gated chain's r02 incumbent plus body L2-Init."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0,
+            rls_reset_frac=0.05,
+            head_resid=1.0,
+            ident_match_at=50.0,
+            ident_match2=200.0,
+            ident_match3=2000.0,
+            ident_reset_frac=0.03,
+            step_size=0.0031640625,
+            rls_ridge_init=0.03,
+        ),
+        "decay_to_init": 1.0,
+    }
+
+
+def _make_rls_head_identmap_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Build the gated chain's body-only L2-Init cell, failing closed on drift.
+
+    ``decay_to_init = 0.0`` delegates to the incumbent identmap factory so
+    the reduction to the r02 parent stays pinnable bit-for-bit; the
+    registered cell is the frozen ``1.0`` endpoint.
+    """
+    expected = _rls_head_identmap_l2init_hp()
+    if set(hp) != set(expected):
+        raise ValueError(
+            "frozen L2-Init configuration requires exactly the registered keys"
+        )
+    invalid = [
+        name
+        for name, expected_value in expected.items()
+        if name != "decay_to_init"
+        and (
+            type(hp[name]) is not float
+            or not math.isfinite(hp[name])
+            or hp[name].hex() != expected_value.hex()
+        )
+    ]
+    flag = hp["decay_to_init"]
+    if type(flag) is not float or flag not in (0.0, 1.0):
+        invalid.append("decay_to_init")
+    if invalid:
+        raise ValueError(
+            "frozen L2-Init configuration differs at: " + ", ".join(invalid)
+        )
+    base_hp = dict(hp)
+    del base_hp["decay_to_init"]
+    return _make_rls_head_identmap_learner(
+        base_hp, _decay_to_init=flag == 1.0
+    )
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -4727,6 +4826,10 @@ def _make_rls_head_learner(
     4. Sherman-Morrison RLS with forgetting ``rls_lambda`` (symmetrized P,
        the rff_rls equations), then the optional detector-driven P reset
        (``mean(shifted) >= rls_reset_frac`` => ``p = eye/ridge``, wout kept).
+       The opt-in ``rls_head_sgd = 1`` matched-gradient control replaces
+       exactly this head update with plain decayed SGD on the same one-hot
+       squared loss (``rls_head_sgd_step``, calibrated on a seed-0 3-task
+       bracket); P is then never touched and the reset/cap compile out.
 
     The harness RNG key is deliberately unused (sigma-0 family, closed-form
     head).
@@ -4790,6 +4893,104 @@ def _make_rls_head_learner(
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
 
+    head_sgd = hp.get("rls_head_sgd", 0.0)
+    if head_sgd not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_sgd selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    sgd_head = head_sgd == 1.0
+    head_sgd_step = hp.get("rls_head_sgd_step", 0.01)
+    head_param_decay = 1.0 - head_sgd_step * weight_decay
+    if sgd_head:
+        if not math.isfinite(head_sgd_step) or head_sgd_step < 0.0:
+            raise ValueError("rls_head_sgd_step must be nonnegative and finite")
+        if not resid:
+            raise ValueError("rls_head_sgd is supported only for the residual body")
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_sgd is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init:
+            raise ValueError(
+                "rls_head_sgd is scoped to the plain gated residual body"
+            )
+
+    head_block = hp.get("rls_head_block", 0.0)
+    if head_block != 0.0 and (
+        not math.isfinite(head_block)
+        or head_block < 1.0
+        or head_block != int(head_block)
+    ):
+        raise ValueError(
+            "rls_head_block selects a block count and must be a positive"
+            " integer (0.0 selects the plain full-P path)"
+        )
+    # The plain full-P path (including the explicit 1.0 reduction cell) is
+    # untouched code: only block counts above one compile the block graph.
+    block_head = head_block > 1.0
+    n_blocks = int(head_block) if block_head else 0
+    if block_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_block is pinned to rls_lambda 1.0: below 1 the"
+                " per-block accumulators wind up unboundedly along"
+                " unexcited directions exactly like the full matrix, and"
+                " no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError(
+                "rls_head_block is supported only for the residual body"
+            )
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_block is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_block is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_block does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+
+    head_diag = hp.get("rls_head_diag", 0.0)
+    if head_diag not in (0.0, 1.0):
+        raise ValueError(
+            "rls_head_diag selects a frozen endpoint and must be 0.0 or 1.0"
+        )
+    diag_head = head_diag == 1.0
+    if diag_head:
+        if rls_lambda != 1.0:
+            raise ValueError(
+                "rls_head_diag is pinned to rls_lambda 1.0: below 1 the"
+                " per-direction accumulator winds up unboundedly along"
+                " unexcited directions exactly like the full matrix, and"
+                " no lambda<1 cell is measured"
+            )
+        if not resid:
+            raise ValueError("rls_head_diag is supported only for the residual body")
+        if not gate_enabled:
+            raise ValueError(
+                "rls_head_diag is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or sm_enabled or _decay_to_init or sgd_head:
+            raise ValueError(
+                "rls_head_diag is scoped to the plain gated residual body"
+            )
+        if cap_enabled:
+            raise ValueError(
+                "rls_head_diag does not compose with the P trace cap: the"
+                " registered arm keeps the cap disabled as in the parent"
+            )
+    if block_head and diag_head:
+        raise ValueError(
+            "rls_head_block does not compose with rls_head_diag: the"
+            " per-block recursion at one block per coordinate already"
+            " is the diagonal head"
+        )
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -4805,7 +5006,7 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
@@ -4827,6 +5028,46 @@ def _make_rls_head_learner(
                     name: jnp.zeros_like(params[name])
                     for name in _RLS_HEAD_BODY
                 },
+            )
+        if block_head:
+            if n_blocks > m:
+                raise ValueError(
+                    "rls_head_block exceeds the head width: block count"
+                    " must not exceed the number of head coordinates"
+                )
+            padded = n_blocks * -(-m // n_blocks)
+            return RLSHeadBlockState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.tile(
+                    jnp.eye(padded // n_blocks, dtype=jnp.float32) / ridge_init,
+                    (n_blocks, 1, 1),
+                ),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
+
+        if diag_head:
+            return RLSHeadDiagState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.full((m,), 1.0 / ridge_init, dtype=jnp.float32),
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
             )
         if _decay_to_init:
             return RLSHeadL2InitState(  # type: ignore[call-arg]
@@ -4922,13 +5163,14 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+        | RLSHeadDiagState | RLSHeadBlockState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadDiagState | RLSHeadBlockState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5093,25 +5335,105 @@ def _make_rls_head_learner(
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
         err = y_onehot - logits
-        pp = state.p @ phi
-        gain = pp / (rls_lambda + phi @ pp)
-        new_wout = state.wout + jnp.outer(gain, err)
-        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
-        new_p = 0.5 * (new_p + new_p.T)
-        if reset_enabled:
-            m = new_p.shape[0]
-            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
-            new_p = jnp.where(
-                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+        if sgd_head:
+            # Matched-gradient control: the same pre-update one-hot residual
+            # drives a plain decayed-SGD head update; only the head's
+            # estimation rule changes. The residual err = y - logits enters
+            # with the same sign as the RLS gain update (+ outer(gain, err)),
+            # so both rules descend the same squared loss. P is never read or
+            # written, so the detector-driven reset and the trace cap have no
+            # effect and compile out of this graph.
+            new_wout = (
+                state.wout * head_param_decay
+                + head_sgd_step * jnp.outer(phi, err)
             )
-        if cap_enabled:
-            # Covariance wind-up guard: exponential forgetting grows P as
-            # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
-            # float32 overflow and prediction collapse (wave-1 measurement:
-            # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
-            # horizon).  Rescale P to the trace cap whenever it exceeds it;
-            # under the cap the step is bitwise untouched.
-            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+            new_p = state.p
+        elif diag_head:
+            # Per-direction adaptive head (negative result #26's named
+            # escape class): each coordinate runs its own scalar RLS on the
+            # shared pre-update one-hot residual, gain
+            # K_j = p_j*phi_j / (lambda + p_j*phi_j^2), accumulator
+            # p_j <- (p_j - K_j*phi_j*p_j)/lambda. This is the diagonal
+            # restriction of the Sherman-Morrison recursion: on a
+            # single-active-direction phi it is BITWISE the full head's gain,
+            # and with many simultaneous directions it drops exactly the
+            # cross-direction denominator coupling phi^T P phi that pairs
+            # active features use to share estimation gain. O(m) state and
+            # work per step instead of O(m^2). The detector-driven reset
+            # keeps its parent meaning (restore per-direction gain, keep
+            # wout); the cap guard is rejected at build time.
+            pp = state.p * phi
+            gain = pp / (rls_lambda + state.p * phi * phi)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - gain * pp) / rls_lambda
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.full_like(new_p, 1.0 / ridge_init),
+                    new_p,
+                )
+        elif block_head:
+            # Block-factored head (negative result #27's named escape
+            # class: coupling at sub-O(d^2) cost): the head coordinates
+            # are partitioned into ``n_blocks`` contiguous groups and each
+            # group runs its own exact Sherman-Morrison RLS on the shared
+            # pre-update one-hot residual, gain
+            # K_b = P_b phi_b / (lambda + phi_b^T P_b phi_b), accumulator
+            # P_b <- (P_b - outer(K_b, P_b phi_b))/lambda with the parent's
+            # per-update symmetrization. This is the block-diagonal
+            # restriction of the recursion: within-block coupling is kept
+            # exactly, and the only removed mechanism is the cross-block
+            # coupling (off-block P entries never exist, and each block's
+            # denominator sees only its own slice). O(m^2/G) state and
+            # work per step; at one block per coordinate it is exactly the
+            # diagonal head, and the flag is rejected at build time
+            # alongside it. The tail is zero-padded to equal block sizes;
+            # padded coordinates carry zero phi entries, so they never
+            # enter a gain or a denominator and stay inert. The
+            # detector-driven reset keeps its parent meaning (restore every
+            # block's gain, keep wout); the cap guard is rejected at build
+            # time.
+            block = -(-phi.shape[0] // n_blocks)
+            pad = block * n_blocks - phi.shape[0]
+            phi_b = jnp.reshape(
+                jnp.concatenate([phi, jnp.zeros((pad,), jnp.float32)]),
+                (n_blocks, block),
+            )
+            pp = jnp.einsum("gij,gj->gi", state.p, phi_b)
+            gain = pp / (rls_lambda + jnp.sum(phi_b * pp, axis=1))[:, None]
+            new_wout = state.wout + jnp.outer(
+                jnp.reshape(gain, (block * n_blocks,))[: phi.shape[0]], err
+            )
+            new_p = (state.p - gain[:, :, None] * pp[:, None, :]) / rls_lambda
+            new_p = 0.5 * (new_p + jnp.transpose(new_p, (0, 2, 1)))
+            if reset_enabled:
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger,
+                    jnp.eye(block, dtype=jnp.float32)[None, :, :] / ridge_init,
+                    new_p,
+                )
+        else:
+            pp = state.p @ phi
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+            new_p = 0.5 * (new_p + new_p.T)
+            if reset_enabled:
+                m = new_p.shape[0]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+                )
+            if cap_enabled:
+                # Covariance wind-up guard: exponential forgetting grows P as
+                # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
+                # float32 overflow and prediction collapse (wave-1 measurement:
+                # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
+                # horizon).  Rescale P to the trace cap whenever it exceeds it;
+                # under the cap the step is bitwise untouched.
+                new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
         err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
@@ -5139,6 +5461,26 @@ def _make_rls_head_learner(
                 wout=new_wout,
                 init_params=state.init_params,
             ), (accuracy, loss, plasticity)
+        if block_head:
+            assert isinstance(state, RLSHeadBlockState)
+            return new_params, RLSHeadBlockState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
+        if diag_head:
+            assert isinstance(state, RLSHeadDiagState)
+            return new_params, RLSHeadDiagState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+            ), (accuracy, loss, plasticity)
         return new_params, RLSHeadState(  # type: ignore[call-arg]
             utility=new_utility,
             step=count,
@@ -5165,7 +5507,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadL2InitState | RLSHeadDiagState | RLSHeadBlockState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -5216,6 +5558,8 @@ def _identmap_assignment(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _decay_to_init: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5234,13 +5578,15 @@ def _make_rls_head_identmap_learner(
     """
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, _decay_to_init=_decay_to_init)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(
+        hp, _decay_to_init=_decay_to_init
+    )
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -8299,9 +8645,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
-    # 0.8997; a refining identifier rides the upper envelope.  The arms
-    # below are the two 200-task/20-seed CONFIRMED members of the family
-    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
+    # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of
+    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
+    # the third is a registered 60-task screen of the gated chain's
+    # head-axis ridge cell (rls_ridge_init 0.1 -> 0.03 on the gated
+    # idet003_s0031640625_r01 best, wave_identmap50_r_idet003_s0031640625_
+    # r02/), and the fourth registers the gated chain's first reset-axis
+    # cell: the head P-reset detector threshold rls_reset_frac lowered
+    # 0.05 -> 0.03 on the r02 incumbent (wave ..._r02_preset003/) — an
+    # axis never swept on the identified chain, whose 0.05 default was
+    # calibrated on the pre-identmap champion's un-remapped inner stream;
+    # the screened
     # intermediates (identmap200 single-shot, identmap100_r) and the
     # round-2 rejections (identmap25_r, identmap50_fast — negative result
     # #22) are deregistered but retained in the ledger and pinned outputs.
@@ -8325,6 +8680,50 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r01 composition (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.1 — the gated"
+            " chain's best measured screen, PR #3122) with the RLS head's"
+            " initial and reset ridge lowered 0.1 -> 0.03, the smallest"
+            " cell of the new head axis: P0 becomes ~33*I, so earliest and"
+            " post-reset gains rise further and the head converges even"
+            " faster to each task's least-squares solution; the ridge-star"
+            " collapse (negative result #10) was measured at lambda 0.999"
+            " under forgetting wind-up, a mechanism absent at lambda 1.0"
+            " (P nonincreasing PSD), and the P-trace cap stays disabled as"
+            " in the parent",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.03, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r02 incumbent (identmap50_r"
+            " schedule 50/200/2000, utility gate kept, identifier trigger"
+            " 0.03, body step 0.0031640625, head ridge 0.03 — the gated"
+            " chain's best measured screen, PR #3123) with the head P-reset"
+            " detector threshold rls_reset_frac lowered 0.05 -> 0.03, the"
+            " first cell of the reset axis: the level-triggered reset holds"
+            " P at I/ridge through every above-threshold step, so the lower"
+            " threshold lengthens each hold around the initial shift and the"
+            " match-induced alignment changes of the 50/200/2000-sample remap"
+            " refinements and catches weaker disturbances; the 0.05 default"
+            " was calibrated at a 2.8x margin over the within-task detector"
+            " maximum of the PRE-identmap champion, whose inner detector"
+            " watched the un-remapped stream, so the axis is unmeasured on"
+            " the identified chain; 0.03 is the trigger-axis measured optimum"
+            " for this detector family on the raw stream (PRs #3115/#3116/"
+            " #3119), and lambda 1.0 keeps the head P nonincreasing outside"
+            " reset windows so no wind-up collapse (negative results #10/"
+            " #20) can recur",
+        ),
     ):
         specs.append(
             ScreeningSpec(
@@ -8341,6 +8740,35 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    # The gated chain's body-only L2-Init cell: the r02 incumbent verbatim
+    # plus the issue-#14 decay-to-initialization endpoint on the four
+    # residual body tensors.  The endpoint's own entry
+    # (rls_head_resid_l1_preset005_l2init) remains code-only; this is the
+    # first measured L2-Init composition in the rls_head family, screened
+    # on the chain incumbent because negative results #23/#24 both
+    # localize the chain's recent axis costs in the late-life tail.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_identmap_l2init_hp(),
+            factory=_make_rls_head_identmap_l2init_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "The gated idet003_s0031640625_r02 incumbent (identmap50_r"
+                " schedule 50/200/2000, utility gate kept, identifier"
+                " trigger 0.03, body step 0.0031640625, head ridge 0.03 —"
+                " the gated chain's best measured screen, PR #3123) with"
+                " decoupled L2-to-initialization on w1/b1/w2/b2 only (the"
+                " issue-#14 endpoint at its frozen decay_to_init=1.0);"
+                " w3/b3 and the RLS recursion are unchanged. L2-Init"
+                " combats late-life plasticity loss, the tail where the"
+                " chain's recent axis closures (#23 preconditioner, #24"
+                " reset) both measured their costs."
+            ),
+        )
+    )
     # The smprecond_r1 second-moment body-preconditioning arms
     # (rls_head_resid_sm{3e4,1e3}_i50r) failed their preregistered outcome
     # — sm1e3 lost the 60t screen on all seeds and sm3e4 failed the
@@ -8362,6 +8790,170 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "L2-to-initialization on w1/b1/w2/b2 only; w3/b3 and the "
                 "RLS recursion are unchanged. This registry entry has no "
                 "result artifact and does not authorize execution."
+            ),
+        )
+    )
+    # The matched-gradient head control: the r02 incumbent verbatim with the
+    # Sherman-Morrison head update replaced by plain decayed SGD on the same
+    # one-hot squared loss.  Theory §6.3 names exactly this control as the
+    # way to separate the residual's geometry from the stable head's rapid
+    # fit, and §6.6 asks whether the O(d^2) RLS head is removable.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_sgd=1.0,
+                rls_head_sgd_step=0.1,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Matched-gradient control (ipmnist-theory §6.3): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r schedule"
+                " 50/200/2000, utility gate kept, identifier trigger 0.03,"
+                " body step 0.0031640625, head ridge 0.03 — the gated"
+                " chain's best measured screen, PR #3123) with the"
+                " Sherman-Morrison head update replaced by plain decayed SGD"
+                " on the same one-hot squared loss. The head step is"
+                " calibrated, not ported: a seed-0 3-task bracket measured a"
+                " wide stable range (0.0001-0.4 all finite; accuracy rises"
+                " monotonically to a flat optimum at 0.05-0.1 and declines at"
+                " 0.2/0.4), and the registered endpoint takes the bracket's"
+                " best cell 0.1 with weight_decay 0.01 verbatim — the"
+                " parallel-head family's 0.01 constant is mis-scaled for the"
+                " body's hidden-feature head input and was not carried over."
+                " The body still trains on the head's own pre-update residual"
+                " gradient, so only the head's estimation rule changes; the"
+                " detector-driven P reset and trace cap compile out (P is"
+                " never touched), and rls_ridge_init stays 0.03 verbatim"
+                " though it no longer affects dynamics. If the body lift"
+                " survives, the residual's geometry — not the stable head's"
+                " rapid fit — carries it and the O(d^2) RLS head (§6.6) is"
+                " removable at no accuracy cost; if it collapses, the"
+                " convergence-shortfall account is confirmed on the identified"
+                " chain. Falsifiable prediction from CEILING_ANALYSIS: collapse"
+                " toward the pre-RLS champion plateau."
+            ),
+        )
+    )
+    # The per-direction adaptive head (negative result #26's named escape
+    # class): the r02 incumbent verbatim with the head's full Sherman-
+    # Morrison P replaced by a diagonal per-direction gain accumulator —
+    # each coordinate runs its own scalar RLS on the shared residual.
+    # Theory §6.6 asks whether the O(d^2) head is removable; #26 removed
+    # the adaptive gain (plain SGD collapses) and this cell removes the
+    # off-diagonal coupling instead, the only remaining O(d) second-order
+    # head between the two.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_diag=1.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Per-direction adaptive head (negative result #26's named"
+                " escape class): the gated idet003_s0031640625_r02 incumbent"
+                " (identmap50_r schedule 50/200/2000, utility gate kept,"
+                " identifier trigger 0.03, body step 0.0031640625, head"
+                " ridge 0.03 — the gated chain's best measured screen, PR"
+                " #3123) with the head's full Sherman-Morrison P replaced by"
+                " a diagonal per-direction gain accumulator: each coordinate"
+                " runs its own scalar RLS on the shared one-hot squared-loss"
+                " residual, K_j = p_j*phi_j / (lambda + p_j*phi_j^2),"
+                " p_j nonincreasing at lambda 1 (no wind-up), O(m) state and"
+                " work per step instead of O(m^2). No new hyperparameter and"
+                " no calibration: lambda, ridge, reset, gate, step, and the"
+                " body's residual feedback are all the incumbent's verbatim"
+                " constants, and on a single-active-direction phi the gain is"
+                " bitwise the full head's — the only removed mechanism is the"
+                " cross-direction denominator coupling phi^T P phi. If the"
+                " body lift survives, the O(d^2) head (§6.6) is removable at"
+                " O(d) cost; if it collapses, the off-diagonal coupling is"
+                " load-bearing and the head-axis closure (negative results"
+                " #25/#26) extends to the whole second-order family."
+            ),
+        )
+    )
+    # The block-factored head (negative result #27's named escape class):
+    # the r02 incumbent verbatim with the head's full Sherman-Morrison P
+    # restricted to G contiguous blocks — each block runs its own exact
+    # Sherman-Morrison RLS on the shared residual, keeping within-block
+    # cross-direction coupling and dropping only the cross-block coupling,
+    # the named "coupling at sub-O(d^2) cost" mechanism between the full
+    # head and the measured diagonal cell.
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_hp(
+                rls_lambda=1.0,
+                rls_reset_frac=0.05,
+                head_resid=1.0,
+                ident_match_at=50.0,
+                ident_match2=200.0,
+                ident_match3=2000.0,
+                ident_reset_frac=0.03,
+                step_size=0.0031640625,
+                rls_ridge_init=0.03,
+                rls_head_block=4.0,
+            ),
+            factory=_make_rls_head_identmap_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Block-factored head (negative result #27's named escape"
+                " class: coupling at sub-O(d^2) cost): the gated"
+                " idet003_s0031640625_r02 incumbent (identmap50_r schedule"
+                " 50/200/2000, utility gate kept, identifier trigger 0.03,"
+                " body step 0.0031640625, head ridge 0.03 — the gated"
+                " chain's best measured screen, PR #3123) with the head's"
+                " full Sherman-Morrison P restricted to 4 contiguous blocks"
+                " of the m = h2+1 = 151 head coordinates (38/38/38/37, the"
+                " tail zero-padded to equal sizes): each block runs its own"
+                " exact Sherman-Morrison RLS on the shared one-hot"
+                " squared-loss residual, K_b = P_b phi_b / (lambda +"
+                " phi_b^T P_b phi_b), P_b <- (P_b - outer(K_b, P_b"
+                " phi_b))/lambda with the parent's per-update"
+                " symmetrization — within-block cross-direction coupling is"
+                " kept exactly and the only removed mechanism is the"
+                " cross-block coupling. O(m^2/G) = 5776 state entries (~25%"
+                " of the full head's 22801) and work per step. No new"
+                " tuned constant: lambda, ridge, reset, gate, step, and the"
+                " body's residual feedback are all the incumbent's verbatim"
+                " constants, and the block count G is the measured axis"
+                " itself (G = 1 is bitwise the full head, G = m is exactly"
+                " the diagonal cell). At one block per coordinate the"
+                " recursion is the diagonal head; the diag flag is rejected"
+                " at build time alongside it. If G = 4 retains the"
+                " incumbent's level, cross-direction coupling is needed only"
+                " locally and a sub-O(d^2) head is viable (§6.6); if it"
+                " loses toward the diagonal cell, coupling is global on this"
+                " feature geometry and the head ladder closes with a"
+                " measured interpolation point."
             ),
         )
     )
