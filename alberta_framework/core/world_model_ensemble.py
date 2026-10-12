@@ -225,7 +225,11 @@ def _preflight_ensemble_update_working_set(
 def _safe_mean(values: Array, *, axis: int | None = None) -> Array:
     """Compute a float32 mean without first forming an overflowing sum."""
     divisor = values.size if axis is None else values.shape[axis]
-    return jnp.sum(values / jnp.asarray(divisor, dtype=values.dtype), axis=axis)
+    scaled_mean = jnp.sum(values / jnp.asarray(divisor, dtype=values.dtype), axis=axis)
+    # Dividing first can flush normal inputs to zero on float32 CPU backends.
+    summed_mean = jnp.mean(values, axis=axis)
+    recover = (scaled_mean == 0) & jnp.isfinite(summed_mean)
+    return jnp.where(recover, summed_mean, scaled_mean)
 
 
 _REPLAY_KEY_FOLD_IN = 0x5245504C
