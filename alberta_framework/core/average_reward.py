@@ -41,6 +41,7 @@ from alberta_framework.core._float32_scalars import (
     validated_float32_scalar,
     validated_float32_scalar_with_ratio,
 )
+from alberta_framework.core.actor_critic import _temperature_scaled_logits
 from alberta_framework.core.learners import (
     _gradient_step_error,
     _update_from_gradient_with_diagnostics,
@@ -869,7 +870,7 @@ class AverageRewardHordeActorCriticAgent:
         features = self._actor_features(state, observation)
         logits = state.actor_weights @ features + state.actor_bias
         logits = jnp.clip(logits, -self._config.logit_clip, self._config.logit_clip)
-        return jax.nn.softmax(logits / self._config.temperature)
+        return jax.nn.softmax(_temperature_scaled_logits(logits, self._config.temperature))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def behavior_policy(
@@ -2550,7 +2551,7 @@ def migrate_legacy_differential_sarsa_state(
         raise TypeError("legacy differential SARSA state must be a mapping or dataclass")
     current_names = {
         field.name
-        for field in dataclasses.fields(DifferentialSARSAState)  # type: ignore[arg-type]
+        for field in dataclasses.fields(DifferentialSARSAState)
     }
     legacy_names = current_names - {"step_words"}
     supplied_names = set(fields)
