@@ -8299,14 +8299,16 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
-    # 0.8997; a refining identifier rides the upper envelope.  The arms
-    # below are the two 200-task/20-seed CONFIRMED members of the family
-    # (identmap_confirm_r1/ and identmap_star_confirm_r1/); the screened
-    # intermediates (identmap200 single-shot, identmap100_r) and the
-    # round-2 rejections (identmap25_r, identmap50_fast — negative result
-    # #22) are deregistered but retained in the ledger and pinned outputs.
-    # ident_match_at=0 delegates verbatim to the incumbent factory
-    # (bit-exact reduction, pinned by tests).
+    # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of the
+    # family (identmap_confirm_r1/ and identmap_star_confirm_r1/); the
+    # third is a registered 60-task screen of the identifier trigger axis
+    # (wave_identmap50_r_idet003/); the screened intermediates (identmap200
+    # single-shot, identmap100_r) and the round-2 rejections (identmap25_r,
+    # identmap50_fast — negative result #22) are deregistered but retained
+    # in the ledger and pinned outputs.  ident_match_at=0 delegates
+    # verbatim to the incumbent factory (bit-exact reduction, pinned by
+    # tests).
     for ident_name, ident_overrides, ident_extra in (
         (
             "rls_head_resid_identmap50_r",
@@ -8324,6 +8326,19 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03},
+            "the gated identmap50_r schedule (50/200/2000) with the "
+            "identifier's own shift-detector trigger at the more sensitive "
+            "0.03 fraction instead of the 0.05 default (ident_reset_frac, "
+            "distinct from the head's rls_reset_frac, which stays 0.05): "
+            "the utility gate is kept, making this the gate-kept twin of "
+            "the screened ungated nogate_idet003 composition (PR #3109's "
+            "axis) and isolating the trigger effect from the gate axis",
         ),
     ):
         specs.append(
