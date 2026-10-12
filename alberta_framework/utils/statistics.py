@@ -1048,12 +1048,14 @@ def bootstrap_ci(
     rng = np.random.default_rng(seed)
 
     stat_func = np.mean if statistic == "mean" else np.median
-    point_estimate = float(stat_func(arr))
+    scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
+    scale = float(scale_array.item())
+    point_estimate = float(stat_func(scaled) * scale)
 
     # Generate bootstrap samples
     bootstrap_stats_list: list[float] = []
     for _ in range(n_bootstrap):
-        sample = rng.choice(arr, size=len(arr), replace=True)
+        sample = rng.choice(scaled, size=len(scaled), replace=True)
         bootstrap_stats_list.append(float(stat_func(sample)))
 
     bootstrap_stats = np.array(bootstrap_stats_list)
@@ -1061,7 +1063,7 @@ def bootstrap_ci(
     # Percentile method
     lower_percentile = (1 - confidence_level) / 2 * 100
     upper_percentile = (1 + confidence_level) / 2 * 100
-    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile))
-    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile))
+    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * scale)
+    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * scale)
 
     return point_estimate, ci_lower, ci_upper
