@@ -176,7 +176,7 @@ class SignificanceResult(_SignificanceResultTuple):
         return type(self)(**values)
 
 
-def _validate_confidence_level(confidence_level: object) -> None:
+def _validate_confidence_level(confidence_level: object) -> float:
     if type(confidence_level) not in _ALLOWED_REAL_TYPES:
         raise ValueError("confidence_level must be strictly between 0 and 1")
     try:
@@ -189,8 +189,11 @@ def _validate_confidence_level(confidence_level: object) -> None:
         )
     except ValueError:
         raise ValueError("confidence_level must be strictly between 0 and 1") from None
-    # validated ensures (0,1); keep for mypy
+    # Keep the original host-double value after preserving the existing domain
+    # gate. The downstream NumPy/SciPy calls cannot consume Fraction objects,
+    # and arithmetic on NumPy float32 scalars would narrow the quantile level.
     _ = validated
+    return float(cast(Any, confidence_level))
 
 
 def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
@@ -301,7 +304,7 @@ def compute_statistics(
     if n == 0:
         raise ValueError("values must be non-empty")
     _require_finite_values(arr, name="values")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
 
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
@@ -377,7 +380,7 @@ def compute_timeseries_statistics(
     if metric_array.ndim == 2 and metric_array.shape[1] == 0:
         raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
     scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
     scale = scales[0]
     mean = np.mean(scaled, axis=0) * scale
@@ -1037,7 +1040,7 @@ def bootstrap_ci(
     _require_finite_values(arr, name="values")
     if type(statistic) is not str or statistic not in ("mean", "median"):
         raise ValueError("statistic must be either 'mean' or 'median'")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
     n_bootstrap = _require_positive_int("n_bootstrap", n_bootstrap)
     if n_bootstrap > _BOOTSTRAP_MAX_COUNT:
         raise ValueError(
