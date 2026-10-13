@@ -106,3 +106,33 @@ def test_catalog_is_pinned_blocked_and_cli_is_metadata_only(
     assert OFFICIAL_CODE.endswith("f2754bb282757829765beb4703f24b87efa13ff9")
     assert main(["--catalog"]) == 0
     assert json.loads(capsys.readouterr().out) == catalog_payload()
+
+
+@pytest.mark.parametrize("capacity", [1, 8, 64])
+def test_live_replay_stays_within_its_reported_capacity(capacity: int) -> None:
+    import sys
+    from types import FrameType
+    from typing import Any
+
+    from alberta_framework.benchmarks import cora_development as lane
+
+    peaks: list[int] = []
+
+    def trace(frame: FrameType, event: str, arg: Any) -> Any:
+        if frame.f_code is lane._run_arm.__code__:
+            replay = frame.f_locals.get("replay")
+            if replay is not None:
+                peaks.append(len(replay))
+            return trace
+        return None
+
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        result = run_cora_development(
+            seed=FROZEN_SEEDS[0], steps_per_task=2, replay_capacity=capacity,
+        )
+    finally:
+        sys.settrace(previous)
+    assert max(peaks) == min(capacity, 12)
+    assert result.arms[0].receipt.peak_replay_bytes == max(peaks) * 8

@@ -311,9 +311,9 @@ def _run_arm(seed: int, steps: int, capacity: int, arm_id: str) -> ArmResult:
                         )
                         updates += 1
                     if arm_id == "replay_q":
-                        replay.append((action, reward))
-                        if len(replay) > capacity:
+                        if len(replay) >= capacity:
                             replay.pop(0)
+                        replay.append((action, reward))
                         inserts += 1
                 global_step += 1
             matrix.append(_evaluate(arm_id, shared, task_values, len(matrix), seed))
