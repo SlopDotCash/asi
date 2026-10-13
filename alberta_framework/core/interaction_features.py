@@ -3761,6 +3761,11 @@ def run_interaction_feature_arrays(
 
     t0 = time.time()
     final_state, metrics = jax.lax.scan(step_fn, state, (observations, targets))
+    # Concrete scans must complete before uptime stops; traced calls defer execution.
+    if not isinstance(final_state.output_weights, jax.core.Tracer):
+        for leaf in jax.tree.leaves(final_state):
+            if isinstance(leaf, jax.Array):
+                leaf.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
     return InteractionFeatureLearningResult(state=final_state, metrics=metrics)
@@ -3812,7 +3817,7 @@ def migrate_legacy_interaction_feature_state(
         raise TypeError("legacy interaction-feature state must be a mapping or dataclass")
     current_names = {
         field.name
-        for field in dataclasses.fields(InteractionFeatureState)  # type: ignore[arg-type]
+        for field in dataclasses.fields(InteractionFeatureState)
     }
     legacy_names = current_names - {"step_words", "replacement_phase"}
     supplied_names = set(fields)
