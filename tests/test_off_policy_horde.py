@@ -916,3 +916,40 @@ def test_off_policy_horde_ratio_clip_scalars_reject_booleans_and_nans() -> None:
     assert learner._ratio_clip == 2.0
     assert learner._trace_ratio_clip == 1.0
     assert learner._min_behavior_probability == 1e-6
+
+
+def test_off_policy_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    import alberta_framework.core.off_policy_horde as module
+
+    learner = OffPolicyHordeLearner(_spec(), hidden_sizes=(5,), optimizer=LMS(step_size=0.01))
+    state = learner.init(3, jax.random.key(4))
+    observations = jnp.full((1024, 3), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((1024, 2), 0.2, dtype=jnp.float32)
+    rhos = jnp.ones((1024, 2), dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(leaf.is_ready() for leaf in scan_outputs if isinstance(leaf, jax.Array))
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_off_policy_horde_learning_loop(
+        learner, state, observations, cumulants, observations, rhos
+    )
+    assert scan_outputs
+    assert int(result.state.step_count) == 1024
+    assert bool(jnp.all(result.updates_applied))
