@@ -34,3 +34,15 @@ def test_paired_ttest_matches_float64_samples(a: np.ndarray, b: np.ndarray) -> N
     assert actual.p_value == expected.pvalue
     assert actual.effect_size == pytest.approx(effect)
     assert actual.significant == (expected.pvalue < actual.alpha)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_paired_ttest_retains_small_differences_at_large_integer_offsets(dtype: type) -> None:
+    offset = 2**60
+    a = np.array([offset + 1, offset + 4, offset + 7], dtype=dtype)
+    b = np.array([offset, offset + 2, offset + 4], dtype=dtype)
+    expected = stats.ttest_rel([1.0, 2.0, 3.0], [0.0, 0.0, 0.0])
+    actual = ttest_comparison(a, b)
+    assert actual.statistic == pytest.approx(expected.statistic)
+    assert actual.p_value == expected.pvalue
+    assert actual.effect_size == pytest.approx(2.0)
