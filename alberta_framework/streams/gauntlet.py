@@ -701,11 +701,11 @@ class LifetimeGauntletStream:
                 0 of every N-th cycle (0 disables it).
         """
         self._config = config or GauntletConfig()
-        if (
-            isinstance(scale_cycle_period, bool)
-            or not isinstance(scale_cycle_period, int)
-            or scale_cycle_period < 0
-        ):
+        # An exact-type gate keeps a hostile ``int`` subclass from dispatching
+        # its overridden comparison as the range check is built.
+        if type(scale_cycle_period) is bool or type(scale_cycle_period) is not int:
+            raise ValueError("scale_cycle_period must be an exact integer")
+        if scale_cycle_period < 0:
             raise ValueError("scale_cycle_period must be non-negative")
         cycle_length = self.SUB_SEGMENTS * self._config.segment_length
         if cycle_length > _INT32_MAX:
