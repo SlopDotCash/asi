@@ -451,14 +451,32 @@ def cohens_d(
             f"(got n_a={n_a}, n_b={n_b}, pooled_df={pooled_df})"
         )
 
-    mean_a = np.mean(a)
-    mean_b = np.mean(b)
+    # Compute each group's spread at its own bounded scale so a large constant
+    # group cannot erase the smaller group's variance. Cohen's d is unchanged
+    # when both means and standard deviations use the same positive units.
+    a, scale_a_array = _scaled_float64_values(a, name="values_a", axis=None)
+    b, scale_b_array = _scaled_float64_values(b, name="values_b", axis=None)
+    scale_a = float(scale_a_array.item())
+    scale_b = float(scale_b_array.item())
+    common_scale = max(scale_a, scale_b)
+    ratio_a = scale_a / common_scale
+    ratio_b = scale_b / common_scale
+    # Canonical reduction order keeps this unpaired statistic independent of
+    # seed-row permutations (including paired callers that align their rows).
+    a = np.sort(a)
+    b = np.sort(b)
+    mean_a = np.mean(a) * ratio_a
+    mean_b = np.mean(b) * ratio_b
 
     # Pooled standard deviation
-    var_a = np.var(a, ddof=1) if n_a > 1 else 0.0
-    var_b = np.var(b, ddof=1) if n_b > 1 else 0.0
-
-    pooled_std = np.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / pooled_df)
+    std_a = np.std(a, ddof=1) * ratio_a if n_a > 1 else 0.0
+    std_b = np.std(b, ddof=1) * ratio_b if n_b > 1 else 0.0
+    # hypot combines the weighted standard deviations without squaring tiny
+    # values into zero or large values into infinity.
+    pooled_std = np.hypot(
+        np.sqrt((n_a - 1) / pooled_df) * std_a,
+        np.sqrt((n_b - 1) / pooled_df) * std_b,
+    )
 
     if pooled_std == 0:
         mean_difference = mean_a - mean_b
