@@ -621,11 +621,12 @@ class SARSAAgent:
         """Clear the control-head eligibility traces at an episode boundary.
 
         ``update`` clears these traces itself when ``terminated`` is set, and
-        skips the bootstrap at the same time. A truncated episode keeps its
-        bootstrap (the last state is not terminal) but still ends the
-        trajectory, so credit accumulated in the traces must not be applied
-        to the first update of the next, unrelated episode. Parameters,
-        optimizer states, prediction-demon traces, and counters are untouched.
+        skips the bootstrap at the same time. A truncated episode, or one cut
+        off by ``run_sarsa_episode``'s ``max_steps``, keeps its bootstrap (the
+        last state is not terminal) but still ends the trajectory, so credit
+        accumulated in the traces must not be applied to the first update of
+        the next, unrelated episode. Parameters, optimizer states,
+        prediction-demon traces, and counters are untouched.
         """
         if type(state) is not SARSAState:
             raise ValueError("state must be a SARSAState")
@@ -1209,6 +1210,11 @@ def run_sarsa_episode(
                 # traces credit the next episode's first transition.
                 state = agent.reset_control_traces(state)
             break
+    else:
+        # The max_steps budget ran out before either flag ended the episode.
+        # The next call resets the environment just as it does after a
+        # truncation, so the traces must not carry over either.
+        state = agent.reset_control_traces(state)
 
     return SARSAEpisodeResult(
         state=state,
