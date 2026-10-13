@@ -2468,7 +2468,11 @@ class UPGDLearner:
         )
 
         sq_for_metric = (predictions - safe_targets) ** 2
-        step_mse = jnp.sum(jnp.where(active_mask, sq_for_metric, 0.0)) / n_active
+        active_squared = jnp.where(active_mask, sq_for_metric, 0.0)
+        step_mse = jnp.sum(active_squared) / n_active
+        # Recover reduction overflow only when each active squared error is finite.
+        recover = jnp.isinf(step_mse) & jnp.all(jnp.isfinite(active_squared))
+        step_mse = jnp.where(recover, jnp.sum(active_squared / n_active), step_mse)
         fast_decay = jnp.asarray(self._loss_fast_decay, dtype=jnp.float32)
         slow_decay = jnp.asarray(self._loss_slow_decay, dtype=jnp.float32)
         new_loss_fast_ema = (
