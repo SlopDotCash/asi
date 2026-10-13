@@ -1902,7 +1902,11 @@ class FixedBudgetFeatureLearner:
             uptime_s=state.uptime_s,
         )
 
-        loss = jnp.sum(errors**2) / active_count
+        squared_errors = errors**2
+        loss = jnp.sum(squared_errors) / active_count
+        # Recover reduction overflow only when each squared error is finite.
+        recover = jnp.isinf(loss) & jnp.all(jnp.isfinite(squared_errors))
+        loss = jnp.where(recover, jnp.sum(squared_errors / active_count), loss)
         mean_abs_error = jnp.sum(jnp.abs(errors)) / active_count
         max_candidate_utility = (
             jnp.max(ranking_candidate_utilities)
