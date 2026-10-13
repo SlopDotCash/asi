@@ -510,6 +510,18 @@ def _local_normalize(
             axis=-1,
             keepdims=True,
         )
+        # Recover norm overflow of finite utilities by scaling before squaring.
+        scale = jnp.max(jnp.abs(active_denominator), axis=-1, keepdims=True)
+        safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+        scaled_norm = safe_scale * jnp.linalg.norm(
+            active_denominator / safe_scale,
+            axis=-1,
+            keepdims=True,
+        )
+        recover = jnp.isinf(denominator) & jnp.all(
+            jnp.isfinite(active_denominator), axis=-1, keepdims=True
+        )
+        denominator = jnp.where(recover, scaled_norm, denominator)
     if epsilon is not None:
         denominator = jnp.maximum(denominator, epsilon)
     normalized = numerator / denominator

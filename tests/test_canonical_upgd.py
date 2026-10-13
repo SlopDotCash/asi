@@ -1298,3 +1298,18 @@ def test_saturated_gate_accepts_finite_inputs_with_overflowing_direction() -> No
     assert float(result.params[0]) == float(params[0])
     assert float(result.params[1]) == pytest.approx(-5e-6)
     chex.assert_tree_all_finite(result.params)
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_local_normalization_keeps_finite_utility_rows_with_overflowing_norms(
+    disable_jit: bool,
+) -> None:
+    optimizer = CanonicalUPGD(CanonicalUPGDConfig(normalization="local", noise_std=0.0))
+    params = {"w": jnp.ones((1, 2), dtype=jnp.float32)}
+    gradients = {"w": jnp.full((1, 2), -2e19, dtype=jnp.float32)}
+    with jax.disable_jit(disable_jit):
+        result = optimizer.update(optimizer.init(params), params, gradients, jr.key(0))
+    expected = jax.nn.sigmoid(jnp.asarray(2.0**-0.5, dtype=jnp.float32))
+    chex.assert_trees_all_close(
+        result.scaled_utility["w"], jnp.full((1, 2), expected), rtol=1e-6
+    )
