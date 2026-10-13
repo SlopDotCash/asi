@@ -21,6 +21,7 @@ so noise effects are unmistakable) and ``sparsity=0.5`` round-trips.
 """
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -2471,3 +2472,16 @@ class TestGradientAlignmentScaleInvariance:
             state_rev = learner.update(state, obs, target_rev).state
             np.testing.assert_allclose(float(state_rev.meta_head_weight_log_scale), -0.5, atol=1e-5)
             np.testing.assert_allclose(float(state_rev.meta_head_bias_log_scale), -0.5, atol=1e-5)
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_update_preserves_finite_step_mse_reductions(disable_jit: bool) -> None:
+    learner = UPGDLearner(n_heads=2, hidden_sizes=(4,), sparsity=0.0, perturbation_sigma=0.0)
+    with jax.disable_jit(disable_jit):
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        result = learner.update(
+            state, jnp.zeros(2, dtype=jnp.float32), jnp.full(2, 1.5e19, dtype=jnp.float32)
+        )
+    assert int(result.state.step_count) == 1
+    assert bool(jnp.isfinite(result.state.loss_fast_ema))
+    assert bool(jnp.isfinite(result.state.loss_slow_ema))
