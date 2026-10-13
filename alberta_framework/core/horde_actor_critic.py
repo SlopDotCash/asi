@@ -1405,6 +1405,14 @@ def _clip_nlhac_actor_grads(
     for grad in (*grad_trunk_w, *grad_trunk_b):
         squared_norm = squared_norm + jnp.sum(jnp.square(grad))
     norm = jnp.sqrt(squared_norm)
+    # Recover squared-sum overflow of finite gradients by scaling before squaring.
+    grads = (grad_head_w, grad_head_b, *grad_trunk_w, *grad_trunk_b)
+    finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(grad)) for grad in grads]))
+    largest = jnp.max(jnp.stack([jnp.max(jnp.abs(grad), initial=0.0) for grad in grads]))
+    safe_largest = jnp.where(largest > 0.0, largest, 1.0)
+    rescaled = jnp.sum(jnp.stack([jnp.sum(jnp.square(grad / safe_largest)) for grad in grads]))
+    recover = jnp.isinf(norm) & finite
+    norm = jnp.where(recover, safe_largest * jnp.sqrt(rescaled), norm)
     scale = jnp.minimum(1.0, jnp.asarray(max_norm, dtype=jnp.float32) / (norm + 1e-8))
     return (
         tuple(scale * grad for grad in grad_trunk_w),
