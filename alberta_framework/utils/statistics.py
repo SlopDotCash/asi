@@ -531,6 +531,14 @@ def ttest_comparison(
             )
         if len(a) < 2:
             raise ValueError(f"paired t-test requires at least 2 pairs (got {len(a)})")
+        # SciPy and d_z both subtract the paired inputs. Promote before that
+        # subtraction so integer counts cannot wrap and float32 squared
+        # deviations cannot overflow while the float64 result is finite.
+        with np.errstate(over="ignore", invalid="ignore"):
+            a = np.asarray(a, dtype=np.float64)
+            b = np.asarray(b, dtype=np.float64)
+        _require_finite_values(a, name="values_a")
+        _require_finite_values(b, name="values_b")
         _require_exact_str("method_a", method_a)
         _require_exact_str("method_b", method_b)
         if np.array_equal(a, b):
