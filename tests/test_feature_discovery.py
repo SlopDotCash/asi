@@ -3439,3 +3439,22 @@ def test_fixed_budget_outer_jit_shapes_and_saturating_counters() -> None:
             jnp.ones((3,), dtype=jnp.float32),
             jnp.ones((1, 1), dtype=jnp.float32),
         )
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [1.5e19, -1.5e19, 1e20, float("inf")])
+def test_update_preserves_finite_mean_squared_error_metric(
+    disable_jit: bool, magnitude: float
+) -> None:
+    learner = FixedBudgetFeatureLearner(n_features=2, n_tasks=2)
+    with jax.disable_jit(disable_jit):
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        observation = jnp.zeros(2, dtype=jnp.float32)
+        result = learner.update(state, observation, jnp.full(2, magnitude, dtype=jnp.float32))
+    if abs(magnitude) == 1.5e19:
+        errors = np.asarray(result.errors, dtype=np.float64)
+        assert bool(result.update_applied)
+        assert float(result.metrics[0]) == pytest.approx(float(np.mean(errors**2)), rel=2e-6)
+    else:
+        assert not bool(result.update_applied)
+        assert int(result.state.step_count) == 0
