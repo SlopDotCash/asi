@@ -80,13 +80,22 @@ jobs:
         run: |
           mkdir -p "$WORKDIR"
           gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json number,title,body,author,baseRefName,headRefName,isDraft,additions,deletions,mergeable,labels \
+            --json number,title,body,author,baseRefName,headRefName,headRefOid,isDraft,additions,deletions,mergeable,labels \
             > "$WORKDIR/metadata.json"
           gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' \
             > "$WORKDIR/changed_files.txt"
           # Cap the diff so a giant PR can't blow out the context; truncation
           # alone disqualifies a PR from auto-merge (the prompt says so).
           gh pr diff "$PR_NUMBER" --repo "$REPO" | head -c 400000 > "$WORKDIR/diff.patch"
+          # A synchronize event can replace the head while this run is fetching
+          # or reviewing it. Keep the fetched head as this run's merge condition.
+          REVIEWED_HEAD=$(jq -er '.headRefOid | select(type == "string" and test("^[0-9a-f]{40}$"))' "$WORKDIR/metadata.json")
+          CURRENT_HEAD=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid')
+          if [ "$CURRENT_HEAD" != "$REVIEWED_HEAD" ]; then
+            echo "::error::PR head changed during data fetch; discard this triage run"
+            exit 1
+          fi
+          echo "REVIEWED_HEAD=$REVIEWED_HEAD" >> "$GITHUB_ENV"
           echo "AUTHOR=$(jq -r '.author.login' "$WORKDIR/metadata.json")" >> "$GITHUB_ENV"
 
       - name: Claude triage classification
@@ -159,8 +168,8 @@ jobs:
             "Automated review: approved for merge. $SUMMARY"
           # Prefer the auto-merge queue (merges only once required checks pass);
           # fall back to a direct merge; otherwise leave it labeled for a human.
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto \
-            || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash \
+          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
+            || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
             || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
                  echo "::warning::Merge blocked (checks pending/failing or settings); labeled claude-approved"; }
 
@@ -214,8 +223,8 @@ jobs:
               gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
               echo "::warning::Research said merge, but protected paths are touched; left for a human."
             else
-              gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto \
-                || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash \
+              gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
+                || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
                 || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
                      echo "::warning::Merge blocked; labeled claude-approved"; }
             fi
