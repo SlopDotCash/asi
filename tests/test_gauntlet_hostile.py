@@ -180,6 +180,24 @@ def test_lifetime_gauntlet_from_config_rejects_invalid_nested_gauntlet_config() 
         )
 
 
+def test_lifetime_gauntlet_constructor_rejects_hostile_scale_period_before_range() -> None:
+    hostile = _HostileInt(3)
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream(scale_cycle_period=hostile)  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
+
+    # bool is an int subclass and must be rejected without dispatch too.
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream(scale_cycle_period=True)  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
+
+    # A plain negative integer keeps the range error, and zero stays valid.
+    with pytest.raises(ValueError, match="scale_cycle_period must be non-negative"):
+        LifetimeGauntletStream(scale_cycle_period=-1)
+    assert LifetimeGauntletStream(scale_cycle_period=0).scale_cycle_period == 0
+
+
 def test_lifetime_gauntlet_from_config_rejects_invalid_scale_period_type() -> None:
     valid = LifetimeGauntletStream().to_config()
     with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
