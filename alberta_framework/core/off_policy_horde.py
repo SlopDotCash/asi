@@ -765,7 +765,7 @@ class OffPolicyHordeLearner:
         new_trunk_params = MLPParams(
             weights=tuple(new_trunk_weights),
             biases=tuple(new_trunk_biases),
-        )  # type: ignore[call-arg]
+        )
 
         new_head_weights: list[Array] = []
         new_head_biases: list[Array] = []
@@ -906,7 +906,7 @@ class OffPolicyHordeLearner:
         new_head_params = MLPParams(
             weights=tuple(new_head_weights),
             biases=tuple(new_head_biases),
-        )  # type: ignore[call-arg]
+        )
         new_state = MultiHeadMLPState(
             trunk_params=new_trunk_params,
             head_params=new_head_params,
@@ -920,7 +920,7 @@ class OffPolicyHordeLearner:
             step_words=counter_status.proposed_step_words,
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
-        )  # type: ignore[call-arg]
+        )
 
         candidate_state_finite = _floating_tree_is_finite(new_state)
         all_active_candidates_finite = jnp.all(jnp.stack(head_candidates_finite))
@@ -983,7 +983,7 @@ class OffPolicyHordeLearner:
             ),
             head_updates_applied=head_updates_applied,
             update_applied=update_applied,
-        )  # type: ignore[call-arg]
+        )
 
     def to_config(self) -> dict[str, Any]:
         """Serialize learner configuration."""
@@ -1212,7 +1212,7 @@ class NonlinearSharedGTDHordeLearner:
             (self.n_demons, self._hidden_size),
             dtype=jnp.float32,
         )
-        state = NonlinearSharedGTDHordeState(  # type: ignore[call-arg]
+        state = NonlinearSharedGTDHordeState(
             trunk_w=trunk_w,
             trunk_b=jnp.zeros(self._hidden_size, dtype=jnp.float32),
             head_w=head_w,
@@ -1527,7 +1527,7 @@ class NonlinearSharedGTDHordeLearner:
             lambda: proposed_state,
             lambda: state,
         )
-        return NonlinearSharedGTDHordeUpdateResult(  # type: ignore[call-arg]
+        return NonlinearSharedGTDHordeUpdateResult(
             state=new_state,
             predictions=jnp.where(update_applied, predictions, jnp.zeros_like(predictions)),
             next_predictions=jnp.where(
@@ -1620,6 +1620,10 @@ def run_off_policy_horde_learning_loop(
         state,
         (observations, cumulants, next_observations, rhos, discounts),
     )
+    # Concrete calls must finish device work before recording active uptime.
+    # Traced calls (including the batched wrapper) defer execution to callers.
+    if not isinstance(per_demon_metrics, jax.core.Tracer):
+        per_demon_metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(  # type: ignore[attr-defined]
         uptime_s=final_state.uptime_s + elapsed
@@ -1632,7 +1636,7 @@ def run_off_policy_horde_learning_loop(
         clipped_rhos=clipped_rhos,
         head_updates_applied=head_updates_applied,
         updates_applied=updates_applied,
-    )  # type: ignore[call-arg]
+    )
 
 
 def run_off_policy_horde_learning_loop_batched(
@@ -1683,7 +1687,7 @@ def run_off_policy_horde_learning_loop_batched(
         clipped_rhos=clipped_rhos,
         head_updates_applied=head_updates_applied,
         updates_applied=updates_applied,
-    )  # type: ignore[call-arg]
+    )
 
 
 __all__ = [
