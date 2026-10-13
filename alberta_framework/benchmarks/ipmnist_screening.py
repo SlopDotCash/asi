@@ -9552,7 +9552,7 @@ def _validated_recurring_phase_lengths(
 ) -> tuple[int, int, int]:
     lengths = tuple(phase_lengths)
     if len(lengths) != 3 or any(
-        not isinstance(length, int) or isinstance(length, bool) or length <= 0
+        type(length) is not int or type(length) is bool or length <= 0
         for length in lengths
     ):
         raise ValueError("phase_lengths must contain exactly three positive integers")
@@ -9583,8 +9583,8 @@ def build_recurring_ipmnist_online_indices(
     """
     resolved_seed = _validated_recurring_seed(seed)
     if (
-        not isinstance(n_examples, int)
-        or isinstance(n_examples, bool)
+        type(n_examples) is not int
+        or type(n_examples) is bool
         or n_examples <= 0
     ):
         raise ValueError("n_examples must be a positive integer")
@@ -9793,8 +9793,8 @@ def run_recurring_ipmnist_retention_development(
         raise TypeError("config must be an IPMNISTConfig")
     resolved_seed = _validated_recurring_seed(seed)
     if (
-        not isinstance(relearning_window, int)
-        or isinstance(relearning_window, bool)
+        type(relearning_window) is not int
+        or type(relearning_window) is bool
         or relearning_window <= 0
     ):
         raise ValueError("relearning_window must be a positive integer")
