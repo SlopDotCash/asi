@@ -278,6 +278,21 @@ def _require_p_value(value: object, *, name: str) -> float:
     return _require_probability(value, name=name, strict=False)
 
 
+def _summary_quartile(sorted_values: NDArray[np.float64], quarter: int) -> float:
+    """Interpolate only the selected neighbors, preserving their original units."""
+    index, remainder = divmod((len(sorted_values) - 1) * quarter, 4)
+    lower = float(sorted_values[index])
+    if remainder == 0:
+        return lower
+    upper = float(sorted_values[index + 1])
+    weight = remainder / 4.0
+    if (lower >= 0.0) == (upper >= 0.0):
+        # Same-sign differences fit even when adding the endpoints would not.
+        return lower + (upper - lower) * weight
+    # Opposite-sign subtraction may overflow; weighted terms cannot do so.
+    return (1.0 - weight) * lower + weight * upper
+
+
 def compute_statistics(
     values: NDArray[np.float64] | list[float],
     confidence_level: float = 0.95,
@@ -305,13 +320,15 @@ def compute_statistics(
 
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
+    ordered = np.sort(np.asarray(arr, dtype=np.float64))
     with np.errstate(over="ignore", invalid="ignore"):
         mean = float(np.mean(scaled) * scale)
         std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
         sem = std / np.sqrt(n) if n > 1 else 0.0
-        median = float(np.median(scaled) * scale)
-        q75, q25 = np.percentile(scaled, [75, 25])
-        iqr = float((q75 - q25) * scale)
+        median = _summary_quartile(ordered, 2)
+        q25 = _summary_quartile(ordered, 1)
+        q75 = _summary_quartile(ordered, 3)
+        iqr = q75 - q25
 
     # Compute confidence interval
     try:
