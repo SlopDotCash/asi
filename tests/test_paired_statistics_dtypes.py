@@ -46,3 +46,16 @@ def test_paired_ttest_retains_small_differences_at_large_integer_offsets(dtype: 
     assert actual.statistic == pytest.approx(expected.statistic)
     assert actual.p_value == expected.pvalue
     assert actual.effect_size == pytest.approx(2.0)
+
+
+def test_independent_ttest_preserves_finite_float32_variance() -> None:
+    a = np.array([10, 11, 12, 13, 14], dtype=np.float32) * np.float32(1e20)
+    b = np.array([0, 1, 2, 3, 4], dtype=np.float32) * np.float32(1e20)
+    expected = stats.ttest_ind(a.astype(np.float64), b.astype(np.float64))
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual = ttest_comparison(a, b, paired=False)
+    assert actual.statistic == pytest.approx(expected.statistic)
+    assert actual.p_value == expected.pvalue
+    assert actual.significant
+    assert actual.effect_size == pytest.approx(10.0 / np.sqrt(2.5), rel=1e-6)

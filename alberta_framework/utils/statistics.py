@@ -564,6 +564,15 @@ def ttest_comparison(
             f"(got {len(a)} and {len(b)})"
         )
 
+    if not paired:
+        # Independent inference squares deviations too; keep it in the same
+        # float64 measurement domain instead of overflowing finite float32 data.
+        with np.errstate(over="ignore", invalid="ignore"):
+            a = np.asarray(a, dtype=np.float64)
+            b = np.asarray(b, dtype=np.float64)
+        _require_finite_values(a, name="values_a")
+        _require_finite_values(b, name="values_b")
+
     try:
         from scipy import stats
 
