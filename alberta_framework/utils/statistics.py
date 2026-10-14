@@ -524,6 +524,7 @@ def ttest_comparison(
     _require_finite_values(a, name="values_a")
     _require_finite_values(b, name="values_b")
 
+    exact_pair_summary: tuple[float, float] | None = None
     if paired:
         if len(a) != len(b):
             raise ValueError(
@@ -535,9 +536,15 @@ def ttest_comparison(
         # integer offsets to float64 first would erase small paired differences.
         # Both paired inference and d_z depend only on those differences.
         if a.dtype.kind in "iu" and b.dtype.kind in "iu":
-            a = np.asarray(
-                [int(x) - int(y) for x, y in zip(a, b, strict=True)], dtype=np.float64
-            )
+            differences = [int(x) - int(y) for x, y in zip(a, b, strict=True)]
+            a = np.asarray(differences, dtype=np.float64)
+            if any(int(converted) != original for converted, original in zip(a, differences)):
+                exact_mean = Fraction(sum(differences), len(differences))
+                centered = np.asarray(
+                    [float(Fraction(value) - exact_mean) for value in differences],
+                    dtype=np.float64,
+                )
+                exact_pair_summary = (float(exact_mean), float(np.std(centered, ddof=1)))
             b = np.zeros_like(a)
         else:
             # Promote before float subtraction and squared deviations so finite
@@ -576,7 +583,15 @@ def ttest_comparison(
     try:
         from scipy import stats
 
-        if paired:
+        if exact_pair_summary is not None:
+            mean_difference, difference_std = exact_pair_summary
+            if difference_std == 0.0:
+                stat_val = float(np.copysign(np.inf, mean_difference))
+            else:
+                stat_val = mean_difference / (difference_std / math.sqrt(len(a)))
+            result = (stat_val, 2.0 * stats.t.sf(abs(stat_val), len(a) - 1))
+            test_name = "paired t-test"
+        elif paired:
             result = stats.ttest_rel(a, b)
             test_name = "paired t-test"
         else:
@@ -590,7 +605,15 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
+    if exact_pair_summary is not None:
+        mean_difference, difference_std = exact_pair_summary
+        effect = (
+            mean_difference / difference_std
+            if difference_std > 0.0
+            else float(np.copysign(np.inf, mean_difference))
+        )
+    else:
+        effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
