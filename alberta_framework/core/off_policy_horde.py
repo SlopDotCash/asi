@@ -188,7 +188,12 @@ def _stable_l2_norm(*values: Array) -> Array:
         scale = jnp.maximum(scale, jnp.max(jnp.abs(value), initial=0.0))
     square_sum = jnp.asarray(0.0, dtype=jnp.float32)
     for value in values:
-        normalized = jnp.where(scale > 0.0, value / scale, jnp.zeros_like(value))
+        absolute = jnp.abs(value)
+        normalized = jnp.where(
+            absolute == scale,
+            jnp.sign(value),
+            jnp.where(scale > 0.0, value / scale, jnp.zeros_like(value)),
+        )
         square_sum = square_sum + jnp.sum(jnp.square(normalized))
     return scale * jnp.sqrt(square_sum)
 

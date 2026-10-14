@@ -12,6 +12,7 @@ from alberta_framework.core.off_policy_horde import (
     NonlinearSharedGTDHordeLearner,
     OffPolicyHordeLearner,
     OffPolicyHordeUpdateResult,
+    _stable_l2_norm,
     run_off_policy_horde_learning_loop,
 )
 from alberta_framework.core.optimizers import LMS, AGCBounding, ObGDBounding
@@ -35,6 +36,15 @@ def _spec(
         for i, gamma in enumerate(gammas)
     )
     return create_horde_spec(demons)
+
+
+@pytest.mark.parametrize("compile_fn", [lambda fn: fn, jax.jit])
+def test_stable_l2_norm_preserves_float32_limit(compile_fn) -> None:
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
+    norm = compile_fn(_stable_l2_norm)(jnp.asarray([maximum, 0.0], dtype=jnp.float32))
+
+    assert bool(jnp.isfinite(norm))
+    assert float(norm) == float(maximum)
 
 
 def test_init_predict_and_config_roundtrip() -> None:
