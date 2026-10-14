@@ -663,8 +663,37 @@ def test_action_features_rejects_fractional_discrete_action() -> None:
 
 @pytest.mark.unit
 def test_action_features_rejects_wide_action_before_narrowing_eager_and_jit() -> None:
-    with jax.enable_x64():
+    enable_x64 = jax.enable_x64 if hasattr(jax, "enable_x64") else jax.experimental.enable_x64
+    with enable_x64():
         wide = jnp.asarray(2**32, dtype=jnp.uint64)
         expected = jnp.zeros((3,), dtype=jnp.float32)
         chex.assert_trees_all_equal(action_features(wide, 3), expected)
         chex.assert_trees_all_equal(jax.jit(lambda x: action_features(x, 3))(wide), expected)
+
+
+
+@pytest.mark.parametrize("confidence, expected_weight", [(1.0, 1.0), (0.0, 0.0)])
+def test_terminal_dream_retains_sarsa_weight_without_bootstrap(
+    confidence: float, expected_weight: float
+) -> None:
+    class TerminalWorldModel(MockWorldModel):
+        def predict(self, state, observation, action, key):  # type: ignore[no-untyped-def]
+            prediction = super().predict(state, observation, action, key)
+            return dataclasses.replace(
+                prediction,
+                discount=jnp.array(0.0, dtype=jnp.float32),
+                terminated=jnp.array(True),
+            )
+
+    rollout = dream_rollout(
+        TerminalWorldModel(),
+        _world_state(confidence=confidence),
+        DeterministicBehaviorModel(),
+        DeterministicBehaviorState(action=jnp.array(1, dtype=jnp.int32)),
+        init_dream_rollout_state(jnp.array([1.0, 2.0], dtype=jnp.float32), jr.key(13)),
+        DreamRolloutConfig(confidence_threshold=0.5),
+    )
+    items = imagined_rollout_to_sarsa_items(rollout)
+    chex.assert_trees_all_close(items.weights, jnp.array([expected_weight], dtype=jnp.float32))
+    chex.assert_trees_all_close(items.discounts, jnp.zeros((1,), dtype=jnp.float32))
+    assert float(items.weights[0] * items.rewards[0]) == pytest.approx(expected_weight * 3.7)
