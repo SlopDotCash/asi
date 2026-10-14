@@ -754,3 +754,24 @@ def test_array_runner_accepts_jax_arrays_under_jit() -> None:
     )
     result = compiled(observations, option_indices, rewards, observations, discounts)
     chex.assert_tree_all_finite(result.predictions)
+
+
+def test_array_runner_preserves_initialized_host_clocks() -> None:
+    """Host clocks must survive the device scan as exact Python floats."""
+
+    learner = OptionValueDurationLearner(n_options=2)
+    state = learner.init(2).replace(birth_timestamp=1700000000.125, uptime_s=12.5)
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    result = run_option_value_duration_from_arrays(
+        learner,
+        state,
+        observations,
+        jnp.array([0, 1], dtype=jnp.int32),
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+        observations[::-1],
+        jnp.array([0.9, 0.0], dtype=jnp.float32),
+    )
+    assert type(result.state.birth_timestamp) is float
+    assert result.state.birth_timestamp == 1700000000.125
+    assert type(result.state.uptime_s) is float
+    assert result.state.uptime_s >= 12.5
