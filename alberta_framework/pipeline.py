@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any, Literal, SupportsIndex, cast
 
 import chex
@@ -1831,6 +1831,20 @@ class AlbertaPipeline:
             actions,
             control_td_errors,
         ) = outputs
+        # Keep host-only Horde clocks out of the device scan's scalar narrowing.
+        final_horde = replace(
+            final_state.horde_state,
+            birth_timestamp=state.horde_state.birth_timestamp,
+            uptime_s=state.horde_state.uptime_s,
+        )
+        final_control = final_state.control_state
+        if self._config.control_mode == "horde_ac":
+            final_control = replace(
+                cast(HordeActorCriticState, final_control), critic_state=final_horde
+            )
+        final_state = replace(
+            final_state, horde_state=final_horde, control_state=final_control
+        )
         return AlbertaPipelineArrayResult(
             state=final_state,
             features=features,
