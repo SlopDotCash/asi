@@ -12195,6 +12195,30 @@ def _validate_screening_arm_contract(
         )
 
 
+def _require_registered_base_learner(
+    config_name: str,
+    per_seed: Mapping[int, dict[str, Any]],
+    registry: Mapping[str, ScreeningSpec],
+) -> None:
+    """Reject an arm whose recorded learner contradicts its registered spec.
+
+    ``load_shard`` applies this cross-check to source-bound shards only, and the
+    campaign's live shard format is v1. An arm whose seeds all agree on a
+    learner its registry entry never registered therefore reaches the merge,
+    which publishes the recorded ``base_learner`` as the arm's identity.
+    ``_validate_screening_arm_contract`` runs first and, on its own, only
+    rejects a batch that disagrees with itself.
+    """
+    recorded = per_seed[min(per_seed)]["base_learner"]
+    registered = registry[config_name].base_learner
+    if recorded != registered:
+        raise ValueError(
+            f"config {config_name!r} records base_learner {recorded!r}, but its "
+            f"registered arm registers {registered!r}; refusing to publish an "
+            "arm identity the registry does not support"
+        )
+
+
 def _late_window_slope(per_task_accuracy: np.ndarray, window: int) -> float:
     """OLS slope (accuracy per task) over the final ``window`` tasks."""
     tail = per_task_accuracy[-window:]
@@ -12326,8 +12350,10 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
+    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
+        _require_registered_base_learner(name, per_seed, registry)
     control = by_config[control_name]
     control_seeds = sorted(control)
     for name, per_seed in sorted(by_config.items()):

@@ -1952,6 +1952,26 @@ class TestShardsAndMerge:
         ):
             merge_shards([p0, p1, p2], control_name="upgd_w_control", slope_window=2)
 
+    def test_merge_rejects_registry_contradicting_base_learner(self, tmp_path):
+        """An arm that consistently misreports its learner must not rank.
+
+        The campaign's live format is v1, and ``load_shard`` cross-checks the
+        registered arm only for source-bound v2/v3 shards.  Every seed of a v1
+        arm can therefore agree on a learner its registry entry never
+        registered, and the merged summary publishes the recorded
+        ``base_learner`` as the arm's identity.
+        """
+        control = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
+        winner = self._write_inband_shard(tmp_path, "upgd_l2init", 0, 0.9)
+        payload = json.loads(winner.read_text(encoding="utf-8"))
+        payload["base_learner"] = "adamw"
+        winner.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=r"registered arm registers 'upgd_w'"):
+            merge_shards(
+                [control, winner], control_name="upgd_w_control", slope_window=2
+            )
+
     def test_merge_rejects_environment_drift_and_records_environment(
         self, tmp_path, small_data
     ):
