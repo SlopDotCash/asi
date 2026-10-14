@@ -2165,6 +2165,46 @@ class TestShardsAndMerge:
         with pytest.raises(ValueError, match="hyperparameters must exactly match"):
             validate_proxy([upgd, changed_path], tmp_path)
 
+    def test_current_stored_summary_reconstructs_from_retained_shards(self) -> None:
+        """The stored campaign summary must re-derive from the shards on disk.
+
+        ``summary.json`` is the published measurement record, and the champion
+        number quoted across the retained reports comes from it.  Its siblings
+        are pinned the same way (``frontier_results.json`` and the ceiling
+        summary), but the record itself was not: a drifted artifact or a
+        changed merge could pass unnoticed.  Only the run stamp and the keys
+        added after this payload was written may differ.
+        """
+        campaign = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+        expected = json.loads((campaign / "summary.json").read_text(encoding="utf-8"))
+        retained = {row["config_name"] for row in expected["results"]}
+        paths = [
+            path
+            for path in sorted((campaign / "shards").glob("*.json"))
+            if json.loads(path.read_text(encoding="utf-8"))["config_name"] in retained
+        ]
+        assert len(paths) == expected["n_shards"]
+
+        actual = merge_shards(
+            paths,
+            control_name=expected["control_name"],
+            slope_window=expected["slope_window"],
+        )
+
+        # Current code writes these two keys; the retained v1 payload predates
+        # them.  Assert the exact difference, so that a further new key has to
+        # be a deliberate decision here instead of a silent exemption.
+        assert set(actual) - set(expected) == {"environment", "noise_pool_steps"}
+        assert set(expected) - set(actual) == set()
+
+        actual.pop("environment")
+        actual.pop("noise_pool_steps")
+        # created_unix records when the campaign ran, not what it measured.
+        actual.pop("created_unix")
+        expected.pop("created_unix")
+
+        assert actual == expected
+
 
 class TestPoolConfirmation:
     """Screening-only pool-noise mode for full-protocol confirmation runs."""
