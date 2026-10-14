@@ -1179,13 +1179,17 @@ def imagined_rollout_to_sarsa_items(
     rollout: DreamRolloutResult,
     bootstrap_action: Array | None = None,
 ) -> DreamSARSATrainingItem:
-    """Convert a rollout to SARSA-style arrays with shifted next actions."""
+    """Convert a rollout to SARSA-style arrays with shifted next actions.
+
+    Without a bootstrap action, retain the final row only when its discount is zero.
+    """
     transitions = rollout.transitions
     actions = transitions.action
     if bootstrap_action is None:
         next_actions = jnp.concatenate([actions[1:], jnp.zeros_like(actions[-1:])], axis=0)
         weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
-        weights = weights.at[-1].set(0.0)
+        # A zero-discount transition has no bootstrap term or next-action dependency.
+        weights = weights.at[-1].set(weights[-1] * (transitions.discount[-1] == 0.0))
     else:
         bootstrap = jnp.expand_dims(jnp.asarray(bootstrap_action, dtype=actions.dtype), axis=0)
         next_actions = jnp.concatenate([actions[1:], bootstrap], axis=0)
