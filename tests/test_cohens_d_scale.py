@@ -1,6 +1,7 @@
 """Effect sizes must not change when metric units change."""
 
 import warnings
+from decimal import Decimal, localcontext
 
 import numpy as np
 import pytest
@@ -52,3 +53,25 @@ def test_cohens_d_retains_spread_of_smaller_group() -> None:
         assert cohens_d([1.0e308] * 3, [1.0, 2.0, 3.0]) == pytest.approx(
             1.0e308 / np.sqrt(0.5)
         )
+
+
+@pytest.mark.parametrize("common_scale", [1.0, 1e-6])
+def test_separately_scaled_groups_match_exact_pooled_effect(common_scale: float) -> None:
+    a = np.asarray([2.0, 4.0, 6.0]) * 1e300 * common_scale
+    b = np.asarray([1.0, 3.0, 5.0]) * 1e-300 * common_scale
+    # Independent group scaling changes d; only a COMMON unit multiplier is
+    # an invariance. Compute the pooled formula from the actual input floats.
+    with localcontext() as context:
+        context.prec = 1400
+        exact_a = [Decimal.from_float(float(value)) for value in a]
+        exact_b = [Decimal.from_float(float(value)) for value in b]
+        mean_a = sum(exact_a) / 3
+        mean_b = sum(exact_b) / 3
+        variance_a = sum((value - mean_a) ** 2 for value in exact_a) / 2
+        variance_b = sum((value - mean_b) ** 2 for value in exact_b) / 2
+        expected = float((mean_a - mean_b) / ((variance_a + variance_b) / 2).sqrt())
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        actual = cohens_d(a, b)
+    assert actual == pytest.approx(expected, rel=1e-14, abs=0.0)
+    assert actual == pytest.approx(2.0 * np.sqrt(2.0), rel=1e-14, abs=0.0)
