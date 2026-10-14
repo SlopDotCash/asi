@@ -370,6 +370,51 @@ def test_action_conditioned_world_model_scan_loop_shapes() -> None:
     chex.assert_tree_all_finite(result.prediction_errors)
 
 
+def test_action_conditioned_world_model_scan_preserves_initialized_host_clocks() -> None:
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            step_size=0.05,
+            sparsity=0.0,
+        )
+    )
+    initial = model.init(jr.key(17))
+    initial = dataclasses.replace(
+        initial,
+        learner_state=dataclasses.replace(
+            initial.learner_state,
+            birth_timestamp=1700000000.125,
+            uptime_s=12.5,
+        ),
+    )
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    next_observations = observations[::-1]
+    actions = jnp.array([0, 1], dtype=jnp.int32)
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    discounts = jnp.array([0.99, 0.0], dtype=jnp.float32)
+    result = run_action_conditioned_world_model_learning_loop(
+        model, initial, observations, actions, rewards, next_observations, discounts
+    )
+    continued = run_action_conditioned_world_model_learning_loop(
+        model,
+        result.state,
+        observations,
+        actions,
+        rewards,
+        next_observations,
+        discounts,
+    )
+
+    for returned in (result.state, continued.state):
+        assert type(returned.learner_state.birth_timestamp) is float
+        assert returned.learner_state.birth_timestamp == 1700000000.125
+        assert type(returned.learner_state.uptime_s) is float
+        assert returned.learner_state.uptime_s == 12.5
+    assert int(continued.state.step_count) == 4
+
+
 def test_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     """An integer or bool reward array must not truncate gamma into the default discounts."""
     config = ActionConditionedWorldModelConfig(
