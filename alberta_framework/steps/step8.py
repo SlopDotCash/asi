@@ -325,6 +325,30 @@ def step8_update(
     )
 
 
+def _scale_safe_mean(values: Array, *, axis: int) -> Array:
+    """Return a mean without overflowing a representable finite result."""
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    _, exponent = jnp.frexp(scale)
+    safe_exponent = jnp.where(jnp.isfinite(scale) & (scale > 0), exponent, 0)
+    normalized_mean = jnp.mean(jnp.ldexp(values, -safe_exponent), axis=axis)
+    return jnp.ldexp(normalized_mean, jnp.squeeze(safe_exponent, axis=axis))
+
+
+def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, Array]:
+    """Return population statistics while preserving finite float32 range."""
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    _, exponent = jnp.frexp(scale)
+    safe_exponent = jnp.where(jnp.isfinite(scale) & (scale > 0), exponent, 0)
+    normalized = jnp.ldexp(values, -safe_exponent)
+    normalized_mean = jnp.mean(normalized, axis=axis)
+    normalized_centered = normalized - jnp.expand_dims(normalized_mean, axis=axis)
+    normalized_variance = jnp.mean(normalized_centered**2, axis=axis)
+    restored_exponent = jnp.squeeze(safe_exponent, axis=axis)
+    mean = jnp.ldexp(normalized_mean, restored_exponent)
+    variance = jnp.ldexp(normalized_variance, 2 * restored_exponent)
+    return mean, variance
+
+
 def step8_ensemble_predict(
     model: OneStepWorldModel,
     states: Sequence[WorldModelState],
@@ -345,10 +369,18 @@ def step8_ensemble_predict(
         [pred.next_observation for pred in predictions],
         axis=0,
     )
-    mean_reward = jnp.mean(reward_predictions, axis=0)
-    mean_next_observation = jnp.mean(next_observation_predictions, axis=0)
-    reward_disagreement = jnp.var(reward_predictions, axis=0)
-    next_observation_disagreement = jnp.mean(jnp.var(next_observation_predictions, axis=0))
+    mean_reward, reward_disagreement = _scale_safe_mean_and_variance(
+        reward_predictions,
+        axis=0,
+    )
+    mean_next_observation, per_observation_disagreement = _scale_safe_mean_and_variance(
+        next_observation_predictions,
+        axis=0,
+    )
+    next_observation_disagreement = _scale_safe_mean(
+        per_observation_disagreement,
+        axis=0,
+    )
     total_disagreement = reward_disagreement + next_observation_disagreement
     return Step8EnsemblePrediction(
         reward_predictions=reward_predictions,
