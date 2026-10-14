@@ -385,6 +385,14 @@ def _task_trajectories(
     return matrix, rows, trajectories
 
 
+def _finite_metric_difference(left: float, right: float, *, name: str) -> float:
+    """Reject an unrepresentable derived difference without a NumPy warning."""
+    difference = float(left) - float(right)
+    if not math.isfinite(difference):
+        raise ValueError(f"{name} must remain finite")
+    return difference
+
+
 def compute_per_task_forgetting(
     performance_matrix: NDArray[np.floating] | list[list[float]],
     first_exposure: NDArray[np.integer] | list[int],
@@ -404,7 +412,11 @@ def compute_per_task_forgetting(
     for values in trajectories:
         final = values[-1]
         best = np.max(values) if higher_is_better else np.min(values)
-        degradation = best - final if higher_is_better else final - best
+        degradation = _finite_metric_difference(
+            best if higher_is_better else final,
+            final if higher_is_better else best,
+            name="per-task forgetting",
+        )
         forgetting.append(max(0.0, float(degradation)))
     return np.asarray(forgetting, dtype=np.float64)
 
@@ -431,7 +443,11 @@ def compute_backward_transfer(
     for values in trajectories:
         first = values[0]
         final = values[-1]
-        change = final - first if higher_is_better else first - final
+        change = _finite_metric_difference(
+            final if higher_is_better else first,
+            first if higher_is_better else final,
+            name="backward transfer",
+        )
         transfer.append(float(change))
     return np.asarray(transfer, dtype=np.float64)
 
@@ -479,8 +495,10 @@ def compute_forward_transfer(
         immediate = matrix[int(first_row) - 1, task]
         if not np.isfinite(immediate):
             continue
-        transfer[task] = (
-            immediate - baseline[task] if higher_is_better else baseline[task] - immediate
+        transfer[task] = _finite_metric_difference(
+            immediate if higher_is_better else baseline[task],
+            baseline[task] if higher_is_better else immediate,
+            name="forward transfer",
         )
     return transfer
 
@@ -540,8 +558,18 @@ def compute_stability_gap(
     valid = np.isfinite(values) & np.isfinite(broadcast_reference)
     if not np.any(valid):
         raise ValueError("stability-gap inputs must contain a finite aligned value")
-    raw_gap = broadcast_reference - values if higher_is_better else values - broadcast_reference
-    per_step = np.where(valid, np.maximum(raw_gap, 0.0), np.nan)
+    # Improving performance has a zero gap. Do not subtract those operands:
+    # their unclipped difference can overflow even though the gap is zero.
+    left, right = (
+        (broadcast_reference, values) if higher_is_better else (values, broadcast_reference)
+    )
+    adverse = valid & (left > right)
+    raw_gap = np.zeros_like(values)
+    with np.errstate(over="ignore", invalid="ignore"):
+        np.subtract(left, right, out=raw_gap, where=adverse)
+    if np.any(~np.isfinite(raw_gap[valid])):
+        raise ValueError("stability gaps must remain finite")
+    per_step = np.where(valid, raw_gap, np.nan)
     finite_gaps = per_step[np.isfinite(per_step)]
     return StabilityGap(
         mean=_scale_safe_mean(finite_gaps, name="stability gaps"),
