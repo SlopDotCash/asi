@@ -32,6 +32,7 @@ def step(name):
 
 class TriageHeadTests(unittest.TestCase):
     def run_step(self, name, *, live=SHA, metadata=SHA, auto_failure=False,
+                 direct_failure=False, head_after_auto_failure=None,
                  protected=False, reviewed=SHA):
         self.assertTrue(BASH and JQ, "bash and jq are required")
         with tempfile.TemporaryDirectory(prefix="triage-head-") as temporary:
@@ -69,9 +70,20 @@ gh() {
       previous="$arg"
     done
     if [ -n "$expected" ] && [ "$expected" != "$LIVE_HEAD" ]; then return 1; fi
-    case "$*" in *--auto*) if [ "$AUTO_FAILURE" = 1 ]; then return 1; fi ;; esac
+    case "$*" in
+      *--auto*)
+        if [ "$AUTO_FAILURE" = 1 ]; then
+          if [ -n "$HEAD_AFTER_AUTO_FAILURE" ]; then LIVE_HEAD="$HEAD_AFTER_AUTO_FAILURE"; fi
+          return 1
+        fi ;;
+      *) if [ "$DIRECT_FAILURE" = 1 ]; then return 1; fi ;;
+    esac
     printf '%s\n' "$LIVE_HEAD" > "$WORKDIR/merged-head"
-  elif [ "$1 $2" = "pr edit" ] || [ "$1 $2" = "pr comment" ] || [ "$1 $2" = "pr review" ]; then
+  elif [ "$1 $2" = "pr edit" ]; then
+    printf '%s\n' "$*" >> "$WORKDIR/edit-calls"
+  elif [ "$1 $2" = "pr comment" ]; then
+    printf '%s\n' "$*" >> "$WORKDIR/comment-calls"
+  elif [ "$1 $2" = "pr review" ]; then
     return 0
   else
     printf 'unexpected gh invocation: %s\n' "$*" >&2
@@ -82,11 +94,15 @@ gh() {
             script = root / "step.sh"
             script.write_text(prelude + step(name), encoding="utf-8", newline="\n")
             env = {key: os.environ[key] for key in ("SYSTEMROOT", "WINDIR") if key in os.environ}
+            tool_dirs = dict.fromkeys((str(Path(BASH).parent), "/usr/bin", "/bin"))
             env.update({
-                "PATH": str(Path(BASH).parent), "WORKDIR": root.as_posix(),
+                "PATH": os.pathsep.join(tool_dirs),
+                "WORKDIR": root.as_posix(),
                 "GITHUB_ENV": (root / "github-env").as_posix(),
                 "JQ_EXECUTABLE": Path(JQ).as_posix(),
                 "LIVE_HEAD": live, "AUTO_FAILURE": "1" if auto_failure else "0",
+                "DIRECT_FAILURE": "1" if direct_failure else "0",
+                "HEAD_AFTER_AUTO_FAILURE": head_after_auto_failure or "",
                 "PR_NUMBER": "1", "REPO": "fixture/repo", "MSYS_NO_PATHCONV": "1",
             })
             if reviewed is not None:
@@ -126,6 +142,8 @@ gh() {
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertEqual(files["merged-head"], f"{SHA}\n")
                 self.assertIn(f"--match-head-commit {SHA}", files["merge-calls"])
+                if name == MERGE_STEPS[0]:
+                    self.assertIn(f"Automated review of commit {SHA}", files["comment-calls"])
 
     def test_changed_head_cannot_merge(self):
         for name in MERGE_STEPS:
@@ -136,6 +154,30 @@ gh() {
                 calls = files["merge-calls"].splitlines()
                 self.assertEqual(len(calls), 2)
                 self.assertTrue(all(f"--match-head-commit {SHA}" in call for call in calls))
+                self.assertIn("--add-label needs-human-review", files["edit-calls"])
+                self.assertNotIn("claude-approved", files["edit-calls"])
+
+    def test_head_changed_after_auto_failure_needs_human_review(self):
+        for name in MERGE_STEPS:
+            with self.subTest(step=name):
+                run, files = self.run_step(
+                    name, auto_failure=True, head_after_auto_failure=NEW_SHA,
+                )
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertNotIn("merged-head", files)
+                self.assertEqual(len(files["merge-calls"].splitlines()), 2)
+                self.assertIn("--add-label needs-human-review", files["edit-calls"])
+                self.assertNotIn("claude-approved", files["edit-calls"])
+
+    def test_both_merge_failures_need_human_review(self):
+        for name in MERGE_STEPS:
+            with self.subTest(step=name):
+                run, files = self.run_step(name, auto_failure=True, direct_failure=True)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertNotIn("merged-head", files)
+                self.assertEqual(len(files["merge-calls"].splitlines()), 2)
+                self.assertIn("--add-label needs-human-review", files["edit-calls"])
+                self.assertNotIn("claude-approved", files["edit-calls"])
 
     def test_direct_fallback_keeps_the_same_head_guard(self):
         for name in MERGE_STEPS:

@@ -32,7 +32,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify triage fetch and merge head guards
-        run: python .github/tests/test_triage_reviewed_head.py
+        run: python3 .github/tests/test_triage_reviewed_head.py
 
   package:
     runs-on: ubuntu-latest
@@ -416,7 +416,7 @@ jobs:
     # A superseded run must terminate instead of scheduling this aggregate
     # after its dependencies were cancelled. Failures still reach the jq gate.
     if: ${{ !cancelled() }}
-    needs: [package, robot-floor, portability, lint, test-plan, test]
+    needs: [triage-contract, package, robot-floor, portability, lint, test-plan, test]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

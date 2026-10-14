@@ -74,7 +74,6 @@ jobs:
         run: |
           gh label create flagged-malicious    --repo "$REPO" --color B60205 --description "Claude triage: flagged as malicious" || true
           gh label create needs-human-review   --repo "$REPO" --color FBCA04 --description "Claude triage: controversial, needs a human" || true
-          gh label create claude-approved      --repo "$REPO" --color 0E8A16 --description "Claude triage: approved, merge blocked on checks/settings" || true
 
       - name: Fetch PR data (as data, not code)
         run: |
@@ -165,13 +164,14 @@ jobs:
         run: |
           SUMMARY=$(jq -r '.summary // "Non-controversial and obviously correct."' "$WORKDIR/verdict.json")
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-            "Automated review: approved for merge. $SUMMARY"
+            "Automated review of commit ${REVIEWED_HEAD:?Missing reviewed PR head}: approved for merge. $SUMMARY"
           # Prefer the auto-merge queue (merges only once required checks pass);
-          # fall back to a direct merge; otherwise leave it labeled for a human.
+          # fall back to a direct merge; otherwise require human review. A
+          # failed merge may mean the live head was never reviewed by this run.
           gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
             || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
-            || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
-                 echo "::warning::Merge blocked (checks pending/failing or settings); labeled claude-approved"; }
+            || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review;
+                 echo "::warning::Merge blocked or head changed; labeled needs-human-review"; }
 
       - name: Downgrade blocked auto-merge to human review
         if: steps.verdict.outputs.verdict == 'auto_merge' && steps.pathgate.outputs.blocked == 'true'
@@ -225,8 +225,8 @@ jobs:
             else
               gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
                 || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --match-head-commit "${REVIEWED_HEAD:?Missing reviewed PR head}" \
-                || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
-                     echo "::warning::Merge blocked; labeled claude-approved"; }
+                || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review;
+                     echo "::warning::Merge blocked or head changed; labeled needs-human-review"; }
             fi
           else
             gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review

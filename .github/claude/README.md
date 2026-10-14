@@ -9,7 +9,7 @@ reopened, updated, or ready-for-review pull request (and on demand via
 | Verdict | Action (deterministic workflow steps, not the model) |
 |---|---|
 | `malicious` | Close the PR, label `flagged-malicious`, comment, and block the author org-wide (requires `PR_TRIAGE_ADMIN_TOKEN`; otherwise warns for a manual ban). |
-| `auto_merge` | Comment approval and squash-merge via GitHub's auto-merge queue (falls back to direct merge; if blocked, labels `claude-approved` for a human). |
+| `auto_merge` | Comment approval of the reviewed commit and squash-merge via GitHub's auto-merge queue (falls back to direct merge; if blocked or the head changed, labels `needs-human-review`). |
 | `needs_research` | A deeper Claude pass researches the implementation against the base branch, posts a review; if it confirms correct + non-controversial it merges under the same gates, else labels `needs-human-review`. |
 
 ## Setup
@@ -39,3 +39,7 @@ reopened, updated, or ready-for-review pull request (and on demand via
   enforced by a bash gate independent of the model.
 - Merges go through GitHub's auto-merge / branch-protection machinery, so
   required checks still gate every merge this workflow performs.
+- Both merge attempts require the captured, validated PR head SHA. If both
+  fail, either merge-verdict path labels `needs-human-review`, including
+  when an updated head was never reviewed by that run. Blocked merges do
+  not receive an approval label.
