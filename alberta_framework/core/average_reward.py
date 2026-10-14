@@ -1646,7 +1646,12 @@ def run_differential_td_from_arrays(
         (observations, rewards, next_observations),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return DifferentialTDArrayResult(
         state=final_state,
         predictions=predictions,
@@ -1715,7 +1720,12 @@ def run_differential_gtd_from_arrays(
         (observations, rewards, next_observations, rhos),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return DifferentialGTDArrayResult(
         state=final_state,
         predictions=predictions,
@@ -1794,7 +1804,12 @@ def run_average_reward_horde_from_arrays(
         (observations, cumulants, next_observations),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return AverageRewardHordeLearningResult(
         state=final_state,
         td_errors=td_errors,
@@ -1866,7 +1881,12 @@ def run_average_reward_horde_actor_critic_from_arrays(
         ),
     ) = jax.lax.scan(_scan_fn, state, (rewards, next_observations))
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return AverageRewardHordeActorCriticArrayResult(
         state=final_state,
         actions=actions,
@@ -2506,8 +2526,12 @@ def run_differential_sarsa_from_arrays(
         (rewards, next_observations, discounts),
     )
     elapsed = time.time() - start
+    # Keep host-only clocks out of the device scan's scalar narrowing. Birth is
+    # always restored; uptime advances from the true host base only when the
+    # scan applied an update, preserving the existing conditional semantics.
+    final_state = final_state.replace(birth_timestamp=state.birth_timestamp)
     if bool(jax.device_get(jnp.any(updates_applied))):
-        final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+        final_state = final_state.replace(uptime_s=state.uptime_s + elapsed)
     return DifferentialSARSAArrayResult(
         state=final_state,
         q_values=q_values,

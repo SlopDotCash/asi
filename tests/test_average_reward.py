@@ -1414,3 +1414,93 @@ class TestAverageRewardSequenceCeiling:
                 learner, state, observations, rewards, next_observations
             )
         assert seen == []
+
+
+def _assert_host_clocks_preserved(state: object, *, initial_uptime: float) -> None:
+    """Host clocks must survive the device scan as exact Python floats."""
+
+    birth = state.birth_timestamp  # type: ignore[attr-defined]
+    uptime = state.uptime_s  # type: ignore[attr-defined]
+    assert type(birth) is float
+    assert birth == 1700000000.125
+    assert type(uptime) is float
+    assert uptime >= initial_uptime
+
+
+def test_differential_td_arrays_preserve_initialized_host_clocks() -> None:
+    learner = DifferentialTDLearner(DifferentialTDConfig())
+    state = learner.init(2).replace(birth_timestamp=1700000000.125, uptime_s=12.5)
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    result = run_differential_td_from_arrays(
+        learner,
+        state,
+        observations,
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+        observations[::-1],
+    )
+    _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_differential_gtd_arrays_preserve_initialized_host_clocks() -> None:
+    learner = DifferentialGTDLearner(DifferentialGTDConfig())
+    state = learner.init(1).replace(birth_timestamp=1700000000.125, uptime_s=12.5)
+    observations = jnp.array([[1.0], [0.5]], dtype=jnp.float32)
+    result = run_differential_gtd_from_arrays(
+        learner,
+        state,
+        observations,
+        jnp.array([0.5, -0.25], dtype=jnp.float32),
+        observations[::-1],
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+    )
+    _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_average_reward_horde_arrays_preserve_initialized_host_clocks() -> None:
+    learner = AverageRewardHordeLearner(n_demons=2, hidden_sizes=())
+    state = learner.init(3, jr.key(2)).replace(
+        birth_timestamp=1700000000.125, uptime_s=12.5
+    )
+    observations = jnp.array(
+        [[1.0, 0.0, 0.5], [0.0, 1.0, -0.5]], dtype=jnp.float32
+    )
+    result = run_average_reward_horde_from_arrays(
+        learner,
+        state,
+        observations,
+        jnp.array([[0.5, -0.25], [0.25, 0.5]], dtype=jnp.float32),
+        observations[::-1],
+    )
+    _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_average_reward_horde_actor_critic_arrays_preserve_host_clocks() -> None:
+    agent = AverageRewardHordeActorCriticAgent(
+        AverageRewardHordeActorCriticConfig(n_actions=2, hidden_sizes=(4,))
+    )
+    started, _ = agent.start(
+        agent.init(2, jr.key(17)), jnp.array([1.0, 0.0], dtype=jnp.float32)
+    )
+    state = started.replace(birth_timestamp=1700000000.125, uptime_s=12.5)
+    result = run_average_reward_horde_actor_critic_from_arrays(
+        agent,
+        state,
+        jnp.array([1.0, -0.5], dtype=jnp.float32),
+        jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
+    )
+    _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_differential_sarsa_arrays_preserve_initialized_host_clocks() -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+    started, _ = agent.start(
+        agent.init(2, jr.key(1)), jnp.array([1.0, 0.0], dtype=jnp.float32)
+    )
+    state = started.replace(birth_timestamp=1700000000.125, uptime_s=12.5)
+    result = run_differential_sarsa_from_arrays(
+        agent,
+        state,
+        jnp.array([1.0, -0.25], dtype=jnp.float32),
+        jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
+    )
+    _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
