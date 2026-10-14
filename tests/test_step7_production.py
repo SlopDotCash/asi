@@ -915,3 +915,27 @@ def test_zero_importance_ratio_does_not_multiply_overflowing_planning_delta() ->
     chex.assert_trees_all_close(corrected.average_reward, old.average_reward)
     chex.assert_tree_all_finite(corrected.q_weights)
     chex.assert_tree_all_finite(corrected.average_reward)
+
+
+
+@pytest.mark.parametrize("planning_steps", [0, 1])
+def test_dyna_model_scan_preserves_initialized_host_clocks(planning_steps: int) -> None:
+    cfg = _cfg(planning_steps=planning_steps)
+    agent, model = make_step7_components(cfg)
+    initial = init_step7_state(
+        agent, model, key=jr.key(17), initial_observation=jnp.zeros(OBS_DIM),
+        memory_size=cfg.planning_memory_size,
+    )
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    observations = jnp.ones((2, OBS_DIM), dtype=jnp.float32)
+    batch = run_step7_scan(cfg, agent, model, initial, rewards, observations)
+    continued = run_step7_scan(cfg, agent, model, batch.state, rewards, observations)
+    expected = initial.world_model_state.learner_state
+    for returned in (batch.state, continued.state):
+        actual = returned.world_model_state.learner_state
+        assert type(actual.birth_timestamp) is float
+        assert actual.birth_timestamp == expected.birth_timestamp
+        assert type(actual.uptime_s) is float
+        assert actual.uptime_s == expected.uptime_s
+    assert int(continued.state.step_count) == 4
+    assert int(continued.state.world_model_state.step_count) == 4
