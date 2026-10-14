@@ -471,6 +471,15 @@ class CumulantDiscovery:
         debias = 1.0 - jnp.power(jnp.asarray(self._decay_rate, dtype=jnp.float32), safe_ages)
         safe_debias = jnp.maximum(debias, jnp.asarray(1e-30, dtype=jnp.float32))
         ranking_utility = state.utility / safe_debias
+        # A common scale preserves ranking when finite utilities overflow on debiasing.
+        eligible_finite = mature & jnp.isfinite(state.utility)
+        utility_scale = jnp.max(jnp.where(eligible_finite, jnp.abs(state.utility), 0.0))
+        safe_scale = jnp.where(utility_scale > 0.0, utility_scale, 1.0)
+        _, scale_exponent = jnp.frexp(safe_scale)
+        scaled_ranking = jnp.ldexp(state.utility, -scale_exponent) / safe_debias
+        ranking_utility = jnp.where(
+            jnp.any(mature & jnp.isfinite(ranking_utility)), ranking_utility, scaled_ranking
+        )
 
         # Disqualify immature candidates by setting their utility to +inf
         masked_utility = jnp.where(
