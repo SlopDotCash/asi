@@ -156,4 +156,6 @@ def test_rejected_scan_preserves_state_and_can_retry_after_model_repair():
     assert bool(retry.update_applied)
     assert int(retry.nested_updates_applied) == 2
     assert int(retry.planning_backups) == 1
-    _assert_equal(retry, direct)
+    # The retry ran through the rejected scan first, so its host uptime carries
+    # that attempt; everything else must match the direct update.
+    _assert_equal(retry, direct, ignore_uptime_s=True)
