@@ -288,6 +288,13 @@ class ETDState:
             forward so the *next* call can advance ``F_t`` on ``rho_{t-1}``
             (Sutton, Mahmood & White 2016, eq. 20) rather than on the ratio
             of the transition it is currently processing.
+        previous_gamma: Discount from the prior update call, carried forward
+            so the *next* call advances ``F_t`` and decays the eligibility
+            trace on ``gamma_t`` -- the discount into the state being
+            processed (Sutton, Mahmood & White 2016, eqs. 20/22) -- rather
+            than on the current call's bootstrap discount into the next
+            state. A zero here (previous transition terminated) wipes the
+            stale traces at the start of a new episode.
         step_count: Number of updates applied
         birth_timestamp: Wall-clock seconds at init
         uptime_s: Cumulative wall-clock seconds spent in update calls
@@ -300,6 +307,7 @@ class ETDState:
     follow_on_trace: Float[Array, ""]
     emphasis: Float[Array, ""]
     previous_rho: Float[Array, ""] = None  # type: ignore[assignment]
+    previous_gamma: Float[Array, ""] = None  # type: ignore[assignment]
     step_count: Int[Array, ""] = None  # type: ignore[assignment]
     birth_timestamp: float = 0.0
     uptime_s: float = 0.0
@@ -406,6 +414,7 @@ def _etd_state_contract(state: object) -> tuple[ETDState, int]:
     _array_metadata("state.eligibility_traces", checked.eligibility_traces, (feature_dim,))
     for name in ("bias_eligibility_trace", "follow_on_trace", "emphasis", "previous_rho"):
         _array_metadata(f"state.{name}", getattr(checked, name), ())
+    _array_metadata("state.previous_gamma", checked.previous_gamma, ())
     try:
         step_shape = tuple(checked.step_count.shape)
         step_dtype = np.dtype(checked.step_count.dtype)
@@ -690,9 +699,13 @@ class ETDLinearLearner:
     ``e_t = rho_t * (gamma_t * lambda * e_{t-1} + M_t * phi_t)``
     ``w_{t+1} = w_t + alpha * delta_t * e_t``
 
-    The single-step API advances the follow-on trace with the current
-    transition's ratio and discount. With ``rho=1``, ``gamma=0``, and
-    ``lambda=0``, this reduces to the standard LMS/TD(0) terminating update.
+    Here ``gamma_t`` is the discount *into* the state being processed --
+    the prior update call's discount, carried as ``previous_gamma`` (a
+    zero there means the previous transition terminated, which wipes the
+    stale traces at the start of a new episode). The current call's
+    ``gamma`` argument is only the bootstrap discount into the next
+    state. With ``rho=1``, ``gamma=0``, and ``lambda=0``, this reduces to
+    the standard LMS/TD(0) terminating update.
 
     Attributes:
         step_size: Learning rate alpha
@@ -728,7 +741,7 @@ class ETDLinearLearner:
     def init(self, feature_dim: int) -> ETDState:
         """Initialize learner state with zero weights and zero traces."""
         feature_dim = _require_feature_dim(
-            feature_dim, vectors=2, fixed_scalars=6, update_vectors=9
+            feature_dim, vectors=2, fixed_scalars=7, update_vectors=9
         )
         return ETDState(  # type: ignore[call-arg]
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
@@ -738,6 +751,7 @@ class ETDLinearLearner:
             follow_on_trace=jnp.array(0.0, dtype=jnp.float32),
             emphasis=jnp.array(0.0, dtype=jnp.float32),
             previous_rho=jnp.array(1.0, dtype=jnp.float32),
+            previous_gamma=jnp.array(1.0, dtype=jnp.float32),
             step_count=jnp.array(0, dtype=jnp.int32),
             birth_timestamp=time.time(),
             uptime_s=0.0,
@@ -822,17 +836,21 @@ class ETDLinearLearner:
 
         # F_t = rho_{t-1} * gamma_t * F_{t-1} + i_t (Sutton, Mahmood & White
         # 2016, eq. 20): the follow-on trace advances on the PRIOR call's
-        # ratio (state.previous_rho), not rho_s -- only e_t below uses rho_s.
+        # ratio (state.previous_rho) AND the prior call's discount
+        # (state.previous_gamma = gamma_t, the discount into S_t), not
+        # rho_s/gamma_s -- only e_t below uses the current call's ratio,
+        # and only the td_error bootstrap uses the current call's gamma.
+        prev_gamma = state.previous_gamma
         follow_on = (
             _skip_zero_scale(
-                gamma_s,
+                prev_gamma,
                 _skip_zero_scale(state.previous_rho, state.follow_on_trace),
             )
             + interest_s
         )
         emphasis = _skip_zero_scale(lam, interest_s) + _skip_zero_scale(1.0 - lam, follow_on)
 
-        trace_decay = gamma_s * lam
+        trace_decay = prev_gamma * lam
         eligibility_core = (
             _skip_zero_scale(trace_decay, state.eligibility_traces) + emphasis * observation
         )
@@ -848,6 +866,7 @@ class ETDLinearLearner:
             follow_on_trace=follow_on,
             emphasis=emphasis,
             previous_rho=rho_s,
+            previous_gamma=gamma_s,
             step_count=jnp.minimum(state.step_count, _INT32_MAX - 1) + 1,
             birth_timestamp=state.birth_timestamp,
             uptime_s=state.uptime_s,
@@ -864,8 +883,8 @@ class ETDLinearLearner:
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(trace_decay, state.eligibility_traces),
             bias_eligibility_trace=_zero_if_unused(trace_decay, state.bias_eligibility_trace),
-            follow_on_trace=_zero_if_unused(gamma_s, state.follow_on_trace),
-            previous_rho=_zero_if_unused(gamma_s, state.previous_rho),
+            follow_on_trace=_zero_if_unused(prev_gamma, state.follow_on_trace),
+            previous_rho=_zero_if_unused(prev_gamma, state.previous_rho),
         )
         squared_td = td_error**2
         mean_e = jnp.mean(jnp.abs(proposed_state.eligibility_traces))
