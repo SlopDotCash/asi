@@ -516,6 +516,8 @@ def run_step1_smoke(
     metrics.block_until_ready()
     window = metrics[-final_window:, 0]
     final_window_mse = float(jnp.mean(window))
+    if not math.isfinite(final_window_mse) and bool(jnp.all(jnp.isfinite(window))):
+        final_window_mse = float(np.asarray(window, dtype=np.float64).mean())
     return Step1SmokeResult(
         config=cfg,
         steps=steps,
