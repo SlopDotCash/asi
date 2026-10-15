@@ -1155,3 +1155,34 @@ def test_checkpoint_rejects_nonfinite_and_boolean_numeric_corruption() -> None:
     boolean["state_digest"] = _digest(boolean["state"])
     with pytest.raises(ValueError, match="JSON real"):
         DualReplayMemory.from_checkpoint_payload(boolean)
+
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e-20, 1e20])
+@pytest.mark.parametrize("relative_distance", [0.0, 0.5, 1.0, 2.0])
+def test_calibrated_coverage_retention_is_scale_invariant(
+    scale: float, relative_distance: float
+) -> None:
+    memory = DualReplayMemory(_config(
+        long_term_policy="calibrated", coverage_scale=scale,
+        calibrated_priority_threshold=0.1,
+    ))
+    initial = memory.init(jr.key(19))
+    first = memory.record(
+        initial, _prediction(0, observation=(0.0, 0.0), epistemic=0.0),
+        _outcome(0, progress=0.0),
+    )
+    assert bool(first.wrote_long_term)
+    prediction = _prediction(
+        1, observation=(scale * relative_distance, 0.0), epistemic=0.0,
+    )
+    outcome = _outcome(1, progress=0.0)
+    result = memory.record(first.state, prediction, outcome)
+    compiled = jax.jit(memory.record)(first.state, prediction, outcome)
+    _assert_trees_equal(result, compiled)
+    expected = min(relative_distance, 1.0)
+    np.testing.assert_allclose(result.coverage_component, expected, atol=1e-6)
+    np.testing.assert_allclose(result.long_term_priority, expected / 3.0, atol=1e-6)
+    assert bool(result.state_valid) and bool(result.input_valid)
+    assert bool(result.wrote_short_term)
+    assert bool(result.wrote_long_term) == (relative_distance > 0.0)
