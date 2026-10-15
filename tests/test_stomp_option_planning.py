@@ -160,7 +160,13 @@ def test_default_zero_planning_is_exactly_explicit_zero() -> None:
     default_result = default_agent.scan(shared_state, rewards, observations[1:])
     explicit_result = explicit_agent.scan(shared_state, rewards, observations[1:])
 
-    chex.assert_trees_all_equal(default_result, explicit_result)
+    explicit_state = explicit_result.state.replace(
+        base_learner_state=explicit_result.state.base_learner_state.replace(
+            # Host uptime is measured independently for each scan call.
+            uptime_s=default_result.state.base_learner_state.uptime_s,
+        )
+    )
+    chex.assert_trees_all_equal(default_result, explicit_result.replace(state=explicit_state))
     np.testing.assert_array_equal(
         np.asarray(default_result.planning_backups), np.zeros(12, dtype=np.int32)
     )
