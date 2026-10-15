@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 _VALIDATOR = (
     Path(__file__).resolve().parents[1]
     / "outputs"
