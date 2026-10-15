@@ -517,6 +517,63 @@ def test_pipeline_horde_ac_honors_terminated_discount() -> None:
     )
 
 
+def test_pipeline_horde_ac_termination_clears_value_head_critic_trace() -> None:
+    """``terminated`` must also end the value head's critic eligibility.
+
+    With a value head that keeps a trace (lambda 0.8), the terminal transition
+    clears the actor trace and must clear the value head's critic trace too.
+    Otherwise the first update of the next episode moves the weight of a
+    feature that was only active in the finished episode.
+    """
+    config = AlbertaPipelineConfig(
+        features=Step2FeatureConfig.identity(observation_dim=3),
+        horde=Step3HordeConfig(
+            gammas=(0.0, 0.9),
+            lamdas=(0.0, 0.8),
+            hidden_sizes=(),
+            step_size=0.1,
+            use_obgd=False,
+            use_layer_norm=False,
+        ),
+        control=Step4SARSAConfig(n_actions=2, hidden_sizes=()),
+        horde_ac=HordeActorCriticPipelineConfig(
+            n_actions=2,
+            actor_step_size=0.02,
+            actor_lamda=0.8,
+            value_head_index=1,
+        ),
+        control_mode="horde_ac",
+    )
+    pipeline = make_alberta_pipeline(config)
+    cumulants = jnp.zeros(2, dtype=jnp.float32)
+    reward = jnp.asarray(1.0, dtype=jnp.float32)
+    state = pipeline.init(jr.key(0), jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float32))
+
+    # The finished episode's only state is feature 0; the next one starts at 1.
+    terminal = pipeline.update(
+        state,
+        jnp.asarray([0.0, 1.0, 0.0], dtype=jnp.float32),
+        reward,
+        jnp.asarray(1.0, dtype=jnp.float32),
+        cumulants,
+    )
+    w_trace, b_trace = terminal.state.horde_state.head_traces[1]
+    np.testing.assert_array_equal(w_trace, jnp.zeros_like(w_trace))
+    np.testing.assert_array_equal(b_trace, jnp.zeros_like(b_trace))
+    weight_before = terminal.state.horde_state.head_params.weights[1][0, 0]
+    assert float(weight_before) != 0.0
+
+    following = pipeline.update(
+        terminal.state,
+        jnp.asarray([0.0, 0.0, 1.0], dtype=jnp.float32),
+        reward,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        cumulants,
+    )
+    assert int(following.state.step_count) == 2
+    assert float(following.state.horde_state.head_params.weights[1][0, 0]) == float(weight_before)
+
+
 def test_pipeline_with_associative_step2_smoke() -> None:
     """Associative Step 2 exposes finite probability features and updates."""
     config = _small_associative_config()

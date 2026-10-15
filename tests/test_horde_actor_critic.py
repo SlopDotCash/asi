@@ -2216,3 +2216,157 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     )
     np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
     chex.assert_trees_all_equal(result.state, state)
+
+
+# ===========================================================================
+# Terminal critic eligibility
+# ===========================================================================
+
+_EPISODE_1_OBS = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)  # finished episode only
+_EPISODE_2_OBS = jnp.array([0.0, 1.0, 0.0], dtype=jnp.float32)
+_EPISODE_2_NEXT_OBS = jnp.array([0.0, 0.0, 1.0], dtype=jnp.float32)
+_TERMINAL_OBS = jnp.zeros(3, dtype=jnp.float32)
+
+
+def _trace_keeping_critic() -> HordeLearner:
+    """Linear value head with a trace (gamma 0.9, lambda 0.8) plus an auxiliary GVF."""
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name="value",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.9,
+            lamda=0.8,
+            cumulant_index=-1,
+        ),
+        GVFSpec(  # type: ignore[call-arg]
+            name="aux",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.5,
+            lamda=0.5,
+            cumulant_index=-1,
+        ),
+    ]
+    return HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+
+
+def _linear_terminal_trace_agent() -> HordeActorCriticAgent:
+    return HordeActorCriticAgent(
+        HordeActorCriticConfig(n_actions=2, actor_step_size=0.05, actor_lamda=0.7),
+        critic=_trace_keeping_critic(),
+    )
+
+
+def _nonlinear_terminal_trace_agent() -> NonlinearHordeActorCriticAgent:
+    return NonlinearHordeActorCriticAgent(
+        NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=()),
+        _trace_keeping_critic(),
+    )
+
+
+_TERMINAL_TRACE_AGENTS = pytest.mark.parametrize(
+    ("make_agent", "run_arrays"),
+    [
+        (_linear_terminal_trace_agent, run_horde_actor_critic_from_arrays),
+        (_nonlinear_terminal_trace_agent, run_nonlinear_horde_actor_critic_from_arrays),
+    ],
+    ids=["linear", "nonlinear"],
+)
+
+
+@_TERMINAL_TRACE_AGENTS
+def test_terminal_update_clears_value_head_critic_trace(
+    make_agent: Callable[[], Any], run_arrays: Callable[..., Any]
+) -> None:
+    """A terminal update must not carry critic eligibility into the next episode.
+
+    The value head learns the terminal reward along its trace and the actor
+    traces are cleared. The value head's critic trace must be cleared as well:
+    otherwise the first TD error of the next episode moves the weight of a
+    feature that was only active in the finished episode.
+    """
+    del run_arrays
+    agent = make_agent()
+    state = agent.init(feature_dim=3, key=jr.key(0))
+    state, _, _ = agent.start(state, _EPISODE_1_OBS)
+    terminal = agent.update(
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        _TERMINAL_OBS,
+        jnp.zeros(1, dtype=jnp.float32),
+        jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(terminal.update_applied)
+
+    critic_state = terminal.state.critic_state
+    value_w_trace, value_b_trace = critic_state.head_traces[0]
+    np.testing.assert_array_equal(value_w_trace, jnp.zeros_like(value_w_trace))
+    np.testing.assert_array_equal(value_b_trace, jnp.zeros_like(value_b_trace))
+    # The auxiliary demon keeps its configured gamma, so its trace survives.
+    aux_w_trace, _ = critic_state.head_traces[1]
+    np.testing.assert_array_equal(aux_w_trace, _EPISODE_1_OBS[None, :])
+    # The pipeline reads the critic state from the committed critic result.
+    chex.assert_trees_all_equal(terminal.critic_result.state.head_traces, critic_state.head_traces)
+
+    weights = np.asarray(critic_state.head_params.weights[0][0])
+    bias = float(critic_state.head_params.biases[0][0])
+    state, _, _ = agent.start(terminal.state, _EPISODE_2_OBS)
+    first = agent.update(
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        _EPISODE_2_NEXT_OBS,
+        jnp.zeros(1, dtype=jnp.float32),
+        jnp.array(0.9, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+
+    # One-step TD(lambda) reference that starts the episode from a cleared trace.
+    td_error = 1.0 + 0.9 * (weights[2] + bias) - (weights[1] + bias)
+    new_weights = np.asarray(first.state.critic_state.head_params.weights[0][0])
+    assert new_weights[0] == weights[0]
+    np.testing.assert_allclose(
+        new_weights, weights + 0.1 * td_error * np.asarray(_EPISODE_2_OBS), rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        float(first.state.critic_state.head_params.biases[0][0]),
+        bias + 0.1 * td_error,
+        rtol=1e-6,
+    )
+
+
+@_TERMINAL_TRACE_AGENTS
+def test_array_runner_keeps_terminal_critic_eligibility_out_of_the_next_episode(
+    make_agent: Callable[[], Any], run_arrays: Callable[..., Any]
+) -> None:
+    """A zero entry in ``discounts`` ends the value head's critic eligibility."""
+    agent = make_agent()
+    state = agent.init(feature_dim=3, key=jr.key(0))
+    first_episode = run_arrays(
+        agent,
+        state,
+        _EPISODE_1_OBS[None, :],
+        jnp.array([1.0], dtype=jnp.float32),
+        _TERMINAL_OBS[None, :],
+        auxiliary_cumulants=jnp.zeros((1, 1), dtype=jnp.float32),
+        discounts=jnp.array([0.0], dtype=jnp.float32),
+    )
+    both_episodes = run_arrays(
+        agent,
+        state,
+        jnp.stack([_EPISODE_1_OBS, _EPISODE_2_OBS]),
+        jnp.array([1.0, 1.0], dtype=jnp.float32),
+        jnp.stack([_TERMINAL_OBS, _EPISODE_2_NEXT_OBS]),
+        auxiliary_cumulants=jnp.zeros((2, 1), dtype=jnp.float32),
+        discounts=jnp.array([0.0, 0.9], dtype=jnp.float32),
+    )
+    assert bool(jnp.all(both_episodes.updates_applied))
+
+    weight_after_episode_1 = first_episode.state.critic_state.head_params.weights[0][0, 0]
+    assert float(weight_after_episode_1) != 0.0
+    assert float(both_episodes.state.critic_state.head_params.weights[0][0, 0]) == float(
+        weight_after_episode_1
+    )
