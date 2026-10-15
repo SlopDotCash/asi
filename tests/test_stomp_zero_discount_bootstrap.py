@@ -51,10 +51,13 @@ def _primitive_case(n_options):
     return agent, state, observation
 
 
-def _assert_equal(actual, expected):
-    for a, b in zip(
-        jax.tree_util.tree_leaves(actual), jax.tree_util.tree_leaves(expected), strict=True
-    ):
+def _assert_equal(actual, expected, *, ignore_uptime_s=False):
+    actual_leaves = jax.tree_util.tree_flatten_with_path(actual)[0]
+    expected_leaves = jax.tree_util.tree_flatten_with_path(expected)[0]
+    for (actual_path, a), (expected_path, b) in zip(actual_leaves, expected_leaves, strict=True):
+        assert actual_path == expected_path
+        if ignore_uptime_s and getattr(actual_path[-1], "name", None) == "uptime_s":
+            continue
         if jax.dtypes.issubdtype(a.dtype, jax.dtypes.prng_key):
             a, b = jr.key_data(a), jr.key_data(b)
         np.testing.assert_array_equal(a, b)
@@ -153,7 +156,7 @@ def test_terminal_scan_keeps_learning_and_matches_safe_bootstrap():
     )
     assert bool(jnp.all(result.update_applied))
     np.testing.assert_allclose(result.td_errors, np.array([1.0, 0.8, 0.64, 0.512]), rtol=1e-6)
-    _assert_equal(result, control)
+    _assert_equal(result, control, ignore_uptime_s=True)
 
 
 @pytest.mark.parametrize(

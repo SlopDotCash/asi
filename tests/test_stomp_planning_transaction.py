@@ -50,8 +50,15 @@ def _case(backups=1, n_options=1):
     return agent, state
 
 
-def _assert_equal(actual, expected):
-    for a, b in zip(jax.tree.leaves(actual), jax.tree.leaves(expected), strict=True):
+def _assert_equal(actual, expected, *, ignore_uptime_s=False):
+    actual_leaves = jax.tree_util.tree_flatten_with_path(actual)[0]
+    expected_leaves = jax.tree_util.tree_flatten_with_path(expected)[0]
+    for (actual_path, a), (expected_path, b) in zip(
+        actual_leaves, expected_leaves, strict=True
+    ):
+        assert actual_path == expected_path
+        if ignore_uptime_s and getattr(actual_path[-1], "name", None) == "uptime_s":
+            continue
         if jax.dtypes.issubdtype(a.dtype, jax.dtypes.prng_key):
             a, b = jr.key_data(a), jr.key_data(b)
         np.testing.assert_array_equal(a, b)
@@ -128,7 +135,12 @@ def test_rejected_scan_preserves_state_and_can_retry_after_model_repair():
     np.testing.assert_array_equal(result.update_applied, [False, False, False])
     np.testing.assert_array_equal(result.planning_td_errors, [0.0, 0.0, 0.0])
     np.testing.assert_array_equal(result.nested_updates_applied, [0, 0, 0])
-    _assert_equal(result.state, state)
+    _assert_equal(result.state, state, ignore_uptime_s=True)
+    assert (
+        result.state.base_learner_state.birth_timestamp
+        == state.base_learner_state.birth_timestamp
+    )
+    assert result.state.base_learner_state.uptime_s > state.base_learner_state.uptime_s
     repaired = result.state.replace(
         option_models=result.state.option_models.replace(
             next_state_weights=jnp.zeros((1, 2, 2)),
@@ -144,4 +156,6 @@ def test_rejected_scan_preserves_state_and_can_retry_after_model_repair():
     assert bool(retry.update_applied)
     assert int(retry.nested_updates_applied) == 2
     assert int(retry.planning_backups) == 1
-    _assert_equal(retry, direct)
+    # The retry ran through the rejected scan first, so its host uptime carries
+    # that attempt; everything else must match the direct update.
+    _assert_equal(retry, direct, ignore_uptime_s=True)
