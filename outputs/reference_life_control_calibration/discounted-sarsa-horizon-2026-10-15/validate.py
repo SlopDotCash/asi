@@ -12,6 +12,14 @@ from datetime import datetime
 from pathlib import Path
 
 
+_REQUIRED_THREAD_SETTINGS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+}
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -19,6 +27,12 @@ def digest(path: Path) -> str:
 def require(condition: bool, reason: str) -> None:
     if not condition:
         raise ValueError(reason)
+
+
+def require_fixed_thread_settings(runtime: object) -> None:
+    require(type(runtime) is dict, "runtime")
+    settings = runtime.get("thread_settings")
+    require(settings == _REQUIRED_THREAD_SETTINGS, "fixed thread settings")
 
 
 def main() -> None:
@@ -124,6 +138,7 @@ def main() -> None:
         set(by_pair) == {(s, a) for s in plan["seeds"] for a in plan["arms"]}, "complete roster"
     )
     first = records[0]
+    require_fixed_thread_settings(first["runtime"])
     for relative, expected_digest in first["source_sha256"].items():
         require(
             digest(args.source_root / relative) == expected_digest, "current source " + relative

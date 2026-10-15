@@ -32,6 +32,24 @@ from alberta_framework.reference_life_controls import (
 from alberta_framework.streams.closed_loop import RiverSwimConfig
 
 
+_REQUIRED_THREAD_SETTINGS = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
+}
+
+
+def _require_fixed_thread_settings() -> dict[str, str]:
+    actual = {name: os.environ.get(name) for name in _REQUIRED_THREAD_SETTINGS}
+    if actual != _REQUIRED_THREAD_SETTINGS:
+        raise RuntimeError(
+            "comparison requires fixed thread settings "
+            f"{_REQUIRED_THREAD_SETTINGS!r}, got {actual!r}"
+        )
+    return actual
+
+
 def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -70,6 +88,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--preflight", action="store_true", help="one excluded event at seed101099")
     args = parser.parse_args()
+    thread_settings = _require_fixed_thread_settings()
     if args.out.exists():
         raise SystemExit("Output already exists; overwriting is forbidden")
     root = Path.cwd()
@@ -219,15 +238,7 @@ def main() -> None:
             "versions": {
                 n: importlib.metadata.version(n) for n in ("jax", "jaxlib", "numpy", "chex")
             },
-            "thread_settings": {
-                n: os.environ.get(n)
-                for n in (
-                    "OMP_NUM_THREADS",
-                    "OPENBLAS_NUM_THREADS",
-                    "MKL_NUM_THREADS",
-                    "XLA_PYTHON_CLIENT_PREALLOCATE",
-                )
-            },
+            "thread_settings": thread_settings,
         },
         "started_at_utc": started_at_utc,
         "completed_at_utc": datetime.now(UTC).isoformat(),
