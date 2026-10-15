@@ -1,7 +1,7 @@
 """The preregistered discount-horizon validator enforces its resource policy."""
 
-import runpy
 from pathlib import Path
+import runpy
 
 import pytest
 
