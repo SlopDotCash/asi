@@ -528,6 +528,23 @@ class FrequencyMismatchState:
     step_count: Int[Array, ""]
 
 
+def _finite_frequency_component_sum(products: Array) -> Array:
+    """Sum sinusoidal products without an overflowing partial total.
+
+    ``jnp.sum`` turns a pair of large opposite values into ``inf`` when one
+    partial total leaves the float32 range, even though the real total is
+    finite.  A power-of-two scale keeps that total.  A finite direct sum
+    stays bit for bit.
+    """
+    products = jnp.asarray(products, dtype=jnp.float32)
+    direct = jnp.sum(products, axis=-1)
+    exponent = jnp.frexp(jnp.max(jnp.abs(products), axis=-1))[1]
+    scaled = jnp.ldexp(products, -exponent[:, None])
+    stable = jnp.ldexp(jnp.sum(scaled, axis=-1), exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 class FrequencyMismatchStream:
     """Non-stationary stream whose targets are sums of sinusoids.
 
@@ -688,7 +705,7 @@ class FrequencyMismatchStream:
 
         x_active = x[active]                            # (n_tasks, n_components)
         components = jnp.sin(omegas * x_active + phases)
-        target = jnp.sum(amps * components, axis=-1)    # (n_tasks,)
+        target = _finite_frequency_component_sum(amps * components)
         noise = self._noise_std * jr.normal(
             k_noise, (self._n_tasks,), dtype=jnp.float32
         )
