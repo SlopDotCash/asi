@@ -617,6 +617,12 @@ def _named_significance(name_a: str, name_b: str) -> dict[tuple[str, str], Signi
         ("candidate~control", r"candidate\textasciitilde{}control"),
         ("candidate^2", r"candidate\textasciicircum{}2"),
         (r"candidate\control", r"candidate\textbackslash{}control"),
+        ("candidate\ncontrol", "candidate control"),
+        ("candidate\rcontrol", "candidate control"),
+        ("candidate\r\ncontrol", "candidate control"),
+        ("candidate\n\ncontrol", "candidate  control"),
+        ("candidate\r\n\r\ncontrol", "candidate  control"),
+        ("candidate&\r\ncontrol_1", r"candidate\& control\_1"),
         (
             r"\{A&B_100%}^~$#",
             r"\textbackslash{}\{A\&B\_100\%\}"
@@ -715,7 +721,7 @@ def test_method_name_escaping_preserves_latex_caption_and_label_interface() -> N
 
 
 def test_report_escapes_method_names_without_changing_record_identity(tmp_path: Path) -> None:
-    name = r"A&B\control | 100%"
+    name = "A&B\\control | 100%\r\ncandidate"
     results = {name: _constant_result(name, 2.0), "control": _constant_result("control")}
     comparison = SignificanceResult(
         test_name="paired_t_test",
@@ -734,8 +740,8 @@ def test_report_escapes_method_names_without_changing_record_identity(tmp_path: 
         significance_results={(name, "control"): comparison},
     )
 
-    latex_display = r"A\&B\textbackslash{}control | 100\%"
-    markdown_display = r"A&B\\control \| 100%"
+    latex_display = r"A\&B\textbackslash{}control | 100\% candidate"
+    markdown_display = r"A&B\\control \| 100%<br>candidate"
     assert (
         rf"{latex_display} & 2.0000 $\pm$ 0.0000$^{{*}}$ & 1 \\"
         in artifacts["latex_table"].read_text(encoding="utf-8").splitlines()
@@ -753,6 +759,8 @@ def test_report_escapes_method_names_without_changing_record_identity(tmp_path: 
     assert set(json.loads(artifacts["json"].read_text(encoding="utf-8"))) == {name, "control"}
     with artifacts["summary_csv"].open(encoding="utf-8", newline="") as handle:
         assert [row["config"] for row in csv.DictReader(handle)] == [name, "control"]
+    assert results[name].config_name == name
+    assert comparison.method_a == name
 
 
 @pytest.mark.parametrize("value", [True, False, np.bool_(True), np.bool_(False)])

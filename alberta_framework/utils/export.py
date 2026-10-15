@@ -458,8 +458,9 @@ def _finite_table_summaries(
 
 
 def _escape_latex_method_name(name: str) -> str:
-    """Render method names as text without re-escaping inserted LaTeX commands."""
-    return name.translate(_LATEX_METHOD_NAME_ESCAPES)
+    """Render method names in one row without re-escaping inserted LaTeX commands."""
+    normalized = name.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return normalized.translate(_LATEX_METHOD_NAME_ESCAPES)
 
 
 def _escape_markdown_method_name(name: str) -> str:
