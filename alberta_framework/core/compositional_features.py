@@ -4792,8 +4792,12 @@ def run_compositional_arrays(
     t0 = time.time()
     final_state, (metrics, updates_applied) = jax.lax.scan(step_fn, state, (observations, targets))
     elapsed = time.time() - t0
+    # The scan carries host clocks through the traced update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
     return CompositionalFeatureLearningResult(
         state=final_state,

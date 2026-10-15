@@ -1477,6 +1477,28 @@ class TestCompositionalFeatureLearner:
         # Sanity check the resulting state retains the type.
         assert isinstance(result.state, CompositionalFeatureState)
 
+    def test_array_scan_preserves_initialized_host_clocks(self) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=4,
+            n_tasks=1,
+            candidate_count=0,
+            replacement_interval=100_000,
+            min_feature_age=100_000,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(birth_timestamp=birth, uptime_s=uptime)
+        observations = jnp.zeros((2, 2), dtype=jnp.float32)
+        targets = jnp.zeros((2, 1), dtype=jnp.float32)
+        result = run_compositional_arrays(learner, state, observations, targets)
+        clocks = result.state
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.metrics)
+
 
 class TestImprintConsolidation:
     """_initial_candidate_output_weights delegates to the module-level imprint."""
