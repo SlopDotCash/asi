@@ -1,0 +1,320 @@
+{
+  "accepted_events": 240000,
+  "arm_statistics": {
+    "no_trace_original": {
+      "mean": 0.5069447499636095,
+      "sample_std": 0.4348519712651587
+    },
+    "no_trace_scaled": {
+      "mean": 0.5120697499634232,
+      "sample_std": 0.43927353264039415
+    },
+    "trace_original": {
+      "mean": 0.00533966656109939,
+      "sample_std": 0.00044162529109678954
+    },
+    "trace_scaled": {
+      "mean": 0.5098612499628682,
+      "sample_std": 0.4373614657409709
+    }
+  },
+  "decision": "bounded_trace_step_reduction_supported",
+  "development_only": true,
+  "inputs": [
+    {
+      "path": "no_trace_original-seed100601.json",
+      "sha256": "adf759e6f8db70488ed5abbfe5b48f8c3c5b5401edb9ddbe8168e8d1e0dde526"
+    },
+    {
+      "path": "no_trace_original-seed100602.json",
+      "sha256": "5548e9432733fcfefd8eb86e5c12e0f6f721d737e016ad1ff971932f8dde7317"
+    },
+    {
+      "path": "no_trace_original-seed100603.json",
+      "sha256": "c34a4cce3665c42967bed45855f1c0f2de3d046ba2d623fe47046b06a2a60ff9"
+    },
+    {
+      "path": "no_trace_scaled-seed100601.json",
+      "sha256": "c133d5127887d5883be728986bc7843d123537bd3125cb4cbb7f1e8d5b0bbf63"
+    },
+    {
+      "path": "no_trace_scaled-seed100602.json",
+      "sha256": "420f4f84db088cf88c387d7e6298c6a5603a844b7f3f7e541b451aa5eb6c2aba"
+    },
+    {
+      "path": "no_trace_scaled-seed100603.json",
+      "sha256": "a7ce21d781316f495c6d113971c849671d0a66b22dcd4bc6b1709d883b850502"
+    },
+    {
+      "path": "trace_original-seed100601.json",
+      "sha256": "4f4a4e677f10eb42e92b70b05f22a32e8a703793e0f38050023fd51ccfcbcd8c"
+    },
+    {
+      "path": "trace_original-seed100602.json",
+      "sha256": "dcb4d910d3338ce07966f899f35d452bd9108bf93c3bdd4160bfd26e6c09937f"
+    },
+    {
+      "path": "trace_original-seed100603.json",
+      "sha256": "71fdeb8af8e536249ace910da53722646463854372127893af079890b2120fb4"
+    },
+    {
+      "path": "trace_scaled-seed100601.json",
+      "sha256": "37312fedd302dcc74a24a832b2ddb6c7da71e3587651582e6bc9cfba7dbb56f6"
+    },
+    {
+      "path": "trace_scaled-seed100602.json",
+      "sha256": "75a98ec665bc5d81245321edb4812062c140ce8c218097288bbea3c61830f4d0"
+    },
+    {
+      "path": "trace_scaled-seed100603.json",
+      "sha256": "c7a65fb6316d155de7f82727a9f29b72598e681c76e94fd17c8a8d7cf6966af8"
+    }
+  ],
+  "interaction_delta": {
+    "mean": 0.499396583401955,
+    "sample_std": 0.43249874156299634
+  },
+  "interaction_rule_passed": false,
+  "limits": [
+    "Permanently nonpromoting development-only causal diagnostic. Three seed pairs and two chosen step sizes cannot establish an optimal step, general superiority, statistical confidence, transfer/retention, frozen-scorecard qualification, reference-dev or scientific evidence. Existing artifacts and frozen gates stay unchanged. Any further tuning requires a different preregistered hypothesis and new seeds.",
+    "Reported spreads are sample standard deviations, not confidence bounds.",
+    "Raw-reward aggregates and transition support are independently reconstructed; diagnostic snapshot values are checked for finite shape, not independently replayed learner states.",
+    "UTC times and hashes are consistency data, not execution attestation."
+  ],
+  "maximum_recorded_collection_concurrency": 2,
+  "n_paired_seeds": 3,
+  "no_trace_step_delta": {
+    "mean": 0.005124999999813746,
+    "sample_std": 0.004959582852141369
+  },
+  "paired_seeds": [
+    {
+      "arm_diagnostics": {
+        "no_trace_original": {
+          "action_counts": [
+            604,
+            19396
+          ],
+          "first_upstream_reward_event": 178,
+          "late_mean_reward": 0.7885,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15367
+        },
+        "no_trace_scaled": {
+          "action_counts": [
+            496,
+            19504
+          ],
+          "first_upstream_reward_event": 150,
+          "late_mean_reward": 0.7885,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15587
+        },
+        "trace_original": {
+          "action_counts": [
+            18853,
+            1147
+          ],
+          "first_upstream_reward_event": 891,
+          "late_mean_reward": 0.00491749989008531,
+          "parameter_change_events": 18636,
+          "rightmost_state_visits": 28
+        },
+        "trace_scaled": {
+          "action_counts": [
+            557,
+            19443
+          ],
+          "first_upstream_reward_event": 150,
+          "late_mean_reward": 0.7885,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15515
+        }
+      },
+      "arm_mean_rewards": {
+        "no_trace_original": 0.7575269999993965,
+        "no_trace_scaled": 0.7674559999998659,
+        "trace_original": 0.005625249896617606,
+        "trace_scaled": 0.7642704999995418
+      },
+      "interaction_delta": 0.7487162501024548,
+      "no_trace_step_delta": 0.009929000000469368,
+      "primary_trace_step_delta": 0.7586452501029242,
+      "seed": 100601,
+      "trace_scaled_vs_no_trace_original": 0.0067435000001452305,
+      "trace_scaled_vs_no_trace_scaled": -0.0031855000003241374
+    },
+    {
+      "arm_diagnostics": {
+        "no_trace_original": {
+          "action_counts": [
+            19455,
+            545
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004937499889638275,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        },
+        "no_trace_scaled": {
+          "action_counts": [
+            19523,
+            477
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004937499889638275,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        },
+        "trace_original": {
+          "action_counts": [
+            19486,
+            514
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004937499889638275,
+          "parameter_change_events": 18393,
+          "rightmost_state_visits": 0
+        },
+        "trace_scaled": {
+          "action_counts": [
+            19523,
+            477
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004937499889638275,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        }
+      },
+      "arm_mean_rewards": {
+        "no_trace_original": 0.004821249892236665,
+        "no_trace_scaled": 0.004844499891716987,
+        "trace_original": 0.004830999892018736,
+        "trace_scaled": 0.004844499891716987
+      },
+      "interaction_delta": -9.749999782070369e-06,
+      "no_trace_step_delta": 2.3249999480321783e-05,
+      "primary_trace_step_delta": 1.3499999698251414e-05,
+      "seed": 100602,
+      "trace_scaled_vs_no_trace_original": 2.3249999480321783e-05,
+      "trace_scaled_vs_no_trace_scaled": 0.0
+    },
+    {
+      "arm_diagnostics": {
+        "no_trace_original": {
+          "action_counts": [
+            620,
+            19380
+          ],
+          "first_upstream_reward_event": 79,
+          "late_mean_reward": 0.8085,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15386
+        },
+        "no_trace_scaled": {
+          "action_counts": [
+            663,
+            19337
+          ],
+          "first_upstream_reward_event": 340,
+          "late_mean_reward": 0.8085,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15509
+        },
+        "trace_original": {
+          "action_counts": [
+            19132,
+            868
+          ],
+          "first_upstream_reward_event": 340,
+          "late_mean_reward": 0.004909999890252948,
+          "parameter_change_events": 19626,
+          "rightmost_state_visits": 23
+        },
+        "trace_scaled": {
+          "action_counts": [
+            861,
+            19139
+          ],
+          "first_upstream_reward_event": 673,
+          "late_mean_reward": 0.8085,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15422
+        }
+      },
+      "arm_mean_rewards": {
+        "no_trace_original": 0.7584859999991953,
+        "no_trace_scaled": 0.7639087499986869,
+        "trace_original": 0.005562749894661829,
+        "trace_scaled": 0.7604687499973457
+      },
+      "interaction_delta": 0.7494832501031923,
+      "no_trace_step_delta": 0.0054227499994915496,
+      "primary_trace_step_delta": 0.7549060001026838,
+      "seed": 100603,
+      "trace_scaled_vs_no_trace_original": 0.0019827499981504015,
+      "trace_scaled_vs_no_trace_scaled": -0.003440000001341148
+    }
+  ],
+  "plan_sha256": "898eddbd1bb8aee14ada4a15284ebfdd05e376bd07e1322c88cfddb534fe43f0",
+  "preregistration": {
+    "base": "415e7d225a4338492275be6cafa69d87c158c30a",
+    "created_at": "2026-10-15T04:17:40Z",
+    "draft": true,
+    "head": "9b3565fe3aa9cc0155cd7573ec96d6d8fbf85275",
+    "number": 3220,
+    "url": "https://github.com/SlopDotCash/asi/pull/3220"
+  },
+  "primary_rule_passed": true,
+  "primary_trace_step_delta": {
+    "mean": 0.5045215834017688,
+    "sample_std": 0.4369208168091376
+  },
+  "reference_dev_population_allowed": false,
+  "resources": {
+    "final": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "initial": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    }
+  },
+  "runtime": {
+    "backend": "cpu",
+    "machine": "AMD64",
+    "python": "3.12.4",
+    "system": "Windows",
+    "thread_settings": {
+      "MKL_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    },
+    "versions": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    }
+  },
+  "schema": "asi.riverswim_sarsa_step_size_diagnostic.summary.v1",
+  "scientific_promotion_allowed": false,
+  "script_sha256": "61d594be9c3ea559e5599f2cb3301c08b0a8218d52fe759e331aa35650e07d37",
+  "source_commit": "9b3565fe3aa9cc0155cd7573ec96d6d8fbf85275",
+  "trace_scaled_vs_no_trace_original": {
+    "mean": 0.0029164999992586514,
+    "sample_std": 0.0034560608814496337
+  },
+  "trace_scaled_vs_no_trace_scaled": {
+    "mean": -0.002208500000555095,
+    "sample_std": 0.0019168455211540406
+  },
+  "utc_schedule_order_verified": true
+}
