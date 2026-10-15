@@ -639,6 +639,28 @@ def _update_control_with_linear_rng(
     )
 
 
+def _mean_squared_deviation(delta: Array) -> Array:
+    """Return the mean square of one finite residual without a sum overflow.
+
+    ``jnp.mean(delta ** 2)`` adds every square before dividing. A wide finite
+    residual can overflow that sum even though the mean is a finite float32
+    value. The direct mean is kept whenever it is already finite, so ordinary
+    residuals stay bit-identical. Only an overflowing reduction is rebuilt
+    from a power-of-two scaling.
+    """
+
+    squares = delta * delta
+    direct = jnp.mean(squares)
+    peak = jnp.max(jnp.abs(delta))
+    safe_peak = jnp.where(peak > 0.0, peak, jnp.asarray(1.0, dtype=jnp.float32))
+    _, exponent = jnp.frexp(safe_peak)
+    scaled = jnp.ldexp(delta, -exponent)
+    count = jnp.asarray(delta.shape[0], dtype=jnp.float32)
+    scaled_mean = jnp.sum(scaled * scaled) / count
+    stable = jnp.ldexp(scaled_mean, exponent + exponent)
+    return jnp.where(jnp.isfinite(direct), direct, stable)
+
+
 @functools.partial(jax.jit, static_argnums=(0, 1, 2, 3))
 def step9_update(
     config: Step9DreamingConfig,
@@ -733,8 +755,8 @@ def step9_update(
                 anchor_obs,
             )
             prediction = model.predict(model_state, anchor_obs, behavior_sample.action)
-            transition_magnitude = jnp.mean(
-                (prediction.next_observation - anchor_obs) ** 2
+            transition_magnitude = _mean_squared_deviation(
+                prediction.next_observation - anchor_obs
             )
             surprise = transition_magnitude + jnp.abs(prediction.reward)
             utility = jnp.abs(prediction.reward)
