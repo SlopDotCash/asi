@@ -222,8 +222,8 @@ def test_working_dimensions_preflight_without_allocation() -> None:
 def test_working_state_preflight_bytes_without_allocation() -> None:
     # Minimal custom decays to make math tractable: len_obs=3 default
     # Use observation_dim variation with other dims 0 to isolate
-    # With this configuration, the conservative update bound is 35*obs+47.
-    last_legal = (_INT32_MAX // 4 - 47) // 35
+    # With the finite convex fallback, the conservative update bound is 50*obs+47.
+    last_legal = (_INT32_MAX // 4 - 47) // 50
     # Need to set action/reward 0 to keep trace minimal
     cfg = WorkingMemoryConfig(
         observation_dim=last_legal,

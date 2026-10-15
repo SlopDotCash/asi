@@ -311,7 +311,7 @@ def test_working_memory_step_reports_rejection_with_neutral_features_and_recover
     assert int(recovered.state.step_count) == int(state.step_count) + 1
 
 
-def test_working_memory_step_rejects_finite_post_apply_overflow() -> None:
+def test_working_memory_step_rejects_unrepresentable_innovation() -> None:
     memory = WorkingMemoryFeaturizer(
         WorkingMemoryConfig(
             observation_dim=1,
@@ -321,6 +321,7 @@ def test_working_memory_step_rejects_finite_post_apply_overflow() -> None:
             include_current_observation=False,
             include_current_action=False,
             include_current_reward=False,
+            include_innovations=True,
         )
     )
     limit = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
@@ -335,7 +336,7 @@ def test_working_memory_step_rejects_finite_post_apply_overflow() -> None:
 
     assert not bool(rejected.update_applied)
     chex.assert_trees_all_equal(rejected.state, state)
-    chex.assert_trees_all_equal(rejected.features, jnp.zeros((1,), dtype=jnp.float32))
+    chex.assert_trees_all_equal(rejected.features, jnp.zeros((2,), dtype=jnp.float32))
     recovered = memory.step(
         rejected.state,
         jnp.asarray([-limit]),
