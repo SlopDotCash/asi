@@ -25,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import operator
+import time
 from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
@@ -3215,6 +3216,7 @@ class STOMPAgent:
             if scan_extended_action_masks.dtype != jnp.bool_:
                 raise TypeError("extended_action_masks must have dtype bool")
 
+        t0 = time.time()
         (
             final_state,
             (
@@ -3250,6 +3252,14 @@ class STOMPAgent:
                 scan_execution_boundaries,
                 scan_extended_action_masks,
             ),
+        )
+        elapsed = time.time() - t0
+        learner_state = final_state.base_learner_state
+        final_state = final_state.replace(
+            base_learner_state=learner_state.replace(
+                birth_timestamp=state.base_learner_state.birth_timestamp,
+                uptime_s=state.base_learner_state.uptime_s + elapsed,
+            )
         )
         return STOMPArrayResult(
             state=final_state,
