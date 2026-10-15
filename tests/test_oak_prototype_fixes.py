@@ -402,4 +402,4 @@ def test_scan_preserves_base_learner_host_clocks() -> None:
     assert type(clocks.birth_timestamp) is float
     assert clocks.birth_timestamp == birth
     assert type(clocks.uptime_s) is float
-    assert clocks.uptime_s == uptime
+    assert clocks.uptime_s > uptime

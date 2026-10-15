@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import dataclasses
 import operator
+import time
 from collections.abc import Mapping
 from typing import Any, SupportsIndex, cast
 
@@ -1997,6 +1998,7 @@ class OaKAgent:
             if scan_extended_action_masks.dtype != jnp.bool_:
                 raise TypeError("extended_action_masks must have dtype bool")
 
+        t0 = time.time()
         (
             final_state,
             (
@@ -2031,13 +2033,13 @@ class OaKAgent:
                 scan_extended_action_masks,
             ),
         )
+        elapsed = time.time() - t0
         # The scan traces the base learner and narrows its host clocks to
-        # float32. Restore the incoming Python values. This scan does not
-        # add elapsed time to those clocks.
+        # float32. Restore the incoming birth time and add elapsed host time.
         learner_state = final_state.stomp_state.base_learner_state
         restored_learner = learner_state.replace(
             birth_timestamp=state.stomp_state.base_learner_state.birth_timestamp,
-            uptime_s=state.stomp_state.base_learner_state.uptime_s,
+            uptime_s=state.stomp_state.base_learner_state.uptime_s + elapsed,
         )
         final_state = final_state.replace(
             stomp_state=final_state.stomp_state.replace(
