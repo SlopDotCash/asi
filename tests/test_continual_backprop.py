@@ -754,6 +754,35 @@ class TestLoop:
         chex.assert_shape(result.per_head_metrics, (50, 1, 3))
         chex.assert_shape(result.replacements_made, (50, 1))
 
+    def test_learning_loop_preserves_initialized_host_clocks(self):
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(4,),
+            cbp_config=ContinualBackpropConfig(enabled=False),
+            step_size=0.05,
+            sparsity=0.0,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(
+            mlp_state=state.mlp_state.replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+            )
+        )
+        observations = jnp.zeros((2, 2), dtype=jnp.float32)
+        targets = jnp.zeros((2, 1), dtype=jnp.float32)
+
+        result = run_cbp_learning_loop(learner, state, observations, targets)
+        clocks = result.state.mlp_state
+
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.per_head_metrics)
+
 
 # ======================================================================
 
