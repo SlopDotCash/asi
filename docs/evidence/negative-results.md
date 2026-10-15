@@ -504,3 +504,19 @@ Next work requires a separate bounded control-calibration/bottleneck hypothesis
 and its own plan. Do not relax or retrospectively retune this run’s gates. Timing
 remains telemetry, resource Pareto selection remains unevaluated, and the prior
 run and all pinned evidence are unchanged.
+
+
+## RiverSwim discount-horizon probe (2026-10-15)
+
+At fixed lambda 0.8 and learning rate 0.014, the separately preregistered
+gamma 0.9 versus 0.99 comparison completed all six full reference lives
+(three fresh development seeds 101001–101003, 120,000 events, no retries).
+Paired lifetime mean-reward difference: `0.004296750 +/- 0.007343468`
+(mean +/- sample SD). Decision: `bounded_gamma_increase_inconclusive`. The all-positive/mean-above-0.01
+screen passed: `false`; the improvement
+rule also requiring mean above sample SD passed: `false`.
+No secondary rescue or reference selection. Gamma changes discounting, trace
+decay and value scale jointly; this does not isolate horizon mediation.
+Permanently nonpromoting. Do not retry this consumed roster or retune its gates.
+Full results, per-seed values, raw traces, diagnostics, resources and verification:
+[`discounted-sarsa-horizon-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/README.md).
