@@ -510,3 +510,34 @@ class TestCheckpointExists:
         """checkpoint_exists should return False for a regular file."""
         (tmp_path / "not_a_ckpt").touch()
         assert not checkpoint_exists(tmp_path / "not_a_ckpt")
+
+
+@pytest.mark.parametrize("as_string", [False, True])
+def test_relative_checkpoint_paths_round_trip(tmp_path, monkeypatch, as_string):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path.relative_to(tmp_path) / "nested" / "agent.ckpt"
+    supplied = str(path) if as_string else path
+    state = {"weights": jnp.arange(3, dtype=jnp.float32)}
+    metadata = {"epoch": 7}
+
+    save_checkpoint(state, supplied, metadata=metadata)
+    assert checkpoint_exists(supplied)
+    restored, restored_metadata = load_checkpoint(state, supplied)
+    chex.assert_trees_all_equal(restored, state)
+    assert restored_metadata == metadata
+    assert load_checkpoint_metadata(supplied) == metadata
+
+
+@pytest.mark.parametrize("as_string", [False, True])
+def test_relative_path_restores_existing_absolute_checkpoint(tmp_path, monkeypatch, as_string):
+    state = {"weights": jnp.arange(3, dtype=jnp.float32)}
+    save_checkpoint(state, tmp_path / "agent.ckpt", metadata={"epoch": 7})
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path.relative_to(tmp_path) / "agent.ckpt"
+    supplied = str(path) if as_string else path
+
+    assert checkpoint_exists(supplied)
+    restored, metadata = load_checkpoint(state, supplied)
+    chex.assert_trees_all_equal(restored, state)
+    assert metadata == {"epoch": 7}
+    assert load_checkpoint_metadata(supplied) == metadata
