@@ -1,0 +1,73 @@
+{
+  "schema": "asi.riverswim_sarsa_discount_horizon.plan.v1",
+  "framework_base_commit": "415e7d225a4338492275be6cafa69d87c158c30a",
+  "development_only": true,
+  "scientific_promotion_allowed": false,
+  "reference_dev_population_allowed": false,
+  "prior_result": "PR #3220 improved two seeds by lowering trace learning rate, but one seed remained at the reward floor in every arm; the lambda-specific interaction rule failed. No prior shard is reused here.",
+  "hypothesis": "At fixed lamda 0.8 and step_size 0.014, increasing gamma from 0.9 to 0.99 improves lifetime mean reward by giving distant upstream rewards a longer discounted horizon.",
+  "mechanism_basis": "The default six-state chain needs five net upstream moves from its initial state. The discount weight at lag 20 changes from approximately 0.122 to 0.818; geometric discount scale 1/(1-gamma) changes from 10 to 100. These are algebraic motivation, not evidence that either discount has the wrong optimal policy. Increasing gamma also changes eligibility decay gamma*lambda from approximately 0.72 to 0.792 and changes value/TD-error scale. This single-factor probe measures the combined gamma intervention, not discount-horizon mediation separately from trace or stability effects.",
+  "design": "One factor: gamma. Two fresh-process arms per seed, identical actual initialization and all other configuration values, same full runner and event budget. Default gamma is remeasured; no old numerical result is a baseline substitute.",
+  "arms": {
+    "gamma_090": {
+      "gamma": 0.9,
+      "lamda": 0.8,
+      "step_size": 0.014
+    },
+    "gamma_099": {
+      "gamma": 0.99,
+      "lamda": 0.8,
+      "step_size": 0.014
+    }
+  },
+  "seeds": [
+    101001,
+    101002,
+    101003
+  ],
+  "seed_role": "Fresh development seeds; never frozen-scorecard or scientific evaluation seeds.",
+  "horizon": 20000,
+  "fresh_process_shards": 6,
+  "maximum_comparison_events": 120000,
+  "primary_metric": "mean reward across all 20000 transitions",
+  "primary_contrast": "gamma_099 minus gamma_090 within each seed",
+  "primary_decision": "The fixed sign/size screen passes only if every paired difference is strictly positive and mean exceeds 0.01. Report improvement only if that screen passes and mean also exceeds the across-seed sample SD. Otherwise report negative when mean <= 0, or inconclusive. No secondary rescue or reference selection.",
+  "secondary_metrics": [
+    "last-2000 mean reward",
+    "rightmost-state visits",
+    "first upstream reward event (null censored)",
+    "action counts",
+    "parameter-change events",
+    "fixed diagnostic snapshots"
+  ],
+  "fixed_checkpoints": [
+    0,
+    100,
+    1000,
+    2500,
+    5000,
+    10000,
+    20000
+  ],
+  "fixed_controls": "Default six-state RiverSwim; lamda 0.8, step_size 0.014; epsilon 0.5 to 0.02 over 2500 steps; empty hidden network and shared per-action biases. No initialization, reward, horizon, exploration, runner, trace mode or other intervention.",
+  "schedule": [
+    [
+      101001,
+      "gamma_090",
+      "gamma_099"
+    ],
+    [
+      101002,
+      "gamma_099",
+      "gamma_090"
+    ],
+    [
+      101003,
+      "gamma_090",
+      "gamma_099"
+    ]
+  ],
+  "resource_policy": "At most two CPU fresh processes concurrently in fixed pair schedule. OMP/OpenBLAS/MKL threads 1, JAX preallocation false. Equal event/update-attempt budgets. Endpoint numeric state bytes/leaves recorded; total process/native peak memory and qualified timing unmeasured. Excluded one-event API preflight seed 101099 for each arm.",
+  "integrity_policy": "Public draft PR and clean input commit before comparisons. Freeze plan, run script AND validator before collection. Record all 228 framework/config/lockfile byte digests, source commit, runtime, UTC start/end, plan/script hashes, raw reward/action/state traces and read-only snapshots. No retries, substitutions, early stopping, gate changes or source drift. Stop later batches on any failure and retain the partial failure prefix and logs.",
+  "scope_limit": "Permanently nonpromoting development probe, three seed pairs and two gamma values. Cannot establish an optimal discount, trace superiority, a pure horizon mechanism, sole cause of previous failure, confidence, generalization, transfer/retention, frozen-scorecard qualification, reference-dev or scientific evidence. Existing artifacts and gates immutable. This roster is consumed development data after execution."
+}
