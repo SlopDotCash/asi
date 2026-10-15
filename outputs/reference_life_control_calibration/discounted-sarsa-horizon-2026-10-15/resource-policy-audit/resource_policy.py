@@ -12,6 +12,10 @@ EXPECTED_SETTINGS = {
     "MKL_NUM_THREADS": "1",
     "XLA_PYTHON_CLIENT_PREALLOCATE": "false",
 }
+PRE_FLIGHT_NAMES = (
+    "preflight-gamma_090.json",
+    "preflight-gamma_099.json",
+)
 FROZEN_INPUTS = Path(__file__).resolve().parent.parent
 FROZEN_SCRIPT_HASHES = {
     "run.py": "5f38fb5c9aafd5b667814cfaa7a6757b2310ca30c79e78585b00c2842f39d696",
@@ -32,6 +36,15 @@ def require_settings(settings: object, *, context: str) -> None:
             raise ResourcePolicyError(
                 f"{context}: {key} must be exactly {expected!r}; got {actual!r}"
             )
+
+
+def required_preflight_paths(records: Path) -> tuple[Path, ...]:
+    paths = tuple(records / "preflight" / name for name in PRE_FLIGHT_NAMES)
+    missing = tuple(path.name for path in paths if not path.is_file())
+    if missing:
+        names = ", ".join(missing)
+        raise ResourcePolicyError(f"Missing required preflight records: {names}")
+    return paths
 
 
 def frozen_script(name: str) -> Path:

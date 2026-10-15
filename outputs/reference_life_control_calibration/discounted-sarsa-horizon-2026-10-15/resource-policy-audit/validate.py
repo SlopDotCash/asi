@@ -15,6 +15,7 @@ from resource_policy import (
     ResourcePolicyError,
     frozen_script,
     require_settings,
+    required_preflight_paths,
 )
 
 
@@ -37,17 +38,20 @@ def main() -> int:
         paths = sorted(args.records.glob("*-seed*.json"))
         if not paths:
             raise ResourcePolicyError("No comparison records")
-        checked = []
-        for path in paths:
+        preflight_paths = required_preflight_paths(args.records)
+
+        def audit_record(path: Path) -> dict[str, object]:
             record = json.loads(path.read_text(encoding="utf-8"))
             runtime = record.get("runtime")
             settings = runtime.get("thread_settings") if isinstance(runtime, dict) else None
             require_settings(settings, context=path.name)
-            checked.append({
+            return {
                 "path": path.name,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "recorded_settings": settings,
-            })
+
+        checked = [audit_record(path) for path in paths]
+        checked_preflights = [audit_record(path) for path in preflight_paths]
     except (ResourcePolicyError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -67,7 +71,9 @@ def main() -> int:
             "post_collection_audit": True,
             "required_settings": EXPECTED_SETTINGS,
             "compliant_comparison_records": len(checked),
+            "compliant_preflight_records": len(checked_preflights),
             "records": checked,
+            "preflight_records": checked_preflights,
             "recomputed_summary_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
             "limits": "Recorded environment settings, not independently measured native "
             "thread counts, actual peak memory, execution attestation or a retroactive "

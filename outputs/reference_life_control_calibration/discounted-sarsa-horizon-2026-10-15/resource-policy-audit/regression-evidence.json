@@ -15,8 +15,10 @@
   "post_collection_correction": true,
   "new_validator_exit_code_on_same_invalid_fixtures": 2,
   "invalid_fixture_summary_created_by_new_validator": false,
+  "invalid_preflight_record_rejected": true,
   "original_artifact_files_unchanged_from_result_commit": 20,
   "original_result_commit": "08b146636e8c53ab9568d955b65ea8c98f54be51",
+  "preflight_records_audited": 2,
   "two_excluded_preflights_compliant": true,
   "compliant_summary_reproduced_byte_for_byte": true,
   "required_settings": {
@@ -25,6 +27,6 @@
     "MKL_NUM_THREADS": "1",
     "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
   },
-  "new_resource_guard_tests_passed": 38,
+  "new_resource_guard_tests_passed": 39,
   "limits": "Synthetic invalid copies are test fixtures, not benchmark data. This correction was added after collection; original inputs remain unchanged. Recorded settings do not independently attest native execution or peak resources."
 }
