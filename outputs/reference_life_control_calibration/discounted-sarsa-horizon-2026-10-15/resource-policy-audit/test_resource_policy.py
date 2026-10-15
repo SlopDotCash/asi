@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -79,7 +80,37 @@ def test_compliant_retained_records_reproduce_original_summary(tmp_path):
     ], cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stderr
     assert output.read_bytes() == (FROZEN_INPUTS / "summary.json").read_bytes()
-    assert json.loads(report.read_text())["compliant_comparison_records"] == 6
+    audit = json.loads(report.read_text())
+    assert audit["compliant_comparison_records"] == 6
+    assert audit["compliant_preflight_records"] == 2
+    assert {item["path"] for item in audit["records"]} >= {
+        "preflight/preflight-gamma_090.json",
+        "preflight/preflight-gamma_099.json",
+    }
+
+
+def test_validation_rejects_noncompliant_nested_preflight(tmp_path):
+    records = tmp_path / "records"
+    records.mkdir()
+    preflight = records / "preflight"
+    preflight.mkdir()
+    for path in sorted(FROZEN_INPUTS.glob("*-seed*.json")):
+        shutil.copy2(path, records / path.name)
+    for path in sorted((FROZEN_INPUTS / "preflight").glob("preflight-*.json")):
+        shutil.copy2(path, preflight / path.name)
+    bad = preflight / "preflight-gamma_090.json"
+    record = json.loads(bad.read_text(encoding="utf-8"))
+    record["runtime"]["thread_settings"]["OMP_NUM_THREADS"] = "8"
+    bad.write_text(json.dumps(record), encoding="utf-8")
+
+    output = tmp_path / "must-not-exist.json"
+    result = subprocess.run([
+        sys.executable, str(HERE / "validate.py"), "--records", str(records),
+        "--preregistration", str(FROZEN_INPUTS / "preregistration.json"),
+        "--source-root", str(ROOT), "--out", str(output),
+    ], cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 2 and "preflight/preflight-gamma_090.json" in result.stderr
+    assert not output.exists()
 
 
 def test_compliant_run_help_forwards_without_running_a_life():

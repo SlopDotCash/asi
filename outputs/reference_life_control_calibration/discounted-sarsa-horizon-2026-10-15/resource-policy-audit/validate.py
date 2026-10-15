@@ -34,17 +34,26 @@ def main() -> int:
             raise ResourcePolicyError("Output already exists; overwriting is forbidden")
         frozen_script("run.py")
         script = frozen_script("validate.py")
-        paths = sorted(args.records.glob("*-seed*.json"))
-        if not paths:
+        comparison_paths = sorted(args.records.glob("*-seed*.json"))
+        preflight_paths = sorted((args.records / "preflight").glob("preflight-*.json"))
+        expected_preflights = [
+            args.records / "preflight" / "preflight-gamma_090.json",
+            args.records / "preflight" / "preflight-gamma_099.json",
+        ]
+        if preflight_paths != expected_preflights:
+            raise ResourcePolicyError("Expected both frozen preflight records")
+        paths = comparison_paths + preflight_paths
+        if not comparison_paths:
             raise ResourcePolicyError("No comparison records")
         checked = []
         for path in paths:
             record = json.loads(path.read_text(encoding="utf-8"))
             runtime = record.get("runtime")
             settings = runtime.get("thread_settings") if isinstance(runtime, dict) else None
-            require_settings(settings, context=path.name)
+            relative_path = path.relative_to(args.records).as_posix()
+            require_settings(settings, context=relative_path)
             checked.append({
-                "path": path.name,
+                "path": relative_path,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "recorded_settings": settings,
             })
@@ -66,7 +75,8 @@ def main() -> int:
             "scientific_promotion_allowed": False,
             "post_collection_audit": True,
             "required_settings": EXPECTED_SETTINGS,
-            "compliant_comparison_records": len(checked),
+            "compliant_comparison_records": len(comparison_paths),
+            "compliant_preflight_records": len(preflight_paths),
             "records": checked,
             "recomputed_summary_sha256": hashlib.sha256(args.out.read_bytes()).hexdigest(),
             "limits": "Recorded environment settings, not independently measured native "

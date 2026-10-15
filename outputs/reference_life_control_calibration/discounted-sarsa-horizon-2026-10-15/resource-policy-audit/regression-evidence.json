@@ -7,7 +7,7 @@
     "XLA_PYTHON_CLIENT_PREALLOCATE": "true"
   },
   "actual_six_retained_records_compliant": true,
-  "validator_sha256": "aad4bcc597c772a66cf4abf41194d3694dc07c2af8166bb2d27aa70574b4562a",
+  "validator_sha256": "44b15dcd9db8d26850715e83e5b3f9e671b0e1285588e229f8cf93e0f5c2263b",
   "frozen_script_sha256": "5f38fb5c9aafd5b667814cfaa7a6757b2310ca30c79e78585b00c2842f39d696",
   "schema": "asi.riverswim_sarsa_discount_horizon.resource_guard_regression.v1",
   "development_only": true,
@@ -18,6 +18,8 @@
   "original_artifact_files_unchanged_from_result_commit": 20,
   "original_result_commit": "08b146636e8c53ab9568d955b65ea8c98f54be51",
   "two_excluded_preflights_compliant": true,
+  "resource_audit_contains_preflight_records": true,
+  "validated_preflight_records": 2,
   "compliant_summary_reproduced_byte_for_byte": true,
   "required_settings": {
     "OMP_NUM_THREADS": "1",

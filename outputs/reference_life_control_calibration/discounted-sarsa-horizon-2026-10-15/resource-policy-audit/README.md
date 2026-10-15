@@ -26,7 +26,8 @@ experimental evidence. [Regression evidence](regression-evidence.json).
   `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1` and
   `XLA_PYTHON_CLIENT_PREALLOCATE=false`. Values must be strings matching exactly.
 - All six actual comparison records have those four values, as do both excluded
-  one-event preflights. The checked validator accepts the six actual records and
+  one-event preflights. The checked validator audits and hashes all eight records,
+  including both nested preflights, accepts the six comparison records and
   regenerates the retained summary byte for byte. [Audit](resource-audit.json).
 
 The 38 [regression tests](test_resource_policy.py) cover absent/noncanonical/

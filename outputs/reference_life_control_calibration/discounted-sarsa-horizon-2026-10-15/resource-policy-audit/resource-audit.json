@@ -4,6 +4,7 @@
   "limits": "Recorded environment settings, not independently measured native thread counts, actual peak memory, execution attestation or a retroactive pre-execution guard. Frozen seed consumption and scientific status unchanged.",
   "post_collection_audit": true,
   "recomputed_summary_sha256": "ffbe7201ae0a14bd036a31a09de8635b65a284142ba3df56992f9d85af3735e2",
+  "compliant_preflight_records": 2,
   "records": [
     {
       "path": "gamma_090-seed101001.json",
@@ -64,6 +65,26 @@
         "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
       },
       "sha256": "b9d0f8e3c069e2ba92082d77cb1a334b67306630b40d7146cf945041d3272ee4"
+    },
+    {
+      "path": "preflight/preflight-gamma_090.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "e784f6fd560d6e3fd2d1717bb190a5fc366aa65c9e95ecb4b87010086b46c01"
+    },
+    {
+      "path": "preflight/preflight-gamma_099.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "c4753bc3132da429052b7fa7723d32505f3df789c522190bda9a4415e67e36da"
     }
   ],
   "required_settings": {
