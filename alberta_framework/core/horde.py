@@ -1121,9 +1121,15 @@ def run_horde_learning_loop_final_state(
         (observations, cumulants, next_observations),
     )
     elapsed = time.time() - t0
+    # The scan carries host clocks through the traced update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     return cast(
         MultiHeadMLPState,
-        final_state.replace(uptime_s=final_state.uptime_s + elapsed),  # type: ignore[attr-defined]
+        final_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=state.birth_timestamp,
+            uptime_s=state.uptime_s + elapsed,
+        ),
     )
 
 
