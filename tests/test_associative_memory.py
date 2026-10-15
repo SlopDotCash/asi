@@ -945,6 +945,54 @@ def test_full_table_update_retains_every_write_of_the_step() -> None:
     assert int(result.state.replacements - state.replacements) <= active
 
 
+def test_full_table_update_keeps_rows_it_matched_but_has_not_written_yet() -> None:
+    """A row matched by this update's prediction is not this update's victim.
+
+    The scan writes features in context order, so a new key early in the
+    context could take the slot of a matched key that comes later. That key
+    was then no longer found, came back as an empty row, and evicted a second
+    row: the learned values were lost and ``replacements`` counted two
+    evictions for one new key.
+    """
+    config = AssociativeMemoryConfig(
+        vocab_size=4,
+        block_size=2,
+        suffix_length=2,
+        feature_family="position_token",
+        max_features=3,
+    )
+    learner = AssociativeMemoryLearner(config)
+    state = learner.init()
+    # Token 3 in position 1 precedes two different labels, so its row has the
+    # lowest utility of the full table when the update below starts.
+    for warm, warm_label in (([0, 3], 1), ([1, 3], 2)):
+        for _ in range(20):
+            state = learner.update(
+                state,
+                jnp.asarray(warm, dtype=jnp.int32),
+                jnp.asarray(warm_label, dtype=jnp.int32),
+            ).state
+
+    context = jnp.asarray([2, 3], dtype=jnp.int32)
+    before = learner.predict(state, context)
+    assert [int(x) for x in before.feature_mask] == [1, 1, 0]
+    assert [int(x) for x in before.found] == [0, 1, 0]
+    assert int(jnp.sum(state.counts > 0)) == config.max_features
+    matched = int(before.indices[1])
+    assert int(jnp.argmin(state.utility)) == matched
+
+    label = 2
+    result = learner.update(state, context, jnp.asarray(label, dtype=jnp.int32))
+    after = learner.predict(result.state, context)
+
+    assert [int(x) for x in after.found] == [1, 1, 0]
+    assert int(after.indices[1]) == matched
+    assert int(result.state.counts[matched]) == int(state.counts[matched]) + 1
+    expected_row = (state.values[matched] * config.retention).at[label].add(config.write_lr)
+    chex.assert_trees_all_close(result.state.values[matched], expected_row, atol=1e-6)
+    assert int(result.state.replacements - state.replacements) == 1
+
+
 def test_prior_coefficient_is_independent_of_feature_weight_mass() -> None:
     """The prior enters with a small fixed weight (its documented contract).
 
