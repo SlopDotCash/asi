@@ -595,6 +595,18 @@ def create_obgd_state(
     )
 
 
+def _float32_log(value: float) -> Array:
+    # float32 log flushes a positive subnormal to zero and returns -inf.
+    # The log of that same value is finite and fits in float32.
+    direct = jnp.log(jnp.asarray(value, dtype=jnp.float32))
+    narrowed = float(np.float32(value))
+    if narrowed > 0.0:
+        stable = jnp.asarray(math.log(narrowed), dtype=jnp.float32)
+        use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+        return jnp.where(use_stable, stable, direct)
+    return direct
+
+
 def create_tdidbd_state(
     feature_dim: int,
     initial_step_size: float = 0.01,
@@ -612,13 +624,14 @@ def create_tdidbd_state(
     Returns:
         Initial TD-IDBD state
     """
+    log_step_size = _float32_log(initial_step_size)
     return TDIDBDState(
-        log_step_sizes=jnp.full(feature_dim, jnp.log(initial_step_size), dtype=jnp.float32),
+        log_step_sizes=jnp.full(feature_dim, log_step_size, dtype=jnp.float32),
         eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
         h_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
         meta_step_size=jnp.array(meta_step_size, dtype=jnp.float32),
         trace_decay=jnp.array(trace_decay, dtype=jnp.float32),
-        bias_log_step_size=jnp.array(jnp.log(initial_step_size), dtype=jnp.float32),
+        bias_log_step_size=jnp.array(log_step_size, dtype=jnp.float32),
         bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
         bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
         previous_gamma=jnp.array(1.0, dtype=jnp.float32),

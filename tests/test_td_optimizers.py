@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from alberta_framework import TDIDBD, AutoTDIDBD, TDLinearLearner
+from alberta_framework.core.types import create_tdidbd_state
 
 
 class TestTDIDBD:
@@ -26,6 +27,16 @@ class TestTDIDBD:
         chex.assert_trees_all_close(state.h_traces, jnp.zeros(10))
         assert state.meta_step_size == pytest.approx(0.001)
         assert state.trace_decay == pytest.approx(0.9)
+
+    def test_subnormal_initial_step_size_keeps_a_finite_log(self) -> None:
+        state = create_tdidbd_state(2, initial_step_size=1e-38)
+        expected = np.float32(-87.49822998046875)
+        np.testing.assert_array_equal(state.log_step_sizes, np.full(2, expected))
+        np.testing.assert_array_equal(state.bias_log_step_size, expected)
+        ordinary = create_tdidbd_state(1, initial_step_size=0.01)
+        direct = jnp.log(jnp.asarray(0.01, dtype=jnp.float32))
+        np.testing.assert_array_equal(ordinary.log_step_sizes, np.asarray(direct))
+        np.testing.assert_array_equal(ordinary.bias_log_step_size, np.asarray(direct))
 
     def test_update_returns_correct_shapes(self, sample_observation):
         """TDIDBD update should return correctly shaped deltas."""
