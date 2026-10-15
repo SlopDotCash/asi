@@ -1402,3 +1402,25 @@ class TestTraceDiscountUsesPriorTransition:
             jnp.array([0.09, 0.1, 0.19], dtype=jnp.float32),
             atol=1e-6,
         )
+
+
+
+@pytest.mark.parametrize("reject", [False, True])
+def test_gradient_scan_preserves_initialized_host_clocks(reject: bool) -> None:
+    learner = GradientTDLinearLearner()
+    initial = learner.init(2)
+    observations = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    rewards = jnp.full((2,), jnp.nan if reject else 1.0, dtype=jnp.float32)
+    current = initial
+    for batch in range(2):
+        result = run_gradient_td_learning_loop(
+            learner, current, observations, rewards, observations,
+            jnp.zeros(2, dtype=jnp.float32), jnp.ones(2, dtype=jnp.float32),
+        )
+        assert type(result.state.birth_timestamp) is float
+        assert result.state.birth_timestamp == initial.birth_timestamp
+        assert type(result.state.uptime_s) is float
+        assert result.state.uptime_s >= current.uptime_s
+        assert int(result.state.step_count) == (0 if reject else 2 * (batch + 1))
+        assert bool(jnp.all(result.updates_applied == (not reject)))
+        current = result.state

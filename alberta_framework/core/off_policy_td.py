@@ -507,7 +507,7 @@ class OffPolicyTDLinearLearner:
         feature_dim = _require_feature_dim(
             feature_dim, vectors=2, fixed_scalars=4, update_vectors=9
         )
-        return OffPolicyTDState(  # type: ignore[call-arg]
+        return OffPolicyTDState(
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
@@ -606,7 +606,7 @@ class OffPolicyTDLinearLearner:
 
         # rho_clipped is already represented in the trace.
         scaled_update = alpha * td_error
-        proposed_state = OffPolicyTDState(  # type: ignore[call-arg]
+        proposed_state = OffPolicyTDState(
             weights=state.weights + scaled_update * new_e,
             bias=state.bias + scaled_update * new_e_b,
             eligibility_traces=new_e,
@@ -646,7 +646,7 @@ class OffPolicyTDLinearLearner:
             lambda: state,
         )
 
-        return OffPolicyTDUpdateResult(  # type: ignore[call-arg]
+        return OffPolicyTDUpdateResult(
             state=new_state,
             prediction=jnp.where(
                 update_applied, jnp.atleast_1d(v_t), jnp.zeros_like(jnp.atleast_1d(v_t))
@@ -730,7 +730,7 @@ class ETDLinearLearner:
         feature_dim = _require_feature_dim(
             feature_dim, vectors=2, fixed_scalars=6, update_vectors=9
         )
-        return ETDState(  # type: ignore[call-arg]
+        return ETDState(
             weights=jnp.zeros(feature_dim, dtype=jnp.float32),
             bias=jnp.array(0.0, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
@@ -840,7 +840,7 @@ class ETDLinearLearner:
         new_e = _skip_zero_scale(rho_s, eligibility_core)
         new_e_b = _skip_zero_scale(rho_s, bias_core)
 
-        proposed_state = ETDState(  # type: ignore[call-arg]
+        proposed_state = ETDState(
             weights=state.weights + alpha * td_error * new_e,
             bias=state.bias + alpha * td_error * new_e_b,
             eligibility_traces=new_e,
@@ -885,7 +885,7 @@ class ETDLinearLearner:
             lambda: state,
         )
 
-        return ETDUpdateResult(  # type: ignore[call-arg]
+        return ETDUpdateResult(
             state=new_state,
             prediction=jnp.where(
                 update_applied, jnp.atleast_1d(v_t), jnp.zeros_like(jnp.atleast_1d(v_t))
@@ -979,7 +979,7 @@ class GradientTDLinearLearner:
             augmented=True,
         )
         augmented_dim = feature_dim + 1
-        return GradientTDState(  # type: ignore[call-arg]
+        return GradientTDState(
             weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
             secondary_weights=jnp.zeros(augmented_dim, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(augmented_dim, dtype=jnp.float32),
@@ -1074,7 +1074,7 @@ class GradientTDLinearLearner:
         primary_step = alpha * (td_error * traces - bootstrap_correction)
         secondary_step = beta * (td_error * traces - secondary_dot_phi * phi)
 
-        proposed_state = GradientTDState(  # type: ignore[call-arg]
+        proposed_state = GradientTDState(
             weights=state.weights + primary_step,
             secondary_weights=state.secondary_weights + secondary_step,
             eligibility_traces=traces,
@@ -1118,7 +1118,7 @@ class GradientTDLinearLearner:
             lambda: proposed_state,
             lambda: state,
         )
-        return GradientTDUpdateResult(  # type: ignore[call-arg]
+        return GradientTDUpdateResult(
             state=new_state,
             prediction=jnp.where(
                 update_applied,
@@ -1203,9 +1203,10 @@ def run_gradient_td_learning_loop(
     )
     elapsed = time.time() - t0
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
-    return GradientTDArrayResult(  # type: ignore[call-arg]
+    return GradientTDArrayResult(
         state=final_state,
         predictions=predictions,
         td_errors=td_errors,
