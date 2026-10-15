@@ -1,0 +1,77 @@
+{
+  "compliant_comparison_records": 6,
+  "development_only": true,
+  "limits": "Recorded environment settings, not independently measured native thread counts, actual peak memory, execution attestation or a retroactive pre-execution guard. Frozen seed consumption and scientific status unchanged.",
+  "post_collection_audit": true,
+  "recomputed_summary_sha256": "ffbe7201ae0a14bd036a31a09de8635b65a284142ba3df56992f9d85af3735e2",
+  "records": [
+    {
+      "path": "gamma_090-seed101001.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "1b95d2d00394ef2f96674390ccb738e4a730a5e57543b67cb8f97d1f99105ab0"
+    },
+    {
+      "path": "gamma_090-seed101002.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "59a6d08f86fcb4081ecfabc8cf3cb3c8f411ba60f3dc21d6e6ec0aacd9f53c83"
+    },
+    {
+      "path": "gamma_090-seed101003.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "fd6d97bada754dedae545ab96e9a714da147e6e65cd03191ddf25b82578872f4"
+    },
+    {
+      "path": "gamma_099-seed101001.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "ef23c202c9f0899d8efd2ef7ee64a839843f23975fd5769742f349e5cf970b89"
+    },
+    {
+      "path": "gamma_099-seed101002.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "7389a61ec6b20932e9f9eb559e251ca56017dc3a6e3d17128e4b13344a09bb0c"
+    },
+    {
+      "path": "gamma_099-seed101003.json",
+      "recorded_settings": {
+        "MKL_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+      },
+      "sha256": "b9d0f8e3c069e2ba92082d77cb1a334b67306630b40d7146cf945041d3272ee4"
+    }
+  ],
+  "required_settings": {
+    "MKL_NUM_THREADS": "1",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+  },
+  "schema": "asi.riverswim_sarsa_discount_horizon.resource_audit.v1",
+  "scientific_promotion_allowed": false
+}
