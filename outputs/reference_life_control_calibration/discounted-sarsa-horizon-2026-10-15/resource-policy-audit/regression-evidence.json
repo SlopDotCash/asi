@@ -1,0 +1,30 @@
+{
+  "original_validator_exit_code_on_six_consistently_noncompliant_fixtures": 0,
+  "invalid_settings": {
+    "OMP_NUM_THREADS": "8",
+    "OPENBLAS_NUM_THREADS": "8",
+    "MKL_NUM_THREADS": "8",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "true"
+  },
+  "actual_six_retained_records_compliant": true,
+  "validator_sha256": "aad4bcc597c772a66cf4abf41194d3694dc07c2af8166bb2d27aa70574b4562a",
+  "frozen_script_sha256": "5f38fb5c9aafd5b667814cfaa7a6757b2310ca30c79e78585b00c2842f39d696",
+  "schema": "asi.riverswim_sarsa_discount_horizon.resource_guard_regression.v1",
+  "development_only": true,
+  "scientific_promotion_allowed": false,
+  "post_collection_correction": true,
+  "new_validator_exit_code_on_same_invalid_fixtures": 2,
+  "invalid_fixture_summary_created_by_new_validator": false,
+  "original_artifact_files_unchanged_from_result_commit": 20,
+  "original_result_commit": "08b146636e8c53ab9568d955b65ea8c98f54be51",
+  "two_excluded_preflights_compliant": true,
+  "compliant_summary_reproduced_byte_for_byte": true,
+  "required_settings": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+  },
+  "new_resource_guard_tests_passed": 38,
+  "limits": "Synthetic invalid copies are test fixtures, not benchmark data. This correction was added after collection; original inputs remain unchanged. Recorded settings do not independently attest native execution or peak resources."
+}
