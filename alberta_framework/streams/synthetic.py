@@ -165,6 +165,23 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _finite_float32_sum(values: Array) -> Array:
+    """Sum finite float32 values without an overflowing partial total.
+
+    ``jnp.sum`` turns a pair of large opposite values into ``inf`` when one
+    partial total leaves the float32 range, even though the real total is
+    finite.  A power-of-two scale keeps that total, including exact zero.
+    A finite direct sum stays bit for bit.
+    """
+    values = jnp.asarray(values, dtype=jnp.float32)
+    direct = jnp.sum(values)
+    exponent = jnp.frexp(jnp.max(jnp.abs(values)))[1]
+    scaled = jnp.ldexp(values, -exponent)
+    stable = jnp.ldexp(jnp.sum(scaled), exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 @chex.dataclass(frozen=True)
 class RandomWalkState:
     """State for RandomWalkStream.
@@ -377,7 +394,7 @@ class HiddenStateAR2Stream:
             dtype=jnp.float32,
         )
         x_t = self._phi1 * state.x_prev + self._phi2 * state.x_prev2 + innovation
-        visible_term = jnp.sum(x_t[: self._visible_dim])
+        visible_term = _finite_float32_sum(x_t[: self._visible_dim])
         h0 = x_t[self._visible_dim]
         h1 = x_t[self._visible_dim + 1]
         hidden_term = self._nonlinear_coeff * h0 * h1
