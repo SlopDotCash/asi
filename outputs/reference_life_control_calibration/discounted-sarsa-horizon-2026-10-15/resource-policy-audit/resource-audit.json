@@ -1,10 +1,10 @@
 {
   "compliant_comparison_records": 6,
+  "compliant_preflight_records": 2,
   "development_only": true,
   "limits": "Recorded environment settings, not independently measured native thread counts, actual peak memory, execution attestation or a retroactive pre-execution guard. Frozen seed consumption and scientific status unchanged.",
   "post_collection_audit": true,
   "recomputed_summary_sha256": "ffbe7201ae0a14bd036a31a09de8635b65a284142ba3df56992f9d85af3735e2",
-  "compliant_preflight_records": 2,
   "records": [
     {
       "path": "gamma_090-seed101001.json",
@@ -74,7 +74,7 @@
         "OPENBLAS_NUM_THREADS": "1",
         "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
       },
-      "sha256": "e784f6fd560d6e3fd2d1717bb190a5fc366aa65c9e95ecb4b87010086b46c01"
+      "sha256": "e784f6fd560d6e3fd2d1717bb1900a5fc366aa65c9e95ecb4b87010086b46c01"
     },
     {
       "path": "preflight/preflight-gamma_099.json",

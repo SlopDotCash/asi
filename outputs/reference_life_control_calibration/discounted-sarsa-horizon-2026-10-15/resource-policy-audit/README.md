@@ -19,9 +19,11 @@ experimental evidence. [Regression evidence](regression-evidence.json).
   runner or importing JAX. Missing, mistyped and wrong values fail closed with
   exit 2 before a life starts. It delegates to the unchanged, hash-pinned input
   runner; all original CLI arguments are forwarded.
-- [validate.py](validate.py) checks the recorded settings of every shard before
-  delegating to the unchanged, hash-pinned full validator. Cross-shard equality
-  cannot substitute for compliance with the declared values.
+- [validate.py](validate.py) checks that the records are exactly the six
+  comparison shards plus the two retained nested preflights, rejects any other
+  preflight set, and checks every shard's recorded settings before delegating to
+  the unchanged, hash-pinned full validator. Cross-shard equality cannot
+  substitute for compliance with the declared values.
 - [resource_policy.py](resource_policy.py) shares the exact required settings:
   `OMP_NUM_THREADS=1`, `OPENBLAS_NUM_THREADS=1`, `MKL_NUM_THREADS=1` and
   `XLA_PYTHON_CLIENT_PREALLOCATE=false`. Values must be strings matching exactly.
@@ -30,11 +32,13 @@ experimental evidence. [Regression evidence](regression-evidence.json).
   including both nested preflights, accepts the six comparison records and
   regenerates the retained summary byte for byte. [Audit](resource-audit.json).
 
-The 38 [regression tests](test_resource_policy.py) cover absent/noncanonical/
+The 41 [regression tests](test_resource_policy.py) cover absent/noncanonical/
 non-string settings, real runner CLI rejection before dispatch/output, real
-validation CLI rejection when all six fixtures share a violation, the positive
-full retained-data path, and compliant runner `--help` forwarding. No comparison
-or new benchmark seed was executed to test the correction.
+validation CLI rejection when all six fixtures share a violation, rejection of a
+noncompliant nested preflight, of a dropped retained preflight and of an
+unexpected extra preflight record, the positive full retained-data path, and
+compliant runner `--help` forwarding. No comparison or new benchmark seed was
+executed to test the correction.
 
 ## Timing and scope
 

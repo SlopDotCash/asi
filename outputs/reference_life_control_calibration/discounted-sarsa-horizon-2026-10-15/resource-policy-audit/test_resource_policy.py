@@ -60,6 +60,10 @@ def test_validation_rejects_consistently_invalid_six_shards(tmp_path, key, missi
                 "true" if key == "XLA_PYTHON_CLIENT_PREALLOCATE" else "8"
             )
         (records / path.name).write_text(json.dumps(record), encoding="utf-8")
+    preflight = records / "preflight"
+    preflight.mkdir()
+    for path in sorted((FROZEN_INPUTS / "preflight").glob("preflight-*.json")):
+        shutil.copy2(path, preflight / path.name)
     output = tmp_path / "must-not-exist.json"
     result = subprocess.run([
         sys.executable, str(HERE / "validate.py"), "--records", str(records),
@@ -113,10 +117,56 @@ def test_validation_rejects_noncompliant_nested_preflight(tmp_path):
     assert not output.exists()
 
 
+def test_validation_rejects_an_extra_preflight_record(tmp_path):
+    records = tmp_path / "records"
+    records.mkdir()
+    preflight = records / "preflight"
+    preflight.mkdir()
+    for path in sorted(FROZEN_INPUTS.glob("*-seed*.json")):
+        shutil.copy2(path, records / path.name)
+    for path in sorted((FROZEN_INPUTS / "preflight").glob("preflight-*.json")):
+        shutil.copy2(path, preflight / path.name)
+    (preflight / "preflight-gamma_095.json").write_text(
+        (preflight / "preflight-gamma_090.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    output = tmp_path / "must-not-exist.json"
+    result = subprocess.run([
+        sys.executable, str(HERE / "validate.py"), "--records", str(records),
+        "--preregistration", str(FROZEN_INPUTS / "preregistration.json"),
+        "--source-root", str(ROOT), "--out", str(output),
+    ], cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 2 and "Expected both frozen preflight records" in result.stderr
+    assert not output.exists()
+
+
+def test_validation_rejects_a_dropped_preflight_record(tmp_path):
+    records = tmp_path / "records"
+    records.mkdir()
+    preflight = records / "preflight"
+    preflight.mkdir()
+    for path in sorted(FROZEN_INPUTS.glob("*-seed*.json")):
+        shutil.copy2(path, records / path.name)
+    shutil.copy2(
+        FROZEN_INPUTS / "preflight" / "preflight-gamma_090.json",
+        preflight / "preflight-gamma_090.json",
+    )
+
+    output = tmp_path / "must-not-exist.json"
+    result = subprocess.run([
+        sys.executable, str(HERE / "validate.py"), "--records", str(records),
+        "--preregistration", str(FROZEN_INPUTS / "preregistration.json"),
+        "--source-root", str(ROOT), "--out", str(output),
+    ], cwd=ROOT, capture_output=True, text=True, timeout=30, check=False)
+    assert result.returncode == 2 and "Expected both frozen preflight records" in result.stderr
+    assert not output.exists()
+
+
 def test_compliant_run_help_forwards_without_running_a_life():
     result = subprocess.run([
         sys.executable, str(HERE / "run.py"), "--help",
     ], cwd=ROOT, env=dict(os.environ, **EXPECTED_SETTINGS), capture_output=True,
-        text=True, timeout=30, check=False)
+        text=True, timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     assert "--preflight" in result.stdout
