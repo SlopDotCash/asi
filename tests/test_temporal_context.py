@@ -172,6 +172,34 @@ def test_finite_temporal_context_path_is_bitwise_unchanged() -> None:
     assert int(next_state.step_count) == 18
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_temporal_context_delta_overflow_fails_closed_in_eager_and_jit(
+    disable_jit: bool,
+) -> None:
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(
+            input_dim=1,
+            include_raw=False,
+            include_ema=False,
+            include_delta=True,
+            periods=(),
+        )
+    )
+    limit = jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32)
+    state = TemporalContextState(
+        observation_ema=jnp.asarray([limit], dtype=jnp.float32),
+        step_count=jnp.asarray(0, dtype=jnp.int32),
+    )
+
+    with jax.disable_jit(disable_jit):
+        features = featurizer.features(
+            state,
+            jnp.asarray([-limit], dtype=jnp.float32),
+        )
+
+    chex.assert_trees_all_equal(features, jnp.zeros((1,), dtype=jnp.float32))
+
+
 def test_temporal_context_step_count_saturates_at_int32_max() -> None:
     featurizer = TemporalContextFeaturizer(
         TemporalContextConfig(input_dim=1, periods=())
