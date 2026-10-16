@@ -260,6 +260,13 @@ class RecurrentLatentWorldModelEnsembleConfig:
     still bounds the representation gradient (a returned diagnostic signal,
     never itself clipped) and constrains ``gradient_clip_norm`` at
     construction.
+
+    Head logits are likewise validated for finiteness only.  They are not
+    predictions: ``tanh`` squashes the observation and reward means into
+    ``max_prediction_magnitude``, a sigmoid squashes the variances into
+    ``[variance_floor, max_variance]``, and the prediction gates check those
+    outputs.  A member that learns a low-noise stream drives its variance
+    logit past any fixed ceiling, so a logit ceiling is the same deadlock.
     """
 
     observation_dim: int
@@ -1148,7 +1155,6 @@ class RecurrentLatentWorldModelEnsemble:
             jnp.all(jnp.isfinite(next_hidden))
             & jnp.all(jnp.abs(next_hidden) <= 1.0 + 1.0e-6)
             & jnp.all(jnp.isfinite(raw))
-            & jnp.all(jnp.abs(raw) <= self._config.max_prediction_magnitude)
             & jnp.all(jnp.isfinite(means))
             & jnp.all(jnp.abs(means) <= self._config.max_prediction_magnitude)
             & jnp.all(jnp.isfinite(variances))
