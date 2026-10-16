@@ -62,6 +62,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
     load_checkpoint_metadata,
@@ -302,6 +303,12 @@ class GauntletConfig:
                 raise ValueError(f"{name} must be a finite real number")
             if not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
+            validated_float32_scalar(
+                name,
+                value,
+                positive=name in ("feature_std", "scale_factor"),
+                lower=None if name in ("feature_std", "scale_factor") else 0.0,
+            )
         if self.noise_std < 0.0 or self.feature_std <= 0.0:
             raise ValueError("noise_std must be >= 0 and feature_std > 0")
         if self.scale_factor <= 0.0 or self.drift_rate < 0.0:
