@@ -445,7 +445,11 @@ def run_activation_feature_arm(
         raise ValueError("activation/feature lane exceeds its 2000000-step bound")
     if type(seed) is not int or not 0 <= seed <= 2**32 - 1:
         raise ValueError("seed must be an exact uint32 value")
-    if arm.startswith("deep_fourier") and (config.hidden1 % 2 or config.hidden2 % 2):
+    if (
+        arm.startswith("deep_fourier")
+        and arm != "deep_fourier_off"
+        and (config.hidden1 % 2 or config.hidden2 % 2)
+    ):
         raise ValueError("Deep Fourier arms require even hidden widths")
     host_x = _host_array(data_x, name="data_x", dtype=np.dtype(np.float32))
     host_y = _host_array(data_y, name="data_y", dtype=np.dtype(np.int32))

@@ -360,3 +360,25 @@ def test_receipt_revalidates_frozen_result_without_array_protocol_dispatch() -> 
     object.__setattr__(result.screening, "per_task_accuracy", HostileArray())
     with pytest.raises(ValueError, match="per_task_accuracy"):
         activation_feature_result_payload(result, outcome="inconclusive")
+
+
+@pytest.mark.parametrize("hidden1,hidden2", [(3, 4), (4, 3), (3, 5)])
+def test_fourier_off_accepts_odd_widths_with_exact_control_parity(
+    hidden1: int, hidden2: int
+) -> None:
+    config = IPMNISTConfig(
+        n_tasks=2, task_length=4, input_dim=4,
+        hidden1=hidden1, hidden2=hidden2, n_classes=2,
+    )
+    x, y = _data()
+    control = run_screening_config(x, y, screening_spec("sgd_ema_norm_d099"), 3, config)
+    result = run_activation_feature_arm(x, y, arm="deep_fourier_off", seed=3, config=config)
+    for name in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
+        np.testing.assert_array_equal(getattr(result, name), getattr(control, name))
+    payload = activation_feature_result_payload(result, outcome="inconclusive")
+    validate_activation_feature_result(payload)
+    resources = payload["resources"]
+    assert resources["active_parameter_scalars"] == resources["allocated_parameter_scalars"]
+    for arm in ("deep_fourier", "deep_fourier_first_layer", "deep_fourier_sine_only"):
+        with pytest.raises(ValueError, match="even hidden widths"):
+            run_activation_feature_arm(x, y, arm=arm, seed=3, config=config)
