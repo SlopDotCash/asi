@@ -1536,6 +1536,40 @@ class TestObGDBoundCountsTheErrorOnce:
             bounded, tuple(error * b for b in published), rtol=1e-6, atol=1e-7
         )
 
+    @pytest.mark.parametrize("delta", [0.5, 0.1])
+    def test_adaptive_bounder_error_carrying_matches_published_obgd(
+        self, delta: float
+    ) -> None:
+        """AdaptiveObGDBounding must consume UPGD's error-carrying steps exactly once.
+
+        Regression: the pseudo-error-1.0 path under-bounded by ~1/|delta| for
+        |delta| < 1, letting the bounded step overshoot the target.
+        """
+        kappa, lr = 2.0, 1.0
+        learner = UPGDLearner(
+            n_heads=1,
+            hidden_sizes=(),
+            step_size=lr,
+            sparsity=0.0,
+            perturbation_sigma=0.0,
+            bounder=AdaptiveObGDBounding(kappa=kappa),
+            track_unit_utilities=False,
+            track_gradient_history=False,
+        )
+        state = learner.init(10, jr.key(0))
+        x = jnp.ones(10, dtype=jnp.float32)
+        z_l1 = float(jnp.sum(jnp.abs(x)) + 1.0)  # weight and bias gradient, error-free
+        z_sq = float(jnp.sum(x * x) + 1.0)
+        before = float(learner.predict(state, x)[0])
+        target = jnp.array([before + delta], dtype=jnp.float32)
+
+        after = float(learner.predict(learner.update(state, x, target).state, x)[0])
+
+        alpha_eff = lr / max(kappa * max(abs(delta), 1.0) * lr * z_l1, 1.0)
+        assert after - before == pytest.approx(alpha_eff * delta * z_sq, rel=1e-4)
+        # The bounded step never overshoots the target.
+        assert 0.0 < (after - before) / delta <= 1.0
+
 
 class TestUtilityTracking:
     """Utility should reflect |w * grad| accumulation."""

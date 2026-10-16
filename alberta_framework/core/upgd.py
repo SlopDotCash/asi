@@ -60,7 +60,11 @@ from alberta_framework.core._float32_scalars import (
 )
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
-from alberta_framework.core.optimizers import Bounder, ObGDBounding
+from alberta_framework.core.optimizers import (
+    AdaptiveObGDBounding,
+    Bounder,
+    ObGDBounding,
+)
 from alberta_framework.core.types import MLPParams
 from alberta_framework.core.update_safety import zero_if_collapsed_infinity
 
@@ -1982,16 +1986,21 @@ class UPGDLearner:
     ) -> tuple[tuple[Array, ...], Array]:
         """Bound steps that already contain the prediction error.
 
-        ``ObGDBounding`` takes the exact published form through
-        :meth:`_obgd_bound_with_kappa`. Any other bounder receives the
-        pseudo-error ``1.0``, the same convention ``MultiHeadMLPLearner`` uses
-        for its error-in-gradient trunk steps, so the error is never applied
-        a second time.
+        ``ObGDBounding`` and ``AdaptiveObGDBounding`` take the exact published
+        form through :meth:`_obgd_bound_with_kappa` (the latter then applies
+        its RMS normalization stage to the correctly scaled steps). Any other
+        bounder receives the pseudo-error ``1.0``, the same convention
+        ``MultiHeadMLPLearner`` uses for its error-in-gradient trunk steps, so
+        the error is never applied a second time.
         """
         assert self._bounder is not None
         if type(self._bounder) is ObGDBounding:
             kappa = jnp.asarray(self._bounder.to_config()["kappa"], dtype=jnp.float32)
             return self._obgd_bound_with_kappa(steps, error, kappa)
+        if type(self._bounder) is AdaptiveObGDBounding:
+            kappa = jnp.asarray(self._bounder.to_config()["kappa"], dtype=jnp.float32)
+            bounded, scale = self._obgd_bound_with_kappa(steps, error, kappa)
+            return self._bounder._rms_normalize(bounded), scale
         return self._bounder.bound(steps, jnp.array(1.0, dtype=jnp.float32), params)
 
     @staticmethod
