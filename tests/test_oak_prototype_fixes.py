@@ -380,3 +380,26 @@ def test_oak_and_keyboard_close_schema_float32_and_resource_boundaries() -> None
     KeyboardChordLearnerConfig(n_options=last_legal_keyboard_options)
     with pytest.raises(ValueError, match="keyboard state bytes"):
         KeyboardChordLearnerConfig(n_options=last_legal_keyboard_options + 1)
+
+
+def test_scan_preserves_base_learner_host_clocks() -> None:
+    agent, state = _primed(_oak_cfg())
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    learner = state.stomp_state.base_learner_state.replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    state = state.replace(
+        stomp_state=state.stomp_state.replace(base_learner_state=learner)
+    )
+    result = agent.scan(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2, OBS_DIM), dtype=jnp.float32),
+    )
+    clocks = result.state.stomp_state.base_learner_state
+    assert type(clocks.birth_timestamp) is float
+    assert clocks.birth_timestamp == birth
+    assert type(clocks.uptime_s) is float
+    assert clocks.uptime_s == uptime
