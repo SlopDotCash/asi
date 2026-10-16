@@ -342,8 +342,11 @@ def make_frozen_feature_learner(hp: Mapping[str, float]) -> tuple[Any, Any]:
                     mechanism * hp["head_step_size"],
                     update_scale * feature_gradient,
                 )
-                prompt = state.prompt - feature_step
-                scale = state.scale - feature_step * (phi - state.shift)
+                # Pull the feature-space loss gradient through the affine map.
+                prompt = state.prompt - feature_step * state.scale
+                scale = state.scale - feature_step * (
+                    jax.nn.relu(state.projection @ x) + mechanism * state.prompt
+                )
                 shift = state.shift - feature_step
             else:
                 prompt, scale, shift = state.prompt, state.scale, state.shift
