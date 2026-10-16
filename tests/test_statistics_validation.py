@@ -432,6 +432,33 @@ class TestTimeseriesStatistics:
         assert lo[0] == 1.0e308
         assert hi[0] == 1.0e308
 
+    def test_representable_interval_survives_unrepresentable_sample_std(self) -> None:
+        """Eight symmetric seeds have finite mean/CI despite an overflowing SD."""
+        from scipy import stats
+
+        maximum = np.finfo(np.float64).max
+        signs = np.tile([-1.0, 1.0], 4)
+        arr = np.column_stack((signs * maximum, signs, np.full(8, maximum)))
+        # For eight +/-M observations, the mean is zero and SEM is M/sqrt(7).
+        # Form the dimensionless margin first; the returned bounds fit float64.
+        margin_fraction = float(stats.t.ppf(0.975, 7)) / np.sqrt(7.0)
+        margin = margin_fraction * maximum
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mean, lo, hi = compute_timeseries_statistics(arr, confidence_level=0.95)
+
+        assert np.isfinite(mean).all()
+        assert np.isfinite(lo).all()
+        assert np.isfinite(hi).all()
+        np.testing.assert_array_equal(mean, [0.0, 0.0, maximum])
+        np.testing.assert_allclose(
+            lo, [-margin, -margin_fraction, maximum], rtol=1e-14, atol=0.0
+        )
+        np.testing.assert_allclose(
+            hi, [margin, margin_fraction, maximum], rtol=1e-14, atol=0.0
+        )
+
     def test_zero_seed_matrix_rejected_without_warnings(self) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
