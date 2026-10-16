@@ -299,6 +299,23 @@ class HistoryFeatureExtractor:
         if state.traces.shape != expected_shape or state.traces.dtype != jnp.float32:
             raise ValueError("state.traces has an invalid shape or dtype")
 
+    def _require_observation_contract(self, observation: object) -> Array:
+        actual_type = type(observation)
+        if not (
+            issubclass(actual_type, jax.Array)
+            or issubclass(actual_type, jax.core.Tracer)
+        ):
+            raise TypeError("observation must be a JAX array")
+        trusted = cast(Array, observation)
+        if trusted.shape != (self._raw_dim,):
+            raise ValueError(
+                f"observation must have shape ({self._raw_dim},), "
+                f"got {trusted.shape}"
+            )
+        if trusted.dtype != jnp.float32:
+            raise ValueError("observation must have dtype float32")
+        return trusted
+
     def step(
         self,
         state: HistoryFeatureState,
@@ -318,6 +335,7 @@ class HistoryFeatureExtractor:
             - ``new_state`` carries the updated trace values
         """
         self._require_state_contract(state)
+        observation = self._require_observation_contract(observation)
         return cast(
             tuple[Float[Array, " out_dim"], HistoryFeatureState],
             self._step_jit(state, observation),
