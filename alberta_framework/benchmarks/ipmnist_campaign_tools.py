@@ -381,8 +381,11 @@ def _ceiling_runs(
     for path in sorted(ceiling_dir.glob(f"{prefix}_seed*.npz")):
         _preflight_ceiling_npz(path)
         with np.load(path, allow_pickle=False) as archive:
+            metadata = archive["metadata"].item()
+            if type(metadata) is bytes:
+                metadata = metadata.decode("utf-8")
             payload = load_strict_json_object_from_text(
-                archive["metadata"].item(),
+                metadata,
                 label=f"{path} metadata",
             )
             per_step = np.asarray(archive["per_step"])
