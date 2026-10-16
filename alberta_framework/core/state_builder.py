@@ -1503,6 +1503,28 @@ class OnlineGatedStateBuilderState:
     last_gradient_norm: Float[Array, ""]
 
 
+def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+    """Return a matrix-vector product that keeps large finite cancellation.
+
+    A compiled GEMV can turn an exact cancelling pair of finite products
+    into a huge finite value. The scaled product sum replaces that result.
+    A direct product that already matches stays bit for bit.
+    """
+
+    products = matrix * vector
+    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
+    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
+    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
+    _, exponent = jnp.frexp(max_abs)
+    scaled_sum = jnp.sum(jnp.ldexp(products, -exponent), axis=-1)
+    stable = jnp.ldexp(scaled_sum, jnp.reshape(exponent, (-1,)))
+    direct = matrix @ vector
+    gap = jnp.abs(direct - stable)
+    limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    return jnp.where(use_stable, stable, direct)
+
+
 class OnlineGatedStateBuilder:
     """Learnable gated recurrent state with an online sensitivity trace.
 
@@ -1632,8 +1654,8 @@ class OnlineGatedStateBuilder:
         gate_weights, gate_bias, candidate_weights, candidate_bias = self._unpack_parameters(
             parameters
         )
-        gate = jax.nn.sigmoid(gate_weights @ event + gate_bias)
-        candidate = jnp.tanh(candidate_weights @ event + candidate_bias)
+        gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, event) + gate_bias)
+        candidate = jnp.tanh(_finite_product_matvec(candidate_weights, event) + candidate_bias)
         return hidden + gate * (candidate - hidden)
 
     def _event(
@@ -1700,7 +1722,7 @@ class OnlineGatedStateBuilder:
         )
 
         gate_weights, gate_bias, _, _ = self._unpack_parameters(state.parameters)
-        gate = jax.nn.sigmoid(gate_weights @ safe_event + gate_bias)
+        gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, safe_event) + gate_bias)
         new_sensitivity = direct_sensitivity + ((1.0 - gate)[:, None] * state.parameter_sensitivity)
         candidate_state = OnlineGatedStateBuilderState(
             parameters=state.parameters,
