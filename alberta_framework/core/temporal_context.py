@@ -508,7 +508,8 @@ class TemporalContextFeaturizer:
             blocks.append(safe_ema)
         if cfg.include_delta:
             delta = obs - safe_ema
-            blocks.append(jnp.where(coordinate_valid, delta, jnp.zeros_like(delta)))
+            delta_valid = coordinate_valid & jnp.isfinite(delta)
+            blocks.append(jnp.where(delta_valid, delta, jnp.zeros_like(delta)))
         if cfg.periods:
             counter_valid = state.step_count >= jnp.asarray(0, dtype=jnp.int32)
             safe_step_count = jnp.where(
