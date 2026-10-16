@@ -444,6 +444,9 @@ NoiseUpdateFn = Callable[
     tuple[dict[str, Array], Any],
 ]
 FrozenProbeInputFn = Callable[[Any, Array, Mapping[str, float]], Array]
+FrozenProbeLogitsFn = Callable[
+    [dict[str, Array], Any, Array, Mapping[str, float]], Array
+]
 
 
 def _lean_upgd_noise_update(
@@ -5426,6 +5429,32 @@ def _rls_head_frozen_probe_input(
     )
 
 
+def _rls_head_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Read the confirmed RLS arm's deployed head without updating any state.
+
+    As with the MLP control, sentinel inputs use the checkpoint's frozen EMA
+    statistics. Neither the normalizer nor the RLS/body update is executed.
+    """
+    if not isinstance(state, RLSHeadState):
+        raise TypeError("an rls_head frozen probe requires RLSHeadState")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    hidden1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+    hidden2 = jax.nn.relu(hidden1 @ params["w2"] + params["b2"])
+    features = jnp.concatenate(
+        [
+            hidden2 * (1.0 / math.sqrt(hidden2.shape[1] + 1)),
+            jnp.ones((hidden2.shape[0], 1), dtype=jnp.float32),
+        ],
+        axis=1,
+    )
+    return features @ state.wout
+
+
 # =============================================================================
 # (v2) Transient attack: champion/NB ensemble with online learned vote weights
 # =============================================================================
@@ -6965,6 +6994,8 @@ class ScreeningSpec:
         frozen_probe_input: Applies the learner's current input preprocessing
             without updating its state.  Raw-input learners use the identity
             transform; adaptive normalizers must opt in explicitly.
+        frozen_probe_logits: Optional deployed forward for a non-MLP readout.
+            None preserves input preprocessing followed by the protocol MLP.
     """
 
     name: str
@@ -6975,6 +7006,7 @@ class ScreeningSpec:
     description: str = ""
     noise_update: NoiseUpdateFn | None = None
     frozen_probe_input: FrozenProbeInputFn = _raw_frozen_probe_input
+    frozen_probe_logits: FrozenProbeLogitsFn | None = None
 
     def __post_init__(self) -> None:
         for attr in ("name", "base_learner", "mechanism"):
@@ -6997,7 +7029,7 @@ class ScreeningSpec:
         object.__setattr__(self, "hyperparameters", normalized)
         if type(self.factory) is not FunctionType:
             raise TypeError("factory must be an exact Python function")
-        for name in ("noise_update", "frozen_probe_input"):
+        for name in ("noise_update", "frozen_probe_input", "frozen_probe_logits"):
             value = getattr(self, name)
             if value is not None and type(value) is not FunctionType:
                 raise TypeError(f"{name} must be an exact Python function or None")
@@ -8285,6 +8317,11 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 hyperparameters=_rls_head_hp(**rls_overrides),
                 factory=_make_rls_head_learner,
                 frozen_probe_input=_rls_head_frozen_probe_input,
+                frozen_probe_logits=(
+                    _rls_head_frozen_probe_logits
+                    if rls_name == "rls_head_resid_l1_preset005"
+                    else None
+                ),
                 description=(
                     "Champion body (shift-adaptive EMA-norm d099 + "
                     + body_update
@@ -9977,19 +10014,29 @@ def run_recurring_ipmnist_retention_development(
             sentinel_inputs = jnp.asarray(
                 resolved_x[indices][:, permutation], dtype=jnp.float32
             )
-            model_inputs = spec.frozen_probe_input(
-                state, sentinel_inputs, spec.hyperparameters
-            )
-            if model_inputs.shape != sentinel_inputs.shape:
-                raise ValueError("frozen_probe_input must preserve sentinel input shape")
-            logits = np.asarray(jax.device_get(mlp_logits(params, model_inputs)))
+            if spec.frozen_probe_logits is None:
+                model_inputs = spec.frozen_probe_input(
+                    state, sentinel_inputs, spec.hyperparameters
+                )
+                if model_inputs.shape != sentinel_inputs.shape:
+                    raise ValueError("frozen_probe_input must preserve sentinel input shape")
+                probe_logits = mlp_logits(params, model_inputs)
+            else:
+                probe_logits = spec.frozen_probe_logits(
+                    params, state, sentinel_inputs, spec.hyperparameters
+                )
+            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
+            if state_hash_after != state_hash_before:
+                raise ValueError("a frozen sentinel probe must not mutate learner state")
+            logits = np.asarray(jax.device_get(probe_logits))
+            if logits.shape != (len(indices), config.n_classes):
+                raise ValueError("a frozen sentinel probe must return one logit per case/class")
             if not np.all(np.isfinite(logits)):
                 raise ValueError("a frozen sentinel probe produced non-finite logits")
             correctness = tuple(
                 bool(value)
                 for value in np.asarray(np.argmax(logits, axis=-1) == sentinel_labels)
             )
-            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
             snapshots.append(
                 SentinelProbeSnapshot.from_requirement(
                     requirement,

@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from collections.abc import Mapping
 from typing import Any
 
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
 from jax import Array
 
+import alberta_framework.benchmarks.ipmnist_screening as screening
 from alberta_framework.benchmarks.ipmnist_screening import (
     SCREENING_REGISTRY,
     build_recurring_ipmnist_online_indices,
@@ -20,7 +23,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     run_recurring_ipmnist_retention_development,
     screening_spec,
 )
-from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig, init_mlp_params
+from alberta_framework.benchmarks.upgd_ipmnist import IPMNISTConfig, init_mlp_params, mlp_logits
 
 pytestmark = pytest.mark.unit
 
@@ -50,6 +53,156 @@ DATA_Y = np.asarray([0, 1, 1, 0, 1, 0, 1, 0, 1], dtype=np.int32)
 PERMUTATION_A = np.asarray([0, 1, 2, 3], dtype=np.int32)
 PERMUTATION_B = np.asarray([3, 1, 0, 2], dtype=np.int32)
 SENTINELS = (7, 8)
+
+
+def test_confirmed_rls_winner_runs_recurring_retention_with_frozen_probes() -> None:
+    report = run_recurring_ipmnist_retention_development(
+        DATA_X,
+        DATA_Y,
+        screening_spec("rls_head_resid_l1_preset005"),
+        seed=19,
+        config=CONFIG,
+        phase_lengths=(2, 3, 2),
+        permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A.copy()),
+        sentinel_indices=SENTINELS,
+        relearning_window=1,
+    )
+
+    assert len(report.sentinel_scores) == 5
+    checkpoint_hashes = tuple(score.learner_state_sha256 for score in report.sentinel_scores)
+    assert checkpoint_hashes[1] == checkpoint_hashes[2]
+    assert checkpoint_hashes[3] == checkpoint_hashes[4]
+    assert report.to_config()["scientific_promotion_allowed"] is False
+
+
+def test_rls_probe_reads_the_deployed_head_and_leaves_state_and_rng_unchanged() -> None:
+    spec = screening_spec("rls_head_resid_l1_preset005")
+    init_fn, _ = spec.factory(spec.hyperparameters)
+    params = {
+        "w1": jnp.asarray([[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]], jnp.float32),
+        "b1": jnp.zeros(3, jnp.float32),
+        "w2": jnp.asarray([[1, 0], [0, 1], [1, 1]], jnp.float32),
+        "b2": jnp.zeros(2, jnp.float32),
+        "w3": jnp.zeros((2, 2), jnp.float32),
+        "b3": jnp.asarray([10, -10], jnp.float32),
+    }
+    state = init_fn(params)
+    state = state.replace(
+        norm=state.norm.replace(
+            mean=jnp.asarray([1, -1, 2, 0], jnp.float32),
+            var=jnp.asarray([4, 1, 1, 1], jnp.float32),
+            count=jnp.full(4, 3, jnp.float32),
+        ),
+        wout=jnp.asarray([[2, -1], [-1, 3], [0.5, -0.25]], jnp.float32),
+    )
+    observations = jnp.asarray([[3, 1, 2, 0], [-1, -1, 4, 0]], jnp.float32)
+    key = jr.key(23)
+    before = screening._declared_learner_state_sha256(params, state, key)
+    probe = spec.frozen_probe_logits
+    assert probe is not None
+    # The normalized hidden features are (1, 2) and (2, 2), respectively.
+    # These hand-computed readouts disagree with the deliberately opposite MLP head.
+    expected = np.asarray(
+        [[0.5, 5 / math.sqrt(3) - 0.25],
+         [2 / math.sqrt(3) + 0.5, 4 / math.sqrt(3) - 0.25]],
+    )
+    logits = probe(params, state, observations, spec.hyperparameters)
+    np.testing.assert_allclose(np.asarray(logits), expected, atol=1e-6, rtol=1e-6)
+    np.testing.assert_array_equal(np.asarray(jnp.argmax(logits, axis=1)), [1, 1])
+    np.testing.assert_array_equal(
+        np.asarray(jnp.argmax(mlp_logits(params, observations), axis=1)), [0, 0]
+    )
+    np.testing.assert_array_equal(
+        np.asarray(probe(params, state, observations, spec.hyperparameters)), np.asarray(logits)
+    )
+    assert screening._declared_learner_state_sha256(params, state, key) == before
+
+
+@pytest.mark.parametrize("name", ["rls_head_resid_l1_preset005", "sigma0_shiftnorm_d099"])
+def test_sentinel_probes_preserve_unprobed_training_continuation(name: str) -> None:
+    """Compare the public runner with the same seven updates and no probes."""
+    spec = screening_spec(name)
+    report = run_recurring_ipmnist_retention_development(
+        DATA_X, DATA_Y, spec, seed=19, config=CONFIG, phase_lengths=(2, 3, 2),
+        permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A),
+        sentinel_indices=SENTINELS, relearning_window=1,
+    )
+    init_key, _, key = jr.split(jr.key(jnp.uint32(19)), 3)
+    params = init_mlp_params(init_key, CONFIG)
+    init_fn, step_fn = spec.factory(spec.hyperparameters)
+    state = init_fn(params)
+    orders = build_recurring_ipmnist_online_indices(
+        seed=19, n_examples=len(DATA_X), phase_lengths=(2, 3, 2), sentinel_indices=SENTINELS,
+    )
+    data_x, data_y = jnp.asarray(DATA_X), jnp.asarray(DATA_Y)
+
+    @jax.jit
+    def unprobed_phase(
+        params: dict[str, Array], state: Any, key: Array, permutation: Array, examples: Array,
+    ) -> tuple[dict[str, Array], Any, Array]:
+        def update(
+            carry: tuple[dict[str, Array], Any, Array], example: Array,
+        ) -> tuple[tuple[dict[str, Array], Any, Array], None]:
+            p, s, k = carry
+            k, step_key = jr.split(k)
+            p, s, _ = step_fn(p, s, data_x[example][permutation], data_y[example], step_key)
+            return (p, s, k), None
+
+        carry, _ = jax.lax.scan(update, (params, state, key), examples)
+        return carry
+
+    for phase, (permutation, order) in enumerate(
+        zip((PERMUTATION_A, PERMUTATION_B, PERMUTATION_A), orders, strict=True)
+    ):
+        params, state, key = unprobed_phase(
+            params, state, key, jnp.asarray(permutation), jnp.asarray(order)
+        )
+        expected_hash = screening._declared_learner_state_sha256(params, state, key)
+        scores = [s for s in report.sentinel_scores if s.phase_index == phase]
+        assert scores
+        for score in scores:
+            assert score.learner_state_sha256 == expected_hash
+
+
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [("shape", "one logit"), ("nonfinite", "non-finite logits"), ("mutation", "must not mutate")],
+)
+def test_runner_rejects_invalid_or_mutating_frozen_forward(
+    failure: str, message: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def invalid_forward(
+        params: dict[str, Array], state: Any, observation: Array, hp: Mapping[str, float],
+    ) -> Array:
+        del state, hp
+        if failure == "mutation":
+            params["b1"] = params["b1"] + 1
+        if failure == "shape":
+            return jnp.zeros((observation.shape[0], 1))
+        if failure == "nonfinite":
+            return jnp.full((observation.shape[0], CONFIG.n_classes), jnp.nan)
+        return jnp.zeros((observation.shape[0], CONFIG.n_classes))
+
+    spec = dataclasses.replace(
+        screening_spec("rls_head_resid_l1_preset005"), frozen_probe_logits=invalid_forward,
+    )
+    monkeypatch.setattr(screening, "SCREENING_REGISTRY", {spec.name: spec})
+    with pytest.raises(ValueError, match=message):
+        run_recurring_ipmnist_retention_development(
+            DATA_X, DATA_Y, spec, seed=19, config=CONFIG, phase_lengths=(2, 3, 2),
+            permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A),
+            sentinel_indices=SENTINELS, relearning_window=1,
+        )
+
+
+def test_other_rls_arm_still_refuses_unsupported_sentinel_path() -> None:
+    with pytest.raises(NotImplementedError, match="rls_head"):
+        run_recurring_ipmnist_retention_development(
+            DATA_X, DATA_Y, screening_spec("rls_head_l1"), seed=19, config=CONFIG,
+            phase_lengths=(2, 3, 2),
+            permutations=(PERMUTATION_A, PERMUTATION_B, PERMUTATION_A),
+            sentinel_indices=SENTINELS, relearning_window=1,
+        )
 
 
 def test_adapter_returns_bound_threshold_free_report_and_frozen_probes() -> None:
