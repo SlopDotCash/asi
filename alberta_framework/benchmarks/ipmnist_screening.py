@@ -444,6 +444,9 @@ NoiseUpdateFn = Callable[
     tuple[dict[str, Array], Any],
 ]
 FrozenProbeInputFn = Callable[[Any, Array, Mapping[str, float]], Array]
+FrozenProbeLogitsFn = Callable[
+    [dict[str, Array], Any, Array, Mapping[str, float]], Array
+]
 
 
 def _lean_upgd_noise_update(
@@ -4698,6 +4701,18 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_forward(
+    params: dict[str, Array], wout: Array, normalized: Array,
+) -> tuple[Array, Array]:
+    """Return deployed logits and bias-augmented features for one normalized input."""
+    m = params["w2"].shape[1] + 1
+    a1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+    a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+    scale = 1.0 / math.sqrt(m)
+    phi = jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
+    return wout.T @ phi, phi
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -4857,13 +4872,6 @@ def _make_rls_head_learner(
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
 
-    def _phi(params: dict[str, Array], x_norm: Array) -> Array:
-        m = params["w2"].shape[1] + 1
-        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
-        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
-        scale = 1.0 / math.sqrt(m)
-        return jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
-
     def _gated_sgd(
         params: dict[str, Array],
         grads: dict[str, Array],
@@ -4966,8 +4974,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     surrogate_loss = 0.5 * jnp.sum(err * err)
                     err_c = jax.lax.stop_gradient(err)
@@ -5002,8 +5009,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     return 0.5 * jnp.sum(err * err), (logits, phi)
 
@@ -5087,8 +5093,7 @@ def _make_rls_head_learner(
                 params, grads, state.utility, count,
                 tuple(sorted(params)), guard_zero_max=False,
             )
-            phi = _phi(params, x_norm)
-            logits = state.wout.T @ phi
+            logits, phi = _rls_head_forward(params, state.wout, x_norm)
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
@@ -5112,7 +5117,7 @@ def _make_rls_head_learner(
             # horizon).  Rescale P to the trace cap whenever it exceeds it;
             # under the cap the step is bitwise untouched.
             new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
-        err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
+        err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
@@ -5424,6 +5429,23 @@ def _rls_head_frozen_probe_input(
         "model is the champion body + RLS readout, not the protocol MLP head "
         "that the probe harness would score"
     )
+
+
+def _rls_head_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Read the confirmed RLS arm's deployed head without updating any state.
+
+    As with the MLP control, sentinel inputs use the checkpoint's frozen EMA
+    statistics. Neither the normalizer nor the RLS/body update is executed.
+    """
+    if not isinstance(state, RLSHeadState):
+        raise TypeError("an rls_head frozen probe requires RLSHeadState")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    return jax.vmap(lambda x: _rls_head_forward(params, state.wout, x)[0])(normalized)
 
 
 # =============================================================================
@@ -6965,6 +6987,8 @@ class ScreeningSpec:
         frozen_probe_input: Applies the learner's current input preprocessing
             without updating its state.  Raw-input learners use the identity
             transform; adaptive normalizers must opt in explicitly.
+        frozen_probe_logits: Optional deployed forward for a non-MLP readout.
+            None preserves input preprocessing followed by the protocol MLP.
     """
 
     name: str
@@ -6975,6 +6999,7 @@ class ScreeningSpec:
     description: str = ""
     noise_update: NoiseUpdateFn | None = None
     frozen_probe_input: FrozenProbeInputFn = _raw_frozen_probe_input
+    frozen_probe_logits: FrozenProbeLogitsFn | None = None
 
     def __post_init__(self) -> None:
         for attr in ("name", "base_learner", "mechanism"):
@@ -6997,7 +7022,7 @@ class ScreeningSpec:
         object.__setattr__(self, "hyperparameters", normalized)
         if type(self.factory) is not FunctionType:
             raise TypeError("factory must be an exact Python function")
-        for name in ("noise_update", "frozen_probe_input"):
+        for name in ("noise_update", "frozen_probe_input", "frozen_probe_logits"):
             value = getattr(self, name)
             if value is not None and type(value) is not FunctionType:
                 raise TypeError(f"{name} must be an exact Python function or None")
@@ -8285,6 +8310,11 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 hyperparameters=_rls_head_hp(**rls_overrides),
                 factory=_make_rls_head_learner,
                 frozen_probe_input=_rls_head_frozen_probe_input,
+                frozen_probe_logits=(
+                    _rls_head_frozen_probe_logits
+                    if rls_name == "rls_head_resid_l1_preset005"
+                    else None
+                ),
                 description=(
                     "Champion body (shift-adaptive EMA-norm d099 + "
                     + body_update
@@ -9977,19 +10007,29 @@ def run_recurring_ipmnist_retention_development(
             sentinel_inputs = jnp.asarray(
                 resolved_x[indices][:, permutation], dtype=jnp.float32
             )
-            model_inputs = spec.frozen_probe_input(
-                state, sentinel_inputs, spec.hyperparameters
-            )
-            if model_inputs.shape != sentinel_inputs.shape:
-                raise ValueError("frozen_probe_input must preserve sentinel input shape")
-            logits = np.asarray(jax.device_get(mlp_logits(params, model_inputs)))
+            if spec.frozen_probe_logits is None:
+                model_inputs = spec.frozen_probe_input(
+                    state, sentinel_inputs, spec.hyperparameters
+                )
+                if model_inputs.shape != sentinel_inputs.shape:
+                    raise ValueError("frozen_probe_input must preserve sentinel input shape")
+                probe_logits = mlp_logits(params, model_inputs)
+            else:
+                probe_logits = spec.frozen_probe_logits(
+                    params, state, sentinel_inputs, spec.hyperparameters
+                )
+            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
+            if state_hash_after != state_hash_before:
+                raise ValueError("a frozen sentinel probe must not mutate learner state")
+            logits = np.asarray(jax.device_get(probe_logits))
+            if logits.shape != (len(indices), config.n_classes):
+                raise ValueError("a frozen sentinel probe must return one logit per case/class")
             if not np.all(np.isfinite(logits)):
                 raise ValueError("a frozen sentinel probe produced non-finite logits")
             correctness = tuple(
                 bool(value)
                 for value in np.asarray(np.argmax(logits, axis=-1) == sentinel_labels)
             )
-            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
             snapshots.append(
                 SentinelProbeSnapshot.from_requirement(
                     requirement,
