@@ -295,6 +295,27 @@ def test_reward_model_step_count_saturates_at_int32_max() -> None:
     assert int(result.state.step_count) == 2**31 - 1
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_reward_model_negative_step_count_rejects_update_atomically(
+    disable_jit: bool,
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=1, forgetting=1.0))
+    state = model.init().replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+        )
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.prediction, jnp.zeros_like(result.prediction))
+    chex.assert_trees_all_equal(result.error, jnp.zeros_like(result.error))
+    chex.assert_trees_all_equal(result.gain, jnp.zeros_like(result.gain))
+
+
 def test_rls_reward_model_config_integer_and_scalar_validation() -> None:
     with pytest.raises(ValueError, match="feature_dim"):
         RLSRewardModelConfig(feature_dim=True)  # type: ignore[arg-type]

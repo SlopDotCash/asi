@@ -315,10 +315,11 @@ class RLSRewardModel:
             if self._config.error_decay == 0.0
             else state.abs_error_ema
         )
-        source_finite = (
+        source_valid = (
             jnp.all(jnp.isfinite(state.weights))
             & jnp.all(jnp.isfinite(state.covariance))
             & jnp.isfinite(checked_error_ema)
+            & (state.step_count >= 0)
         )
         inputs_valid = jnp.all(jnp.isfinite(x)) & jnp.isfinite(jnp.squeeze(target))
         denominator_finite = jnp.isfinite(denominator)
@@ -328,7 +329,7 @@ class RLSRewardModel:
             & jnp.isfinite(next_abs_error_ema)
         )
         update_applied = (
-            source_finite & inputs_valid & denominator_finite & proposed_finite
+            source_valid & inputs_valid & denominator_finite & proposed_finite
         )
         committed = jax.lax.cond(
             update_applied,
