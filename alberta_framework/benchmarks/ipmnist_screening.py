@@ -4701,6 +4701,18 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_forward(
+    params: dict[str, Array], wout: Array, normalized: Array,
+) -> tuple[Array, Array]:
+    """Return deployed logits and bias-augmented features for one normalized input."""
+    m = params["w2"].shape[1] + 1
+    a1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+    a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+    scale = 1.0 / math.sqrt(m)
+    phi = jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
+    return wout.T @ phi, phi
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -4860,13 +4872,6 @@ def _make_rls_head_learner(
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
 
-    def _phi(params: dict[str, Array], x_norm: Array) -> Array:
-        m = params["w2"].shape[1] + 1
-        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
-        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
-        scale = 1.0 / math.sqrt(m)
-        return jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
-
     def _gated_sgd(
         params: dict[str, Array],
         grads: dict[str, Array],
@@ -4969,8 +4974,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     surrogate_loss = 0.5 * jnp.sum(err * err)
                     err_c = jax.lax.stop_gradient(err)
@@ -5005,8 +5009,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     return 0.5 * jnp.sum(err * err), (logits, phi)
 
@@ -5090,8 +5093,7 @@ def _make_rls_head_learner(
                 params, grads, state.utility, count,
                 tuple(sorted(params)), guard_zero_max=False,
             )
-            phi = _phi(params, x_norm)
-            logits = state.wout.T @ phi
+            logits, phi = _rls_head_forward(params, state.wout, x_norm)
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
@@ -5115,7 +5117,7 @@ def _make_rls_head_learner(
             # horizon).  Rescale P to the trace cap whenever it exceeds it;
             # under the cap the step is bitwise untouched.
             new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
-        err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
+        err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
@@ -5443,16 +5445,7 @@ def _rls_head_frozen_probe_logits(
     if not isinstance(state, RLSHeadState):
         raise TypeError("an rls_head frozen probe requires RLSHeadState")
     normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
-    hidden1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
-    hidden2 = jax.nn.relu(hidden1 @ params["w2"] + params["b2"])
-    features = jnp.concatenate(
-        [
-            hidden2 * (1.0 / math.sqrt(hidden2.shape[1] + 1)),
-            jnp.ones((hidden2.shape[0], 1), dtype=jnp.float32),
-        ],
-        axis=1,
-    )
-    return features @ state.wout
+    return jax.vmap(lambda x: _rls_head_forward(params, state.wout, x)[0])(normalized)
 
 
 # =============================================================================

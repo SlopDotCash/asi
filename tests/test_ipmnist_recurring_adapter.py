@@ -75,7 +75,7 @@ def test_confirmed_rls_winner_runs_recurring_retention_with_frozen_probes() -> N
     assert report.to_config()["scientific_promotion_allowed"] is False
 
 
-def test_rls_probe_reads_the_deployed_head_and_leaves_state_and_rng_unchanged() -> None:
+def _hand_rls_checkpoint() -> tuple[dict[str, Array], Any]:
     spec = screening_spec("rls_head_resid_l1_preset005")
     init_fn, _ = spec.factory(spec.hyperparameters)
     params = {
@@ -95,6 +95,12 @@ def test_rls_probe_reads_the_deployed_head_and_leaves_state_and_rng_unchanged() 
         ),
         wout=jnp.asarray([[2, -1], [-1, 3], [0.5, -0.25]], jnp.float32),
     )
+    return params, state
+
+
+def test_rls_probe_reads_the_deployed_head_and_leaves_state_and_rng_unchanged() -> None:
+    spec = screening_spec("rls_head_resid_l1_preset005")
+    params, state = _hand_rls_checkpoint()
     observations = jnp.asarray([[3, 1, 2, 0], [-1, -1, 4, 0]], jnp.float32)
     key = jr.key(23)
     before = screening._declared_learner_state_sha256(params, state, key)
@@ -115,6 +121,74 @@ def test_rls_probe_reads_the_deployed_head_and_leaves_state_and_rng_unchanged() 
     np.testing.assert_array_equal(
         np.asarray(probe(params, state, observations, spec.hyperparameters)), np.asarray(logits)
     )
+    assert screening._declared_learner_state_sha256(params, state, key) == before
+
+
+@pytest.mark.parametrize("checkpoint", ["hand", "initialized", "trained"])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rls_probe_matches_actual_learner_loss_readout(
+    checkpoint: str, compiled: bool,
+) -> None:
+    """Recover logits from the real residual learner, without copying its forward."""
+    spec = screening_spec("rls_head_resid_l1_preset005")
+    init_fn, step_fn = spec.factory(spec.hyperparameters)
+    key = jr.key(31)
+    if checkpoint == "hand":
+        params, state = _hand_rls_checkpoint()
+        observations = jnp.asarray([[3, 1, 2, 0], [-1, -1, 4, 0]], jnp.float32)
+    else:
+        params = init_mlp_params(jr.key(17), CONFIG)
+        state = init_fn(params)
+        if checkpoint == "trained":
+            for index in range(4):
+                params, state, _ = step_fn(
+                    params, state, jnp.asarray(DATA_X[index]),
+                    jnp.asarray(DATA_Y[index]), jr.fold_in(key, index),
+                )
+            assert bool(jnp.any(state.wout != 0))
+        observations = jnp.asarray(DATA_X[-2:])
+
+    def learner_logits(
+        params: dict[str, Array], state: Any, x: Array, y: Array, key: Array,
+    ) -> Array:
+        # The returned, pre-update residual loss is 0.5 * ||logits-onehot||^2.
+        # Its derivative w.r.t. the readout's unit-bias row is logits-onehot.
+        # Differentiate the actual step, including its normalization and
+        # residual branch; do not call a probe/helper as the reference.
+        def loss(wout: Array) -> Array:
+            _, _, metrics = step_fn(params, state.replace(wout=wout), x, y, key)
+            return metrics[1]
+
+        loss_gradient: Array = jax.grad(loss)(state.wout)
+        return loss_gradient[-1] + jax.nn.one_hot(y, CONFIG.n_classes)
+
+    probe = spec.frozen_probe_logits
+    assert probe is not None
+
+    def frozen_logits(params: dict[str, Array], state: Any, x: Array) -> Array:
+        return probe(params, state, x, spec.hyperparameters)
+
+    actual_forward = jax.jit(learner_logits) if compiled else learner_logits
+    frozen_forward = jax.jit(frozen_logits) if compiled else frozen_logits
+    learner_step = jax.jit(step_fn) if compiled else step_fn
+    before = screening._declared_learner_state_sha256(params, state, key)
+    for index, observation in enumerate(observations):
+        label = jnp.asarray(index, jnp.int32)
+        _, next_state, _ = learner_step(params, state, observation, label, key)
+        # Training normalizes after advancing EMA; a probe must never do so.
+        # Freeze the EMA that training actually used, retaining the SAME
+        # pre-update body and readout. Both paths now see identical inputs.
+        aligned_state = state.replace(norm=next_state.norm)
+        aligned_before = screening._declared_learner_state_sha256(params, aligned_state, key)
+        assert not np.array_equal(np.asarray(state.norm.count), np.asarray(next_state.norm.count))
+        expected = actual_forward(params, state, observation, label, key)
+        logits = frozen_forward(params, aligned_state, observation[None, :])
+        np.testing.assert_allclose(
+            np.asarray(logits[0]), np.asarray(expected), atol=1e-6, rtol=1e-6,
+        )
+        assert (
+            screening._declared_learner_state_sha256(params, aligned_state, key) == aligned_before
+        )
     assert screening._declared_learner_state_sha256(params, state, key) == before
 
 
