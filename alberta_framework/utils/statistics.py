@@ -389,8 +389,8 @@ def compute_timeseries_statistics(
         return mean, mean.copy(), mean.copy()
 
     with np.errstate(over="ignore", invalid="ignore"):
-        std = np.std(scaled, axis=0, ddof=1) * scale
-    sem = std / np.sqrt(n_seeds)
+        # A finite confidence interval need not have a representable sample SD.
+        sem = (np.std(scaled, axis=0, ddof=1) / np.sqrt(n_seeds)) * scale
 
     try:
         from scipy import stats
