@@ -9,6 +9,7 @@ after the facade rejects them. Legal endpoints stay constructible.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from fractions import Fraction
 from typing import Any, cast
 
@@ -174,6 +175,87 @@ def test_step8_ensemble_prediction_reports_disagreement() -> None:
     chex.assert_shape(prediction.next_observation_predictions, (2, 2))
     chex.assert_shape(prediction.mean_next_observation, (2,))
     assert float(prediction.total_disagreement) >= 0.0
+
+
+def test_step8_ensemble_prediction_preserves_representable_large_statistics() -> None:
+    cfg = Step8WorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        hidden_sizes=(),
+        sparsity=0.0,
+    )
+    model = make_step8_world_model(cfg)
+    initial = init_step8_state(model, key=jr.key(1))
+
+    def state_with_constant_prediction(values: tuple[float, float, float]) -> Any:
+        head_params = initial.learner_state.head_params
+        constant_heads = replace(
+            head_params,
+            weights=tuple(jnp.zeros_like(weight) for weight in head_params.weights),
+            biases=tuple(jnp.array([value], dtype=jnp.float32) for value in values),
+        )
+        return replace(
+            initial,
+            learner_state=replace(initial.learner_state, head_params=constant_heads),
+        )
+
+    prediction = step8_ensemble_predict(
+        model,
+        [
+            state_with_constant_prediction((2.0e38, 1.5e19, 2.0e38)),
+            state_with_constant_prediction((2.0e38, -1.5e19, 2.0e38)),
+        ],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    assert bool(jnp.isfinite(prediction.mean_reward))
+    assert bool(jnp.all(jnp.isfinite(prediction.mean_next_observation)))
+    assert bool(jnp.isfinite(prediction.reward_disagreement))
+    assert bool(jnp.isfinite(prediction.next_observation_disagreement))
+    assert bool(jnp.isfinite(prediction.total_disagreement))
+    np.testing.assert_allclose(float(prediction.mean_reward), 2.0e38, rtol=1e-6)
+    np.testing.assert_allclose(
+        np.asarray(prediction.mean_next_observation),
+        np.array([0.0, 2.0e38], dtype=np.float32),
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(
+        float(prediction.next_observation_disagreement),
+        1.125e38,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(float(prediction.total_disagreement), 1.125e38, rtol=1e-6)
+
+    reduced_prediction = step8_ensemble_predict(
+        model,
+        [
+            state_with_constant_prediction((0.0, 2.0e19, 0.0)),
+            state_with_constant_prediction((0.0, -2.0e19, 0.0)),
+        ],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    assert bool(jnp.isfinite(reduced_prediction.next_observation_disagreement))
+    assert bool(jnp.isfinite(reduced_prediction.total_disagreement))
+    np.testing.assert_allclose(
+        float(reduced_prediction.next_observation_disagreement),
+        2.0e38,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(float(reduced_prediction.total_disagreement), 2.0e38, rtol=1e-6)
+
+    identical_state = state_with_constant_prediction((2.0e38, 0.0, 0.0))
+    identical_prediction = step8_ensemble_predict(
+        model,
+        [identical_state, identical_state, identical_state],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    np.testing.assert_equal(float(identical_prediction.reward_disagreement), 0.0)
+    np.testing.assert_equal(float(identical_prediction.total_disagreement), 0.0)
 
 
 def test_step8_ensemble_prediction_rejects_empty_state_list() -> None:
