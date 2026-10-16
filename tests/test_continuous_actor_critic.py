@@ -679,9 +679,9 @@ def test_continuous_actor_critic_mapping_config_and_resource_boundary() -> None:
     ).to_config()
     clone = ContinuousActorCriticConfig.from_config(MappingProxyType(config))
     assert clone.to_config() == config
-    _require_continuous_state_resources(1, 107_374_180)
+    _require_continuous_state_resources(1, 107_374_179)
     with pytest.raises(ValueError, match="state exceeds"):
-        _require_continuous_state_resources(1, 107_374_181)
+        _require_continuous_state_resources(1, 107_374_180)
 
 
 class _HostileArray:
