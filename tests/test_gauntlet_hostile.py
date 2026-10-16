@@ -109,6 +109,15 @@ def test_gauntlet_benign_still_works() -> None:
         GauntletConfig(noise_std=float("inf"))  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["noise_std", "feature_std", "scale_factor", "drift_rate", "context_noise_std"],
+)
+def test_gauntlet_rejects_scalars_outside_float32_domain(field: str) -> None:
+    with pytest.raises(ValueError, match=rf"{field} must remain finite once narrowed to float32"):
+        GauntletConfig(**{field: 1.0e200})
+
+
 def test_gauntlet_hostile_not_in_repr() -> None:
     hostile = _HostileInt(8)
     _HostileInt.calls = 0
