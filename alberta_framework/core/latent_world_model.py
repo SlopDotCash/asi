@@ -1022,6 +1022,7 @@ class LatentWorldModel:
             inputs_valid
             & learner_result.update_applied
             & floating_tree_is_finite(state)
+            & (state.step_count >= 0)
             & floating_tree_is_finite(candidate_state)
             & diagnostics_finite
         )

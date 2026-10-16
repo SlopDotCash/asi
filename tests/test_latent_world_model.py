@@ -7,6 +7,7 @@ import warnings
 from types import MappingProxyType
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -240,6 +241,44 @@ def test_latent_update_saturates_step_count_at_int32_max() -> None:
 
     assert bool(result.update_applied)
     assert int(result.state.step_count) == 2**31 - 1
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_latent_update_rejects_negative_step_count_atomically(
+    disable_jit: bool,
+) -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=2,
+            hidden_sizes=(),
+        )
+    )
+    state = model.init(jr.key(0)).replace(
+        step_count=jnp.asarray(-1, dtype=jnp.int32)
+    )
+
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            state,
+            jnp.asarray([0.1, -0.2], dtype=jnp.float32),
+            jnp.asarray(1, dtype=jnp.int32),
+            jnp.asarray(0.5, dtype=jnp.float32),
+            jnp.asarray(0.9, dtype=jnp.float32),
+            jnp.asarray([0.2, -0.1], dtype=jnp.float32),
+        )
+
+    assert not bool(result.update_applied)
+    # MultiHeadMLPState's Python-float lifecycle telemetry is explicitly not
+    # part of its JIT bit contract; compare the complete persistent JAX state.
+    returned_state = result.state.replace(
+        learner_state=result.state.learner_state.replace(
+            birth_timestamp=state.learner_state.birth_timestamp,
+            uptime_s=state.learner_state.uptime_s,
+        )
+    )
+    chex.assert_trees_all_equal(returned_state, state)
 
 
 def test_latent_world_model_scan_loop_and_config_roundtrip() -> None:
