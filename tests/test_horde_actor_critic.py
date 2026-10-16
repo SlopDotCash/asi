@@ -1965,16 +1965,16 @@ def test_actor_resource_budgets_preflight_before_allocation(
     linear = HordeActorCriticConfig(n_actions=2)
     assert linear.actor_resource_budget(3) == {
         "parameter_scalars": 8,
-        "float32_state_scalars": 19,
-        "state_scalars": 23,
-        "state_nbytes": 92,
+        "float32_state_scalars": 20,
+        "state_scalars": 24,
+        "state_nbytes": 96,
     }
     nonlinear = NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(3,))
     budget = nonlinear.actor_resource_budget(4)
     assert budget["parameter_scalars"] == 23
     assert budget["optimizer_tensor_count"] == 4
-    assert budget["float32_state_scalars"] == 128
-    assert budget["state_nbytes"] == 528
+    assert budget["float32_state_scalars"] == 129
+    assert budget["state_nbytes"] == 532
 
     with pytest.raises(ValueError, match="derived actor"):
         HordeActorCriticConfig(n_actions=2**31 - 1)
