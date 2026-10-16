@@ -91,14 +91,38 @@ def test_ceiling_rejects_compressed_oversize_members_before_materialize(
         build_ceiling_summary(ceiling, tmp_path / "confirm")
 
 
-def test_ceiling_accepts_bounded_compressed_npz(tmp_path: Path) -> None:
+@pytest.mark.parametrize("byte_metadata", [False, True])
+def test_ceiling_accepts_bounded_compressed_npz(
+    tmp_path: Path, byte_metadata: bool
+) -> None:
     ceiling = tmp_path / "ceiling"
     ceiling.mkdir()
     per_step = np.ones((1, 5000), dtype=np.uint8)
+    metadata = _valid_metadata()
     np.savez_compressed(
         ceiling / "stationary_sigma0_ndecay099_seed0.npz",
-        metadata=np.asarray(_valid_metadata()),
+        metadata=np.asarray(metadata.encode("utf-8") if byte_metadata else metadata),
         per_step=per_step,
     )
     report = build_ceiling_summary(ceiling, tmp_path / "confirm")
     assert report["stationary_sigma0_ndecay099"]["avg_online_mean"] == 1.0
+
+
+@pytest.mark.parametrize(
+    ("metadata", "match"),
+    [
+        (b'{"a":1,"a":2}', "duplicate"),
+        (b'{"a":NaN}', "non-standard"),
+        (b'{"a":"\xff"}', "utf-8"),
+    ],
+)
+def test_ceiling_rejects_invalid_byte_metadata(
+    tmp_path: Path, metadata: bytes, match: str
+) -> None:
+    np.savez_compressed(
+        tmp_path / "stationary_sigma0_ndecay099_seed0.npz",
+        metadata=np.asarray(metadata),
+        per_step=np.ones((1, 5000), dtype=np.uint8),
+    )
+    with pytest.raises(ValueError, match=match):
+        build_ceiling_summary(tmp_path, tmp_path / "confirm")
