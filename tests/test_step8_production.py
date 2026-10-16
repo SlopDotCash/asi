@@ -227,6 +227,36 @@ def test_step8_ensemble_prediction_preserves_representable_large_statistics() ->
     )
     np.testing.assert_allclose(float(prediction.total_disagreement), 1.125e38, rtol=1e-6)
 
+    reduced_prediction = step8_ensemble_predict(
+        model,
+        [
+            state_with_constant_prediction((0.0, 2.0e19, 0.0)),
+            state_with_constant_prediction((0.0, -2.0e19, 0.0)),
+        ],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    assert bool(jnp.isfinite(reduced_prediction.next_observation_disagreement))
+    assert bool(jnp.isfinite(reduced_prediction.total_disagreement))
+    np.testing.assert_allclose(
+        float(reduced_prediction.next_observation_disagreement),
+        2.0e38,
+        rtol=1e-6,
+    )
+    np.testing.assert_allclose(float(reduced_prediction.total_disagreement), 2.0e38, rtol=1e-6)
+
+    identical_state = state_with_constant_prediction((2.0e38, 0.0, 0.0))
+    identical_prediction = step8_ensemble_predict(
+        model,
+        [identical_state, identical_state, identical_state],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.array(0, dtype=jnp.int32),
+    )
+
+    np.testing.assert_equal(float(identical_prediction.reward_disagreement), 0.0)
+    np.testing.assert_equal(float(identical_prediction.total_disagreement), 0.0)
+
 
 def test_step8_ensemble_prediction_rejects_empty_state_list() -> None:
     cfg = Step8WorldModelConfig(observation_dim=2, n_actions=2)
