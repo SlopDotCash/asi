@@ -1787,6 +1787,12 @@ class FixedBudgetFeatureLearner:
             )
 
             if self._candidate_count > 0:
+                # Measure pressure on the curated bank: a promotion has just
+                # refilled the pre-curation worst slot with an age-0 feature.
+                eligible_active_for_pressure = ages >= self._min_feature_age
+                worst_active_for_pressure = jnp.argmin(
+                    jnp.where(eligible_active_for_pressure, ranking_utilities, jnp.inf)
+                ).astype(jnp.int32)
                 eligible_candidates_for_pressure = candidate_ages >= self._candidate_min_age
                 candidate_pressure_scores = jnp.where(
                     eligible_candidates_for_pressure,
@@ -1797,13 +1803,13 @@ class FixedBudgetFeatureLearner:
                     jnp.int32
                 )
                 has_candidate_for_pressure = jnp.any(eligible_candidates_for_pressure)
-                worst_active_utility = ranking_utilities[worst_active]
+                worst_active_utility = ranking_utilities[worst_active_for_pressure]
                 best_candidate_utility = ranking_candidate_utilities[best_candidate_for_pressure]
                 pressure_raw = (
                     best_candidate_utility - promotion_margin * worst_active_utility
                 ) / (jnp.abs(worst_active_utility) + 1e-6)
                 pressure = jnp.where(
-                    has_active_slot & has_candidate_for_pressure,
+                    jnp.any(eligible_active_for_pressure) & has_candidate_for_pressure,
                     jnp.tanh(pressure_raw),
                     jnp.array(0.0, dtype=jnp.float32),
                 )
