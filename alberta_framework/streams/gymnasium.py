@@ -193,6 +193,22 @@ def _flatten_action(action: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     return flattened
 
 
+def _transition_observations(
+    raw_next_obs: Any, info: dict[str, Any], space: gymnasium.spaces.Space[Any], *, done: bool,
+) -> tuple[Array, Array | None]:
+    """Separate a transition's next observation from an already-reset episode.
+
+    Gymnasium 0.29's scalar AutoResetWrapper returns reset observations and
+    puts the final observation in info. Newer scalar Autoreset wrappers reset
+    on the next step; without that marker the ordinary manual reset path applies.
+    VectorEnv's final_obs/mask protocol is outside this scalar Env interface.
+    """
+    returned_obs = _flatten_observation(raw_next_obs, space)
+    if done and "final_observation" in info:
+        return _flatten_observation(info["final_observation"], space), returned_obs
+    return returned_obs, None
+
+
 def _require_runtime_shape(name: str, value: object, expected: tuple[int, ...]) -> None:
     """Check host shape metadata before conversion can allocate a device array."""
     try:
@@ -424,8 +440,10 @@ def collect_trajectory(
         action = policy(current_obs)
         flat_action = _flatten_action(action, env.action_space)
 
-        raw_next_obs, reward, terminated, truncated, _ = env.step(action)
-        next_obs = _flatten_observation(raw_next_obs, env.observation_space)
+        raw_next_obs, reward, terminated, truncated, info = env.step(action)
+        next_obs, reset_obs = _transition_observations(
+            raw_next_obs, info, env.observation_space, done=terminated or truncated,
+        )
 
         # Construct features
         if include_action_in_features:
@@ -454,9 +472,12 @@ def collect_trajectory(
         targets.append(target)
 
         if terminated or truncated:
-            raw_obs, _ = env.reset(seed=seed + reset_count)
-            reset_count += 1
-            current_obs = _flatten_observation(raw_obs, env.observation_space)
+            if reset_obs is not None:
+                current_obs = reset_obs
+            else:
+                raw_obs, _ = env.reset(seed=seed + reset_count)
+                reset_count += 1
+                current_obs = _flatten_observation(raw_obs, env.observation_space)
         else:
             current_obs = next_obs
 
@@ -740,8 +761,10 @@ class GymnasiumStream:
         action = self._policy(self._current_obs)
         flat_action = _flatten_action(action, self._env.action_space)
 
-        raw_next_obs, reward, terminated, truncated, _ = self._env.step(action)
-        next_obs = _flatten_observation(raw_next_obs, self._env.observation_space)
+        raw_next_obs, reward, terminated, truncated, info = self._env.step(action)
+        next_obs, reset_obs = _transition_observations(
+            raw_next_obs, info, self._env.observation_space, done=terminated or truncated,
+        )
 
         features = self._construct_features(self._current_obs, flat_action)
         target = self._construct_target(float(reward), next_obs, terminated)
@@ -750,7 +773,7 @@ class GymnasiumStream:
 
         if terminated or truncated:
             self._episode_count += 1
-            self._current_obs = None
+            self._current_obs = reset_obs
         else:
             self._current_obs = next_obs
 
@@ -866,6 +889,7 @@ class TDStream:
         if self._current_obs is None:
             raw_obs, _ = self._env.reset(seed=self._get_reset_seed())
             self._current_obs = _flatten_observation(raw_obs, self._env.observation_space)
+        if self._current_action is None:
             self._current_action = self._policy(self._current_obs)
 
         action = self._current_action
@@ -873,8 +897,10 @@ class TDStream:
             raise RuntimeError("TDStream has an observation without an owned action")
         flat_action = _flatten_action(action, self._env.action_space)
 
-        raw_next_obs, reward, terminated, truncated, _ = self._env.step(action)
-        next_obs = _flatten_observation(raw_next_obs, self._env.observation_space)
+        raw_next_obs, reward, terminated, truncated, info = self._env.step(action)
+        next_obs, reset_obs = _transition_observations(
+            raw_next_obs, info, self._env.observation_space, done=terminated or truncated,
+        )
 
         features = self._construct_features(self._current_obs, flat_action)
 
@@ -892,7 +918,7 @@ class TDStream:
 
         if terminated or truncated:
             self._episode_count += 1
-            self._current_obs = None
+            self._current_obs = reset_obs
             self._current_action = None
         else:
             self._current_obs = next_obs
