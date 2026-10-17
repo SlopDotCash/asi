@@ -46,8 +46,11 @@ from alberta_framework.core.normalizers import (
 )
 from alberta_framework.core.optimizers import (
     LMS,
+    AdaptiveObGDBounding,
     Bounder,
+    ObGDBounding,
     Optimizer,
+    _apply_obgd_bound_error_carrying,
 )
 from alberta_framework.core.types import (
     AutostepParamState,
@@ -1248,18 +1251,47 @@ class MultiHeadMLPLearner:
             new_trunk_opt_states.append(new_b_opt)
             optimizer_updates_applied.append(b_update_applied)
 
-        # Trunk bounding (pseudo_error=1.0 since error is in gradient)
+        # Trunk bounding: the trunk steps already carry the per-head errors
+        # (folded into the cotangent before the VJP backward pass), so the
+        # ObGD-family bounders must consume the representative error exactly
+        # once -- the published error-carrying form -- rather than the
+        # pseudo-error 1.0, which lets small-error updates overshoot the
+        # published guarantee by up to 1/|error|.
         trunk_bounding_metric = jnp.array(1.0, dtype=jnp.float32)
         if self._bounder is not None:
             trunk_params_flat: list[Array] = []
             for i in range(n_trunk_layers):
                 trunk_params_flat.append(state.trunk_params.weights[i])
                 trunk_params_flat.append(state.trunk_params.biases[i])
+            # Representative error scalar: mean absolute error across active
+            # heads (the UPGDLearner convention for error-carrying steps).
             # The bounder's metric is a reporting scalar (ObGD's step scale,
             # AGC's clipped-unit fraction); it must never scale the traces.
-            bounded_trunk_steps, trunk_bounding_metric = self._bounder.bound(
-                tuple(trunk_steps), jnp.array(1.0), tuple(trunk_params_flat)
-            )
+            n_active = jnp.maximum(jnp.sum(active_mask.astype(jnp.float32)), 1.0)
+            mean_abs_err = jnp.sum(
+                jnp.abs(jnp.where(active_mask, predictions_arr - safe_targets, 0.0))
+            ) / n_active
+            if type(self._bounder) is ObGDBounding:
+                kappa = jnp.asarray(
+                    self._bounder.to_config()["kappa"], dtype=jnp.float32
+                )
+                bounded_trunk_steps, trunk_bounding_metric = (
+                    _apply_obgd_bound_error_carrying(
+                        tuple(trunk_steps), mean_abs_err, kappa
+                    )
+                )
+            elif type(self._bounder) is AdaptiveObGDBounding:
+                kappa = jnp.asarray(
+                    self._bounder.to_config()["kappa"], dtype=jnp.float32
+                )
+                bounded0, trunk_bounding_metric = _apply_obgd_bound_error_carrying(
+                    tuple(trunk_steps), mean_abs_err, kappa
+                )
+                bounded_trunk_steps = self._bounder._rms_normalize(bounded0)
+            else:
+                bounded_trunk_steps, trunk_bounding_metric = self._bounder.bound(
+                    tuple(trunk_steps), jnp.array(1.0), tuple(trunk_params_flat)
+                )
             trunk_steps = list(bounded_trunk_steps)
 
         # Apply trunk updates (no error multiply -- error already in gradient)

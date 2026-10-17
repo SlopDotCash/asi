@@ -173,6 +173,43 @@ def _apply_obgd_bound(
     )
 
 
+def _apply_obgd_bound_error_carrying(
+    steps: tuple[Array, ...],
+    error: Array,
+    kappa: Array,
+) -> tuple[tuple[Array, ...], Array]:
+    """Apply the ObGD global bounding formula to steps that already carry the error.
+
+    Published ObGD (Elsayed et al. 2024) bounds with
+    ``M = alpha * kappa * max(|delta|, 1) * ||z||_1`` where ``z`` is the
+    error-free prediction gradient. When the steps already contain the error
+    (``alpha * delta * z``), ``sum|steps|`` is ``alpha * |delta| * ||z||_1``
+    and the published bound in terms of those steps is
+    ``kappa * sum|steps| / min(|delta|, 1)``. Feeding ``|delta|`` back in as a
+    second factor would count the error twice. The scale is written as
+    ``m / max(kappa * total, m)`` with ``m = min(|delta|, 1)`` so it cannot
+    overflow for tiny errors; a zero error carries zero steps, where the bound
+    is moot.
+
+    Callers whose steps carry the error must use this instead of passing a
+    pseudo-error of ``1.0`` to :meth:`ObGDBounding.bound`: the pseudo-error
+    lets small-error updates overshoot the published guarantee by up to
+    ``1 / |delta|``.
+    """
+    error_scalar = jnp.squeeze(error)
+    total_step = jnp.array(0.0, dtype=jnp.float32)
+    for step in steps:
+        total_step = total_step + jnp.sum(jnp.abs(step))
+    abs_error = jnp.abs(error_scalar)
+    error_unit = jnp.where(abs_error > 0.0, jnp.minimum(abs_error, 1.0), 1.0)
+    scale = error_unit / jnp.maximum(kappa * total_step, error_unit)
+    collapsed = scale == 0
+    return (
+        tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
+        scale,
+    )
+
+
 class ObGDBounding(Bounder):
     """ObGD-style global update bounding (Elsayed et al. 2024).
 
@@ -281,15 +318,25 @@ class AdaptiveObGDBounding(Bounder):
         bounded, scale = _apply_obgd_bound(steps, error, self._kappa)
 
         # Per-weight RMS normalization across all bounded steps.
+        return self._rms_normalize(bounded), scale
+
+    def _rms_normalize(self, steps: tuple[Array, ...]) -> tuple[Array, ...]:
+        """Divide each step by the RMS of all steps, floored at 1.
+
+        Shared by :meth:`bound` and by error-carrying callers (e.g.
+        ``UPGDLearner``, ``MultiHeadMLPLearner``) that must apply the global
+        ObGD stage with the published error accounting before this stage.
+        """
         sum_sq = jnp.array(0.0)
         n_weights = jnp.array(0)
-        for s in bounded:
+        for s in steps:
             sum_sq = sum_sq + jnp.sum(s**2)
             n_weights = n_weights + s.size
-        rms = jnp.sqrt(sum_sq / jnp.maximum(n_weights.astype(jnp.float32), 1.0) + self._eps)
+        rms = jnp.sqrt(
+            sum_sq / jnp.maximum(n_weights.astype(jnp.float32), 1.0) + self._eps
+        )
         rms_scale = jnp.maximum(rms, 1.0)
-        adaptive = tuple(s / rms_scale for s in bounded)
-        return adaptive, scale
+        return tuple(s / rms_scale for s in steps)
 
 
 class AGCBounding(Bounder):

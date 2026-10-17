@@ -11,6 +11,7 @@ import pytest
 
 from alberta_framework import (
     LMS,
+    AdaptiveObGDBounding,
     AGCBounding,
     Autostep,
     AutostepGTDLambda,
@@ -1767,3 +1768,55 @@ class TestMultiHeadLinearBaseline:
         assert bool(result.update_applied)
         for utility in result.state.hidden_unit_utilities:
             assert bool(jnp.all(jnp.isfinite(utility)))
+
+
+# =============================================================================
+# Trunk bounding with error-carrying steps
+# =============================================================================
+
+
+class TestTrunkObGDBoundingErrorCarrying:
+    """The trunk gradient already carries the per-head prediction errors
+    (folded into the cotangent before the VJP backward pass), so the ObGD
+    bounding stage must consume the representative error exactly once --
+    the published error-carrying form -- instead of the pseudo-error 1.0.
+    """
+
+    @pytest.mark.parametrize("bounder_cls", [ObGDBounding, AdaptiveObGDBounding])
+    def test_trunk_update_respects_published_obgd_guarantee(self, bounder_cls):
+        kappa = 2.0
+        delta = 0.1
+        learner = MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(16,),
+            optimizer=LMS(step_size=5.0),
+            bounder=bounder_cls(kappa=kappa),
+            gamma=0.0,
+            lamda=0.0,
+            use_layer_norm=False,
+            sparsity=0.0,
+        )
+        state = learner.init(4, jr.key(0))
+        obs = jnp.array([0.5, -0.25, 1.0, 0.75], dtype=jnp.float32)
+        pred = float(learner.predict(state, obs)[0])
+        result = learner.update(
+            state, obs, jnp.array([pred + delta], dtype=jnp.float32)
+        )
+        assert bool(result.update_applied)
+        new_state = result.state
+        trunk_l1 = 0.0
+        for w_old, w_new in zip(
+            state.trunk_params.weights, new_state.trunk_params.weights
+        ):
+            trunk_l1 += float(jnp.sum(jnp.abs(w_new - w_old)))
+        for b_old, b_new in zip(
+            state.trunk_params.biases, new_state.trunk_params.biases
+        ):
+            trunk_l1 += float(jnp.sum(jnp.abs(b_new - b_old)))
+        # Published ObGD form for error-carrying steps:
+        # ||applied||_1 <= min(|delta|, 1) / kappa (the RMS stage only shrinks).
+        guarantee = min(abs(delta), 1.0) / kappa
+        assert trunk_l1 <= guarantee + 1e-6, (
+            f"trunk update L1 {trunk_l1:.4f} exceeds published guarantee "
+            f"{guarantee:.4f}"
+        )

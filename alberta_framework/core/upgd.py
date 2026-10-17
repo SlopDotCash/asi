@@ -60,9 +60,12 @@ from alberta_framework.core._float32_scalars import (
 )
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.normalizers import _saturating_int32_counter_increment
-from alberta_framework.core.optimizers import Bounder, ObGDBounding
+from alberta_framework.core.optimizers import (
+    Bounder,
+    ObGDBounding,
+    _apply_obgd_bound_error_carrying,
+)
 from alberta_framework.core.types import MLPParams
-from alberta_framework.core.update_safety import zero_if_collapsed_infinity
 
 
 def _require_exact_str(name: object, value: object) -> str:
@@ -1950,29 +1953,10 @@ class UPGDLearner:
     ) -> tuple[tuple[Array, ...], Array]:
         """Apply ObGD global step bounding to steps that already carry the error.
 
-        Published ObGD (Elsayed et al. 2024) bounds with
-        ``M = alpha * kappa * max(|delta|, 1) * ||z||_1`` where ``z`` is the
-        error-free prediction gradient. UPGD forms its steps as
-        ``alpha * delta * z`` before bounding, so ``sum|steps|`` is
-        ``alpha * |delta| * ||z||_1`` and the published bound in terms of
-        those steps is ``kappa * sum|steps| / min(|delta|, 1)``. Feeding
-        ``|delta|`` back in as a second factor would count the error twice.
-        The scale is written as ``m / max(kappa * total, m)`` with
-        ``m = min(|delta|, 1)`` so it cannot overflow for tiny errors; a zero
-        error carries zero steps, where the bound is moot.
+        Shared published form; see
+        :func:`alberta_framework.core.optimizers._apply_obgd_bound_error_carrying`.
         """
-        error_scalar = jnp.squeeze(error)
-        total_step = jnp.array(0.0, dtype=jnp.float32)
-        for step in steps:
-            total_step = total_step + jnp.sum(jnp.abs(step))
-        abs_error = jnp.abs(error_scalar)
-        error_unit = jnp.where(abs_error > 0.0, jnp.minimum(abs_error, 1.0), 1.0)
-        scale = error_unit / jnp.maximum(kappa * total_step, error_unit)
-        collapsed = scale == 0
-        return (
-            tuple(zero_if_collapsed_infinity(scale * step, step, collapsed) for step in steps),
-            scale,
-        )
+        return _apply_obgd_bound_error_carrying(steps, error, kappa)
 
     def _bound_error_carrying_steps(
         self,
