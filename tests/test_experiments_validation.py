@@ -6,6 +6,7 @@ import warnings
 from collections.abc import Callable
 from decimal import Decimal
 from fractions import Fraction
+from importlib import import_module
 from typing import Any, Never
 
 import numpy as np
@@ -50,6 +51,38 @@ def _config(
         stream_factory=stream_factory,
         num_steps=num_steps,
     )
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("show_progress", [False, True])
+def test_experiment_import_error_does_not_repeat_completed_runs(
+    parallel: bool, show_progress: bool
+) -> None:
+    if parallel:
+        pytest.importorskip("joblib")
+    if show_progress:
+        pytest.importorskip("tqdm")
+    calls = {"healthy": 0, "missing_dependency": 0}
+
+    def healthy_learner() -> LinearLearner:
+        calls["healthy"] += 1
+        return LinearLearner()
+
+    def missing_dependency_learner() -> LinearLearner:
+        calls["missing_dependency"] += 1
+        import_module("asi_test_missing_optional_learner_dependency")
+        raise AssertionError("the optional learner dependency must be absent")
+
+    configs = [
+        _config("healthy", learner_factory=healthy_learner),
+        _config("missing_dependency", learner_factory=missing_dependency_learner),
+    ]
+    with pytest.raises(ModuleNotFoundError) as error:
+        run_multi_seed_experiment(
+            configs, seeds=[17], parallel=parallel, n_jobs=1, show_progress=show_progress
+        )
+    assert error.value.name == "asi_test_missing_optional_learner_dependency"
+    assert calls == {"healthy": 1, "missing_dependency": 1}
 
 
 def test_duplicate_names_reject_before_distinct_factories_execute() -> None:

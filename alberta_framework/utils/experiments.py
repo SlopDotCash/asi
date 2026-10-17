@@ -573,26 +573,22 @@ def run_multi_seed_experiment(
     if parallel:
         try:
             from joblib import Parallel, delayed
-
+        except ImportError:
+            # Fallback only when joblib itself is unavailable. An experiment's
+            # ImportError must propagate without repeating completed runs.
+            results_list = _run_sequential(tasks, show_progress)
+        else:
+            task_iterator: Iterable[tuple[ExperimentConfig, int]] = tasks
             if show_progress:
                 try:
                     from tqdm import tqdm
-
-                    results_list: list[SingleRunResult] = Parallel(n_jobs=n_jobs)(
-                        delayed(run_single_experiment)(config, seed)
-                        for config, seed in tqdm(tasks, desc="Running experiments")
-                    )
                 except ImportError:
-                    results_list = Parallel(n_jobs=n_jobs)(
-                        delayed(run_single_experiment)(config, seed) for config, seed in tasks
-                    )
-            else:
-                results_list = Parallel(n_jobs=n_jobs)(
-                    delayed(run_single_experiment)(config, seed) for config, seed in tasks
-                )
-        except ImportError:
-            # Fallback to sequential if joblib not available
-            results_list = _run_sequential(tasks, show_progress)
+                    pass
+                else:
+                    task_iterator = tqdm(tasks, desc="Running experiments")
+            results_list = Parallel(n_jobs=n_jobs)(
+                delayed(run_single_experiment)(config, seed) for config, seed in task_iterator
+            )
     else:
         results_list = _run_sequential(tasks, show_progress)
 
@@ -616,14 +612,15 @@ def _run_sequential(
     show_progress: bool,
 ) -> list[SingleRunResult]:
     """Run experiments sequentially."""
+    task_iterator: Iterable[tuple[ExperimentConfig, int]] = tasks
     if show_progress:
         try:
             from tqdm import tqdm
-
-            return [run_single_experiment(config, seed) for config, seed in tqdm(tasks)]
         except ImportError:
             pass
-    return [run_single_experiment(config, seed) for config, seed in tasks]
+        else:
+            task_iterator = tqdm(tasks)
+    return [run_single_experiment(config, seed) for config, seed in task_iterator]
 
 
 def get_metric_timeseries(
