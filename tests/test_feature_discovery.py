@@ -552,6 +552,69 @@ class TestFixedBudgetFeatureLearner:
             state.generator_utility_ema[1:],
         )
 
+    @pytest.mark.parametrize(
+        ("age_corrected", "ranking_kwargs"),
+        [
+            (False, {}),
+            (True, {"future_utility_mix": 1.0, "future_utility_normalization": "age"}),
+        ],
+    )
+    def test_plasticity_pressure_compares_post_promotion_eligible_bank(
+        self,
+        age_corrected: bool,
+        ranking_kwargs: dict[str, Any],
+    ) -> None:
+        """Pressure must not rank the slot a promotion just refilled as worst active."""
+        learner = FixedBudgetFeatureLearner(
+            n_features=2,
+            n_tasks=1,
+            step_size_output=0.0,
+            step_size_feature=0.0,
+            utility_decay=0.5,
+            replacement_interval=1,
+            min_feature_age=5,
+            candidate_count=2,
+            candidate_min_age=5,
+            use_obgd=False,
+            learn_feature_resources=True,
+            resource_discount=0.5,
+            resource_exploration=0.0,
+            **ranking_kwargs,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(43)).replace(
+            utilities=jnp.array([0.2, 0.8], dtype=jnp.float32),
+            ages=jnp.array([10, 10], dtype=jnp.int32),
+            candidate_utilities=jnp.array([1.0, 0.6], dtype=jnp.float32),
+            candidate_ages=jnp.array([10, 10], dtype=jnp.int32),
+        )
+
+        # Zero output weights and a zero target make every utility signal zero,
+        # so each EMA halves: active (0.1, 0.4) and candidates (0.5, 0.3).
+        result = learner.update(
+            state,
+            jnp.array([0.3, -0.4], dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+        )
+
+        assert int(result.promoted_candidate) == 0
+        assert int(result.replaced_slot) == 0
+        np.testing.assert_array_equal(np.asarray(result.state.ages), np.array([0, 11]))
+        np.testing.assert_array_equal(np.asarray(result.state.candidate_ages), np.array([0, 11]))
+        # After the promotion, slot 0 holds an age-0 feature that cannot be
+        # discarded, so the worst eligible active feature is slot 1 (0.4) and
+        # the best eligible candidate is candidate 1 (0.3).
+        correction = 1.0 / (1.0 - 0.5**11) if age_corrected else 1.0
+        worst_active = 0.4 * correction
+        best_candidate = 0.3 * correction
+        margin = 1.05 * (1.25 + 1.0 + 0.8) / 3.0
+        pressure = np.tanh((best_candidate - margin * worst_active) / (worst_active + 1e-6))
+        np.testing.assert_allclose(
+            np.asarray(result.state.plasticity_signal_ema),
+            0.5 * np.array([-pressure, 0.0, pressure]),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
     def test_constructed_and_augmented_feature_shapes(self) -> None:
         learner = FixedBudgetFeatureLearner(n_features=6, n_tasks=2)
         state = learner.init(feature_dim=4, key=jr.key(14))
