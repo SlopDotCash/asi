@@ -40,7 +40,13 @@ from alberta_framework.core.normalizers import (
     WelfordNormalizerState,
     _saturating_int32_counter_increment,
 )
-from alberta_framework.core.optimizers import LMS, Bounder
+from alberta_framework.core.optimizers import (
+    AdaptiveObGDBounding,
+    LMS,
+    Bounder,
+    ObGDBounding,
+    _apply_obgd_bound_error_carrying,
+)
 from alberta_framework.core.types import HordeSpec, MLPParams, TraceMode
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite as _floating_tree_is_finite,
@@ -681,6 +687,7 @@ class OffPolicyHordeLearner:
         predictions = jnp.stack(predictions_list)
         td_errors = jnp.stack(td_errors_list)
         masked_td_errors = jnp.stack(masked_td_errors_list)
+        effective_td_errors = safe_clipped_rhos * masked_td_errors
 
         trunk_weight_grads, trunk_bias_grads = trunk_vjp_fn(cotangent)
 
@@ -747,13 +754,35 @@ class OffPolicyHordeLearner:
             for i in range(n_trunk_layers):
                 trunk_params_flat.append(state.trunk_params.weights[i])
                 trunk_params_flat.append(state.trunk_params.biases[i])
-            # The bounder's metric is a reporting scalar (ObGD's step scale,
-            # AGC's clipped-unit fraction); it must never scale the traces.
-            bounded_trunk_steps, trunk_bounding_metric = self._bounder.bound(
-                tuple(trunk_steps),
-                jnp.array(1.0, dtype=jnp.float32),
-                tuple(trunk_params_flat),
-            )
+            # The trunk steps already carry the per-head TD errors and the
+            # current importance ratios, so ObGD-family bounders must consume
+            # the representative error exactly once. The bounder's metric is
+            # reporting-only and must never scale the traces.
+            n_active = jnp.maximum(jnp.sum(active_mask.astype(jnp.float32)), 1.0)
+            mean_abs_err = jnp.sum(
+                jnp.abs(jnp.where(active_mask, effective_td_errors, 0.0))
+            ) / n_active
+            if isinstance(self._bounder, ObGDBounding):
+                kappa = jnp.asarray(
+                    self._bounder.to_config()["kappa"], dtype=jnp.float32
+                )
+                bounded_trunk_steps, trunk_bounding_metric = (
+                    _apply_obgd_bound_error_carrying(
+                        tuple(trunk_steps), mean_abs_err, kappa
+                    )
+                )
+            elif isinstance(self._bounder, AdaptiveObGDBounding):
+                kappa = jnp.asarray(
+                    self._bounder.to_config()["kappa"], dtype=jnp.float32
+                )
+                bounded0, trunk_bounding_metric = _apply_obgd_bound_error_carrying(
+                    tuple(trunk_steps), mean_abs_err, kappa
+                )
+                bounded_trunk_steps = self._bounder._rms_normalize(bounded0)
+            else:
+                bounded_trunk_steps, trunk_bounding_metric = self._bounder.bound(
+                    tuple(trunk_steps), jnp.array(1.0), tuple(trunk_params_flat)
+                )
             trunk_steps = list(bounded_trunk_steps)
 
         new_trunk_weights: list[Array] = []
