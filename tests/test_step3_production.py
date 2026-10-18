@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import pytest
+from jax.experimental import enable_x64
 
 import alberta_framework.steps.step3 as step3_module
 from alberta_framework.core.horde import run_horde_learning_loop
@@ -380,3 +381,21 @@ def test_step3_smoke_health_gate_reports_refused_updates(
     result = run_step3_smoke(steps=8, final_window=4)
 
     assert not result.finite
+
+
+@pytest.mark.parametrize("routing", ["shared", "independent", "mixed"])
+def test_step3_smoke_keeps_float32_data_under_x64(routing: str) -> None:
+    with enable_x64():
+        assert jnp.asarray(0.0).dtype == jnp.float64
+        config = Step3HordeConfig(routing=routing)  # type: ignore[arg-type]
+        result = run_step3_smoke(
+            config, steps=3, final_window=1, seed=7,
+            raw_feature_dim=2, constructed_feature_dim=1,
+        )
+        assert jnp.asarray(0.0).dtype == jnp.float64
+        assert result.finite
+        assert result.td_errors_shape == (3, config.n_demons)
+        assert result.handoff.observations.dtype == jnp.float32
+        assert result.handoff.next_observations.dtype == jnp.float32
+        assert result.handoff.cumulants.dtype == jnp.float32
+        assert result.to_dict()["config"] == config.to_dict()
