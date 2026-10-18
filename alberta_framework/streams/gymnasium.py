@@ -193,19 +193,58 @@ def _flatten_action(action: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     return flattened
 
 
+def _same_step_autoreset(env: gymnasium.Env[Any, Any]) -> bool:
+    """Recognize the legacy scalar contract, not an incidental info key.
+
+    Only unchanged official same-step step implementations own the reset.
+    Outer wrappers may delegate unchanged, or transform actions/rewards only.
+    Other outer step implementations could introduce a boundary themselves or
+    change observation coordinates, so their reset contract is unsupported.
+    Gymnasium >=1.0's next-step Autoreset uses the ordinary explicit reset path.
+    """
+    import gymnasium
+
+    legacy_type = getattr(gymnasium.wrappers, "AutoResetWrapper", None)
+    if legacy_type is None:
+        return False
+    delegates = (gymnasium.Wrapper.step, gymnasium.ActionWrapper.step, gymnasium.RewardWrapper.step)
+    unchanged_outer_step = True
+    current = env
+    while isinstance(current, gymnasium.Wrapper):
+        step = current.step
+        implementation = (
+            getattr(step, "__func__", None) if getattr(step, "__self__", None) is current else None
+        )
+        if isinstance(current, legacy_type):
+            if not unchanged_outer_step or implementation is not legacy_type.step:
+                raise ValueError(
+                    "same-step AutoResetWrapper requires its unchanged step and "
+                    "outer wrappers that only delegate or transform actions/rewards"
+                )
+            return True
+        unchanged_outer_step = unchanged_outer_step and implementation in delegates
+        current = current.env
+    return False
+
+
 def _transition_observations(
     raw_next_obs: Any, info: dict[str, Any], space: gymnasium.spaces.Space[Any], *, done: bool,
+    same_step_autoreset: bool,
 ) -> tuple[Array, Array | None]:
     """Separate a transition's next observation from an already-reset episode.
 
-    Gymnasium 0.29's scalar AutoResetWrapper returns reset observations and
-    puts the final observation in info. Newer scalar Autoreset wrappers reset
-    on the next step; without that marker the ordinary manual reset path applies.
+    Only the recognized same-step contract reinterprets the returned observation
+    as a reset observation and its final_observation as the learning observation.
+    Ordinary scalar steps return their actual next observation and must reset
+    explicitly at a boundary, regardless of incidental info keys.
     VectorEnv's final_obs/mask protocol is outside this scalar Env interface.
     """
     returned_obs = _flatten_observation(raw_next_obs, space)
-    if done and "final_observation" in info:
-        return _flatten_observation(info["final_observation"], space), returned_obs
+    if done and same_step_autoreset:
+        if "final_observation" not in info:
+            raise ValueError("same-step autoreset must provide final_observation")
+        final_obs = _flatten_observation(info["final_observation"], space)
+        return final_obs, returned_obs
     return returned_obs, None
 
 
@@ -443,6 +482,7 @@ def collect_trajectory(
         raw_next_obs, reward, terminated, truncated, info = env.step(action)
         next_obs, reset_obs = _transition_observations(
             raw_next_obs, info, env.observation_space, done=terminated or truncated,
+            same_step_autoreset=_same_step_autoreset(env) if terminated or truncated else False,
         )
 
         # Construct features
@@ -764,6 +804,9 @@ class GymnasiumStream:
         raw_next_obs, reward, terminated, truncated, info = self._env.step(action)
         next_obs, reset_obs = _transition_observations(
             raw_next_obs, info, self._env.observation_space, done=terminated or truncated,
+            same_step_autoreset=(
+                _same_step_autoreset(self._env) if terminated or truncated else False
+            ),
         )
 
         features = self._construct_features(self._current_obs, flat_action)
@@ -900,6 +943,9 @@ class TDStream:
         raw_next_obs, reward, terminated, truncated, info = self._env.step(action)
         next_obs, reset_obs = _transition_observations(
             raw_next_obs, info, self._env.observation_space, done=terminated or truncated,
+            same_step_autoreset=(
+                _same_step_autoreset(self._env) if terminated or truncated else False
+            ),
         )
 
         features = self._construct_features(self._current_obs, flat_action)
