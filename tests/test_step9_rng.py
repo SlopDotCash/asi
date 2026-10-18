@@ -345,6 +345,9 @@ def test_accepted_dream_uses_dedicated_candidate_behavior_and_control_roots() ->
         average_reward=dedicated_input.average_reward,
         last_observation=control_after_real.last_observation,
         last_action=control_after_real.last_action,
+        step_count=control_after_real.step_count,
+        epsilon=control_after_real.epsilon,
+        step_words=control_after_real.step_words,
         rng_key=reserved,
     )
     expected_behavior = behavior_model.sample_action(
