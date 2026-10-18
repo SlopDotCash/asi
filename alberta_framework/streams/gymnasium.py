@@ -199,12 +199,13 @@ def _transition_observations(
     """Separate a transition's next observation from an already-reset episode.
 
     Gymnasium 0.29's scalar AutoResetWrapper returns reset observations and
-    puts the final observation in info. Newer scalar Autoreset wrappers reset
-    on the next step; without that marker the ordinary manual reset path applies.
+    puts the final observation plus final transition info in info. Newer scalar
+    Autoreset wrappers reset on the next step. Without the complete same-step
+    marker pair, the ordinary manual reset path applies.
     VectorEnv's final_obs/mask protocol is outside this scalar Env interface.
     """
     returned_obs = _flatten_observation(raw_next_obs, space)
-    if done and "final_observation" in info:
+    if done and "final_observation" in info and "final_info" in info:
         return _flatten_observation(info["final_observation"], space), returned_obs
     return returned_obs, None
 

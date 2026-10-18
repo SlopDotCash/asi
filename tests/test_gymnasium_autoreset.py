@@ -216,3 +216,21 @@ def test_nonterminal_info_does_not_claim_a_reset() -> None:
     raw = IncidentalInfo(False, horizon=2)
     stream = GymnasiumStream(raw, mode=PredictionMode.NEXT_STATE, policy=lambda _obs: 0)
     np.testing.assert_array_equal(next(stream).target, jnp.asarray([1]))
+
+
+@pytest.mark.parametrize("consumer", CONSUMERS)
+def test_terminal_incidental_final_observation_does_not_claim_a_reset(consumer: str) -> None:
+    class IncidentalInfo(_BoundaryEnv):
+        def step(
+            self, action: Any,
+        ) -> tuple[NDArray[np.float32], float, bool, bool, dict[str, Any]]:
+            if self.episode_step >= self.horizon:
+                raise AssertionError("step called without a reset")
+            obs, reward, term, trunc, info = super().step(action)
+            info["final_observation"] = np.asarray([99], np.float32)
+            return obs, reward, term, trunc, info
+
+    raw = IncidentalInfo(False, horizon=1)
+    observations, targets, _ = _consume(raw, consumer, 2)
+    np.testing.assert_array_equal(observations, [[10], [10]])
+    np.testing.assert_array_equal(targets, [[2], [2]])
