@@ -41,8 +41,8 @@ from alberta_framework.core.normalizers import (
     _saturating_int32_counter_increment,
 )
 from alberta_framework.core.optimizers import (
-    AdaptiveObGDBounding,
     LMS,
+    AdaptiveObGDBounding,
     Bounder,
     ObGDBounding,
     _apply_obgd_bound_error_carrying,
