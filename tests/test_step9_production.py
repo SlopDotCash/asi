@@ -563,6 +563,46 @@ def test_step9_dreams_accepted_with_zero_warmup_and_high_error_threshold() -> No
     assert bool(jnp.any(result.dream_accepted)), "At least one dream should be accepted"
 
 
+def test_step9_dreaming_preserves_real_control_clock() -> None:
+    """Imagined updates must not consume real control transitions."""
+    cfg = Step9DreamingConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=2,
+            epsilon_decay_steps=100,
+        ),
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=1,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    state = init_step9_state(
+        agent,
+        model,
+        buffer,
+        key=jr.key(0),
+        initial_observation=jnp.zeros(2),
+    )
+    result = step9_update(
+        cfg,
+        agent,
+        model,
+        buffer,
+        state,
+        jnp.array(0.5),
+        jnp.ones(2),
+    )
+    assert bool(result.dream_accepted[0])
+    real = result.real_control_result.state
+    final = result.state.control_state
+    assert int(final.step_count) == int(real.step_count)
+    chex.assert_trees_all_equal(final.step_words, real.step_words)
+    np.testing.assert_allclose(final.epsilon, real.epsilon)
+
+
 def test_step9_dreams_rejected_when_error_too_high() -> None:
     """With a very strict error threshold, dreams should be rejected."""
     cfg = Step9DreamingConfig(

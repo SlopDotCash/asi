@@ -1172,6 +1172,9 @@ def step7_update(
             rollout_state.replace(  # type: ignore[attr-defined]
                 last_observation=control_after_real.last_observation,
                 last_action=control_after_real.last_action,
+                step_count=control_after_real.step_count,
+                epsilon=control_after_real.epsilon,
+                step_words=control_after_real.step_words,
             ),
         )
         corrected_state = jax.lax.cond(

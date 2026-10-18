@@ -865,6 +865,9 @@ def step9_update(
         restored = rollout_ctrl.replace(
             last_observation=control_after_real.last_observation,
             last_action=control_after_real.last_action,
+            step_count=control_after_real.step_count,
+            epsilon=control_after_real.epsilon,
+            step_words=control_after_real.step_words,
         )
         next_ctrl = cast(
             DifferentialSARSAState,
