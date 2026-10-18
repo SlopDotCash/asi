@@ -365,6 +365,10 @@ def _require_descriptor_contract(
     active_slots: int,
     location: str,
 ) -> Array:
+    # Check the source dtype before JAX can narrow int64 identities to int32.
+    source_dtype = getattr(descriptors, "dtype", None)
+    if source_dtype is not None and np.dtype(source_dtype) != np.dtype(np.int32):
+        raise TypeError(f"{location} must have dtype int32")
     value = jnp.asarray(descriptors)
     if value.shape != (active_slots, 2):
         raise ValueError(f"{location} must have shape ({active_slots}, 2)")
