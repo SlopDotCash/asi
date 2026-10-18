@@ -73,6 +73,7 @@ def _prototype_config(
     world_model: bool = False,
     n_dreams: int = 0,
     horde: bool = False,
+    horde_lamda: float = 0.0,
     dream_next_observation_mode: Literal[
         "model_prediction",
         "sample_one_hot",
@@ -86,14 +87,14 @@ def _prototype_config(
                     name="short",
                     demon_type=DemonType.PREDICTION,
                     gamma=0.2,
-                    lamda=0.0,
+                    lamda=horde_lamda,
                     cumulant_index=-1,
                 ),
                 GVFSpec(
                     name="long",
                     demon_type=DemonType.PREDICTION,
                     gamma=0.9,
-                    lamda=0.0,
+                    lamda=horde_lamda,
                     cumulant_index=-1,
                 ),
             )
@@ -146,6 +147,7 @@ def _explicit_transition(
     discount: object,
     terminated: object | None = None,
     truncated: object = False,
+    next_decision_observation: object | None = None,
     horde_cumulants: object | None = None,
     horde_discounts: object | None = None,
 ) -> PrototypeTransition:
@@ -160,7 +162,9 @@ def _explicit_transition(
         terminated=(discount_array == 0.0 if terminated is None else terminated),
         truncated=truncated,
         next_observation=next_observation,
-        next_decision_observation=next_observation,
+        next_decision_observation=(
+            next_observation if next_decision_observation is None else next_decision_observation
+        ),
         horde_cumulants=horde_cumulants,
         horde_discounts=horde_discounts,
     )
@@ -469,6 +473,86 @@ def test_horde_explicit_discounts_and_default_horizons() -> None:
         cumulants - current,
         atol=1e-6,
     )
+
+
+@pytest.mark.parametrize("boundary", ["terminated", "truncated"])
+def test_horde_traces_end_with_the_episode(boundary: str) -> None:
+    lamda = 0.8
+    agent = PrototypeAgent(_prototype_config(horde=True, horde_lamda=lamda))
+    assert agent._horde is not None
+    step_size = 0.05
+    episode_one = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    episode_two = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.start(agent.init(jr.key(5)), episode_one)
+    for _ in range(3):
+        state = agent.update_transition(
+            state,
+            _explicit_transition(
+                state,
+                reward=1.0,
+                next_observation=episode_one,
+                discount=1.0,
+            ),
+        ).state
+
+    terminated = boundary == "terminated"
+    boundary_result = agent.update_transition(
+        state,
+        _explicit_transition(
+            state,
+            reward=1.0,
+            next_observation=episode_one,
+            discount=0.0 if terminated else 1.0,
+            terminated=terminated,
+            truncated=not terminated,
+            next_decision_observation=episode_two,
+        ),
+    )
+    assert bool(boundary_result.transition_diagnostics.valid)
+    before = state.horde_state
+    after = boundary_result.state.horde_state
+    for head, demon in enumerate(agent._horde.horde_spec.demons):
+        gamma_lamda = np.float32(demon.gamma) * np.float32(lamda)
+        weight_trace, bias_trace = before.head_traces[head]
+        delta = boundary_result.horde_td_errors[head]
+        # The boundary update still credits the finished episode along the
+        # complete trace before that trace ends.
+        np.testing.assert_allclose(
+            after.head_params.weights[head],
+            before.head_params.weights[head]
+            + step_size * delta * (gamma_lamda * weight_trace + episode_one),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+        np.testing.assert_allclose(
+            after.head_params.biases[head],
+            before.head_params.biases[head] + step_size * delta * (gamma_lamda * bias_trace + 1.0),
+            rtol=1e-6,
+            atol=1e-7,
+        )
+        np.testing.assert_array_equal(after.head_traces[head][0], 0.0)
+        np.testing.assert_array_equal(after.head_traces[head][1], 0.0)
+
+    state = boundary_result.state
+    np.testing.assert_array_equal(state.current_representation, episode_two)
+    following = agent.update_transition(
+        state,
+        _explicit_transition(
+            state,
+            reward=1.0,
+            next_observation=episode_two,
+            discount=1.0,
+        ),
+    )
+    assert bool(following.transition_diagnostics.valid)
+    for head in range(agent._horde.n_demons):
+        # Feature 0 is active only in the finished episode, so the first
+        # update of the next episode leaves its weight alone.
+        np.testing.assert_array_equal(
+            following.state.horde_state.head_params.weights[head][..., 0],
+            state.horde_state.head_params.weights[head][..., 0],
+        )
+        assert float(following.horde_td_errors[head]) != 0.0
 
 
 class _FixedDreamer:

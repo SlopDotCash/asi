@@ -1404,7 +1404,10 @@ class PrototypeTransition:
     uses each demon's configured gamma on nonterminal transitions and zeros
     every demon only when the global ``discount`` is zero.  Consequently,
     callers that need fractional environment continuation to alter GVF
-    horizons must supply ``horde_discounts`` explicitly.
+    horizons must supply ``horde_discounts`` explicitly.  A boundary
+    (``terminated`` or ``truncated``) ends every GVF eligibility trace after
+    the boundary update has credited it, so the next episode starts with
+    fresh traces.
 
     Attributes:
         observation: Raw observation on which ``action`` was selected.
@@ -6396,6 +6399,34 @@ class PrototypeAgent:
             operand=None,
         )
 
+    def _end_horde_traces_at_boundary(
+        self,
+        horde_state: Any,
+        execution_boundary: Array,
+    ) -> Any:
+        """End every GVF eligibility trace after a boundary transition.
+
+        The boundary update has already credited the finished episode along
+        these traces. The next transition starts from the decision
+        observation, so a carried trace would credit the next episode's TD
+        errors to states of the finished one. GVF targets keep their
+        configured or explicit discounts. Heads whose float32 gamma * lambda
+        is zero rebuild their trace from the gradient alone and are left
+        unchanged.
+        """
+        horde_spec = cast(HordeSpec, self._config.horde_spec)
+        head_traces = tuple(
+            (
+                tuple(
+                    jnp.where(execution_boundary, jnp.zeros_like(trace), trace) for trace in traces
+                )
+                if np.float32(demon.gamma) * np.float32(demon.lamda) != 0.0
+                else traces
+            )
+            for demon, traces in zip(horde_spec.demons, horde_state.head_traces, strict=True)
+        )
+        return horde_state.replace(head_traces=head_traces)
+
     def _apply_valid_transition_impl(
         self,
         state: PrototypeAgentState,
@@ -7009,7 +7040,9 @@ class PrototypeAgent:
                 bootstrap_obs,
                 horde_discounts,
             )
-            new_horde_state = horde_result.state
+            new_horde_state = self._end_horde_traces_at_boundary(
+                horde_result.state, execution_boundary
+            )
             horde_tderrs = horde_result.td_errors
 
         # -- Step 12: IA update -----------------------------------------------
