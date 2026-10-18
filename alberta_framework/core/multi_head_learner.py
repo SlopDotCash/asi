@@ -1271,7 +1271,7 @@ class MultiHeadMLPLearner:
             mean_abs_err = jnp.sum(
                 jnp.abs(jnp.where(active_mask, predictions_arr - safe_targets, 0.0))
             ) / n_active
-            if type(self._bounder) is ObGDBounding:
+            if isinstance(self._bounder, ObGDBounding):
                 kappa = jnp.asarray(
                     self._bounder.to_config()["kappa"], dtype=jnp.float32
                 )
@@ -1280,7 +1280,7 @@ class MultiHeadMLPLearner:
                         tuple(trunk_steps), mean_abs_err, kappa
                     )
                 )
-            elif type(self._bounder) is AdaptiveObGDBounding:
+            elif isinstance(self._bounder, AdaptiveObGDBounding):
                 kappa = jnp.asarray(
                     self._bounder.to_config()["kappa"], dtype=jnp.float32
                 )

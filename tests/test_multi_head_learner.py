@@ -1820,3 +1820,34 @@ class TestTrunkObGDBoundingErrorCarrying:
             f"trunk update L1 {trunk_l1:.4f} exceeds published guarantee "
             f"{guarantee:.4f}"
         )
+
+    def test_trunk_update_respects_published_obgd_guarantee_for_subclass(self) -> None:
+        class DerivedObGDBounding(ObGDBounding):
+            pass
+
+        kappa = 2.0
+        delta = 0.1
+        learner = MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(16,),
+            optimizer=LMS(step_size=5.0),
+            bounder=DerivedObGDBounding(kappa=kappa),
+            gamma=0.0,
+            lamda=0.0,
+            use_layer_norm=False,
+            sparsity=0.0,
+        )
+        state = learner.init(4, jr.key(0))
+        obs = jnp.array([0.5, -0.25, 1.0, 0.75], dtype=jnp.float32)
+        pred = float(learner.predict(state, obs)[0])
+        result = learner.update(
+            state, obs, jnp.array([pred + delta], dtype=jnp.float32)
+        )
+        assert bool(result.update_applied)
+        trunk_l1 = 0.0
+        for old, new in zip(
+            state.trunk_params.weights + state.trunk_params.biases,
+            result.state.trunk_params.weights + result.state.trunk_params.biases,
+        ):
+            trunk_l1 += float(jnp.sum(jnp.abs(new - old)))
+        assert trunk_l1 <= min(abs(delta), 1.0) / kappa + 1e-6
