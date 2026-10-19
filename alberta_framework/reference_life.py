@@ -2231,11 +2231,14 @@ class ReferenceLifeRunner:
             )
             if any(payoff.shape != (2, 2) for payoff in payoff_matrices):
                 raise DecisionOwnershipError("checkpoint environment payoff schedule is invalid")
+            # Add the toggle payoffs in float64, as
+            # ``SwitchingTwoStateMDP.optimal_average_reward`` does; their
+            # float32 sum can round, which no metrics history would match.
             oracle_rewards = tuple(
                 max(
                     float(payoff[0, 0]),
                     float(payoff[1, 1]),
-                    0.5 * float(payoff[0, 1] + payoff[1, 0]),
+                    0.5 * (float(payoff[0, 1]) + float(payoff[1, 0])),
                 )
                 for payoff in payoff_matrices
             )
