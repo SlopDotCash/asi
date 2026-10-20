@@ -397,8 +397,10 @@ class HordeActorCriticState:
     Attributes:
         actor_weights: Policy weight matrix, shape ``(n_actions, feature_dim)``.
         actor_bias: Policy bias vector, shape ``(n_actions,)``.
-        actor_trace_weights: Eligibility trace for actor weights.
-        actor_trace_bias: Eligibility trace for actor bias.
+        actor_trace_weights: Eligibility trace for actor weights, stored
+            already decayed by the last transition's ``discount * actor_lamda``
+            (zero after a terminal transition).
+        actor_trace_bias: Eligibility trace for actor bias, stored the same way.
         critic_state: Underlying Horde learner state.
         last_observation: Previous observation ``s_t``.
         last_action: Previous action ``a_t``.
@@ -768,11 +770,11 @@ class QHordeActorCriticAgent:
             else sampled_actor_grad_bias
         )
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
-        actor_decay = effective_gamma * cfg.actor_lamda
-        actor_trace_weights = (
-            _skip_zero_scale(actor_decay, state.actor_trace_weights) + actor_grad_weights
-        )
-        actor_trace_bias = _skip_zero_scale(actor_decay, state.actor_trace_bias) + actor_grad_bias
+        # The stored trace was already decayed by the discount of the transition
+        # into ``prev_obs`` (see ``trace_decay`` below), so this TD error credits
+        # every earlier action of the episode, also when this transition ends it.
+        actor_trace_weights = state.actor_trace_weights + actor_grad_weights
+        actor_trace_bias = state.actor_trace_bias + actor_grad_bias
         actor_scale = (
             jnp.array(1.0, dtype=jnp.float32)
             if cfg.actor_update == "expected_advantage"
@@ -790,16 +792,14 @@ class QHordeActorCriticAgent:
                 (state.actor_weights, state.actor_bias),
             )
         actor_steps = tuple(actor_scale * step for step in actor_steps)
-        carry_traces = effective_gamma != 0.0
+        # Store the trace decayed by this transition's discount, which is the decay
+        # the next update needs. A terminal transition (discount 0) clears it.
+        trace_decay = effective_gamma * cfg.actor_lamda
         updated = state.replace(  # type: ignore[attr-defined]
             actor_weights=state.actor_weights + actor_steps[0],
             actor_bias=state.actor_bias + actor_steps[1],
-            actor_trace_weights=jnp.where(
-                carry_traces, actor_trace_weights, jnp.zeros_like(actor_trace_weights)
-            ),
-            actor_trace_bias=jnp.where(
-                carry_traces, actor_trace_bias, jnp.zeros_like(actor_trace_bias)
-            ),
+            actor_trace_weights=_skip_zero_scale(trace_decay, actor_trace_weights),
+            actor_trace_bias=_skip_zero_scale(trace_decay, actor_trace_bias),
             critic_state=critic_result.state,
             step_count=_saturating_int32_counter_increment(state.step_count),
         )
@@ -1031,9 +1031,12 @@ class HordeActorCriticAgent:
         The actor follows the AC(lambda) policy-gradient update
         ``theta += alpha * delta_t * e_t``, where ``delta_t`` is the TD error
         from the configured Horde value head and
-        ``e_t = gamma_t * lambda * e_{t-1} + grad log pi(A_t | S_t)``. When an
-        actor bounder is configured, the proposed actor step is scaled by the
-        same ``Bounder`` interface used elsewhere in the framework.
+        ``e_t = gamma_t * lambda * e_{t-1} + grad log pi(A_t | S_t)``, where
+        ``gamma_t`` is the discount of the transition into ``S_t``. A terminal
+        transition's TD error therefore still credits earlier actions, and the
+        trace is empty afterwards. When an actor bounder is configured, the
+        proposed actor step is scaled by the same ``Bounder`` interface used
+        elsewhere in the framework.
 
         Args:
             state: Current state with a valid previous observation/action.
@@ -1097,11 +1100,11 @@ class HordeActorCriticAgent:
         one_hot = jax.nn.one_hot(safe_last_action, cfg.n_actions, dtype=jnp.float32)
         actor_grad_bias = (one_hot - old_policy) / cfg.temperature
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
-        actor_decay = value_discount * cfg.actor_lamda
-        actor_trace_weights = (
-            _skip_zero_scale(actor_decay, state.actor_trace_weights) + actor_grad_weights
-        )
-        actor_trace_bias = _skip_zero_scale(actor_decay, state.actor_trace_bias) + actor_grad_bias
+        # The stored trace was already decayed by the discount of the transition
+        # into ``prev_obs`` (see ``trace_decay`` below), so this TD error credits
+        # every earlier action of the episode, also when this transition ends it.
+        actor_trace_weights = state.actor_trace_weights + actor_grad_weights
+        actor_trace_bias = state.actor_trace_bias + actor_grad_bias
         actor_steps: tuple[Array, ...] = (
             cfg.actor_step_size * actor_trace_weights,
             cfg.actor_step_size * actor_trace_bias,
@@ -1114,17 +1117,15 @@ class HordeActorCriticAgent:
                 (state.actor_weights, state.actor_bias),
             )
         actor_steps = tuple(actor_td_error * step for step in actor_steps)
-        carry_traces = value_discount != 0.0
+        # Store the trace decayed by this transition's discount, which is the decay
+        # the next update needs. A terminal transition (discount 0) clears it.
+        trace_decay = value_discount * cfg.actor_lamda
 
         updated = state.replace(  # type: ignore[attr-defined]
             actor_weights=state.actor_weights + actor_steps[0],
             actor_bias=state.actor_bias + actor_steps[1],
-            actor_trace_weights=jnp.where(
-                carry_traces, actor_trace_weights, jnp.zeros_like(actor_trace_weights)
-            ),
-            actor_trace_bias=jnp.where(
-                carry_traces, actor_trace_bias, jnp.zeros_like(actor_trace_bias)
-            ),
+            actor_trace_weights=_skip_zero_scale(trace_decay, actor_trace_weights),
+            actor_trace_bias=_skip_zero_scale(trace_decay, actor_trace_bias),
             critic_state=critic_result.state,
             step_count=_saturating_int32_counter_increment(state.step_count),
         )
@@ -1554,6 +1555,9 @@ class NonlinearHordeActorCriticState:
         actor_head_w: Output layer weights, shape ``(n_actions, H_last)``.
         actor_head_b: Output layer biases, shape ``(n_actions,)``.
         actor_trunk_traces: Interleaved trace arrays ``(w0_tr, b0_tr, …)``.
+            Every actor trace is stored already decayed by the last
+            transition's ``discount * actor_lamda`` (zero after a terminal
+            transition).
         actor_head_trace_w: Trace for ``actor_head_w``.
         actor_head_trace_b: Trace for ``actor_head_b``.
         actor_trunk_opt_states: Interleaved Autostep states ``(w0_opt, b0_opt, …)``.
@@ -1945,20 +1949,18 @@ class NonlinearHordeActorCriticAgent:
             cfg.actor_gradient_clip_norm,
         )
 
-        actor_decay = value_discount * cfg.actor_lamda
+        # The stored traces were already decayed by the discount of the transition
+        # into ``prev_obs`` (see ``trace_decay`` below), so this TD error credits
+        # every earlier action of the episode, also when this transition ends it.
         n_hidden = len(cfg.hidden_sizes)
 
         new_trunk_traces: list[Array] = []
         for i in range(n_hidden):
-            new_trunk_traces.append(
-                _skip_zero_scale(actor_decay, state.actor_trunk_traces[2 * i]) + grad_trunk_w[i]
-            )
-            new_trunk_traces.append(
-                _skip_zero_scale(actor_decay, state.actor_trunk_traces[2 * i + 1]) + grad_trunk_b[i]
-            )
+            new_trunk_traces.append(state.actor_trunk_traces[2 * i] + grad_trunk_w[i])
+            new_trunk_traces.append(state.actor_trunk_traces[2 * i + 1] + grad_trunk_b[i])
 
-        new_head_trace_w = _skip_zero_scale(actor_decay, state.actor_head_trace_w) + grad_head_w
-        new_head_trace_b = _skip_zero_scale(actor_decay, state.actor_head_trace_b) + grad_head_b
+        new_head_trace_w = state.actor_head_trace_w + grad_head_w
+        new_head_trace_b = state.actor_head_trace_b + grad_head_b
 
         # Per-weight Autostep updates: step = alpha_i * z_i; caller applies error * step
         new_trunk_opt_states: list[AutostepParamState] = []
@@ -2041,10 +2043,9 @@ class NonlinearHordeActorCriticAgent:
         new_head_w = state.actor_head_w + head_w_step
         new_head_b = state.actor_head_b + head_b_step
 
-        carry_traces = value_discount != 0.0
-        zeroed_trunk_traces = tuple(
-            jnp.where(carry_traces, t, jnp.zeros_like(t)) for t in new_trunk_traces
-        )
+        # Store the traces decayed by this transition's discount, which is the decay
+        # the next update needs. A terminal transition (discount 0) clears them.
+        trace_decay = value_discount * cfg.actor_lamda
 
         updated = state.replace(  # type: ignore[attr-defined]
             actor_trunk=MLPParams(  # type: ignore[call-arg]
@@ -2052,13 +2053,9 @@ class NonlinearHordeActorCriticAgent:
             ),
             actor_head_w=new_head_w,
             actor_head_b=new_head_b,
-            actor_trunk_traces=zeroed_trunk_traces,
-            actor_head_trace_w=jnp.where(
-                carry_traces, new_head_trace_w, jnp.zeros_like(new_head_trace_w)
-            ),
-            actor_head_trace_b=jnp.where(
-                carry_traces, new_head_trace_b, jnp.zeros_like(new_head_trace_b)
-            ),
+            actor_trunk_traces=tuple(_skip_zero_scale(trace_decay, t) for t in new_trunk_traces),
+            actor_head_trace_w=_skip_zero_scale(trace_decay, new_head_trace_w),
+            actor_head_trace_b=_skip_zero_scale(trace_decay, new_head_trace_b),
             actor_trunk_opt_states=tuple(new_trunk_opt_states),
             actor_head_opt_w=new_head_opt_w,
             actor_head_opt_b=new_head_opt_b,
@@ -2642,18 +2639,16 @@ class NonlinearQHordeActorCriticAgent:
             cfg.actor_gradient_clip_norm,
         )
 
-        actor_decay = effective_gamma * cfg.actor_lamda
+        # The stored traces were already decayed by the discount of the transition
+        # into ``prev_obs`` (see ``trace_decay`` below), so this TD error credits
+        # every earlier action of the episode, also when this transition ends it.
         n_hidden = len(cfg.hidden_sizes)
         new_trunk_traces: list[Array] = []
         for i in range(n_hidden):
-            new_trunk_traces.append(
-                _skip_zero_scale(actor_decay, state.actor_trunk_traces[2 * i]) + grad_trunk_w[i]
-            )
-            new_trunk_traces.append(
-                _skip_zero_scale(actor_decay, state.actor_trunk_traces[2 * i + 1]) + grad_trunk_b[i]
-            )
-        new_head_trace_w = _skip_zero_scale(actor_decay, state.actor_head_trace_w) + grad_head_w
-        new_head_trace_b = _skip_zero_scale(actor_decay, state.actor_head_trace_b) + grad_head_b
+            new_trunk_traces.append(state.actor_trunk_traces[2 * i] + grad_trunk_w[i])
+            new_trunk_traces.append(state.actor_trunk_traces[2 * i + 1] + grad_trunk_b[i])
+        new_head_trace_w = state.actor_head_trace_w + grad_head_w
+        new_head_trace_b = state.actor_head_trace_b + grad_head_b
 
         new_trunk_opt_states: list[AutostepParamState] = []
         trunk_w_steps: list[Array] = []
@@ -2719,7 +2714,9 @@ class NonlinearQHordeActorCriticAgent:
         head_w_step = step_error * head_w_step
         head_b_step = step_error * head_b_step
 
-        carry_traces = effective_gamma != 0.0
+        # Store the traces decayed by this transition's discount, which is the decay
+        # the next update needs. A terminal transition (discount 0) clears them.
+        trace_decay = effective_gamma * cfg.actor_lamda
         updated = state.replace(  # type: ignore[attr-defined]
             actor_trunk=MLPParams(  # type: ignore[call-arg]
                 {
@@ -2734,14 +2731,10 @@ class NonlinearQHordeActorCriticAgent:
             actor_head_w=state.actor_head_w + head_w_step,
             actor_head_b=state.actor_head_b + head_b_step,
             actor_trunk_traces=tuple(
-                jnp.where(carry_traces, trace, jnp.zeros_like(trace)) for trace in new_trunk_traces
+                _skip_zero_scale(trace_decay, trace) for trace in new_trunk_traces
             ),
-            actor_head_trace_w=jnp.where(
-                carry_traces, new_head_trace_w, jnp.zeros_like(new_head_trace_w)
-            ),
-            actor_head_trace_b=jnp.where(
-                carry_traces, new_head_trace_b, jnp.zeros_like(new_head_trace_b)
-            ),
+            actor_head_trace_w=_skip_zero_scale(trace_decay, new_head_trace_w),
+            actor_head_trace_b=_skip_zero_scale(trace_decay, new_head_trace_b),
             actor_trunk_opt_states=tuple(new_trunk_opt_states),
             actor_head_opt_w=new_head_opt_w,
             actor_head_opt_b=new_head_opt_b,

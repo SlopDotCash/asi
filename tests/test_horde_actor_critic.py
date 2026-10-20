@@ -582,6 +582,103 @@ def test_qhorde_actor_critic_auxiliary_prediction_and_terminal_trace_reset() -> 
     chex.assert_trees_all_close(result.state.actor_trace_weights, jnp.zeros((2, 2)))
 
 
+@pytest.mark.parametrize("second_discount", [0.0, 0.9], ids=["terminal", "continuing"])
+def test_horde_actor_critic_trace_decays_by_the_discount_into_the_state(
+    second_discount: float,
+) -> None:
+    """AC(lambda) decays e_{t-1} by the discount of the transition into S_t.
+
+    The first transition's caller discount 0.4 differs from the value head's
+    configured gamma 0.9, so the second update must use 0.4, whether its own
+    discount ends the episode (0) or not (0.9).
+    """
+    agent = _make_agent()
+    s0 = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    s1 = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(5)).replace(  # type: ignore[attr-defined]
+        last_observation=s0,
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        discount=jnp.array(0.4, dtype=jnp.float32),
+    )
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s0,
+        discount=jnp.array(second_discount, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    assert bool(second.update_applied)
+
+    # grad log pi(A|S) of each update's own state and action.
+    grad0 = jax.nn.one_hot(0, 2) - agent.policy(state, s0)
+    grad1 = jax.nn.one_hot(first.state.last_action, 2) - agent.policy(first.state, s1)
+    trace_weights = 0.4 * 0.7 * grad0[:, None] * s0[None, :] + grad1[:, None] * s1[None, :]
+    trace_bias = 0.4 * 0.7 * grad0 + grad1
+    step = 0.05 * second.td_error
+    chex.assert_trees_all_close(
+        second.state.actor_weights,
+        first.state.actor_weights + step * trace_weights,
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    chex.assert_trees_all_close(
+        second.state.actor_bias,
+        first.state.actor_bias + step * trace_bias,
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    # s0's weight column moves only through the first action's trace.
+    first_column_step = second.state.actor_weights[:, 0] - first.state.actor_weights[:, 0]
+    assert float(jnp.max(jnp.abs(first_column_step))) > 1e-4
+    if second_discount == 0.0:
+        chex.assert_trees_all_equal(second.state.actor_trace_weights, jnp.zeros((2, 2)))
+        chex.assert_trees_all_equal(second.state.actor_trace_bias, jnp.zeros((2,)))
+
+
+def test_qhorde_actor_critic_terminal_td_error_credits_earlier_actions() -> None:
+    """The Q-critic actor also credits earlier actions at termination."""
+    agent = _make_qhorde_agent(n_actions=2)
+    s0 = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    s1 = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(6)).replace(  # type: ignore[attr-defined]
+        last_observation=s0,
+        last_action=jnp.array(0, dtype=jnp.int32),
+    )
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        terminated=jnp.array(0.0, dtype=jnp.float32),
+    )
+    terminal = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s0,
+        terminated=jnp.array(1.0, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    assert bool(terminal.update_applied)
+
+    # The configured gamma 0.9 and actor lambda 0.7 decay the first trace.
+    grad0 = jax.nn.one_hot(0, 2) - agent.policy(state, s0)
+    grad1 = jax.nn.one_hot(first.state.last_action, 2) - agent.policy(first.state, s1)
+    trace_weights = 0.9 * 0.7 * grad0[:, None] * s0[None, :] + grad1[:, None] * s1[None, :]
+    chex.assert_trees_all_close(
+        terminal.state.actor_weights,
+        first.state.actor_weights + 0.05 * terminal.td_error * trace_weights,
+        rtol=1e-5,
+        atol=1e-7,
+    )
+    first_column_step = terminal.state.actor_weights[:, 0] - first.state.actor_weights[:, 0]
+    assert float(jnp.max(jnp.abs(first_column_step))) > 1e-4
+    chex.assert_trees_all_equal(terminal.state.actor_trace_weights, jnp.zeros((2, 2)))
+
+
 def test_qhorde_actor_critic_config_roundtrip_and_exports() -> None:
     base_agent = _make_qhorde_agent(n_actions=2, n_aux=1)
     agent = QHordeActorCriticAgent(
@@ -929,6 +1026,61 @@ def test_nonlinear_horde_zero_discount_neutralizes_inf_next_value() -> None:
     chex.assert_trees_all_equal(result.next_value, jnp.array(0.0, jnp.float32))
     chex.assert_tree_all_finite(result.state.replace(rng_key=jr.key_data(result.state.rng_key)))
     chex.assert_tree_all_finite((result.policy, result.value, result.next_value, result.td_error))
+
+
+def _zero_nonlinear_actor_traces(state: Any) -> Any:
+    return state.replace(
+        actor_trunk_traces=tuple(jnp.zeros_like(t) for t in state.actor_trunk_traces),
+        actor_head_trace_w=jnp.zeros_like(state.actor_head_trace_w),
+        actor_head_trace_b=jnp.zeros_like(state.actor_head_trace_b),
+    )
+
+
+@pytest.mark.parametrize("q_critic", [False, True], ids=["value_critic", "q_critic"])
+def test_nonlinear_horde_terminal_td_error_credits_earlier_actions(q_critic: bool) -> None:
+    """A terminal TD error must reach the trace built earlier in the episode."""
+    agent: Any = _make_nlqhac_agent() if q_critic else _make_nlhac_agent()
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(30))
+    state, _, _ = agent.start(state, jr.normal(jr.key(31), (OBS_DIM,)))
+    observations = jr.normal(jr.key(32), (2, OBS_DIM))
+
+    def step(current: Any, reward: float, observation: jax.Array, terminal: bool) -> Any:
+        if q_critic:
+            return agent.update(
+                current,
+                jnp.array(reward, jnp.float32),
+                observation,
+                terminated=jnp.array(float(terminal), jnp.float32),
+            )
+        return agent.update(
+            current,
+            jnp.array(reward, jnp.float32),
+            observation,
+            discount=jnp.array(0.0 if terminal else 0.99, jnp.float32),
+        )
+
+    first = step(state, 0.0, observations[0], terminal=False)
+    carried = step(first.state, 1.0, observations[1], terminal=True)
+    without_history = step(
+        _zero_nonlinear_actor_traces(first.state), 1.0, observations[1], terminal=True
+    )
+    assert bool(first.update_applied)
+    assert bool(carried.update_applied)
+    assert bool(without_history.update_applied)
+
+    # The trace from the first action changes the terminal actor step ...
+    assert float(jnp.max(jnp.abs(first.state.actor_head_trace_w))) > 0.0
+    assert not np.allclose(
+        np.asarray(carried.state.actor_head_w),
+        np.asarray(without_history.state.actor_head_w),
+    )
+    # ... and is still cleared after the terminal update.
+    for trace in (
+        *carried.state.actor_trunk_traces,
+        carried.state.actor_head_trace_w,
+        carried.state.actor_head_trace_b,
+    ):
+        chex.assert_trees_all_equal(trace, jnp.zeros_like(trace))
 
 
 class TestNonlinearHordeActorCriticConfig:
