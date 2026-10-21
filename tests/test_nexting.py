@@ -12,6 +12,7 @@ import pytest
 from jax.experimental import checkify
 
 from alberta_framework.utils.nexting import (
+    _exact_power_of_two_scale,
     forward_view_returns,
     multi_channel_horizon_returns,
     multi_horizon_returns,
@@ -313,6 +314,71 @@ class TestRMSE:
         np.testing.assert_allclose(np.asarray(rmse), reference, rtol=2e-6)
         compiled = jax.jit(per_horizon_rmse)(predictions, returns)
         np.testing.assert_allclose(np.asarray(compiled), reference, rtol=2e-6)
+
+    @pytest.mark.parametrize(
+        ("magnitude", "exponent"),
+        [
+            (1.0e38, -127),
+            (1.0e38, -128),
+            (1.0e38, -140),
+            (1.0, 127),
+            (0.5, 128),
+        ],
+    )
+    def test_power_of_two_rescale_matches_ieee754_ldexp(
+        self,
+        magnitude: float,
+        exponent: int,
+    ) -> None:
+        """Rescaling must keep IEEE-754 semantics past the backend ldexp cliff.
+
+        ``jnp.ldexp`` returns a hard zero for every exponent at or below ``-127``
+        on some backends no matter how representable the product is, so the
+        rescale cannot delegate the whole exponent to it. numpy implements the
+        full IEEE-754 range and is the reference here.
+        """
+        values = np.asarray([magnitude, -magnitude, 0.5 * magnitude], dtype=np.float32)
+        expected = np.ldexp(values, np.int32(exponent))
+
+        scaled = _exact_power_of_two_scale(jnp.asarray(values), jnp.int32(exponent))
+
+        np.testing.assert_allclose(np.asarray(scaled), expected, rtol=1e-6)
+        compiled = jax.jit(_exact_power_of_two_scale)(
+            jnp.asarray(values), jnp.int32(exponent)
+        )
+        np.testing.assert_allclose(np.asarray(compiled), expected, rtol=1e-6)
+
+    def test_rmse_above_the_ldexp_exponent_limit_is_not_reported_as_zero(
+        self,
+    ) -> None:
+        """A 2**126 magnitude forces a rescale exponent of -127 or lower.
+
+        That is exactly the band where a bare ``ldexp`` returns zero, which would
+        report a perfect RMSE for enormous finite errors.
+        """
+        values = np.linspace(-1.0e38, 1.0e38, 257, dtype=np.float32)[:, None]
+        predictions = jnp.asarray(values)
+        returns = jnp.zeros_like(predictions)
+        reference = np.sqrt(np.mean(np.square(values.astype(np.float64)), axis=0))
+
+        rmse = per_horizon_rmse(predictions, returns)
+
+        np.testing.assert_allclose(np.asarray(rmse), reference, rtol=2e-6)
+        assert bool(jnp.all(rmse > 0.0))
+
+        window_size = 64
+        running = per_horizon_running_rmse(
+            predictions, returns, window_size=window_size
+        )
+        completed = np.asarray(running)[window_size - 1 :]
+        assert completed.size > 0
+        assert bool(np.all(completed > 0.0))
+        last_window = values[-window_size:].astype(np.float64)
+        np.testing.assert_allclose(
+            completed[-1],
+            np.sqrt(np.mean(np.square(last_window), axis=0)),
+            rtol=2e-6,
+        )
 
     def test_finite_stable_rmse_has_no_checkify_float_errors(self) -> None:
         checked = checkify.checkify(per_horizon_rmse, errors=checkify.float_checks)

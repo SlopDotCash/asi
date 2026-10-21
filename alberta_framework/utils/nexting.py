@@ -282,11 +282,35 @@ def _validate_rmse_inputs(
     return predictions.shape[0]
 
 
+_EXACT_LDEXP_EXPONENT_LIMIT = 126
+
+
+def _exact_power_of_two_scale(values: Array, exponent: Array) -> Array:
+    """Scale ``values`` by ``2**exponent`` without leaving the exact range.
+
+    ``jnp.ldexp`` returns a hard zero for every exponent at or below ``-127`` on
+    some backends, even when ``values * 2**exponent`` is an ordinary normal
+    number. Delegating a whole rescale to it therefore silences any column whose
+    magnitude reaches ``2**126``. Splitting the exponent into a bounded
+    ``ldexp`` head plus an exactly representable power-of-two factor keeps the
+    IEEE-754 semantics across the full float range.
+    """
+    exponent = jnp.asarray(exponent)
+    head = jnp.clip(
+        exponent,
+        -_EXACT_LDEXP_EXPONENT_LIMIT,
+        _EXACT_LDEXP_EXPONENT_LIMIT,
+    )
+    tail = exponent - head
+    tail_factor = jnp.exp2(tail.astype(values.dtype))
+    return jnp.ldexp(values, head) * tail_factor
+
+
 def _scaled_rmse_terms(errors: Array) -> tuple[Array, Array, Array]:
     """Return power-of-two scale, scaled errors, and their RMS."""
     scale = jnp.max(jnp.abs(errors), axis=0)
     _, exponent = jnp.frexp(scale)
-    scaled_errors = jnp.ldexp(errors, -exponent)
+    scaled_errors = _exact_power_of_two_scale(errors, -exponent)
     scaled_rmse = jnp.sqrt(jnp.mean(scaled_errors**2, axis=0))
     return exponent, scaled_errors, scaled_rmse
 
@@ -295,7 +319,7 @@ def _scaled_rmse_terms(errors: Array) -> tuple[Array, Array, Array]:
 def _finite_rmse(errors: Array) -> Array:
     """Compute finite-column RMSE without overflow or reciprocal underflow."""
     exponent, _, scaled_rmse = _scaled_rmse_terms(errors)
-    return jnp.ldexp(scaled_rmse, exponent)
+    return _exact_power_of_two_scale(scaled_rmse, exponent)
 
 
 @_finite_rmse.defjvp
@@ -306,7 +330,7 @@ def _finite_rmse_jvp(
     """Differentiate in the scaled domain so huge finite gradients stay valid."""
     (errors,), (errors_dot,) = primals, tangents
     exponent, scaled_errors, scaled_rmse = _scaled_rmse_terms(errors)
-    rmse = jnp.ldexp(scaled_rmse, exponent)
+    rmse = _exact_power_of_two_scale(scaled_rmse, exponent)
     # Zero is a valid subgradient for an all-zero column and avoids a 0 / 0.
     safe_scaled_rmse = jnp.where(
         scaled_rmse > 0.0,
@@ -345,7 +369,7 @@ def _scaled_running_rmse_terms(
     """Return one power-of-two scale and stable sliding RMS terms."""
     scale = jnp.max(jnp.abs(errors), axis=0)
     _, exponent = jnp.frexp(scale)
-    scaled_errors = jnp.ldexp(errors, -exponent)
+    scaled_errors = _exact_power_of_two_scale(errors, -exponent)
     scaled_window = _sliding_sum(scaled_errors**2, window_size)
     scaled_running = jnp.sqrt(scaled_window / window_size)
     return exponent, scaled_errors, scaled_running
@@ -355,7 +379,7 @@ def _scaled_running_rmse_terms(
 def _finite_running_rmse(errors: Array, window_size: int) -> Array:
     """Compute a finite sliding RMSE with a scale-free derivative."""
     exponent, _, scaled_running = _scaled_running_rmse_terms(errors, window_size)
-    return jnp.ldexp(scaled_running, exponent)
+    return _exact_power_of_two_scale(scaled_running, exponent)
 
 
 @_finite_running_rmse.defjvp
@@ -368,7 +392,7 @@ def _finite_running_rmse_jvp(
     exponent, scaled_errors, scaled_running = _scaled_running_rmse_terms(
         errors, window_size
     )
-    running = jnp.ldexp(scaled_running, exponent)
+    running = _exact_power_of_two_scale(scaled_running, exponent)
     safe_scaled_running = jnp.where(
         scaled_running > 0.0,
         scaled_running,
@@ -423,8 +447,8 @@ def per_horizon_rmse(
     finite_columns = jnp.all(jnp.isfinite(errors), axis=0)
     safe_errors = jnp.where(finite_columns[None, :], errors, jnp.zeros_like(errors))
     # Arbitrary division by a near-max float32 scale can lower to a reciprocal
-    # that underflows to zero.  ldexp performs exact power-of-two scaling and
-    # keeps the normalized magnitudes in range without that reciprocal.
+    # that underflows to zero.  Exact power-of-two rescaling keeps the
+    # normalized magnitudes in range without that reciprocal.
     stable_rmse = _finite_rmse(safe_errors)
     # A maximum absolute error carries the desired diagnostic: NaN if any
     # error is NaN, otherwise Inf if any error is infinite.  Deriving it from
