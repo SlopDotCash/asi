@@ -224,15 +224,18 @@ def _evaluate(
     block: int,
     seed: int,
 ) -> tuple[float, ...]:
+    # One tie for every checkpoint and task: values that did not change score
+    # the same, so forgetting and transfer measure only what training changed.
+    tie = seed % 2
     returns: list[float] = []
     for task_id, target in enumerate(TASK_TARGETS):
         if arm_id == "task_id_q_control":
-            action = _greedy(task_values[task_id], (block + task_id) % 2)
+            action = _greedy(task_values[task_id], tie)
         elif arm_id == "uniform_random":
             query_index = block * len(TASK_TARGETS) + task_id
             action = int(jr.randint(_rng_key(seed, 1, query_index), (), 0, 2))
         else:
-            action = _greedy(shared, (seed + block) % 2)
+            action = _greedy(shared, tie)
         returns.append(float(action == target))
     return tuple(returns)
 

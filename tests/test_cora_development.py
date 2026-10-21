@@ -52,6 +52,28 @@ def test_candidate_evaluation_tie_break_does_not_receive_task_identity() -> None
         assert arm.evaluation_matrix[0] in ((1.0, 0.0, 1.0), (0.0, 1.0, 0.0))
 
 
+def test_unchanged_shared_values_score_the_same_at_every_checkpoint() -> None:
+    # With one step per task, every cycle-0 action of this seed earns reward 0,
+    # so the shared values stay at zero through the first four checkpoints.
+    result = run_cora_development(seed=FROZEN_SEEDS[1], steps_per_task=1)
+
+    for arm in result.arms[:2]:
+        assert len(set(arm.evaluation_matrix[:4])) == 1
+        assert arm.isolated_forward_transfer == 0.0
+
+
+@pytest.mark.parametrize("seed", FROZEN_SEEDS)
+def test_task_id_control_has_no_isolated_forgetting_or_transfer(seed: int) -> None:
+    result = run_cora_development(seed=seed)
+    replay, _, task_control, _ = result.arms
+
+    # Every greedy arm starts from zero values, and training one task's table
+    # leaves the other tables unchanged.
+    assert task_control.evaluation_matrix[0] == replay.evaluation_matrix[0]
+    assert task_control.isolated_forgetting == 0.0
+    assert task_control.isolated_forward_transfer == 0.0
+
+
 def test_jit_and_eager_update_paths_match_except_timing() -> None:
     compiled = run_cora_development(seed=FROZEN_SEEDS[1], steps_per_task=1)
     with jax.disable_jit():
