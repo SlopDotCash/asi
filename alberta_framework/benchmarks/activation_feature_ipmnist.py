@@ -367,13 +367,18 @@ def _runtime_identity() -> tuple[str, str, str, str]:
     return (platform.python_version(), jax.__version__, np.__version__, jax.default_backend())
 
 
-def _current_source_identity() -> tuple[str, str, str]:
-    names = ("activation_feature_ipmnist.py", "ipmnist_screening.py", "upgd_ipmnist.py")
+def _current_source_identity() -> tuple[str, str, str, str]:
+    names = (
+        "activation_feature_ipmnist.py",
+        "ipmnist_screening.py",
+        "upgd_ipmnist.py",
+        "plasticity_comparators.py",
+    )
     digests = tuple(
         hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
         for name in names
     )
-    return digests[0], digests[1], digests[2]
+    return digests[0], digests[1], digests[2], digests[3]
 
 
 def _host_array(value: object, *, name: str, dtype: np.dtype[Any]) -> np.ndarray:
@@ -388,7 +393,7 @@ class ActivationFeatureRunResult:
     screening: ScreeningRunResult
     dataset_sha256: str
     schedule_sha256: str
-    source_identity: tuple[str, str, str]
+    source_identity: tuple[str, str, str, str]
     runtime_identity: tuple[str, str, str, str]
     n_train: int
     retained_schedule_numeric_bytes: int

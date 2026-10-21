@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import shutil
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+import alberta_framework.benchmarks.activation_feature_ipmnist as activation_lane
 from alberta_framework.benchmarks.activation_feature_ipmnist import (
     ACTIVATION_FEATURE_SOURCES,
     ACTIVATION_FEATURE_SPECS,
@@ -347,6 +350,35 @@ def test_receipt_rejects_forged_identity_and_retained_schedule_bytes() -> None:
     forged_peak["resources"]["retained_schedule_numeric_bytes"] = 1
     with pytest.raises(ValueError, match="retained_schedule_numeric_bytes"):
         validate_activation_feature_result(forged_peak)
+
+
+def test_receipt_source_identity_binds_the_comparator_kernels(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Smooth-Leaky, AID and Deep Fourier compute their mechanism in
+    # plasticity_comparators.py, so a receipt must not validate once it changes.
+    x, y = _data()
+    payload = activation_feature_result_payload(
+        run_activation_feature_arm(x, y, arm="smooth_leaky", seed=0, config=SMALL),
+        outcome="inconclusive",
+    )
+    source_dir = Path(activation_lane.__file__).parent
+    for name in (
+        "activation_feature_ipmnist.py",
+        "ipmnist_screening.py",
+        "plasticity_comparators.py",
+        "upgd_ipmnist.py",
+    ):
+        shutil.copyfile(source_dir / name, tmp_path / name)
+    monkeypatch.setattr(
+        activation_lane, "__file__", str(tmp_path / "activation_feature_ipmnist.py")
+    )
+    assert validate_activation_feature_result(copy.deepcopy(payload)) == payload
+
+    comparators = tmp_path / "plasticity_comparators.py"
+    comparators.write_bytes(comparators.read_bytes() + b"\n# edited kernel\n")
+    with pytest.raises(ValueError, match="source identity drift"):
+        validate_activation_feature_result(payload)
 
 
 def test_receipt_revalidates_frozen_result_without_array_protocol_dispatch() -> None:
