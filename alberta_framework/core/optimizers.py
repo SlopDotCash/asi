@@ -1600,6 +1600,7 @@ class AutostepGTDLambda(Optimizer[AutostepGTDLambdaState]):
         )
         base_update = self._base.update(base_state, error, eligibility)
         new_base_state = cast(AutostepState, base_update.new_state)
+        bias_delta = base_update.bias_delta * bias_eligibility
         candidate_state = AutostepGTDLambdaState(
             step_sizes=new_base_state.step_sizes,
             traces=new_base_state.traces,
@@ -1624,11 +1625,12 @@ class AutostepGTDLambda(Optimizer[AutostepGTDLambdaState]):
             & floating_tree_is_finite(previous_checked)
             & jnp.all(jnp.isfinite(observation))
             & floating_tree_is_finite(candidate_state)
+            & jnp.isfinite(bias_delta)
         )
         new_state = select_transaction(update_applied, candidate_state, state)
         return OptimizerUpdate(
             weight_delta=neutralize_array(update_applied, base_update.weight_delta),
-            bias_delta=neutralize_array(update_applied, base_update.bias_delta),
+            bias_delta=neutralize_array(update_applied, bias_delta),
             new_state=new_state,
             metrics=neutralize_metrics(update_applied, base_update.metrics),
             update_applied=update_applied,

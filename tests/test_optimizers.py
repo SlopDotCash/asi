@@ -757,6 +757,22 @@ class TestAutostepGTDLambda:
         expected = 0.5 * observation + observation
         chex.assert_trees_all_close(result2.new_state.eligibility_traces, expected, atol=1e-6)
 
+    def test_bias_update_uses_accumulated_bias_eligibility(self):
+        """The bias is a weight on the constant feature, so it must use z_bias."""
+        optimizer = AutostepGTDLambda(
+            initial_step_size=0.01, meta_step_size=0.0, trace_decay=0.5
+        )
+        state = optimizer.init(feature_dim=1)
+        observation = jnp.array([1.0], dtype=jnp.float32)
+        error = jnp.array(1.0, dtype=jnp.float32)
+
+        first = optimizer.update(state, error, observation)
+        second = optimizer.update(first.new_state, error, observation)
+
+        assert float(second.new_state.bias_eligibility_trace) == pytest.approx(1.5)
+        assert float(second.bias_delta) == pytest.approx(0.015, rel=1e-6)
+        chex.assert_trees_all_close(second.bias_delta, second.weight_delta[0], rtol=1e-6)
+
 
 class TestObGD:
     """Tests for the ObGD optimizer."""
