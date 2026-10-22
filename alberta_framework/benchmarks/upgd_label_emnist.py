@@ -1206,6 +1206,23 @@ def _validated_float_hyperparameters(
     return {str(name): cast(float, entry) for name, entry in value.items()}
 
 
+_PLAN_BODY_FIELDS = frozenset(
+    {
+        "benchmark",
+        "config",
+        "matches_selected_publication_configuration",
+        "learner_ids",
+        "hyperparameters",
+        "seed_ids",
+        "planned_shard_count",
+        "dataset",
+        "deviations",
+        "paper_reference",
+        "notes",
+    }
+)
+
+
 def load_plan(path: Path) -> dict[str, Any]:
     """Load and structurally validate a v1 plan file."""
     payload = _strict_json_object(path)
@@ -1216,6 +1233,13 @@ def load_plan(path: Path) -> dict[str, Any]:
     body = payload.get("plan")
     if not isinstance(body, dict):
         raise ValueError(f"{path}: plan body must be an object")
+    if set(body) != _PLAN_BODY_FIELDS:
+        missing = sorted(_PLAN_BODY_FIELDS - set(body))
+        extra = sorted(set(body) - _PLAN_BODY_FIELDS)
+        raise ValueError(
+            f"{path}: plan body fields do not match its schema; "
+            f"missing={missing}, extra={extra}"
+        )
     if payload.get("plan_sha256") != canonical_json_sha256(body):
         raise ValueError(f"{path}: plan_sha256 does not match the plan body")
     if body.get("benchmark") != BENCHMARK:
@@ -1229,12 +1253,24 @@ def load_plan(path: Path) -> dict[str, Any]:
     config = LabelEMNISTConfig(**config_payload)
     if n_steps != config.n_steps:
         raise ValueError(f"{path}: plan n_steps is inconsistent with config")
-    learner_ids = body["learner_ids"]
-    if sorted(body["hyperparameters"]) != sorted(learner_ids):
+    learner_ids = body.get("learner_ids")
+    if (
+        type(learner_ids) is not list
+        or not learner_ids
+        or any(type(learner) is not str or not learner for learner in learner_ids)
+        or len(set(learner_ids)) != len(learner_ids)
+    ):
+        raise ValueError(
+            f"{path}: plan learner_ids must be a list of unique non-empty strings"
+        )
+    hyperparameters = body.get("hyperparameters")
+    if not isinstance(hyperparameters, Mapping) or sorted(hyperparameters) != sorted(
+        learner_ids
+    ):
         raise ValueError(f"{path}: hyperparameter learner keys differ from learner_ids")
     for learner in learner_ids:
         provided = _validated_float_hyperparameters(
-            body["hyperparameters"][learner], learner, context=str(path)
+            hyperparameters[learner], learner, context=str(path)
         )
         resolved = resolve_hyperparameters(learner, provided)
         if sorted(resolved) != sorted(provided) or any(
@@ -1249,8 +1285,22 @@ def load_plan(path: Path) -> dict[str, Any]:
     seeds = require_unique_jax_seeds(raw_seeds, name=f"{path}: plan seed_ids")
     if seeds != tuple(sorted(seeds)):
         raise ValueError(f"{path}: plan seed_ids must be sorted")
-    if body["planned_shard_count"] != len(learner_ids) * len(seeds):
+    planned_shard_count = body.get("planned_shard_count")
+    if type(planned_shard_count) is not int:
+        raise ValueError(f"{path}: planned_shard_count must be an exact integer")
+    if planned_shard_count != len(learner_ids) * len(seeds):
         raise ValueError(f"{path}: planned_shard_count is inconsistent")
+    if not isinstance(body.get("dataset"), Mapping):
+        raise ValueError(f"{path}: plan dataset must be an object")
+    if type(body.get("matches_selected_publication_configuration")) is not bool:
+        raise ValueError(
+            f"{path}: matches_selected_publication_configuration must be a boolean"
+        )
+    for fieldname in ("deviations", "notes"):
+        if type(body.get(fieldname)) is not list:
+            raise ValueError(f"{path}: plan {fieldname} must be a list")
+    if not isinstance(body.get("paper_reference"), Mapping):
+        raise ValueError(f"{path}: plan paper_reference must be an object")
     return payload
 
 
@@ -1321,14 +1371,26 @@ def _validated_partial(path: Path, plan: dict[str, Any]) -> dict[str, Any]:
         values = payload.get(field)
         if not isinstance(values, list) or len(values) != n_tasks:
             raise ValueError(f"{path}: {field} must be a list of {n_tasks} numbers")
-        array = np.asarray(values, dtype=np.float64)
-        if not np.all(np.isfinite(array)) or not np.all(array >= lower):
+        array = np.asarray(
+            [
+                _require_finite_real(f"{field}[{index}]", entry)
+                for index, entry in enumerate(values)
+            ],
+            dtype=np.float64,
+        )
+        if not np.all(array >= lower):
             raise ValueError(f"{path}: {field} values are outside the allowed range")
         if upper is not None and not np.all(array <= upper):
             raise ValueError(f"{path}: {field} values are outside the allowed range")
     mean_accuracy = float(np.asarray(payload["per_task_accuracy"], dtype=np.float64).mean())
-    if abs(mean_accuracy - float(payload["average_online_accuracy"])) > 1e-5:
+    average_online_accuracy = _require_finite_real(
+        "average_online_accuracy", payload.get("average_online_accuracy")
+    )
+    if not 0.0 <= average_online_accuracy <= 1.0:
+        raise ValueError(f"{path}: average_online_accuracy must lie in [0, 1]")
+    if abs(mean_accuracy - average_online_accuracy) > 1e-5:
         raise ValueError(f"{path}: average_online_accuracy does not match per-task mean")
+    payload["average_online_accuracy"] = average_online_accuracy
     return payload
 
 
