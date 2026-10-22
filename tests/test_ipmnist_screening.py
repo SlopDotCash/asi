@@ -1260,6 +1260,35 @@ class TestShardsAndMerge:
         with pytest.raises(ValueError, match=rf"config: missing field\(s\) \['{omitted}'\]"):
             load_shard(path)
 
+    def test_load_shard_rejects_legacy_shard_without_a_config_object(
+        self, tmp_path
+    ) -> None:
+        """The legacy v1 path indexes the config before validating it. An
+        artifact missing that key must follow the loader's ValueError
+        contract instead of raising an uncaught KeyError."""
+        path = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["config"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="config must be an object"):
+            load_shard(path)
+
+    @pytest.mark.parametrize("schema", [[], {}])
+    def test_load_shard_rejects_unhashable_schema_as_value_error(
+        self, tmp_path, schema
+    ) -> None:
+        """A JSON array or object is untrusted input; testing it against the
+        supported-schema set must not surface an uncaught TypeError from
+        hashing an unhashable value."""
+        path = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["schema"] = schema
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="not a supported"):
+            load_shard(path)
+
     @pytest.mark.parametrize("location", ["top-level", "nested"])
     def test_load_shard_rejects_duplicate_top_level_and_nested_keys(
         self, tmp_path: Path, location: str
