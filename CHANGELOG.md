@@ -81,6 +81,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `upgd_label_emnist.load_plan` now rejects a plan body whose keys differ from
+  the schema `build_plan_payload` writes, a duplicate or non-string
+  `learner_ids` entry, and a non-integer `planned_shard_count` with
+  `ValueError` instead of `KeyError` or silent acceptance. Shard validation
+  routes per-task curves and `average_online_accuracy` through the finite-real
+  gate, so a string mean, an absent mean, and nested or boolean curve entries
+  fail the loader contract instead of being coerced.
 - `upgd_memory._normalize_simplex` now returns a probability simplex for
   zero, negative, sub-`1e-12`, and float32-overflowing inputs.  The previous
   floored-denominator helper could drop mass (including the reachable

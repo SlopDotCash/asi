@@ -1071,6 +1071,106 @@ class TestPlanShardFloatAliasIntake:
             merge_partials(plan, [path], allow_incomplete=True)
 
 
+@pytest.mark.unit
+class TestPlanBodyAndShardMetricStrictness:
+    """Malformed plans and shards must fail closed through ``ValueError``.
+
+    ``load_plan`` read the plan body by direct indexing and never compared its
+    key set to the schema ``build_plan_payload`` writes, so an artifact that
+    dropped ``learner_ids``/``hyperparameters``/``planned_shard_count`` raised
+    ``KeyError``, an artifact that dropped ``dataset``/``deviations``/``notes``
+    was silently accepted, and a mapping ``learner_ids`` or float
+    ``planned_shard_count`` passed every comparison.  The shard gate likewise
+    accepted a JSON string metric and non-scalar or boolean curve entries, and
+    a missing metric raised ``KeyError`` instead of ``ValueError``.
+    """
+
+    def _write_plan(self, tmp_path, mutate):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        payload = build_plan_payload(TINY, [0, 1], DATASET_META)
+        mutate(payload["plan"])
+        payload["plan_sha256"] = upgd_label_emnist.canonical_json_sha256(payload["plan"])
+        path = tmp_path / "plan.json"
+        atomic_write_new_json(path, payload)
+        return path
+
+    def _merge_mutated_shard(self, tmp_path, name, mutate):
+        from alberta_framework.benchmarks.upgd_ipmnist import atomic_write_new_json
+
+        plan = build_plan_payload(TINY, [0, 1], DATASET_META)
+        x, y = _tiny_data()
+        result = run_label_emnist(x, y, "adamw", seeds=[0], config=TINY)
+        payload = partial_payload(result, plan["plan_sha256"])
+        mutate(payload)
+        path = tmp_path / f"{name}.json"
+        atomic_write_new_json(path, payload)
+        return merge_partials(plan, [path], allow_incomplete=True)
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "learner_ids",
+            "hyperparameters",
+            "planned_shard_count",
+            "dataset",
+            "deviations",
+            "notes",
+        ],
+    )
+    def test_load_plan_rejects_missing_body_fields(self, tmp_path, field: str) -> None:
+        path = self._write_plan(tmp_path, lambda body: body.pop(field))
+        with pytest.raises(ValueError, match="plan body fields"):
+            load_plan(path)
+
+    def test_load_plan_rejects_mapping_learner_ids(self, tmp_path) -> None:
+        def mutate(body):
+            body["learner_ids"] = {
+                name: index for index, name in enumerate(body["learner_ids"])
+            }
+
+        path = self._write_plan(tmp_path, mutate)
+        with pytest.raises(ValueError, match="learner_ids"):
+            load_plan(path)
+
+    def test_load_plan_rejects_float_planned_shard_count(self, tmp_path) -> None:
+        path = self._write_plan(
+            tmp_path, lambda body: body.__setitem__("planned_shard_count", 4.0)
+        )
+        with pytest.raises(ValueError, match="planned_shard_count"):
+            load_plan(path)
+
+    def test_shard_rejects_string_average_online_accuracy(self, tmp_path) -> None:
+        def mutate(payload):
+            payload["average_online_accuracy"] = str(payload["average_online_accuracy"])
+
+        with pytest.raises(ValueError, match="average_online_accuracy"):
+            self._merge_mutated_shard(tmp_path, "string_mean", mutate)
+
+    def test_shard_rejects_missing_average_online_accuracy(self, tmp_path) -> None:
+        with pytest.raises(ValueError, match="average_online_accuracy"):
+            self._merge_mutated_shard(
+                tmp_path, "missing_mean", lambda payload: payload.pop("average_online_accuracy")
+            )
+
+    def test_shard_rejects_nested_per_task_curve(self, tmp_path) -> None:
+        def mutate(payload):
+            payload["per_task_accuracy"] = [
+                [value, value] for value in payload["per_task_accuracy"]
+            ]
+
+        with pytest.raises(ValueError, match="per_task_accuracy"):
+            self._merge_mutated_shard(tmp_path, "nested_curve", mutate)
+
+    def test_shard_rejects_boolean_per_task_curve(self, tmp_path) -> None:
+        def mutate(payload):
+            payload["per_task_accuracy"] = [True] * len(payload["per_task_accuracy"])
+            payload["average_online_accuracy"] = 1.0
+
+        with pytest.raises(ValueError, match="per_task_accuracy"):
+            self._merge_mutated_shard(tmp_path, "boolean_curve", mutate)
+
+
 def _legal_label_emnist_run_result(**overrides: object) -> LabelEMNISTRunResult:
     payload: dict[str, object] = {
         "learner": "adamw",
