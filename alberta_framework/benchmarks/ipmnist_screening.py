@@ -12126,7 +12126,11 @@ def load_shard(
     registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
     payload = load_strict_json_object(path)
     schema = payload.get("schema")
-    if schema not in {LEGACY_SHARD_SCHEMA, SHARD_SCHEMA, SHARD_SCHEMA_V3}:
+    if type(schema) is not str or schema not in {
+        LEGACY_SHARD_SCHEMA,
+        SHARD_SCHEMA,
+        SHARD_SCHEMA_V3,
+    }:
         raise ValueError(
             f"{path}: not a supported {LEGACY_SHARD_SCHEMA}, {SHARD_SCHEMA}, or "
             f"{SHARD_SCHEMA_V3} shard"
@@ -12170,10 +12174,10 @@ def load_shard(
         payload["environment"] = _validated_runtime_environment(
             payload["environment"], context=str(path)
         )
-    _require_exact_keys(
-        payload["config"], _IPMNIST_CONFIG_FIELDS, context=f"{path}: config"
+    config_payload = _require_exact_keys(
+        payload.get("config"), _IPMNIST_CONFIG_FIELDS, context=f"{path}: config"
     )
-    config = IPMNISTConfig(**payload["config"])
+    config = IPMNISTConfig(**config_payload)
     if is_bound:
         _validate_dataset_config_binding(
             payload["dataset_provenance"], config, context=str(path)
