@@ -81,6 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AverageRewardHordeActorCriticAgent.policy` now centers and shift-scales
+  temperature-scaled logits before `softmax`, matching the construction the
+  actor-critic, behavior-model, and Horde actors already use. A validated
+  finite temperature such as `1e-10` previously divided directly, so XLA's
+  fused multiply-then-subtract left a rounding residual at the argmax that
+  drove the exponential to `inf`: the policy became NaN and the update
+  finiteness gates then rejected every transition, leaving the agent at zero
+  steps forever (SlopDotCash/asi#2886).
 - `upgd_memory._normalize_simplex` now returns a probability simplex for
   zero, negative, sub-`1e-12`, and float32-overflowing inputs.  The previous
   floored-denominator helper could drop mass (including the reachable

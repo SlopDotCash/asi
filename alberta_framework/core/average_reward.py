@@ -80,6 +80,30 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _temperature_scaled_logits(logits: Array, temperature: float) -> Array:
+    """Scale logits for softmax without exposing a rounded argmax to fusion.
+
+    XLA may recompute ``logits * (1 / temperature)`` inside both fused
+    subcomputations of a compiled ``jax.nn.softmax``.  The contracted
+    multiply-then-subtract leaves a rounding residual at the argmax instead of
+    an exact zero; once ``|logits / temperature|`` is large enough that
+    residual drives the exponential to ``inf``, a finite input yields a NaN
+    policy and the update finiteness gates then reject every transition
+    (SlopDotCash/asi#2886).
+
+    Both shifts below are exact (softmax is shift invariant), and each blocks
+    one of the two recomputations.  When the temperature exceeds one, halving
+    both operands first is equally exact and keeps the pre-scale centering
+    finite for opposite finite extreme logits.
+    """
+    if temperature > 1.0:
+        logits = logits * 0.5
+        temperature *= 0.5
+    centered = logits - jax.lax.stop_gradient(jnp.max(logits))
+    scaled = centered / temperature
+    return scaled - jax.lax.stop_gradient(jnp.max(scaled))
+
+
 # Matches the class of ceiling already established for other scan-driven
 # array-loop runners in ``core`` (e.g. ``sarsa._SARSA_SEQUENCE_MAX_STEPS``,
 # ``learners._LEARNING_LOOP_MAX_STEPS``). Set with headroom above this
@@ -869,7 +893,7 @@ class AverageRewardHordeActorCriticAgent:
         features = self._actor_features(state, observation)
         logits = state.actor_weights @ features + state.actor_bias
         logits = jnp.clip(logits, -self._config.logit_clip, self._config.logit_clip)
-        return jax.nn.softmax(logits / self._config.temperature)
+        return jax.nn.softmax(_temperature_scaled_logits(logits, self._config.temperature))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def behavior_policy(
