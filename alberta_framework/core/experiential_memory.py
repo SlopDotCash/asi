@@ -978,13 +978,21 @@ class ExperientialMemory:
 
         safe_query_key = jnp.where(jnp.isfinite(query_key), query_key, 0.0)
         safe_keys = jnp.where(finite_rows[:, None], entries.keys, 0.0)
-        squared_distance = jnp.mean(
-            (safe_keys - safe_query_key[None, :]) ** 2,
+        distance_scale = jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
+        # Compute the dimensionless exponent before squaring. A finite key
+        # difference can overflow while it is squared even when its mean
+        # square and the final exponent are both representable. A genuinely
+        # unrepresentable scaled distance remains +inf and therefore maps to
+        # the correct zero similarity.
+        scaled_squared_distance = jnp.mean(
+            (
+                (safe_keys - safe_query_key[None, :])
+                / jnp.sqrt(distance_scale)
+            )
+            ** 2,
             axis=1,
         )
-        similarities = jnp.exp(
-            -squared_distance / jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
-        )
+        similarities = jnp.exp(-scaled_squared_distance)
         safe_ages = jnp.where(entries.ages >= 0, entries.ages, 0)
         staleness_scale = jnp.asarray(cfg.staleness_scale, dtype=jnp.float32)
         # Every positive float32 scale is legal. Cap the mathematically huge

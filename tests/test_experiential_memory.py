@@ -160,6 +160,38 @@ def test_single_tiny_positive_neighbor_score_still_has_unit_weight() -> None:
     np.testing.assert_allclose(retrieval.action, entry.action)
 
 
+def test_finite_representable_key_distance_does_not_overflow_similarity() -> None:
+    """A representable mean square must not be lost to an overflowing square."""
+    memory = ExperientialMemory(
+        _config(
+            capacity=1,
+            top_k=1,
+            distance_scale=3.0e38,
+            min_similarity=0.5,
+        )
+    )
+    entry = _entry(9, key=(2.0e19, 0.0), action=(0.25, 0.75))
+    state = _write(memory, memory.init(), entry)
+
+    retrieval = memory.query(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(True, dtype=jnp.bool_),
+    )
+
+    expected_similarity = np.exp(-((2.0e19**2) / 2.0) / 3.0e38)
+    assert expected_similarity > memory.config.min_similarity
+    assert bool(retrieval.accepted)
+    assert bool(retrieval.has_neighbors)
+    assert float(retrieval.neighbor_similarities[0]) == pytest.approx(
+        expected_similarity,
+        rel=1e-6,
+    )
+    np.testing.assert_allclose(retrieval.action, entry.action)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
