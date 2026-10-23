@@ -571,11 +571,11 @@ class WorkingMemoryFeaturizer:
         decay = jnp.asarray(decay_rates, dtype=jnp.float32)[:, None]
         update_rate = (1.0 - decay) * gate
         persist = 1.0 - update_rate
-        delta_update = traces + update_rate * (value[None, :] - traces)
+        convex_update = persist * traces + update_rate * value[None, :]
         return jnp.where(
             persist == 0.0,
             jnp.broadcast_to(value[None, :], traces.shape),
-            jnp.where(update_rate == 0.0, traces, delta_update),
+            jnp.where(update_rate == 0.0, traces, convex_update),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))

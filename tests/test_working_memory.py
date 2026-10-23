@@ -311,7 +311,7 @@ def test_working_memory_step_reports_rejection_with_neutral_features_and_recover
     assert int(recovered.state.step_count) == int(state.step_count) + 1
 
 
-def test_working_memory_step_rejects_finite_post_apply_overflow() -> None:
+def test_working_memory_step_keeps_finite_convex_ema_at_opposite_extremes() -> None:
     memory = WorkingMemoryFeaturizer(
         WorkingMemoryConfig(
             observation_dim=1,
@@ -326,24 +326,24 @@ def test_working_memory_step_rejects_finite_post_apply_overflow() -> None:
     limit = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
     state = memory.init().replace(observation_traces=-limit.reshape((1, 1)))
 
-    rejected = memory.step(
+    result = memory.step(
         state,
         jnp.asarray([limit]),
         memory.zero_action(),
         memory.zero_reward(),
     )
 
-    assert not bool(rejected.update_applied)
-    chex.assert_trees_all_equal(rejected.state, state)
-    chex.assert_trees_all_equal(rejected.features, jnp.zeros((1,), dtype=jnp.float32))
-    recovered = memory.step(
-        rejected.state,
-        jnp.asarray([-limit]),
-        memory.zero_action(),
-        memory.zero_reward(),
+    assert bool(result.update_applied)
+    chex.assert_trees_all_equal(
+        result.features,
+        jnp.asarray([-limit], dtype=jnp.float32),
     )
-    assert bool(recovered.update_applied)
-    chex.assert_tree_all_finite(recovered.state)
+    chex.assert_trees_all_equal(
+        result.state.observation_traces,
+        jnp.zeros((1, 1), dtype=jnp.float32),
+    )
+    assert int(result.state.step_count) == 1
+    chex.assert_tree_all_finite(result.state)
 
 
 def test_working_memory_jit_reports_gate_only_rejection_and_rolls_back() -> None:
