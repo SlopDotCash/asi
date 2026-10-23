@@ -15,6 +15,8 @@ import chex
 import jax.numpy as jnp
 from jax import Array
 
+_INT32_MAX = 2**31 - 1
+
 
 @dataclasses.dataclass(frozen=True)
 class IntentionalTDConfig:
@@ -101,7 +103,10 @@ def intentional_td_update(
         raise ValueError("gradient must match weights")
     decay = config.gamma * config.lamda
     trace = decay * state.trace + gradient
-    step = state.step + jnp.array(1, dtype=jnp.int32)
+    maximum_step = jnp.array(_INT32_MAX, dtype=jnp.int32)
+    step = jnp.minimum(state.step, maximum_step - 1) + jnp.array(
+        1, dtype=jnp.int32
+    )
     if not config.enabled:
         changed = weights + (config.eta * td_error) * trace
         return changed, state.replace(  # type: ignore[attr-defined]
