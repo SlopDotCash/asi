@@ -107,6 +107,20 @@ def test_nearest_archive_preserves_finite_extreme_distances(query, far, near) ->
     assert archive.retrieve_nearest(query) is second
 
 
+def test_diverse_archive_add_preserves_tiny_finite_latent_separation() -> None:
+    first = _entry("first", (0.0,), 2.0)
+    distinct = _entry("distinct", (2.0e-200,), 1.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024,
+        min_latent_distance=1.0e-210,
+        entries=(first,),
+    )
+
+    updated = archive.add(distinct)
+
+    assert [entry.identity for entry in updated.entries] == ["first", "distinct"]
+
+
 def test_archive_constructor_enforces_equal_latent_width() -> None:
     narrow = _entry("a", (0.0,), 1.0)
     wide = _entry("b", (1.0, 2.0), 2.0)
