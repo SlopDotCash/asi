@@ -117,6 +117,35 @@ def test_occupied_class_keeps_mass_when_distance_is_below_empty_sentinel() -> No
     assert int(jnp.argmax(prediction)) == 0
 
 
+def test_representable_scaled_distance_keeps_active_class_logit_finite() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(
+            feature_dim=2,
+            n_classes=2,
+            slots_per_class=1,
+            bandwidth=3.0e38,
+        )
+    )
+    state = learner.init().replace(
+        means=learner.init().means.at[0, 0].set(
+            jnp.asarray([2.0e19, 0.0], dtype=jnp.float32)
+        ),
+        counts=learner.init().counts.at[0, 0].set(1),
+    )
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+
+    logits = learner.class_logits(state, observation)
+    prediction = learner.predict(state, observation)
+
+    assert float(logits[0]) == pytest.approx(-2.0 / 3.0, rel=1e-6)
+    assert not bool(jnp.isfinite(logits[1]))
+    assert float(logits[1]) < 0.0
+    np.testing.assert_array_equal(
+        prediction,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+
+
 def test_repeated_update_moves_prediction_to_target_class() -> None:
     """A repeated class example should become confidently classified."""
     learner = PrototypeMemoryLearner(
