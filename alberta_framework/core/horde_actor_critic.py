@@ -1422,14 +1422,20 @@ def _clip_nlhac_actor_grads(
     for grad in gradients:
         scaled = jnp.ldexp(grad, -exponent) / safe_mantissa
         scaled_squared_norm = scaled_squared_norm + jnp.sum(jnp.square(scaled))
-    stable_norm = jnp.ldexp(safe_mantissa * jnp.sqrt(scaled_squared_norm), exponent)
-    norm = jnp.where(~jnp.isfinite(direct_norm) & gradients_finite, stable_norm, direct_norm)
-    scale = jnp.minimum(1.0, jnp.asarray(max_norm, dtype=jnp.float32) / (norm + 1e-8))
+    use_stable_clip = ~jnp.isfinite(direct_norm) & gradients_finite
+    max_norm_f = jnp.asarray(max_norm, dtype=jnp.float32)
+    direct_scale = jnp.minimum(1.0, max_norm_f / (direct_norm + 1e-8))
+    stable_scale = max_norm_f / jnp.sqrt(scaled_squared_norm)
+
+    def clip(grad: Array) -> Array:
+        scaled = jnp.ldexp(grad, -exponent) / safe_mantissa
+        return jnp.where(use_stable_clip, stable_scale * scaled, direct_scale * grad)
+
     return (
-        tuple(scale * grad for grad in grad_trunk_w),
-        tuple(scale * grad for grad in grad_trunk_b),
-        scale * grad_head_w,
-        scale * grad_head_b,
+        tuple(clip(grad) for grad in grad_trunk_w),
+        tuple(clip(grad) for grad in grad_trunk_b),
+        clip(grad_head_w),
+        clip(grad_head_b),
     )
 
 

@@ -732,6 +732,7 @@ from alberta_framework.core.horde_actor_critic import (  # noqa: E402
     NonlinearHordeActorCriticState,
     NonlinearQHordeActorCriticAgent,
     NonlinearQHordeActorCriticConfig,
+    _clip_nlhac_actor_grads,
     run_nonlinear_horde_actor_critic_from_arrays,
 )
 
@@ -1361,6 +1362,26 @@ class TestNonlinearHordeActorCriticUpdate:
             ]
         )
         assert bool(result.update_applied)
+        assert np.all(np.isfinite(clipped))
+        assert np.linalg.norm(clipped) == pytest.approx(0.05, rel=2e-6)
+
+    def test_actor_gradient_clip_handles_unrepresentable_finite_norm(self) -> None:
+        maximum = jnp.finfo(jnp.float32).max
+
+        _, _, clipped_w, clipped_b = _clip_nlhac_actor_grads(
+            (),
+            (),
+            jnp.asarray([[maximum, maximum]], dtype=jnp.float32),
+            jnp.zeros((1,), dtype=jnp.float32),
+            0.05,
+        )
+
+        clipped = np.concatenate(
+            [
+                np.asarray(clipped_w, dtype=np.float64).reshape((-1,)),
+                np.asarray(clipped_b, dtype=np.float64).reshape((-1,)),
+            ]
+        )
         assert np.all(np.isfinite(clipped))
         assert np.linalg.norm(clipped) == pytest.approx(0.05, rel=2e-6)
 
