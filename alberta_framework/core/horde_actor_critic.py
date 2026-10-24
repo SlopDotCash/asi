@@ -1404,7 +1404,26 @@ def _clip_nlhac_actor_grads(
     squared_norm = jnp.sum(jnp.square(grad_head_w)) + jnp.sum(jnp.square(grad_head_b))
     for grad in (*grad_trunk_w, *grad_trunk_b):
         squared_norm = squared_norm + jnp.sum(jnp.square(grad))
-    norm = jnp.sqrt(squared_norm)
+    direct_norm = jnp.sqrt(squared_norm)
+
+    gradients = (*grad_trunk_w, *grad_trunk_b, grad_head_w, grad_head_b)
+    maximum = jnp.asarray(0.0, dtype=jnp.float32)
+    gradients_finite = jnp.asarray(True)
+    for grad in gradients:
+        maximum = jnp.maximum(maximum, jnp.max(jnp.abs(grad), initial=0.0))
+        gradients_finite = gradients_finite & jnp.all(jnp.isfinite(grad))
+
+    # Squaring at input scale can overflow even when the true norm is finite.
+    # Use exact power-of-two scaling only for that case so ordinary results do
+    # not move and genuinely nonfinite gradients still fail closed downstream.
+    mantissa, exponent = jnp.frexp(maximum)
+    safe_mantissa = jnp.where(maximum > 0.0, mantissa, 1.0)
+    scaled_squared_norm = jnp.asarray(0.0, dtype=jnp.float32)
+    for grad in gradients:
+        scaled = jnp.ldexp(grad, -exponent) / safe_mantissa
+        scaled_squared_norm = scaled_squared_norm + jnp.sum(jnp.square(scaled))
+    stable_norm = jnp.ldexp(safe_mantissa * jnp.sqrt(scaled_squared_norm), exponent)
+    norm = jnp.where(~jnp.isfinite(direct_norm) & gradients_finite, stable_norm, direct_norm)
     scale = jnp.minimum(1.0, jnp.asarray(max_norm, dtype=jnp.float32) / (norm + 1e-8))
     return (
         tuple(scale * grad for grad in grad_trunk_w),

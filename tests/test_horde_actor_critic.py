@@ -1310,6 +1310,60 @@ class TestNonlinearHordeActorCriticUpdate:
         )
         assert float(trace_norm) <= 0.0501
 
+    def test_actor_gradient_clip_preserves_finite_wide_gradient(self) -> None:
+        critic = HordeLearner(
+            create_horde_spec(
+                [
+                    GVFSpec(  # type: ignore[call-arg]
+                        name="v",
+                        demon_type=DemonType.PREDICTION,
+                        gamma=0.99,
+                        lamda=0.0,
+                        cumulant_index=0,
+                    )
+                ]
+            ),
+            hidden_sizes=(),
+            step_size=0.03,
+            use_layer_norm=False,
+        )
+        agent = NonlinearHordeActorCriticAgent(
+            NonlinearHordeActorCriticConfig(
+                n_actions=N_ACTIONS,
+                hidden_sizes=(),
+                actor_sparsity=0.0,
+                use_layer_norm=False,
+                actor_gradient_clip_norm=0.05,
+            ),
+            critic,
+        )
+        observation = jnp.full((OBS_DIM,), 1e19, dtype=jnp.float32)
+        state = agent.init(OBS_DIM, jr.key(11))
+        zero_head_params = state.critic_state.head_params.replace(
+            weights=tuple(
+                jnp.zeros_like(value) for value in state.critic_state.head_params.weights
+            ),
+            biases=tuple(jnp.zeros_like(value) for value in state.critic_state.head_params.biases),
+        )
+        state = state.replace(  # type: ignore[attr-defined]
+            actor_head_w=jnp.zeros_like(state.actor_head_w),
+            actor_head_b=jnp.zeros_like(state.actor_head_b),
+            critic_state=state.critic_state.replace(head_params=zero_head_params),
+        )
+        state, _, _ = agent.start(state, observation)
+
+        result = agent.update(state, jnp.asarray(0.0, dtype=jnp.float32), observation)
+
+        clipped = np.concatenate(
+            [
+                np.asarray(result.state.actor_head_trace_w, dtype=np.float64).reshape((-1,)),
+                np.asarray(result.state.actor_head_trace_b, dtype=np.float64).reshape((-1,)),
+            ]
+        )
+        assert bool(result.update_applied)
+        assert np.all(np.isfinite(clipped))
+        assert np.linalg.norm(clipped) == pytest.approx(0.05, rel=2e-6)
+
     def test_obgd_bounds_raw_autostep_step_before_td_error_application(self) -> None:
         """Large TD errors must enter the ObGD denominator exactly once."""
         critic = HordeLearner(
