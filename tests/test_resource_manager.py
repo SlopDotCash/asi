@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 from numpy.typing import NDArray
 
+import alberta_framework.core.resource_manager as resource_manager_module
 from alberta_framework import (
     GeneratorMetaResourceManager,
     LearnedResourceManager,
@@ -527,6 +528,27 @@ class TestGeneratorMetaResourceManager:
         assert float(decision.promotion_margin_multiplier) == pytest.approx(1.25)
         assert float(decision.candidate_min_age_multiplier) == pytest.approx(1.5)
         assert float(decision.imprint_scale) == pytest.approx(0.0)
+
+    def test_select_samples_from_the_exact_reported_allocation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manager = self._manager()
+        state = manager.init().replace(
+            log_weights=jnp.asarray([[0.0, -200.0]], dtype=jnp.float32)
+        )
+        captured: dict[str, jax.Array] = {}
+
+        def capture_categorical(key: jax.Array, logits: jax.Array) -> jax.Array:
+            del key
+            captured["logits"] = logits
+            return jnp.argmax(logits).astype(jnp.int32)
+
+        monkeypatch.setattr(resource_manager_module.jr, "categorical", capture_categorical)
+        decision = manager._select_jit.__wrapped__(manager, state, jr.key(0))
+
+        sampled_distribution = jax.nn.softmax(captured["logits"])
+        assert float(decision.weights[1]) == 0.0
+        np.testing.assert_array_equal(sampled_distribution, decision.weights)
 
     def test_config_roundtrip(self) -> None:
         manager = GeneratorMetaResourceManager(
