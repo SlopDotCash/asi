@@ -197,6 +197,29 @@ def _preflight_latent_update_working_set(
         )
 
 
+def _reduction_safe_mean_square(values: Array) -> Array:
+    """Keep a representable mean square when only its reduction overflows."""
+
+    squared = values * values
+    direct = jnp.mean(squared)
+    reduction_only_overflow = jnp.isinf(direct) & jnp.all(jnp.isfinite(squared))
+
+    def scaled_mean_square(_: None) -> Array:
+        scale = jnp.max(jnp.abs(values))
+        normalized = values / scale
+        return scale * (scale * jnp.mean(normalized * normalized))
+
+    return cast(
+        Array,
+        jax.lax.cond(
+            reduction_only_overflow,
+            scaled_mean_square,
+            lambda _: direct,
+            operand=None,
+        ),
+    )
+
+
 @dataclasses.dataclass(frozen=True)
 class LatentWorldModelConfig:
     """Configuration for :class:`LatentWorldModel`.
@@ -930,7 +953,9 @@ class LatentWorldModel:
             targets,
         )
         target_next_latent = self.encode(state, safe_next_observation)
-        surprise = jnp.mean((prediction.next_latent - target_next_latent) ** 2)
+        surprise = _reduction_safe_mean_square(
+            prediction.next_latent - target_next_latent
+        )
         reward_error = prediction.reward - safe_reward
         discount_error = prediction.discount - safe_discount
         prediction_error = surprise + reward_error**2 + discount_error**2

@@ -126,6 +126,57 @@ def test_latent_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     )
     chex.assert_trees_all_close(defaulted.discount_errors, explicit.discount_errors)
     chex.assert_trees_all_close(defaulted.discount_predictions, explicit.discount_predictions)
+
+
+def test_latent_world_model_update_retains_finite_wide_surprise() -> None:
+    latent_dim = 8
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=1,
+            n_actions=1,
+            latent_dim=latent_dim,
+            hidden_sizes=(),
+            step_size=1e-20,
+            sparsity=0.0,
+            use_layer_norm=False,
+            predict_delta=False,
+            encoder_bias_scale=0.0,
+        )
+    )
+    state = model.init(jr.key(20))
+    heads = state.learner_state.head_params
+    state = state.replace(
+        learner_state=state.learner_state.replace(
+            head_params=heads.replace(
+                biases=tuple(
+                    jnp.full_like(bias, 7e18) if index < latent_dim else bias
+                    for index, bias in enumerate(heads.biases)
+                )
+            )
+        )
+    )
+    observation = jnp.zeros((1,), dtype=jnp.float32)
+    prediction = model.predict(state, observation, jnp.asarray(0, dtype=jnp.int32))
+    squared_errors = prediction.next_latent * prediction.next_latent
+
+    assert bool(jnp.all(jnp.isfinite(squared_errors)))
+    assert bool(jnp.isinf(jnp.mean(squared_errors)))
+
+    result = model.update(
+        state,
+        observation,
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        observation,
+    )
+
+    assert bool(result.update_applied)
+    assert bool(result.learner_result.update_applied)
+    assert float(result.surprise) == pytest.approx(4.9e37, rel=1e-6)
+    assert int(result.state.step_count) == 1
+
+
 class _FloatSpoof:
     @property
     def __class__(self) -> type[float]:  # type: ignore[override]
