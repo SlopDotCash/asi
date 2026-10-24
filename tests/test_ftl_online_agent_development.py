@@ -178,3 +178,13 @@ def test_deeper_planning_never_degrades_the_privileged_dynamics_control() -> Non
         arm = next(x for x in result.arms if x.arm_id == "privileged_dynamics_mpc")
         privileged_returns.append(sum(arm.task_returns))
     assert privileged_returns == pytest.approx([_OPTIMAL_DEFAULT_RETURN] * 3)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("scientific_promotion_allowed", "historical_ftl_claim_reused"),
+)
+def test_validator_rejects_int_zero_policy_flags(field: str) -> None:
+    result = run_development_lane(seed=FROZEN_SEEDS[0], steps_per_task=1, planning_horizon=1)
+    with pytest.raises(ValueError, match="nonpromoting"):
+        validate_result(dataclasses.replace(result, **{field: 0}))

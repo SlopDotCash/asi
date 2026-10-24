@@ -147,6 +147,19 @@ def test_validator_rejects_promotion_and_counter_forgery() -> None:
         validate_result(dataclasses.asdict(result))
 
 
+@pytest.mark.parametrize(
+    "field",
+    ("scientific_promotion_allowed", "task_information_used_by_learner"),
+)
+def test_validator_rejects_int_zero_policy_flags(field: str) -> None:
+    images, labels = _fixture(10, (4, 4))
+    result = run_native_suite(
+        "rotated_mnist", images, labels, seed=FROZEN_SEEDS[0], examples_per_task=1
+    )
+    with pytest.raises(ValueError, match="nonpromoting"):
+        validate_result(dataclasses.replace(result, **{field: 0}))
+
+
 def test_validator_rejects_forged_headline_accuracy() -> None:
     """The headline must reconstruct from the retained per-task accuracies."""
     images, labels = _fixture(10, (4, 4))

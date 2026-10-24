@@ -113,3 +113,15 @@ def test_validator_replays_reported_metrics() -> None:
     )
     with pytest.raises(ValueError, match="deterministic replay"):
         validate_result(dataclasses.replace(result, arms=(forged_values, *result.arms[1:])))
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("scientific_promotion_allowed", "dreamer_parity_claimed"),
+)
+def test_validator_rejects_int_zero_policy_flags(field: str) -> None:
+    result = run_development_lane(
+        seed=FROZEN_SEEDS[0], steps_per_task=1, replay_capacity=1, imaginations_per_step=1
+    )
+    with pytest.raises(ValueError, match="nonpromoting"):
+        validate_result(dataclasses.replace(result, **{field: 0}))

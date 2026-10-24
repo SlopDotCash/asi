@@ -170,13 +170,12 @@ class DevelopmentResult:
             or self.allowed_task_information[0] != "current_goal"
         ):
             raise ValueError("the planner receives only the current goal as task information")
-        flags = (
-            self.development_only,
-            not self.scientific_promotion_allowed,
-            self.negative_results_must_be_retained,
-            not self.historical_ftl_claim_reused,
-        )
-        if any(type(x) is not bool or not x for x in flags):
+        if (
+            self.development_only is not True
+            or self.scientific_promotion_allowed is not False
+            or self.negative_results_must_be_retained is not True
+            or self.historical_ftl_claim_reused is not False
+        ):
             raise ValueError("result must remain nonpromoting, retained, and historically separate")
 
 
