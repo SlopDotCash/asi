@@ -408,8 +408,13 @@ class PrototypeMemoryLearner:
         bandwidth_scale = jnp.sqrt(
             jnp.asarray(self._config.bandwidth, dtype=jnp.float32)
         )
-        diffs = (state.means - x[None, None, :]) / bandwidth_scale
-        distances = jnp.mean(diffs * diffs, axis=2)
+        dimension_scale = jnp.sqrt(
+            jnp.asarray(self._config.feature_dim, dtype=jnp.float32)
+        )
+        diffs = (state.means - x[None, None, :]) / (
+            bandwidth_scale * dimension_scale
+        )
+        distances = jnp.sum(diffs * diffs, axis=2)
         slot_logits = -distances
         slot_logits = jnp.where(state.counts > 0.0, slot_logits, -jnp.inf)
         logits = jnp.max(slot_logits, axis=1)

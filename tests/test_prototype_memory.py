@@ -146,6 +146,37 @@ def test_representable_scaled_distance_keeps_active_class_logit_finite() -> None
     )
 
 
+def test_representable_scaled_distance_sum_keeps_active_class_logit_finite() -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(
+            feature_dim=2,
+            n_classes=2,
+            slots_per_class=1,
+            bandwidth=1.0,
+        )
+    )
+    state = learner.init().replace(
+        means=learner.init().means.at[0, 0].set(
+            jnp.asarray([1.5e19, 1.5e19], dtype=jnp.float32)
+        ),
+        counts=learner.init().counts.at[0, 0].set(1),
+    )
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+
+    eager_logits = learner.class_logits(state, observation)
+    jitted_logits = jax.jit(learner.class_logits)(state, observation)
+    eager_prediction = learner.predict(state, observation)
+    jitted_prediction = jax.jit(learner.predict)(state, observation)
+
+    for logits in (eager_logits, jitted_logits):
+        assert float(logits[0]) == pytest.approx(-2.25e38, rel=1e-6)
+        assert not bool(jnp.isfinite(logits[1]))
+        assert float(logits[1]) < 0.0
+    expected_prediction = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    np.testing.assert_array_equal(eager_prediction, expected_prediction)
+    np.testing.assert_array_equal(jitted_prediction, expected_prediction)
+
+
 def test_repeated_update_moves_prediction_to_target_class() -> None:
     """A repeated class example should become confidently classified."""
     learner = PrototypeMemoryLearner(
