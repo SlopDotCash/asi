@@ -18,6 +18,18 @@ from jax import Array
 _FLOAT32_MAX = 3.4028234663852886e38
 
 
+def _stable_weighted_square_ema(previous: Array, value: Array, decay: float) -> Array:
+    """Preserve a finite float32 EMA when the unweighted square overflows."""
+
+    direct = decay * previous + (1 - decay) * value**2
+    float32_max = jnp.asarray(_FLOAT32_MAX, dtype=jnp.float32)
+    retained = decay * previous
+    scaled_value = jnp.sqrt(1 - decay) * value
+    innovation = jnp.minimum(scaled_value**2, float32_max)
+    stable = jnp.minimum(retained, float32_max - innovation) + innovation
+    return jnp.where(jnp.isfinite(direct), direct, stable)
+
+
 @dataclasses.dataclass(frozen=True)
 class IntentionalTDConfig:
     """Value-optimizer controls; defaults match the pinned reference code.
@@ -111,17 +123,14 @@ def intentional_td_update(
         )
 
     gradient_squared = gradient**2
-    second = config.beta2 * state.squared_gradient + (1 - config.beta2) * gradient_squared
-    # Weight before squaring when the direct square overflows.  The EMA term can
-    # still be representable even when a finite float32 gradient squared is not.
-    float32_max = jnp.asarray(_FLOAT32_MAX, dtype=jnp.float32)
-    retained_second = config.beta2 * state.squared_gradient
-    scaled_gradient = jnp.sqrt(1 - config.beta2) * gradient
-    stable_innovation = jnp.minimum(scaled_gradient**2, float32_max)
-    stable_second = (
-        jnp.minimum(retained_second, float32_max - stable_innovation) + stable_innovation
+    # Weight before squaring when the direct square overflows.  The weighted
+    # moment can still be representable even when a finite float32 value
+    # squared is not.
+    second = _stable_weighted_square_ema(
+        state.squared_gradient,
+        gradient,
+        config.beta2,
     )
-    second = jnp.where(jnp.isfinite(second), second, stable_second)
     count = step.astype(jnp.float32)
     if config.use_rmsprop:
         second_bias = 1 - config.beta2**count
@@ -144,12 +153,18 @@ def intentional_td_update(
     stable_normalizer = jnp.sqrt(sigma_corrected) * jnp.sqrt(norm_trace)
     normalizer = jnp.where(jnp.isfinite(direct_normalizer), direct_normalizer, stable_normalizer)
     step_size = config.eta / jnp.maximum(normalizer, 1e-8)
-    clip_second = config.beta_clip * state.clip_squared_error + (1 - config.beta_clip) * td_error**2
-    cap = (
-        config.clip_mult * jnp.sqrt(clip_second / (1 - config.beta_clip**count))
-        if config.use_adaptive_clip
-        else jnp.array(1.0, dtype=jnp.float32)
+    clip_second = _stable_weighted_square_ema(
+        state.clip_squared_error,
+        td_error,
+        config.beta_clip,
     )
+    if config.use_adaptive_clip:
+        clip_bias = 1 - config.beta_clip**count
+        direct_cap = config.clip_mult * jnp.sqrt(clip_second / clip_bias)
+        stable_cap = config.clip_mult * jnp.sqrt(clip_second) / jnp.sqrt(clip_bias)
+        cap = jnp.where(jnp.isfinite(direct_cap), direct_cap, stable_cap)
+    else:
+        cap = jnp.array(1.0, dtype=jnp.float32)
     safe_error = jnp.clip(td_error, -cap, cap)
     changed = weights + (safe_error * step_size) * (trace / divisor)
     return changed, IntentionalTDState(  # type: ignore[call-arg]
