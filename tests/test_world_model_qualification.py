@@ -93,3 +93,10 @@ def test_world_model_smoke_result_binds_arm_metrics_and_step_count() -> None:
 
     with pytest.raises(ValueError, match="step count"):
         dataclasses.replace(result, steps=1, actions=(0,))
+
+
+def test_world_model_smoke_result_binds_the_executed_action_trace() -> None:
+    result = run_native_world_model_smoke(seed=0, steps=4)
+
+    with pytest.raises(ValueError, match="deterministic trace"):
+        dataclasses.replace(result, actions=(0, 0, 0, 0))

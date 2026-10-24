@@ -54,6 +54,10 @@ def _tree_nbytes(tree: object) -> int:
     return total
 
 
+def _action_trace(steps: int) -> tuple[int, ...]:
+    return tuple(index % 2 for index in range(steps))
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class WorldModelSmokeArm:
     arm_id: str
@@ -106,6 +110,8 @@ class WorldModelSmokeResult:
             raise ValueError("actions must be an exact tuple with one item per step")
         if any(type(action) is not int or action not in (0, 1) for action in self.actions):
             raise ValueError("actions must contain exact binary integers")
+        if self.actions != _action_trace(steps):
+            raise ValueError("actions differ from the deterministic trace")
         if type(self.arms) is not tuple or len(self.arms) != 4:
             raise ValueError("smoke result must contain the four frozen arms")
         if any(type(arm) is not WorldModelSmokeArm for arm in self.arms):
@@ -129,7 +135,7 @@ class WorldModelSmokeResult:
 
 
 def _trace(steps: int) -> tuple[tuple[int, ...], tuple[tuple[np.ndarray, np.ndarray], ...]]:
-    actions = tuple(index % 2 for index in range(steps))
+    actions = _action_trace(steps)
     observation = np.asarray([0.25, -0.5], dtype=np.float32)
     transitions: list[tuple[np.ndarray, np.ndarray]] = []
     for action in actions:
