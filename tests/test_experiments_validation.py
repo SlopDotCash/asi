@@ -240,6 +240,23 @@ def test_single_seed_surfaces_report_zero_spread() -> None:
     assert performance["single"] == pytest.approx((2.5, 0.0))
 
 
+def test_timeseries_preserves_representable_means_of_wide_finite_samples() -> None:
+    wide = 1.0e308
+    aggregate = AggregatedResults(
+        config_name="wide",
+        seeds=[0, 1],
+        metric_arrays={"squared_error": np.full((2, 3), wide, dtype=np.float64)},
+        summary={},
+    )
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean, lower, upper = get_metric_timeseries(aggregate)
+
+    np.testing.assert_array_equal(mean, np.full((3,), wide))
+    np.testing.assert_array_equal(lower, mean)
+    np.testing.assert_array_equal(upper, mean)
+
+
 def test_empty_config_sequence_still_returns_empty_results() -> None:
     assert (
         run_multi_seed_experiment([], seeds=[0], parallel=False, show_progress=False) == {}
@@ -336,6 +353,21 @@ def test_get_final_performance_positive_window_is_a_suffix() -> None:
     assert result["candidate"][1] == pytest.approx(float(np.std(expected_values, ddof=1)))
 
 
+def test_get_final_performance_preserves_wide_finite_samples() -> None:
+    wide = 1.0e308
+    aggregate = AggregatedResults(
+        config_name="wide",
+        seeds=[0, 1],
+        metric_arrays={"squared_error": np.full((2, 3), wide, dtype=np.float64)},
+        summary={},
+    )
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        result = get_final_performance({"wide": aggregate})
+
+    assert result["wide"] == (wide, 0.0)
+
+
 def _single_run(seed: int, values: list[float]) -> SingleRunResult:
     learner = LinearLearner(optimizer=LMS(step_size=0.05))
     return SingleRunResult(
@@ -355,6 +387,23 @@ def test_aggregate_metrics_rejects_nonfinite_samples() -> None:
                 _single_run(1, [3.0, float("nan")]),
             ]
         )
+
+
+def test_aggregate_metrics_preserves_representable_means_of_wide_finite_samples() -> None:
+    wide = 1.0e308
+
+    with np.errstate(over="ignore", invalid="ignore"):
+        aggregated = aggregate_metrics(
+            [
+                _single_run(0, [wide, wide]),
+                _single_run(1, [wide, wide]),
+            ]
+        )
+
+    summary = aggregated.summary["squared_error"]
+    np.testing.assert_array_equal(summary.values, np.asarray([wide, wide]))
+    assert summary.mean == wide
+    assert summary.std == 0.0
 
 
 def test_aggregate_metrics_rejects_metric_schema_drift_in_later_seed() -> None:
