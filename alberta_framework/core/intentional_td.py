@@ -15,6 +15,8 @@ import chex
 import jax.numpy as jnp
 from jax import Array
 
+_FLOAT32_MAX = 3.4028234663852886e38
+
 
 @dataclasses.dataclass(frozen=True)
 class IntentionalTDConfig:
@@ -108,18 +110,40 @@ def intentional_td_update(
             trace=jnp.where(terminated, jnp.zeros_like(trace), trace), step=step
         )
 
-    second = config.beta2 * state.squared_gradient + (1 - config.beta2) * gradient**2
-    count = step.astype(jnp.float32)
-    divisor = (
-        jnp.sqrt(second / (1 - config.beta2**count)) + 1e-8
-        if config.use_rmsprop
-        else jnp.ones_like(weights)
+    gradient_squared = gradient**2
+    second = config.beta2 * state.squared_gradient + (1 - config.beta2) * gradient_squared
+    # Weight before squaring when the direct square overflows.  The EMA term can
+    # still be representable even when a finite float32 gradient squared is not.
+    float32_max = jnp.asarray(_FLOAT32_MAX, dtype=jnp.float32)
+    retained_second = config.beta2 * state.squared_gradient
+    scaled_gradient = jnp.sqrt(1 - config.beta2) * gradient
+    stable_innovation = jnp.minimum(scaled_gradient**2, float32_max)
+    stable_second = (
+        jnp.minimum(retained_second, float32_max - stable_innovation) + stable_innovation
     )
-    norm_gradient = jnp.sum(gradient**2 / divisor)
+    second = jnp.where(jnp.isfinite(second), second, stable_second)
+    count = step.astype(jnp.float32)
+    if config.use_rmsprop:
+        second_bias = 1 - config.beta2**count
+        direct_rms = jnp.sqrt(second / second_bias)
+        stable_rms = jnp.sqrt(second) / jnp.sqrt(second_bias)
+        divisor = jnp.where(jnp.isfinite(direct_rms), direct_rms, stable_rms) + 1e-8
+    else:
+        divisor = jnp.ones_like(weights)
+    direct_norm_gradient = jnp.sum(gradient_squared / divisor)
+    stable_norm_gradient = jnp.sum((gradient / divisor) * gradient)
+    norm_gradient = jnp.where(
+        jnp.isfinite(direct_norm_gradient), direct_norm_gradient, stable_norm_gradient
+    )
     sigma = state.sigma + (1 - decay) * (norm_gradient - state.sigma)
     sigma_corrected = sigma / (1 - decay**count)
-    norm_trace = jnp.sum(trace**2 / divisor)
-    step_size = config.eta / jnp.maximum(jnp.sqrt(sigma_corrected * norm_trace), 1e-8)
+    direct_norm_trace = jnp.sum(trace**2 / divisor)
+    stable_norm_trace = jnp.sum((trace / divisor) * trace)
+    norm_trace = jnp.where(jnp.isfinite(direct_norm_trace), direct_norm_trace, stable_norm_trace)
+    direct_normalizer = jnp.sqrt(sigma_corrected * norm_trace)
+    stable_normalizer = jnp.sqrt(sigma_corrected) * jnp.sqrt(norm_trace)
+    normalizer = jnp.where(jnp.isfinite(direct_normalizer), direct_normalizer, stable_normalizer)
+    step_size = config.eta / jnp.maximum(normalizer, 1e-8)
     clip_second = config.beta_clip * state.clip_squared_error + (1 - config.beta_clip) * td_error**2
     cap = (
         config.clip_mult * jnp.sqrt(clip_second / (1 - config.beta_clip**count))

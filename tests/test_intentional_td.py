@@ -66,6 +66,22 @@ def test_fixed_step_control_is_exact_sgd_with_mechanism_off():
 
 
 @pytest.mark.parametrize("compiled", [False, True])
+def test_rms_normalization_preserves_finite_wide_gradient_update(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([2.0e19, -2.0e19], dtype=jnp.float32)
+    config = IntentionalTDConfig(eta=0.1, lamda=0.0)
+
+    def update(w, state):
+        return intentional_td_update(w, state, gradient, jnp.array(1.0), config)
+
+    step = jax.jit(update) if compiled else update
+    changed, state = step(weights, init_intentional_td(weights))
+
+    np.testing.assert_allclose(changed, [2.5e-21, -2.5e-21], rtol=2e-5)
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("adaptive", [False, True])
 @pytest.mark.parametrize("error", [-10.0, 10.0])
 def test_binding_clip_limits_prediction_change(compiled, adaptive, error):
