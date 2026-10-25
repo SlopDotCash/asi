@@ -265,6 +265,41 @@ def test_runtime_values_must_match_declared_flattened_shapes_and_be_finite() -> 
         _flatten_action(np.asarray((0.0, np.inf), dtype=np.float32), box)
 
 
+@pytest.mark.parametrize("consumer", ("collector", "stream", "td_stream"))
+def test_host_finite_reward_must_remain_finite_in_float32_target(consumer: str) -> None:
+    class WideRewardEnv(gymnasium.Env):
+        observation_space = gymnasium.spaces.Box(
+            -1.0,
+            1.0,
+            shape=(1,),
+            dtype=np.float32,
+        )
+        action_space = gymnasium.spaces.Discrete(2)
+
+        def reset(self, *, seed=None, options=None):
+            super().reset(seed=seed)
+            return np.zeros((1,), dtype=np.float32), {}
+
+        def step(self, action):
+            del action
+            return (
+                np.zeros((1,), dtype=np.float32),
+                float(np.finfo(np.float64).max),
+                False,
+                False,
+                {},
+            )
+
+    env = WideRewardEnv()
+    with pytest.raises(ValueError, match="target.*finite.*float32"):
+        if consumer == "collector":
+            collect_trajectory(env, lambda _observation: 0, 1)
+        elif consumer == "stream":
+            next(GymnasiumStream(env, policy=lambda _observation: 0))
+        else:
+            next(TDStream(env, policy=lambda _observation: 0))
+
+
 def test_runtime_shape_metadata_rejects_before_jax_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
