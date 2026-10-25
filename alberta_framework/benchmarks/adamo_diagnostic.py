@@ -424,12 +424,23 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
                 raise ValueError("diagnostic task index mismatch")
             _digest(snapshot.get("parameter_sha256"), "parameter_sha256")
             _digest(snapshot.get("learner_state_sha256"), "learner_state_sha256")
+            metrics: dict[str, float] = {}
             for metric in (
                 "jacobian_min_singular_value", "jacobian_max_singular_value",
                 "jacobian_mean_singular_value", "jacobian_condition_number_clipped_1e12",
                 "jacobian_rms_distance_from_one", "weight_gram_penalty",
             ):
-                _finite(snapshot.get(metric), metric)
+                metrics[metric] = _finite(snapshot.get(metric), metric)
+            minimum = metrics["jacobian_min_singular_value"]
+            mean = metrics["jacobian_mean_singular_value"]
+            maximum = metrics["jacobian_max_singular_value"]
+            if not minimum <= mean <= maximum:
+                raise ValueError("diagnostic singular-value ordering is impossible")
+            expected_condition = (
+                1e12 if minimum == 0.0 else min(maximum / minimum, 1e12)
+            )
+            if metrics["jacobian_condition_number_clipped_1e12"] != expected_condition:
+                raise ValueError("diagnostic condition number does not match singular values")
         resources = arm.get("resources")
         if type(resources) is not dict or set(resources) != {
             "observations", "updates", "data_steps", "environment_steps", "model_queries",

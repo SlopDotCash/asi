@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
+import platform
 from pathlib import Path
 
+import jax
 import numpy as np
 import pytest
 
+import alberta_framework.benchmarks.adamo_diagnostic as adamo_diagnostic
 from alberta_framework.benchmarks.adamo_diagnostic import (
     ARMS,
     FROZEN_DEVELOPMENT_SEEDS,
@@ -117,6 +121,58 @@ def test_hostile_scalar_alias_and_unfrozen_seed_are_rejected(
         validate_adamo_diagnostic(hostile)
     with pytest.raises(ValueError, match="frozen"):
         run_adamo_diagnostic(*tiny_data, profile="contract-smoke", seed=9)
+
+
+@pytest.mark.parametrize(
+    ("field", "source_field", "message"),
+    [
+        (
+            "jacobian_min_singular_value",
+            "jacobian_max_singular_value",
+            "singular-value ordering",
+        ),
+        (
+            "jacobian_mean_singular_value",
+            "jacobian_max_singular_value",
+            "singular-value ordering",
+        ),
+        (
+            "jacobian_condition_number_clipped_1e12",
+            None,
+            "condition number",
+        ),
+    ],
+)
+def test_validator_rejects_impossible_jacobian_summaries(
+    field: str,
+    source_field: str | None,
+    message: str,
+) -> None:
+    receipt_path = (
+        Path(__file__).parents[1]
+        / "outputs/adamo_matched_screen_v1/receipts/adamo_bounded-development_s15600.json"
+    )
+    retained = json.loads(receipt_path.read_text())
+    module_path = Path(adamo_diagnostic.__file__)
+    retained["runtime"] = {
+        "python": platform.python_version(),
+        "jax": jax.__version__,
+        "numpy": np.__version__,
+        "backend": jax.default_backend(),
+    }
+    retained["source"] = {
+        "adapter_sha256": hashlib.sha256(module_path.read_bytes()).hexdigest(),
+        "runner_sha256": hashlib.sha256(
+            module_path.with_name("ipmnist_screening.py").read_bytes()
+        ).hexdigest(),
+    }
+    validate_adamo_diagnostic(retained)
+
+    hostile = copy.deepcopy(retained)
+    snapshot = hostile["arms"][2]["post_task_diagnostics"][0]
+    snapshot[field] = 1.0 if source_field is None else snapshot[source_field] + 1.0
+    with pytest.raises(ValueError, match=message):
+        validate_adamo_diagnostic(hostile)
 
 
 def test_runner_observer_is_a_downstream_exact_function_only(
