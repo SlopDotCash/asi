@@ -286,14 +286,25 @@ _EXACT_LDEXP_EXPONENT_LIMIT = 126
 
 
 def _exact_power_of_two_scale(values: Array, exponent: Array) -> Array:
-    """Scale ``values`` by ``2**exponent`` without leaving the exact range.
+    """Scale ``values`` by ``2**exponent`` in exact power-of-two steps.
 
-    ``jnp.ldexp`` returns a hard zero for every exponent at or below ``-127`` on
-    some backends, even when ``values * 2**exponent`` is an ordinary normal
-    number. Delegating a whole rescale to it therefore silences any column whose
-    magnitude reaches ``2**126``. Splitting the exponent into a bounded
-    ``ldexp`` head plus an exactly representable power-of-two factor keeps the
-    IEEE-754 semantics across the full float range.
+    ``jnp.ldexp`` delegates to the backend's power-of-two construction, which may
+    underflow before the product does: on some backends it returns a hard zero
+    for every exponent at or below ``-127``, even when the product is an ordinary
+    normal number. Handing a whole rescale to it therefore silences any column
+    whose magnitude reaches ``2**126``. Splitting the exponent into a bounded
+    ``ldexp`` head plus a small tail keeps both factors inside the range where a
+    power of two is exactly representable, so the rescale rounds at most once.
+
+    The tail factor is built with ``ldexp`` and not ``exp2``: ``jnp.exp2`` of an
+    integer argument is a general exponential on this backend, and it does not
+    return the exact power of two for several tails in ``[-23, 23]``.
+
+    Scope: exact for normal inputs and the exponents this module produces. Both
+    call sites feed exponents derived from ``jnp.frexp``, so the head-scaled
+    intermediate stays normal and the result is a single rounding. A subnormal
+    input, a subnormal result, or an overflow is the backend's rounding to
+    decide; some backends flush subnormals and no arithmetic rewrite avoids it.
     """
     exponent = jnp.asarray(exponent)
     head = jnp.clip(
@@ -302,7 +313,7 @@ def _exact_power_of_two_scale(values: Array, exponent: Array) -> Array:
         _EXACT_LDEXP_EXPONENT_LIMIT,
     )
     tail = exponent - head
-    tail_factor = jnp.exp2(tail.astype(values.dtype))
+    tail_factor = jnp.ldexp(jnp.ones_like(values), tail)
     return jnp.ldexp(values, head) * tail_factor
 
 

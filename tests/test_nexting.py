@@ -316,45 +316,93 @@ class TestRMSE:
         np.testing.assert_allclose(np.asarray(compiled), reference, rtol=2e-6)
 
     @pytest.mark.parametrize(
-        ("magnitude", "exponent"),
-        [
-            (1.0e38, -127),
-            (1.0e38, -128),
-            (1.0e38, -140),
-            (1.0, 127),
-            (0.5, 128),
-        ],
+        "exponent",
+        [-149, -140, -128, -127, -126, -64, -1, 0, 1, 64, 126, 127, 140, 148],
     )
-    def test_power_of_two_rescale_matches_ieee754_ldexp(
-        self,
-        magnitude: float,
-        exponent: int,
-    ) -> None:
-        """Rescaling must keep IEEE-754 semantics past the backend ldexp cliff.
+    def test_power_of_two_rescale_matches_numpy_ldexp_bits(self, exponent: int) -> None:
+        """The split rescale must be bit-identical to one IEEE-754 scaling.
 
-        ``jnp.ldexp`` returns a hard zero for every exponent at or below ``-127``
-        on some backends no matter how representable the product is, so the
-        rescale cannot delegate the whole exponent to it. numpy implements the
-        full IEEE-754 range and is the reference here.
+        The split head/tail path is the only thing standing between a normal
+        finite product and a hard zero, so the contract is checked bit-for-bit
+        against ``numpy.ldexp`` instead of with a tolerance that would accept a
+        few ulp of drift. ``numpy`` is the backend-independent reference.
+
+        Covered scope: results that are finite and normal. A result that is
+        itself subnormal is left out because a backend may flush it, which is a
+        property of the backend rather than of this split.
         """
-        values = np.asarray([magnitude, -magnitude, 0.5 * magnitude], dtype=np.float32)
-        expected = np.ldexp(values, np.int32(exponent))
+        values = np.asarray(
+            [1.0, 1.5, -0.5, -1.0e38, 3.0e38, 1.0e-30],
+            dtype=np.float32,
+        )
+        with np.errstate(over="ignore"):
+            expected = np.ldexp(values, np.int32(exponent))
+        supported = np.isfinite(expected) & (
+            np.abs(expected) >= np.finfo(np.float32).tiny
+        )
+        assert supported.any()
 
         scaled = _exact_power_of_two_scale(jnp.asarray(values), jnp.int32(exponent))
-
-        np.testing.assert_allclose(np.asarray(scaled), expected, rtol=1e-6)
         compiled = jax.jit(_exact_power_of_two_scale)(
             jnp.asarray(values), jnp.int32(exponent)
         )
-        np.testing.assert_allclose(np.asarray(compiled), expected, rtol=1e-6)
+
+        np.testing.assert_array_equal(
+            np.asarray(scaled)[supported].view(np.uint32),
+            expected[supported].view(np.uint32),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(compiled)[supported].view(np.uint32),
+            expected[supported].view(np.uint32),
+        )
+
+    def test_power_of_two_rescale_matches_numpy_ldexp_on_a_sweep(self) -> None:
+        """The bit contract has to hold for every tail, not just the boundaries.
+
+        A handful of hand-picked exponents cannot pin the tail factor: of the 47
+        tails in ``[-23, 23]`` that this split can produce, a general exponential
+        returns the wrong power of two for 16 of them, and only one of the
+        boundary rows above happens to land on those. This sweep covers the whole
+        exponent range with random normal mantissas so the tail floor is checked
+        everywhere it can be reached.
+        """
+        rng = np.random.default_rng(20261025)
+        mantissa = rng.uniform(1.0, 2.0, 4096) * rng.choice([-1.0, 1.0], 4096)
+        magnitudes = rng.integers(-125, 128, 4096)
+        values = (mantissa * np.exp2(magnitudes.astype(np.float64))).astype(np.float32)
+        exponents = rng.integers(-149, 149, 4096).astype(np.int32)
+
+        with np.errstate(over="ignore"):
+            expected = np.ldexp(values, exponents)
+        supported = np.isfinite(expected) & (
+            np.abs(expected) >= np.finfo(np.float32).tiny
+        )
+        assert int(supported.sum()) > 1024
+
+        scaled = np.asarray(_exact_power_of_two_scale(jnp.asarray(values), exponents))
+        compiled = np.asarray(
+            jax.jit(_exact_power_of_two_scale)(jnp.asarray(values), exponents)
+        )
+
+        np.testing.assert_array_equal(
+            scaled[supported].view(np.uint32),
+            expected[supported].view(np.uint32),
+        )
+        np.testing.assert_array_equal(
+            compiled[supported].view(np.uint32),
+            expected[supported].view(np.uint32),
+        )
 
     def test_rmse_above_the_ldexp_exponent_limit_is_not_reported_as_zero(
         self,
     ) -> None:
         """A 2**126 magnitude forces a rescale exponent of -127 or lower.
 
-        That is exactly the band where a bare ``ldexp`` returns zero, which would
-        report a perfect RMSE for enormous finite errors.
+        That is the band where a power-of-two construction that underflows ahead
+        of the product returns zero, which would report a perfect RMSE for
+        enormous finite errors. On a toolchain whose ``ldexp`` already splits the
+        exponent this passes either way; on one that does not it is the
+        difference between 0.0 and the correct value.
         """
         values = np.linspace(-1.0e38, 1.0e38, 257, dtype=np.float32)[:, None]
         predictions = jnp.asarray(values)
