@@ -26,6 +26,7 @@ from numbers import Integral, Real
 from typing import cast
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -105,6 +106,28 @@ def _require_int(
     if maximum is not None and number > maximum:
         raise ValueError(f"{name} must be <= {maximum}")
     return number
+
+
+def _require_key(value: object, *, name: str) -> Array:
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array) or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key")
+    trusted = cast(Array, value)
+    try:
+        words = jr.key_data(trusted)
+        implementation = str(jr.key_impl(trusted))
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key") from error
+    if (
+        trusted.shape != ()
+        or words.shape != (2,)
+        or words.dtype != jnp.dtype(jnp.uint32)
+        or implementation != "threefry2x32"
+    ):
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key")
+    return trusted
 
 
 @chex.dataclass(frozen=True)
@@ -236,7 +259,11 @@ class AlbertaPlanStep1Stream:
 
         Returns:
             Initial stream state with random relevant weights and zero bias.
+
+        Raises:
+            TypeError: If ``key`` is not a scalar typed Threefry JAX key.
         """
+        key = _require_key(key, name="key")
         key, k_init = jr.split(key)
         relevant_init = jr.normal(k_init, (self._num_relevant,), dtype=jnp.float32)
         weights = jnp.zeros(self._feature_dim, dtype=jnp.float32)
@@ -457,7 +484,11 @@ class XDistShiftStream:
         Returns:
             Initial stream state with a fixed target function and an initial
             per-feature scale vector.
+
+        Raises:
+            TypeError: If ``key`` is not a scalar typed Threefry JAX key.
         """
+        key = _require_key(key, name="key")
         key, k_w, k_scales = jr.split(key, 3)
         relevant_w = jr.normal(k_w, (self._num_relevant,), dtype=jnp.float32)
         weights = jnp.zeros(self._feature_dim, dtype=jnp.float32)
