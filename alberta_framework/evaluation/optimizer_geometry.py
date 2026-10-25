@@ -711,7 +711,7 @@ def _fields(actual: dict[str, object], expected: tuple[str, ...], *, name: str) 
 def _same_float(actual: object, expected: object, *, name: str) -> None:
     if type(actual) is not float or type(expected) is not float:
         raise ValueError(f"{name} must be a float")
-    if not math.isfinite(actual) or actual != expected:
+    if not math.isfinite(actual) or actual.hex() != expected.hex():
         raise ValueError(f"{name} does not match the frozen evaluation")
 
 
@@ -753,7 +753,7 @@ def _exact_equal(actual: object, expected: object) -> bool:
         return -_INT64_MAX <= actual_integer <= _INT64_MAX and actual_integer == expected
     if type(expected) is float:
         actual_float = cast(float, actual)
-        return math.isfinite(actual_float) and actual_float == expected
+        return math.isfinite(actual_float) and actual_float.hex() == expected.hex()
     if type(expected) in (bool, type(None)):
         return actual == expected
     return False

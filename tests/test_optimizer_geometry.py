@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from alberta_framework.evaluation.optimizer_geometry import (
     FROZEN_GEOMETRY_CONFIG,
     GEOMETRY_PROTOCOL,
     GEOMETRY_RESULT_SCHEMA,
+    _canonical_json_bytes_raw,
     _nonzero_magnitude_bits,
     canonical_streaming_matrix_result_bytes,
     flad_noise_component,
@@ -167,6 +169,19 @@ def test_streaming_matrix_validator_rejects_tampering(
         target = target[component]  # type: ignore[index]
     target[path[-1]] = replacement  # type: ignore[index]
     with pytest.raises(ValueError):
+        validate_streaming_matrix_result(result)
+
+
+def test_streaming_matrix_validator_rejects_rehashed_negative_zero_metric() -> None:
+    result = run_streaming_matrix_evaluation()
+    result["arms"][3]["metrics"]["final_target_mse"] = -0.0  # type: ignore[index]
+    unsigned = dict(result)
+    del unsigned["result_sha256"]
+    result["result_sha256"] = hashlib.sha256(
+        _canonical_json_bytes_raw(unsigned)
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="does not match the frozen evaluation"):
         validate_streaming_matrix_result(result)
 
 
