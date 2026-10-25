@@ -1373,9 +1373,10 @@ class DifferentialGTDLearner:
         ratio_clip = jnp.asarray(cfg.ratio_clip, dtype=jnp.float32)
 
         reward_s = jnp.squeeze(jnp.asarray(reward, dtype=jnp.float32))
+        raw_rho_s = jnp.squeeze(jnp.asarray(rho, dtype=jnp.float32))
         rho_s = jnp.maximum(
             0.0,
-            jnp.minimum(jnp.squeeze(jnp.asarray(rho, dtype=jnp.float32)), ratio_clip),
+            jnp.minimum(raw_rho_s, ratio_clip),
         )
         prediction = self.predict(state, observation)
         next_prediction = self.predict(state, next_observation)
@@ -1412,7 +1413,8 @@ class DifferentialGTDLearner:
             jnp.all(jnp.isfinite(observation))
             & jnp.isfinite(reward_s)
             & jnp.all(jnp.isfinite(next_observation))
-            & jnp.isfinite(jnp.squeeze(jnp.asarray(rho, dtype=jnp.float32)))
+            & jnp.isfinite(raw_rho_s)
+            & (raw_rho_s >= 0.0)
         )
         proposed_finite = (
             jnp.all(jnp.isfinite(proposed_state.weights))

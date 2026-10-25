@@ -142,6 +142,39 @@ def test_differential_gtd_infinite_reward_does_not_poison_weights() -> None:
     assert bool(recovered.update_applied)
 
 
+def test_differential_gtd_negative_importance_ratio_is_atomic_and_neutral() -> None:
+    learner = DifferentialGTDLearner(
+        DifferentialGTDConfig(
+            value_step_size=0.1,
+            secondary_step_size=0.01,
+            average_reward_step_size=0.02,
+        )
+    )
+    state = learner.init(1).replace(
+        secondary_weights=jnp.asarray([1.0], dtype=jnp.float32),
+    )
+
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(-0.25, dtype=jnp.float32),
+    )
+
+    # JIT tracing narrows the incidental host clock; compare the learning state.
+    chex.assert_trees_all_equal(
+        result.state.replace(birth_timestamp=state.birth_timestamp),
+        state,
+    )
+    assert not bool(result.update_applied)
+    assert float(result.prediction) == 0.0
+    assert float(result.next_prediction) == 0.0
+    assert float(result.td_error) == 0.0
+    assert float(result.rho_clipped) == 0.0
+    chex.assert_trees_all_equal(result.metrics, jnp.zeros_like(result.metrics))
+
+
 def test_average_reward_horde_infinite_cumulant_does_not_poison_rbar() -> None:
     """Inf is not NaN, so it used to keep a demon 'active'.
 
