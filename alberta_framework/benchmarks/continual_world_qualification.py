@@ -194,6 +194,16 @@ class ContinualWorldSmokeReceipt:
         ):
             _digest(getattr(self, name), name=name, prefixed=False)
         horizon = len(CW20_TASKS) * self.plan.steps_per_task
+        expected_action_sha256 = _array_hash(
+            b"asi.cw.actions.v1\0", _fixed_action_trace(horizon)
+        )
+        if self.action_sha256 != expected_action_sha256:
+            raise ValueError("action_sha256 does not bind the frozen fixed-action trace")
+        expected_task_index_sha256 = _array_hash(
+            b"asi.cw.tasks.v1\0", _frozen_task_indices(self.plan.steps_per_task)
+        )
+        if self.task_index_sha256 != expected_task_index_sha256:
+            raise ValueError("task_index_sha256 does not bind the frozen CW20 schedule")
         if _int(self.environment_steps, name="environment_steps", minimum=1) != horizon:
             raise ValueError("environment_steps do not match the frozen CW20 smoke horizon")
         exact_zero = ("data_steps", "learner_updates", "model_queries")
@@ -239,6 +249,16 @@ def _array_hash(domain: bytes, value: np.ndarray) -> str:
     return digest.hexdigest()
 
 
+def _fixed_action_trace(horizon: int) -> np.ndarray:
+    return np.zeros((horizon, len(FIXED_ACTION)), dtype=np.float32)
+
+
+def _frozen_task_indices(steps_per_task: int) -> np.ndarray:
+    return np.repeat(
+        np.arange(len(CW20_TASKS), dtype=np.int32), steps_per_task
+    )
+
+
 def build_smoke_receipt(
     plan: ContinualWorldSmokePlan,
     *,
@@ -275,12 +295,10 @@ def build_smoke_receipt(
         if dtype.kind == "f" and not np.isfinite(snapshot).all():
             raise ValueError(f"{name} must be finite")
         snapshots[name] = snapshot
-    expected_actions = np.zeros((horizon, 4), dtype=np.float32)
+    expected_actions = _fixed_action_trace(horizon)
     if not np.array_equal(snapshots["actions"], expected_actions):
         raise ValueError("actions do not match the exact fixed-action mechanism-off schedule")
-    expected_indices = np.repeat(
-        np.arange(len(CW20_TASKS), dtype=np.int32), plan.steps_per_task
-    )
+    expected_indices = _frozen_task_indices(plan.steps_per_task)
     if not np.array_equal(snapshots["task_indices"], expected_indices):
         raise ValueError("task_indices do not follow the exact CW20 boundary schedule")
     expected_task_tail = np.eye(CW20_TASK_ONE_HOT_DIM, dtype=np.float32)[expected_indices]

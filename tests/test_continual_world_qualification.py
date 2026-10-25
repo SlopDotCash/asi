@@ -176,6 +176,15 @@ def test_validator_rejects_hostile_expansion_resources_and_promotion(receipt) ->
         dataclasses.replace(receipt, plan_sha256="0" * 64)
 
 
+@pytest.mark.parametrize("field", ["action_sha256", "task_index_sha256"])
+def test_validator_rejects_forged_frozen_trace_hashes(receipt, field: str) -> None:
+    forged = receipt.payload()
+    forged[field] = "0" * 64
+
+    with pytest.raises(ValueError, match=field):
+        validate_smoke_payload(forged)
+
+
 def test_runtime_and_plan_fail_closed(runtime) -> None:
     with pytest.raises(ValueError, match="image_digest"):
         dataclasses.replace(runtime, image_digest="latest")
