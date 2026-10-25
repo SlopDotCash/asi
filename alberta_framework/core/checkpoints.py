@@ -47,6 +47,7 @@ from alberta_framework._bounded_containers import (
     require_bounded_container_tree,
     require_json_text_nesting,
 )
+from alberta_framework._strict_json import load_strict_json_object_from_text
 
 # Stamped into checkpoint metadata on save, but deliberately NOT validated on
 # load: compatibility is enforced structurally instead, by restoring into the
@@ -213,7 +214,7 @@ def _on_disk_metadata_path(path: Path) -> Path:
 
 
 def _preflight_on_disk_metadata(path: Path) -> None:
-    """Reject deep on-disk metadata JSON before Orbax ``json.loads``."""
+    """Reject ambiguous or deep metadata JSON before Orbax ``json.loads``."""
 
     meta_path = _on_disk_metadata_path(path)
     try:
@@ -239,6 +240,18 @@ def _preflight_on_disk_metadata(path: Path) -> None:
         if "nesting limit" not in str(exc):
             raise
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
+    try:
+        load_strict_json_object_from_text(text, label="checkpoint metadata")
+    except ValueError as exc:
+        message = str(exc)
+        if message in {
+            "non-finite JSON number is forbidden",
+            "non-standard JSON numeric constant is forbidden",
+        }:
+            raise ValueError("checkpoint metadata must be JSON-safe and finite") from exc
+        if message.endswith("payload must contain one JSON object"):
+            raise ValueError("checkpoint metadata must be a mapping") from exc
+        raise
 
 
 def _require_json_safe_metadata(metadata: dict[str, Any]) -> None:
