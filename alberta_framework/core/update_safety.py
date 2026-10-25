@@ -14,6 +14,7 @@ from jaxtyping import Bool, Int
 from alberta_framework._bounded_containers import require_bounded_container_tree
 
 _ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
+_ACTUAL_FLOAT_TYPES = frozenset({float, *(np.dtype(code).type for code in "efdg")})
 _INT32_MAX = int(np.iinfo(np.int32).max)
 # Origin ``jax.tree.leaves`` still returns at depth 8000 and SystemErrors at 10_000.
 _MAX_PYTREE_NESTING_DEPTH = 4096
@@ -85,6 +86,24 @@ def _integer_action_code(
     return safe, valid
 
 
+def _host_float32_action_is_exact(action: object) -> bool | None:
+    """Return whether a concrete host float survives the action narrowing."""
+
+    value: Any
+    if type(action) in _ACTUAL_FLOAT_TYPES:
+        value = action
+    elif type(action) is np.ndarray:
+        array = action
+        if array.shape != () or not np.issubdtype(array.dtype, np.floating):
+            return None
+        value = array.reshape(()).item()
+    else:
+        return None
+    with np.errstate(over="ignore", invalid="ignore"):
+        narrowed = np.asarray(value, dtype=np.float32).reshape(()).item()
+    return bool(np.isfinite(value) and value == narrowed)
+
+
 def safe_discrete_action(
     action: Array | int,
     n_actions: int,
@@ -112,14 +131,22 @@ def safe_discrete_action(
     integer_code = _integer_action_code(action, n_actions, allow_unset=allow_unset)
     if integer_code is not None:
         return integer_code
-    raw = jnp.asarray(action, dtype=jnp.float32).reshape(())
+    host_float32_exact = _host_float32_action_is_exact(action)
+    source = jnp.asarray(action).reshape(())
+    raw = source.astype(jnp.float32)
+    source_float32_exact = jnp.asarray(True, dtype=jnp.bool_)
+    if jnp.issubdtype(source.dtype, jnp.floating):
+        source_float32_exact = source == raw.astype(source.dtype)
     lower = -1.0 if allow_unset else 0.0
     valid = (
-        jnp.isfinite(raw)
+        source_float32_exact
+        & jnp.isfinite(raw)
         & (raw == jnp.floor(raw))
         & (raw >= lower)
         & (raw < float(n_actions))
     )
+    if host_float32_exact is not None:
+        valid = valid & jnp.asarray(host_float32_exact, dtype=jnp.bool_)
     fallback = -1 if allow_unset else 0
     safe = jnp.where(valid, raw, jnp.asarray(fallback, dtype=jnp.float32))
     return safe.astype(jnp.int32), valid
