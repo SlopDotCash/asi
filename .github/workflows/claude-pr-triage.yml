@@ -193,6 +193,10 @@ jobs:
 
       - name: Post review and act on research verdict
         if: steps.verdict.outputs.verdict == 'needs_research'
+        env:
+          # continue-on-error keeps the job green; the outcome is the only
+          # signal that distinguishes a real review from a failed step.
+          RESEARCH_OUTCOME: ${{ steps.claude_research.outcome }}
         run: |
           FINAL="manual_review"
           if jq -e . "$WORKDIR/research_verdict.json" >/dev/null 2>&1; then
@@ -204,9 +208,14 @@ jobs:
 
           if [ -s "$WORKDIR/review.md" ]; then
             gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
-          else
+          elif [ "$RESEARCH_OUTCOME" != "success" ]; then
+            echo "::error::Automated research review failed with outcome '$RESEARCH_OUTCOME'; no review was produced."
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-              "Automated review ran but produced no report; leaving for a maintainer."
+              "Automated review could not run: the research step ended as `$RESEARCH_OUTCOME`, so nothing in this pull request has been evaluated yet. Leaving it for a maintainer."
+          else
+            echo "::error::Automated review finished without writing a report."
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+              "Automated review finished without writing a report; leaving for a maintainer."
           fi
 
           if [ "$FINAL" = "merge" ]; then
