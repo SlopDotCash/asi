@@ -2216,3 +2216,72 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     )
     np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
     chex.assert_trees_all_equal(result.state, state)
+
+
+_AGENT_FACTORIES: dict[str, Callable[[], Any]] = {
+    "horde": _make_agent,
+    "q-horde": _make_qhorde_agent,
+    "nonlinear": _make_nlhac_agent,
+    "nonlinear-q": _make_nlqhac_agent,
+}
+
+
+@pytest.mark.parametrize("agent_name", sorted(_AGENT_FACTORIES))
+@pytest.mark.parametrize("bad_value", [np.nan, np.inf, -np.inf])
+def test_horde_actor_start_rejects_nonfinite_observation(
+    agent_name: str, bad_value: float
+) -> None:
+    """The public start boundary refuses non-finite observations.
+
+    ``start`` is the only public path that stores an observation into
+    persistent state without a runtime gate: ``update`` commits only when the
+    whole stored state is finite, so a non-finite value accepted here would be
+    stored in ``last_observation`` and silently reject every later update with
+    the state bitwise frozen.
+    """
+
+    agent = _AGENT_FACTORIES[agent_name]()
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(0))
+    observation = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[1].set(bad_value)
+    with pytest.raises(ValueError, match="observation must contain only finite values"):
+        agent.start(state, observation)
+
+
+@pytest.mark.parametrize("agent_name", sorted(_AGENT_FACTORIES))
+def test_horde_actor_start_keeps_finite_and_traced_observations(agent_name: str) -> None:
+    """Finite inputs still start the episode, and tracing skips the eager gate."""
+
+    agent = _AGENT_FACTORIES[agent_name]()
+    state = agent.init(feature_dim=OBS_DIM, key=jr.key(0))
+    observation = jnp.full((OBS_DIM,), 0.25, dtype=jnp.float32)
+    started, action, probs = agent.start(state, observation)
+    chex.assert_trees_all_equal(started.last_observation, observation)
+    assert probs.shape == (agent.config.n_actions,)
+    assert 0 <= int(action) < agent.config.n_actions
+    traced_state, traced_action, _ = jax.jit(agent.start)(state, observation)
+    chex.assert_trees_all_equal(traced_state.last_observation, observation)
+    assert int(traced_action) == int(action)
+
+
+def test_horde_actor_nonfinite_stored_observation_freezes_every_later_update() -> None:
+    """A committed non-finite observation silently drops every later update.
+
+    This is what the eager start gate prevents: ``update_applied`` stays
+    ``False`` and the state is returned unchanged forever, so a campaign would
+    record a frozen agent instead of an error.
+    """
+
+    agent = _make_agent()
+    state, _, _ = agent.start(
+        agent.init(feature_dim=OBS_DIM, key=jr.key(0)),
+        jnp.zeros(OBS_DIM, dtype=jnp.float32),
+    )
+    reward = jnp.asarray(1.0, dtype=jnp.float32)
+    next_observation = jnp.full((OBS_DIM,), 0.5, dtype=jnp.float32)
+    assert bool(agent.update(state, reward, next_observation).update_applied)
+    poisoned = state.replace(
+        last_observation=jnp.zeros(OBS_DIM, dtype=jnp.float32).at[0].set(np.nan)
+    )
+    frozen = agent.update(poisoned, reward, next_observation)
+    assert not bool(frozen.update_applied)
+    chex.assert_trees_all_equal(frozen.state, poisoned)
