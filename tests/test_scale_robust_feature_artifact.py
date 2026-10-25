@@ -1455,3 +1455,27 @@ def test_overflowing_json_integer_is_invalid_not_a_crash(
     path = tmp_path / "overflow.json"
     path.write_text(artifact_json(changed), encoding="utf-8")
     assert scale_robust_feature_cli.main(["--verify", str(path)]) == 2
+
+
+@pytest.mark.parametrize(
+    "count_key",
+    ("step_count", "early_count", "tail_count", "asymptotic_count"),
+)
+def test_overflowing_phase_window_count_is_invalid_not_a_crash(
+    accepted_artifact: dict[str, object],
+    tmp_path: Path,
+    count_key: str,
+):
+    """Unbounded JSON counts must not escape metric reconstruction."""
+    changed = copy.deepcopy(accepted_artifact)
+    phase = changed["scientific_payload"]["seed_records"][0]["conditions"][CONDITION_PRIMARY][
+        "phase_windows"
+    ][1]
+    phase[count_key] = 10**400
+    _rehash(changed)
+    validation = validate_evidence_artifact(changed)
+    assert not validation.valid
+    assert not validation.accepted
+    path = tmp_path / f"overflow-{count_key}.json"
+    path.write_text(artifact_json(changed), encoding="utf-8")
+    assert scale_robust_feature_cli.main(["--verify", str(path)]) == 2

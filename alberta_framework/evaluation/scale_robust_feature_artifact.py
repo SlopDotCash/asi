@@ -544,7 +544,10 @@ def _window_mean(
     count = _strict_int(phase.get(count_key))
     if total is None or count is None or count <= 0:
         return None
-    value = total / count
+    finite_count = _finite_number(count)
+    if finite_count is None:
+        return None
+    value = total / finite_count
     return value if math.isfinite(value) else None
 
 
