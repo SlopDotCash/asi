@@ -240,6 +240,18 @@ def test_receipt_enforces_exact_resources_and_permanent_nonpromotion() -> None:
         validate_bounded_elastic_development_result(hostile_dimension)
 
 
+def test_receipt_rejects_signed_zero_in_exact_hyperparameters() -> None:
+    payload = bounded_elastic_development_result_payload(
+        _result("bounded_structure_off"), outcome="inconclusive"
+    )
+    hyperparameters = payload["hyperparameters"]
+    assert isinstance(hyperparameters, dict)
+    hyperparameters["growth_enabled"] = -0.0
+
+    with pytest.raises(ValueError, match="hyperparameters do not match"):
+        validate_bounded_elastic_development_result(payload)
+
+
 def test_matched_validator_requires_all_arms_workload_and_budgets() -> None:
     arms = (
         "bounded_structure_off",

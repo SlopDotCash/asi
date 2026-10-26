@@ -252,7 +252,10 @@ def validate_bounded_elastic_development_result(payload: object) -> dict[str, ob
         key: _float(hp[key], context=f"hyperparameters.{key}", nonnegative=True)
         for key in expected_hp
     }
-    if normalized_hp != expected_hp:
+    if any(
+        normalized_hp[key].hex() != expected_value.hex()
+        for key, expected_value in expected_hp.items()
+    ):
         raise ValueError("hyperparameters do not match the registered arm")
 
     metrics = _object(
