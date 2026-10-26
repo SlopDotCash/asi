@@ -11915,6 +11915,11 @@ def load_shard(
                 f"{path}: {fieldname} must be a list of finite JSON numbers "
                 f"with length {config.n_tasks}"
             )
+        if any(type(value) is int and value != float(value) for value in raw_values):
+            raise ValueError(
+                f"{path}: {fieldname} integer entries must be exactly representable "
+                "as float64"
+            )
         values = np.asarray(raw_values, dtype=np.float64)
         if values.shape != (config.n_tasks,) or not np.all(np.isfinite(values)):
             raise ValueError(f"{path}: {fieldname} must be finite with shape ({config.n_tasks},)")

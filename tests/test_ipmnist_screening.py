@@ -1394,6 +1394,15 @@ class TestShardsAndMerge:
         assert loaded["per_task_accuracy"][0] == 1.0
         assert type(loaded["per_task_accuracy"][0]) is float
 
+    def test_load_shard_rejects_lossy_legacy_integer_curve_entries(self, tmp_path):
+        path = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["per_task_loss"] = [2**53 + 1] + payload["per_task_loss"][1:]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="exactly representable"):
+            load_shard(path)
+
     def test_out_of_domain_legacy_shard_cannot_top_a_merge(self, tmp_path):
         control = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
         winner = self._write_inband_shard(tmp_path, "upgd_l2init", 0, 0.6)
