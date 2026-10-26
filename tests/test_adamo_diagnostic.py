@@ -119,6 +119,23 @@ def test_hostile_scalar_alias_and_unfrozen_seed_are_rejected(
         run_adamo_diagnostic(*tiny_data, profile="contract-smoke", seed=9)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: value["config"].update(n_tasks=2.0),
+        lambda value: value["arms"][0]["hyperparameters"].update(beta1=False),
+    ],
+    ids=("float-for-config-int", "bool-for-hyperparameter-float"),
+)
+def test_validator_rejects_type_punned_serialized_configs(
+    receipt: dict[str, object], mutation: object,
+) -> None:
+    hostile = copy.deepcopy(receipt)
+    mutation(hostile)
+    with pytest.raises(ValueError, match="configuration drift|hyperparameter drift"):
+        validate_adamo_diagnostic(hostile)
+
+
 def test_runner_observer_is_a_downstream_exact_function_only(
     tiny_data: tuple[np.ndarray, np.ndarray],
 ) -> None:

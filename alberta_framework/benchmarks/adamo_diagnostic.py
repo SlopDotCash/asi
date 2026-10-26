@@ -304,6 +304,20 @@ def _digest(value: object, name: str) -> str:
     return value
 
 
+def _exact_scalar_mapping(value: object, expected: Mapping[str, object]) -> bool:
+    if type(value) is not dict:
+        return False
+    actual = cast(dict[object, object], value)
+    if len(actual) != len(expected) or any(type(key) is not str for key in actual):
+        return False
+    return all(
+        key in actual
+        and type(actual[key]) is type(expected_value)
+        and actual[key] == expected_value
+        for key, expected_value in expected.items()
+    )
+
+
 def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
     """Fail closed on malformed, drifted, promoting, or unmatched receipts."""
     if type(payload) is not dict:
@@ -339,7 +353,7 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
     if result["frozen_development_seeds"] != list(FROZEN_DEVELOPMENT_SEEDS):
         raise ValueError("frozen seed schedule drift")
     config = PROFILES[profile].config
-    if result["config"] != asdict(config):
+    if not _exact_scalar_mapping(result["config"], asdict(config)):
         raise ValueError("profile configuration drift")
     dataset = result["dataset"]
     if type(dataset) is not dict or set(dataset) != {
@@ -399,9 +413,10 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
         } or arm.get("arm") != expected_name:
             raise ValueError("arm ordering or identity drift")
         expected_spec = screening_spec(expected_name)
-        if arm.get("mechanism") != expected_spec.mechanism or arm.get(
-            "hyperparameters"
-        ) != expected_spec.hyperparameters:
+        hyperparameters = arm.get("hyperparameters")
+        if arm.get("mechanism") != expected_spec.mechanism or not _exact_scalar_mapping(
+            hyperparameters, expected_spec.hyperparameters
+        ):
             raise ValueError("arm mechanism or hyperparameter drift")
         for curve_name in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
             curve = arm.get(curve_name)
