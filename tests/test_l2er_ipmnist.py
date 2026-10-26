@@ -340,6 +340,18 @@ def test_result_receipt_accounts_resources_and_is_permanently_nonpromoting() -> 
         validate_l2er_development_result(HostileObject())
 
 
+def test_result_validator_rejects_negative_zero_protocol_scalar() -> None:
+    payload = l2er_development_result_payload(
+        _result("l2er_mechanism_off"), outcome="inconclusive"
+    )
+    hyperparameters = payload["hyperparameters"]
+    assert isinstance(hyperparameters, dict)
+    hyperparameters["weight_decay"] = -0.0
+
+    with pytest.raises(ValueError, match="canonical zero"):
+        validate_l2er_development_result(payload)
+
+
 def test_matched_validator_requires_all_arms_and_axes() -> None:
     names = ("l2er_mechanism_off", "l2er_l2_only", "l2er_er_only", "l2er_combined")
     payloads = [

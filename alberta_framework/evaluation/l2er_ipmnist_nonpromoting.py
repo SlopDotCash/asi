@@ -96,6 +96,8 @@ def _int(value: object, *, context: str, positive: bool = False) -> int:
 def _float(value: object, *, context: str, nonnegative: bool = False) -> float:
     if type(value) is not float or not math.isfinite(value):
         raise ValueError(f"{context} must be a finite float")
+    if value == 0.0 and math.copysign(1.0, value) < 0.0:
+        raise ValueError(f"{context} must use canonical zero")
     if nonnegative and value < 0.0:
         raise ValueError(f"{context} must be nonnegative")
     return value

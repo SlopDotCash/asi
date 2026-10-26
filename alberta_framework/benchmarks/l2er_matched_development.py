@@ -218,6 +218,8 @@ def _object(value: object, keys: frozenset[str], *, context: str) -> dict[str, A
 def _finite_float(value: object, *, context: str, nonnegative: bool = False) -> float:
     if type(value) is not float or not math.isfinite(value):
         raise ValueError(f"{context} must be an exact finite float")
+    if value == 0.0 and math.copysign(1.0, value) < 0.0:
+        raise ValueError(f"{context} must use canonical zero")
     if nonnegative and value < 0.0:
         raise ValueError(f"{context} must be nonnegative")
     return value

@@ -229,6 +229,21 @@ def test_validator_recomputes_paired_arithmetic(
         matched.validate_report(reordered, require_current_source=False)
 
 
+def test_validator_rejects_negative_zero_frozen_plan_scalar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(matched, "_validated_source_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_dataset_provenance", lambda value, **_: value)
+    monkeypatch.setattr(matched, "_validated_runtime_environment", lambda value, **_: value)
+    report = matched.build_report(
+        _results(), source_provenance={}, dataset_provenance={}, environment={}
+    )
+    report["plan"]["null_delta"] = -0.0
+
+    with pytest.raises(ValueError, match="canonical zero"):
+        matched.validate_report(report, require_current_source=False)
+
+
 def test_three_seed_interval_uses_student_t_not_normal_critical_value() -> None:
     mean, lower, upper, outcome = matched._outcome((0.01, 0.01, 0.0))
     assert mean > 0.0
