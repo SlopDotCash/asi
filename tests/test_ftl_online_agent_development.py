@@ -12,6 +12,8 @@ from alberta_framework.benchmarks.ftl_online_agent_development import (
     FROZEN_GOALS,
     FROZEN_SEEDS,
     OFFICIAL_CODE_REVISION,
+    ArmResult,
+    ResourceReceipt,
     _mpc_action,
     run_development_lane,
     validate_result,
@@ -113,6 +115,29 @@ def test_mechanism_off_is_causal_and_does_not_adopt_updates() -> None:
 def test_workload_action_registry_is_read_only() -> None:
     with pytest.raises(ValueError):
         ACTION_DELTAS[0, 0] = 7
+
+
+@pytest.mark.parametrize("impossible_return", [1.0, 0.0, -0.5])
+def test_arm_result_rejects_returns_outside_exact_reward_lattice(
+    impossible_return: float,
+) -> None:
+    receipt = ResourceReceipt(
+        environment_steps=1,
+        model_updates=1,
+        model_queries=1,
+        planner_candidates=1,
+        logical_compute_units=1,
+        persistent_bytes=1,
+        elapsed_ns=0,
+    )
+    with pytest.raises(ValueError, match="reward lattice"):
+        ArmResult(
+            arm_id="sparse_ftl_online",
+            task_returns=(impossible_return, -1.0, -1.0),
+            prequential_squared_errors=(),
+            receipt=receipt,
+            candidate_eligible=True,
+        )
 
 
 def _grid_predict(observation: np.ndarray, action: int) -> np.ndarray:
