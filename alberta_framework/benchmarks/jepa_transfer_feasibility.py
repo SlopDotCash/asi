@@ -279,8 +279,13 @@ class JEPATransferResult:
             if (
                 decision_off.action_sha256 != mechanism_off.action_sha256
                 or decision_off.reward_sha256 != mechanism_off.reward_sha256
+                or decision_off.return_sum != mechanism_off.return_sum
+                or decision_off.late_return_sum != mechanism_off.late_return_sum
             ):
-                raise ValueError("decision-off must reduce exactly to mechanism-off")
+                raise ValueError(
+                    "decision-off actions, rewards, and returns must reduce exactly "
+                    "to mechanism-off"
+                )
             self._validate_resource_schedule(group)
         if (
             self.development_only is not True

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+from typing import cast
 
 import jax
 import jax.numpy as jnp
@@ -66,6 +67,23 @@ def test_decision_off_reduces_exactly_to_mechanism_off(
         assert decision_off.reward_sha256 == mechanism_off.reward_sha256
         assert decision_off.resources.pretraining_examples == 4
         assert mechanism_off.resources.pretraining_examples == 0
+
+
+@pytest.mark.parametrize("field", ("return_sum", "late_return_sum"))
+def test_payload_binds_exact_reduction_returns(
+    result: lane.JEPATransferResult, field: str
+) -> None:
+    payload = result.to_payload()
+    arms = cast(list[dict[str, object]], payload["arms"])
+    decision_off = arms[4]
+    mechanism_off = arms[5]
+    original = decision_off[field]
+    assert type(original) is float
+    assert original == mechanism_off[field]
+    decision_off[field] = original + 1.0
+
+    with pytest.raises(ValueError, match="decision-off.*return"):
+        lane.validate_jepa_transfer_payload(payload)
 
 
 def test_live_transfer_selector_is_jittable() -> None:
