@@ -221,6 +221,9 @@ class TransferArmReceipt:
         loss = self.mean_prediction_loss
         if loss is not None and (type(loss) is not float or not math.isfinite(loss) or loss < 0):
             raise ValueError("mean_prediction_loss must be finite and nonnegative or None")
+        model_arm = self.arm_id not in ("mechanism_off", "sarsa_control")
+        if model_arm != (loss is not None):
+            raise ValueError("prediction loss presence must match the arm mechanism")
         for name in ("action_sha256", "reward_sha256"):
             value = getattr(self, name)
             if (

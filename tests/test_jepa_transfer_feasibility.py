@@ -120,6 +120,25 @@ def test_hostile_and_expanded_payloads_fail_closed(result: lane.JEPATransferResu
         lane.validate_jepa_transfer_payload(forged_identity)
 
 
+@pytest.mark.parametrize(
+    ("arm_index", "loss"),
+    [
+        (0, None),
+        (5, 1.0),
+    ],
+)
+def test_payload_binds_prediction_loss_presence_to_the_arm_mechanism(
+    result: lane.JEPATransferResult,
+    arm_index: int,
+    loss: float | None,
+) -> None:
+    forged = copy.deepcopy(result.to_payload())
+    forged["arms"][arm_index]["mean_prediction_loss"] = loss  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="prediction loss"):
+        lane.validate_jepa_transfer_payload(forged)
+
+
 def test_validator_is_pure_on_success_and_failure(
     result: lane.JEPATransferResult, monkeypatch: pytest.MonkeyPatch
 ) -> None:
