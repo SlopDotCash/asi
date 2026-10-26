@@ -71,6 +71,11 @@ def _hidden_state_ar2_persistent_bytes(feature_dim: int) -> int:
     return 4 * (2 * feature_dim + 2)
 
 
+def _random_walk_persistent_bytes(feature_dim: int) -> int:
+    """Bytes in the true-weight vector and the two-word Threefry key."""
+    return 4 * (feature_dim + 2)
+
+
 def _sutton_experiment1_persistent_bytes(feature_dim: int) -> int:
     """Named persist already counted inside ``_require_float32_resource``."""
     return 4 * (feature_dim + 3)
@@ -209,6 +214,16 @@ class RandomWalkStream:
             feature_std: Std dev of feature values
         """
         self._feature_dim = _require_positive_int("feature_dim", feature_dim)
+        _require_float32_resource(
+            "RandomWalkStream state",
+            vector_scalars=self._feature_dim,
+            fixed_scalars=2,
+        )
+        _preflight_synthetic_step_working_set(
+            "RandomWalkStream",
+            _random_walk_persistent_bytes(self._feature_dim),
+            self._feature_dim,
+        )
         self._drift_rate = _require_finite_nonnegative_float32("drift_rate", drift_rate)
         self._noise_std = _require_finite_nonnegative_float32("noise_std", noise_std)
         self._feature_std = _require_finite_nonnegative_float32("feature_std", feature_std)
