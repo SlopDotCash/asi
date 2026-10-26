@@ -15,6 +15,7 @@ from alberta_framework.benchmarks.action_conditioned_latent import (
     ACTION_LATENT_SCHEMA,
     FROZEN_ARM_IDS,
     PINNED_RESEARCH,
+    ActionLatentArmReceipt,
     ActionLatentProtocol,
     run_action_conditioned_latent_lane,
     select_latent_action,
@@ -164,6 +165,38 @@ def test_validator_rejects_returns_outside_the_environment_lattice(
 
     with pytest.raises(ValueError, match="reward lattice"):
         validate_action_latent_payload(forged)
+
+
+@pytest.mark.parametrize(
+    ("arm_id", "model_updates", "training_queries", "mean_prequential_loss"),
+    [
+        ("latent_action_interactions", 1, 1, None),
+        ("mechanism_off", 0, 0, 0.0),
+    ],
+)
+def test_receipt_rejects_prequential_loss_presence_that_disagrees_with_mechanism(
+    arm_id: str,
+    model_updates: int,
+    training_queries: int,
+    mean_prequential_loss: float | None,
+) -> None:
+    with pytest.raises(ValueError, match="prequential loss"):
+        ActionLatentArmReceipt(
+            arm_id=arm_id,
+            seed=0,
+            return_sum=0.0,
+            late_return_sum=0.0,
+            mean_prequential_loss=mean_prequential_loss,
+            action_sha256="0" * 64,
+            reward_sha256="0" * 64,
+            environment_steps=1,
+            model_updates=model_updates,
+            training_queries=training_queries,
+            decision_queries=0,
+            persistent_mechanism_bytes=1 if model_updates else 0,
+            persistent_environment_bytes=1,
+            negative_outcome_retained=True,
+        )
 
 
 def test_paper_registry_is_immutable() -> None:

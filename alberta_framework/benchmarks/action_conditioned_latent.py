@@ -169,6 +169,9 @@ class ActionLatentArmReceipt:
         loss = self.mean_prequential_loss
         if loss is not None and (type(loss) is not float or not math.isfinite(loss) or loss < 0):
             raise ValueError("mean_prequential_loss must be None or a finite nonnegative float")
+        model_arm = self.arm_id.startswith("latent_")
+        if model_arm != (loss is not None):
+            raise ValueError("prequential loss presence disagrees with arm mechanism")
         for name in ("action_sha256", "reward_sha256"):
             value = getattr(self, name)
             if (
@@ -193,7 +196,6 @@ class ActionLatentArmReceipt:
         mechanism_enabled = self.arm_id != "mechanism_off"
         if mechanism_enabled != (self.persistent_mechanism_bytes > 0):
             raise ValueError("persistent resources disagree with arm mechanism")
-        model_arm = self.arm_id.startswith("latent_")
         if model_arm != (self.model_updates > 0):
             raise ValueError("model updates disagree with arm mechanism")
         if self.negative_outcome_retained is not True:
