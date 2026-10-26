@@ -325,6 +325,29 @@ def step8_update(
     )
 
 
+def _scaled_mean(values: Array) -> Array:
+    """Return a float32 mean without overflowing a representable result."""
+    scale = jnp.max(jnp.abs(values), axis=0, keepdims=True)
+    _, scale_exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(values, -scale_exponent)
+    scaled_mean = jnp.mean(scaled, axis=0)
+    restored_exponent = jnp.squeeze(scale_exponent, axis=0)
+    return jnp.ldexp(scaled_mean, restored_exponent)
+
+
+def _scaled_ensemble_moments(values: Array) -> tuple[Array, Array]:
+    """Return float32 mean and variance without overflowing finite reductions."""
+    scale = jnp.max(jnp.abs(values), axis=0, keepdims=True)
+    _, scale_exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(values, -scale_exponent)
+    scaled_mean = jnp.mean(scaled, axis=0)
+    restored_exponent = jnp.squeeze(scale_exponent, axis=0)
+    mean = jnp.ldexp(scaled_mean, restored_exponent)
+    scaled_variance = jnp.mean(jnp.square(scaled - scaled_mean), axis=0)
+    standard_deviation = jnp.ldexp(jnp.sqrt(scaled_variance), restored_exponent)
+    return mean, jnp.square(standard_deviation)
+
+
 def step8_ensemble_predict(
     model: OneStepWorldModel,
     states: Sequence[WorldModelState],
@@ -345,10 +368,11 @@ def step8_ensemble_predict(
         [pred.next_observation for pred in predictions],
         axis=0,
     )
-    mean_reward = jnp.mean(reward_predictions, axis=0)
-    mean_next_observation = jnp.mean(next_observation_predictions, axis=0)
-    reward_disagreement = jnp.var(reward_predictions, axis=0)
-    next_observation_disagreement = jnp.mean(jnp.var(next_observation_predictions, axis=0))
+    mean_reward, reward_disagreement = _scaled_ensemble_moments(reward_predictions)
+    mean_next_observation, per_observation_disagreement = _scaled_ensemble_moments(
+        next_observation_predictions
+    )
+    next_observation_disagreement = _scaled_mean(per_observation_disagreement)
     total_disagreement = reward_disagreement + next_observation_disagreement
     return Step8EnsemblePrediction(
         reward_predictions=reward_predictions,

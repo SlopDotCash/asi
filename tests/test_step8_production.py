@@ -176,6 +176,79 @@ def test_step8_ensemble_prediction_reports_disagreement() -> None:
     assert float(prediction.total_disagreement) >= 0.0
 
 
+def test_step8_ensemble_identical_finite_extremes_have_zero_disagreement() -> None:
+    cfg = Step8WorldModelConfig(
+        observation_dim=1,
+        n_actions=1,
+        hidden_sizes=(),
+        sparsity=0.0,
+    )
+    model = make_step8_world_model(cfg)
+    state = init_step8_state(model, key=jr.key(1))
+    maximum = jnp.asarray(jnp.finfo(jnp.float32).max, dtype=jnp.float32)
+    biases = (*state.learner_state.head_params.biases[:-1], maximum[None])
+    head_params = state.learner_state.head_params.replace(biases=biases)
+    extreme = state.replace(
+        learner_state=state.learner_state.replace(head_params=head_params)
+    )
+
+    prediction = step8_ensemble_predict(
+        model,
+        [extreme, extreme],
+        jnp.zeros((1,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+
+    chex.assert_tree_all_finite(
+        (
+            prediction.mean_next_observation,
+            prediction.next_observation_disagreement,
+            prediction.total_disagreement,
+        )
+    )
+    np.testing.assert_array_equal(prediction.mean_next_observation, maximum[None])
+    assert float(prediction.next_observation_disagreement) == 0.0
+    assert float(prediction.total_disagreement) == 0.0
+
+
+def test_step8_ensemble_preserves_finite_mean_disagreement_across_dimensions() -> None:
+    cfg = Step8WorldModelConfig(
+        observation_dim=2,
+        n_actions=1,
+        hidden_sizes=(),
+        sparsity=0.0,
+    )
+    model = make_step8_world_model(cfg)
+    state = init_step8_state(model, key=jr.key(1))
+    expected = jnp.asarray(jnp.finfo(jnp.float32).max * 0.75, dtype=jnp.float32)
+    amplitude = jnp.sqrt(expected)
+
+    def state_with_observation_bias(sign: float):
+        observation_biases = tuple(
+            jnp.full_like(bias, sign * amplitude)
+            for bias in state.learner_state.head_params.biases[1:]
+        )
+        biases = (state.learner_state.head_params.biases[0], *observation_biases)
+        head_params = state.learner_state.head_params.replace(biases=biases)
+        return state.replace(
+            learner_state=state.learner_state.replace(head_params=head_params)
+        )
+
+    prediction = step8_ensemble_predict(
+        model,
+        [state_with_observation_bias(1.0), state_with_observation_bias(-1.0)],
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+
+    assert bool(jnp.isfinite(prediction.next_observation_disagreement))
+    np.testing.assert_allclose(
+        prediction.next_observation_disagreement,
+        expected,
+        rtol=2.0e-7,
+    )
+
+
 def test_step8_ensemble_prediction_rejects_empty_state_list() -> None:
     cfg = Step8WorldModelConfig(observation_dim=2, n_actions=2)
     model = make_step8_world_model(cfg)
