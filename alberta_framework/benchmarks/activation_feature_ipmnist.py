@@ -832,6 +832,8 @@ def _validate_activation_feature_result(
     for name, value in metrics.items():
         if type(value) is not float or not math.isfinite(value):
             raise ValueError(f"metric {name} must be an exact finite float")
+        if value == 0.0 and value.hex() != 0.0.hex():
+            raise ValueError(f"metric {name} must use canonical positive zero")
     for name in ("asi_whole_stream_mean_accuracy", "asi_whole_stream_mean_plasticity"):
         if not 0.0 <= cast(float, metrics[name]) <= 1.0:
             raise ValueError(f"metric {name} must lie in [0, 1]")

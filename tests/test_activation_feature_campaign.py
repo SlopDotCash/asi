@@ -356,6 +356,21 @@ def test_shard_uses_external_seed_v2_and_cross_validates_wrapper_plan_and_resour
         campaign.validate_shard(forged_schedule, cheap_plan)
 
 
+def test_shard_rejects_rehashed_negative_zero_metric(
+    cheap_plan: dict[str, object], data: tuple[np.ndarray, np.ndarray]
+) -> None:
+    shard = _shard(cheap_plan, data, "aid", campaign._SEEDS["cheap_screen"][0])
+    metrics = cast(dict[str, object], cast(dict[str, object], shard["result"])["metrics"])
+    metrics["asi_whole_stream_mean_loss"] = 0.0
+    _resign_shard(cast(dict[str, Any], shard))
+    campaign.validate_shard(shard, cheap_plan)
+
+    metrics["asi_whole_stream_mean_loss"] = -0.0
+    _resign_shard(cast(dict[str, Any], shard))
+    with pytest.raises(ValueError, match="canonical"):
+        campaign.validate_shard(shard, cheap_plan)
+
+
 def test_complete_aggregate_uses_paired_student_t_and_multiplicity_rule(
     cheap_plan: dict[str, object], data: tuple[np.ndarray, np.ndarray]
 ) -> None:
