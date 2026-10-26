@@ -441,6 +441,34 @@ def test_new_json_publication_rejects_a_symlinked_parent(tmp_path: Path) -> None
     assert not (real_parent / "plan.json").exists()
 
 
+@pytest.mark.skipif(
+    not hasattr(os, "O_TMPFILE"),
+    reason="write_new_json publishes through Linux O_TMPFILE and linkat(AT_EMPTY_PATH)",
+)
+@pytest.mark.skipif(
+    hasattr(os, "geteuid") and os.geteuid() == 0,
+    reason="root bypasses directory read permission",
+)
+def test_new_json_publication_traverses_a_search_only_ancestor(tmp_path: Path) -> None:
+    # A shared root such as a 0711 home or tenant mount grants search, not read.
+    shared = tmp_path / "shared"
+    output_dir = shared / "scorecard"
+    output_dir.mkdir(parents=True)
+    destination = output_dir / "plan.json"
+    payload = build_development_plan().to_payload()
+    shared.chmod(0o111)
+    try:
+        assert scorecard.preflight_new_output(destination) == destination
+        write_new_json(destination, payload)
+        with pytest.raises(FileExistsError, match="refusing to overwrite"):
+            scorecard.preflight_new_output(destination)
+        with pytest.raises(FileExistsError, match="refusing to overwrite"):
+            write_new_json(destination, {"different": math.pi})
+    finally:
+        shared.chmod(0o755)
+    assert json.loads(destination.read_bytes()) == payload
+
+
 def test_failed_shard_is_retained_and_digest_tampering_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
