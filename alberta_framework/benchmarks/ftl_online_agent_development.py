@@ -120,6 +120,8 @@ class ArmResult:
         values = self.task_returns + self.prequential_squared_errors
         if any(type(x) is not float or not math.isfinite(x) for x in values):
             raise ValueError("metrics must be finite exact floats")
+        if any(error < 0.0 for error in self.prequential_squared_errors):
+            raise ValueError("prequential squared errors must be nonnegative")
         expected_eligible = self.arm_id != "privileged_dynamics_mpc"
         if (
             type(self.candidate_eligible) is not bool

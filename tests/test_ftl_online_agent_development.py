@@ -12,6 +12,8 @@ from alberta_framework.benchmarks.ftl_online_agent_development import (
     FROZEN_GOALS,
     FROZEN_SEEDS,
     OFFICIAL_CODE_REVISION,
+    ArmResult,
+    ResourceReceipt,
     _mpc_action,
     run_development_lane,
     validate_result,
@@ -100,6 +102,25 @@ def test_validator_rejects_promotion_counter_forgery_and_extra_fields() -> None:
     forged_identity = dataclasses.replace(result.identity, paper_registry_sha256="0" * 64)
     with pytest.raises(ValueError, match="current source/runtime/registries"):
         validate_result(dataclasses.replace(result, identity=forged_identity))
+
+
+def test_arm_result_rejects_negative_prequential_squared_error() -> None:
+    with pytest.raises(ValueError, match="nonnegative"):
+        ArmResult(
+            arm_id="sparse_ftl_online",
+            task_returns=(0.0,) * len(FROZEN_GOALS),
+            prequential_squared_errors=(-1.0,),
+            receipt=ResourceReceipt(
+                environment_steps=1,
+                model_updates=1,
+                model_queries=1,
+                planner_candidates=1,
+                logical_compute_units=4,
+                persistent_bytes=1,
+                elapsed_ns=0,
+            ),
+            candidate_eligible=True,
+        )
 
 
 def test_mechanism_off_is_causal_and_does_not_adopt_updates() -> None:
