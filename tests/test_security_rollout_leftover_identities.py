@@ -107,3 +107,26 @@ def test_validate_security_rollout_revalidates_mutated_records(
             [step],
             SecurityFeatureSchema(names=("first", "second")),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("state", ("spoofed", 1.0), r"state\[0\]"),
+        ("action", 0, "action"),
+        ("reward", "spoofed", "reward"),
+        ("next_state", (0.0, "spoofed"), r"next_state\[1\]"),
+        ("terminated", 0, "terminated"),
+        ("truncated", 0, "truncated"),
+    ],
+)
+def test_security_rollout_step_to_dict_revalidates_mutated_records(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    step = _legal_step()
+    object.__setattr__(step, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        step.to_dict()

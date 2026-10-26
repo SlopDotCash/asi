@@ -427,16 +427,17 @@ class SecurityRolloutStep:
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable transition mapping."""
+        validated = self._revalidated_copy()
         payload = {
-            "state": list(self.state),
-            "action": int(self.action),
-            "action_name": self.action.name.lower(),
-            "reward": self.reward,
-            "next_state": list(self.next_state),
-            "terminated": self.terminated,
-            "truncated": self.truncated,
+            "state": list(validated.state),
+            "action": int(validated.action),
+            "action_name": validated.action.name.lower(),
+            "reward": validated.reward,
+            "next_state": list(validated.next_state),
+            "terminated": validated.terminated,
+            "truncated": validated.truncated,
             "policy_metadata": _copy_json_mapping(
-                self.policy_metadata, name="policy_metadata"
+                validated.policy_metadata, name="policy_metadata"
             ),
         }
         _require_rfc_json_mapping(payload, name="security rollout step")
