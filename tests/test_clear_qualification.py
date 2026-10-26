@@ -364,6 +364,15 @@ def test_result_validator_enforces_receipts_nonpromotion_and_negative_retention(
         },
     }
     assert validate_result(json.dumps(result).encode(), expected_plan=plan) == result
+    zero_result = {
+        **result,
+        "accuracy_matrix": [[0.0 for _ in range(10)] for _ in range(10)],
+        "metrics": {name: 0.0 for name in result["metrics"]},
+    }
+    signed_zero_metric = json.loads(json.dumps(zero_result))
+    signed_zero_metric["metrics"]["accuracy"] = -0.0
+    with pytest.raises(ClearQualificationError, match="do not replay"):
+        validate_result(json.dumps(signed_zero_metric).encode(), expected_plan=plan)
     mismatched = json.loads(json.dumps(result))
     mismatched["resource_receipts"]["model_queries"] += 1
     with pytest.raises(ClearQualificationError, match="model_queries"):

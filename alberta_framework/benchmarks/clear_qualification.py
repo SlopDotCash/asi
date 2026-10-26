@@ -616,10 +616,12 @@ def validate_result(
     metric_value = _object(payload["metrics"], "CLEAR metrics")
     expected_metrics = _metric_values(matrix)
     _keys(metric_value, set(expected_metrics), "CLEAR metrics")
-    if any(type(value) is not float or not math.isfinite(value) for value in metric_value.values()):
-        raise ClearQualificationError("CLEAR metrics must be finite exact floats")
-    if metric_value != expected_metrics:
-        raise ClearQualificationError("CLEAR metrics do not replay from the accuracy matrix")
+    for name, expected in expected_metrics.items():
+        value = metric_value[name]
+        if type(value) is not float or not math.isfinite(value):
+            raise ClearQualificationError("CLEAR metrics must be finite exact floats")
+        if value.hex() != expected.hex():
+            raise ClearQualificationError("CLEAR metrics do not replay from the accuracy matrix")
     resources = _object(payload["resource_receipts"], "resource receipts")
     _keys(
         resources,
