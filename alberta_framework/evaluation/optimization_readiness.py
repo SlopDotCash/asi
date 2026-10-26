@@ -27,6 +27,7 @@ _MAX_RESULT_COUNT: Final[int] = 256
 _MAX_PERSISTENT_BYTES: Final[int] = 256 * 1024 * 1024
 _MAX_WORKING_SET_BYTES: Final[int] = 512 * 1024 * 1024
 _MAX_ARRAY_BYTES: Final[int] = 512 * 1024 * 1024
+_INTEGER_ROUNDTRIP_CHUNK_ITEMS: Final[int] = 1 << 20
 _FLOAT64_BYTES: Final[int] = np.dtype(np.float64).itemsize
 _APPENDIX_C1_VALIDATION_OBSERVATIONS: Final[int] = 10_000
 _APPENDIX_C1_BATCH_SIZE: Final[int] = 4
@@ -196,6 +197,17 @@ def _finite_array(
     if raw.nbytes > _MAX_ARRAY_BYTES or raw.size > _MAX_ARRAY_BYTES // _FLOAT64_BYTES:
         raise ValueError(f"{name} exceeds the bounded numeric payload")
     resolved = np.asarray(raw, dtype=np.float64)
+    if raw.dtype.kind in {"i", "u"}:
+        raw_flat = raw.reshape(-1)
+        resolved_flat = resolved.reshape(-1)
+        for start in range(0, raw.size, _INTEGER_ROUNDTRIP_CHUNK_ITEMS):
+            stop = min(start + _INTEGER_ROUNDTRIP_CHUNK_ITEMS, raw.size)
+            with np.errstate(invalid="ignore", over="ignore"):
+                restored = resolved_flat[start:stop].astype(raw.dtype)
+            if not np.array_equal(restored, raw_flat[start:stop]):
+                raise ValueError(
+                    f"{name} integer entries must be exactly representable as float64"
+                )
     if not np.all(np.isfinite(resolved)):
         raise ValueError(f"{name} must contain only finite values")
     return resolved
@@ -256,6 +268,8 @@ def estimate_optimization_readiness(
         resolved_loss = float(loss)
     except (OverflowError, ValueError) as exc:
         raise ValueError("loss must be a finite non-negative real number") from exc
+    if type(loss) is int and int(resolved_loss) != loss:
+        raise ValueError("loss must be exactly representable as float64")
     if not math.isfinite(resolved_loss) or resolved_loss < 0.0:
         raise ValueError("loss must be a finite non-negative real number")
     if type(include_reliability) is not bool:

@@ -142,6 +142,48 @@ def test_readiness_rejects_mismatched_parameter_axes() -> None:
         )
 
 
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+@pytest.mark.parametrize("field", ["full_validation_gradient", "batch_gradients"])
+def test_readiness_rejects_integer_gradients_that_alias_in_float64(
+    dtype: np.dtype[np.signedinteger | np.unsignedinteger],
+    field: str,
+) -> None:
+    exact = 2**60
+    accepted = estimate_optimization_readiness(
+        loss=1.0,
+        full_validation_gradient=np.asarray([exact], dtype=dtype),
+        batch_gradients=np.asarray([[exact]], dtype=dtype),
+    )
+    assert accepted.gradient_squared_norm == float(exact) ** 2
+
+    inputs = {
+        "full_validation_gradient": np.asarray([1], dtype=dtype),
+        "batch_gradients": np.asarray([[1]], dtype=dtype),
+    }
+    inputs[field] = np.asarray(
+        [2**53 + 1] if field == "full_validation_gradient" else [[2**53 + 1]],
+        dtype=dtype,
+    )
+    with pytest.raises(ValueError, match="exactly representable as float64"):
+        estimate_optimization_readiness(loss=1.0, **inputs)
+
+
+def test_readiness_rejects_integer_loss_that_aliases_in_float64() -> None:
+    accepted = estimate_optimization_readiness(
+        loss=2**60,
+        full_validation_gradient=np.asarray([1.0]),
+        batch_gradients=np.asarray([[1.0]]),
+    )
+    assert accepted.gradient_strength == 1.0 / float(2**60)
+
+    with pytest.raises(ValueError, match="exactly representable as float64"):
+        estimate_optimization_readiness(
+            loss=2**53 + 1,
+            full_validation_gradient=np.asarray([1.0]),
+            batch_gradients=np.asarray([[1.0]]),
+        )
+
+
 def test_readiness_rejects_nonrepresentable_squared_norms() -> None:
     with pytest.raises(ValueError, match="finite float64"):
         estimate_optimization_readiness(
