@@ -301,6 +301,31 @@ def test_receipt_derives_metrics_and_disclaims_unverifiable_digests() -> None:
     validate_bimu_result(reported_identity)
 
 
+@pytest.mark.parametrize(
+    "metric",
+    (
+        "asi_whole_stream_online_accuracy",
+        "paper_late_five_test_accuracy",
+        "final_five_test_accuracy",
+    ),
+)
+def test_validator_rejects_noncanonical_negative_zero_accuracy(metric: str) -> None:
+    payload = run_bimu_development(*_tiny_data(), config=_tiny_config(), seed=37)
+    payload["metrics"]["online_correct"] = 0
+    payload["metrics"]["asi_whole_stream_online_accuracy"] = 0.0
+    payload["metrics"]["final_five_test_correct"] = [0] * 5
+    payload["metrics"]["final_five_test_accuracy"] = [0.0] * 5
+    payload["metrics"]["paper_late_five_test_accuracy"] = 0.0
+    validate_bimu_result(payload)
+
+    if metric == "final_five_test_accuracy":
+        payload["metrics"][metric][0] = -0.0
+    else:
+        payload["metrics"][metric] = -0.0
+    with pytest.raises(ValueError, match="metric"):
+        validate_bimu_result(payload)
+
+
 def test_validator_binds_zero_threshold_to_all_label_queries() -> None:
     payload = run_bimu_development(*_tiny_data(), config=_tiny_config(), seed=37)
     forged = deepcopy(payload)

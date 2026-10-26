@@ -1079,7 +1079,8 @@ def validate_bimu_result(value: object) -> None:
     paper_metric = _unit_interval(
         metrics["paper_late_five_test_accuracy"], "paper_late_five_test_accuracy"
     )
-    if paper_metric != late_window_mean(per_task, window=5):
+    expected_paper_metric = late_window_mean(per_task, window=5)
+    if paper_metric.hex() != expected_paper_metric.hex():
         raise ValueError("paper late-five metric is not canonical")
     online_metric = _unit_interval(
         metrics["asi_whole_stream_online_accuracy"], "asi_whole_stream_online_accuracy"
@@ -1094,11 +1095,18 @@ def validate_bimu_result(value: object) -> None:
     ]
     if online_correct > config.n_tasks * config.train_examples_per_task:
         raise ValueError("online correct count is impossible")
-    if online_metric != online_correct / (config.n_tasks * config.train_examples_per_task):
+    expected_online_metric = online_correct / (
+        config.n_tasks * config.train_examples_per_task
+    )
+    if online_metric.hex() != expected_online_metric.hex():
         raise ValueError("whole-stream metric is not derived from its reported count")
     if any(value > config.test_examples_per_task for value in final_correct):
         raise ValueError("final-five correct count is impossible")
-    if per_task != [value / config.test_examples_per_task for value in final_correct]:
+    expected_per_task = [value / config.test_examples_per_task for value in final_correct]
+    if any(
+        actual.hex() != expected.hex()
+        for actual, expected in zip(per_task, expected_per_task, strict=True)
+    ):
         raise ValueError("final-five metrics are not derived from their reported counts")
 
     counters = _exact_mapping(
