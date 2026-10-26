@@ -1023,7 +1023,7 @@ def _validate_shard_against_plan(
     seed = shard["seed"]
     stage = cast(str, checked_plan["stage"])
     seeds = _SEEDS[stage]
-    if shard["authorization"] != expected_authorization:
+    if _canonical(shard["authorization"]) != _canonical(expected_authorization):
         raise ValueError("shard execution authorization drifted")
     if type(arm) is not str or arm not in ARM_ROSTER:
         raise ValueError("shard arm is outside the frozen matrix")
