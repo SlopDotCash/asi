@@ -601,6 +601,22 @@ class TestBootstrapCI:
         with pytest.raises(ValueError, match="n_bootstrap.*positive integer"):
             bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=HostileInt(10))
 
+    @pytest.mark.parametrize("seed", [True, False, 1.0, -1])
+    def test_noninteger_or_negative_bootstrap_seed_is_rejected_before_sampling(
+        self,
+        seed: object,
+    ) -> None:
+        with pytest.raises(ValueError, match="seed.*non-negative integer"):
+            bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=10, seed=seed)  # type: ignore[arg-type]
+
+    def test_numpy_integer_bootstrap_seed_matches_builtin_seed(self) -> None:
+        builtin = bootstrap_ci([1.0, 2.0, 3.0], n_bootstrap=20, seed=7)
+        numpy_scalar = bootstrap_ci(
+            [1.0, 2.0, 3.0], n_bootstrap=20, seed=np.int64(7)  # type: ignore[arg-type]
+        )
+
+        assert numpy_scalar == builtin
+
     @pytest.mark.parametrize("confidence_level", [0.0, 1.0, -0.1, 1.1, float("nan")])
     def test_invalid_confidence_level_rejected_without_warnings(
         self,

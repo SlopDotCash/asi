@@ -274,6 +274,16 @@ def _require_positive_int(name: str, value: object) -> int:
     return count
 
 
+def _require_nonnegative_int(name: str, value: object) -> int:
+    """Reject aliased seed identities before constructing a random stream."""
+    if type(value) not in _ACTUAL_INT_TYPES:
+        raise ValueError(f"{name} must be a non-negative integer")
+    count = operator.index(cast(SupportsIndex, value))
+    if count < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return count
+
+
 def _require_p_value(value: object, *, name: str) -> float:
     return _require_probability(value, name=name, strict=False)
 
@@ -1026,7 +1036,8 @@ def bootstrap_ci(
     Raises:
         ValueError: If ``values`` is empty or contains a non-finite sample,
             ``statistic`` is not ``"mean"`` or ``"median"``, ``confidence_level``
-            is not strictly between 0 and 1, or ``n_bootstrap`` is not positive.
+            is not strictly between 0 and 1, ``n_bootstrap`` is not positive,
+            or ``seed`` is not a non-negative integer.
     """
     arr = _require_sample_vector(values, name="values")
     if len(arr) == 0:
@@ -1045,6 +1056,7 @@ def bootstrap_ci(
         )
     sample_count = require_parallel_count("sample count", len(arr), _BOOTSTRAP_BUDGET)
     require_step_units(n_bootstrap, sample_count, _BOOTSTRAP_BUDGET)
+    seed = _require_nonnegative_int("seed", seed)
     rng = np.random.default_rng(seed)
 
     stat_func = np.mean if statistic == "mean" else np.median
