@@ -624,6 +624,7 @@ class OffPolicyTDLinearLearner:
             & (gamma_s >= 0.0)
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
+            & (state.step_count >= 0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(decay, state.eligibility_traces),
@@ -860,6 +861,7 @@ class ETDLinearLearner:
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
             & jnp.isfinite(interest_s)
+            & (state.step_count >= 0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(trace_decay, state.eligibility_traces),
@@ -1090,6 +1092,7 @@ class GradientTDLinearLearner:
             & (gamma_s >= 0.0)
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
+            & (state.step_count >= 0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(
