@@ -269,6 +269,41 @@ def test_rls_overflowed_denominator_rejects_update_atomically() -> None:
     chex.assert_trees_all_equal(result.gain, jnp.zeros_like(result.gain))
 
 
+def test_rls_preserves_finite_cancelling_prediction() -> None:
+    """Finite cancelling products must not make prediction reject the update."""
+    model = RLSRewardModel(
+        RLSRewardModelConfig(feature_dim=4, forgetting=1.0, ridge=1.0)
+    )
+    large = jnp.ldexp(jnp.asarray(1.0, dtype=jnp.float32), 127)
+    almost_large = jnp.nextafter(large, jnp.asarray(0.0, dtype=jnp.float32))
+    expected = large - almost_large
+    weights = jnp.asarray([-large, -almost_large, large, large], dtype=jnp.float32)
+    state = model.init().replace(weights=weights)
+    features = jnp.ones((4,), dtype=jnp.float32)
+    reward = expected
+
+    assert not bool(jnp.isfinite(jnp.dot(weights, features)))
+    assert float(model.predict(state, features)) == float(expected)
+
+    result = model.update(state, features, reward)
+
+    assert bool(result.update_applied)
+    assert float(result.prediction) == float(expected)
+    assert float(result.error) == 0.0
+    chex.assert_trees_all_equal(result.state.weights, weights)
+
+    silently_cancelled = jnp.asarray(
+        [large, -almost_large, large, -large], dtype=jnp.float32
+    )
+    assert float(jnp.dot(silently_cancelled, features)) == 0.0
+    assert float(model.predict(state.replace(weights=silently_cancelled), features)) == float(
+        expected
+    )
+
+    overflowing_state = state.replace(weights=jnp.full((4,), large, dtype=jnp.float32))
+    assert bool(jnp.isinf(model.predict(overflowing_state, features)))
+
+
 def test_zero_error_decay_does_not_multiply_inf_ema() -> None:
     """error_decay=0 times an infinite abs-error EMA is NaN."""
     model = RLSRewardModel(

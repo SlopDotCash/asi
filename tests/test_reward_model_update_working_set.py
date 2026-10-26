@@ -79,11 +79,11 @@ def test_legal_rls_update_identity_is_unchanged() -> None:
 
 
 def test_rls_exact_last_legal_update_width_and_first_overflow() -> None:
-    # 57*d^2 + 28*d + 32 <= signed-int32 byte limit.
-    last_legal = (math.isqrt(28**2 + 4 * 57 * (_INT32_MAX - 32)) - 28) // (2 * 57)
-    assert 57 * last_legal**2 + 28 * last_legal + 32 <= _INT32_MAX
+    # 57*d^2 + 36*d + 88 <= signed-int32 byte limit.
+    last_legal = (math.isqrt(36**2 + 4 * 57 * (_INT32_MAX - 88)) - 36) // (2 * 57)
+    assert 57 * last_legal**2 + 36 * last_legal + 88 <= _INT32_MAX
     first_overflowing = last_legal + 1
-    assert 57 * first_overflowing**2 + 28 * first_overflowing + 32 > _INT32_MAX
+    assert 57 * first_overflowing**2 + 36 * first_overflowing + 88 > _INT32_MAX
     _preflight_update_working_set(last_legal)
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_update_working_set(first_overflowing)
