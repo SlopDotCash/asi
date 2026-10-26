@@ -80,6 +80,29 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Require one scalar typed Threefry key with exactly two uint32 words."""
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array) or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key")
+    trusted = cast(Array, value)
+    try:
+        implementation = str(jr.key_impl(trusted))
+        words = jr.key_data(trusted)
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key") from error
+    if (
+        trusted.shape != ()
+        or implementation != "threefry2x32"
+        or words.shape != (2,)
+        or words.dtype != jnp.dtype(jnp.uint32)
+    ):
+        raise TypeError(f"{name} must be a scalar typed Threefry JAX key")
+    return trusted
+
+
 # Matches the class of ceiling already established for other scan-driven
 # array-loop runners in ``core`` (e.g. ``sarsa._SARSA_SEQUENCE_MAX_STEPS``,
 # ``learners._LEARNING_LOOP_MAX_STEPS``). Set with headroom above this
@@ -2083,6 +2106,7 @@ class DifferentialSARSAAgent:
         """Initialize Q weights, traces, reward-rate estimate, and RNG."""
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         _preflight_differential_sarsa_state(self._config.n_actions, feature_dim)
+        key = _require_typed_threefry_key("key", key)
         average_reward = validated_float32_scalar("average_reward", average_reward)
         cfg = self._config
         zeros_q = jnp.zeros((cfg.n_actions, feature_dim), dtype=jnp.float32)
@@ -2143,9 +2167,7 @@ class DifferentialSARSAAgent:
             if array.dtype != jnp.dtype(jnp.int32):
                 raise TypeError(f"differential SARSA {name} must have dtype int32")
         _checked_lifetime_words_increment(state.step_words)
-        key_words = jnp.asarray(jr.key_data(state.rng_key))
-        if key_words.shape != (2,) or key_words.dtype != jnp.dtype(jnp.uint32):
-            raise TypeError("differential SARSA rng_key must be a scalar PRNG key")
+        _require_typed_threefry_key("differential SARSA rng_key", state.rng_key)
         return feature_dim
 
     def _state_values_valid(self, state: DifferentialSARSAState) -> Bool[Array, ""]:
