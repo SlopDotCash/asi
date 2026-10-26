@@ -66,6 +66,7 @@ NONPROMOTING_REPLAY_POLICY = {
     ),
 }
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_MAX_JSON_NESTING_DEPTH = 64
 _SOURCE_PATHS = (
     Path("alberta_framework/evaluation/continual_ia.py"),
     Path("alberta_framework/evaluation/continual_ia_artifact.py"),
@@ -494,13 +495,41 @@ def _reject_duplicate_keys(
     return parsed
 
 
+def _require_bounded_json_nesting(text: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_JSON_NESTING_DEPTH:
+                raise ValueError("IA evidence artifact exceeds the JSON nesting limit")
+        elif character in "]}":
+            depth -= 1
+
+
 def load_ia_evidence_artifact(path: Path) -> dict[str, object]:
-    parsed = json.loads(
-        path.read_text(encoding="utf-8"),
-        parse_constant=_reject_nonstandard_constant,
-        parse_float=_parse_finite_json_float,
-        object_pairs_hook=_reject_duplicate_keys,
-    )
+    text = path.read_text(encoding="utf-8")
+    _require_bounded_json_nesting(text)
+    try:
+        parsed = json.loads(
+            text,
+            parse_constant=_reject_nonstandard_constant,
+            parse_float=_parse_finite_json_float,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+    except RecursionError as exc:
+        raise ValueError("IA evidence artifact exceeds the JSON nesting limit") from exc
     if not isinstance(parsed, dict):
         raise ValueError("IA evidence artifact must be a JSON object")
     return parsed
