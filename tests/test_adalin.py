@@ -205,6 +205,48 @@ def test_validator_rejects_tampering(section: str, field: str, replacement: obje
         validate_adalin_result(tampered)
 
 
+@pytest.mark.parametrize(
+    ("series_name", "aggregate_name"),
+    [
+        (
+            "task_preupdate_online_accuracy",
+            "asi_whole_stream_preupdate_online_accuracy",
+        ),
+        (
+            "task_postupdate_test_accuracy",
+            "paper_current_task_test_accuracy_mean",
+        ),
+    ],
+)
+def test_validator_rejects_task_accuracy_outside_declared_count_lattice(
+    series_name: str,
+    aggregate_name: str,
+) -> None:
+    inputs = np.eye(4, dtype=np.float32)
+    labels = np.array([0, 1, 0, 1], dtype=np.int32)
+    config = AdaLinConfig(
+        tasks=1,
+        examples_per_task=4,
+        batch_size=2,
+        hidden_widths=(3, 2),
+        classes=2,
+    )
+    result = run_adalin_development(
+        inputs,
+        labels,
+        inputs,
+        labels,
+        config=config,
+        seed=6,
+    )
+    tampered = copy.deepcopy(result)
+    tampered["metrics"][series_name] = [0.125]
+    tampered["metrics"][aggregate_name] = 0.125
+
+    with pytest.raises(ValueError, match="correct-count lattice"):
+        validate_adalin_result(tampered)
+
+
 def test_validator_and_runner_reject_hostile_containers_without_hooks() -> None:
     class HostileDict(dict[object, object]):
         calls = 0

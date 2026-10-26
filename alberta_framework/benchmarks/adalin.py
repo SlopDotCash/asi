@@ -921,11 +921,19 @@ def validate_adalin_result(value: object) -> None:
         or len(tested) != config.tasks
     ):
         raise ValueError("task metrics must be exact lists covering every task")
-    for name, series in (("online", online), ("test", tested)):
+    for name, series, examples in (
+        ("online", online, config.examples_per_task),
+        ("test", tested, cast(int, dataset["test_examples"])),
+    ):
         for item in cast(list[object], series):
             resolved = _exact_finite_number(item, f"{name} metric")
             if resolved < 0 or resolved > 1:
                 raise ValueError(f"{name} metrics must lie in [0, 1]")
+            correct = round(resolved * examples)
+            if resolved != correct / examples:
+                raise ValueError(
+                    f"{name} metrics must lie on the declared correct-count lattice"
+                )
     if not math.isclose(
         _exact_finite_number(
             metrics["asi_whole_stream_preupdate_online_accuracy"], "whole-stream metric"
