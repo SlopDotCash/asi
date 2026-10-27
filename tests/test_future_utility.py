@@ -14,6 +14,7 @@ from alberta_framework.core.compositional_features import CompositionalFeatureLe
 from alberta_framework.core.feature_discovery import FixedBudgetFeatureLearner
 from alberta_framework.core.future_utility import (
     bias_correct_future_utility,
+    canonical_float32_ema_decay,
     contribution_trace_output_loss_reduction,
     contribution_trace_output_loss_reduction_with_diagnostics,
     normalize_future_utility_signal,
@@ -21,6 +22,13 @@ from alberta_framework.core.future_utility import (
     trace_decay_from_half_life,
     trace_output_loss_reduction_with_diagnostics,
 )
+
+
+@pytest.mark.parametrize("value", [-0.0, np.float32(-0.0), np.float64(-0.0)])
+def test_canonical_float32_ema_decay_rejects_negative_zero(value: object) -> None:
+    """Behavior-equivalent decays must not retain distinct config identities."""
+    with pytest.raises(ValueError, match="utility_decay"):
+        canonical_float32_ema_decay("utility_decay", value)
 
 
 def test_one_step_rejects_activity_mask_task_axis_broadcast() -> None:

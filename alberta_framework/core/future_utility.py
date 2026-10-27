@@ -39,8 +39,9 @@ def canonical_float32_ema_decay(name: str, value: object) -> float:
     """Validate an exact EMA decay and canonicalize its float32 execution value.
 
     The exact-ratio checks retain domain facts that float32 narrowing can erase:
-    a tiny negative must not become an accepted ``-0.0``, and a positive decay
-    must not silently become the disabled-decay endpoint ``0.0``.
+    a tiny negative or negative zero must not become an accepted ``-0.0``, and
+    a positive decay must not silently become the disabled-decay endpoint
+    ``0.0``.
     """
     message = f"{name} must narrow to a finite float32 in [0, 1)"
     if type(value) not in _ACTUAL_DECAY_TYPES:
@@ -52,9 +53,11 @@ def canonical_float32_ema_decay(name: str, value: object) -> float:
     except (OverflowError, TypeError, ValueError) as error:
         raise ValueError(message) from error
     exact_in_domain = 0 <= numerator < denominator
+    negative_zero = narrowed == 0.0 and math.copysign(1.0, narrowed) < 0.0
     positive_underflow = numerator > 0 and narrowed == 0.0
     if (
         not exact_in_domain
+        or negative_zero
         or positive_underflow
         or not math.isfinite(narrowed)
         or not 0.0 <= narrowed < 1.0
