@@ -416,7 +416,7 @@ def _parse_partial(path: Path, errors: list[str]) -> _Shard | None:
     else:
         for name, expected_float in expected_hp.items():
             number = _finite_number(hyperparameters_value.get(name))
-            if number is None or number != expected_float:
+            if number is None or number.hex() != expected_float.hex():
                 errors.append(f"{path}: hyperparameters.{name} must equal {expected_float}")
             else:
                 hyperparameters[name] = number

@@ -236,6 +236,21 @@ def test_partial_tampering_fails_closed(tmp_path: Path, tamper: str, expected_er
 
 
 @pytest.mark.unit
+def test_partial_rejects_negative_zero_frozen_hyperparameter(tmp_path: Path) -> None:
+    paths = _write_shards(tmp_path, seeds=(0,))
+    target = tmp_path / "adamw_seed0.json"
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload["hyperparameters"]["beta1"] = -0.0
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    validation = validate_upgd_ipmnist_partials(paths, expected_seeds=(0,))
+
+    assert not validation.valid
+    assert any("hyperparameters.beta1" in error for error in validation.errors)
+    assert not validation.scientific_promotion_allowed
+
+
+@pytest.mark.unit
 def test_strict_loader_rejects_duplicate_keys_and_nonfinite_json(tmp_path: Path) -> None:
     duplicate = tmp_path / "upgd_w_seed0.json"
     duplicate.write_text(
