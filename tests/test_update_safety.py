@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -105,5 +106,35 @@ def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     assert not bool(valid)
     assert int(safe) == 0
     safe, valid = safe_discrete_action(2**40, 3)
+    assert not bool(valid)
+    assert int(safe) == 0
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        pytest.param(float(2**24), id="python-float"),
+        pytest.param(np.float32(2**24), id="numpy-float32"),
+        pytest.param(jnp.asarray(2**24, dtype=jnp.float32), id="jax-float32"),
+    ],
+)
+def test_exact_float32_action_below_wide_domain_bound_remains_valid(action: object) -> None:
+    safe, valid = safe_discrete_action(action, 2**24 + 1)  # type: ignore[arg-type]
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_exact_float32_action_below_wide_domain_bound_remains_valid_under_jit() -> None:
+    action = jnp.asarray(2**24, dtype=jnp.float32)
+    safe, valid = jax.jit(lambda value: safe_discrete_action(value, 2**24 + 1))(action)
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_first_float32_action_outside_wide_domain_remains_invalid() -> None:
+    safe, valid = safe_discrete_action(
+        jnp.asarray(2**24 + 2, dtype=jnp.float32),
+        2**24 + 1,
+    )
     assert not bool(valid)
     assert int(safe) == 0
