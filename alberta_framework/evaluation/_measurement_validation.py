@@ -16,7 +16,10 @@ def real_number(name: str, value: object) -> float:
     actual_type = type(value)
     if actual_type is not int and actual_type is not float:
         raise ValueError(f"{name} must be a real number")
-    return float(cast("int | float", value))
+    try:
+        return float(cast("int | float", value))
+    except OverflowError as error:
+        raise ValueError(f"{name} must be a real number") from error
 
 
 def finite_real(name: str, value: object) -> float:
@@ -25,7 +28,10 @@ def finite_real(name: str, value: object) -> float:
     actual_type = type(value)
     if actual_type is not int and actual_type is not float:
         raise ValueError(f"{name} must be a finite real number")
-    numeric = float(cast("int | float", value))
+    try:
+        numeric = float(cast("int | float", value))
+    except OverflowError as error:
+        raise ValueError(f"{name} must be a finite real number") from error
     if not math.isfinite(numeric):
         raise ValueError(f"{name} must be a finite real number")
     return numeric

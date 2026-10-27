@@ -7,6 +7,7 @@ import pytest
 from alberta_framework.evaluation.continual_ia import (
     IAAcceptanceEvidence,
     IAAcceptanceResult,
+    PairedBootstrapInterval,
 )
 from alberta_framework.evaluation.continual_multiagent import (
     AcceptanceEvidence,
@@ -237,6 +238,31 @@ def test_ia_acceptance_evidence_rejects_invalid_actual(invalid_actual: object) -
             comparator=">=",
             threshold=0.0,
             detail="ok",
+        )
+
+
+def test_measurement_records_reject_unrepresentable_builtin_integers() -> None:
+    huge_integer = 10**1000
+
+    with pytest.raises(ValueError, match="actual must be a real number"):
+        IAAcceptanceEvidence(
+            name="check",
+            scope="primary",
+            passed=False,
+            actual=huge_integer,
+            comparator=">=",
+            threshold=0.0,
+            detail="invalid measurement",
+        )
+
+    with pytest.raises(ValueError, match="estimate must be a finite real number"):
+        PairedBootstrapInterval(
+            estimate=huge_integer,
+            lower=0.0,
+            upper=1.0,
+            confidence_level=0.95,
+            resamples=10,
+            sample_size=2,
         )
 
 
