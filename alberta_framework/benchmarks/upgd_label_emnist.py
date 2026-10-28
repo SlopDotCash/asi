@@ -476,7 +476,13 @@ def build_schedule(key: Array, config: LabelEMNISTConfig, n_train: int) -> Label
 def _require_finite_real(name: str, value: object) -> float:
     if type(value) is not int and type(value) is not float:
         raise ValueError(f"{name} must be a finite real number")
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError as error:
+        # A JSON integer larger than the float range must fail closed with
+        # ValueError like every other malformed metric, not escape as
+        # OverflowError.
+        raise ValueError(f"{name} must be a finite real number") from error
     if not math.isfinite(number):
         raise ValueError(f"{name} must be a finite real number")
     return number

@@ -8,6 +8,7 @@ tiny synthetic smoke run. Benchmark executions never happen inside pytest.
 from __future__ import annotations
 
 import json
+import sys
 from io import BytesIO
 
 import jax.numpy as jnp
@@ -1169,6 +1170,34 @@ class TestPlanBodyAndShardMetricStrictness:
 
         with pytest.raises(ValueError, match="per_task_accuracy"):
             self._merge_mutated_shard(tmp_path, "boolean_curve", mutate)
+
+    def test_shard_rejects_oversized_integer_per_task_accuracy(self, tmp_path) -> None:
+        previous = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(0)  # allow the oversized JSON integer literal
+        try:
+            def mutate(payload):
+                payload["per_task_accuracy"] = [10**10000] + list(
+                    payload["per_task_accuracy"][1:]
+                )
+
+            with pytest.raises(ValueError, match="per_task_accuracy"):
+                self._merge_mutated_shard(tmp_path, "oversized_curve", mutate)
+        finally:
+            sys.set_int_max_str_digits(previous)
+
+    def test_shard_rejects_oversized_integer_average_online_accuracy(
+        self, tmp_path
+    ) -> None:
+        previous = sys.get_int_max_str_digits()
+        sys.set_int_max_str_digits(0)  # allow the oversized JSON integer literal
+        try:
+            def mutate(payload):
+                payload["average_online_accuracy"] = 10**10000
+
+            with pytest.raises(ValueError, match="average_online_accuracy"):
+                self._merge_mutated_shard(tmp_path, "oversized_mean", mutate)
+        finally:
+            sys.set_int_max_str_digits(previous)
 
 
 def _legal_label_emnist_run_result(**overrides: object) -> LabelEMNISTRunResult:
