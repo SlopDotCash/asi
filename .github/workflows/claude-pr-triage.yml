@@ -194,8 +194,9 @@ jobs:
       - name: Post review and act on research verdict
         if: steps.verdict.outputs.verdict == 'needs_research'
         env:
-          # continue-on-error keeps the job green; the outcome is the only
-          # signal that distinguishes a real review from a failed step.
+          # continue-on-error keeps both model steps green, so their outcomes
+          # are the only signal that separates a real review from a failed step.
+          TRIAGE_OUTCOME: ${{ steps.claude_triage.outcome }}
           RESEARCH_OUTCOME: ${{ steps.claude_research.outcome }}
         run: |
           FINAL="manual_review"
@@ -206,13 +207,23 @@ jobs:
             echo "::warning::research_verdict.json missing/invalid; failing safe to manual_review"
           fi
 
+          NO_REVIEW=""
           if [ -s "$WORKDIR/review.md" ]; then
             gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
+          elif [ "$TRIAGE_OUTCOME" != "success" ]; then
+            # Research runs downstream of classification, so a failed classification
+            # is the real cause even when research also failed.
+            NO_REVIEW="classification $TRIAGE_OUTCOME"
+            echo "::error::Classification ended as '$TRIAGE_OUTCOME' and research as '$RESEARCH_OUTCOME'; no review was produced."
+            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
+              "Automated review could not run: the classification step ended as '$TRIAGE_OUTCOME' and the research step as '$RESEARCH_OUTCOME', so nothing in this pull request has been evaluated yet. Leaving it for a maintainer."
           elif [ "$RESEARCH_OUTCOME" != "success" ]; then
+            NO_REVIEW="research $RESEARCH_OUTCOME"
             echo "::error::Automated research review failed with outcome '$RESEARCH_OUTCOME'; no review was produced."
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-              "Automated review could not run: the research step ended as `$RESEARCH_OUTCOME`, so nothing in this pull request has been evaluated yet. Leaving it for a maintainer."
+              "Automated review could not run: the research step ended as '$RESEARCH_OUTCOME', so nothing in this pull request has been evaluated yet. Leaving it for a maintainer."
           else
+            NO_REVIEW="empty report"
             echo "::error::Automated review finished without writing a report."
             gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
               "Automated review finished without writing a report; leaving for a maintainer."
@@ -230,4 +241,12 @@ jobs:
             fi
           else
             gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+          fi
+
+          # An annotation alone leaves the check green, which is what readers
+          # scan first. Fail so the missing review is visible. `triage` is not a
+          # required context (only ci-ok is), so this blocks no merge.
+          if [ -n "$NO_REVIEW" ]; then
+            echo "::error::No review was produced ($NO_REVIEW); failing this job so the check is not green."
+            exit 1
           fi
