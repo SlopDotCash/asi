@@ -773,6 +773,64 @@ class TestAutostepGTDLambda:
         assert float(second.bias_delta) == pytest.approx(0.015, rel=1e-6)
         chex.assert_trees_all_close(second.bias_delta, second.weight_delta[0], rtol=1e-6)
 
+    def test_constant_feature_weight_and_bias_paths_stay_symmetric(self):
+        """With a constant unit feature, z_weight == z_bias must force exact
+        weight/bias symmetry through meta-gradient, normalizer, effective-step
+        normalization, and delta (review finding on 27e35f6f: with the bias
+        eligibility only post-multiplied onto the delta, nonzero meta
+        adaptation diverged the two step sizes).
+
+        A nonzero meta step size and a nontrivial error sequence are required
+        to exercise the meta paths; ``meta_step_size=0`` hides the mismatch.
+        """
+        optimizer = AutostepGTDLambda(
+            initial_step_size=0.2, meta_step_size=0.1, tau=100.0, trace_decay=0.8
+        )
+        state = optimizer.init(feature_dim=1)
+        observation = jnp.array([1.0], dtype=jnp.float32)
+
+        result = None
+        for error_value in (1.0, -0.2, 0.7):
+            result = optimizer.update(
+                state, jnp.asarray(error_value, dtype=jnp.float32), observation
+            )
+            state = result.new_state
+
+        assert result is not None
+        # The accumulated traces coincide on the constant feature...
+        assert float(state.eligibility_traces[0]) == pytest.approx(2.44, abs=1e-6)
+        assert float(state.bias_eligibility_trace) == pytest.approx(2.44, abs=1e-6)
+        # ...so every adapted quantity must coincide exactly.
+        assert float(state.step_sizes[0]) == float(state.bias_step_size)
+        chex.assert_trees_all_close(
+            result.bias_delta, result.weight_delta[0], rtol=0.0, atol=0.0
+        )
+
+    def test_bias_eligibility_enters_effective_step_normalization(self):
+        """z_bias must sit inside the joint overshoot normalization, not only
+        scale the final delta. With ``meta_step_size=0`` the deltas have a
+        closed form: after two steps with ``trace_decay=0.5`` and observation
+        2, ``z_weight = 3`` and ``z_bias = 1.5``, so
+        ``M = max(0.2*9 + 0.2*2.25, 1) = 2.25`` and the deltas are
+        ``alpha/M * delta * z``. The post-scale variant normalizes the bias
+        with the stale implicit feature 1 instead (M = 2.0) and cannot match.
+        """
+        optimizer = AutostepGTDLambda(
+            initial_step_size=0.2, meta_step_size=0.0, tau=100.0, trace_decay=0.5
+        )
+        state = optimizer.init(feature_dim=1)
+        observation = jnp.array([2.0], dtype=jnp.float32)
+
+        first = optimizer.update(state, jnp.asarray(1.0, dtype=jnp.float32), observation)
+        second = optimizer.update(
+            first.new_state, jnp.asarray(-0.2, dtype=jnp.float32), observation
+        )
+
+        assert float(second.new_state.eligibility_traces[0]) == pytest.approx(3.0)
+        assert float(second.new_state.bias_eligibility_trace) == pytest.approx(1.5)
+        assert float(second.weight_delta[0]) == pytest.approx(0.2 / 2.25 * -0.2 * 3.0, rel=1e-5)
+        assert float(second.bias_delta) == pytest.approx(0.2 / 2.25 * -0.2 * 1.5, rel=1e-5)
+
 
 class TestObGD:
     """Tests for the ObGD optimizer."""
