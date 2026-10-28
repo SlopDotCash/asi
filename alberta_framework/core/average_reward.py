@@ -80,6 +80,12 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+# Smallest normal binary32 (2**-126): the largest temperature whose reciprocal
+# 1 / temperature is guaranteed to stay finite in float32 arithmetic, so a
+# temperature-scaled division can never overflow through its reciprocal.
+_MIN_STABLE_TEMPERATURE = 2.0**-126
+
+
 def _temperature_scaled_logits(logits: Array, temperature: float) -> Array:
     """Scale logits for softmax without exposing a rounded argmax to fusion.
 
@@ -95,12 +101,22 @@ def _temperature_scaled_logits(logits: Array, temperature: float) -> Array:
     one of the two recomputations.  When the temperature exceeds one, halving
     both operands first is equally exact and keeps the pre-scale centering
     finite for opposite finite extreme logits.
+
+    XLA also lowers the division itself to multiply-by-reciprocal, and for a
+    subnormal temperature that reciprocal overflows to ``+inf``: the centered
+    argmax zero becomes ``0 * inf = NaN`` and every accepted equal-logit state
+    yields an all-NaN policy (e.g. the minimum positive subnormal).  The
+    effective temperature is therefore floored at the smallest normal
+    binary32, whose reciprocal stays finite; the centered argmax keeps its
+    exact zero, equal logits stay exactly uniform, and below the floor the
+    exact softmax is already one-hot for every representable logit
+    difference.
     """
     if temperature > 1.0:
         logits = logits * 0.5
         temperature *= 0.5
     centered = logits - jax.lax.stop_gradient(jnp.max(logits))
-    scaled = centered / temperature
+    scaled = centered / max(temperature, _MIN_STABLE_TEMPERATURE)
     return scaled - jax.lax.stop_gradient(jnp.max(scaled))
 
 

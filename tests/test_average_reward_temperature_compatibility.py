@@ -96,3 +96,32 @@ def test_moderate_temperature_matches_the_historical_expression(
     np.testing.assert_allclose(
         np.asarray(probabilities), np.asarray(expected), rtol=1e-5
     )
+
+
+_MIN_POSITIVE_SUBNORMAL = float(np.nextafter(np.float32(0), np.float32(1)))
+
+
+def test_minimum_positive_subnormal_temperature_equal_logits_give_uniform_policy() -> None:
+    """Equal logits at the smallest accepted temperature are exactly uniform.
+
+    XLA lowers float32 division to multiply-by-reciprocal; for the minimum
+    positive subnormal temperature that reciprocal overflows to ``+inf``, so
+    an unfloored scale turns the centered argmax zero into ``0 * inf = NaN``
+    and ``policy`` returns an all-NaN vector (review finding on 8c8bc565).
+    """
+    agent = _agent(temperature=_MIN_POSITIVE_SUBNORMAL)
+    state = _constant_logits_state(agent, (0.0, 0.0))
+
+    probabilities = np.asarray(agent.policy(state, _OBSERVATION))
+    np.testing.assert_array_equal(probabilities, np.full(2, 0.5))
+
+
+def test_minimum_positive_subnormal_temperature_unequal_logits_stay_finite() -> None:
+    """Subnormal temperatures keep a finite one-hot policy for split logits."""
+    agent = _agent(temperature=_MIN_POSITIVE_SUBNORMAL)
+    state = _constant_logits_state(agent, (20.0, -20.0))
+
+    probabilities = np.asarray(agent.policy(state, _OBSERVATION))
+    np.testing.assert_array_equal(np.isfinite(probabilities), True)
+    np.testing.assert_array_equal(probabilities.argmax(), 0)
+    np.testing.assert_allclose(probabilities.sum(), 1.0, rtol=1e-5)
