@@ -475,6 +475,101 @@ def test_failed_shard_is_retained_and_digest_tampering_is_rejected(
         scorecard.validate_scorecard_run_record(tampered)
 
 
+def test_init_failure_after_setup_is_retained_with_setup_telemetry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {"schema": "test.identity.v1", "value": "fixed"}
+    monkeypatch.setattr(scorecard, "_checkpoint_source_identity", lambda: identity)
+    monkeypatch.setattr(scorecard, "_checkpoint_runtime_identity", lambda: identity)
+    monkeypatch.setattr(scorecard, "_checkpoint_dependency_identity", lambda: identity)
+    monkeypatch.setattr(
+        scorecard,
+        "_agent_resource_payload",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("intentional resource-accounting failure")
+        ),
+    )
+
+    plan = build_development_plan()
+    record = scorecard.run_scorecard_shard(plan, scorecard.iter_run_specs(plan)[0])
+
+    assert record["failure"]["stage"] == "init"
+    assert record["telemetry"]["setup_seconds"] is not None
+    assert record["telemetry"]["cold_step_seconds"] is None
+    assert scorecard.validate_scorecard_run_record(record, plan=plan)["valid"] is True
+
+
+def test_failed_step_telemetry_is_bound_to_accepted_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = {"schema": "test.identity.v1", "value": "fixed"}
+    monkeypatch.setattr(scorecard, "_checkpoint_source_identity", lambda: identity)
+    monkeypatch.setattr(scorecard, "_checkpoint_runtime_identity", lambda: identity)
+    monkeypatch.setattr(scorecard, "_checkpoint_dependency_identity", lambda: identity)
+    original_build = scorecard.build_scorecard_runner
+
+    class FailOnFourthStep:
+        def __init__(self, runner: Any) -> None:
+            self._runner = runner
+            self.agent_adapter = runner.agent_adapter
+            self.environment_adapter = runner.environment_adapter
+            self.config = runner.config
+            self.calls = 0
+
+        def init(self) -> Any:
+            return self._runner.init()
+
+        def step(self, state: Any) -> Any:
+            self.calls += 1
+            if self.calls == 4:
+                raise RuntimeError("intentional fourth-step failure")
+            return self._runner.step(state)
+
+    monkeypatch.setattr(
+        scorecard,
+        "build_scorecard_runner",
+        lambda plan, spec: FailOnFourthStep(original_build(plan, spec)),
+    )
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == "switching_two_state" and item.arm == "random"
+    )
+    record = scorecard.run_scorecard_shard(plan, spec)
+
+    assert record["failure"]["stage"] == "step"
+    assert record["failure"]["accepted_events"] == 3
+    assert record["telemetry"]["warmed_step_count"] == 2
+    assert scorecard.validate_scorecard_run_record(record, plan=plan)["valid"] is True
+
+    timed_rejection = copy.deepcopy(record)
+    timed_rejection["telemetry"].update(
+        {
+            "warmed_step_seconds_total": 0.0,
+            "warmed_step_count": 3,
+            "warmed_step_seconds_mean": 0.0,
+        }
+    )
+    _redigest(timed_rejection)
+    assert (
+        scorecard.validate_scorecard_run_record(timed_rejection, plan=plan)["valid"]
+        is True
+    )
+
+    forged = copy.deepcopy(record)
+    forged["telemetry"].update(
+        {
+            "warmed_step_seconds_total": 0.0,
+            "warmed_step_count": 99,
+            "warmed_step_seconds_mean": 0.0,
+        }
+    )
+    _redigest(forged)
+    with pytest.raises(ValueError, match="timed step count"):
+        scorecard.validate_scorecard_run_record(forged, plan=plan)
+
+
 def _completed_outcome(
     plan: ReferenceLifeDevelopmentPlan,
     spec: scorecard.ScorecardRunSpec,
@@ -714,6 +809,90 @@ def test_completed_shard_rejects_impossible_reward_lattice_total() -> None:
     outcome["regret_sum"] = outcome["oracle_reward_sum"] - 0.001
     _redigest(record)
     with pytest.raises(ValueError, match="reward lattice"):
+        scorecard.validate_scorecard_run_record(record)
+
+
+def test_completed_riverswim_shard_rejects_right_rewards_without_high_end_visits() -> None:
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == "riverswim"
+        and item.arm == "random"
+        and item.seed == SEED_ROSTER[0]
+    )
+    record = _completed_record(plan, spec)
+    outcome = record["outcome"]
+    horizon = outcome["accepted_events"]
+    outcome["reward_sum"] = float(horizon)
+    outcome["mean_reward"] = 1.0
+    outcome["phase_reward_sums"] = [float(horizon), 0.0]
+    outcome["regret_sum"] = outcome["oracle_reward_sum"] - float(horizon)
+    outcome["high_end_visit_count"] = 0
+    outcome["high_end_visit_rate"] = 0.0
+    _redigest(record)
+
+    with pytest.raises(ValueError, match="right-end rewards exceed high-end visits"):
+        scorecard.validate_scorecard_run_record(record)
+
+
+def test_partial_riverswim_shard_rejects_right_reward_before_reaching_high_end() -> None:
+    plan = build_development_plan()
+    spec = next(
+        item
+        for item in scorecard.iter_run_specs(plan)
+        if item.environment_kind == "riverswim"
+        and item.arm == "random"
+        and item.seed == SEED_ROSTER[0]
+    )
+    record = _completed_record(plan, spec)
+    horizon = plan.protocol("riverswim")["horizon"]
+    oracle_reward = record["outcome"]["oracle_reward_sum"] / horizon
+    record.update(
+        {
+            "status": "failed",
+            "failure": {
+                "stage": "step",
+                "type": "RuntimeError",
+                "message": "synthetic post-step failure",
+                "accepted_events": 1,
+            },
+            "outcome": None,
+            "partial_outcome": {
+                "summary_mode": "streaming_o1_no_retained_events",
+                "configured_horizon": horizon,
+                "accepted_events": 1,
+                "reward_sum": 1.0,
+                "mean_reward": 1.0,
+                "oracle_reward_sum": oracle_reward,
+                "regret_sum": oracle_reward - 1.0,
+                "parameter_change_events": 0,
+                "phase_event_counts": [1, 0],
+                "phase_reward_sums": [1.0, 0.0],
+                "windows": {
+                    "early": {
+                        "event_count": 1,
+                        "reward_sum": 1.0,
+                        "mean_reward": 1.0,
+                        "mean_oracle_regret": oracle_reward - 1.0,
+                    },
+                    "late": None,
+                },
+                "high_end_visit_count": 0,
+                "high_end_visit_rate": 0.0,
+            },
+        }
+    )
+    record["telemetry"].update(
+        {
+            "warmed_step_seconds_total": 0.0,
+            "warmed_step_count": 0,
+            "warmed_step_seconds_mean": None,
+        }
+    )
+    _redigest(record)
+
+    with pytest.raises(ValueError, match="right-end rewards exceed high-end visits"):
         scorecard.validate_scorecard_run_record(record)
 
 
@@ -1165,15 +1344,29 @@ def test_failed_record_requires_exact_partial_schema_and_stage(
     )
     plan = build_development_plan()
     record = scorecard.run_scorecard_shard(plan, scorecard.iter_run_specs(plan)[0])
-    for mutation in ("extra_partial", "unknown_stage", "build_count"):
+    for mutation in (
+        "extra_partial",
+        "unknown_stage",
+        "build_count",
+        "prestep_telemetry",
+    ):
         altered = copy.deepcopy(record)
         if mutation == "extra_partial":
             altered["partial_outcome"]["extra"] = 1
         elif mutation == "unknown_stage":
             altered["failure"]["stage"] = "unknown"
-        else:
+        elif mutation == "build_count":
             altered["failure"]["accepted_events"] = 1
             altered["partial_outcome"]["accepted_events"] = 1
+        else:
+            altered["telemetry"].update(
+                {
+                    "setup_seconds": 0.0,
+                    "cold_step_seconds": 0.0,
+                    "warmed_step_count": 7,
+                    "warmed_step_seconds_mean": 0.0,
+                }
+            )
         _redigest(altered)
         with pytest.raises(ValueError):
             scorecard.validate_scorecard_run_record(altered, plan=plan)

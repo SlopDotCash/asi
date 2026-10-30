@@ -507,6 +507,21 @@ def collect_feature_discovery_stream(
     return observations, targets
 
 
+def _weighted_pair_product(weight: Array, left: Array, right: Array) -> Array:
+    # ``weight * (left * right)`` overflows when the raw pair exceeds float32,
+    # even though the three-factor product is finite and representable.
+    direct = weight * (left * right)
+    weight_mantissa, weight_exponent = jnp.frexp(weight)
+    left_mantissa, left_exponent = jnp.frexp(left)
+    right_mantissa, right_exponent = jnp.frexp(right)
+    stable = jnp.ldexp(
+        weight_mantissa * left_mantissa * right_mantissa,
+        weight_exponent + left_exponent + right_exponent,
+    )
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 class InteractionFeatureDiscoveryStream:
     """Non-stationary stream whose useful features are pairwise products.
 
@@ -747,7 +762,22 @@ class InteractionFeatureDiscoveryStream:
         interactions = x[state.pair_left] * x[state.pair_right]
         context_idx = (state.step_count // self._context_length) % self._n_contexts
         task_weights = state.context_weights[context_idx]
-        target = task_weights @ interactions + state.linear_weights @ x
+        direct_pair = task_weights @ interactions
+        stable_pair = jnp.sum(
+            _weighted_pair_product(
+                task_weights, x[state.pair_left], x[state.pair_right]
+            ),
+            axis=-1,
+        )
+        # A finite direct dot stays bit-exact. Replace it only when a raw
+        # pair overflowed and the scaled sum is finite.
+        use_stable = (
+            jnp.any(~jnp.isfinite(interactions))
+            & jnp.isfinite(stable_pair)
+            & ~jnp.isfinite(direct_pair)
+        )
+        pair_target = jnp.where(use_stable, stable_pair, direct_pair)
+        target = pair_target + state.linear_weights @ x
         noise = self._noise_std * jr.normal(k_noise, (self._n_tasks,), dtype=jnp.float32)
         target = target + noise
 

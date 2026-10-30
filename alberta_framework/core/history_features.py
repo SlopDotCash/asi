@@ -377,7 +377,8 @@ class HistoryFeatureExtractor:
     def from_config(cls, config: dict[str, Any]) -> HistoryFeatureExtractor:
         """Reconstruct from config dict."""
         config = dict(config)
-        config.pop("type", None)
+        if config.pop("type", None) != "HistoryFeatureExtractor":
+            raise ValueError("type must be 'HistoryFeatureExtractor'")
         raw_rates = config["decay_rates"]
         if type(raw_rates) is list:
             if len(raw_rates) > _MAX_HISTORY_DECAY_RATES:
