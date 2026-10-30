@@ -902,6 +902,23 @@ def test_learned_resource_manager_masked_baseline_centers_across_extreme_gaps() 
         assert jnp.allclose(result.advantages[2], -1.0, atol=1e-4)
 
 
+@pytest.mark.parametrize("offset", [2e38, -2e38, 0.0])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_learned_resource_manager_finite_logit_centering(
+    offset: float, compiled: bool
+) -> None:
+    manager = LearnedResourceManager(n_actions=4, discount=1.0)
+    state = dataclasses.replace(
+        manager.init(), log_weights=jnp.full((1, 4), offset, dtype=jnp.float32)
+    )
+    update = jax.jit(manager.update) if compiled else manager.update
+    result = update(state, jnp.ones(4, dtype=jnp.float32))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_allclose(result.state.log_weights, 0.0, atol=1e-6)
+    np.testing.assert_allclose(manager.weights(result.state), 0.25, atol=1e-6)
+
+
 def test_learned_resource_manager_preserves_finite_extreme_convex_baseline() -> None:
     manager = LearnedResourceManager(
         n_actions=20,
@@ -963,4 +980,3 @@ def test_generator_resource_manager_preserves_finite_extreme_convex_baseline() -
     np.testing.assert_array_equal(result.advantages[:19], 0.0)
     np.testing.assert_array_equal(result.advantages[19], -10.0)
     assert float(manager.weights(result.state)[19]) < float(manager.weights(state)[19])
-
