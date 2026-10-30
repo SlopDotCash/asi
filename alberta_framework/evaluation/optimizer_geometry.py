@@ -257,15 +257,19 @@ def flad_noise_component_transaction(perturbation: Array, gradient: Array) -> tu
     numerator = jnp.vdot(scaled, delta).real
     active = squared_norm > 0.0
     denominator = jnp.where(active, squared_norm, jnp.ones_like(squared_norm))
-    coefficient = numerator / denominator
-    projection = scaled * coefficient * active.astype(delta.dtype)
+    active_scale = active.astype(delta.dtype)
+    # Dividing the dot by the squared norm overflows before the O(1) scaled
+    # direction brings a finite projection back into range.
+    direct_projection = scaled * (numerator / denominator) * active_scale
+    scaled_projection = (scaled * numerator) / denominator * active_scale
+    use_scaled = jnp.isfinite(scaled_projection) & ~jnp.isfinite(direct_projection)
+    projection = jnp.where(use_scaled, scaled_projection, direct_projection)
     candidate = delta - projection
     valid = (
         jnp.all(jnp.isfinite(delta))
         & jnp.all(jnp.isfinite(direction))
         & jnp.isfinite(squared_norm)
         & jnp.isfinite(numerator)
-        & jnp.isfinite(coefficient)
         & jnp.all(jnp.isfinite(projection))
         & jnp.all(jnp.isfinite(candidate))
     )
