@@ -7,6 +7,10 @@ task-by-task reinitialization, operates within explicit compute, memory, and
 latency budgets, and scales from research benchmarks to real work — especially
 robotics.
 State-of-the-art continual learning is the destination, not a current claim.
+This is a hill-climbing project at every stage: measure and outperform the current
+best internal benchmark under a matched protocol and explicit resource accounting,
+then promote that verified development winner to the next baseline. No stage is
+exempt from comparison against the strongest current internal control.
 
 [The Alberta Plan](https://arxiv.org/abs/2208.11173) is a foundational
 inspiration and a source of inherited mechanisms, vocabulary, and file names.

@@ -279,6 +279,107 @@ def _gru_proto_cfg() -> PrototypeAgentConfig:
     )
 
 
+def test_gru_start_keeps_a_cancelling_finite_update_gate() -> None:
+    """A cancelling finite GRU gate must not collapse the next hidden state."""
+
+    scale = jnp.asarray(1.5e19, dtype=jnp.float32)
+    obs_dim = 2
+    hidden_dim = 1
+    stomp = STOMPConfig(
+        subtask_specs=(_SPEC0,),
+        observation_dim=obs_dim + hidden_dim,
+        n_primitive_actions=2,
+    )
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=OaKConfig(stomp=stomp),
+            gru_perception=GRUPerceptionConfig(
+                observation_dim=obs_dim,
+                hidden_dim=hidden_dim,
+            ),
+        )
+    )
+    state = agent.init(jr.key(0))
+    gru = state.gru_state
+    assert gru is not None
+    state = state.replace(
+        gru_state=gru.replace(
+            W_z=jnp.array([[scale, -scale]], dtype=jnp.float32),
+            U_z=jnp.zeros_like(gru.U_z),
+            b_z=jnp.zeros_like(gru.b_z),
+            W_r=jnp.zeros_like(gru.W_r),
+            U_r=jnp.zeros_like(gru.U_r),
+            b_r=jnp.zeros_like(gru.b_r),
+            W_h=jnp.zeros_like(gru.W_h),
+            U_h=jnp.zeros_like(gru.U_h),
+            b_h=jnp.ones_like(gru.b_h),
+            hidden=jnp.zeros_like(gru.hidden),
+        )
+    )
+
+    started = agent.start(state, jnp.array([scale, scale], dtype=jnp.float32))
+
+    expected_hidden = jnp.tanh(jnp.asarray(1.0, dtype=jnp.float32)) * jnp.asarray(
+        0.5, dtype=jnp.float32
+    )
+    assert started.gru_state is not None
+    np.testing.assert_array_equal(
+        np.asarray(started.gru_state.hidden),
+        np.asarray(expected_hidden),
+    )
+
+
+@pytest.mark.parametrize(
+    ("weight", "observation"),
+    [(1e19, 1e19), (1e4, 1e34), (3e4, 1e34)],
+)
+def test_gru_start_keeps_a_large_finite_update_gate(weight: float, observation: float) -> None:
+    """A finite gate product above 2**126 must saturate the gate, not halve it."""
+
+    obs_dim = 2
+    hidden_dim = 1
+    stomp = STOMPConfig(
+        subtask_specs=(_SPEC0,),
+        observation_dim=obs_dim + hidden_dim,
+        n_primitive_actions=2,
+    )
+    agent = PrototypeAgent(
+        PrototypeAgentConfig(
+            oak=OaKConfig(stomp=stomp),
+            gru_perception=GRUPerceptionConfig(
+                observation_dim=obs_dim,
+                hidden_dim=hidden_dim,
+            ),
+        )
+    )
+    state = agent.init(jr.key(0))
+    gru = state.gru_state
+    assert gru is not None
+    state = state.replace(
+        gru_state=gru.replace(
+            W_z=jnp.array([[weight, 0.0]], dtype=jnp.float32),
+            U_z=jnp.zeros_like(gru.U_z),
+            b_z=jnp.zeros_like(gru.b_z),
+            W_r=jnp.zeros_like(gru.W_r),
+            U_r=jnp.zeros_like(gru.U_r),
+            b_r=jnp.zeros_like(gru.b_r),
+            W_h=jnp.zeros_like(gru.W_h),
+            U_h=jnp.zeros_like(gru.U_h),
+            b_h=jnp.ones_like(gru.b_h),
+            hidden=jnp.zeros_like(gru.hidden),
+        )
+    )
+
+    started = agent.start(state, jnp.array([observation, 0.0], dtype=jnp.float32))
+
+    expected_hidden = jnp.tanh(jnp.asarray(1.0, dtype=jnp.float32))
+    assert started.gru_state is not None
+    np.testing.assert_array_equal(
+        np.asarray(started.gru_state.hidden),
+        np.asarray([expected_hidden]),
+    )
+
+
 def test_act_works_with_gru_perception() -> None:
     agent = PrototypeAgent(_gru_proto_cfg())
     state = agent.start(agent.init(jr.key(0)), jnp.zeros(GRU_OBS_DIM))
@@ -380,3 +481,26 @@ def test_oak_and_keyboard_close_schema_float32_and_resource_boundaries() -> None
     KeyboardChordLearnerConfig(n_options=last_legal_keyboard_options)
     with pytest.raises(ValueError, match="keyboard state bytes"):
         KeyboardChordLearnerConfig(n_options=last_legal_keyboard_options + 1)
+
+
+def test_scan_preserves_base_learner_host_clocks() -> None:
+    agent, state = _primed(_oak_cfg())
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    learner = state.stomp_state.base_learner_state.replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+    )
+    state = state.replace(
+        stomp_state=state.stomp_state.replace(base_learner_state=learner)
+    )
+    result = agent.scan(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2, OBS_DIM), dtype=jnp.float32),
+    )
+    clocks = result.state.stomp_state.base_learner_state
+    assert type(clocks.birth_timestamp) is float
+    assert clocks.birth_timestamp == birth
+    assert type(clocks.uptime_s) is float
+    assert clocks.uptime_s == uptime
