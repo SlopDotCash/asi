@@ -1845,3 +1845,36 @@ class TestMultiHeadLinearBaseline:
         assert bool(result.update_applied)
         for utility in result.state.hidden_unit_utilities:
             assert bool(jnp.all(jnp.isfinite(utility)))
+
+
+def test_multi_head_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import alberta_framework.core.multi_head_learner as module
+
+    learner = MultiHeadMLPLearner(n_heads=3, hidden_sizes=(4,), sparsity=0.0)
+    state = learner.init(5, jr.key(0))
+    observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)
+    targets = jnp.full((1024, 3), 0.2, dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(leaf.is_ready() for leaf in scan_outputs if isinstance(leaf, jax.Array))
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_multi_head_learning_loop(learner, state, observations, targets)
+    assert scan_outputs
+    assert int(result.state.step_count) == 1024
+    assert bool(jnp.all(result.updates_applied))

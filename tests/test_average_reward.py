@@ -20,6 +20,7 @@ from alberta_framework.core.average_reward import (
     DifferentialGTDLearner,
     DifferentialSARSAAgent,
     DifferentialSARSAConfig,
+    DifferentialSARSAState,
     DifferentialTDConfig,
     DifferentialTDLearner,
     _require_avg_reward_matching_length,
@@ -830,6 +831,55 @@ def test_differential_sarsa_select_action_rejects_nonfinite_policy_state() -> No
 
     assert int(action) == -1
     chex.assert_trees_all_equal(jr.key_data(key), jr.key_data(poisoned.rng_key))
+
+
+def _overflowing_next_decision_state() -> tuple[DifferentialSARSAAgent, DifferentialSARSAState]:
+    """Prime a state whose next decision overflows for action 0 only.
+
+    At the next observation ``[2.0]`` action 0's Q-value overflows float32,
+    so ``select_action`` returns -1, while action 1 (the stored last
+    action) keeps a finite Q-value and therefore a finite TD error.
+    """
+    agent = DifferentialSARSAAgent(
+        DifferentialSARSAConfig(n_actions=2, epsilon_start=0.0, epsilon_end=0.0)
+    )
+    state = agent.init(1, jr.key(0))
+    state, _ = agent.start(state, jnp.array([1.0], dtype=jnp.float32))
+    state = state.replace(
+        q_weights=jnp.array([[3.0e38], [1.0]], dtype=jnp.float32),
+        last_action=jnp.asarray(1, dtype=jnp.int32),
+    )
+    return agent, state
+
+
+def test_differential_sarsa_update_rejects_a_nonfinite_self_selected_action() -> None:
+    agent, state = _overflowing_next_decision_state()
+    next_observation = jnp.array([2.0], dtype=jnp.float32)
+    selected, _ = agent.select_action(state, next_observation)
+    assert int(selected) == -1
+
+    result = agent.update(state, jnp.asarray(0.0, dtype=jnp.float32), next_observation)
+
+    assert not bool(result.update_applied)
+    assert not bool(result.input_valid)
+    assert int(result.action) == 1
+    chex.assert_trees_all_equal(result.state.last_action, state.last_action)
+    chex.assert_trees_all_equal(result.state.last_observation, state.last_observation)
+    chex.assert_trees_all_equal(result.state.q_weights, state.q_weights)
+    chex.assert_trees_all_equal(result.state.step_words, state.step_words)
+    chex.assert_trees_all_equal(jr.key_data(result.state.rng_key), jr.key_data(state.rng_key))
+
+
+def test_differential_sarsa_scan_learns_after_a_nonfinite_self_selected_action() -> None:
+    agent, state = _overflowing_next_decision_state()
+    rewards = jnp.zeros((4,), dtype=jnp.float32)
+    next_observations = jnp.array([[2.0], [-1.0e-3], [-1.0e-3], [-1.0e-3]], dtype=jnp.float32)
+
+    result = run_differential_sarsa_from_arrays(agent, state, rewards, next_observations)
+
+    assert [bool(applied) for applied in result.updates_applied] == [False, True, True, True]
+    assert bool(jnp.all(result.actions >= 0))
+    assert 0 <= int(result.state.last_action) < 2
 
 
 def test_differential_sarsa_update_and_scan_are_finite() -> None:

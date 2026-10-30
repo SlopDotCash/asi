@@ -973,6 +973,28 @@ class UPGDMemoryLearner:
             + _skip_zero_scale(confidence_scale, confidence_delta)
             + _skip_zero_scale(reliability_scale, reliability_delta)
         )
+        # Inspect products even if fusion leaves a finite cancellation residual.
+        terms = jnp.stack((
+            _skip_zero_scale(confidence_scale, confidence_delta),
+            _skip_zero_scale(reliability_scale, reliability_delta),
+        ))
+        scale = max(
+            abs(self._config.confidence_logit_scale),
+            abs(self._config.reliability_logit_scale),
+            1.0,
+        )
+        # Static host ratios avoid a subnormal float32 reciprocal of the scale.
+        scaled = (
+            (self._config.confidence_logit_scale / scale) * confidence_delta
+            + (self._config.reliability_logit_scale / scale) * reliability_delta
+        )
+        recovered = state.memory_logit + jnp.asarray(scale, dtype=jnp.float32) * scaled
+        recoverable = (
+            (~jnp.isfinite(logit) | ~jnp.isfinite(terms).all())
+            & jnp.isfinite(state.memory_logit)
+            & jnp.isfinite(confidence_delta) & jnp.isfinite(reliability_delta)
+        )
+        logit = jnp.where(recoverable, recovered, logit)
         return active_memory * jax.nn.sigmoid(logit)
 
     def _blend_predictions(

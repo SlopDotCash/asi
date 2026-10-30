@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sys
+from types import FrameType
+from typing import Any
 
 import jax
 import numpy as np
@@ -204,3 +207,32 @@ def test_catalog_cli_is_metadata_only(capsys: pytest.CaptureFixture[str]) -> Non
     payload = json.loads(capsys.readouterr().out)
     assert payload == catalog_payload()
     assert payload["avalanche_revision"].endswith("eb075be393e1f458b2c352514ff6c17b5a2c0f4e")
+
+
+def test_replay_buffer_never_exceeds_the_reported_peak() -> None:
+    task = native_suite.TaskBatch(
+        task_index=0,
+        inputs=np.eye(4, dtype=np.float32),
+        labels=np.asarray((0, 1, 0, 1), dtype=np.int32),
+    )
+    observed: list[int] = []
+    code = native_suite._run_arm.__code__
+
+    def local(frame: FrameType, event: str, arg: Any) -> Any:
+        replay = frame.f_locals.get("replay")
+        if replay is not None:
+            observed.append(len(replay))
+        return local
+
+    def tracer(frame: FrameType, event: str, arg: Any) -> Any:
+        return local if frame.f_code is code else None
+
+    previous = sys.gettrace()
+    sys.settrace(tracer)
+    try:
+        arm = native_suite._run_arm((task,), n_classes=2, capacity=2, arm_id="replay_sgd")
+    finally:
+        sys.settrace(previous)
+
+    assert max(observed) == 2
+    assert arm.receipt.peak_replay_bytes == max(observed) * (4 * 4 + 4)

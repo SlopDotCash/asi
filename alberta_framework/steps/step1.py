@@ -412,7 +412,10 @@ def make_step1_optimizer(config: Step1KernelConfig) -> Any:
             meta_step_size=config.meta_step_size,
         )
     if name == "adagain":
-        return AdaGain(initial_step_size=config.step_size)
+        return AdaGain(
+            initial_step_size=config.step_size,
+            meta_step_size=config.meta_step_size,
+        )
     if name == "adam":
         return Adam(step_size=config.step_size)
     if name == "rmsprop":
@@ -516,6 +519,8 @@ def run_step1_smoke(
     metrics.block_until_ready()
     window = metrics[-final_window:, 0]
     final_window_mse = float(jnp.mean(window))
+    if not math.isfinite(final_window_mse) and bool(jnp.all(jnp.isfinite(window))):
+        final_window_mse = float(np.asarray(window, dtype=np.float64).mean())
     return Step1SmokeResult(
         config=cfg,
         steps=steps,
