@@ -772,6 +772,20 @@ def test_continuous_actor_critic_state_contract_and_counter_saturation() -> None
     assert int(result.state.step_count) == 2**31 - 1
 
 
+def test_continuous_actor_critic_start_rejects_policy_overflow_from_finite_inputs() -> None:
+    """A clipped action must not hide a non-finite sample retained in state."""
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(action_dim=1, action_low=-1.0, action_high=1.0)
+    )
+    state = agent.init(1, jr.key(0)).replace(
+        mean_weights=jnp.asarray([[2.0]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="start result"):
+        agent.start(state, observation)
+
+
 def _clip_at_mean_agent(action_high: float | None) -> ContinuousActorCriticAgent:
     # sigma frozen at 1, critic frozen at 0, gamma 0: every update has td_error == reward
     # and the actor mean step is exactly ``actor_step_size * reward * score_mu``.

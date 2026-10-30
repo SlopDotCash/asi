@@ -196,6 +196,17 @@ def _guarded_dream_rng_root(stored_real_key: Array) -> Array:
     return jr.fold_in(stored_real_key, _GUARDED_DREAM_STREAM_TAG)
 
 
+def _reduction_safe_l2_norm(value: Array) -> Array:
+    """Preserve a representable L2 norm when only its square sum overflows."""
+    direct = jnp.linalg.norm(value)
+    scale = jnp.max(jnp.abs(value))
+    _, exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(value, -exponent)
+    stable = jnp.ldexp(jnp.linalg.norm(scaled), exponent)
+    reduction_only_overflow = ~jnp.isfinite(direct) & jnp.all(jnp.isfinite(value))
+    return jnp.where(reduction_only_overflow, stable, direct)
+
+
 def feature_to_subtask_specs(
     oak_state: OaKState,
     *,
@@ -494,6 +505,30 @@ def _init_gru_state(cfg: GRUPerceptionConfig, key: Array) -> GRUPerceptionState:
     )
 
 
+def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+    """Return a matrix-vector product that keeps large finite cancellation.
+
+    A compiled GEMV can turn an exact cancelling pair of finite products
+    into a huge finite value. The scaled product sum replaces that result.
+    Eagerly, a direct product that already matches stays bit for bit. Under
+    ``jax.jit`` the fused graph can round a few ulp differently, as the
+    compiled direct product already does relative to eager.
+    """
+
+    products = matrix * vector
+    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
+    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
+    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
+    _, exponent = jnp.frexp(max_abs)
+    scaled_sum = jnp.sum(jnp.ldexp(products, -exponent), axis=-1)
+    stable = jnp.ldexp(scaled_sum, jnp.reshape(exponent, (-1,)))
+    direct = matrix @ vector
+    gap = jnp.abs(direct - stable)
+    limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    return jnp.where(use_stable, stable, direct)
+
+
 def _gru_step(
     gru: GRUPerceptionState,
     obs: Float[Array, " obs_dim"],
@@ -504,9 +539,15 @@ def _gru_step(
     ``[obs, new_hidden]`` as the augmented observation.
     """
     h = gru.hidden
-    z = jax.nn.sigmoid(gru.W_z @ obs + gru.U_z @ h + gru.b_z)
-    r = jax.nn.sigmoid(gru.W_r @ obs + gru.U_r @ h + gru.b_r)
-    h_tilde = jnp.tanh(gru.W_h @ obs + gru.U_h @ (r * h) + gru.b_h)
+    z = jax.nn.sigmoid(
+        _finite_product_matvec(gru.W_z, obs) + _finite_product_matvec(gru.U_z, h) + gru.b_z
+    )
+    r = jax.nn.sigmoid(
+        _finite_product_matvec(gru.W_r, obs) + _finite_product_matvec(gru.U_r, h) + gru.b_r
+    )
+    h_tilde = jnp.tanh(
+        _finite_product_matvec(gru.W_h, obs) + _finite_product_matvec(gru.U_h, r * h) + gru.b_h
+    )
     new_h = (1.0 - z) * h + z * h_tilde
     new_gru = cast(GRUPerceptionState, gru.replace(hidden=new_h))
     return new_gru, jnp.concatenate([obs, new_h], axis=0)
@@ -3985,7 +4026,7 @@ class PrototypeAgent:
         )
         td_error = target - prediction
         gradient_finite = jnp.all(jnp.isfinite(raw_gradient))
-        gradient_norm = jnp.linalg.norm(raw_gradient)
+        gradient_norm = _reduction_safe_l2_norm(raw_gradient)
         prediction_finite = jnp.isfinite(prediction)
         target_finite = jnp.isfinite(target)
         td_error_finite = jnp.isfinite(td_error)
