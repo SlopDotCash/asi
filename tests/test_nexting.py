@@ -636,6 +636,52 @@ class TestRunningRMSE:
             settled_windows = running[2000 + window :, 0]
             np.testing.assert_allclose(settled_windows, settled, rtol=1e-3, atol=0.0)
 
+    def test_running_rmse_scales_each_window_independently(self) -> None:
+        largest = np.finfo(np.float32).max
+        predictions = jnp.asarray(
+            [[largest, 1.0], [1.0, 3.0], [3.0, largest]],
+            dtype=jnp.float32,
+        )
+        returns = jnp.zeros_like(predictions)
+        expected = np.asarray(
+            [
+                [np.nan, np.nan],
+                [largest / np.sqrt(2.0), np.sqrt(5.0)],
+                [np.sqrt(5.0), largest / np.sqrt(2.0)],
+            ],
+            dtype=np.float32,
+        )
+
+        eager = per_horizon_running_rmse(predictions, returns, window_size=2)
+        compiled = jax.jit(
+            lambda values: per_horizon_running_rmse(values, returns, window_size=2)
+        )(predictions)
+
+        np.testing.assert_allclose(np.asarray(eager), expected, rtol=1e-6, atol=0.0)
+        np.testing.assert_allclose(np.asarray(compiled), expected, rtol=1e-6, atol=0.0)
+
+        def local_window_loss(values: jax.Array) -> jax.Array:
+            running = per_horizon_running_rmse(values, returns, window_size=2)
+            return running[2, 0] + running[1, 1]
+
+        small_window_scale = 1.0 / (2.0 * np.sqrt(5.0))
+        expected_gradient = np.asarray(
+            [
+                [0.0, small_window_scale],
+                [small_window_scale, 3.0 * small_window_scale],
+                [3.0 * small_window_scale, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        eager_gradient = jax.grad(local_window_loss)(predictions)
+        compiled_gradient = jax.jit(jax.grad(local_window_loss))(predictions)
+        np.testing.assert_allclose(
+            np.asarray(eager_gradient), expected_gradient, rtol=1e-6, atol=0.0
+        )
+        np.testing.assert_allclose(
+            np.asarray(compiled_gradient), expected_gradient, rtol=1e-6, atol=0.0
+        )
+
     @pytest.mark.parametrize(
         "window_size",
         [

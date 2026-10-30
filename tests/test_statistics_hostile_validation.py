@@ -88,6 +88,16 @@ def test_ttest_rejects_hostile_float_alpha() -> None:
     assert _HostileFloat.calls == 0
 
 
+@pytest.mark.parametrize("paired", [0, 1, np.bool_(True), "unpaired", None])
+def test_ttest_requires_exact_paired_bool(paired: object) -> None:
+    with pytest.raises(ValueError, match="paired must be an exact bool"):
+        ttest_comparison(
+            [101.0, 202.0, 303.0, 404.0],
+            [100.0, 200.0, 300.0, 400.0],
+            paired=paired,  # type: ignore[arg-type]
+        )
+
+
 def test_ttest_rejects_string_subclass_method_name() -> None:
     a = [0.9, 0.8, 0.85]
     b = [0.5, 0.6, 0.55]
