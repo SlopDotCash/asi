@@ -655,3 +655,77 @@ class TestTraceDecaysWithPriorTransitionDiscount:
         np.testing.assert_allclose(state.weights, expected_w, rtol=1e-5, atol=1e-7)
         np.testing.assert_allclose(float(state.bias), expected_b, rtol=1e-5, atol=1e-7)
         assert bool(np.all(np.asarray(state.weights) > 0.0))
+
+
+class TestFiniteDutchTraceCancellation:
+    """Huge but cancelling terms must not discard a representable step."""
+
+    @pytest.mark.parametrize("sign", [-1.0, 1.0])
+    def test_overflowing_reward_sum_keeps_the_semi_gradient_step(self, sign: float) -> None:
+        """``R + V(s')`` and ``(delta + V(s)) * e`` overflow; the step does not.
+
+        With zero traces, True Online TD(0) is semi-gradient TD. Matching
+        ``R``, ``V(s)``, and ``V(s')`` at ``sign * 2e38`` leaves ``delta = R``.
+        The Dutch correction then cancels because the new trace equals the
+        feature, so the weight step is ``alpha * R``.
+        """
+        learner = TrueOnlineTDLearner(step_size=0.05, trace_decay=0.0)
+        magnitude = np.float32(sign * 2.0e38)
+        state = learner.init(1).replace(  # type: ignore[attr-defined]
+            weights=jnp.asarray([magnitude], dtype=jnp.float32)
+        )
+        obs = jnp.ones((1,), dtype=jnp.float32)
+        reward = jnp.asarray(magnitude, dtype=jnp.float32)
+        gamma = jnp.asarray(1.0, dtype=jnp.float32)
+        alpha = np.float32(learner._step_size)
+        expected_weight = np.float32(magnitude + alpha * magnitude)
+        expected_bias = np.float32(alpha * magnitude)
+
+        with jax.disable_jit():
+            eager = learner.update(state, obs, reward, obs, gamma)
+        compiled = jax.jit(learner.update)(state, obs, reward, obs, gamma)
+
+        for result in (eager, compiled):
+            assert bool(result.update_applied)
+            np.testing.assert_array_equal(np.asarray(result.td_error), magnitude)
+            np.testing.assert_array_equal(np.asarray(result.state.weights), expected_weight)
+            np.testing.assert_array_equal(np.asarray(result.state.bias), expected_bias)
+            np.testing.assert_array_equal(np.asarray(result.state.eligibility_traces), obs)
+            assert float(result.state.bias_eligibility_trace) == 1.0
+            assert float(result.state.v_old) == float(magnitude)
+            assert int(result.state.step_count) == 1
+
+    @pytest.mark.parametrize(
+        ("next_feature", "step_size"),
+        [(0.0, 0.05), (1.0, 1.0)],
+    )
+    def test_unrepresentable_true_online_step_still_rejects(
+        self,
+        next_feature: float,
+        step_size: float,
+    ) -> None:
+        """Reject a TD error or weight that is still outside float32."""
+        learner = TrueOnlineTDLearner(step_size=step_size, trace_decay=0.0)
+        magnitude = np.float32(2.0e38)
+        weight = np.float32(-magnitude if next_feature == 0.0 else magnitude)
+        state = learner.init(1).replace(  # type: ignore[attr-defined]
+            weights=jnp.asarray([weight], dtype=jnp.float32)
+        )
+        obs = jnp.ones((1,), dtype=jnp.float32)
+        reward = jnp.asarray(magnitude, dtype=jnp.float32)
+        gamma = jnp.asarray(1.0, dtype=jnp.float32)
+        next_obs = jnp.asarray([next_feature], dtype=jnp.float32)
+
+        with jax.disable_jit():
+            eager = learner.update(state, obs, reward, next_obs, gamma)
+        compiled = jax.jit(learner.update)(state, obs, reward, next_obs, gamma)
+
+        for result in (eager, compiled):
+            assert not bool(result.update_applied)
+            np.testing.assert_array_equal(np.asarray(result.td_error), np.float32(0.0))
+            np.testing.assert_array_equal(
+                np.asarray(result.state.weights),
+                np.asarray(state.weights),
+            )
+            assert float(result.state.bias) == 0.0
+            assert int(result.state.step_count) == 0

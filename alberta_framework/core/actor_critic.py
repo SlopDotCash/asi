@@ -313,6 +313,13 @@ def _require_concrete_finite(name: str, array: Array) -> Array:
     return array
 
 
+def _require_concrete_finite_tree(name: str, tree: object) -> None:
+    """Reject a non-finite result tree at an eager public boundary."""
+    valid = _floating_tree_is_finite(tree)
+    if not isinstance(valid, jax.core.Tracer) and not bool(valid):
+        raise ValueError(f"{name} must contain only finite values")
+
+
 def _checked_terminated(name: str, value: object) -> Array:
     """Validate a ``terminated`` flag array dtype before boolean coercion."""
     actual_type = type(value)
@@ -358,14 +365,16 @@ def _validated_bounder_result(
 
 
 def _require_key(key: object) -> Array:
-    if not isinstance(key, jax.Array):
-        raise ValueError("key must be a Threefry JAX key")
+    """Require one typed scalar Threefry key; reject legacy raw uint32 words."""
+    if not isinstance(key, jax.Array) or tuple(key.shape) != ():
+        raise ValueError("key must be a typed scalar Threefry JAX key")
     try:
+        implementation = str(jr.key_impl(cast(Any, key)))
         data = jr.key_data(cast(Any, key))
     except Exception as error:
-        raise ValueError("key must be a Threefry JAX key") from error
-    if data.shape != (2,) or data.dtype != jnp.uint32:
-        raise ValueError("key must be a Threefry JAX key")
+        raise ValueError("key must be a typed scalar Threefry JAX key") from error
+    if implementation != "threefry2x32" or data.shape != (2,) or data.dtype != jnp.uint32:
+        raise ValueError("key must be a typed scalar Threefry JAX key")
     return key
 
 
@@ -559,6 +568,21 @@ class ActorCriticArrayResult:
     updates_applied: Bool[Array, " num_steps"]
 
 
+def _finite_cancelled_td(reward: Array, bootstrap: Array, prediction: Array) -> Array:
+    """Keep ``(reward + bootstrap) - prediction`` unless that sum overflows.
+
+    When the reward and the bootstrap are both huge, their sum can leave
+    float32 before the current prediction cancels the bootstrap. The
+    rearranged error ``reward + (bootstrap - prediction)`` can still be
+    finite. A TD error that remains outside float32 stays non-finite so the
+    caller rejects the update.
+    """
+    direct_partial = reward + bootstrap
+    direct_td = direct_partial - prediction
+    recovered_td = reward + (bootstrap - prediction)
+    return jnp.where(jnp.isfinite(direct_partial), direct_td, recovered_td)
+
+
 class ActorCriticAgent:
     """Linear actor-critic agent with a discrete softmax policy.
 
@@ -746,15 +770,18 @@ class ActorCriticAgent:
     ) -> tuple[ActorCriticState, Int[Array, ""], Float[Array, " n_actions"]]:
         """Select and store the first action for a new stream or episode.
 
-        The observation is validated eagerly at this state-committing
-        boundary: a non-finite value would otherwise be stored in
-        ``last_observation`` and reject every later update with the state
-        bitwise frozen. Traced inputs pass through to the runtime gates.
+        The observation and completed transaction are validated eagerly at
+        this state-committing boundary: a non-finite input would poison
+        ``last_observation``, while finite inputs can still overflow policy
+        arithmetic and publish a non-finite distribution. Traced values pass
+        through to the update-side runtime gates.
         """
         observation = _require_concrete_finite(
             "observation", self._observation(state, observation)
         )
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        result = self._start(state, observation)
+        _require_concrete_finite_tree("actor-critic start result", result)
+        return result  # type: ignore[no-any-return]
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -822,7 +849,7 @@ class ActorCriticAgent:
         discount = jnp.asarray(discount, dtype=jnp.float32)
         # Terminal 0 * inf V(s') is NaN and would freeze the critic.
         bootstrap = jnp.where(discount == 0.0, jnp.zeros_like(next_value), discount * next_value)
-        td_error = reward + bootstrap - value
+        td_error = _finite_cancelled_td(reward, bootstrap, value)
 
         one_hot = jax.nn.one_hot(action, cfg.n_actions, dtype=jnp.float32)
         actor_grad_bias = (one_hot - old_policy) / cfg.temperature
@@ -1612,16 +1639,18 @@ class ContinuousActorCriticAgent:
     ]:
         """Select and store the first action for a new stream or episode.
 
-        The observation is validated eagerly at this state-committing
-        boundary, matching the discrete agent's start contract: a non-finite
-        value would otherwise be stored in ``last_observation`` and reject
-        every later update with the state bitwise frozen. Traced inputs pass
-        through to the runtime gates.
+        The observation and completed transaction are validated eagerly at
+        this state-committing boundary, matching the discrete agent's start
+        contract: finite inputs can still overflow the Gaussian mean and hide
+        a non-finite raw sample behind a clipped action. Traced values pass
+        through to the update-side runtime gates.
         """
         observation = _require_concrete_finite(
             "observation", self._observation(state, observation)
         )
-        return self._start(state, observation)  # type: ignore[no-any-return]
+        result = self._start(state, observation)
+        _require_concrete_finite_tree("continuous actor-critic start result", result)
+        return result  # type: ignore[no-any-return]
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _start(
@@ -1695,7 +1724,7 @@ class ContinuousActorCriticAgent:
         discount = jnp.asarray(discount, dtype=jnp.float32)
         # Terminal 0 * inf V(s') is NaN and would freeze the critic.
         bootstrap = jnp.where(discount == 0.0, jnp.zeros_like(next_value), discount * next_value)
-        td_error = reward + bootstrap - value
+        td_error = _finite_cancelled_td(reward, bootstrap, value)
 
         diff = sample - prev_mean
         # Gaussian score function (per-dimension):

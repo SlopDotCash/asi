@@ -185,6 +185,24 @@ def _finite_l2_norm(value: Array) -> Array:
     return jnp.where(jnp.isfinite(norm), norm, jnp.float32(_FLOAT32_MAX))
 
 
+def _divide_by_positive_float32_scale(value: Array, scale: float) -> Array:
+    """Divide by a configured scale without a flushed reciprocal.
+
+    XLA:CPU can lower division by a scalar to reciprocal multiplication.  A
+    reciprocal below the smallest normal float32 then flushes to zero, even
+    though ``value / scale`` is representable because ``abs(value) <= scale``.
+    Preserve the existing direct operation for ordinary scales and decompose
+    only the affected extreme range into an exact power of two and a normal
+    mantissa.
+    """
+
+    scale_array = jnp.asarray(scale, dtype=jnp.float32)
+    if scale <= 1.0 / _FLOAT32_TINY:
+        return value / scale_array
+    mantissa, exponent = math.frexp(scale)
+    return jnp.ldexp(value, -exponent) / jnp.asarray(mantissa, dtype=jnp.float32)
+
+
 def _safe_action_lookup(mask: Array, action: Array, n_actions: int) -> Array:
     """Read an action mask without allowing an out-of-range gather."""
 
@@ -1163,7 +1181,9 @@ class PartnerPolicyFusion:
 
         safe_context = jnp.where(context_valid, context_features, 0.0)
         normalized_context = jnp.clip(
-            safe_context / jnp.float32(cfg.max_abs_context), -1.0, 1.0
+            _divide_by_positive_float32_scale(safe_context, cfg.max_abs_context),
+            -1.0,
+            1.0,
         )
         safe_confidences = jnp.where(
             jnp.isfinite(messages.declared_confidence),
@@ -1767,6 +1787,11 @@ class PartnerPolicyFusion:
             parsed: npt.NDArray[np.float32] = np.asarray(value, dtype=np.float32)
         if not np.all(np.isfinite(parsed)):
             raise ValueError(f"{name} must contain finite float32 values")
+        if any(
+            cast(float, original).hex() != float(narrowed).hex()
+            for original, narrowed in zip(untyped.flat, parsed.flat, strict=True)
+        ):
+            raise ValueError(f"{name} values must be exactly representable in float32")
         return jnp.asarray(parsed, dtype=jnp.float32)
 
     @classmethod
@@ -1843,9 +1868,14 @@ class PartnerPolicyFusion:
         predicted = state_payload.get("armed_predicted_reliability")
         if type(predicted) is not float:
             raise ValueError("armed_predicted_reliability must be a JSON float")
-        parsed_predicted = np.float32(predicted)
+        with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+            parsed_predicted = np.float32(predicted)
         if not np.isfinite(parsed_predicted):
             raise ValueError("armed_predicted_reliability must be finite float32")
+        if predicted.hex() != float(parsed_predicted).hex():
+            raise ValueError(
+                "armed_predicted_reliability must be exactly representable in float32"
+            )
         state = PartnerPolicyFusionState(
             reliability_weights=cls._checkpoint_float_array(
                 state_payload.get("reliability_weights"),

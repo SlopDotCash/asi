@@ -9,10 +9,12 @@ change, retain and reuse useful knowledge, build state and models, plan and act,
 within explicit compute, memory, and latency budgets. The intended application envelope
 includes useful ongoing work and embodied systems such as robotics.
 
-The goal is a state-of-the-art continual-learning application. That is an aspiration and a
-comparative research target, not a claim about the current checkout. ASI does not yet have a
-completed whole-agent L3 protocol or result, state-of-the-art application evidence, or
-robotics readiness.
+ASI is a hill-climbing project: at every stage, the objective is to outperform the current
+best internal benchmark result under the same protocol and resource accounting. Each accepted
+improvement becomes the new baseline for the next climb. The broader goal is a state-of-the-art
+continual-learning application. That is an aspiration and comparative research target, not a
+claim about the current checkout. ASI does not yet have a completed whole-agent L3 protocol or
+result, state-of-the-art application evidence, or robotics readiness.
 
 The repository provides a JAX package of online learners, adaptive optimizers, prediction and
 control agents, learned-state and memory mechanisms, world models, planning and option
@@ -54,6 +56,14 @@ package keeps Python 3.12 compatibility and a NumPy 1.26 floor. The name labels 
 program; it is not a claim about the current software's level of intelligence.
 
 ## Current status
+
+**Progress snapshot — 2026-10-30:** the primitive Prototype reference-life runner, matched
+SwitchingTwoState/RiverSwim development scorecard, and quiescent exact-resume checkpoints are
+implemented at L0. The retained scorecard completed all 144 lives and independently recomputed
+its aggregate, but ended in `valid_baseline_failure`: RiverSwim controls did not qualify and no
+candidate was selected. The immediate hillclimb is therefore control calibration and a measured
+candidate/control retry, alongside the active IPMNIST plasticity lane—not a claim of a new
+performance leader.
 
 Individual mechanisms range from contract-tested kernels to narrow historical evidence
 packages. The retained `PrototypeAgent` is a candidate composition surface, not a completed
