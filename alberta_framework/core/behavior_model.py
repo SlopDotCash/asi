@@ -1039,9 +1039,10 @@ class BehaviorModel:
         # Inf observation makes softmax NaN and logit_error * x = 0*inf = NaN
         # on silent features. Hold the previous finite state.
         diagnostics_required = jnp.asarray(cfg.diagnostic_decay != 0.0, dtype=jnp.bool_)
-        source_finite = (
+        source_valid = (
             jnp.all(jnp.isfinite(state.weights))
             & jnp.all(jnp.isfinite(state.bias))
+            & (state.step_count >= 0)
             & (
                 (~diagnostics_required)
                 | (
@@ -1062,7 +1063,7 @@ class BehaviorModel:
             & jnp.isfinite(new_state.accuracy_ema)
             & jnp.isfinite(new_state.confidence_ema)
         )
-        update_applied = source_finite & inputs_valid & proposed_finite
+        update_applied = source_valid & inputs_valid & proposed_finite
         committed = jax.lax.cond(
             update_applied,
             lambda: new_state,

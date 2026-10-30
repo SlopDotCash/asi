@@ -192,6 +192,32 @@ def test_infinite_observation_does_not_poison_weights() -> None:
     assert bool(recovered.update_applied)
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_negative_step_count_rejects_behavior_update_atomically(
+    disable_jit: bool,
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0)).replace(
+        step_count=jnp.asarray(-1, dtype=jnp.int32)
+    )
+
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            state,
+            jnp.asarray([0.5, -0.25], dtype=jnp.float32),
+            jnp.asarray(0, dtype=jnp.int32),
+        )
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.logits, jnp.zeros_like(result.logits))
+    chex.assert_trees_all_equal(
+        result.probabilities,
+        jnp.zeros_like(result.probabilities),
+    )
+    chex.assert_trees_all_equal(result.loss, jnp.zeros_like(result.loss))
+
+
 def test_zero_diagnostic_decay_does_not_multiply_inf_ema() -> None:
     """decay=0 times an infinite diagnostic EMA is NaN and would reject a finite sample."""
     model = BehaviorModel(

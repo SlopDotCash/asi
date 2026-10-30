@@ -1255,7 +1255,7 @@ def run_step2_associative_smoke(
     seed = require_jax_seed(seed, name="seed")
     window = _require_int("window", window, minimum=1, maximum=steps // 2)
     pattern_count = min(8, max(2, steps // 8))
-    key = jr.key(seed)
+    key = jr.key(seed, impl="threefry2x32")
     patterns = jr.randint(
         key,
         (pattern_count, cfg.block_size),

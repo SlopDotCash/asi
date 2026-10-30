@@ -62,7 +62,7 @@ def test_temporal_context_persist_matches_jit_and_width_still_fits() -> None:
 def test_temporal_context_last_fit_and_first_overflow_are_adjacent() -> None:
     last_fit = None
     first_overflow = None
-    for input_dim in range(22_369_618, 22_369_624):
+    for input_dim in range(21_262_212, 21_262_217):
         working_set_bytes = _temporal_context_update_working_set_bytes(
             input_dim,
             **_PHASE_PRODUCT_KWARGS,

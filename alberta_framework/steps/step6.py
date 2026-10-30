@@ -414,7 +414,7 @@ def run_step6_smoke(
         raise TypeError("config must be an exact Step6DifferentialSARSAConfig")
     _preflight_step6_smoke_resources(cfg, steps=steps, feature_dim=feature_dim)
     agent = make_step6_differential_sarsa_agent(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(data_key, (steps + 1, feature_dim), dtype=jnp.float32)
     rewards = jnp.tanh(observations[1:, 0])
     state = init_step6_state(
