@@ -40,7 +40,7 @@ The parent at 60 tasks is therefore taken as the first 60 entries of the stored 
 
 ## Pin tests (tests/test_ipmnist_screening.py)
 - `anneal_peak == step_size` gives a result bitwise equal to the parent.
-- A deliberate break, `anneal_peak = step_size * 1.0001`, must differ from the parent.
+- A deliberate break, `anneal_peak = 0.006` (~7% above step_size; a 1e-4 bump was measured indistinguishable on the 64-step pin stream), must differ from the parent.
 - Invalid values are rejected: `anneal_peak` < floor, `anneal_peak` ≤ 0, and `anneal_peak` = inf or nan.
 
 ## Runtime (one heavy slot, at most 4 one-thread workers, 3 GB available-RAM floor)

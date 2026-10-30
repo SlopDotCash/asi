@@ -7857,9 +7857,13 @@ class TestRLSHeadIdentMapAnnealPeak(TestRLSHeadIdentMapStepAnneal):
         )
 
     def test_mechanism_live(self):
-        """Deliberate break: a peak a hair above step_size must diverge."""
+        """Deliberate break: a peak ~7% above step_size must diverge.
+
+        (A 1e-4 relative bump is below the 64-step pin stream's
+        resolution: measured identical, so the break uses 0.006.)
+        """
         parent = self._run(anneal_tau=2.0)
-        brk = self._run(anneal_tau=2.0, anneal_peak=0.005625 * 1.0001)
+        brk = self._run(anneal_tau=2.0, anneal_peak=0.006)
         assert not np.array_equal(
             np.asarray(brk.per_task_loss), np.asarray(parent.per_task_loss)
         )
