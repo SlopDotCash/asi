@@ -7578,6 +7578,17 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.005625,
             },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_snp_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "snp_shrink": shrink,
+                    "snp_sigma": sigma,
+                }
+                for tag, shrink, sigma in (
+                    ("l08s001", 0.8, 0.01), ("l05s01", 0.5, 0.1),
+                )
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7734,6 +7745,127 @@ class TestRLSHeadIdentMapIdet003S005625:
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapShrinkPerturb:
+    """Shrink & Perturb at the identifier's first remap (S&P wave).
+
+    The reduction pin runs the LIVE S&P path (keys present,
+    ``snp_shrink = 1, snp_sigma = 0``) on a stream where the identifier
+    provably fires, and requires bitwise equality with the parent.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+
+    @staticmethod
+    def _offset_data():
+        key = jr.key(4321)
+        kx, ky = jr.split(key)
+        offsets = jnp.linspace(-2.0, 2.0, SMALL.input_dim)
+        x = np.asarray(
+            jr.uniform(kx, (64, SMALL.input_dim), jnp.float32, -0.3, 0.3)
+            + offsets[None, :]
+        )
+        y = np.asarray(jr.randint(ky, (64,), 0, SMALL.n_classes))
+        return x, y
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_snp_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def test_off_live_path_pin_bitwise(self):
+        """``snp_shrink = 1, snp_sigma = 0`` through the live path is the
+        parent bit-exactly, on a stream where the remap fires."""
+        x, y = self._offset_data()
+        parent = run_screening_config(x, y, self._spec(), seed=7, config=SMALL)
+        off = run_screening_config(
+            x, y, self._spec(snp_shrink=1.0, snp_sigma=0.0),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_helper_identity_bitwise(self):
+        """The body transform at (1, 0) returns every tensor bitwise."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _shrink_perturb_body,
+        )
+
+        params = init_mlp_params(jr.key(3), SMALL)
+        out = _shrink_perturb_body(
+            params, jnp.bool_(True), jr.key(9), 1.0, 0.0
+        )
+        for name, value in params.items():
+            np.testing.assert_array_equal(
+                np.asarray(out[name]), np.asarray(value)
+            )
+
+    def test_helper_event_gating(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _shrink_perturb_body,
+        )
+
+        params = init_mlp_params(jr.key(3), SMALL)
+        idle = _shrink_perturb_body(
+            params, jnp.bool_(False), jr.key(9), 0.5, 0.1
+        )
+        fired = _shrink_perturb_body(
+            params, jnp.bool_(True), jr.key(9), 0.5, 0.1
+        )
+        for name in ("w1", "b1", "w2", "b2"):
+            np.testing.assert_array_equal(
+                np.asarray(idle[name]), np.asarray(params[name])
+            )
+            bound = 1.0 / math.sqrt(params[name[0] + "1" if name.endswith("1")
+                                           else "w2"].shape[0])
+            delta = np.asarray(fired[name]) - 0.5 * np.asarray(params[name])
+            assert np.all(np.abs(delta) <= 0.1 * bound + 1e-6)
+        for name in params:
+            if name not in ("w1", "b1", "w2", "b2"):
+                np.testing.assert_array_equal(
+                    np.asarray(fired[name]), np.asarray(params[name])
+                )
+
+    def test_mechanism_live(self):
+        """With a real shrink the trajectory diverges from the parent (the
+        event fires inside the scanned loop; on this offset stream the
+        detector already fires during task 0's warm-up)."""
+        x, y = self._offset_data()
+        parent = run_screening_config(x, y, self._spec(), seed=7, config=SMALL)
+        snp = run_screening_config(
+            x, y, self._spec(snp_shrink=0.5, snp_sigma=0.1),
+            seed=7, config=SMALL,
+        )
+        assert not np.array_equal(
+            np.asarray(snp.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(snp.per_task_loss)))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        for bad in ({"snp_shrink": 0.0}, {"snp_shrink": 1.5},
+                    {"snp_sigma": -0.1}):
+            hp = {**self._spec(snp_shrink=0.8, snp_sigma=0.01)
+                  .hyperparameters, **bad}
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner(hp)
 
 
 class TestPlasticityCounterSaturation:
