@@ -1,0 +1,82 @@
+{
+  "agent_config": {
+    "algorithm": "discounted_sarsa",
+    "boundary_mode": "continuing_unit_discount_only",
+    "environment_kind": "riverswim",
+    "epsilon_decay_steps": 2500,
+    "epsilon_end": 0.019999999552965164,
+    "epsilon_start": 0.5,
+    "gamma": 0.8999999761581421,
+    "hidden_sizes": [],
+    "initial_key_contract": "scalar_threefry2x32_typed_or_legacy.preview1",
+    "initial_q_value": 10.0,
+    "lamda": 0.0,
+    "leaky_relu_slope": 0.009999999776482582,
+    "n_actions": 2,
+    "observation_dim": 6,
+    "rng_implementation": "threefry2x32",
+    "rng_schedule": "owned_sarsa_key.preview1",
+    "schema": "asi.reference_life_control_config.preview1",
+    "sparsity": 0.0,
+    "step_size": 0.05000000074505806,
+    "use_layer_norm": false
+  },
+  "agent_manifest_id": "b206a4eb96fbdf294e6104b2fa3254113209e1e3128827796a0c04faa57a8bb7",
+  "arm": "optimistic",
+  "evidence_policy": {
+    "development_only": true,
+    "permanently_nonpromoting": true,
+    "reference_dev_population_allowed": false,
+    "scientific_promotion_allowed": false
+  },
+  "horizon": 5000,
+  "result": {
+    "accepted_events": 5000,
+    "early_reward_sum": 221.33499999251217,
+    "final_resources": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "first_high_end_event": 294,
+    "high_end_visit_count": 3175,
+    "high_end_visit_rate": 0.635,
+    "initial_resources": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "late_reward_sum": 869.0,
+    "oracle_reward_sum": 4285.7507094362745,
+    "parameter_change_events": 5000,
+    "phase": "completed",
+    "regret_sum": 1232.4007094444048,
+    "reward_sum": 3053.349999992177,
+    "transcript_sha256": "553613377b98cb51d3fd6790002a9ae2ad63cdeb3a3ac98deecea6aba00e3d64",
+    "wall_clock_seconds_telemetry_only": 74.8586388300173
+  },
+  "runtime_identity": {
+    "dependencies": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    },
+    "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "schema": "asi.reference_life_riverswim_control_calibration.development.v1",
+  "seed": 81013,
+  "source_identity": {
+    "files": {
+      "alberta_framework/reference_life.py": "c774b06ada83eea7742c8efdfd73c1cb7ff458afc0c80252a9638106bf96008d",
+      "alberta_framework/reference_life_controls.py": "3638dcbc60d4dd445d9c699f7ff20a44128c116390bf30445222fdfa26d6803c",
+      "alberta_framework/streams/closed_loop.py": "9268c08f12f56b9056f7ce45d33420706472ae54097b1b38af3299cff5774fe2",
+      "outputs/reference_life_control_calibration/2026-10-18/run.py": "8140a6df8847f38ed3a7ea4f4579ab96f51842c438cd11e55bddaa79e777cc9b"
+    },
+    "git_head": "b132b2693a1305baefe20e98e4dea80d7b252f80"
+  },
+  "window": 1000
+}
