@@ -8301,14 +8301,9 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # V1's measured 0.62 identification accuracy lifts the incumbent to
     # 0.8997; a refining identifier rides the upper envelope.  The first
     # two arms below are the two 200-task/20-seed CONFIRMED members of the
-    # family (identmap_confirm_r1/ and identmap_star_confirm_r1/); the
-    # third is a registered 60-task screen of the gate + trigger +
-    # step-size triple on the gated chain (wave_identmap50_r_idet003_s005625/,
-    # the ungated chain's winning step size composed with the gated
-    # idet003 trigger peak, PRs #3115/#3116); the screened intermediates
-    # (identmap200 single-shot, identmap100_r) and the round-2 rejections
-    # (identmap25_r, identmap50_fast — negative result #22) are
-    # deregistered but retained in the ledger and pinned outputs.
+    # family; the remaining arms are registered 60-task gated-chain screens.
+    # Screened intermediates and round-2 rejections are deregistered but
+    # retained in the ledger and pinned outputs.
     # ident_match_at=0 delegates verbatim to the incumbent factory
     # (bit-exact reduction, pinned by tests).
     for ident_name, ident_overrides, ident_extra in (
@@ -8335,15 +8330,16 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match_at": 50.0, "ident_match2": 200.0,
              "ident_match3": 2000.0, "ident_reset_frac": 0.03,
              "step_size": 0.005625},
-            "the gated idet003 composition (identmap50_r schedule "
-            "50/200/2000, utility gate kept, identifier trigger 0.03 — the "
-            "gated trigger peak, PR #3115) with the residual body's step "
-            "size lowered to 0.005625 from the champion-calibrated 0.01: "
-            "the ungated chain measured the step axis improving through "
-            "0.005625 on every seed (PRs #3109-#3111, +0.01155 cumulative), "
-            "and the gated chain never screened any step below 0.01 — the "
-            "gate + trigger + step triple named unmeasured in the idet002 "
-            "wave README (PR #3116)"
+            "the gated idet003 composition with residual body step 0.005625",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.0031640625, "rls_ridge_init": 0.03},
+            "the gated idet003_s0031640625_r01 composition with initial/reset "
+            "RLS head ridge lowered from 0.1 to 0.03",
         ),
     ):
         specs.append(
