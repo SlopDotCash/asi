@@ -877,6 +877,13 @@ class MixedHorde:
         next_observation: Array,
     ) -> HordeUpdateResult:
         """Update routed demons and return outputs in original demon order."""
+        cumulants = jnp.asarray(cumulants)
+        expected_shape = (self.n_demons,)
+        if cumulants.shape != expected_shape:
+            raise ValueError(
+                f"cumulants must have shape {expected_shape}, got {cumulants.shape}"
+            )
+
         predictions = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
         td_errors = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
         td_targets = jnp.full((self.n_demons,), jnp.nan, dtype=jnp.float32)
