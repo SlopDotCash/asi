@@ -55,6 +55,20 @@ class TestLearnedResourceManager:
         weights = manager.weights(state, 1)
         assert weights.tolist() == pytest.approx([1 / 3, 1 / 3, 1 / 3])
 
+    @pytest.mark.parametrize("shape", [(1,), (1, 1)])
+    def test_context_id_rejects_nonscalar_aliases(
+        self,
+        shape: tuple[int, ...],
+    ) -> None:
+        manager = LearnedResourceManager(n_actions=3, n_contexts=2)
+        state = manager.init()
+        context_id = jnp.ones(shape, dtype=jnp.int32)
+
+        with pytest.raises(ValueError, match="action must be a scalar"):
+            manager.weights(state, context_id)
+        with pytest.raises(ValueError, match="action must be a scalar"):
+            manager.update(state, jnp.zeros((3,), dtype=jnp.float32), context_id)
+
     def test_weights_shift_toward_lower_loss_action(self) -> None:
         manager = LearnedResourceManager(
             n_actions=3,
@@ -528,6 +542,17 @@ class TestGeneratorMetaResourceManager:
         assert float(decision.candidate_min_age_multiplier) == pytest.approx(1.5)
         assert float(decision.imprint_scale) == pytest.approx(0.0)
 
+    @pytest.mark.parametrize(
+        "key",
+        [jr.PRNGKey(1), jr.key(1, impl="rbg")],
+        ids=["legacy-words", "rbg"],
+    )
+    def test_select_requires_a_typed_threefry_key(self, key: jax.Array) -> None:
+        manager = self._manager()
+
+        with pytest.raises(TypeError, match="typed scalar threefry2x32 key"):
+            manager.select(manager.init(), key)
+
     def test_config_roundtrip(self) -> None:
         manager = GeneratorMetaResourceManager(
             policy_names=("a", "b", "c"),
@@ -694,8 +719,8 @@ def test_resource_manager_float32_config_is_canonical_and_json_safe() -> None:
 
 
 def test_resource_manager_preflights_complete_state_before_allocation() -> None:
-    # Conservative update/select working set is 49*n_actions+35 for one context.
-    last_legal = ((2**31 - 1) // 4 - 35) // 49
+    # Conservative update/select working set is 50*n_actions+35 for one context.
+    last_legal = ((2**31 - 1) // 4 - 35) // 50
     LearnedResourceManager(n_actions=last_legal)
     with pytest.raises(ValueError, match="state exceeds"):
         LearnedResourceManager(n_actions=last_legal + 1)
@@ -875,4 +900,67 @@ def test_learned_resource_manager_masked_baseline_centers_across_extreme_gaps() 
         # Centering baseline of 1.0 and 3.0 should give advantages +1.0 and -1.0
         assert jnp.allclose(result.advantages[1], 1.0, atol=1e-4)
         assert jnp.allclose(result.advantages[2], -1.0, atol=1e-4)
+
+
+def test_learned_resource_manager_preserves_finite_extreme_convex_baseline() -> None:
+    manager = LearnedResourceManager(
+        n_actions=20,
+        learning_rate=1.0,
+        discount=1.0,
+        exploration=0.0,
+    )
+    state = dataclasses.replace(
+        manager.init(),
+        log_weights=jnp.asarray([[0.0] * 19 + [-15.0]], dtype=jnp.float32),
+    )
+    maximum = jnp.finfo(jnp.float32).max
+    losses = jnp.asarray([maximum] * 19 + [0.0], dtype=jnp.float32)
+    weights = manager.weights(state)
+    _, exponent = jnp.frexp(jnp.max(weights))
+    normalized = jnp.ldexp(weights, -exponent)
+    normalized = normalized / jnp.sum(normalized)
+
+    assert bool(jnp.isinf(jnp.sum(normalized * losses)))
+
+    result = manager.update(state, losses)
+
+    assert bool(result.update_applied)
+    np.testing.assert_array_equal(result.advantages[:19], 0.0)
+    np.testing.assert_array_equal(result.advantages[19], 10.0)
+    assert float(manager.weights(result.state)[19]) > float(manager.weights(state)[19])
+
+
+def test_generator_resource_manager_preserves_finite_extreme_convex_baseline() -> None:
+    count = 20
+    manager = GeneratorMetaResourceManager(
+        policy_names=tuple(f"p{index}" for index in range(count)),
+        op_ids=tuple(range(count)),
+        parent_modes=(0,) * count,
+        replacement_multipliers=(1.0,) * count,
+        promotion_margin_multipliers=(1.0,) * count,
+        candidate_min_age_multipliers=(1.0,) * count,
+        imprint_scales=(0.0,) * count,
+        learning_rate=1.0,
+        discount=1.0,
+        exploration=0.0,
+    )
+    state = dataclasses.replace(
+        manager.init(),
+        log_weights=jnp.asarray([[0.0] * 19 + [-15.0]], dtype=jnp.float32),
+    )
+    maximum = jnp.finfo(jnp.float32).max
+    rewards = jnp.asarray([maximum] * 19 + [0.0], dtype=jnp.float32)
+    weights = manager.weights(state)
+    _, exponent = jnp.frexp(jnp.max(weights))
+    normalized = jnp.ldexp(weights, -exponent)
+    normalized = normalized / jnp.sum(normalized)
+
+    assert bool(jnp.isinf(jnp.sum(normalized * rewards)))
+
+    result = manager.update(state, rewards)
+
+    assert bool(result.update_applied)
+    np.testing.assert_array_equal(result.advantages[:19], 0.0)
+    np.testing.assert_array_equal(result.advantages[19], -10.0)
+    assert float(manager.weights(result.state)[19]) < float(manager.weights(state)[19])
 
