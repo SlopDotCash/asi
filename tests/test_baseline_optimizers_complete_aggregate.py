@@ -54,7 +54,7 @@ def test_adam_rejects_simultaneous_update_working_set() -> None:
     one_bank_bytes = 4 * _WORKING_SET_OVERFLOW
     persistent_bytes = 4 * (2 * _WORKING_SET_OVERFLOW + 7)
     contributor_update_bytes = 4 * (9 * _WORKING_SET_OVERFLOW + 8)
-    update_bytes = 4 * (14 * _WORKING_SET_OVERFLOW + 8)
+    update_bytes = 4 * (16 * _WORKING_SET_OVERFLOW + 14)
     assert one_bank_bytes <= _INT32_MAX
     assert persistent_bytes <= _INT32_MAX
     assert contributor_update_bytes <= _INT32_MAX
@@ -104,10 +104,10 @@ def test_legal_adam_and_adagain_update_identity_is_unchanged() -> None:
 @pytest.mark.parametrize(
     ("factory", "vectors", "scalars", "label"),
     [
-        (Adam, 14, 8, "Adam"),
+        (Adam, 16, 14, "Adam"),
         (AdaGain, 13, 8, "AdaGain"),
-        (RMSprop, 8, 6, "RMSprop"),
-        (NADALINE, 9, 6, "NADALINE"),
+        (RMSprop, 9, 9, "RMSprop"),
+        (NADALINE, 11, 12, "NADALINE"),
     ],
 )
 def test_every_linear_optimizer_rejects_first_overflowing_update_width(
