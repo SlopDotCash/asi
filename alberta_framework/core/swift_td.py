@@ -567,7 +567,11 @@ class SwiftTD:
 
         # Meta-update: beta_i += (theta / alpha_i) * (delta' - v_delta) * p_i,
         # clipped to [ln(eta_min), ln(eta)].
-        meta_delta = (theta / jnp.exp(log_alphas)) * (delta - v_delta) * p_ext
+        # A zero meta trace contributes exactly zero even if the unused
+        # learning-rate/error prefactor overflows for a valid transition.
+        meta_delta = _skip_zero_scale(
+            p_ext, (theta / jnp.exp(log_alphas)) * (delta - v_delta)
+        )
         new_log_step_sizes = jnp.where(
             jnp.isfinite(meta_delta),
             jnp.clip(

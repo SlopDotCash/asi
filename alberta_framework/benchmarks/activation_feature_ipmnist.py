@@ -367,13 +367,18 @@ def _runtime_identity() -> tuple[str, str, str, str]:
     return (platform.python_version(), jax.__version__, np.__version__, jax.default_backend())
 
 
-def _current_source_identity() -> tuple[str, str, str]:
-    names = ("activation_feature_ipmnist.py", "ipmnist_screening.py", "upgd_ipmnist.py")
+def _current_source_identity() -> tuple[str, str, str, str]:
+    names = (
+        "activation_feature_ipmnist.py",
+        "ipmnist_screening.py",
+        "upgd_ipmnist.py",
+        "plasticity_comparators.py",
+    )
     digests = tuple(
         hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
         for name in names
     )
-    return digests[0], digests[1], digests[2]
+    return digests[0], digests[1], digests[2], digests[3]
 
 
 def _host_array(value: object, *, name: str, dtype: np.dtype[Any]) -> np.ndarray:
@@ -388,7 +393,7 @@ class ActivationFeatureRunResult:
     screening: ScreeningRunResult
     dataset_sha256: str
     schedule_sha256: str
-    source_identity: tuple[str, str, str]
+    source_identity: tuple[str, str, str, str]
     runtime_identity: tuple[str, str, str, str]
     n_train: int
     retained_schedule_numeric_bytes: int
@@ -445,7 +450,11 @@ def run_activation_feature_arm(
         raise ValueError("activation/feature lane exceeds its 2000000-step bound")
     if type(seed) is not int or not 0 <= seed <= 2**32 - 1:
         raise ValueError("seed must be an exact uint32 value")
-    if arm.startswith("deep_fourier") and (config.hidden1 % 2 or config.hidden2 % 2):
+    if (
+        arm.startswith("deep_fourier")
+        and arm != "deep_fourier_off"
+        and (config.hidden1 % 2 or config.hidden2 % 2)
+    ):
         raise ValueError("Deep Fourier arms require even hidden widths")
     host_x = _host_array(data_x, name="data_x", dtype=np.dtype(np.float32))
     host_y = _host_array(data_y, name="data_y", dtype=np.dtype(np.int32))

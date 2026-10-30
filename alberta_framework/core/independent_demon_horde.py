@@ -1267,6 +1267,9 @@ def run_independent_horde_learning_loop(
             updates_applied,
         ),
     ) = jax.lax.scan(step_fn, state, (observations, cumulants, next_observations))
+    # Traced calls defer execution; concrete results must finish before timing.
+    if not isinstance(per_demon_metrics, jax.core.Tracer):
+        per_demon_metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(  # type: ignore[attr-defined]
         uptime_s=final_state.uptime_s + elapsed

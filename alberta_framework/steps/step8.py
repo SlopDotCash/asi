@@ -325,6 +325,58 @@ def step8_update(
     )
 
 
+def _scale_safe_normalized_statistics(
+    values: Array,
+    *,
+    axis: int,
+) -> tuple[Array, Array, Array]:
+    """Return the restored mean plus normalized variance and its value exponent."""
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    _, exponent = jnp.frexp(scale)
+    safe_exponent = jnp.where(jnp.isfinite(scale) & (scale > 0), exponent, 0)
+    normalized = jnp.ldexp(values, -safe_exponent)
+    normalized_mean = jnp.mean(normalized, axis=axis)
+    reference = jnp.take(normalized, 0, axis=axis)
+    shifted = normalized - jnp.expand_dims(reference, axis=axis)
+    shifted_mean = jnp.mean(shifted, axis=axis)
+    normalized_centered = shifted - jnp.expand_dims(shifted_mean, axis=axis)
+    normalized_variance = jnp.mean(normalized_centered**2, axis=axis)
+    value_exponent = jnp.squeeze(safe_exponent, axis=axis)
+    mean = jnp.ldexp(normalized_mean, value_exponent)
+    return mean, normalized_variance, value_exponent
+
+
+def _scale_safe_mean_from_scaled(
+    normalized_values: Array,
+    value_exponents: Array,
+    *,
+    axis: int,
+) -> Array:
+    """Average scaled values before restoring their shared binary exponent."""
+    nonzero = normalized_values != 0
+    inactive_exponent = jnp.min(value_exponents, axis=axis, keepdims=True) - 1
+    candidate_exponents = jnp.where(nonzero, value_exponents, inactive_exponent)
+    common_exponent = jnp.max(candidate_exponents, axis=axis, keepdims=True)
+    common_exponent = jnp.where(
+        jnp.any(nonzero, axis=axis, keepdims=True),
+        common_exponent,
+        0,
+    )
+    aligned_values = jnp.ldexp(normalized_values, value_exponents - common_exponent)
+    normalized_mean = jnp.mean(aligned_values, axis=axis)
+    return jnp.ldexp(normalized_mean, jnp.squeeze(common_exponent, axis=axis))
+
+
+def _scale_safe_mean_and_variance(values: Array, *, axis: int) -> tuple[Array, Array]:
+    """Return population statistics while preserving finite float32 range."""
+    mean, normalized_variance, value_exponent = _scale_safe_normalized_statistics(
+        values,
+        axis=axis,
+    )
+    variance = jnp.ldexp(normalized_variance, 2 * value_exponent)
+    return mean, variance
+
+
 def step8_ensemble_predict(
     model: OneStepWorldModel,
     states: Sequence[WorldModelState],
@@ -345,10 +397,23 @@ def step8_ensemble_predict(
         [pred.next_observation for pred in predictions],
         axis=0,
     )
-    mean_reward = jnp.mean(reward_predictions, axis=0)
-    mean_next_observation = jnp.mean(next_observation_predictions, axis=0)
-    reward_disagreement = jnp.var(reward_predictions, axis=0)
-    next_observation_disagreement = jnp.mean(jnp.var(next_observation_predictions, axis=0))
+    mean_reward, reward_disagreement = _scale_safe_mean_and_variance(
+        reward_predictions,
+        axis=0,
+    )
+    (
+        mean_next_observation,
+        normalized_observation_variance,
+        observation_value_exponent,
+    ) = _scale_safe_normalized_statistics(
+        next_observation_predictions,
+        axis=0,
+    )
+    next_observation_disagreement = _scale_safe_mean_from_scaled(
+        normalized_observation_variance,
+        2 * observation_value_exponent,
+        axis=0,
+    )
     total_disagreement = reward_disagreement + next_observation_disagreement
     return Step8EnsemblePrediction(
         reward_predictions=reward_predictions,

@@ -1073,3 +1073,38 @@ def test_mixed_horde_rejects_bool_step_size_before_inner_construction() -> None:
     )
     with pytest.raises(ValueError, match="step_size"):
         MixedHorde(horde_spec=spec, hidden_sizes=(4,), step_size=True)  # type: ignore[arg-type]
+
+
+def test_horde_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    import jax
+
+    import alberta_framework.core.horde as module
+
+    horde, state = _shape_contract_horde()
+    observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((1024, 3), 0.2, dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(leaf.is_ready() for leaf in scan_outputs if isinstance(leaf, jax.Array))
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_horde_learning_loop(horde, state, observations, cumulants, observations)
+    assert scan_outputs
+    assert int(result.state.step_count) == 1024
+    assert bool(jnp.all(result.updates_applied))

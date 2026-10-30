@@ -459,17 +459,19 @@ class TestETDLambda:
         )
 
         # F_t = rho_{t-1} * gamma_t * F_{t-1} + i_t (Sutton, Mahmood & White
-        # 2016, eq. 20): F advances on the PRIOR step's rho, not the current
-        # one. init()'s previous_rho=1.0 is irrelevant here since F_0=0.
-        # F_1 = 1.0 * 0.9 * 0 + 1 = 1
-        # F_2 = rho_1 * 0.8 * 1 + 1 = 2.0 * 0.8 * 1 + 1 = 2.6
-        # M_2 = lambda * i + (1 - lambda) * F_2 = 0.4 + 0.6 * 2.6 = 1.96
+        # 2016, eq. 20): F advances on the PRIOR step's rho AND the prior
+        # step's discount gamma_t (the discount into S_t), not the current
+        # call's bootstrap discount. init()'s previous_rho=1.0 and
+        # previous_gamma=1.0 are irrelevant here since F_0=0.
+        # F_1 = 1.0 * 1.0 * 0 + 1 = 1
+        # F_2 = rho_1 * 0.9 * F_1 + 1 = 2.0 * 0.9 * 1 + 1 = 2.8
+        # M_2 = lambda * i + (1 - lambda) * F_2 = 0.4 + 0.6 * 2.8 = 2.08
         chex.assert_trees_all_close(first.state.follow_on_trace, jnp.float32(1.0))
-        chex.assert_trees_all_close(second.state.follow_on_trace, jnp.float32(2.6))
-        chex.assert_trees_all_close(second.state.emphasis, jnp.float32(1.96))
+        chex.assert_trees_all_close(second.state.follow_on_trace, jnp.float32(2.8))
+        chex.assert_trees_all_close(second.state.emphasis, jnp.float32(2.08), atol=1e-6)
         chex.assert_trees_all_close(
             second.state.eligibility_traces,
-            jnp.array([0.32, 0.98], dtype=jnp.float32),
+            jnp.array([0.36, 1.04], dtype=jnp.float32),
             atol=1e-6,
         )
 
@@ -495,11 +497,12 @@ class TestETDLambda:
             )
             state = result.state
 
-        # F_1 = previous_rho(init=1.0) * 0.5 * F_0(=0) + 1 = 1.0
-        # F_2 = rho_1(=3.0) * 0.9 * F_1(=1.0) + 1 = 3.7
-        # F_3 = rho_2(=0.1) * 0.7 * F_2(=3.7) + 1 = 1.259
-        # (using rho_t instead of rho_{t-1} at each step gives F_3 = 4.052)
-        chex.assert_trees_all_close(state.follow_on_trace, jnp.float32(1.259), atol=1e-5)
+        # F_1 = previous_rho(init=1.0) * previous_gamma(init=1.0) * F_0(=0) + 1 = 1.0
+        # F_2 = rho_1(=3.0) * 0.5 * F_1(=1.0) + 1 = 2.5
+        # F_3 = rho_2(=0.1) * 0.9 * F_2(=2.5) + 1 = 1.225
+        # (using each call's own gamma instead of the prior call's gives
+        # F_3 = 1.259; using rho_t instead of rho_{t-1} gives F_3 = 4.052)
+        chex.assert_trees_all_close(state.follow_on_trace, jnp.float32(1.225), atol=1e-5)
 
     def test_update_is_jit_compatible(self) -> None:
         learner = ETDLinearLearner(step_size=0.05, trace_decay=0.5)
@@ -938,6 +941,45 @@ class TestInfiniteRewardDoesNotPoisonWeights:
         chex.assert_tree_all_finite(recovered.state.weights)
         assert bool(recovered.update_applied)
 
+    def test_etd_terminal_step_clears_stored_traces(self) -> None:
+        learner = ETDLinearLearner(step_size=0.05, trace_decay=0.5)
+        zero = jnp.zeros(2, dtype=jnp.float32)
+        fresh = learner.update(
+            learner.init(2),
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        terminal = learner.update(
+            learner.init(2),
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(terminal.state.eligibility_traces, zero)
+        assert float(terminal.state.follow_on_trace) == 0.0
+        post_terminal = learner.update(
+            terminal.state,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            post_terminal.state.eligibility_traces, fresh.state.eligibility_traces
+        )
+        chex.assert_trees_all_close(
+            post_terminal.state.follow_on_trace, fresh.state.follow_on_trace
+        )
+
     def test_gradient_td(self) -> None:
         learner = GradientTDLinearLearner(step_size=0.1)
         state = learner.init(2)
@@ -1069,12 +1111,14 @@ class TestZeroGammaDoesNotMultiplyInfBootstrap:
         assert bool(jnp.isfinite(result.state.bias_eligibility_trace))
 
     def test_etd_does_not_multiply_inf_follow_on(self) -> None:
-        """gamma=0 drops leftover F; 0 * inf must not freeze the ETD step."""
+        """previous_gamma=0 drops leftover F/traces; 0 * inf must not freeze
+        the ETD step."""
         learner = ETDLinearLearner(step_size=0.1, trace_decay=0.4)
         state = learner.init(2).replace(  # type: ignore[attr-defined]
             follow_on_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
             eligibility_traces=jnp.full(2, jnp.inf, dtype=jnp.float32),
             bias_eligibility_trace=jnp.asarray(jnp.inf, dtype=jnp.float32),
+            previous_gamma=jnp.asarray(0.0, dtype=jnp.float32),
         )
         raw = jnp.asarray(0.0, dtype=jnp.float32) * jnp.asarray(jnp.inf, dtype=jnp.float32)
         assert not bool(jnp.isfinite(raw))
@@ -1083,13 +1127,14 @@ class TestZeroGammaDoesNotMultiplyInfBootstrap:
             state,
             jnp.array([0.5, -0.25], dtype=jnp.float32),
             jnp.array(1.0, dtype=jnp.float32),
-            jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
-            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array([0.25, 0.5], dtype=jnp.float32),
+            jnp.array(0.9, dtype=jnp.float32),
             jnp.array(1.0, dtype=jnp.float32),
         )
         assert bool(result.update_applied)
         assert bool(jnp.isfinite(result.state.follow_on_trace))
         chex.assert_tree_all_finite(result.state.eligibility_traces)
+        assert bool(jnp.isfinite(result.state.bias_eligibility_trace))
 
     def test_etd_zero_previous_rho_preserves_invalid_history_rejection(self) -> None:
         """Zero previous ratio must not broaden adoption of corrupt prior state."""

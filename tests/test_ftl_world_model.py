@@ -944,3 +944,30 @@ def test_sparse_ftl_world_model_from_config_rejects_non_dict_config(
         ValueError, match="SparseFTLWorldModel config payload must be an exact dict"
     ):
         SparseFTLWorldModel.from_config(payload)
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [1.5e19, -1.5e19, 1.0, 1e20, float("inf"), float("nan")])
+def test_update_preserves_mean_squared_error_diagnostics(
+    disable_jit: bool, magnitude: float
+) -> None:
+    model = SparseFTLWorldModel(SparseFTLWorldModelConfig(
+        observation_dim=2, action_dim=1, projection_dim=2, bins=3,
+    ))
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            model.init(jr.key(8)), jnp.zeros(2, dtype=jnp.float32),
+            jnp.zeros(1, dtype=jnp.float32),
+            jnp.full(2, magnitude, dtype=jnp.float32),
+        )
+        if np.isnan(magnitude):
+            assert np.isnan(float(result.squared_error))
+            assert np.isnan(float(result.state.prediction_error_ema))
+        elif abs(magnitude) > 1e19 and abs(magnitude) != 1.5e19:
+            assert np.isinf(float(result.squared_error))
+            assert np.isinf(float(result.state.prediction_error_ema))
+        else:
+            expected = float(np.float32(magnitude)) ** 2
+            assert float(result.squared_error) == pytest.approx(expected, rel=2e-6)
+            assert float(result.state.prediction_error_ema) == pytest.approx(expected, rel=2e-6)
