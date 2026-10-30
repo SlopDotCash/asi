@@ -215,9 +215,9 @@ def _run_arm(
                 state = learned.state
                 updates += int(bool(learned.update_applied))
                 queries += 1
-                replay.append(observation.copy())
-                if len(replay) > capacity:
+                if len(replay) >= capacity:
                     replay.pop(0)
+                replay.append(observation.copy())
                 inserts += 1
                 peak_replay_bytes = max(peak_replay_bytes, sum(item.nbytes for item in replay))
                 if arm_id == "guarded_imagination":

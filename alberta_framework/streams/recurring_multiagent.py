@@ -65,6 +65,7 @@ AVOID_CONTEXT_INDEX = 5
 BASE_OBSERVATION_DIM = 6
 
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MAX = 3.4028234663852886e38
 _UINT32_MAX = 2**32 - 1
 
 RECURRING_TWO_AGENT_CONFIG_SCHEMA = "alberta.recurring-two-agent-config.v2"
@@ -665,7 +666,15 @@ class RecurringTwoAgentWorld:
 
         other = jnp.array([1, 0], dtype=jnp.int32)
         own_positions = state.positions / self._world_limit
-        relative_positions = (state.positions[other] - state.positions) / (2.0 * self._world_limit)
+        if self._world_limit > _FLOAT32_MAX / 2.0:
+            # Normalize before subtracting when the full span cannot fit float32.
+            mantissa, exponent = math.frexp(self._world_limit)
+            own_positions = jnp.ldexp(state.positions, -exponent) / mantissa
+            relative_positions = 0.5 * (own_positions[other] - own_positions)
+        else:
+            relative_positions = (
+                state.positions[other] - state.positions
+            ) / (2.0 * self._world_limit)
         own_velocities = state.velocities / self._max_speed
         other_velocities = state.velocities[other] / self._max_speed
 
@@ -798,11 +807,17 @@ class RecurringTwoAgentWorld:
 
         distance_before = jnp.abs(state.positions[0] - state.positions[1])
         distance_after = jnp.abs(positions[0] - positions[1])
-        normalized_distance = jnp.clip(
-            distance_after / (2.0 * self._world_limit),
-            0.0,
-            1.0,
-        )
+        if self._world_limit > _FLOAT32_MAX / 2.0:
+            # Exponent scaling also avoids a subnormal reciprocal under JIT.
+            mantissa, exponent = math.frexp(self._world_limit)
+            normalized_positions = jnp.ldexp(positions, -exponent) / mantissa
+            normalized_distance = 0.5 * jnp.abs(normalized_positions[0] - normalized_positions[1])
+        else:
+            normalized_distance = jnp.clip(
+                distance_after / (2.0 * self._world_limit),
+                0.0,
+                1.0,
+            )
         meet_reward = 1.0 - normalized_distance
         avoid_reward = normalized_distance
 

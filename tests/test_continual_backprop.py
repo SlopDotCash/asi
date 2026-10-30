@@ -1385,3 +1385,46 @@ class TestPublishedBiasCorrectedUtility:
         assert float(new_cbp.utilities[0][1]) == 0.0
         # The younger, higher-true-utility unit is untouched.
         assert int(new_cbp.ages[0][0]) == self.YOUNG_STEPS
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_cbp_replaces_lowest_finite_utility_when_debiasing_overflows(disable_jit):
+    learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(3,), sparsity=0.0)
+    mlp = learner.init(feature_dim=1, key=jr.key(42))
+    cbp = init_cbp_state(mlp, (3,), key=jr.key(7)).replace(
+        utilities=(jnp.array([0.0, 2e38, 1e38], dtype=jnp.float32),),
+        ages=(jnp.array([0, 1, 1], dtype=jnp.int32),),
+        replacement_accumulators=jnp.array([1.0], dtype=jnp.float32),
+    )
+    config = ContinualBackpropConfig(
+        decay_rate=0.99, replacement_rate=1.0, maturity_threshold=1
+    )
+    with jax.disable_jit(disable_jit):
+        _, updated, flags = jax.jit(
+            lambda m, c: replace_units_with_flags(m, c, config, 0.0)
+        )(mlp, cbp)
+    assert bool(flags[0])
+    np.testing.assert_array_equal(np.asarray(updated.ages[0]), [0, 1, 0])
+    np.testing.assert_array_equal(
+        np.asarray(updated.utilities[0][:2]), np.asarray(cbp.utilities[0][:2])
+    )
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_cbp_ranking_fallback_preserves_finite_scores_and_rejects_poison(disable_jit):
+    select = jax.jit(lambda u, a: _select_replacement_index(u, a, 1, 0.99))
+    with jax.disable_jit(disable_jit):
+        for utilities, ages, expected, available in (
+            ([jnp.nan, jnp.inf, 1e38], [1, 1, 1], 2, True),
+            ([0.0, 2e38, 1e38], [0, 1, 2], 2, True),
+            ([0.0, 2e38, 1e-30], [0, 1, 1], 2, True),
+            ([0.0, 2.0, 1.0], [0, 1, 1], 2, True),
+            ([0.0, 2e38, 1e38], [0, 0, 0], -1, False),
+            ([jnp.nan, jnp.inf, -jnp.inf], [1, 1, 1], -1, False),
+        ):
+            index, found = select(
+                jnp.array(utilities, dtype=jnp.float32), jnp.array(ages, dtype=jnp.int32)
+            )
+            assert int(index) == expected
+            assert bool(found) == available

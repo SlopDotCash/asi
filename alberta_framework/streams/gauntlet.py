@@ -62,6 +62,7 @@ import jax.random as jr
 from jax import Array
 from jaxtyping import Float, Int, PRNGKeyArray
 
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.checkpoints import (
     load_checkpoint,
     load_checkpoint_metadata,
@@ -330,6 +331,12 @@ class GauntletConfig:
                 raise ValueError(f"{name} must be a finite real number")
             if not math.isfinite(float(value)):
                 raise ValueError(f"{name} must be finite")
+            validated_float32_scalar(
+                name,
+                value,
+                positive=name in ("feature_std", "scale_factor"),
+                lower=None if name in ("feature_std", "scale_factor") else 0.0,
+            )
         if self.noise_std < 0.0 or self.feature_std <= 0.0:
             raise ValueError("noise_std must be >= 0 and feature_std > 0")
         if self.scale_factor <= 0.0 or self.drift_rate < 0.0:
@@ -729,11 +736,11 @@ class LifetimeGauntletStream:
                 0 of every N-th cycle (0 disables it).
         """
         self._config = config or GauntletConfig()
-        if (
-            isinstance(scale_cycle_period, bool)
-            or not isinstance(scale_cycle_period, int)
-            or scale_cycle_period < 0
-        ):
+        # An exact-type gate keeps a hostile ``int`` subclass from dispatching
+        # its overridden comparison as the range check is built.
+        if type(scale_cycle_period) is bool or type(scale_cycle_period) is not int:
+            raise ValueError("scale_cycle_period must be an exact integer")
+        if scale_cycle_period < 0:
             raise ValueError("scale_cycle_period must be non-negative")
         cycle_length = self.SUB_SEGMENTS * self._config.segment_length
         if cycle_length > _INT32_MAX:

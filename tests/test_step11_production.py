@@ -1398,3 +1398,15 @@ def test_step11_smoke_result_canonicalizes_supported_numpy_integer_identities() 
     )
     assert type(result.steps) is int
     assert type(result.option_termination_count) is int
+
+
+@pytest.mark.parametrize("implementation", ["rbg", "unsafe_rbg"])
+def test_step11_smoke_uses_threefry_independent_of_default(implementation: str) -> None:
+    config = _make_step11_cfg(obs_dim=2)
+    with jax.default_prng_impl("threefry2x32"):
+        expected = run_step11_smoke(config, steps=2, seed=7).to_dict()
+    with jax.default_prng_impl(implementation):
+        actual = run_step11_smoke(config, steps=2, seed=7).to_dict()
+        assert str(jr.key_impl(jr.key(7))) == implementation
+    assert actual == expected
+    assert actual["finite"] is True

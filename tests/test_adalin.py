@@ -129,6 +129,40 @@ def test_tiny_adalin_runner_is_strict_and_nonpromoting() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("input_dim", "test_rows", "widths", "forward_calls"),
+    [(784, 10_000, (2, 2), 9), (2, 1000, (1001, 2), 3), (2, 1000, (2, 1001), 3)],
+)
+def test_evaluation_batches_preserve_accuracy_and_resource_counts(
+    input_dim: int, test_rows: int, widths: tuple[int, int], forward_calls: int
+) -> None:
+    # Synthetic shape fixtures establish completion and accounting, not MNIST performance.
+    train_x = np.zeros((2, input_dim), dtype=np.float32)
+    train_y = np.zeros(2, dtype=np.int32)
+    test_x = np.zeros((test_rows, input_dim), dtype=np.float32)
+    test_y = np.zeros(test_rows, dtype=np.int32)
+    test_y[-1] = 1
+    config = AdaLinConfig(
+        tasks=1, examples_per_task=2, batch_size=2, hidden_widths=widths, classes=2
+    )
+    result = run_adalin_development(
+        train_x, train_y, test_x, test_y, config=config, seed=7
+    )
+    # Zero inputs and class-zero training make every post-update prediction class zero.
+    # The final, shorter evaluation batch contains the sole incorrect example.
+    expected_accuracy = (test_rows - 1) / test_rows
+    assert result["metrics"]["task_postupdate_test_accuracy"] == [expected_accuracy]
+    assert result["resources"]["model_forward_calls"] == forward_calls
+    assert result["resources"]["model_queries"] == test_rows + 2
+    assert result["resources"]["optimizer_updates"] == 1
+    assert result["policy"]["scientific_promotion_allowed"] is False
+    validate_adalin_result(result)
+    tampered = copy.deepcopy(result)
+    tampered["resources"]["model_forward_calls"] -= 1
+    with pytest.raises(ValueError, match="model_forward_calls"):
+        validate_adalin_result(tampered)
+
+
 def test_runner_accepts_mnist_width_without_running_paper_horizon() -> None:
     inputs = np.zeros((2, 784), dtype=np.float32)
     inputs[0, 0] = 1.0
@@ -200,6 +234,7 @@ def test_mechanism_off_runner_keeps_alpha_zero() -> None:
         ("resources", "optimizer_updates", 3),
         ("metrics", "asi_whole_stream_preupdate_online_accuracy", 0.0),
         ("state", "alpha_bytes", -1),
+        ("dataset", "input_dim", 1_000_001),
         ("provenance", "official_commit", "0" * 40),
     ],
 )

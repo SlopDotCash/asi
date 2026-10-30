@@ -406,7 +406,14 @@ class PrototypeMemoryLearner:
     ) -> Float[Array, " n_classes"]:
         x = jnp.asarray(observation)
         diffs = state.means - x[None, None, :]
-        distances = jnp.mean(diffs * diffs, axis=2)
+        squared_diffs = diffs * diffs
+        distances = jnp.mean(squared_diffs, axis=2)
+        # Recover sum overflow only when every squared component is finite.
+        distances = jnp.where(
+            jnp.all(jnp.isfinite(squared_diffs), axis=2) & ~jnp.isfinite(distances),
+            jnp.sum(squared_diffs / self._config.feature_dim, axis=2),
+            distances,
+        )
         slot_logits = -distances / jnp.asarray(self._config.bandwidth, dtype=jnp.float32)
         slot_logits = jnp.where(state.counts > 0.0, slot_logits, -jnp.inf)
         logits = jnp.max(slot_logits, axis=1)

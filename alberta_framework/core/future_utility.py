@@ -183,7 +183,9 @@ def one_step_output_loss_reduction_with_diagnostics(
         * (feature_values[None, :] ** 2)
         / jnp.maximum(count, 1.0)
     )
-    reduction = errors[:, None] * delta_prediction - 0.5 * delta_prediction**2
+    # Subtract before multiplying: both expanded products can overflow even
+    # when their difference is a representable loss reduction.
+    reduction = delta_prediction * (errors[:, None] - 0.5 * delta_prediction)
     reduction = jnp.maximum(reduction, 0.0)
     proposed = jnp.where(active_mask[:, None], reduction, 0.0)
     inputs_valid = (
@@ -285,9 +287,9 @@ def contribution_trace_output_loss_reduction_with_diagnostics(
         * feature_values[None, :]
         / jnp.maximum(count, 1.0)
     )
-    reduction = (
-        delta_weight * new_contribution_trace
-        - 0.5 * (delta_weight**2) * new_feature_energy_trace[None, :]
+    reduction = delta_weight * (
+        new_contribution_trace
+        - (0.5 * delta_weight) * new_feature_energy_trace[None, :]
     )
     reduction = jnp.maximum(reduction, 0.0)
     proposed_reductions = jnp.where(active_mask[:, None], reduction, 0.0)
@@ -430,9 +432,8 @@ def trace_output_loss_reduction_with_diagnostics(
     )
     recurring_error_feature = new_error_trace[:, None] * new_feature_trace[None, :]
     recurring_feature_energy = new_feature_energy_trace[None, :]
-    reduction = (
-        delta_weight * recurring_error_feature
-        - 0.5 * (delta_weight**2) * recurring_feature_energy
+    reduction = delta_weight * (
+        recurring_error_feature - (0.5 * delta_weight) * recurring_feature_energy
     )
     reduction = jnp.maximum(reduction, 0.0)
     proposed_reductions = jnp.where(active_mask[:, None], reduction, 0.0)

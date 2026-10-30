@@ -230,3 +230,74 @@ def test_active_arm_runs_through_screening_runner() -> None:
     assert result.base_learner == "adamw"
     assert result.per_task_accuracy.shape == (2,)
     assert np.all(np.isfinite(result.per_task_loss))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_isometry_scale_underflow_keeps_representable_step(compiled, sign):
+    optimizer = AdamO(AdamOConfig(
+        isometry_step_size=1e-30, isometry_strength=1e-20,
+    ))
+    weight = jnp.asarray([[sign * 1e10]], dtype=jnp.float32)
+    state = optimizer.init_for_shape(weight.shape)
+    def update(s, w):
+        return optimizer.update_from_gradient_checked(
+            s, jnp.zeros_like(w), w, regularize=True,
+        )
+    if compiled:
+        update = jax.jit(update)
+    with jax.disable_jit(not compiled):
+        result = update(state, weight)
+    scale = optimizer.config.isometry_step_size * optimizer.config.isometry_strength
+    expected = scale * np.asarray(isometry_gradient(weight), dtype=np.float64)
+    assert bool(result.update_applied)
+    assert abs(float(result.isometry_step[0, 0])) > 0
+    np.testing.assert_allclose(result.isometry_step, expected, rtol=2e-6, atol=0)
+    np.testing.assert_array_equal(result.new_state.m, state.m)
+    np.testing.assert_array_equal(result.new_state.v, state.v)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_overflowing_isometry_scale_preserves_stationary_zero(compiled):
+    optimizer = AdamO(AdamOConfig(
+        isometry_step_size=1e20, isometry_strength=1e20,
+    ))
+    weight = jnp.eye(2, dtype=jnp.float32)
+    state = optimizer.init_for_shape(weight.shape)
+    def update(s, w):
+        return optimizer.update_from_gradient_checked(
+            s, jnp.zeros_like(w), w, regularize=True,
+        )
+    if compiled:
+        update = jax.jit(update)
+    with jax.disable_jit(not compiled):
+        result = update(state, weight)
+    assert bool(result.update_applied)
+    np.testing.assert_array_equal(result.isometry_step, jnp.zeros_like(weight))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("offset", [0.0, 2.0**-23, 1.0])
+def test_large_isometry_scale_checks_final_step_range(compiled, offset):
+    optimizer = AdamO(AdamOConfig(isometry_step_size=1e20, isometry_strength=1e20))
+    weight = jnp.asarray([[1.0 + offset]], dtype=jnp.float32)
+    state = optimizer.init_for_shape(weight.shape)
+
+    def update(s, w):
+        return optimizer.update_from_gradient_checked(
+            s, jnp.zeros_like(w), w, regularize=True,
+        )
+
+    if compiled:
+        update = jax.jit(update)
+    with jax.disable_jit(not compiled):
+        result = update(state, weight)
+    scale = optimizer.config.isometry_step_size * optimizer.config.isometry_strength
+    expected = scale * np.asarray(isometry_gradient(weight), dtype=np.float64)
+    if offset == 1.0:
+        assert not bool(result.update_applied)
+        np.testing.assert_array_equal(result.isometry_step, jnp.zeros_like(weight))
+        np.testing.assert_array_equal(result.new_state.t, state.t)
+    else:
+        assert bool(result.update_applied)
+        np.testing.assert_allclose(result.isometry_step, expected, rtol=2e-6, atol=0)

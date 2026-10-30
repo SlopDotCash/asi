@@ -1,9 +1,12 @@
 """Tests for sparse initialization."""
 
+from fractions import Fraction
+
 import chex
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import numpy as np
 import pytest
 
 from alberta_framework import sparse_init
@@ -186,3 +189,10 @@ class TestSparseInit:
         key = jr.key(42)
         with pytest.raises(ValueError, match="sparsity"):
             sparse_init(key, (32, 16), sparsity=invalid_sparsity)
+
+
+@pytest.mark.parametrize("sparsity", [Fraction(2**30 + 1, 2**30), np.float64(1 + 2**-30)])
+def test_sparse_init_rejects_exact_sparsity_above_one(sparsity):
+    """Out-of-range host values must not round into the valid float32 interval."""
+    with pytest.raises(ValueError, match="sparsity"):
+        sparse_init(jr.key(0), (2, 3), sparsity=sparsity)
