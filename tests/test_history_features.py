@@ -303,6 +303,21 @@ class TestStepShapeContract:
         with pytest.raises(ValueError, match="observation must have shape"):
             ex.step(s, rank2_obs)
 
+    @pytest.mark.parametrize(
+        "observation",
+        [
+            jnp.asarray([1, 2], dtype=jnp.int32),
+            jnp.asarray([True, False], dtype=jnp.bool_),
+        ],
+    )
+    def test_rejects_observation_dtype_laundering(
+        self, observation: jax.Array
+    ) -> None:
+        ex = HistoryFeatureExtractor(raw_dim=2, decay_rates=(0.5,))
+
+        with pytest.raises(ValueError, match="observation must have dtype float32"):
+            ex.step(ex.init(), observation)
+
     def test_short_observation_would_silently_duplicate_channels_if_unchecked(
         self,
     ) -> None:
@@ -515,3 +530,18 @@ class TestIntegration:
 
         chex.assert_tree_all_finite(l_state.weights)
         chex.assert_tree_all_finite(h_state.traces)
+
+
+
+@pytest.mark.parametrize("value", [np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 0.25])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_equal_observation_preserves_history_ema_fixed_point(
+    value: float, compiled: bool
+) -> None:
+    extractor = HistoryFeatureExtractor(raw_dim=1, decay_rates=(0.5,), include_raw=False)
+    state = HistoryFeatureState(traces=jnp.full((1, 1), value, dtype=jnp.float32))
+    observation = jnp.full((1,), value, dtype=jnp.float32)
+    with jax.disable_jit(not compiled):
+        augmented, updated = extractor.step(state, observation)
+    np.testing.assert_array_equal(np.asarray(updated.traces), np.asarray(state.traces))
+    np.testing.assert_array_equal(np.asarray(augmented), np.asarray(observation))

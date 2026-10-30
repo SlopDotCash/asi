@@ -419,6 +419,14 @@ def test_runtime_identity_tampering_fails_closed(field: str, value: Any) -> None
         )
 
 
+def test_pytree_fingerprint_distinguishes_scalar_from_length_one_vector() -> None:
+    scalar = np.asarray(1.5, dtype=np.float32)
+    vector = np.asarray([1.5], dtype=np.float32)
+    assert parity.fingerprint_pytree(scalar, label="value") != parity.fingerprint_pytree(
+        vector, label="value"
+    )
+
+
 def test_pytree_fingerprint_is_deterministic_and_rejects_unsafe_leaves() -> None:
     first = {
         "b": np.asarray([1, 2], dtype=np.int32),

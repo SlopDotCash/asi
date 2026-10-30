@@ -472,6 +472,12 @@ class LinearLearner:
 
         if self._normalizer is not None and new_normalizer_state is not None:
             normalizer_mean_var = jnp.mean(new_normalizer_state.var)
+            # Recover reduction overflow only when each variance is finite.
+            normalizer_mean_var = jnp.where(
+                jnp.isinf(normalizer_mean_var) & jnp.all(jnp.isfinite(new_normalizer_state.var)),
+                jnp.sum(new_normalizer_state.var / new_normalizer_state.var.size),
+                normalizer_mean_var,
+            )
             metrics = jnp.array(
                 [squared_error, error, mean_step_size, normalizer_mean_var],
                 dtype=jnp.float32,
@@ -1736,6 +1742,12 @@ class MLPLearner:
 
         if self._normalizer is not None and new_normalizer_state is not None:
             normalizer_mean_var = jnp.mean(new_normalizer_state.var)
+            # Recover reduction overflow only when each variance is finite.
+            normalizer_mean_var = jnp.where(
+                jnp.isinf(normalizer_mean_var) & jnp.all(jnp.isfinite(new_normalizer_state.var)),
+                jnp.sum(new_normalizer_state.var / new_normalizer_state.var.size),
+                normalizer_mean_var,
+            )
             metrics = jnp.array(
                 [squared_error, error, bounding_metric, normalizer_mean_var],
                 dtype=jnp.float32,

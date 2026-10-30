@@ -1434,6 +1434,22 @@ class Autostep(Optimizer[AutostepState]):
         Returns:
             OptimizerUpdate with weight deltas and updated state
         """
+        return self._update_with_bias_feature(state, error, observation)
+
+    def _update_with_bias_feature(
+        self,
+        state: AutostepState,
+        error: Array,
+        observation: Array,
+        bias_feature: Array | None = None,
+    ) -> OptimizerUpdate:
+        """Table-1 update with an optional traced bias coordinate.
+
+        Ordinary Autostep retains its implicit unit bias feature and arithmetic.
+        The supervised-limit GTD wrapper supplies the bias eligibility, just as
+        it supplies weight eligibilities as observations. This is not a full
+        off-policy GTD update.
+        """
         error_scalar = jnp.squeeze(error)
         mu = state.meta_step_size
         tau = state.tau
@@ -1472,12 +1488,19 @@ class Autostep(Optimizer[AutostepState]):
         )
 
         # --- Bias ---
-        # Meta-gradient for bias (implicit x=1): δ*h_bias
-        bias_meta_gradient = error_scalar * state.bias_trace
+        # The bias is a feature coordinate too: δ*x_bias*h_bias.
+        bias_meta_gradient = (
+            error_scalar * state.bias_trace
+            if bias_feature is None
+            else error_scalar * bias_feature * state.bias_trace
+        )
         abs_bias_meta_gradient = jnp.abs(bias_meta_gradient)
 
         # Eq. 4 for bias. Apply the same non-finite correlation guard.
-        bias_v_update = state.bias_normalizer + (1.0 / tau) * state.bias_step_size * (
+        bias_v_scale = (1.0 / tau) * state.bias_step_size
+        if bias_feature is not None:
+            bias_v_scale = bias_v_scale * bias_feature**2
+        bias_v_update = state.bias_normalizer + bias_v_scale * (
             abs_bias_meta_gradient - state.bias_normalizer
         )
         bias_normalizer_candidate = jnp.maximum(abs_bias_meta_gradient, bias_v_update)
@@ -1504,11 +1527,14 @@ class Autostep(Optimizer[AutostepState]):
         new_bias_step_size = jnp.clip(new_bias_step_size, 1e-8, 1.0)
 
         # Eq. 6-7: Overshoot prevention (joint over weights + bias)
-        # M = max(Σ α_i*x_i² + α_bias*1², 1). Normalization is the last
+        # M = max(Σ α_i*x_i² + α_bias*x_bias², 1). Normalization is the last
         # operation on α so the overshoot bound holds at update time
         # (Algorithm 5 lines 8-10).
         effective_terms = new_step_sizes * x_sq
-        effective_step = jnp.sum(effective_terms) + new_bias_step_size
+        bias_effective_step = new_bias_step_size
+        if bias_feature is not None:
+            bias_effective_step = bias_effective_step * bias_feature**2
+        effective_step = jnp.sum(effective_terms) + bias_effective_step
         m_factor = jnp.maximum(effective_step, 1.0)
         new_step_sizes = new_step_sizes / m_factor
         new_bias_step_size = new_bias_step_size / m_factor
@@ -1516,8 +1542,10 @@ class Autostep(Optimizer[AutostepState]):
         # Weight update with NEW alpha: α_i * δ * x_i
         weight_delta = new_step_sizes * error_scalar * x
 
-        # Bias update: α_bias * δ
+        # Bias update: α_bias * δ * x_bias, with the same NEW alpha.
         bias_delta = new_bias_step_size * error_scalar
+        if bias_feature is not None:
+            bias_delta = bias_delta * bias_feature
 
         # Trace update: h_i = h_i*(1 - α_i*x_i²) + α_i*δ*x_i
         trace_decay = 1.0 - new_step_sizes * x_sq
@@ -1526,11 +1554,12 @@ class Autostep(Optimizer[AutostepState]):
         )
         new_traces = jnp.where(jnp.isfinite(trace_candidate), trace_candidate, state.traces)
 
-        # Bias trace: h_bias = h_bias*(1 - α_bias) + α_bias*δ
-        bias_trace_decay = 1.0 - new_bias_step_size
-        bias_trace_candidate = (
-            _skip_zero_scale(bias_trace_decay, state.bias_trace) + new_bias_step_size * error_scalar
-        )
+        # Bias h uses the squared feature in its decay, as for every weight.
+        bias_trace_step = new_bias_step_size
+        if bias_feature is not None:
+            bias_trace_step = bias_trace_step * bias_feature**2
+        bias_trace_decay = 1.0 - bias_trace_step
+        bias_trace_candidate = _skip_zero_scale(bias_trace_decay, state.bias_trace) + bias_delta
         new_bias_trace = jnp.where(
             jnp.isfinite(bias_trace_candidate),
             bias_trace_candidate,
@@ -1568,6 +1597,7 @@ class Autostep(Optimizer[AutostepState]):
             floating_tree_is_finite(previous_checked)
             & jnp.isfinite(error_scalar)
             & jnp.all(jnp.isfinite(observation))
+            & (jnp.asarray(True) if bias_feature is None else jnp.isfinite(bias_feature))
             & meta_ok
             & bias_meta_ok
             & jnp.all(jnp.isfinite(trace_candidate))
@@ -1675,7 +1705,9 @@ class AutostepGTDLambda(Optimizer[AutostepGTDLambdaState]):
             bias_trace=state.bias_trace,
             bias_normalizer=state.bias_normalizer,
         )
-        base_update = self._base.update(base_state, error, eligibility)
+        base_update = self._base._update_with_bias_feature(
+            base_state, error, eligibility, bias_eligibility
+        )
         new_base_state = cast(AutostepState, base_update.new_state)
         candidate_state = AutostepGTDLambdaState(
             step_sizes=new_base_state.step_sizes,
@@ -2205,6 +2237,9 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
 
     Reference: Kearney et al. 2019, Algorithm 6 "AutoStep Style Normalized TIDBD(lambda)"
 
+    The bias is the weight of a constant feature 1, so the effective step-size
+    normalizer M of line 10 is computed over the weights and the bias together.
+
     Attributes:
         initial_step_size: Initial per-weight step-size
         meta_step_size: Meta learning rate theta
@@ -2309,12 +2344,38 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
         normalized_gradient = delta * feature_diff * state.h_traces / new_normalizers
         new_log_step_sizes = state.log_step_sizes - theta * normalized_gradient
 
-        # Effective step-size normalization
-        effective_step_size = -jnp.sum(
-            jnp.exp(new_log_step_sizes) * feature_diff * state.eligibility_traces
+        # Bias normalizer and meta-update: the bias is the weight of a
+        # constant feature 1, so its feature difference is gamma - 1.
+        bias_alpha = jnp.exp(state.bias_log_step_size)
+        bias_feature_diff = gamma_scalar - 1.0
+
+        abs_bias_weight_update = jnp.abs(delta * bias_feature_diff * state.bias_h_trace)
+        bias_normalizer_decay_term = (
+            (1.0 / tau)
+            * bias_alpha
+            * bias_feature_diff
+            * state.bias_eligibility_trace
+            * (jnp.abs(delta * state.bias_h_trace) - state.bias_normalizer)
         )
-        normalization_factor = jnp.maximum(effective_step_size, 1.0)
-        new_log_step_sizes = new_log_step_sizes - jnp.log(normalization_factor)
+        new_bias_normalizer = jnp.maximum(
+            abs_bias_weight_update, state.bias_normalizer - bias_normalizer_decay_term
+        )
+        new_bias_normalizer = jnp.maximum(new_bias_normalizer, 1e-8)
+
+        normalized_bias_gradient = (
+            delta * bias_feature_diff * state.bias_h_trace / new_bias_normalizer
+        )
+        new_bias_log_step_size = state.bias_log_step_size - theta * normalized_bias_gradient
+
+        # Effective step-size normalization (Algorithm 6 line 10): one M over
+        # the weights and the bias, so together they cannot overshoot.
+        effective_step_size = (
+            -jnp.sum(jnp.exp(new_log_step_sizes) * feature_diff * state.eligibility_traces)
+            - jnp.exp(new_bias_log_step_size) * bias_feature_diff * state.bias_eligibility_trace
+        )
+        log_normalization = jnp.log(jnp.maximum(effective_step_size, 1.0))
+        new_log_step_sizes = new_log_step_sizes - log_normalization
+        new_bias_log_step_size = new_bias_log_step_size - log_normalization
 
         new_log_step_sizes = jnp.clip(new_log_step_sizes, -10.0, 2.0)
         new_alphas = jnp.exp(new_log_step_sizes)
@@ -2337,33 +2398,6 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
         new_h_traces = state.h_traces * h_decay + new_alphas * delta * new_eligibility_traces
 
         # Bias updates
-        bias_alpha = jnp.exp(state.bias_log_step_size)
-        bias_feature_diff = gamma_scalar - 1.0
-
-        abs_bias_weight_update = jnp.abs(delta * bias_feature_diff * state.bias_h_trace)
-        bias_normalizer_decay_term = (
-            (1.0 / tau)
-            * bias_alpha
-            * bias_feature_diff
-            * state.bias_eligibility_trace
-            * (jnp.abs(delta * state.bias_h_trace) - state.bias_normalizer)
-        )
-        new_bias_normalizer = jnp.maximum(
-            abs_bias_weight_update, state.bias_normalizer - bias_normalizer_decay_term
-        )
-        new_bias_normalizer = jnp.maximum(new_bias_normalizer, 1e-8)
-
-        normalized_bias_gradient = (
-            delta * bias_feature_diff * state.bias_h_trace / new_bias_normalizer
-        )
-        new_bias_log_step_size = state.bias_log_step_size - theta * normalized_bias_gradient
-
-        bias_effective_step_size = (
-            -jnp.exp(new_bias_log_step_size) * bias_feature_diff * state.bias_eligibility_trace
-        )
-        bias_norm_factor = jnp.maximum(bias_effective_step_size, 1.0)
-        new_bias_log_step_size = new_bias_log_step_size - jnp.log(bias_norm_factor)
-
         new_bias_log_step_size = jnp.clip(new_bias_log_step_size, -10.0, 2.0)
         new_bias_alpha = jnp.exp(new_bias_log_step_size)
 

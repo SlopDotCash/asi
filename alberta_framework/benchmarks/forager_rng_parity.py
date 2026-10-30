@@ -820,7 +820,7 @@ def _canonical_array(leaf: Any, path: str) -> tuple[dict[str, Any], str]:
     if array.dtype.kind == "f" and not bool(np.all(np.isfinite(array))):
         raise ForagerRngParityError(f"{path} contains non-finite values")
     canonical_dtype = array.dtype.newbyteorder("<") if array.dtype.itemsize > 1 else array.dtype
-    canonical = np.ascontiguousarray(array.astype(canonical_dtype, copy=False))
+    canonical = np.asarray(array, dtype=canonical_dtype, order="C")
     contents = canonical.tobytes(order="C")
     descriptor = {
         "dtype": canonical.dtype.str,

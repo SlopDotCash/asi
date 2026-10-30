@@ -561,3 +561,18 @@ def test_tracking_error_preserves_small_windows_after_long_high_error_phase() ->
     history = [{"squared_error": value} for value in ([1e15] * 1000 + [1.0] * 4)]
     result = compute_tracking_error(history, window_size=2)
     np.testing.assert_array_equal(result[-3:], [1.0, 1.0, 1.0])
+
+
+@pytest.mark.parametrize(
+    "values, window, expected",
+    [
+        ([1e-200, 1e-200, 1e200], 2, [np.nan, 1e-200, 5e199]),
+        ([1e200, 1e-200, 1e-200], 2, [np.nan, 5e199, 1e-200]),
+        ([1e-200, 1e200], 1, [1e-200, 1e200]),
+    ],
+)
+def test_running_mean_keeps_small_windows_outside_large_observations(
+    values: list[float], window: int, expected: list[float]
+) -> None:
+    actual = compute_running_mean(values, window)
+    np.testing.assert_allclose(actual, expected, rtol=1e-14, atol=0, equal_nan=True)
