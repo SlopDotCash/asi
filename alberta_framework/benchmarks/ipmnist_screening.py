@@ -5359,6 +5359,43 @@ def _identmap_assignment(
     return assignment
 
 
+_SNP_KEY_SALT = 0x5A9D
+
+
+def _shrink_perturb_body(
+    params: dict[str, Array],
+    event: Array,
+    key: Array,
+    shrink: float,
+    sigma: float,
+) -> dict[str, Array]:
+    """Shrink & Perturb (Ash & Adams 2020) on the residual body, gated.
+
+    Where ``event`` holds, each body tensor becomes
+    ``shrink * theta + sigma * fresh`` with ``fresh`` drawn from the body's
+    init family ``U(-1/sqrt(fan_in), 1/sqrt(fan_in))``; elsewhere it is
+    returned unchanged.  ``shrink = 1, sigma = 0`` is bit-exactly the
+    identity in float32 (pinned by tests).
+    """
+    fans = {
+        "w1": params["w1"].shape[0],
+        "b1": params["w1"].shape[0],
+        "w2": params["w2"].shape[0],
+        "b2": params["w2"].shape[0],
+    }
+    keys = jr.split(key, len(fans))
+    out = dict(params)
+    for sub, (name, fan_in) in zip(keys, fans.items(), strict=True):
+        bound = 1.0 / math.sqrt(fan_in)
+        fresh = jr.uniform(
+            sub, params[name].shape, jnp.float32, -bound, bound
+        )
+        out[name] = jnp.where(
+            event, shrink * params[name] + sigma * fresh, params[name]
+        )
+    return out
+
+
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
@@ -5385,6 +5422,17 @@ def _make_rls_head_identmap_learner(
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
+    # Shrink & Perturb at the first remap of each detected task.  Key
+    # absent: no S&P code is traced (the parent verbatim).  Key present:
+    # the live path runs at every first-remap event; shrink=1, sigma=0
+    # is bit-exactly the parent (pinned).
+    snp_on = "snp_shrink" in hp
+    snp_shrink = float(hp.get("snp_shrink", 1.0))
+    snp_sigma = float(hp.get("snp_sigma", 0.0))
+    if snp_on and not (
+        0.0 < snp_shrink <= 1.0 and 0.0 <= snp_sigma and math.isfinite(snp_sigma)
+    ):
+        raise ValueError("snp_shrink must be in (0, 1] and snp_sigma >= 0")
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5535,6 +5583,15 @@ def _make_rls_head_identmap_learner(
             return remap
 
         remap = jax.lax.cond(do_match, matched, unmatched, None)
+        if snp_on:
+            snp_event = jnp.logical_and(ref_frozen, since == int(match1))
+            new_params = _shrink_perturb_body(
+                new_params,
+                snp_event,
+                jr.fold_in(key, _SNP_KEY_SALT),
+                snp_shrink,
+                snp_sigma,
+            )
         return new_params, RLSHeadIdentState(  # type: ignore[call-arg]
             inner=new_inner,
             raw_norm=new_raw_norm,
@@ -8561,6 +8618,25 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "and the gated chain never screened any step below 0.01 — the "
             "gate + trigger + step triple named unmeasured in the idet002 "
             "wave README (PR #3116)"
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_snp_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "snp_shrink": shrink,
+                 "snp_sigma": sigma},
+                "the idet003_s005625 composition plus Shrink & Perturb "
+                f"(Ash & Adams 2020) of the residual body at the first "
+                f"remap of each detected task, shrink {shrink}, sigma "
+                f"{sigma} x init scale (wave_identmap50_r_idet003_s005625_"
+                "snp/ screen; development screening diagnostic)"
+            )
+            for tag, shrink, sigma in (
+                ("l08s001", 0.8, 0.01),
+                ("l05s01", 0.5, 0.1),
+            )
         ),
     ):
         specs.append(
