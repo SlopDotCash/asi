@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from typing import Any, cast
 
 import jax
@@ -320,6 +322,48 @@ def test_valid_typed_message_is_accepted_and_arms_exact_feedback_record() -> Non
         np.asarray(decision.route_one_hot),
         np.asarray([False, False, True, False, False]),
     )
+
+
+def test_jit_preserves_large_finite_context_ratio_in_partner_routing() -> None:
+    fusion = _fusion(
+        max_partners=1,
+        context_dim=1,
+        n_actions=2,
+        max_abs_context=1.0e38,
+        accept_net_value_threshold=0.7,
+        blend_net_value_threshold=0.6,
+    )
+    state = _replace(
+        fusion.init(),
+        reliability_weights=jnp.asarray([[-2.0, 6.0, 0.0]], dtype=jnp.float32),
+    )
+    messages = _messages(fusion, [{"suggested_action": 1}])
+
+    def decide(current: PartnerPolicyFusionState, context: Any) -> Any:
+        return fusion.decide(
+            current,
+            decision_id=jnp.asarray(10, dtype=jnp.int32),
+            event_id=jnp.asarray(20, dtype=jnp.int32),
+            observation_id=jnp.asarray(30, dtype=jnp.int32),
+            context_id=jnp.asarray(40, dtype=jnp.int32),
+            context_features=context,
+            base_action=jnp.asarray(0, dtype=jnp.int32),
+            base_declared_score=jnp.asarray(0.0, dtype=jnp.float32),
+            safety_action_mask=jnp.asarray([True, True]),
+            option_proposal=fusion.empty_option_proposal(),
+            messages=messages,
+        )
+
+    context = jnp.asarray([5.0e37], dtype=jnp.float32)
+    eager = decide(state, context)
+    compiled = jax.jit(decide)(state, context)
+
+    assert int(eager.decision.route) == ROUTE_ACCEPT
+    assert int(eager.decision.effective_action) == 1
+    assert float(eager.decision.scores.selected_predicted_reliability) == pytest.approx(
+        float(jax.nn.sigmoid(jnp.float32(1.0)))
+    )
+    _assert_tree_equal(compiled, eager)
 
 
 @pytest.mark.parametrize(
@@ -877,6 +921,41 @@ def test_checkpoint_roundtrip_and_tamper_detection_are_strict() -> None:
     cast(dict[str, Any], changed["state"])["unexpected"] = 1
     with pytest.raises(ValueError):
         PartnerPolicyFusion.from_checkpoint_payload(changed)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "reliability_weights",
+        "armed_model_features",
+        "armed_predicted_reliability",
+    ],
+)
+def test_checkpoint_rejects_float_payloads_that_change_on_float32_restore(
+    field: str,
+) -> None:
+    fusion = _fusion()
+    payload = fusion.checkpoint_payload(fusion.init())
+    state = cast(dict[str, Any], payload["state"])
+    lossy = float(np.nextafter(0.0, 1.0))
+    if field == "reliability_weights":
+        cast(list[list[float]], state[field])[0][0] = lossy
+    elif field == "armed_model_features":
+        cast(list[float], state[field])[0] = lossy
+    else:
+        state[field] = lossy
+    payload["state_digest"] = hashlib.sha256(
+        json.dumps(
+            state,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    with pytest.raises(ValueError, match="float32"):
+        PartnerPolicyFusion.from_checkpoint_payload(payload)
 
 
 def test_state_tamper_and_static_shape_mismatch_fail_strict_validation() -> None:

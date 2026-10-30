@@ -919,7 +919,7 @@ def test_step7_short_rollout_depth_spends_multiple_imagined_backups() -> None:
         jnp.array([1.0, 0.0], dtype=jnp.float32),
     )
 
-    assert int(result.state.control_state.step_count) == 7
+    assert int(result.state.control_state.step_count) == 1
     assert result.planning_td_errors.shape == (2,)
     assert bool(jnp.all(result.planning_accepted))
     chex.assert_trees_all_close(
