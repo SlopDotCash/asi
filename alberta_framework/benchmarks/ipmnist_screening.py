@@ -5412,12 +5412,19 @@ def _make_rls_head_identmap_learner(
     anneal_step = float(hp["step_size"])
     anneal_floor = float(hp.get("anneal_floor", anneal_step))
     anneal_tau = float(hp.get("anneal_tau", 1.0))
+    # Post-shift starting step (anneal-peak screen).  Key absent: the
+    # schedule starts at step_size (the parent verbatim, pinned).
+    anneal_peak = float(hp.get("anneal_peak", anneal_step))
     if anneal_on and not (
         0.0 < anneal_floor <= anneal_step
         and 0.0 < anneal_tau
         and math.isfinite(anneal_tau)
     ):
         raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
+    if "anneal_peak" in hp and not (
+        anneal_on and math.isfinite(anneal_peak) and anneal_floor <= anneal_peak
+    ):
+        raise ValueError("anneal_peak needs anneal on and finite floor <= peak")
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5475,7 +5482,7 @@ def _make_rls_head_identmap_learner(
             ).astype(jnp.float32)
             lr = jnp.maximum(
                 jnp.float32(anneal_floor),
-                jnp.float32(anneal_step)
+                jnp.float32(anneal_peak)
                 * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
             )
             new_params, new_inner, metrics = cast(Any, inner_step)(
@@ -8632,6 +8639,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("f4t250", 0.00140625, 250.0),
                 ("f4t1000", 0.00140625, 1000.0),
             )
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_peak": peak},
+                "the anneal_f2t1000 incumbent with the post-shift starting "
+                "body step raised: max(0.0028125, "
+                f"{peak} * (1 + since_shift/1000)^-1/2) "
+                "(anneal_peak screen; development screening diagnostic)"
+            )
+            for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
         ),
     ):
         specs.append(
