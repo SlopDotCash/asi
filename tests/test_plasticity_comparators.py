@@ -122,6 +122,116 @@ def test_nap_projection_and_off_reduction() -> None:
     assert np.isclose(float(jnp.linalg.norm(nap_project(weights, initial_norm=2.0))), 2.0)
 
 
+def test_nap_projection_preserves_radius_when_direct_norm_overflows() -> None:
+    weights = jnp.asarray([1.5e19, 1.5e19], dtype=jnp.float32)
+    assert bool(jnp.all(jnp.isfinite(weights)))
+    assert bool(jnp.isinf(jnp.linalg.norm(weights)))
+
+    projected = nap_project(weights, initial_norm=3.0)
+
+    assert projected.dtype == weights.dtype
+    assert bool(jnp.all(jnp.isfinite(projected)))
+    assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+        3.0,
+        rel=1e-6,
+    )
+
+
+def test_nap_projection_preserves_radius_when_reciprocal_underflows() -> None:
+    weights = jnp.asarray([3.0e38], dtype=jnp.float32)
+    wide_norm = np.linalg.norm(np.asarray(weights, dtype=np.float64))
+    assert np.isfinite(wide_norm)
+    norm = jnp.asarray(wide_norm, dtype=jnp.float32)
+    assert bool(jnp.isfinite(norm))
+    assert float(jnp.asarray(3.0, dtype=jnp.float32) / norm) == 0.0
+
+    projected = nap_project(weights, initial_norm=3.0)
+
+    assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+        3.0,
+        rel=1e-6,
+    )
+
+
+def test_nap_projection_preserves_radius_when_normalization_overflows() -> None:
+    weights = jnp.asarray([1.0e-18], dtype=jnp.float32)
+    target_norm = 3.0e38
+    norm = jnp.linalg.norm(weights)
+    assert bool(jnp.isfinite(norm) & (norm > 0))
+    assert bool(jnp.isinf(jnp.asarray(target_norm, dtype=weights.dtype) / norm))
+
+    eager = nap_project(weights, initial_norm=target_norm)
+    compiled = jax.jit(lambda value: nap_project(value, initial_norm=target_norm))(weights)
+
+    for projected in (eager, compiled):
+        assert bool(jnp.all(jnp.isfinite(projected)))
+        assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+            target_norm,
+            rel=1e-6,
+        )
+
+
+def test_nap_projection_preserves_radius_when_direct_multiply_overflows() -> None:
+    weights = jnp.asarray([100.0], dtype=jnp.float32)
+    target_norm = float(np.finfo(np.float32).max)
+    norm = jnp.linalg.norm(weights)
+    normalization = jnp.asarray(target_norm, dtype=weights.dtype) / norm
+    assert bool(jnp.isfinite(normalization))
+    assert bool(jnp.isinf(weights[0] * normalization))
+
+    eager = nap_project(weights, initial_norm=target_norm)
+    compiled = jax.jit(lambda value: nap_project(value, initial_norm=target_norm))(weights)
+
+    for projected in (eager, compiled):
+        assert bool(jnp.all(jnp.isfinite(projected)))
+        assert float(projected[0]) == target_norm
+
+
+def test_nap_projection_preserves_radius_when_direct_norm_underflows() -> None:
+    weights = jnp.asarray([1.0e-30, 1.0e-30], dtype=jnp.float32)
+    assert bool(jnp.any(weights != 0))
+    assert float(jnp.linalg.norm(weights)) == 0.0
+
+    eager = nap_project(weights, initial_norm=3.0)
+    compiled = jax.jit(lambda value: nap_project(value, initial_norm=3.0))(weights)
+
+    for projected in (eager, compiled):
+        assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+            3.0,
+            rel=1e-6,
+        )
+    assert bool(jnp.all(nap_project(weights, initial_norm=0.0) == 0))
+
+
+def test_nap_projection_uses_wide_accumulation_for_large_low_precision_array() -> None:
+    weights = jnp.ones((262_144,), dtype=jnp.float16)
+    assert bool(jnp.isinf(jnp.linalg.norm(weights)))
+
+    projected = nap_project(weights, initial_norm=3.0)
+
+    assert projected.dtype == weights.dtype
+    assert bool(jnp.all(jnp.isfinite(projected)))
+    assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+        3.0,
+        rel=1e-3,
+    )
+
+
+def test_nap_projection_uses_wide_direct_norm_for_low_precision_array() -> None:
+    weights = jnp.asarray([0.001, 0.001], dtype=jnp.float16)
+    assert bool(jnp.isfinite(jnp.linalg.norm(weights)))
+
+    eager = nap_project(weights, initial_norm=1.0)
+    compiled = jax.jit(lambda value: nap_project(value, initial_norm=1.0))(weights)
+
+    for projected in (eager, compiled):
+        assert projected.dtype == weights.dtype
+        assert np.linalg.norm(np.asarray(projected, dtype=np.float64)) == pytest.approx(
+            1.0,
+            rel=2e-3,
+        )
+
+
 def test_c_chain_churn_loss_and_off_reduction() -> None:
     before = jnp.asarray([1.0, 2.0])
     after = jnp.asarray([2.0, 4.0])
