@@ -1448,6 +1448,40 @@ class TestFixedBudgetInteractionLearner:
         chex.assert_tree_all_finite(result.metrics)
         assert int(result.state.step_count) == 1
 
+    @pytest.mark.parametrize("use_obgd", [False, True])
+    def test_update_preserves_finite_wide_mean_squared_error(
+        self,
+        use_obgd: bool,
+    ) -> None:
+        learner = FixedBudgetInteractionLearner(
+            n_features=1,
+            n_tasks=8,
+            candidate_count=0,
+            step_size_output=1.0e-20,
+            replacement_interval=0,
+            use_obgd=use_obgd,
+            obgd_kappa=1.0e-20,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        observation = jnp.ones((2,), dtype=jnp.float32)
+        targets = jnp.full((8,), -7.0e18, dtype=jnp.float32)
+
+        errors = learner.predict(state, observation) - targets
+        squared_errors = errors**2
+        expected_mse = float(np.float64(np.float32(7.0e18)) ** 2)
+        assert bool(jnp.all(jnp.isfinite(squared_errors)))
+        assert not bool(jnp.isfinite(jnp.sum(squared_errors)))
+        assert np.isfinite(expected_mse)
+
+        result = learner.update(state, observation, targets)
+
+        assert not bool(result.update_rejected)
+        assert int(result.state.step_count) == 1
+        assert bool(jnp.any(result.state.output_biases != state.output_biases))
+        chex.assert_tree_all_finite(result.metrics)
+        assert float(result.metrics[0]) == pytest.approx(expected_mse, rel=1.0e-6)
+        assert float(result.metrics[6]) == 1.0
+
     def test_square_enabled_init_produces_live_pairs_and_accepts_updates(self) -> None:
         learner = FixedBudgetInteractionLearner(
             n_features=8,

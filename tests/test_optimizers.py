@@ -1,5 +1,6 @@
 """Tests for LMS, IDBD, Autostep, and ObGD optimizers."""
 
+import math
 from collections.abc import Callable
 from typing import NoReturn
 
@@ -162,6 +163,49 @@ class TestIDBD:
         smallest_subnormal = float(np.nextafter(np.float32(0.0), np.float32(1.0)))
         state = IDBD(meta_step_size=smallest_subnormal).init(feature_dim=2)
         assert float(state.meta_step_size) == smallest_subnormal
+
+    @pytest.mark.parametrize("initial_step_size", [1e-38, 1e-40])
+    def test_subnormal_initial_step_size_keeps_finite_logs_and_can_update(
+        self, initial_step_size: float
+    ) -> None:
+        narrowed = np.float32(initial_step_size)
+        assert np.float32(0.0) < narrowed < np.finfo(np.float32).tiny
+        expected_log = np.float32(math.log(float(narrowed)))
+
+        optimizer = IDBD(initial_step_size=initial_step_size, meta_step_size=0.0)
+        vector_state = optimizer.init(feature_dim=2)
+        parameter_state = optimizer.init_for_shape((2, 2))
+
+        np.testing.assert_array_equal(
+            np.asarray(vector_state.log_step_sizes), np.full(2, expected_log)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(parameter_state.log_step_sizes), np.full((2, 2), expected_log)
+        )
+
+        vector_update = optimizer.update(
+            vector_state,
+            jnp.array(1.0, dtype=jnp.float32),
+            jnp.ones(2, dtype=jnp.float32),
+        )
+        parameter_update = optimizer.update_from_gradient_checked(
+            parameter_state, jnp.ones((2, 2), dtype=jnp.float32)
+        )
+        assert bool(vector_update.update_applied)
+        assert bool(parameter_update.update_applied)
+
+    @pytest.mark.parametrize("initial_step_size", [0.001, 0.01, 0.1, 1.0])
+    def test_initial_log_stays_bit_identical_for_normal_step_sizes(
+        self, initial_step_size: float
+    ) -> None:
+        direct = np.asarray(jnp.log(jnp.asarray(initial_step_size, dtype=jnp.float32)))
+        optimizer = IDBD(initial_step_size=initial_step_size)
+        np.testing.assert_array_equal(
+            np.asarray(optimizer.init(3).log_step_sizes), np.full(3, direct)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(optimizer.init_for_shape((2, 3)).log_step_sizes), np.full((2, 3), direct)
+        )
 
     def test_update_returns_correct_shapes(self, sample_observation):
         """IDBD update should return correctly shaped deltas."""
@@ -954,6 +998,19 @@ class TestAdaptiveObGDBounding:
         assert scale == pytest.approx(1.0)
         chex.assert_trees_all_close(bounded[0], steps[0] / rms)
         chex.assert_trees_all_close(bounded[1], steps[1] / rms)
+
+    def test_large_finite_rms_stage_does_not_collapse(self):
+        bounder = AdaptiveObGDBounding(kappa=0.0, eps=0.0)
+        steps = (jnp.full((8,), 7e18, dtype=jnp.float32),)
+
+        bounded, scale = bounder.bound(
+            steps,
+            jnp.asarray(1.0, dtype=jnp.float32),
+            (jnp.zeros((8,), dtype=jnp.float32),),
+        )
+
+        assert float(scale) == 1.0
+        np.testing.assert_allclose(bounded[0], jnp.ones((8,)), rtol=1e-6)
 
     def test_produces_finite_zero_steps(self):
         """Zero steps should remain finite and unchanged."""
