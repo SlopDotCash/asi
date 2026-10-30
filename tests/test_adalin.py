@@ -32,6 +32,17 @@ def test_relu_reduction_and_prelu_identity() -> None:
     np.testing.assert_array_equal(adalin_relu(x, jnp.array([0.25, 0.25])), [-0.5, 3.0])
 
 
+def test_overflowing_relu_product_stays_finite() -> None:
+    x = jnp.asarray(1e20, jnp.float32)
+    alpha = jnp.asarray(1e20, jnp.float32)
+    expected = np.array(-4.371138811922056e32, dtype=np.float32)
+    value = adalin_relu(x, alpha)
+    np.testing.assert_array_equal(value, expected)
+    safe, valid = adalin_relu_transaction(x, alpha)
+    np.testing.assert_array_equal(safe, expected)
+    assert bool(valid)
+
+
 def test_gate_is_stop_gradient() -> None:
     value, derivative = jax.value_and_grad(lambda z: adalin_tanh(z, jnp.array(0.2)))(jnp.array(2.0))
     gate = jnp.cos(0.5 * jnp.pi * jnp.abs(1.0 - jnp.tanh(2.0) ** 2))
