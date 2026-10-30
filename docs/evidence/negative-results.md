@@ -296,7 +296,7 @@ postmortem.
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
 24. **Unit-length RLS features lose with the fixed identmap control constants.**
-    A preregistered 60-task x 5,000-step abrupt IPMNIST development screen
+    A predeclared 60-task x 5,000-step abrupt IPMNIST development screen
     remeasured `rls_head_resid_identmap50_r_idet003_s005625` against the same
     arm with only the hidden RLS feature vector normalized to unit length
     (bias unchanged). On consumed development seeds 0, 1 and 2, control online
