@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import functools
 import operator
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
 from typing import Any, SupportsIndex, cast
 
@@ -999,13 +1000,20 @@ class ExperientialMemory:
 
         safe_query_key = jnp.where(jnp.isfinite(query_key), query_key, 0.0)
         safe_keys = jnp.where(finite_rows[:, None], entries.keys, 0.0)
-        squared_distance = jnp.mean(
-            (safe_keys - safe_query_key[None, :]) ** 2,
-            axis=1,
+        squared_differences = (safe_keys - safe_query_key[None, :]) ** 2
+        squared_distance = jnp.mean(squared_differences, axis=1)
+        distance_scale = jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
+        scaled_distance = squared_distance / distance_scale
+        # Recover sum overflow without a subnormal reciprocal of a large scale.
+        bounded_mean = jnp.sum(squared_differences / cfg.key_dim, axis=1)
+        scale_root = jnp.sqrt(distance_scale)
+        barrier = cast(Callable[[Array], Array], jax.lax.optimization_barrier)
+        half_scaled = barrier(bounded_mean / scale_root)
+        recovered_distance = half_scaled / scale_root
+        recover = jnp.isinf(squared_distance) & jnp.all(
+            jnp.isfinite(squared_differences), axis=1
         )
-        similarities = jnp.exp(
-            -squared_distance / jnp.asarray(cfg.distance_scale, dtype=jnp.float32)
-        )
+        similarities = jnp.exp(-jnp.where(recover, recovered_distance, scaled_distance))
         safe_ages = jnp.where(entries.ages >= 0, entries.ages, 0)
         staleness_scale = jnp.asarray(cfg.staleness_scale, dtype=jnp.float32)
         # Every positive float32 scale is legal. Cap the mathematically huge

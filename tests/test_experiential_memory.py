@@ -866,6 +866,26 @@ def test_dynamic_state_corruption_makes_query_abstain_and_mutations_exact_noops(
     assert not bool(compiled_result.retrieval.state_valid)
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [1.5e19, -1.5e19, 1.0])
+@pytest.mark.parametrize("distance_scale", [1e37, 3e38])
+def test_query_preserves_finite_mean_squared_distance(
+    disable_jit: bool, magnitude: float, distance_scale: float
+) -> None:
+    with jax.disable_jit(disable_jit):
+        memory = ExperientialMemory(_config(distance_scale=distance_scale, min_similarity=1e-11))
+        state = _write(memory, memory.init(), _entry(8, key=(magnitude, magnitude)))
+        result = memory.query(
+            state, jnp.zeros(2, dtype=jnp.float32),
+            jnp.asarray(1, dtype=jnp.int32), jnp.asarray(0.0, dtype=jnp.float32),
+            jnp.asarray(True),
+        )
+        expected = np.exp(-float(np.float32(magnitude)) ** 2 / memory.config.distance_scale)
+        assert bool(result.accepted)
+        assert float(result.neighbor_similarities[0]) == pytest.approx(expected, rel=2e-6)
+        np.testing.assert_array_equal(result.action, [1.0, 0.0])
+
+
 @pytest.mark.parametrize(
     "counter_name",
     ("query_count", "write_count", "rejected_write_count"),
