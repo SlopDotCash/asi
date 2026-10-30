@@ -228,6 +228,24 @@ class TestScanCompatibility:
 
 
 class TestDeterminism:
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param(jr.PRNGKey(123), id="legacy-key-words"),
+            pytest.param(jr.key(123, impl="rbg"), id="typed-rbg"),
+        ],
+    )
+    def test_init_rejects_keys_outside_typed_threefry_contract(
+        self, key: jax.Array
+    ) -> None:
+        inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
+        wrapper = PartialObservationWrapper(
+            inner, mode=MaskMode.RANDOM, mask_prob=0.5
+        )
+
+        with pytest.raises(ValueError, match="typed scalar threefry2x32"):
+            wrapper.init(key)
+
     def test_random_mode_deterministic_with_fixed_seed(self) -> None:
         inner = RandomWalkStream(feature_dim=4, drift_rate=0.0)
         w = PartialObservationWrapper(
