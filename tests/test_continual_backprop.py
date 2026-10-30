@@ -10,6 +10,7 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+from alberta_framework.core.baseline_optimizers import Adam
 from alberta_framework.core.continual_backprop import (
     CBPLearningResult,
     CBPMLPLearner,
@@ -157,6 +158,51 @@ class TestInitCbpStateShapes:
 # Utility update behaviour
 # ======================================================================
 
+
+
+class TestReplacedUnitAdamStepCount:
+    """A replaced unit restarts Adam's bias correction with its moments."""
+
+    STEP_SIZE = 1e-3
+
+    def test_first_step_after_replacement_is_adams_nominal_step(self) -> None:
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(8,),
+            optimizer=Adam(self.STEP_SIZE, 0.9, 0.999, 1e-8),
+            cbp_config=ContinualBackpropConfig(replacement_rate=1 / 8, maturity_threshold=50),
+            use_layer_norm=False,
+        )
+        state = learner.init(feature_dim=4, key=jr.key(0))
+        rng = np.random.default_rng(0)
+
+        def sample() -> tuple[jax.Array, jax.Array]:
+            x = jnp.asarray(rng.normal(size=4), dtype=jnp.float32)
+            return x, jnp.asarray([float(np.sin(x[0]))], dtype=jnp.float32)
+
+        for _ in range(200):
+            result = learner.update(state, *sample())
+            state = result.state
+            if bool(result.replacements_made[0]):
+                break
+        assert bool(result.replacements_made[0])
+        unit = int(jnp.argmin(state.cbp_state.ages[0]))
+        assert int(state.cbp_state.ages[0][unit]) == 0
+        head_opt = state.mlp_state.head_optimizer_states[0][0]
+        assert float(head_opt.m[0, unit]) == 0.0
+        assert float(head_opt.t[0, unit]) == 0.0
+        assert float(jnp.max(head_opt.t)) == 50.0
+
+        before = float(state.mlp_state.head_params.weights[0][0, unit])
+        for _ in range(20):
+            result = learner.update(state, *sample())
+            after = float(result.state.mlp_state.head_params.weights[0][0, unit])
+            if after != before:
+                break
+            state = result.state
+        assert after != before
+        # Fresh zero moments with a reset count give Adam's nominal first step.
+        assert abs(after - before) == pytest.approx(self.STEP_SIZE, rel=1e-3)
 
 
 class TestUtilityUpdate:

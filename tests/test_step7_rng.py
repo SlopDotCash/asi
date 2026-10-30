@@ -19,6 +19,7 @@ from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step7 import (
     Step7DynaConfig,
     Step7DynaState,
+    _update_control_with_linear_rng,
     init_step7_state,
     make_step7_components,
     run_step7_scan,
@@ -183,6 +184,28 @@ def test_rejected_real_update_reserves_its_advanced_key_before_planning() -> Non
             anchor,
             rollout_root,
         )
+    )
+
+
+def test_invalid_next_observation_rejects_before_building_a_control_candidate() -> None:
+    """The ``-1`` selection sentinel must never index the SARSA target."""
+    cfg = _cfg(planning_steps=1, warmup=0)
+    agent, _model, state = _init(cfg, seed=23)
+    control = state.control_state
+    result = _update_control_with_linear_rng(
+        agent,
+        control,
+        jnp.array(0.25, dtype=jnp.float32),
+        jnp.full((OBS_DIM,), jnp.nan, dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert not bool(result.input_valid)
+    assert bool(result.candidate_state_finite)
+    expected_key = jr.split(control.rng_key, 4)[0]
+    chex.assert_trees_all_equal(
+        result.state,
+        control.replace(rng_key=expected_key),
     )
 
 

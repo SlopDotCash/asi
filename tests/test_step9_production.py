@@ -626,6 +626,63 @@ def test_step9_multi_step_behavior_model_dreaming_path() -> None:
     assert bool(jnp.any(result.dream_accepted))
 
 
+def test_step9_dream_starts_from_empty_eligibility() -> None:
+    """A dream must leave the real-experience traces untouched.
+
+    With ``trace_decay > 0`` a dream used to run on the live traces: the
+    imagined TD error moved every state-action in the real trace, and the
+    imagined gradient stayed in the trace for the next real update.
+    """
+    cfg = Step9DreamingConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=2,
+            trace_decay=0.9,
+            epsilon_start=1.0,
+            epsilon_end=0.0,
+            epsilon_decay_steps=100,
+        ),
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=1,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    steps = 16
+    data_key, state_key = jr.split(jr.key(0))
+    observations = jr.normal(data_key, (steps + 1, 2), dtype=jnp.float32)
+    rewards = jnp.tanh(observations[1:, 0])
+    state = init_step9_state(
+        agent, model, buffer, key=state_key, initial_observation=observations[0]
+    )
+    for t in range(steps):
+        result = step9_update(cfg, agent, model, buffer, state, rewards[t], observations[t + 1])
+        assert bool(result.dream_accepted[0])
+        real = result.real_control_result.state
+        final = result.state.control_state
+        chex.assert_trees_all_equal(final.q_trace_weights, real.q_trace_weights)
+        chex.assert_trees_all_equal(final.q_trace_bias, real.q_trace_bias)
+        assert int(final.step_count) == int(real.step_count)
+        chex.assert_trees_all_equal(final.step_words, real.step_words)
+        chex.assert_trees_all_equal(final.epsilon, real.epsilon)
+        # A one-step backup at a buffered anchor moves only the dreamed
+        # action's values, by step * anchor.
+        step = cfg.control.q_step_size * result.dream_td_errors[0]
+        delta_weights = np.asarray(final.q_weights - real.q_weights)
+        delta_bias = np.asarray(final.q_bias - real.q_bias)
+        action = int(np.argmax(np.abs(delta_bias)))
+        np.testing.assert_allclose(delta_bias[action], step, atol=1e-6)
+        np.testing.assert_allclose(np.delete(delta_weights, action, axis=0), 0.0, atol=1e-6)
+        np.testing.assert_allclose(np.delete(delta_bias, action), 0.0, atol=1e-6)
+        buffer_state = result.state.buffer_state
+        buffered = np.asarray(buffer_state.observations[: int(buffer_state.size)])
+        anchor_error = np.max(np.abs(step * buffered - delta_weights[action]), axis=1)
+        assert float(np.min(anchor_error)) <= 1e-6
+        state = result.state
+
+
 def test_step9_prioritized_candidate_selection_path() -> None:
     cfg = Step9DreamingConfig(
         observation_dim=2,
