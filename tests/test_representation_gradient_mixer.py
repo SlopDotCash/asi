@@ -314,6 +314,35 @@ def test_any_invalid_actively_weighted_source_atomically_rejects_to_exact_zero(
     assert np.isfinite(np.asarray(result.diagnostics.final_mixed_norm)).all()
 
 
+def test_active_subnormal_source_rejects_instead_of_reporting_a_zero_update() -> None:
+    config = RepresentationGradientMixerConfig(
+        representation_dim=2,
+        mode="behavior_only",
+    )
+    smallest_subnormal = np.nextafter(
+        np.float32(0.0),
+        np.float32(1.0),
+        dtype=np.float32,
+    )
+    behavior = jnp.asarray([smallest_subnormal, 0.0], dtype=jnp.float32)
+    world = jnp.zeros((2,), dtype=jnp.float32)
+
+    def run(active: Array, inactive: Array) -> RepresentationGradientMixResult:
+        return mix_representation_gradients(config, active, inactive)
+
+    assert np.asarray(behavior)[0] != 0.0
+    for result in (run(behavior, world), jax.jit(run)(behavior, world)):
+        np.testing.assert_array_equal(
+            result.gradient,
+            jnp.zeros((2,), dtype=jnp.float32),
+        )
+        assert not bool(result.valid)
+        assert not bool(result.applied)
+        assert bool(result.rejected)
+        assert bool(result.zero_output)
+        assert not bool(result.diagnostics.behavior_valid)
+
+
 def test_masked_or_zero_weight_invalid_source_is_recorded_without_poisoning_output() -> None:
     invalid_world = jnp.asarray([jnp.nan, jnp.inf], dtype=jnp.float32)
     behavior = jnp.asarray([1.0, -2.0], dtype=jnp.float32)
@@ -533,7 +562,7 @@ def test_gradient_mixer_rejects_integer_spoofs_without_running_repr() -> None:
 def test_gradient_mixer_allocation_contract_endpoints_are_allocation_free() -> None:
     fixed_output_bytes = 12 * 4 + 12
     output_last_legal = ((2**31 - 1) - fixed_output_bytes) // 4
-    update_last_legal = 25_565_280
+    update_last_legal = 21_474_835
     with pytest.raises(ValueError, match="update working set byte count"):
         RepresentationGradientMixerConfig(representation_dim=output_last_legal)
     config = RepresentationGradientMixerConfig(representation_dim=update_last_legal)
@@ -761,7 +790,7 @@ def test_mixer_persist_is_empty_and_output_fits_at_max_dim() -> None:
 def test_mixer_last_fit_and_first_overflow_are_adjacent() -> None:
     last_fit = None
     first_overflow = None
-    for representation_dim in range(25_565_279, 25_565_283):
+    for representation_dim in range(21_474_834, 21_474_838):
         working_set_bytes = _mixer_update_working_set_bytes(representation_dim)
         if working_set_bytes <= _INT32_MAX:
             last_fit = representation_dim
