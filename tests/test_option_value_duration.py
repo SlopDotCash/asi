@@ -349,6 +349,90 @@ def test_termination_does_not_multiply_inf_next_prediction() -> None:
     assert bool(result.update_applied)
 
 
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_overflowing_reward_sum_keeps_finite_cancelled_td(sign: float) -> None:
+    """``reward + V(s')`` can overflow while ``reward + (V(s') - V(s))`` is finite.
+
+    Both the current prediction and the bootstrap are ``sign * 2e38`` and the
+    reward matches them, so the conventional TD error is that reward. The
+    left-associated sum is not a float32 value and must not drop the reward head.
+    """
+    learner = OptionValueDurationLearner(
+        1,
+        OptionValueDurationConfig(reward_step_size=0.1, duration_step_size=0.2),
+    )
+    magnitude = np.float32(sign * 2.0e38)
+    state = learner.init(1).replace(  # type: ignore[attr-defined]
+        weights=jnp.asarray([[[magnitude], [0.0]]], dtype=jnp.float32)
+    )
+    obs = jnp.ones((1,), dtype=jnp.float32)
+    reward = jnp.asarray(magnitude, dtype=jnp.float32)
+    option = jnp.asarray(0, dtype=jnp.int32)
+    discount = jnp.asarray(1.0, dtype=jnp.float32)
+    reward_step = np.float32(learner.config.reward_step_size)
+    duration_step = np.float32(learner.config.duration_step_size)
+    expected_reward_weight = np.float32(magnitude + reward_step * magnitude)
+
+    with jax.disable_jit():
+        eager = learner.update(state, obs, option, reward, obs, discount)
+    compiled = jax.jit(learner.update)(state, obs, option, reward, obs, discount)
+
+    for result in (eager, compiled):
+        assert bool(result.head_updates_applied[0])
+        assert bool(result.head_updates_applied[1])
+        np.testing.assert_array_equal(np.asarray(result.td_errors[0]), magnitude)
+        np.testing.assert_array_equal(
+            np.asarray(result.state.weights[0, 0, 0]),
+            expected_reward_weight,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(result.state.weights[0, 1, 0]),
+            duration_step,
+        )
+        assert bool(np.isfinite(np.asarray(result.td_targets)).all())
+        assert int(result.state.step_count) == 1
+
+
+@pytest.mark.parametrize(
+    ("next_feature", "reward_step_size"),
+    [(0.0, 0.1), (1.0, 1.0)],
+)
+def test_unrepresentable_reward_update_still_rejects_the_reward_head(
+    next_feature: float,
+    reward_step_size: float,
+) -> None:
+    """Do not apply a reward step whose TD error or weight is not float32."""
+    learner = OptionValueDurationLearner(
+        1,
+        OptionValueDurationConfig(
+            reward_step_size=reward_step_size,
+            duration_step_size=0.0,
+        ),
+    )
+    magnitude = np.float32(2.0e38)
+    reward_weight = np.float32(-magnitude if next_feature == 0.0 else magnitude)
+    state = learner.init(1).replace(  # type: ignore[attr-defined]
+        weights=jnp.asarray([[[reward_weight], [0.0]]], dtype=jnp.float32)
+    )
+    obs = jnp.ones((1,), dtype=jnp.float32)
+    reward = jnp.asarray(magnitude, dtype=jnp.float32)
+    option = jnp.asarray(0, dtype=jnp.int32)
+    discount = jnp.asarray(1.0, dtype=jnp.float32)
+    next_obs = jnp.asarray([next_feature], dtype=jnp.float32)
+
+    with jax.disable_jit():
+        eager = learner.update(state, obs, option, reward, next_obs, discount)
+    compiled = jax.jit(learner.update)(state, obs, option, reward, next_obs, discount)
+
+    for result in (eager, compiled):
+        assert not bool(result.head_updates_applied[0])
+        np.testing.assert_array_equal(np.asarray(result.td_errors[0]), np.float32(0.0))
+        np.testing.assert_array_equal(
+            np.asarray(result.state.weights[0, 0]),
+            np.asarray(state.weights[0, 0]),
+        )
+
+
 def test_reward_rate_prediction_preserves_raw_duration_and_floors_only_score() -> None:
     learner = OptionValueDurationLearner(
         2,
@@ -377,6 +461,32 @@ def test_reward_rate_prediction_preserves_raw_duration_and_floors_only_score() -
     chex.assert_trees_all_close(
         prediction.reward_rates,
         jnp.array([0.6, 8.0], dtype=jnp.float32),
+    )
+
+
+@pytest.mark.parametrize("invalid", [jnp.nan, jnp.inf, -jnp.inf])
+def test_prediction_fails_closed_on_nonfinite_observation(invalid: float) -> None:
+    learner = OptionValueDurationLearner(2)
+    state = learner.init(2).replace(
+        weights=jnp.ones((2, 2, 2), dtype=jnp.float32)
+    )
+    observation = jnp.asarray([1.0, invalid], dtype=jnp.float32)
+
+    heads = learner.predict_heads(state, observation)
+    prediction = learner.predict(state, observation)
+
+    chex.assert_trees_all_equal(heads, jnp.zeros((2, 2), dtype=jnp.float32))
+    chex.assert_trees_all_equal(
+        prediction.reward_values,
+        jnp.zeros((2,), dtype=jnp.float32),
+    )
+    chex.assert_trees_all_equal(
+        prediction.durations,
+        jnp.zeros((2,), dtype=jnp.float32),
+    )
+    chex.assert_trees_all_equal(
+        prediction.reward_rates,
+        jnp.zeros((2,), dtype=jnp.float32),
     )
 
 
@@ -754,3 +864,61 @@ def test_array_runner_accepts_jax_arrays_under_jit() -> None:
     )
     result = compiled(observations, option_indices, rewards, observations, discounts)
     chex.assert_tree_all_finite(result.predictions)
+
+
+def test_array_runner_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    import alberta_framework.core.option_value_duration as module
+
+    learner = OptionValueDurationLearner(3, OptionValueDurationConfig())
+    state = learner.init(5)
+    steps = 2
+    observations = jnp.full((steps, 5), 0.1, dtype=jnp.float32)
+    option_indices = jnp.zeros((steps,), dtype=jnp.int32)
+    rewards = jnp.full((steps,), 0.2, dtype=jnp.float32)
+    discounts = jnp.full((steps,), 0.9, dtype=jnp.float32)
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    class _PendingOutput:
+        def __init__(self) -> None:
+            self.ready = False
+
+        def block_until_ready(self) -> object:
+            self.ready = True
+            return self
+
+    pending_outputs: list[_PendingOutput] = []
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        final_state, outputs = real_scan(*args, **kwargs)
+        output_values = list(outputs)
+        pending = _PendingOutput()
+        pending_outputs.append(pending)
+        output_values[3] = pending
+        return final_state, tuple(output_values)
+
+    def clock() -> float:
+        if pending_outputs:
+            assert pending_outputs[0].ready
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_option_value_duration_from_arrays(
+        learner,
+        state,
+        observations,
+        option_indices,
+        rewards,
+        observations,
+        discounts,
+    )
+
+    assert pending_outputs
+    assert int(result.state.step_count) == steps
+    assert bool(jnp.all(result.updates_applied))

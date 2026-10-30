@@ -44,6 +44,7 @@ from alberta_framework.core.prototype_agent import (
     save_prototype_checkpoint,
 )
 from alberta_framework.prototype_reference_adapter import (
+    PROTOTYPE_REFERENCE_HOST_TIMING_POLICY,
     PrototypeReferenceAdapter,
     PrototypeReferenceState,
 )
@@ -206,6 +207,27 @@ def _read_bounded_json_file(path: Path) -> bytes:
             raw = stream.read(_MAX_JSON_BYTES + 1)
         if len(raw) != metadata.st_size or len(raw) > _MAX_JSON_BYTES:
             raise ValueError(f"{path.name} changed or exceeds the JSON size limit")
+    finally:
+        os.close(descriptor)
+    return raw
+
+
+def _read_exact_regular_file(path: Path, *, expected_bytes: int, name: str) -> bytes:
+    """Read one regular file only after its exact byte length is established."""
+
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat_module.S_ISREG(metadata.st_mode):
+            raise ValueError(f"checkpoint {name} must be a regular file")
+        if metadata.st_size != expected_bytes:
+            raise ValueError(
+                f"checkpoint {name} must be exactly {expected_bytes} bytes"
+            )
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(expected_bytes + 1)
+        if len(raw) != expected_bytes:
+            raise ValueError(f"checkpoint {name} changed while being read")
     finally:
         os.close(descriptor)
     return raw
@@ -1100,6 +1122,7 @@ def _build_runner(config_value: Any) -> tuple[ReferenceLifeRunner, dict[str, Any
             "adapter_schema",
             "dispatch_mode",
             "environment_mode",
+            "host_timing_metadata",
             "lifecycle_codec",
             "prototype_agent",
             "prototype_state_schema",
@@ -1107,6 +1130,14 @@ def _build_runner(config_value: Any) -> tuple[ReferenceLifeRunner, dict[str, Any
         },
         path="manifest.life_config.agent.config",
     )
+    if (
+        _require_str(
+            agent_binding["host_timing_metadata"],
+            path="manifest.life_config.agent.config.host_timing_metadata",
+        )
+        != PROTOTYPE_REFERENCE_HOST_TIMING_POLICY
+    ):
+        _fail("manifest.life_config.agent.config.host_timing_metadata is unsupported")
     prototype_config_raw = agent_binding["prototype_agent"]
     if type(prototype_config_raw) is not dict:
         _fail("manifest.life_config.agent.config.prototype_agent must be an object")
@@ -1837,7 +1868,9 @@ def _snapshot_checkpoint(source: Path) -> Path:
                         )
                     child_source = os.open(
                         name,
-                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        os.O_RDONLY
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_NONBLOCK", 0),
                         dir_fd=source_fd,
                     )
                     try:
@@ -1878,7 +1911,32 @@ def _snapshot_checkpoint(source: Path) -> Path:
                                 while view:
                                     written = os.write(child_destination, view)
                                     view = view[written:]
-                            if copied != metadata.st_size:
+                            after = os.fstat(child_source)
+                            current = os.stat(
+                                name,
+                                dir_fd=source_fd,
+                                follow_symlinks=False,
+                            )
+                            stable_fields = (
+                                "st_dev",
+                                "st_ino",
+                                "st_mode",
+                                "st_size",
+                                "st_mtime_ns",
+                                "st_ctime_ns",
+                                "st_nlink",
+                            )
+                            if (
+                                copied != metadata.st_size
+                                or any(
+                                    getattr(metadata, field) != getattr(after, field)
+                                    for field in stable_fields
+                                )
+                                or any(
+                                    getattr(metadata, field) != getattr(current, field)
+                                    for field in stable_fields
+                                )
+                            ):
                                 raise ValueError(
                                     f"checkpoint child changed while copied: {child_relative}"
                                 )
@@ -1927,7 +1985,11 @@ def _restore_owned_bundle(root: Path) -> tuple[ReferenceLifeRunner, ReferenceLif
     payload = {name: manifest_data[name] for name in _MANIFEST_PAYLOAD_KEYS}
     if bundle_id != _bundle_id(payload):
         _fail("manifest bundle_id does not match its canonical payload")
-    marker = (root / _COMMITTED_NAME).read_bytes()
+    marker = _read_exact_regular_file(
+        root / _COMMITTED_NAME,
+        expected_bytes=_SHA256_LENGTH + 1,
+        name="COMMITTED marker",
+    )
     if marker != f"{bundle_id}\n".encode("ascii"):
         _fail("checkpoint COMMITTED marker is missing or inconsistent")
 
