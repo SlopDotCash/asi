@@ -196,6 +196,39 @@ def test_switching_execution_rejects_boolean_decoded_action(
         )
 
 
+@pytest.mark.parametrize("field", ["reward", "oracle_reward"])
+def test_switching_execution_rejects_noncanonical_signed_zero_reward(field: str) -> None:
+    runner = build_prototype_switching_life(
+        agent_config=_agent_config(),
+        environment_config=SwitchingTwoStateConfig(  # type: ignore[call-arg]
+            phase_length=2,
+            payoffs_a=((0.0, 0.0), (0.0, 0.0)),
+            payoffs_b=((0.0, 0.0), (0.0, 0.0)),
+        ),
+        lifecycle_id=_LIFECYCLE_ID,
+        seed=7,
+        max_accepted_events=1,
+    )
+    state = runner.init()
+    step = runner.step(state)
+    assert step.event is not None
+    execution = runner.environment_adapter.execute(
+        state.environment_state,
+        step.event.command,
+        key=jr.key(99),
+    )
+    assert not np.signbit(getattr(execution, field))
+    poisoned = dataclasses.replace(execution, **{field: -0.0})
+
+    with pytest.raises(DecisionOwnershipError, match="reward"):
+        runner.environment_adapter.validate_execution(
+            state.environment_state,
+            step.event.command,
+            poisoned,
+            key=jr.key(99),
+        )
+
+
 def _corrupt_accepted_update(
     update: PrototypeAdapterUpdate,
     *,

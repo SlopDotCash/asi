@@ -369,14 +369,26 @@ class WorldModelEnsembleConfig:
             raise ValueError("config must be a readable mapping") from error
         if any(type(key) is not str for key in payload):
             raise ValueError("config keys must be exact strings")
-        type_name = payload.pop("type", None)
-        if type_name is not None and (
-            type(type_name) is not str or type_name != "WorldModelEnsembleConfig"
-        ):
+        expected_fields = {
+            "type",
+            "model",
+            "signal_estimator",
+            "ensemble_size",
+            "bootstrap_probability",
+            "residual_variance_decay",
+            "residual_variance_warmup_steps",
+            "residual_variance_floor",
+            "development_only",
+            "accepted_scientific_evidence",
+        }
+        if set(payload) != expected_fields:
+            raise ValueError("config fields do not match the world-model ensemble schema")
+        type_name = payload.pop("type")
+        if type(type_name) is not str or type_name != "WorldModelEnsembleConfig":
             raise ValueError("type must be WorldModelEnsembleConfig")
-        if payload.pop("development_only", True) is not True:
+        if payload.pop("development_only") is not True:
             raise ValueError("world-model ensemble is development_only")
-        if payload.pop("accepted_scientific_evidence", False) is not False:
+        if payload.pop("accepted_scientific_evidence") is not False:
             raise ValueError("world-model ensemble is not accepted scientific evidence")
         raw_model = payload.pop("model")
         raw_signals = payload.pop("signal_estimator")
@@ -894,7 +906,9 @@ class WorldModelEnsemble:
         self._config = config
         self._model = ActionConditionedWorldModel(config.model)
         self._signals = LearningSignalEstimator(config.signal_estimator)
-        self._member_state_static_signature = _tree_static_signature(self._model.init(jr.key(0)))
+        self._member_state_static_signature = _tree_static_signature(
+            self._model.init(jr.key(0, impl="threefry2x32"))
+        )
         self._signal_state_static_signature = _tree_static_signature(self._signals.init())
 
     @property
@@ -930,13 +944,11 @@ class WorldModelEnsemble:
             raise ValueError("ensemble payload must be a readable mapping") from error
         if any(type(key) is not str for key in payload):
             raise ValueError("ensemble payload keys must be exact strings")
-        type_name = payload.pop("type", None)
-        if type_name is not None and (
-            type(type_name) is not str or type_name != "WorldModelEnsemble"
-        ):
+        if set(payload) != {"type", "config"}:
+            raise ValueError("ensemble payload fields do not match the construction schema")
+        type_name = payload.pop("type")
+        if type(type_name) is not str or type_name != "WorldModelEnsemble":
             raise ValueError("type must be WorldModelEnsemble")
-        if set(payload) != {"config"}:
-            raise ValueError("world-model ensemble config keys are invalid")
         nested = payload["config"]
         if not issubclass(type(nested), Mapping):
             raise ValueError("nested ensemble config must be an actual mapping")
