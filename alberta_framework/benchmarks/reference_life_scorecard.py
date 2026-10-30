@@ -197,6 +197,15 @@ def canonical_json_bytes(value: Any) -> bytes:
         raise ValueError("value does not have a canonical JSON encoding") from exc
 
 
+def _admit_validator_payload(value: object, *, path: str) -> dict[str, Any]:
+    """Admit an exact, deeply canonical JSON object before validator access."""
+
+    if type(value) is not dict:
+        raise ValueError(f"{path}: validator payload must be an exact JSON object")
+    _validate_json_value(value, path=path)
+    return cast(dict[str, Any], value)
+
+
 def _sha256_json(value: Any) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
@@ -2216,6 +2225,38 @@ def _validate_metric_window(
     return reward_sum
 
 
+def _validate_riverswim_reward_visit_consistency(
+    *,
+    reward_sum: float,
+    event_count: int,
+    high_end_visit_count: int,
+    protocol: Mapping[str, Any],
+    path: str,
+) -> None:
+    """Reject reward totals that require more high-end decisions than visits."""
+
+    initial_high_end = int(protocol["initial_state"] == protocol["n_states"] - 1)
+    high_end_decision_bound = min(
+        event_count,
+        high_end_visit_count + initial_high_end,
+    )
+    non_high_end_maximum = max(
+        0.0,
+        float(np.float32(protocol["reward_left"])),
+    )
+    right_end_reward = float(np.float32(protocol["reward_right"]))
+    reward_upper_bound = (
+        event_count * non_high_end_maximum
+        + high_end_decision_bound
+        * max(0.0, right_end_reward - non_high_end_maximum)
+    )
+    tolerance = 1e-9 * max(1.0, abs(reward_sum), abs(reward_upper_bound))
+    if reward_sum > reward_upper_bound + tolerance:
+        raise ValueError(
+            f"{path} right-end rewards exceed high-end visits bound"
+        )
+
+
 def _validate_completed_outcome(
     outcome: Any,
     *,
@@ -2445,6 +2486,13 @@ def _validate_completed_outcome(
         )
         if not _numerically_equal(rate, visits / horizon):
             raise ValueError(f"{path}.high_end_visit_rate is inconsistent")
+        _validate_riverswim_reward_visit_consistency(
+            reward_sum=reward_sum,
+            event_count=horizon,
+            high_end_visit_count=visits,
+            protocol=protocol,
+            path=path,
+        )
     else:
         raise ValueError(f"{path} has an unsupported environment")
 
@@ -2667,6 +2715,13 @@ def _validate_partial_outcome(
             rate_value = _require_finite_number(rate, path=f"{path}.high_end_visit_rate")
             if not _numerically_equal(rate_value, visits / accepted):
                 raise ValueError(f"{path}.high_end_visit_rate is inconsistent")
+        _validate_riverswim_reward_visit_consistency(
+            reward_sum=reward_sum,
+            event_count=accepted,
+            high_end_visit_count=visits,
+            protocol=protocol,
+            path=path,
+        )
     else:
         raise ValueError(f"{path} has an unsupported environment")
     expected_oracle = math.fsum(
@@ -2875,6 +2930,24 @@ def _validate_run_record(
         )
         if failure["stage"] in {"build", "init"} and failure["accepted_events"] != 0:
             raise ValueError(f"{path} pre-step failure cannot claim accepted events")
+        if failure["stage"] in {"build", "init"} and (
+            optional_durations["cold_step_seconds"] is not None or warmed_count != 0
+        ):
+            raise ValueError(f"{path}.telemetry claims step work before the step stage")
+        if failure["stage"] == "build" and optional_durations["setup_seconds"] is not None:
+            raise ValueError(f"{path}.telemetry claims setup completed after a build failure")
+        if failure["stage"] == "step":
+            accepted_events = failure["accepted_events"]
+            cold_step_recorded = optional_durations["cold_step_seconds"] is not None
+            if optional_durations["setup_seconds"] is None:
+                raise ValueError(f"{path}.telemetry omits setup before a step failure")
+            if not cold_step_recorded and warmed_count != 0:
+                raise ValueError(f"{path}.telemetry records warmed work without a cold step")
+            timed_step_count = int(cold_step_recorded) + warmed_count
+            if timed_step_count not in {accepted_events, accepted_events + 1}:
+                raise ValueError(
+                    f"{path}.telemetry timed step count differs from accepted events"
+                )
         if failure["stage"] == "build":
             if any(
                 resolved[field] is not None
@@ -2899,6 +2972,8 @@ def _validate_run_record(
 
 def validate_scorecard_artifact(payload: Mapping[str, Any]) -> dict[str, Any]:
     """Strictly validate and recompute one scorecard aggregate."""
+
+    payload = _admit_validator_payload(payload, path="$")
 
     required = {
         "schema",
@@ -3510,6 +3585,7 @@ def validate_scorecard_run_record(
 ) -> dict[str, Any]:
     """Validate one shard against its canonical schedule identity."""
 
+    payload = _admit_validator_payload(payload, path="$")
     effective_plan = build_development_plan() if plan is None else plan
     environment = payload.get("environment_kind")
     arm = payload.get("arm")

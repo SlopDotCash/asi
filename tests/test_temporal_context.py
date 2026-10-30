@@ -1,6 +1,7 @@
 # mypy: disable-error-code="call-arg,untyped-decorator"
 """Tests for causal temporal/context features."""
 
+from collections.abc import Callable
 from typing import cast
 
 import chex
@@ -28,6 +29,26 @@ def test_temporal_context_shapes_and_roundtrip() -> None:
     chex.assert_shape(features, (13,))
     chex.assert_tree_all_finite(features)
     assert TemporalContextConfig.from_config(config.to_config()) == config
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda payload: payload.pop("type"),
+        lambda payload: payload.__setitem__("type", "WorkingMemoryConfig"),
+        lambda payload: payload.pop("ema_decay"),
+        lambda payload: payload.__setitem__("unexpected", 1),
+    ),
+    ids=("missing-type", "wrong-type", "missing-field", "extra-field"),
+)
+def test_temporal_context_config_loader_requires_exact_serialized_schema(
+    mutation: Callable[[dict[str, object]], object],
+) -> None:
+    payload = TemporalContextConfig(input_dim=3).to_config()
+    mutation(payload)
+
+    with pytest.raises(ValueError, match="TemporalContextConfig"):
+        TemporalContextConfig.from_config(payload)
 
 
 def test_temporal_context_step_is_causal() -> None:
