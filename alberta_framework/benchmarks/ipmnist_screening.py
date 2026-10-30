@@ -8517,6 +8517,15 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
     # 0.8997; a refining identifier rides the upper envelope.  The first
+    # two arms below are the two 200-task/20-seed CONFIRMED members of
+    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
+    # the third is a registered 60-task screen of the gated chain's next
+    # identifier-trigger bracket (wave_identmap50_r_idet004_s00421875/,
+    # the gated idet003_s00421875 best-step composition's trigger raised
+    # to 0.04, PR #3118); the screened intermediates (identmap200
+    # single-shot, identmap100_r) and the round-2 rejections (identmap25_r,
+    # identmap50_fast — negative result #22) are deregistered but retained
+    # in the ledger and pinned outputs.
     # two arms below are the two 200-task/20-seed CONFIRMED members of the
     # family (identmap_confirm_r1/ and identmap_star_confirm_r1/); the
     # third is a registered 60-task screen of the gate + trigger +
@@ -8545,6 +8554,22 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet004_s00421875",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.04,
+             "step_size": 0.00421875},
+            "the gated idet003_s00421875 composition (identmap50_r schedule"
+            " 50/200/2000, utility gate kept, body step 0.00421875 — the"
+            " gated chain's best measured screen, PR #3118) with the"
+            " identifier trigger raised one bracket to 0.04: the trigger"
+            " axis improved monotonically at body step 0.01 (0.02 ->"
+            " 0.92387, PR #3116; 0.03 -> 0.92633, PR #3115) and 0.04 was"
+            " never screened on any chain — the gated chain's next trigger"
+            " bracket, named unmeasured in the s00421875 wave README (PR"
+            " #3118)",
         ),
         (
             "rls_head_resid_identmap50_r_idet003_s005625",
