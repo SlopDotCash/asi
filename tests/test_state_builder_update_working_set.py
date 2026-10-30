@@ -70,7 +70,7 @@ def test_online_gated_persist_fits_while_update_working_set_does_not() -> None:
 def test_online_gated_last_fit_and_first_overflow_are_adjacent() -> None:
     last_fit = None
     first_overflow = None
-    for observation_dim in range(26_843_540, 26_843_545):
+    for observation_dim in range(14_913_075, 14_913_080):
         working_set_bytes = _online_gated_update_working_set_bytes(
             observation_dim,
             0,

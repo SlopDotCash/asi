@@ -13,7 +13,10 @@ import math
 
 import chex
 import jax.numpy as jnp
+import numpy as np
 from jax import Array
+
+from alberta_framework.core._float32_scalars import validated_float32_scalar
 
 
 @dataclasses.dataclass(frozen=True)
@@ -43,14 +46,27 @@ class IntentionalTDConfig:
                 raise ValueError(f"{name} must be a finite number")
             if not math.isfinite(value):
                 raise ValueError(f"{name} must be a finite number")
+        for name in ("eta", "clip_mult"):
+            object.__setattr__(
+                self,
+                name,
+                validated_float32_scalar(name, getattr(self, name), positive=True),
+            )
         if self.eta <= 0 or self.clip_mult <= 0:
             raise ValueError("eta and clip_mult must be positive")
         if not 0 <= self.gamma <= 1 or not 0 <= self.lamda <= 1:
             raise ValueError("gamma and lamda must be in [0, 1]")
         if self.gamma * self.lamda >= 1:
             raise ValueError("gamma * lamda must be less than 1 for sigma correction")
+        if float(np.float32(self.gamma * self.lamda)) >= 1.0:
+            raise ValueError(
+                "gamma * lamda must remain less than 1 in float32 for sigma correction"
+            )
         if not 0 <= self.beta2 < 1 or not 0 <= self.beta_clip < 1:
             raise ValueError("EMA decays must be in [0, 1)")
+        for name in ("beta2", "beta_clip"):
+            if float(np.float32(getattr(self, name))) >= 1.0:
+                raise ValueError(f"{name} must remain less than 1 in float32")
         for name in ("use_rmsprop", "use_adaptive_clip", "enabled"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a bool")
