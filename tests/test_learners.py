@@ -225,6 +225,64 @@ class TestRunLearningLoop:
         chex.assert_trees_all_close(state1.weights, state2.weights)
         chex.assert_trees_all_close(metrics1, metrics2)
 
+    @pytest.mark.parametrize("tracking", [False, True])
+    def test_finishes_device_work_before_stopping_uptime_clock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tracking: bool,
+    ) -> None:
+        """Reported uptime must cover the asynchronous scan, not just dispatch."""
+        from types import SimpleNamespace
+
+        import jax
+
+        import alberta_framework.core.learners as module
+
+        stream = RandomWalkStream(feature_dim=5)
+        learner = LinearLearner()
+        blocked: list[object] = []
+        real_scan = jax.lax.scan
+        real_time = time.time
+        scan_finished = False
+
+        def recording_scan(*args: object, **kwargs: object) -> object:
+            nonlocal scan_finished
+            result = real_scan(*args, **kwargs)
+            scan_finished = True
+            return result
+
+        def recording_block(value: object) -> object:
+            blocked.append(value)
+            return value
+
+        def clock() -> float:
+            if scan_finished:
+                assert blocked
+            return real_time()
+
+        monkeypatch.setattr(jax.lax, "scan", recording_scan)
+        monkeypatch.setattr(jax, "block_until_ready", recording_block)
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+        result = run_learning_loop(
+            learner,
+            stream,
+            num_steps=8,
+            key=jr.key(271),
+            step_size_tracking=(
+                StepSizeTrackingConfig(interval=4) if tracking else None
+            ),
+        )
+        state, metrics = result[:2]
+
+        assert len(blocked) == 1
+        assert isinstance(blocked[0], tuple)
+        blocked_state, blocked_metrics = blocked[0]
+        assert int(blocked_state.step_count) == 8
+        assert blocked_metrics is metrics
+        assert int(state.step_count) == 8
+        chex.assert_shape(metrics, (8, 3))
+
 
 class TestStepSizeTracking:
     """Tests for step-size tracking in run_learning_loop."""

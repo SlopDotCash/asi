@@ -532,8 +532,25 @@ def normalize_future_utility_signal(
     """
     del ages, utility_decay
     decay = jnp.asarray(moment_decay, dtype=jnp.float32)
-    new_second_moment = (
-        _skip_zero_scale(decay, second_moment) + (1.0 - decay) * signal**2
+    decayed_second_moment = _skip_zero_scale(decay, second_moment)
+    innovation_weight = 1.0 - decay
+    direct_second_moment = (
+        decayed_second_moment + innovation_weight * signal**2
+    )
+    # Keep the ordinary path bitwise stable.  The exponent-scaled fallback
+    # avoids squaring a wide finite signal before its small EMA weight is
+    # applied, and remains explicit under XLA compilation.
+    signal_mantissa, signal_exponent = jnp.frexp(signal)
+    weight_mantissa, weight_exponent = jnp.frexp(innovation_weight)
+    recovered_innovation = jnp.ldexp(
+        weight_mantissa * signal_mantissa**2,
+        weight_exponent + 2 * signal_exponent,
+    )
+    recovered_second_moment = decayed_second_moment + recovered_innovation
+    new_second_moment = jnp.where(
+        jnp.isfinite(direct_second_moment) | ~jnp.isfinite(recovered_second_moment),
+        direct_second_moment,
+        recovered_second_moment,
     )
     normalized = signal
     mode = _require_exact_mode(mode)
