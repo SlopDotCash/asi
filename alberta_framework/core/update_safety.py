@@ -128,6 +128,9 @@ def safe_discrete_action(
             jnp.asarray(0, dtype=jnp.int32),
             jnp.asarray(True, dtype=jnp.bool_),
         )
+    action_shape = tuple(jnp.shape(action))
+    if action_shape != ():
+        raise ValueError(f"action must be a scalar, got shape {action_shape}")
     integer_code = _integer_action_code(action, n_actions, allow_unset=allow_unset)
     if integer_code is not None:
         return integer_code
