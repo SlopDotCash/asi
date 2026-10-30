@@ -646,6 +646,18 @@ def test_actor_critic_start_rejects_nonfinite_observation(bad_value: float) -> N
         agent.start(state, bad_observation)
 
 
+def test_actor_critic_start_rejects_policy_overflow_from_finite_inputs() -> None:
+    """A finite observation must not publish a non-finite action distribution."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(1, jr.key(0)).replace(
+        actor_weights=jnp.asarray([[2.0], [-2.0]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="start result"):
+        agent.start(state, observation)
+
+
 def test_actor_critic_start_nonfinite_observation_would_wedge_updates() -> None:
     """Document the wedge the start gate prevents (traced inputs, pre-fix).
 
