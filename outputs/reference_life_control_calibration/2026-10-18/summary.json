@@ -1,0 +1,91 @@
+{
+  "arm_summaries": {
+    "baseline": {
+      "high_end_discovery_count": 1,
+      "mean_late_reward_sum": 4.924999889917672,
+      "mean_reward_sum": 22.365832859495033
+    },
+    "optimistic": {
+      "high_end_discovery_count": 6,
+      "mean_late_reward_sum": 814.8333333333334,
+      "mean_reward_sum": 2988.749166657372
+    }
+  },
+  "decision": {
+    "classification": "development_screen_not_scientific_inference",
+    "mean_paired_reward_difference": 2966.383333797877,
+    "optimistic_high_end_discovery_count": 6,
+    "persistent_resources_equal": true,
+    "positive_pair_count": 6,
+    "retain_mechanism_for_next_calibration": true
+  },
+  "evidence_policy": {
+    "development_only": true,
+    "permanently_nonpromoting": true,
+    "reference_dev_population_allowed": false,
+    "scientific_promotion_allowed": false
+  },
+  "paired_reward_differences": [
+    {
+      "optimistic_minus_baseline": 2904.515000413172,
+      "seed": 81010
+    },
+    {
+      "optimistic_minus_baseline": 2946.9000004939735,
+      "seed": 81011
+    },
+    {
+      "optimistic_minus_baseline": 2930.8450004504994,
+      "seed": 81012
+    },
+    {
+      "optimistic_minus_baseline": 3032.8900004494935,
+      "seed": 81013
+    },
+    {
+      "optimistic_minus_baseline": 2876.075000490062,
+      "seed": 81014
+    },
+    {
+      "optimistic_minus_baseline": 3107.075000490062,
+      "seed": 81015
+    }
+  ],
+  "runtime_identity": {
+    "dependencies": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    },
+    "platform": "Linux-6.8.0-147-generic-x86_64-with-glibc2.39",
+    "python": "3.12.3"
+  },
+  "schema": "asi.reference_life_riverswim_control_calibration_summary.development.v1",
+  "seed_roster": [
+    81010,
+    81011,
+    81012,
+    81013,
+    81014,
+    81015
+  ],
+  "source_identity": {
+    "files": {
+      "alberta_framework/reference_life.py": "c774b06ada83eea7742c8efdfd73c1cb7ff458afc0c80252a9638106bf96008d",
+      "alberta_framework/reference_life_controls.py": "3638dcbc60d4dd445d9c699f7ff20a44128c116390bf30445222fdfa26d6803c",
+      "alberta_framework/streams/closed_loop.py": "9268c08f12f56b9056f7ce45d33420706472ae54097b1b38af3299cff5774fe2",
+      "outputs/reference_life_control_calibration/2026-10-18/run.py": "8140a6df8847f38ed3a7ea4f4579ab96f51842c438cd11e55bddaa79e777cc9b"
+    },
+    "git_head": "b132b2693a1305baefe20e98e4dea80d7b252f80"
+  },
+  "summarizing_source_identity": {
+    "files": {
+      "alberta_framework/reference_life.py": "c774b06ada83eea7742c8efdfd73c1cb7ff458afc0c80252a9638106bf96008d",
+      "alberta_framework/reference_life_controls.py": "3638dcbc60d4dd445d9c699f7ff20a44128c116390bf30445222fdfa26d6803c",
+      "alberta_framework/streams/closed_loop.py": "9268c08f12f56b9056f7ce45d33420706472ae54097b1b38af3299cff5774fe2",
+      "outputs/reference_life_control_calibration/2026-10-18/run.py": "8140a6df8847f38ed3a7ea4f4579ab96f51842c438cd11e55bddaa79e777cc9b"
+    },
+    "git_head": "b132b2693a1305baefe20e98e4dea80d7b252f80"
+  }
+}
