@@ -61,6 +61,20 @@ def test_latent_descriptor_is_jittable_and_deterministic() -> None:
     np.testing.assert_array_equal(eager, jnp.asarray([0.5, 0.5, 0.5, 0.5]))
 
 
+def test_overflowing_reward_mean_stays_finite() -> None:
+    observations = jnp.asarray([[0.0, 1.0], [1.0, 0.0]], dtype=jnp.float32)
+    actions = jnp.asarray([0, 1], dtype=jnp.int32)
+    reward = np.float32(2.0e38)
+    rewards = jnp.asarray([reward, reward])
+    expected = jnp.asarray([0.5, 0.5, reward, 0.5], dtype=jnp.float32)
+    result = rollout_latent_descriptor(observations, actions, rewards)
+    compiled = jax.jit(rollout_latent_descriptor)(observations, actions, rewards)
+    np.testing.assert_array_equal(result, expected)
+    np.testing.assert_array_equal(compiled, expected)
+    negative = rollout_latent_descriptor(observations, actions, -rewards)
+    np.testing.assert_array_equal(negative, jnp.asarray([0.5, 0.5, -reward, 0.5]))
+
+
 def test_current_life_adapter_is_deterministic_for_the_same_key() -> None:
     first = SwitchingPolicyLifeAdapter(phase_length=2, learning_rate=0.125)
     second = SwitchingPolicyLifeAdapter(phase_length=2, learning_rate=0.125)
