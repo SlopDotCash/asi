@@ -2,17 +2,28 @@
 
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
+from typing import Any
+
 import chex
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
+from alberta_framework.core import off_policy_horde as off_policy_horde_module
+from alberta_framework.core.checkpoints import load_checkpoint, save_checkpoint
+from alberta_framework.core.multi_head_learner import (
+    MultiHeadMLPState,
+    measure_multi_head_mlp_state_nbytes,
+)
 from alberta_framework.core.off_policy_horde import (
     NonlinearSharedGTDHordeLearner,
     OffPolicyHordeLearner,
     OffPolicyHordeUpdateResult,
     run_off_policy_horde_learning_loop,
+    run_off_policy_horde_learning_loop_batched,
 )
 from alberta_framework.core.optimizers import LMS, AGCBounding, ObGDBounding
 from alberta_framework.core.types import DemonType, GVFSpec, HordeSpec, TraceMode, create_horde_spec
@@ -54,6 +65,24 @@ def test_init_predict_and_config_roundtrip() -> None:
     config = learner.to_config()
     restored = OffPolicyHordeLearner.from_config(config)
     assert restored.to_config() == config
+
+
+@pytest.mark.parametrize("mutation", ["missing_ratio_clip", "wrong_type"])
+def test_config_adoption_requires_exact_serialized_schema(mutation: str) -> None:
+    learner = OffPolicyHordeLearner(
+        _spec(),
+        hidden_sizes=(8,),
+        optimizer=LMS(step_size=0.03),
+        ratio_clip=2.0,
+    )
+    config = learner.to_config()
+    if mutation == "missing_ratio_clip":
+        config.pop("ratio_clip")
+    else:
+        config["type"] = "MultiHeadMLPLearner"
+
+    with pytest.raises(ValueError, match="OffPolicyHordeLearner config"):
+        OffPolicyHordeLearner.from_config(config)
 
 
 def test_invalid_clips_raise() -> None:
@@ -354,6 +383,281 @@ def test_mixed_discounts_isolate_nonfinite_next_to_consuming_head() -> None:
         result.state.head_optimizer_states[1],
         state.head_optimizer_states[1],
     )
+
+
+# --- Incoming-discount trace decay (state-carried ``previous_discounts``) ---
+#
+# ``OffPolicyHordeState`` is reached through the module attribute so this file
+# still collects against a production module that lacks the class; the
+# behavioural tests below then fail on their assertions rather than at import.
+
+
+def _history_learner(
+    mode: TraceMode = TraceMode.ACCUMULATING, n_demons: int = 1
+) -> OffPolicyHordeLearner:
+    return OffPolicyHordeLearner(
+        _spec(gammas=(0.9,) * n_demons, lamdas=(0.8,) * n_demons),
+        hidden_sizes=(),
+        optimizer=LMS(step_size=0.1),
+        ratio_clip=10.0,
+        trace_ratio_clip=10.0,
+        trace_mode=mode,
+    )
+
+
+def _zeroed_history_state(learner: OffPolicyHordeLearner) -> Any:
+    state = learner.init(3, jax.random.key(270, impl="threefry2x32"))
+    return state.replace(head_params=jax.tree.map(jnp.zeros_like, state.head_params))
+
+
+def _history_step(
+    learner: OffPolicyHordeLearner,
+    state: Any,
+    index: int,
+    rewards: list[float],
+    discounts: list[float],
+    rhos: list[float] | None = None,
+) -> OffPolicyHordeUpdateResult:
+    """One-hot ``e_index -> e_{index+1}`` transition with explicit discounts."""
+    return learner.update_with_ratios_and_discounts(
+        state,
+        jnp.eye(3, dtype=jnp.float32)[index],
+        jnp.asarray(rewards, dtype=jnp.float32),
+        jnp.eye(3, dtype=jnp.float32)[(index + 1) % 3],
+        jnp.asarray(rhos if rhos is not None else [1.0] * learner.n_demons, dtype=jnp.float32),
+        jnp.asarray(discounts, dtype=jnp.float32),
+    )
+
+
+def _assert_learning_state_equal(left: Any, right: Any) -> None:
+    for name in dict(left):
+        if name in {"birth_timestamp", "uptime_s"}:
+            continue
+        for a, b in zip(
+            jax.tree.leaves(getattr(left, name)), jax.tree.leaves(getattr(right, name)), strict=True
+        ):
+            np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("mode", list(TraceMode))
+@pytest.mark.parametrize("incoming", [0.0, 0.5, 0.9])
+@pytest.mark.parametrize("outgoing", [0.0, 0.25, 1.0])
+def test_delayed_credit_uses_incoming_discount(
+    mode: TraceMode, incoming: float, outgoing: float
+) -> None:
+    """The rewarded step decays the carried trace by the discount that entered it."""
+    learner = _history_learner(mode)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0], [incoming], [2.0])
+    result = _history_step(learner, first.state, 1, [1.0], [outgoing], [0.5])
+    assert bool(first.update_applied) and bool(result.update_applied)
+    # delta_1 = 1, so w = alpha * rho_1 * (gamma_in * lambda * rho_0 * phi_0 + phi_1);
+    # the outgoing discount of the rewarded transition must not appear.
+    expected = np.array([[0.1 * 0.5 * incoming * 0.8 * 2.0, 0.05, 0.0]], dtype=np.float32)
+    np.testing.assert_allclose(result.state.head_params.weights[0], expected, atol=1e-7)
+    np.testing.assert_array_equal(result.state.previous_discounts, [outgoing])
+
+
+@pytest.mark.parametrize("mode", list(TraceMode))
+def test_terminal_credit_does_not_cross_into_next_episode(mode: TraceMode) -> None:
+    learner = _history_learner(mode)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0], [0.5])
+    terminal = _history_step(learner, first.state, 1, [1.0], [0.0])
+    following = _history_step(learner, terminal.state, 2, [1.0], [0.9])
+    np.testing.assert_array_equal(
+        following.state.head_params.weights[0][:, :2],
+        terminal.state.head_params.weights[0][:, :2],
+    )
+
+
+@pytest.mark.parametrize("skipped_reward", [np.nan, np.inf])
+def test_inactive_or_rejected_head_preserves_its_own_discount(skipped_reward: float) -> None:
+    learner = _history_learner(n_demons=2)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0, 0.0], [0.5, 0.9])
+    skipped = _history_step(learner, first.state, 1, [skipped_reward, 0.0], [0.0, 0.25])
+    np.testing.assert_array_equal(skipped.head_updates_applied, [False, True])
+    np.testing.assert_array_equal(skipped.state.previous_discounts, [0.5, 0.25])
+    np.testing.assert_array_equal(skipped.state.head_traces[0][0], first.state.head_traces[0][0])
+    resumed = _history_step(learner, skipped.state, 2, [1.0, 1.0], [0.0, 0.0])
+    # Head 0 resumes its last accepted trace under its own carried discount;
+    # head 1 decays the two-step trace by its newer history.
+    np.testing.assert_allclose(resumed.state.head_params.weights[0], [[0.04, 0.0, 0.1]], atol=1e-7)
+    np.testing.assert_allclose(
+        resumed.state.head_params.weights[1], [[0.0144, 0.02, 0.1]], atol=1e-7
+    )
+
+
+def test_rejected_transition_preserves_carried_discount_for_retry() -> None:
+    """A globally rejected (non-finite) transition leaves the history intact for retry."""
+    learner = _history_learner(n_demons=2)
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0, 0.0], [0.5, 0.9])
+    rejected = learner.update_with_ratios_and_discounts(
+        first.state,
+        jnp.full(3, jnp.inf, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.zeros(3, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.zeros(2, dtype=jnp.float32),
+    )
+    assert not bool(rejected.update_applied)
+    _assert_learning_state_equal(rejected.state, first.state)
+    np.testing.assert_array_equal(
+        rejected.state.previous_discounts, np.array([0.5, 0.9], dtype=np.float32)
+    )
+    retried = _history_step(learner, rejected.state, 1, [1.0, 1.0], [0.0, 0.0])
+    reference = _history_step(learner, first.state, 1, [1.0, 1.0], [0.0, 0.0])
+    assert bool(retried.update_applied)
+    _assert_learning_state_equal(retried.state, reference.state)
+    # An all-inactive accepted step also leaves every head's history alone.
+    inactive = _history_step(learner, first.state, 1, [np.nan, np.nan], [0.0, 0.0])
+    assert bool(inactive.update_applied)
+    np.testing.assert_array_equal(
+        inactive.state.previous_discounts, np.array([0.5, 0.9], dtype=np.float32)
+    )
+    assert int(inactive.state.step_count) == int(first.state.step_count) + 1
+
+
+@pytest.mark.parametrize("bad", [-0.1, 1.1, np.nan, np.inf])
+def test_invalid_numeric_history_rejects_atomically(bad: float) -> None:
+    learner = _history_learner()
+    state = _zeroed_history_state(learner).replace(
+        previous_discounts=jnp.array([bad], dtype=jnp.float32)
+    )
+    rejected = _history_step(learner, state, 0, [1.0], [0.0])
+    assert not bool(rejected.update_applied)
+    _assert_learning_state_equal(rejected.state, state)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [None, jnp.array(0.5, dtype=jnp.float32), jnp.ones(2), jnp.ones(1, dtype=jnp.int32)],
+)
+def test_noncanonical_history_fails_closed_before_tracing(bad: object) -> None:
+    learner = _history_learner()
+    state = _zeroed_history_state(learner).replace(previous_discounts=bad)
+    with pytest.raises((TypeError, ValueError), match="previous_discounts"):
+        _history_step(learner, state, 0, [1.0], [0.0])
+
+
+def test_legacy_state_requires_explicit_adoption_and_charges_one_float_per_demon() -> None:
+    """Legacy ``MultiHeadMLPState`` cannot resume silently; adoption is explicit.
+
+    The only persistent growth is the float32 history vector: 4 bytes per demon.
+    """
+    learner = _history_learner(n_demons=2)
+    key = jax.random.key(270, impl="threefry2x32")
+    legacy = learner.learner.init(3, key)
+    assert type(legacy) is MultiHeadMLPState
+    with pytest.raises(TypeError, match="previous_discounts"):
+        _history_step(learner, legacy, 0, [0.0, 0.0], [0.0, 0.0])
+    with pytest.raises(TypeError, match="previous_discounts"):
+        off_policy_horde_module.OffPolicyHordeState(**dict(legacy))
+    adopted = off_policy_horde_module.OffPolicyHordeState(
+        **dict(legacy), previous_discounts=jnp.ones(2, dtype=jnp.float32)
+    )
+    fresh = learner.init(3, key)
+    assert isinstance(fresh, off_policy_horde_module.OffPolicyHordeState)
+    assert isinstance(fresh, MultiHeadMLPState)
+    _assert_learning_state_equal(adopted, fresh)
+    assert fresh.previous_discounts.dtype == jnp.float32
+    assert (
+        measure_multi_head_mlp_state_nbytes(fresh)
+        == measure_multi_head_mlp_state_nbytes(legacy) + 4 * learner.n_demons
+    )
+    assert len(jax.tree.leaves(fresh)) == len(jax.tree.leaves(legacy)) + 1
+    result = _history_step(learner, adopted, 0, [0.0, 0.0], [0.0, 0.0])
+    assert bool(result.update_applied)
+
+
+@pytest.mark.parametrize("incoming, accepted", [(0.0, True), (0.5, False)])
+def test_zero_outgoing_discount_does_not_hide_required_poisoned_trace(
+    incoming: float, accepted: bool
+) -> None:
+    learner = _history_learner()
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0], [incoming])
+    state = first.state.replace(
+        head_traces=((jnp.full((1, 3), jnp.inf, dtype=jnp.float32), jnp.ones(1)),)
+    )
+    result = _history_step(learner, state, 1, [1.0], [0.0])
+    assert bool(result.update_applied) == accepted
+    if accepted:
+        np.testing.assert_array_equal(result.state.head_traces[0][0], [[0.0, 1.0, 0.0]])
+    else:
+        _assert_learning_state_equal(result.state, state)
+
+
+def test_pickle_and_public_scan_preserve_discount_history() -> None:
+    learner = _history_learner()
+    initial = _zeroed_history_state(learner)
+    first = _history_step(learner, initial, 0, [0.0], [0.5])
+    restored = pickle.loads(pickle.dumps(first.state))
+    assert isinstance(restored, off_policy_horde_module.OffPolicyHordeState)
+    np.testing.assert_array_equal(restored.previous_discounts, [0.5])
+    expected = _history_step(learner, first.state, 1, [1.0], [0.0])
+    actual = _history_step(learner, restored, 1, [1.0], [0.0])
+    _assert_learning_state_equal(actual.state, expected.state)
+    scanned = run_off_policy_horde_learning_loop(
+        learner,
+        initial,
+        jnp.eye(3, dtype=jnp.float32)[:2],
+        jnp.array([[0.0], [1.0]], dtype=jnp.float32),
+        jnp.eye(3, dtype=jnp.float32)[1:],
+        jnp.ones((2, 1), dtype=jnp.float32),
+        jnp.array([[0.5], [0.0]], dtype=jnp.float32),
+    )
+    _assert_learning_state_equal(scanned.state, expected.state)
+    np.testing.assert_array_equal(scanned.updates_applied, [True, True])
+
+
+def test_checkpoint_round_trip_carries_history_and_legacy_template_fails_closed(
+    tmp_path: Path,
+) -> None:
+    learner = _history_learner()
+    key = jax.random.key(270, impl="threefry2x32")
+    first = _history_step(learner, _zeroed_history_state(learner), 0, [0.0], [0.5])
+    save_checkpoint(first.state, tmp_path / "history")
+    loaded, _ = load_checkpoint(learner.init(3, key), tmp_path / "history")
+    assert isinstance(loaded, off_policy_horde_module.OffPolicyHordeState)
+    np.testing.assert_array_equal(loaded.previous_discounts, [0.5])
+    expected = _history_step(learner, first.state, 1, [1.0], [0.0])
+    actual = _history_step(learner, loaded, 1, [1.0], [0.0])
+    _assert_learning_state_equal(actual.state, expected.state)
+    # The generic multi-head template has one leaf fewer: refuse rather than misread.
+    with pytest.raises(ValueError, match="leaf count"):
+        load_checkpoint(learner.learner.init(3, key), tmp_path / "history")
+
+
+def test_batched_public_scan_keeps_history_in_its_state() -> None:
+    learner = _history_learner()
+    keys = jax.random.split(jax.random.key(270, impl="threefry2x32"), 2)
+    result = run_off_policy_horde_learning_loop_batched(
+        learner,
+        jnp.eye(3, dtype=jnp.float32)[:2],
+        jnp.zeros((2, 1), dtype=jnp.float32),
+        jnp.eye(3, dtype=jnp.float32)[1:],
+        jnp.ones((2, 1), dtype=jnp.float32),
+        keys,
+        jnp.array([[0.5], [0.0]], dtype=jnp.float32),
+    )
+    np.testing.assert_array_equal(result.state.previous_discounts, [[0.0], [0.0]])
+
+
+def test_history_bytes_are_preflighted_before_wrapped_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The three live float32 history copies (12 bytes/demon) join the int32 envelope."""
+    learner = _history_learner(n_demons=2)
+    monkeypatch.setattr(
+        off_policy_horde_module,
+        "_multi_head_update_working_set_bytes",
+        lambda *args: 2**31 - 20,
+    )
+
+    def forbidden(*args: object) -> None:
+        pytest.fail("oversized history envelope reached allocation")
+
+    monkeypatch.setattr(learner.learner, "init", forbidden)
+    with pytest.raises(ValueError, match="working set"):
+        learner.init(3, jax.random.key(270, impl="threefry2x32"))
 
 
 def test_terminal_lifetime_counter_rejects_entire_update_under_jit() -> None:
