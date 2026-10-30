@@ -124,3 +124,69 @@ def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(2**40, 3)
     assert not bool(valid)
     assert int(safe) == 0
+
+
+@pytest.mark.parametrize("dtype, n_actions", [
+    (jnp.int8, 300), (jnp.uint8, 300), (jnp.int16, 70000), (jnp.uint16, 70000),
+])
+def test_checked_actions_narrow_dtype_keeps_larger_domain(dtype, n_actions) -> None:
+    from alberta_framework.core.update_safety import checked_integer_action_array
+
+    expected = [0, 1, int(np.iinfo(dtype).max)]
+    actions = jnp.asarray(expected, dtype=dtype)
+
+    def check(values):
+        return checked_integer_action_array(
+            values, n_actions, name="actions", expected_shape=(3,), range_message="bad action",
+        )
+
+    for safe, valid in (check(actions), jax.jit(check)(actions)):
+        np.testing.assert_array_equal(safe, expected)
+        np.testing.assert_array_equal(valid, [True, True, True])
+        assert safe.dtype == jnp.int32
+
+
+@pytest.mark.parametrize("dtype", [jnp.int8, jnp.uint8, jnp.int16, jnp.uint16])
+def test_checked_actions_narrow_invalid_values_stay_rejected(dtype) -> None:
+    from alberta_framework.core.update_safety import checked_integer_action_array
+
+    actions = jnp.asarray([0, 1, 2], dtype=dtype)
+
+    def check(values):
+        return checked_integer_action_array(
+            values, 2, name="actions", expected_shape=(3,), range_message="bad action",
+        )
+
+    with pytest.raises(ValueError, match="bad action"):
+        check(actions)
+    safe, valid = jax.jit(check)(actions)
+    np.testing.assert_array_equal(safe, [0, 1, 0])
+    np.testing.assert_array_equal(valid, [True, True, False])
+
+
+@pytest.mark.parametrize("dtype", [jnp.int8, jnp.uint8, jnp.int16, jnp.uint16])
+def test_actor_critic_narrow_actions_match_int32_scan(dtype) -> None:
+    from alberta_framework.core.actor_critic import (
+        ActorCriticAgent,
+        ActorCriticConfig,
+        run_actor_critic_from_arrays,
+    )
+
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=300))
+    state = agent.init(feature_dim=1, key=jax.random.key(0))
+
+    def run(actions):
+        return run_actor_critic_from_arrays(
+            agent, state, observations=jnp.ones((2, 1)), rewards=jnp.ones(2),
+            next_observations=jnp.ones((2, 1)),
+            terminated=jnp.asarray([False, True]), actions=actions,
+        )
+
+    expected = run(jnp.asarray([1, 100], dtype=jnp.int32))
+    actions = jnp.asarray([1, 100], dtype=dtype)
+    for result in (run(actions), jax.jit(run)(actions)):
+        np.testing.assert_array_equal(result.updates_applied, [True, True])
+        for actual, reference in zip(jax.tree.leaves(result), jax.tree.leaves(expected)):
+            if jax.dtypes.issubdtype(actual.dtype, jax.dtypes.prng_key):
+                actual, reference = jax.random.key_data(actual), jax.random.key_data(reference)
+            np.testing.assert_array_equal(actual, reference)

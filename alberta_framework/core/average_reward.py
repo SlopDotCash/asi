@@ -2510,7 +2510,8 @@ class DifferentialSARSAAgent:
         )
         if next_action is None:
             selected_next_action, key = self.select_action(state, next_observation_f)
-            action_contract_valid = jnp.asarray(True, dtype=jnp.bool_)
+            # select_action returns -1 when the next decision is not finite.
+            action_contract_valid = selected_next_action >= 0
         else:
             raw_next_action = jnp.asarray(next_action)
             if raw_next_action.shape != ():

@@ -328,6 +328,27 @@ def test_reward_model_step_count_saturates_at_int32_max() -> None:
     assert int(result.state.step_count) == 2**31 - 1
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_reward_model_negative_step_count_rejects_update_atomically(
+    disable_jit: bool,
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=1, forgetting=1.0))
+    state = model.init().replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+
+    with jax.disable_jit(disable_jit):
+        result = model.update(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+        )
+
+    assert not bool(result.update_applied)
+    chex.assert_trees_all_equal(result.state, state)
+    chex.assert_trees_all_equal(result.prediction, jnp.zeros_like(result.prediction))
+    chex.assert_trees_all_equal(result.error, jnp.zeros_like(result.error))
+    chex.assert_trees_all_equal(result.gain, jnp.zeros_like(result.gain))
+
+
 def test_rls_reward_model_config_integer_and_scalar_validation() -> None:
     with pytest.raises(ValueError, match="feature_dim"):
         RLSRewardModelConfig(feature_dim=True)  # type: ignore[arg-type]
@@ -483,3 +504,24 @@ def test_rls_reward_model_covariance_symmetrization_avoids_finite_overflow() -> 
     cov_out = np.array(result.state.covariance)
     assert np.all(np.isfinite(cov_out))
     assert np.array_equal(cov_out, cov_out.T)
+
+
+
+@pytest.mark.parametrize("value", [np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 0.25])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_rls_reward_model_preserves_equal_covariance_entries(
+    value: float, compiled: bool
+) -> None:
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=2, forgetting=1.0, ridge=1.0))
+    covariance = jnp.array([[1.0, value], [value, 1.0]], dtype=jnp.float32)
+    state = RLSRewardModelState(
+        weights=jnp.zeros(2, dtype=jnp.float32),
+        covariance=covariance,
+        abs_error_ema=jnp.array(0.0, dtype=jnp.float32),
+        step_count=jnp.array(0, dtype=jnp.int32),
+    )
+    with jax.disable_jit(not compiled):
+        result = model.update(state, jnp.zeros(2, dtype=jnp.float32), jnp.float32(0.0))
+    assert bool(result.update_applied)
+    assert int(result.state.step_count) == 1
+    np.testing.assert_array_equal(result.state.covariance, covariance)

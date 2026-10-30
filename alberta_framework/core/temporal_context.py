@@ -229,6 +229,7 @@ def _temporal_context_update_working_set_bytes(
         + 4 * input_dim
         + 4 * input_dim
         + 4 * input_dim
+        + 5 * input_dim  # Equal-input mask and fixed-point selection.
         + 8 * input_dim * int(include_delta)
         + 4 * phase_dim
         + 4 * product_dim
@@ -521,7 +522,8 @@ class TemporalContextFeaturizer:
             blocks.append(safe_ema)
         if cfg.include_delta:
             delta = obs - safe_ema
-            blocks.append(jnp.where(coordinate_valid, delta, jnp.zeros_like(delta)))
+            delta_valid = coordinate_valid & jnp.isfinite(delta)
+            blocks.append(jnp.where(delta_valid, delta, jnp.zeros_like(delta)))
         if cfg.periods:
             counter_valid = state.step_count >= jnp.asarray(0, dtype=jnp.int32)
             safe_step_count = jnp.where(
@@ -583,6 +585,8 @@ class TemporalContextFeaturizer:
             decay * state.observation_ema,
         )
         proposed_ema = decayed_ema + (1.0 - decay) * obs
+        # Equal inputs are an exact EMA fixed point, including tiny normals.
+        proposed_ema = jnp.where(state.observation_ema == obs, obs, proposed_ema)
         proposed = TemporalContextState(
             observation_ema=proposed_ema,
             step_count=jnp.minimum(

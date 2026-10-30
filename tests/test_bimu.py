@@ -13,6 +13,7 @@ from alberta_framework.benchmarks.bimu import (
     BiMUConfig,
     BiMUState,
     _apply_gradient,
+    _layer_normalize,
     _state_sha256,
     bimu_update,
     bimu_update_transaction,
@@ -119,6 +120,18 @@ def test_binary_and_concrete_samples_are_explicit_and_reproducible() -> None:
     assert bool(jnp.all(jnp.abs(concrete) < 1.0))
     derivative = jax.grad(lambda x: concrete_binary_weights(x, key, temperature=0.7).sum())(natural)
     assert bool(jnp.all(jnp.isfinite(derivative)))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_layer_normalize_preserves_large_finite_signals(*, compiled: bool) -> None:
+    normalize = jax.jit(_layer_normalize) if compiled else _layer_normalize
+    maximum = np.finfo(np.float32).max
+
+    equal = normalize(jnp.asarray([maximum, maximum], dtype=jnp.float32))
+    centered = normalize(jnp.asarray([-maximum, maximum], dtype=jnp.float32))
+
+    np.testing.assert_array_equal(equal, jnp.zeros(2, dtype=jnp.float32))
+    np.testing.assert_allclose(centered, jnp.asarray([-1.0, 1.0], dtype=jnp.float32))
 
 
 def test_mechanism_off_removes_only_controlled_forgetting() -> None:
