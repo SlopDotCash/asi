@@ -550,6 +550,77 @@ class TestExactSemantics:
             np.asarray(r2.state.traces), 2.0 * np.asarray(r1.state.traces), rtol=1e-6
         )
 
+    @pytest.mark.parametrize("compiled", [False, True], ids=("eager", "jit"))
+    def test_negative_rho_rejects_the_update_atomically(self, compiled: bool) -> None:
+        """A policy-probability ratio cannot reverse a Horde update."""
+        horde = StackedLinearHorde(
+            _simple_config(
+                n_demons=1,
+                gammas=(0.9,),
+                lamdas=(0.5,),
+                cumulant_indices=(0,),
+            )
+        )
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+        update = jax.jit(horde.update) if compiled else horde.update
+
+        result = update(
+            state,
+            x,
+            x,
+            jnp.array([1.0], dtype=jnp.float32),
+            jnp.array(-0.25, dtype=jnp.float32),
+        )
+
+        assert not bool(result.update_applied)
+        chex.assert_trees_all_equal(result.head_updates_applied, jnp.array([False]))
+        chex.assert_trees_all_equal(result.state, state)
+        chex.assert_trees_all_equal(result.predictions, jnp.zeros((1,), dtype=jnp.float32))
+        chex.assert_trees_all_equal(result.td_errors, jnp.zeros((1,), dtype=jnp.float32))
+
+    def test_negative_rho_only_rejects_its_own_demon(self) -> None:
+        horde = StackedLinearHorde(_simple_config())
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+
+        result = horde.update(
+            state,
+            x,
+            x,
+            jnp.array([1.0, 1.0], dtype=jnp.float32),
+            jnp.array([-0.25, 1.0], dtype=jnp.float32),
+        )
+
+        assert bool(result.update_applied)
+        chex.assert_trees_all_equal(result.head_updates_applied, jnp.array([False, True]))
+        chex.assert_trees_all_equal(result.state.weights[0], state.weights[0])
+        chex.assert_trees_all_equal(result.state.traces[0], state.traces[0])
+        assert float(result.state.weights[1, 0]) > 0.0
+
+    def test_exact_host_negative_rho_is_rejected_before_float32_narrowing(self) -> None:
+        horde = StackedLinearHorde(
+            _simple_config(
+                n_demons=1,
+                gammas=(0.9,),
+                lamdas=(0.5,),
+                cumulant_indices=(0,),
+            )
+        )
+        state = horde.init()
+        x = jnp.array([1.0, 0.0, 0.0], dtype=jnp.float32)
+        negative_underflow = -math.nextafter(0.0, 1.0)
+        assert float(np.float32(negative_underflow)) == 0.0
+
+        with pytest.raises(ValueError, match="rho"):
+            horde.update(
+                state,
+                x,
+                x,
+                jnp.array([1.0], dtype=jnp.float32),
+                negative_underflow,
+            )
+
     def test_infinite_rho_on_zero_feature_does_not_poison_traces(self):
         """rho * x is 0*inf = NaN on a silent feature; hold the finite state."""
         cfg = StackedHordeConfig(
@@ -919,6 +990,25 @@ def test_stacked_horde_step_count_saturates_without_jit_wraparound() -> None:
         jnp.ones(1, dtype=jnp.float32),
     )
     assert int(result.state.step_count) == 2**31 - 1
+
+
+@pytest.mark.parametrize("use_jit", [False, True])
+def test_stacked_horde_rejects_negative_lifetime_counter(use_jit: bool) -> None:
+    horde = StackedLinearHorde(_simple_config(n_demons=1, feature_dim=2))
+    state = horde.init().replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+    update = jax.jit(horde.update) if use_jit else horde.update
+
+    result = update(
+        state,
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.ones(1, dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert int(result.state.step_count) == -1
+    np.testing.assert_array_equal(result.state.weights, state.weights)
+    np.testing.assert_array_equal(result.state.traces, state.traces)
 
 
 def test_stacked_horde_scan_rejects_derived_result_overflow_without_allocation() -> None:
