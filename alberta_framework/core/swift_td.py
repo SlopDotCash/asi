@@ -66,6 +66,17 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _finite_nonnegative_mean(values: Array) -> Array:
+    """Preserve an ordinary mean unless only its reduction overflowed."""
+    ordinary = jnp.mean(values)
+    scale = jnp.max(values)
+    _, exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(values, -exponent)
+    stable = jnp.ldexp(jnp.mean(scaled), exponent)
+    reduction_overflowed = ~jnp.isfinite(ordinary) & jnp.isfinite(scale)
+    return jnp.where(reduction_overflowed, stable, ordinary)
+
+
 # Paper default for the step-size floor: eta_min = e^-15.
 _INT32_MAX = 2**31 - 1
 _FLOAT32_MIN_NORMAL = float.fromhex("0x1.0p-126")
@@ -104,10 +115,12 @@ def _swift_td_update_result_extras_bytes(feature_dim: int) -> int:
 
 
 def _swift_td_update_working_set_bytes(feature_dim: int) -> int:
-    """Three persist copies, returned extras, and stable-bound scratch space."""
+    """Three persist copies, returned extras, and reduction fallback scratch."""
     return 3 * _swift_td_persistent_bytes(
         feature_dim
-    ) + _swift_td_update_result_extras_bytes(feature_dim) + 4 * (4 * (feature_dim + 1) + 5)
+    ) + _swift_td_update_result_extras_bytes(feature_dim) + 4 * (
+        4 * (feature_dim + 1) + 5
+    ) + 4 * (2 * feature_dim + 6)
 
 
 def _preflight_swift_td_update_working_set(feature_dim: int) -> None:
@@ -598,10 +611,10 @@ class SwiftTD:
 
         weight_alphas = jnp.exp(new_log_step_sizes[:-1])
         candidate_metrics = {
-            "mean_step_size": jnp.mean(weight_alphas),
+            "mean_step_size": _finite_nonnegative_mean(weight_alphas),
             "min_step_size": jnp.min(weight_alphas),
             "max_step_size": jnp.max(weight_alphas),
-            "mean_eligibility_trace": jnp.mean(jnp.abs(new_z[:-1])),
+            "mean_eligibility_trace": _finite_nonnegative_mean(jnp.abs(new_z[:-1])),
             "bound_scale": bound_scale,
             "decay_triggered": decay_triggered.astype(jnp.float32),
         }

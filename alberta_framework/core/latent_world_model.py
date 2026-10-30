@@ -70,6 +70,7 @@ from alberta_framework.core.multi_head_learner import (
 from alberta_framework.core.optimizers import Bounder
 from alberta_framework.core.types import TraceMode
 from alberta_framework.core.update_safety import (
+    checked_integer_action_array,
     floating_tree_is_finite,
     neutralize_array,
     safe_discrete_action,
@@ -115,6 +116,18 @@ def _require_bool(name: str, value: object) -> bool:
 def _saturating_int32_increment(value: Array) -> Array:
     maximum = jnp.asarray(_INT32_MAX, dtype=jnp.int32)
     return jnp.where(value < maximum, value + jnp.asarray(1, dtype=jnp.int32), maximum)
+
+
+def _float32_operand(
+    name: str,
+    value: Array | float | int,
+    shape: tuple[int, ...],
+) -> Array:
+    """Narrow one numeric operand while preserving its exact shape contract."""
+    array = jnp.asarray(value, dtype=jnp.float32)
+    if array.shape != shape:
+        raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
+    return array
 
 
 def _latent_direct_state_scalars(
@@ -656,7 +669,7 @@ class LatentWorldModel:
         observation: Array,
     ) -> Float[Array, " latent_dim"]:
         """Encode one observation with explicit (differentiable) encoder params."""
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((self._config.observation_dim,))
+        obs = _float32_operand("observation", observation, (self._config.observation_dim,))
         scale = jnp.asarray(self._observation_scale, dtype=jnp.float32)
         scaled = obs / scale
         return jnp.tanh(scaled @ encoder_matrix + encoder_bias)
@@ -677,7 +690,7 @@ class LatentWorldModel:
         action: Array,
     ) -> Float[Array, " input_dim"]:
         """Return ``concat(latent, one_hot(action), optional interactions)``."""
-        z = jnp.asarray(latent, dtype=jnp.float32).reshape((self._config.latent_dim,))
+        z = _float32_operand("latent", latent, (self._config.latent_dim,))
         safe_action, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
@@ -736,11 +749,10 @@ class LatentWorldModel:
             next_latent - latent,
             next_latent,
         )
-        reward_target = jnp.reshape(
-            jnp.asarray(reward, dtype=jnp.float32) / self._config.reward_scale,
-            (1,),
-        )
-        discount_target = jnp.reshape(jnp.asarray(discount, dtype=jnp.float32), (1,))
+        reward_arr = _float32_operand("reward", reward, ())
+        discount_arr = _float32_operand("discount", discount, ())
+        reward_target = jnp.reshape(reward_arr / self._config.reward_scale, (1,))
+        discount_target = jnp.reshape(discount_arr, (1,))
         return jnp.concatenate([latent_target, reward_target, discount_target], axis=0)
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -751,7 +763,7 @@ class LatentWorldModel:
         action: Array,
     ) -> LatentWorldModelPrediction:
         """Predict the next latent, reward, and discount from a latent state."""
-        z = jnp.asarray(latent, dtype=jnp.float32).reshape((self._config.latent_dim,))
+        z = _float32_operand("latent", latent, (self._config.latent_dim,))
         raw_predictions = self._learner.predict(
             state.learner_state,
             self.input_features_from_latent(z, action),
@@ -885,17 +897,21 @@ class LatentWorldModel:
         ``encoder_learning=False`` the computation is exactly the
         fixed-encoder path.
         """
-        observation_arr = jnp.asarray(observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
+        observation_arr = _float32_operand(
+            "observation",
+            observation,
+            (self._config.observation_dim,),
         )
         action_arr, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
         )
-        reward_arr = jnp.asarray(reward, dtype=jnp.float32)
-        discount_arr = jnp.asarray(discount, dtype=jnp.float32)
-        next_observation_arr = jnp.asarray(next_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
+        reward_arr = _float32_operand("reward", reward, ())
+        discount_arr = _float32_operand("discount", discount, ())
+        next_observation_arr = _float32_operand(
+            "next_observation",
+            next_observation,
+            (self._config.observation_dim,),
         )
         inputs_valid = (
             jnp.all(jnp.isfinite(observation_arr))
@@ -1116,9 +1132,18 @@ def run_latent_world_model_learning_loop(
     if model.config.n_actions is not None:
         if act_shape != (num_steps,):
             raise ValueError(f"actions must have shape ({num_steps},)")
+        safe_actions, actions_valid = checked_integer_action_array(
+            actions,
+            model.config.n_actions,
+            name="actions",
+            expected_shape=(num_steps,),
+            range_message="actions must be in the discrete action range",
+        )
+        act_array = jnp.where(actions_valid, safe_actions, -1).astype(jnp.int32)
     else:
         if act_shape != (num_steps, model.config.action_dim):
             raise ValueError(f"actions must have shape ({num_steps}, {model.config.action_dim})")
+        act_array = jnp.asarray(actions, dtype=jnp.float32)
 
     rew_shape = _require_scan_array_metadata("rewards", rewards)
     if rew_shape != (num_steps,):
@@ -1141,11 +1166,6 @@ def run_latent_world_model_learning_loop(
     obs_array = jnp.asarray(observations, dtype=jnp.float32)
     next_obs_array = jnp.asarray(next_observations, dtype=jnp.float32)
     rew_array = jnp.asarray(rewards, dtype=jnp.float32)
-    act_array = (
-        jnp.asarray(actions, dtype=jnp.int32)
-        if model.config.n_actions is not None
-        else jnp.asarray(actions, dtype=jnp.float32)
-    )
 
     def _scan_fn(
         carry: LatentWorldModelState,

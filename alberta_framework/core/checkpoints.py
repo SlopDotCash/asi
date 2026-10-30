@@ -35,7 +35,7 @@ assert meta["epoch"] == 1
 
 import json
 import os
-import stat
+import stat as stat_module
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -196,9 +196,9 @@ def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
 
 def _require_path(value: object, *, name: str = "checkpoint path") -> Path:
     if type(value) is str:
-        return Path(value)
+        return Path(value).absolute()
     if isinstance(value, Path) and type(value).__module__.startswith("pathlib"):
-        return Path(value)
+        return Path(value).absolute()
     raise ValueError(f"{name} must be an exact str or Path")
 
 
@@ -219,12 +219,34 @@ def _preflight_on_disk_metadata(path: Path) -> None:
 
     meta_path = _on_disk_metadata_path(path)
     try:
-        if not meta_path.is_file():
-            return
-    except OSError:
+        path_metadata = os.lstat(meta_path)
+    except FileNotFoundError:
         return
-    with meta_path.open("rb") as stream:
-        raw = stream.read(_JSON_MAX_BYTES + 1)
+    except OSError as error:
+        raise ValueError("checkpoint metadata must be a readable regular file") from error
+    if not stat_module.S_ISREG(path_metadata.st_mode):
+        raise ValueError("checkpoint metadata must be a regular file")
+
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            meta_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened_metadata = os.fstat(descriptor)
+        if (
+            not stat_module.S_ISREG(opened_metadata.st_mode)
+            or opened_metadata.st_dev != path_metadata.st_dev
+            or opened_metadata.st_ino != path_metadata.st_ino
+        ):
+            raise ValueError("checkpoint metadata must remain the same regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            raw = stream.read(_JSON_MAX_BYTES + 1)
+    except OSError as error:
+        raise ValueError("checkpoint metadata must be a readable regular file") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
     if len(raw) > _JSON_MAX_BYTES:
         raise ValueError("checkpoint metadata exceeds the JSON byte limit")
     try:
@@ -254,7 +276,9 @@ def _preflight_on_disk_state(path: Path) -> None:
             directory_stat = directory.lstat()
         except OSError as error:
             raise ValueError(f"checkpoint state path is not readable: {directory}") from error
-        if stat.S_ISLNK(directory_stat.st_mode) or not stat.S_ISDIR(directory_stat.st_mode):
+        if stat_module.S_ISLNK(directory_stat.st_mode) or not stat_module.S_ISDIR(
+            directory_stat.st_mode
+        ):
             raise ValueError(f"checkpoint state path must be a regular directory: {directory}")
 
         try:
@@ -266,9 +290,9 @@ def _preflight_on_disk_state(path: Path) -> None:
                         raise ValueError(
                             f"checkpoint state entry is not readable: {entry.path}"
                         ) from error
-                    if stat.S_ISDIR(entry_stat.st_mode):
+                    if stat_module.S_ISDIR(entry_stat.st_mode):
                         pending.append(Path(entry.path))
-                    elif not stat.S_ISREG(entry_stat.st_mode):
+                    elif not stat_module.S_ISREG(entry_stat.st_mode):
                         raise ValueError(
                             "checkpoint state entry must be a regular file or directory: "
                             f"{entry.path}"
