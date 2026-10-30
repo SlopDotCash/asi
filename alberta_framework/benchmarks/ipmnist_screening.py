@@ -5020,6 +5020,7 @@ def _make_rls_head_learner(
         names: tuple[str, ...],
         guard_zero_max: bool,
         init_params: Mapping[str, Array] | None = None,
+        lr: Array | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """Champion utility-EMA + global-max sigmoid gate + gated decayed SGD
         over ``names``; other tensors pass through with untouched utility."""
@@ -5037,10 +5038,24 @@ def _make_rls_head_learner(
         if guard_zero_max:
             global_max = jnp.where(global_max == 0.0, 1.0, global_max)
         new_params = dict(params)
+        step: float | Array = step_size
+        decay: float | Array = param_decay
+        if lr is not None:
+            # Runtime (annealed) step.  At ``lr == float32(step_size)`` the
+            # decay is the parent's own constant, so that point of the live
+            # path is bit-exactly the parent (pinned).
+            if init_params is not None:
+                raise ValueError("a runtime step is not defined for L2-Init")
+            step = lr
+            decay = jnp.where(
+                lr == jnp.float32(step_size),
+                jnp.float32(param_decay),
+                1.0 - lr * weight_decay,
+            )
         for name in names:
             if init_params is None:
                 # Keep the incumbent expression byte-for-byte unchanged.
-                new_params[name] = params[name] * param_decay - step_size * (
+                new_params[name] = params[name] * decay - step * (
                     grads[name]
                     * (
                         1.0
@@ -5074,12 +5089,15 @@ def _make_rls_head_learner(
         x: Array,
         y: Array,
         key: Array,
+        lr: Array | None = None,
     ) -> tuple[
         dict[str, Array],
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
+        if lr is not None and (sm_enabled or not gate_enabled or not resid):
+            raise ValueError("a runtime step needs the gated residual body")
         if _decay_to_init:
             if not isinstance(state, RLSHeadL2InitState):
                 raise TypeError("L2-Init learner requires RLSHeadL2InitState")
@@ -5213,6 +5231,7 @@ def _make_rls_head_learner(
                     _RLS_HEAD_BODY,
                     guard_zero_max=True,
                     init_params=init_params,
+                    lr=lr,
                 )
             else:
                 # Issue #52's frozen ablation endpoint: do not compute or
@@ -5385,6 +5404,20 @@ def _make_rls_head_identmap_learner(
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
+    # Within-task body step anneal keyed on since_shift.  Key absent: the
+    # parent verbatim (no runtime step traced).  Key present: the live
+    # schedule ``max(floor, step * (1 + s/tau)^-1/2)`` runs every step;
+    # ``floor == step`` is bit-exactly the parent (pinned).
+    anneal_on = "anneal_floor" in hp
+    anneal_step = float(hp["step_size"])
+    anneal_floor = float(hp.get("anneal_floor", anneal_step))
+    anneal_tau = float(hp.get("anneal_tau", 1.0))
+    if anneal_on and not (
+        0.0 < anneal_floor <= anneal_step
+        and 0.0 < anneal_tau
+        and math.isfinite(anneal_tau)
+    ):
+        raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5432,9 +5465,26 @@ def _make_rls_head_identmap_learner(
         input_dim = x.shape[0]
         n_classes = state.ref_class_sums.shape[0]
         x_r = x[state.remap]
-        new_params, new_inner, metrics = inner_step(
-            params, state.inner, x_r, y, key
-        )
+        if anneal_on:
+            # Pre-step counter; before any detected shift it runs from
+            # -2**30, so the offset recovers steps since stream start.
+            s = jnp.where(
+                state.since_shift < 0,
+                state.since_shift + (2**30),
+                state.since_shift,
+            ).astype(jnp.float32)
+            lr = jnp.maximum(
+                jnp.float32(anneal_floor),
+                jnp.float32(anneal_step)
+                * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
+            )
+            new_params, new_inner, metrics = cast(Any, inner_step)(
+                params, state.inner, x_r, y, key, lr=lr
+            )
+        else:
+            new_params, new_inner, metrics = inner_step(
+                params, state.inner, x_r, y, key
+            )
         _x_norm, new_raw_norm, new_raw_fast, shifted = raw_normalize(
             state.raw_norm, state.raw_fast, x
         )
@@ -8561,6 +8611,27 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "and the gated chain never screened any step below 0.01 — the "
             "gate + trigger + step triple named unmeasured in the idet002 "
             "wave README (PR #3116)"
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": floor,
+                 "anneal_tau": tau},
+                "the idet003_s005625 composition with the body step annealed "
+                "within each detected task, max(floor, 0.005625 * (1 + "
+                f"since_shift/tau)^-1/2), floor {floor}, tau {tau} "
+                "(wave_identmap50_r_idet003_s005625_anneal/ screen; "
+                "development screening diagnostic)"
+            )
+            for tag, floor, tau in (
+                ("f2t250", 0.0028125, 250.0),
+                ("f2t1000", 0.0028125, 1000.0),
+                ("f4t250", 0.00140625, 250.0),
+                ("f4t1000", 0.00140625, 1000.0),
+            )
         ),
     ):
         specs.append(
