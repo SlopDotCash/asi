@@ -99,6 +99,16 @@ def _require_shape_scalars(shape: object) -> int:
     return total
 
 
+def _require_matching_shape(name: str, value: object, expected: tuple[int, ...]) -> None:
+    """Reject broadcastable aliases before they can change optimizer state shape."""
+    try:
+        actual = tuple(cast(Any, value).shape)
+    except (AttributeError, TypeError) as error:
+        raise ValueError(f"{name} must expose an exact shape") from error
+    if actual != expected:
+        raise ValueError(f"{name} shape must match optimizer state")
+
+
 def _preflight_optimizer_resources(
     name: str,
     n: int,
@@ -134,8 +144,10 @@ def _preflight_adam_resources(n: int) -> None:
         # Complete named logical envelope: source moments, observation and
         # gradient, proposed moments, bias-corrected moments, weight delta,
         # checked moments, selected result moments, and neutral output.
-        update_vectors=14,
-        update_scalars=8,
+        # The two diagnostic means each retain one rescaled vector and
+        # three scale/reduction scalars on their overflow fallback path.
+        update_vectors=16,
+        update_scalars=14,
     )
 
 
@@ -174,8 +186,8 @@ def _preflight_rmsprop_resources(n: int) -> None:
         n,
         persistent_vectors=1,
         persistent_scalars=4,
-        update_vectors=8,
-        update_scalars=6,
+        update_vectors=9,
+        update_scalars=9,
     )
 
 
@@ -185,8 +197,8 @@ def _preflight_nadaline_resources(n: int) -> None:
         n,
         persistent_vectors=1,
         persistent_scalars=3,
-        update_vectors=9,
-        update_scalars=6,
+        update_vectors=11,
+        update_scalars=12,
     )
 
 
@@ -204,6 +216,17 @@ def _zero_if_disabled(configured_scale: float, scale: Array, value: Array) -> Ar
     if configured_scale == 0.0:
         return jnp.where(scale == 0.0, jnp.zeros_like(value), value)
     return value
+
+
+def _finite_mean(value: Array) -> Array:
+    """Preserve the ordinary mean unless only its reduction overflowed."""
+    ordinary = jnp.mean(value)
+    scale = jnp.max(jnp.abs(value))
+    _, exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(value, -exponent)
+    scaled_mean = jnp.clip(jnp.mean(scaled), -1.0, 1.0)
+    stable = jnp.ldexp(scaled_mean, exponent)
+    return jnp.where(jnp.isfinite(ordinary), ordinary, stable)
 
 
 # =============================================================================
@@ -445,6 +468,11 @@ class AdaGain(Optimizer[Any]):
         new_bias_step_size = jnp.clip(new_bias_step_size, 1e-8, 1.0)
 
         weight_delta = new_step_sizes * gradient
+        # Preserve the established rounding whenever error * observation is
+        # representable.  If only that intermediate overflows, apply the gain
+        # first so a mathematically finite AdaGain step is not discarded.
+        scaled_weight_delta = (new_step_sizes * error_scalar) * observation
+        weight_delta = jnp.where(jnp.isfinite(weight_delta), weight_delta, scaled_weight_delta)
         bias_delta = new_bias_step_size * bias_gradient
 
         trace_mix = state.forgetting_rate
@@ -498,6 +526,55 @@ class AdaGain(Optimizer[Any]):
 # =============================================================================
 # Adam
 # =============================================================================
+
+
+def _adam_weighted_square(configured_scale: float, scale: Array, value: Array) -> Array:
+    """Apply the EMA weight before squaring when a finite square overflows.
+
+    ``scale * value**2`` is the ordinary second-moment increment. A finite
+    square keeps that product bitwise. When the square is outside float32,
+    the exponent form applies ``scale`` before the square so a representable
+    weighted moment stays finite. A result that is still outside float32
+    stays non-finite and the caller rejects the update.
+    """
+    square = value**2
+    ordinary = _skip_zero_scale(configured_scale, scale, square)
+    value_mantissa, value_exponent = jnp.frexp(value)
+    scale_mantissa, scale_exponent = jnp.frexp(scale)
+    recovered = jnp.ldexp(
+        scale_mantissa * value_mantissa**2,
+        scale_exponent + 2 * value_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(square) | ~jnp.isfinite(recovered),
+        ordinary,
+        recovered,
+    )
+
+
+def _adam_second_moment_rms(second_moment: Array, correction: Array) -> Array:
+    """Return ``sqrt(moment / correction)`` without overflowing the quotient.
+
+    Bias correction divides by ``1 - beta2**t``. On the first step that
+    divisor is ``1 - beta2``, so the quotient rebuilds ``g**2`` and can
+    overflow after the weighted moment itself was kept finite. A finite
+    direct root stays bitwise. A still-unrepresentable root stays non-finite
+    so the caller rejects the update.
+    """
+    direct = jnp.sqrt(second_moment / correction)
+    moment_mantissa, moment_exponent = jnp.frexp(second_moment)
+    correction_mantissa, correction_exponent = jnp.frexp(correction)
+    exponent_delta = moment_exponent - correction_exponent
+    half_exponent = jnp.floor_divide(exponent_delta, jnp.int32(2))
+    odd_exponent = (exponent_delta & jnp.int32(1)) != 0
+    root = jnp.sqrt(moment_mantissa / correction_mantissa)
+    root = jnp.where(odd_exponent, root * jnp.sqrt(jnp.float32(2.0)), root)
+    recovered = jnp.ldexp(root, half_exponent)
+    return jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
 
 
 class Adam(Optimizer[Any]):
@@ -692,6 +769,12 @@ class Adam(Optimizer[Any]):
             ValueError: If ``weight_decay`` is nonzero and ``param`` is
                 not provided.
         """
+        state_shape = tuple(state.m.shape)
+        if tuple(state.v.shape) != state_shape:
+            raise ValueError("Adam moment shapes must match")
+        _require_matching_shape("gradient", gradient, state_shape)
+        if param is not None:
+            _require_matching_shape("param", param, state_shape)
         if self._weight_decay != 0.0 and param is None:
             raise ValueError("nonzero weight_decay requires passing param")
 
@@ -704,14 +787,14 @@ class Adam(Optimizer[Any]):
         new_m = _skip_zero_scale(self._beta1, state.beta1, state.m) + (
             1.0 - state.beta1
         ) * g
-        new_v = _skip_zero_scale(self._beta2, state.beta2, state.v) + (
-            1.0 - state.beta2
-        ) * g**2
+        new_v = _skip_zero_scale(self._beta2, state.beta2, state.v) + _adam_weighted_square(
+            1.0 - self._beta2, 1.0 - state.beta2, g
+        )
 
         m_hat = new_m / (1.0 - state.beta1**new_t)
-        v_hat = new_v / (1.0 - state.beta2**new_t)
+        second_rms = _adam_second_moment_rms(new_v, 1.0 - state.beta2**new_t)
 
-        step = state.step_size * m_hat / (jnp.sqrt(v_hat) + state.eps)
+        step = state.step_size * m_hat / (second_rms + state.eps)
         if self._weight_decay != 0.0 and param is not None:
             step = step + state.step_size * self._weight_decay * param
         if error is not None:
@@ -788,28 +871,27 @@ class Adam(Optimizer[Any]):
         new_m = _skip_zero_scale(self._beta1, state.beta1, state.m) + (
             1.0 - state.beta1
         ) * g
-        new_v = _skip_zero_scale(self._beta2, state.beta2, state.v) + (
-            1.0 - state.beta2
-        ) * g**2
+        new_v = _skip_zero_scale(self._beta2, state.beta2, state.v) + _adam_weighted_square(
+            1.0 - self._beta2, 1.0 - state.beta2, g
+        )
         new_bias_m = (
             _skip_zero_scale(self._beta1, state.beta1, state.bias_m)
             + (1.0 - state.beta1) * g_b
         )
-        new_bias_v = (
-            _skip_zero_scale(self._beta2, state.beta2, state.bias_v)
-            + (1.0 - state.beta2) * g_b**2
-        )
+        new_bias_v = _skip_zero_scale(
+            self._beta2, state.beta2, state.bias_v
+        ) + _adam_weighted_square(1.0 - self._beta2, 1.0 - state.beta2, g_b)
 
         m_hat = new_m / (1.0 - state.beta1**new_t)
-        v_hat = new_v / (1.0 - state.beta2**new_t)
+        second_rms = _adam_second_moment_rms(new_v, 1.0 - state.beta2**new_t)
         bias_m_hat = new_bias_m / (1.0 - state.beta1**new_t)
-        bias_v_hat = new_bias_v / (1.0 - state.beta2**new_t)
+        bias_second_rms = _adam_second_moment_rms(new_bias_v, 1.0 - state.beta2**new_t)
 
         # Descent step is alpha * m_hat / (sqrt(v_hat) + eps); we apply
         # weight_delta = -descent_step so that the resulting update
         # w += weight_delta moves in the direction that reduces loss.
-        weight_delta = -state.step_size * m_hat / (jnp.sqrt(v_hat) + state.eps)
-        bias_delta = -state.step_size * bias_m_hat / (jnp.sqrt(bias_v_hat) + state.eps)
+        weight_delta = -state.step_size * m_hat / (second_rms + state.eps)
+        bias_delta = -state.step_size * bias_m_hat / (bias_second_rms + state.eps)
 
         candidate_state = AdamState(
             m=new_m,
@@ -824,8 +906,8 @@ class Adam(Optimizer[Any]):
         )
         candidate_metrics = {
             "step_size": state.step_size,
-            "mean_m": jnp.mean(new_m),
-            "mean_v": jnp.mean(new_v),
+            "mean_m": _finite_mean(new_m),
+            "mean_v": _finite_mean(new_v),
             "t": new_t,
         }
 
@@ -994,6 +1076,7 @@ class RMSprop(Optimizer[Any]):
         Returns:
             ``(step, new_state)`` -- step has the same shape as gradient
         """
+        _require_matching_shape("gradient", gradient, tuple(state.v.shape))
         if error is not None:
             g = -jnp.squeeze(error) * gradient
         else:
@@ -1078,7 +1161,7 @@ class RMSprop(Optimizer[Any]):
         )
         candidate_metrics = {
             "step_size": state.step_size,
-            "mean_v": jnp.mean(new_v),
+            "mean_v": _finite_mean(new_v),
         }
 
         checked_state = state.replace(  # type: ignore[attr-defined]
@@ -1109,6 +1192,30 @@ class RMSprop(Optimizer[Any]):
 # =============================================================================
 # NADALINE
 # =============================================================================
+
+
+def _nadaline_weighted_square(configured_scale: float, scale: Array, value: Array) -> Array:
+    """Apply the EMA weight before squaring when a finite square overflows.
+
+    ``scale * value**2`` is the ordinary feature-scale increment. A finite
+    square keeps that product bitwise. When the square is outside float32,
+    the exponent form applies ``scale`` before the square so a representable
+    weighted moment stays finite. A result that is still outside float32
+    stays non-finite and the caller rejects the update.
+    """
+    square = value**2
+    ordinary = _skip_zero_scale(configured_scale, scale, square)
+    value_mantissa, value_exponent = jnp.frexp(value)
+    scale_mantissa, scale_exponent = jnp.frexp(scale)
+    recovered = jnp.ldexp(
+        scale_mantissa * value_mantissa**2,
+        scale_exponent + 2 * value_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(square) | ~jnp.isfinite(recovered),
+        ordinary,
+        recovered,
+    )
 
 
 class NADALINE(Optimizer[Any]):
@@ -1202,7 +1309,7 @@ class NADALINE(Optimizer[Any]):
         error_scalar = jnp.squeeze(error)
         new_second_moment = _skip_zero_scale(
             self._decay, state.decay, state.feature_second_moment
-        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, observation**2)
+        ) + _nadaline_weighted_square(1.0 - self._decay, 1.0 - state.decay, observation)
 
         denom = jnp.maximum(state.eps, new_second_moment)
         weight_delta = state.step_size * error_scalar * observation / denom
@@ -1218,8 +1325,8 @@ class NADALINE(Optimizer[Any]):
         )
         candidate_metrics = {
             "step_size": state.step_size,
-            "mean_second_moment": jnp.mean(new_second_moment),
-            "mean_denom": jnp.mean(denom),
+            "mean_second_moment": _finite_mean(new_second_moment),
+            "mean_denom": _finite_mean(denom),
         }
 
         checked_state = state.replace(  # type: ignore[attr-defined]

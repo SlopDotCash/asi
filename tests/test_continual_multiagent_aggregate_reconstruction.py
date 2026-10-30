@@ -33,6 +33,32 @@ def _rehash(artifact: dict[str, object]) -> None:
     artifact["content_digest"]["sha256"] = artifact_module.scientific_content_sha256(content)
 
 
+def test_rehashed_noncanonical_configuration_fails_closed() -> None:
+    fabricated = copy.deepcopy(_source_projected_scratch())
+    content = fabricated["content"]
+    content["configuration"]["phase_steps"] = 2
+    _rehash(fabricated)
+
+    validation = artifact_module.validate_evidence_artifact(fabricated)
+
+    assert not validation.valid
+    assert not validation.accepted
+    assert any("configuration" in error for error in validation.errors)
+
+
+def test_rehashed_noncanonical_protocol_fails_closed() -> None:
+    fabricated = copy.deepcopy(_source_projected_scratch())
+    content = fabricated["content"]
+    content["protocol"]["schedule"] = ["A1-meet", "A2-meet", "B-avoid"]
+    _rehash(fabricated)
+
+    validation = artifact_module.validate_evidence_artifact(fabricated)
+
+    assert not validation.valid
+    assert not validation.accepted
+    assert any("protocol" in error for error in validation.errors)
+
+
 def test_rehashed_primitive_summary_corruption_fails_closed() -> None:
     fabricated = copy.deepcopy(_source_projected_scratch())
     content = fabricated["content"]
