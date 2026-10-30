@@ -1,0 +1,21 @@
+{
+  "schema": "asi.riverswim_sarsa_decay_diagnostic.plan.v1",
+  "source_commit": "415e7d225a4338492275be6cafa69d87c158c30a",
+  "development_only": true,
+  "scientific_promotion_allowed": false,
+  "reference_dev_population_allowed": false,
+  "bottleneck": "The retained reference-life scorecard has valid_baseline_failure because RiverSwim controls do not qualify.",
+  "hypothesis": "Changing only discounted-SARSA epsilon_decay_steps from 2500 to 10000 will improve finite-horizon return by preserving exploration before the right reward is learned.",
+  "arms": {"baseline": 2500, "slow_decay": 10000},
+  "seeds": [100101, 100102, 100103],
+  "seed_role": "newly declared development seeds, never held-out scientific evidence",
+  "horizon": 20000,
+  "fresh_process_shards": 6,
+  "maximum_environment_events": 120000,
+  "primary_metric": "mean reward across all 20000 transitions",
+  "secondary_metrics": ["mean reward over last 2000 transitions", "rightmost-state visits", "action counts"],
+  "decision": "Support this bounded hypothesis only if every paired primary delta is positive and mean paired delta exceeds 0.01; otherwise retain a negative or inconclusive result.",
+  "execution": "JAX scan of the existing SARSAAgent update and RiverSwimMDP step, using the reference-life environment RNG schedule; first require exact 16-transition parity against ReferenceLifeRunner for each arm/seed.",
+  "scope_limit": "This is a separate numerical development diagnostic, not execution or qualification of the frozen whole-life scorecard, checkpoint or safety protocol.",
+  "resource_policy": "Equal horizons, environment, initialization and update budgets; record persistent numeric payload bytes, source hashes and package versions. Timing is telemetry only; native peak memory is not claimed. One shard at a time, one CPU thread."
+}
