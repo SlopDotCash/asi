@@ -795,3 +795,51 @@ def test_blend_predictions_preserves_mass_on_zero_previous_targets() -> None:
     )
 
     _assert_simplex(blended, "live blend")
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("bias", [4.0, -4.0])
+@pytest.mark.parametrize("scale_sign", [1.0, -1.0])
+@pytest.mark.parametrize("memory_logit", [0.0, 0.5])
+@pytest.mark.parametrize("reliability_fraction", [0.5, 1.0, 1.5])
+def test_public_prediction_preserves_cancelling_large_blend_terms(
+    compiled: bool, bias: float, scale_sign: float, memory_logit: float,
+    reliability_fraction: float,
+) -> None:
+    learner = UPGDMemoryLearner(UPGDMemoryConfig(
+        feature_dim=2, n_heads=2, hidden_sizes=(), slots_per_class=1,
+        readout_mode="linear_mse", confidence_logit_scale=scale_sign * 1e38,
+        reliability_logit_scale=scale_sign * 1e38,
+        initial_memory_logit=memory_logit, target_trace_blend_scale=0.0,
+    ))
+    state = learner.init(jr.key(42))
+    heads = state.upgd_state.head_params
+    heads = heads.replace(
+        weights=tuple(jnp.zeros_like(w) for w in heads.weights),
+        biases=tuple(jnp.full_like(b, bias) for b in heads.biases),
+    )
+    delta = (bias - 0.5) * reliability_fraction
+    state = state.replace(
+        upgd_state=state.upgd_state.replace(head_params=heads),
+        memory_state=state.memory_state.replace(counts=jnp.ones_like(state.memory_state.counts)),
+        upgd_loss_ema=jnp.asarray(max(delta, 0.0), dtype=jnp.float32),
+        memory_loss_ema=jnp.asarray(max(-delta, 0.0), dtype=jnp.float32),
+    )
+    predict = jax.jit(learner.predict) if compiled else learner.predict
+    prediction = predict(state, jnp.zeros(2))
+    residual = scale_sign * (bias - 0.5) * (reliability_fraction - 1.0)
+    gate = (
+        jax.nn.sigmoid(jnp.asarray(memory_logit))
+        if residual == 0.0 else jnp.asarray(float(residual > 0.0))
+    )
+    expected = (1.0 - gate) * bias + gate * 0.5
+    chex.assert_tree_all_finite(prediction)
+    chex.assert_trees_all_close(prediction, jnp.full(2, expected), rtol=1e-6)
+
+    def summed_prediction(logit: jax.Array) -> jax.Array:
+        return jnp.sum(learner.predict(state.replace(memory_logit=logit), jnp.zeros(2)))
+
+    gradient = jax.grad(summed_prediction)(state.memory_logit)
+    expected_gradient = 2.0 * (0.5 - bias) * gate * (1.0 - gate)
+    chex.assert_tree_all_finite(gradient)
+    chex.assert_trees_all_close(gradient, expected_gradient, rtol=1e-6, atol=1e-6)

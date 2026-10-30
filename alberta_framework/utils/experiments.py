@@ -400,6 +400,20 @@ def _require_finite_metric_array(arr: NDArray[np.float64], metric: object) -> No
         raise ValueError(f"metric '{host_metric}' contains non-finite samples")
 
 
+def _scaled_mean(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
+    """Reduce each slice without overflowing its finite sample sum."""
+    scale = np.max(np.abs(values), axis=axis, keepdims=True)
+    scale = np.where(scale == 0.0, 1.0, scale)
+    return np.asarray(np.mean(values / scale, axis=axis) * np.squeeze(scale, axis=axis))
+
+
+def _scaled_std(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
+    """Compute sample spread without squaring values in their original scale."""
+    scale = np.max(np.abs(values), axis=axis, keepdims=True)
+    scale = np.where(scale == 0.0, 1.0, scale)
+    return np.asarray(np.std(values / scale, axis=axis, ddof=1) * np.squeeze(scale, axis=axis))
+
+
 def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
     """Aggregate results from multiple seeds into summary statistics.
 
@@ -463,10 +477,10 @@ def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
     for key in metric_keys:
         # Use mean of last 100 steps as the final value
         window = min(100, metric_arrays[key].shape[1])
-        final_values = np.mean(metric_arrays[key][:, -window:], axis=1)
+        final_values = _scaled_mean(metric_arrays[key][:, -window:], axis=1)
         summary[key] = MetricSummary(
-            mean=float(np.mean(final_values)),
-            std=float(np.std(final_values, ddof=1)) if n_seeds > 1 else 0.0,
+            mean=float(_scaled_mean(final_values, axis=0)),
+            std=float(_scaled_std(final_values, axis=0)) if n_seeds > 1 else 0.0,
             min=float(np.min(final_values)),
             max=float(np.max(final_values)),
             n_seeds=n_seeds,
@@ -575,26 +589,22 @@ def run_multi_seed_experiment(
     if parallel:
         try:
             from joblib import Parallel, delayed
-
+        except ImportError:
+            # Fallback only when joblib itself is unavailable. An experiment's
+            # ImportError must propagate without repeating completed runs.
+            results_list = _run_sequential(tasks, show_progress)
+        else:
+            task_iterator: Iterable[tuple[ExperimentConfig, int]] = tasks
             if show_progress:
                 try:
                     from tqdm import tqdm
-
-                    results_list: list[SingleRunResult] = Parallel(n_jobs=n_jobs)(
-                        delayed(run_single_experiment)(config, seed)
-                        for config, seed in tqdm(tasks, desc="Running experiments")
-                    )
                 except ImportError:
-                    results_list = Parallel(n_jobs=n_jobs)(
-                        delayed(run_single_experiment)(config, seed) for config, seed in tasks
-                    )
-            else:
-                results_list = Parallel(n_jobs=n_jobs)(
-                    delayed(run_single_experiment)(config, seed) for config, seed in tasks
-                )
-        except ImportError:
-            # Fallback to sequential if joblib not available
-            results_list = _run_sequential(tasks, show_progress)
+                    pass
+                else:
+                    task_iterator = tqdm(tasks, desc="Running experiments")
+            results_list = Parallel(n_jobs=n_jobs)(
+                delayed(run_single_experiment)(config, seed) for config, seed in task_iterator
+            )
     else:
         results_list = _run_sequential(tasks, show_progress)
 
@@ -618,14 +628,15 @@ def _run_sequential(
     show_progress: bool,
 ) -> list[SingleRunResult]:
     """Run experiments sequentially."""
+    task_iterator: Iterable[tuple[ExperimentConfig, int]] = tasks
     if show_progress:
         try:
             from tqdm import tqdm
-
-            return [run_single_experiment(config, seed) for config, seed in tqdm(tasks)]
         except ImportError:
             pass
-    return [run_single_experiment(config, seed) for config, seed in tasks]
+        else:
+            task_iterator = tqdm(tasks)
+    return [run_single_experiment(config, seed) for config, seed in task_iterator]
 
 
 def get_metric_timeseries(
@@ -644,8 +655,8 @@ def get_metric_timeseries(
     """
     arr = results.metric_arrays[metric]
     _require_finite_metric_array(arr, metric)
-    mean = np.mean(arr, axis=0)
-    std = np.zeros_like(mean) if arr.shape[0] == 1 else np.std(arr, axis=0, ddof=1)
+    mean = _scaled_mean(arr, axis=0)
+    std = np.zeros_like(mean) if arr.shape[0] == 1 else _scaled_std(arr, axis=0)
     return mean, mean - std, mean + std
 
 
@@ -712,9 +723,9 @@ def get_final_performance(
 
     performance: dict[str, tuple[float, float]] = {}
     for name, arr in metric_arrays.items():
-        final_means = np.mean(arr[:, -final_window:], axis=1)
-        std = float(np.std(final_means, ddof=1)) if len(final_means) > 1 else 0.0
-        performance[name] = (float(np.mean(final_means)), std)
+        final_means = _scaled_mean(arr[:, -final_window:], axis=1)
+        std = float(_scaled_std(final_means, axis=0)) if len(final_means) > 1 else 0.0
+        performance[name] = (float(_scaled_mean(final_means, axis=0)), std)
     return performance
 
 

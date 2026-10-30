@@ -1048,3 +1048,17 @@ def test_riverswim_probability_exception_is_normalized_without_repr(field: str) 
 
     with pytest.raises(ValueError, match=field):
         RiverSwimMDP(RiverSwimConfig(**{field: ExplodingReal()}))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("n_states", [2, 13])
+@pytest.mark.parametrize("units", [1, -1, 3, -3])
+def test_riverswim_random_gain_preserves_subnormal_rewards(n_states, units):
+    reward = units * 2.0**-149
+    env = RiverSwimMDP(RiverSwimConfig(
+        n_states=n_states, p_right_up=0.5, p_right_down=0.5,
+        reward_left=reward, reward_right=reward,
+    ))
+    # Uniform actions give adjacent balance d[i+1] / d[i] = 1/3.
+    endpoint_mass = Fraction(3**(n_states - 1) + 1, sum(3**i for i in range(n_states)))
+    expected = float(endpoint_mass * Fraction(reward) / 2)
+    assert env.uniform_random_average_reward() == expected

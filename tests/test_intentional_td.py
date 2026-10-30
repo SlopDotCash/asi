@@ -138,3 +138,24 @@ def test_binding_clip_limits_prediction_change(compiled, adaptive, error):
             changed - weights, [0.2 * np.copysign(cap, value)], rtol=2e-6
         )
         weights = changed
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("field", ["beta2", "beta_clip", "lamda"])
+@pytest.mark.parametrize("decay", [0.0, 1.0 - 1e-10])
+def test_bias_correction_preserves_finite_first_update(compiled, field, decay):
+    # For a unit gradient and error, every first-step bias correction
+    # cancels its EMA coefficient, even when float32 rounds decay to one.
+    settings = {field: decay}
+    if field == "lamda":
+        settings["gamma"] = 1.0
+    config = IntentionalTDConfig(eta=0.2, clip_mult=0.1, **settings)
+    weights = jnp.zeros(1, dtype=jnp.float32)
+    state = init_intentional_td(weights)
+
+    def update(w, s):
+        return intentional_td_update(w, s, jnp.ones_like(w), jnp.array(1.0), config)
+
+    changed, updated = (jax.jit(update) if compiled else update)(weights, state)
+    np.testing.assert_allclose(changed, [0.02], rtol=2e-6)
+    assert all(np.isfinite(np.asarray(leaf)).all() for leaf in jax.tree.leaves(updated))

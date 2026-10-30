@@ -433,6 +433,33 @@ class TestTimeseriesStatistics:
         assert lo[0] == 1.0e308
         assert hi[0] == 1.0e308
 
+    def test_representable_interval_survives_unrepresentable_sample_std(self) -> None:
+        """Eight symmetric seeds have finite mean/CI despite an overflowing SD."""
+        from scipy import stats
+
+        maximum = np.finfo(np.float64).max
+        signs = np.tile([-1.0, 1.0], 4)
+        arr = np.column_stack((signs * maximum, signs, np.full(8, maximum)))
+        # For eight +/-M observations, the mean is zero and SEM is M/sqrt(7).
+        # Form the dimensionless margin first; the returned bounds fit float64.
+        margin_fraction = float(stats.t.ppf(0.975, 7)) / np.sqrt(7.0)
+        margin = margin_fraction * maximum
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            mean, lo, hi = compute_timeseries_statistics(arr, confidence_level=0.95)
+
+        assert np.isfinite(mean).all()
+        assert np.isfinite(lo).all()
+        assert np.isfinite(hi).all()
+        np.testing.assert_array_equal(mean, [0.0, 0.0, maximum])
+        np.testing.assert_allclose(
+            lo, [-margin, -margin_fraction, maximum], rtol=1e-14, atol=0.0
+        )
+        np.testing.assert_allclose(
+            hi, [margin, margin_fraction, maximum], rtol=1e-14, atol=0.0
+        )
+
     def test_zero_seed_matrix_rejected_without_warnings(self) -> None:
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -1418,3 +1445,22 @@ class TestProbabilityPrecision:
         assert from_double == from_builtin
         significant = from_double[0] if correction is bonferroni_correction else from_double
         assert list(significant) == [True, True, True]
+
+
+@pytest.mark.parametrize("statistic", ["mean", "median"])
+@pytest.mark.parametrize("value", [1.0e308, -1.0e308, 0.0])
+def test_bootstrap_large_constant_finite(statistic: str, value: float) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        result = bootstrap_ci([value, value], statistic=statistic, n_bootstrap=32)
+    assert result == (value, value, value)
+
+
+@pytest.mark.parametrize("statistic", ["mean", "median"])
+def test_bootstrap_opposite_extremes_finite(statistic: str) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        point, lower, upper = bootstrap_ci(
+            [-1.0e308, 1.0e308], statistic=statistic, n_bootstrap=100
+        )
+    assert (point, lower, upper) == (0.0, -1.0e308, 1.0e308)

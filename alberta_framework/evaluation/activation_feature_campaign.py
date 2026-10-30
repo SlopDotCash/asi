@@ -900,6 +900,7 @@ def _receipt_source_identity(plan: Mapping[str, object]) -> list[str]:
         "alberta_framework/benchmarks/activation_feature_ipmnist.py",
         "alberta_framework/benchmarks/ipmnist_screening.py",
         "alberta_framework/benchmarks/upgd_ipmnist.py",
+        "alberta_framework/benchmarks/plasticity_comparators.py",
     )
     return [sources[name] for name in names]
 

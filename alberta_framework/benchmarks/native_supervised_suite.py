@@ -423,9 +423,11 @@ def _run_arm(
                         replay_x, replay_label = replay[(updates + label) % len(replay)]
                         linear_update(replay_x, replay_label)
                         samples += 1
-                    replay.append((x.copy(), label))
-                    if len(replay) > capacity:
+                    # Evict before inserting so the buffer never holds more than
+                    # ``capacity`` copies, which is what ``peak_replay_bytes`` reports.
+                    if len(replay) >= capacity:
                         replay.pop(0)
+                    replay.append((x.copy(), label))
                     inserts += 1
                 elif real_seen > 0:
                     # Match replay SGD's optimizer-call budget without exposing
