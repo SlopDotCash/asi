@@ -212,10 +212,12 @@ def _stacked_horde_update_result_extras_bytes(n_demons: int) -> int:
 
 
 def _stacked_horde_update_working_set_bytes(n_demons: int, feature_dim: int) -> int:
-    """Source persist, proposed persist, committed persist, and returned extras."""
+    """Persist copies, returned extras, and bounded TD recovery buffers."""
+    # Conservatively charge six float32-width per-head buffers (including
+    # the narrower recovery mask) for both TD evaluation orders and selection.
     return 3 * _stacked_horde_persistent_bytes(
         n_demons, feature_dim
-    ) + _stacked_horde_update_result_extras_bytes(n_demons)
+    ) + _stacked_horde_update_result_extras_bytes(n_demons) + 24 * n_demons
 
 
 def _preflight_stacked_horde_update_working_set(n_demons: int, feature_dim: int) -> None:
@@ -555,11 +557,17 @@ class StackedLinearHorde:
         v_next = state.weights @ next_features
         # gamma=0 must not multiply an inf bootstrap (0*inf).
         bootstrap = jnp.where(self._gammas == 0.0, 0.0, self._gammas * v_next)
-        raw_td_errors = cumulants + bootstrap - v
+        cumulant_bootstrap = cumulants + bootstrap
+        # Keep ordinary rounding; recover only an overflowing partial sum
+        # whose subtraction of the current prediction can make TD finite.
+        raw_td_errors = jnp.where(
+            jnp.isfinite(cumulant_bootstrap),
+            cumulant_bootstrap - v,
+            cumulants + (bootstrap - v),
+        )
         prediction_valid = jnp.isfinite(v) & ((self._gammas == 0.0) | jnp.isfinite(v_next))
         channel_valid = active & rho_valid & prediction_valid & jnp.isfinite(raw_td_errors)
-        safe_cumulants = jnp.where(channel_valid, cumulants, 0.0)
-        td_errors = safe_cumulants + bootstrap - v
+        td_errors = jnp.where(channel_valid, raw_td_errors, 0.0)
 
         # Per-decision IS with the ratio composed into the trace:
         # z_d = rho_d * (gamma_d * lamda_d * z_d + x).

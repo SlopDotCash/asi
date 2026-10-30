@@ -800,6 +800,88 @@ class TestLoop:
         chex.assert_shape(result.per_head_metrics, (50, 1, 3))
         chex.assert_shape(result.replacements_made, (50, 1))
 
+    def test_learning_loop_preserves_initialized_host_clocks(self):
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(4,),
+            cbp_config=ContinualBackpropConfig(enabled=False),
+            step_size=0.05,
+            sparsity=0.0,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(
+            mlp_state=state.mlp_state.replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+            )
+        )
+        observations = jnp.zeros((2, 2), dtype=jnp.float32)
+        targets = jnp.zeros((2, 1), dtype=jnp.float32)
+
+        result = run_cbp_learning_loop(learner, state, observations, targets)
+        clocks = result.state.mlp_state
+
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.per_head_metrics)
+
+    def test_learning_loop_finishes_device_work_before_stopping_uptime_clock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reported uptime must cover scan completion, not only dispatch."""
+        from types import SimpleNamespace
+
+        import alberta_framework.core.continual_backprop as module
+
+        learner = CBPMultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(4,),
+            cbp_config=ContinualBackpropConfig(enabled=False),
+            step_size=0.05,
+            sparsity=0.0,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        observations = jnp.zeros((2, 2), dtype=jnp.float32)
+        targets = jnp.zeros((2, 1), dtype=jnp.float32)
+        real_scan = jax.lax.scan
+        scan_returned = False
+        blocked: list[object] = []
+
+        def recording_scan(*args: object, **kwargs: object) -> object:
+            nonlocal scan_returned
+            result = real_scan(*args, **kwargs)
+            scan_returned = True
+            return result
+
+        def recording_block(value: object) -> object:
+            assert scan_returned
+            blocked.append(value)
+            return value
+
+        clock_samples = iter((100.0, 101.0))
+
+        def clock() -> float:
+            if scan_returned:
+                assert blocked
+            return next(clock_samples)
+
+        monkeypatch.setattr(jax.lax, "scan", recording_scan)
+        monkeypatch.setattr(jax, "block_until_ready", recording_block)
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+        result = run_cbp_learning_loop(learner, state, observations, targets)
+
+        assert len(blocked) == 1
+        blocked_state, blocked_metrics, blocked_replacements = blocked[0]
+        assert blocked_state is not None
+        assert blocked_metrics is result.per_head_metrics
+        assert blocked_replacements is result.replacements_made
+        assert result.state.mlp_state.uptime_s == state.mlp_state.uptime_s + 1.0
+
 
 # ======================================================================
 

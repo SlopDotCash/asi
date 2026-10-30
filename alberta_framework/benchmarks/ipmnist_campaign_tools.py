@@ -485,9 +485,16 @@ def _validated_ceiling_run(
 
 
 def _finite_vector(value: object, *, name: str) -> np.ndarray[Any, np.dtype[np.float64]]:
-    array = np.asarray(value, dtype=np.float64)
+    if type(value) is not list or any(
+        type(item) is not int and type(item) is not float for item in value
+    ):
+        raise ValueError(f"{name} must be a finite numeric vector")
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite numeric vector") from exc
     if array.ndim != 1 or not bool(np.all(np.isfinite(array))):
-        raise ValueError(f"{name} must be a finite vector")
+        raise ValueError(f"{name} must be a finite numeric vector")
     return array
 
 

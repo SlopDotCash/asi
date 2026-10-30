@@ -196,9 +196,9 @@ def _copy_mapping(payload: object, *, name: str) -> dict[str, Any]:
 
 def _require_path(value: object, *, name: str = "checkpoint path") -> Path:
     if type(value) is str:
-        return Path(value)
+        return Path(value).absolute()
     if isinstance(value, Path) and type(value).__module__.startswith("pathlib"):
-        return Path(value)
+        return Path(value).absolute()
     raise ValueError(f"{name} must be an exact str or Path")
 
 

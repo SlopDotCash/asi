@@ -784,3 +784,29 @@ def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibili
     ):
         with pytest.raises(ValueError, match=match):
             STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
+
+
+def test_scan_preserves_base_learner_host_clocks() -> None:
+    agent = _agent()
+    state = agent.start(
+        agent.init(jr.key(0)),
+        jnp.array([0.5, -0.25, 1.0], dtype=jnp.float32),
+    )
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    state = state.replace(
+        base_learner_state=state.base_learner_state.replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        )
+    )
+    result = agent.scan(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2, OBS_DIM), dtype=jnp.float32),
+    )
+    clocks = result.state.base_learner_state
+    assert type(clocks.birth_timestamp) is float
+    assert clocks.birth_timestamp == birth
+    assert type(clocks.uptime_s) is float
+    assert clocks.uptime_s == uptime

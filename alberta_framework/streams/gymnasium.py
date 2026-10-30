@@ -576,6 +576,7 @@ def learn_from_trajectory(
 
     t0 = time.time()
     final_state, metrics = jax.lax.scan(step_fn, learner_state, (observations, targets))
+    jax.block_until_ready((final_state, metrics))  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
 
