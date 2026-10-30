@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax import tree_util
@@ -13,6 +16,8 @@ from alberta_framework.core.model_replay_rehearsal import (
     ModelReplayRehearsalConfig,
     RealModelReplayEvent,
     ReplayActionEncoding,
+    load_model_replay_rehearsal_checkpoint,
+    save_model_replay_rehearsal_checkpoint,
 )
 from alberta_framework.core.world_model import ActionConditionedWorldModelConfig
 from alberta_framework.core.world_model_ensemble import WorldModelEnsembleConfig
@@ -74,6 +79,37 @@ def _rehearsal(encoding: ReplayActionEncoding) -> ModelReplayRehearsal:
         action_encoding=encoding,
     )
     return ModelReplayRehearsal(config)
+
+
+def test_internal_template_keys_ignore_the_ambient_prng_default() -> None:
+    with jax.default_prng_impl("threefry2x32"):
+        expected = _rehearsal("scalar_index").resource_budget().to_config()
+    with jax.default_prng_impl("rbg"):
+        observed = _rehearsal("scalar_index").resource_budget().to_config()
+
+    assert observed == expected
+
+
+def test_default_checkpoint_template_ignores_the_ambient_prng_default(
+    tmp_path: Path,
+) -> None:
+    rehearsal = _rehearsal("scalar_index")
+    state = rehearsal.init(jr.key(7, impl="threefry2x32"))
+    path = tmp_path / "model_replay"
+    save_model_replay_rehearsal_checkpoint(rehearsal, state, path)
+
+    with jax.default_prng_impl("rbg"):
+        restored_rehearsal, restored_state = load_model_replay_rehearsal_checkpoint(path)
+
+    assert restored_rehearsal.to_config() == rehearsal.to_config()
+    assert all(
+        bool(jnp.array_equal(expected, observed))
+        for expected, observed in zip(
+            tree_util.tree_leaves(state),
+            tree_util.tree_leaves(restored_state),
+            strict=True,
+        )
+    )
 
 
 def _event(

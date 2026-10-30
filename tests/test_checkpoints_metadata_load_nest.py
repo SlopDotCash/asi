@@ -62,6 +62,29 @@ def test_last_fit_on_disk_nest_still_loads(tmp_path: Path) -> None:
     assert loaded["k"] is True or isinstance(loaded, dict)
 
 
+@pytest.mark.parametrize("metadata_only", [False, True])
+def test_symlinked_metadata_is_not_a_self_contained_checkpoint(
+    tmp_path: Path,
+    metadata_only: bool,
+) -> None:
+    learner = LinearLearner()
+    state = learner.init(3)
+    checkpoint = tmp_path / "linked-external-metadata"
+    save_checkpoint(state, checkpoint, metadata={"epoch": 1})
+
+    metadata_path = _on_disk_metadata_path(checkpoint)
+    external_metadata = tmp_path / "external.json"
+    external_metadata.write_bytes(metadata_path.read_bytes())
+    metadata_path.unlink()
+    metadata_path.symlink_to(external_metadata)
+
+    with pytest.raises(ValueError, match="regular file"):
+        if metadata_only:
+            load_checkpoint_metadata(checkpoint)
+        else:
+            load_checkpoint(state, checkpoint)
+
+
 def test_origin_recursion_class_rejects_before_loads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -85,7 +108,7 @@ def test_origin_recursion_class_rejects_before_loads(
 
 
 def test_symlinked_metadata_deep_nest_rejects_before_loads(tmp_path: Path) -> None:
-    """Symlinked metadata/metadata must not bypass the on-disk nest preflight."""
+    """Symlinked metadata must be rejected before any JSON parser runs."""
     learner = LinearLearner()
     state = learner.init(3)
     ckpt = tmp_path / "linked"
@@ -99,12 +122,12 @@ def test_symlinked_metadata_deep_nest_rejects_before_loads(tmp_path: Path) -> No
     meta_path.symlink_to(deep)
     assert meta_path.is_symlink()
 
-    with pytest.raises(ValueError, match="nesting limit"):
+    with pytest.raises(ValueError, match="regular file"):
         load_checkpoint_metadata(ckpt)
 
 
 def test_symlinked_metadata_deep_nest_rejects_load_checkpoint(tmp_path: Path) -> None:
-    """Symlinked metadata bypass must not leak into load_checkpoint either."""
+    """Full restore must reject symlinked metadata before parsing it."""
     learner = LinearLearner()
     state = learner.init(3)
     ckpt = tmp_path / "linked-full"
@@ -118,5 +141,5 @@ def test_symlinked_metadata_deep_nest_rejects_load_checkpoint(tmp_path: Path) ->
     meta_path.symlink_to(deep)
     assert meta_path.is_symlink()
 
-    with pytest.raises(ValueError, match="nesting limit"):
+    with pytest.raises(ValueError, match="regular file"):
         load_checkpoint(state, ckpt)

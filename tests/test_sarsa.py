@@ -947,14 +947,48 @@ class TestSARSAConfigSerialization:
 class TestSARSAScan:
     """Tests for run_sarsa_from_arrays scan loop."""
 
+    @pytest.mark.parametrize(
+        "runner",
+        [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],
+    )
+    def test_scan_rejects_discontinuous_current_observations(self, runner) -> None:
+        """Every declared transition row must be the one the scan consumes."""
+        agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+        observations = jnp.asarray(
+            [[1.0, 0.0], [99.0, -77.0], [1.0, 1.0]], dtype=jnp.float32
+        )
+        next_observations = jnp.asarray(
+            [[0.0, 1.0], [1.0, 1.0], [2.0, 2.0]], dtype=jnp.float32
+        )
+        rewards = jnp.asarray([0.25, -0.5, 1.0], dtype=jnp.float32)
+        terminated = jnp.zeros((3,), dtype=jnp.float32)
+        state = agent.init(feature_dim=2, key=jr.key(7))
+        action, key = agent.select_action(state, observations[0])
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=action,
+            last_observation=observations[0],
+            rng_key=key,
+        )
+
+        with pytest.raises(ValueError, match="transition continuity"):
+            runner(
+                agent,
+                state,
+                observations,
+                rewards,
+                terminated,
+                next_observations,
+            )
+
     def test_scan_shapes(self):
         """Scan loop produces correct output shapes."""
         agent = _make_agent(n_actions=2, hidden_sizes=(8,))
         state = agent.init(feature_dim=4, key=jr.key(42))
 
         n_steps = 20
-        obs = jax.random.normal(jr.key(0), (n_steps, 4))
-        next_obs = jax.random.normal(jr.key(1), (n_steps, 4))
+        trajectory = jax.random.normal(jr.key(0), (n_steps + 1, 4))
+        obs = trajectory[:-1]
+        next_obs = trajectory[1:]
         rewards = jnp.ones(n_steps)
         terminated = jnp.zeros(n_steps)
 
