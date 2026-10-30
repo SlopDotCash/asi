@@ -130,6 +130,30 @@ def _require_key(value: object, *, name: str) -> Array:
     return trusted
 
 
+def _step1_step_result_extras_bytes(feature_dim: int) -> int:
+    """Returned observation and scalar target bytes, excluding nested persist."""
+    return 4 * feature_dim + 4
+
+
+def _step1_step_working_set_bytes(*, persistent_bytes: int, feature_dim: int) -> int:
+    """Source, proposed, committed persist, and returned step-result leaves."""
+    return 3 * persistent_bytes + _step1_step_result_extras_bytes(feature_dim)
+
+
+def _preflight_step1_step_working_set(
+    name: str, *, persistent_bytes: int, feature_dim: int
+) -> None:
+    """Reject a public step envelope that cannot fit signed-int32 byte accounting."""
+    if (
+        _step1_step_working_set_bytes(
+            persistent_bytes=persistent_bytes,
+            feature_dim=feature_dim,
+        )
+        > _INT32_MAX
+    ):
+        raise ValueError(f"{name} step working set byte count must fit signed int32")
+
+
 @chex.dataclass(frozen=True)
 class AlbertaPlanStep1State:
     """State for :class:`AlbertaPlanStep1Stream`.
@@ -213,6 +237,11 @@ class AlbertaPlanStep1Stream:
         drift_rate_b_val = _require_nonnegative_real("drift_rate_b", drift_rate_b)
         noise_std_val = _require_nonnegative_real("noise_std", noise_std)
         feature_std_val = _require_positive_real("feature_std", feature_std)
+        _preflight_step1_step_working_set(
+            "AlbertaPlanStep1Stream",
+            persistent_bytes=4 * (feature_dim_val + 4),
+            feature_dim=feature_dim_val,
+        )
 
         self._feature_dim = feature_dim_val
         self._num_relevant = num_relevant_val
@@ -431,6 +460,11 @@ class XDistShiftStream:
             noise_in_target_val = bool(noise_in_target)
         else:
             raise TypeError("noise_in_target must be a boolean")
+        _preflight_step1_step_working_set(
+            "XDistShiftStream",
+            persistent_bytes=4 * (2 * feature_dim_val + 3),
+            feature_dim=feature_dim_val,
+        )
 
         self._feature_dim = feature_dim_val
         self._num_relevant = num_relevant_val

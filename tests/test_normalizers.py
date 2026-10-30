@@ -20,6 +20,28 @@ from alberta_framework import (
 )
 
 
+@pytest.mark.parametrize(
+    ("normalizer", "missing_field"),
+    [
+        (EMANormalizer(epsilon=1e-6, decay=0.75), "epsilon"),
+        (EMANormalizer(epsilon=1e-6, decay=0.75), "decay"),
+        (WelfordNormalizer(epsilon=1e-6), "epsilon"),
+        (StreamingBatchNormalizer(epsilon=1e-4, momentum=0.75), "epsilon"),
+        (StreamingBatchNormalizer(epsilon=1e-4, momentum=0.75), "momentum"),
+    ],
+)
+def test_from_config_rejects_missing_constructor_parameters(
+    normalizer: EMANormalizer | WelfordNormalizer | StreamingBatchNormalizer,
+    missing_field: str,
+) -> None:
+    """A truncated saved config must not silently adopt constructor defaults."""
+    config = normalizer.to_config()
+    del config[missing_field]
+
+    with pytest.raises(ValueError, match="missing required fields"):
+        normalizer_from_config(config)
+
+
 class TestEMANormalizer:
     """Tests for the EMANormalizer class."""
 
@@ -552,6 +574,71 @@ class TestNormalizerABC:
         [EMANormalizer(), WelfordNormalizer(), StreamingBatchNormalizer()],
         ids=["EMA", "Welford", "StreamingBatch"],
     )
+    def test_update_rejects_observation_dimension_drift(self, normalizer) -> None:
+        """An update cannot broadcast an observation into a new state schema."""
+        state = normalizer.init(1)
+        mismatched = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="observation shape"):
+            normalizer.normalize_with_diagnostics(state, mismatched)
+
+    @pytest.mark.parametrize(
+        "normalizer",
+        [EMANormalizer(), WelfordNormalizer(), StreamingBatchNormalizer()],
+        ids=["EMA", "Welford", "StreamingBatch"],
+    )
+    def test_normalize_only_rejects_observation_dimension_drift(self, normalizer) -> None:
+        """Inference cannot silently broadcast an observation across features."""
+        state = normalizer.init(1)
+        mismatched = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="observation shape"):
+            normalizer.normalize_only(state, mismatched)
+
+    @pytest.mark.parametrize(
+        "normalizer",
+        [EMANormalizer(), WelfordNormalizer(), StreamingBatchNormalizer()],
+        ids=["EMA", "Welford", "StreamingBatch"],
+    )
+    @pytest.mark.parametrize(
+        "method_name",
+        ["normalize_only", "normalize_with_diagnostics"],
+    )
+    def test_paths_reject_variance_shape_drift(
+        self,
+        normalizer,
+        method_name: str,
+    ) -> None:
+        """A persisted variance cannot broadcast into a new feature schema."""
+        state = normalizer.init(1).replace(var=jnp.ones(2, dtype=jnp.float32))
+        observation = jnp.ones(1, dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="variance shape"):
+            getattr(normalizer, method_name)(state, observation)
+
+    @pytest.mark.parametrize(
+        "method_name",
+        ["normalize_only", "normalize_with_diagnostics"],
+    )
+    def test_welford_paths_reject_accumulator_shape_drift(
+        self,
+        method_name: str,
+    ) -> None:
+        """The persisted Welford accumulator shares the feature schema."""
+        normalizer = WelfordNormalizer()
+        state = normalizer.init(1).replace(p=jnp.zeros(2, dtype=jnp.float32))
+
+        with pytest.raises(ValueError, match="accumulator shape"):
+            getattr(normalizer, method_name)(
+                state,
+                jnp.ones(1, dtype=jnp.float32),
+            )
+
+    @pytest.mark.parametrize(
+        "normalizer",
+        [EMANormalizer(), WelfordNormalizer(), StreamingBatchNormalizer()],
+        ids=["EMA", "Welford", "StreamingBatch"],
+    )
     def test_inf_observation_holds_finite_statistics(self, normalizer) -> None:
         """Inf observation minus an inf mean is inf-inf = NaN.
 
@@ -775,6 +862,46 @@ class TestNormalizerScalarSingleConversion:
             "what is actually stored"
         )
         assert getattr(normalizer, f"_{field}") == in_domain
+
+
+class TestNormalizerEpsilonFloat32Domain:
+    """The numerical stabilizer must survive at its float32 execution sink."""
+
+    @pytest.mark.parametrize(
+        "normalizer_cls",
+        [EMANormalizer, WelfordNormalizer, StreamingBatchNormalizer],
+        ids=["ema", "welford", "streaming-batch"],
+    )
+    @pytest.mark.parametrize(
+        "epsilon",
+        [
+            pytest.param(1e-100, id="underflows-to-zero"),
+            pytest.param(
+                float(np.nextafter(np.finfo(np.float32).tiny, np.float32(0.0))),
+                id="subnormal-flushes-to-zero",
+            ),
+            pytest.param(1e100, id="overflows-to-infinity"),
+        ],
+    )
+    def test_rejects_epsilon_outside_positive_normal_float32(
+        self,
+        normalizer_cls,
+        epsilon: float,
+    ) -> None:
+        with pytest.raises(ValueError, match="epsilon"):
+            normalizer_cls(epsilon=epsilon)
+
+    @pytest.mark.parametrize(
+        "epsilon",
+        [
+            pytest.param(float(np.finfo(np.float32).tiny), id="minimum-normal"),
+            pytest.param(float(np.finfo(np.float32).max), id="maximum-finite"),
+        ],
+    )
+    def test_accepts_inclusive_normal_float32_boundaries(self, epsilon: float) -> None:
+        normalizer = EMANormalizer(epsilon=epsilon)
+
+        assert normalizer.to_config()["epsilon"] == epsilon
 
 
 class TestNormalizerFeatureDimValidation:

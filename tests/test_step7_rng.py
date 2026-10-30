@@ -19,6 +19,7 @@ from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step7 import (
     Step7DynaConfig,
     Step7DynaState,
+    _update_control_with_linear_rng,
     init_step7_state,
     make_step7_components,
     run_step7_scan,
@@ -186,6 +187,28 @@ def test_rejected_real_update_reserves_its_advanced_key_before_planning() -> Non
     )
 
 
+def test_invalid_next_observation_rejects_before_building_a_control_candidate() -> None:
+    """The ``-1`` selection sentinel must never index the SARSA target."""
+    cfg = _cfg(planning_steps=1, warmup=0)
+    agent, _model, state = _init(cfg, seed=23)
+    control = state.control_state
+    result = _update_control_with_linear_rng(
+        agent,
+        control,
+        jnp.array(0.25, dtype=jnp.float32),
+        jnp.full((OBS_DIM,), jnp.nan, dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert not bool(result.input_valid)
+    assert bool(result.candidate_state_finite)
+    expected_key = jr.split(control.rng_key, 4)[0]
+    chex.assert_trees_all_equal(
+        result.state,
+        control.replace(rng_key=expected_key),
+    )
+
+
 def test_rejected_rollout_updates_advance_their_local_key_each_depth() -> None:
     """A rejected depth-two rollout cannot sample twice from the same root."""
     cfg = _cfg(planning_steps=1, warmup=0, rollout_depth=2)
@@ -294,4 +317,22 @@ def test_step7_eager_jit_and_scan_reproduce_rng_trajectories(
     )
     first = run_step7_scan(cfg, agent, model, state, rewards, observations)
     second = run_step7_scan(cfg, agent, model, state, rewards, observations)
-    chex.assert_trees_all_equal(first, second)
+    first_without_clock = first.replace(  # type: ignore[attr-defined]
+        state=first.state.replace(  # type: ignore[attr-defined]
+            world_model_state=first.state.world_model_state.replace(  # type: ignore[attr-defined]
+                learner_state=first.state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
+                    uptime_s=0.0,
+                ),
+            ),
+        ),
+    )
+    second_without_clock = second.replace(  # type: ignore[attr-defined]
+        state=second.state.replace(  # type: ignore[attr-defined]
+            world_model_state=second.state.world_model_state.replace(  # type: ignore[attr-defined]
+                learner_state=second.state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
+                    uptime_s=0.0,
+                ),
+            ),
+        ),
+    )
+    chex.assert_trees_all_equal(first_without_clock, second_without_clock)
