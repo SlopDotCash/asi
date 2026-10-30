@@ -101,13 +101,20 @@ def init_intentional_td(weights: Array) -> IntentionalTDState:
     """Allocate optimizer state matching a float32 parameter array."""
     if weights.dtype != jnp.float32 or weights.size == 0:
         raise ValueError("weights must be a nonempty float32 array")
-    return IntentionalTDState(  # type: ignore[call-arg]
+    return IntentionalTDState(
         trace=jnp.zeros_like(weights),
         squared_gradient=jnp.zeros_like(weights),
         sigma=jnp.array(0.0, dtype=jnp.float32),
         clip_squared_error=jnp.array(0.0, dtype=jnp.float32),
         step=jnp.array(0, dtype=jnp.int32),
     )
+
+
+def _bias_correction(decay: float, count: Array) -> Array:
+    """Compute 1 - decay**count without rounding a near-one decay to one."""
+    if decay == 0.0:
+        return jnp.ones_like(count)
+    return -jnp.expm1(count * math.log(decay))
 
 
 def intentional_td_update(
@@ -149,7 +156,7 @@ def intentional_td_update(
     )
     count = step.astype(jnp.float32)
     if config.use_rmsprop:
-        second_bias = 1 - config.beta2**count
+        second_bias = _bias_correction(config.beta2, count)
         direct_rms = jnp.sqrt(second / second_bias)
         stable_rms = jnp.sqrt(second) / jnp.sqrt(second_bias)
         divisor = jnp.where(jnp.isfinite(direct_rms), direct_rms, stable_rms) + 1e-8
@@ -161,7 +168,7 @@ def intentional_td_update(
         jnp.isfinite(direct_norm_gradient), direct_norm_gradient, stable_norm_gradient
     )
     sigma = state.sigma + (1 - decay) * (norm_gradient - state.sigma)
-    sigma_corrected = sigma / (1 - decay**count)
+    sigma_corrected = sigma / _bias_correction(decay, count)
     direct_norm_trace = jnp.sum(trace**2 / divisor)
     stable_norm_trace = jnp.sum((trace / divisor) * trace)
     norm_trace = jnp.where(jnp.isfinite(direct_norm_trace), direct_norm_trace, stable_norm_trace)
@@ -175,7 +182,7 @@ def intentional_td_update(
         config.beta_clip,
     )
     if config.use_adaptive_clip:
-        clip_bias = 1 - config.beta_clip**count
+        clip_bias = _bias_correction(config.beta_clip, count)
         direct_cap = config.clip_mult * jnp.sqrt(clip_second / clip_bias)
         stable_cap = config.clip_mult * jnp.sqrt(clip_second) / jnp.sqrt(clip_bias)
         cap = jnp.where(jnp.isfinite(direct_cap), direct_cap, stable_cap)
@@ -183,7 +190,7 @@ def intentional_td_update(
         cap = jnp.array(1.0, dtype=jnp.float32)
     safe_error = jnp.clip(td_error, -cap, cap)
     changed = weights + (safe_error * step_size) * (trace / divisor)
-    return changed, IntentionalTDState(  # type: ignore[call-arg]
+    return changed, IntentionalTDState(
         trace=jnp.where(terminated, jnp.zeros_like(trace), trace),
         squared_gradient=second,
         sigma=sigma,
