@@ -24,7 +24,9 @@ from alberta_framework.core.compositional_features import (
     _compute_feature_values,
     _imprint_candidate_output_weights,
     run_compositional_arrays,
+    run_compositional_loop,
 )
+from alberta_framework.streams.out_of_class import CompositionalStream
 
 _INT32_MAX = 2**31 - 1
 
@@ -51,6 +53,26 @@ def _assert_valid_active_dag(
             expected_depth = max(depth[parent_a[i]], depth[parent_b[i]]) + 1
             assert depth[i] == expected_depth
             assert depth[i] <= max_depth
+
+
+def _assert_valid_candidate_bank(state: CompositionalFeatureState, max_depth: int) -> None:
+    """Check that every candidate descriptor has its structural depth within budget."""
+    depth = np.asarray(state.depth)
+    n_features = depth.shape[0]
+    candidate_ops = np.asarray(state.candidate_ops)
+    candidate_parent_a = np.asarray(state.candidate_parent_a)
+    candidate_parent_b = np.asarray(state.candidate_parent_b)
+    candidate_depth = np.asarray(state.candidate_depth)
+
+    for j, op in enumerate(candidate_ops):
+        if op == OP_RAW:
+            continue
+        assert 0 <= candidate_parent_a[j] < n_features
+        assert -1 <= candidate_parent_b[j] < n_features
+        parent_b_depth = depth[candidate_parent_b[j]] if candidate_parent_b[j] >= 0 else 0
+        expected_depth = max(depth[candidate_parent_a[j]], parent_b_depth) + 1
+        assert candidate_depth[j] == expected_depth
+        assert candidate_depth[j] <= max_depth
 
 
 class TestCompositionalFeatureLearner:
@@ -969,6 +991,74 @@ class TestCompositionalFeatureLearner:
         assert int(legacy_result.promoted_candidate) == 0
         assert int(selector_result.promoted_candidate) == 1
 
+    def test_over_depth_rebound_candidate_is_regenerated_within_budget(self) -> None:
+        """A candidate rebound through a max-depth promotion gets a fresh valid descriptor."""
+        learner = CompositionalFeatureLearner(
+            n_features=5,
+            n_tasks=1,
+            candidate_count=2,
+            replacement_interval=1,
+            min_feature_age=0,
+            candidate_min_age=0,
+            promotion_margin=0.0,
+            max_depth=2,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+            ops=jnp.array([OP_RAW, OP_RAW, OP_PRODUCT, OP_PRODUCT, OP_PRODUCT], dtype=jnp.int32),
+            parent_a=jnp.array([0, 1, 0, 0, 2], dtype=jnp.int32),
+            parent_b=jnp.array([-1, -1, 1, 1, 0], dtype=jnp.int32),
+            depth=jnp.array([0, 0, 1, 1, 2], dtype=jnp.int32),
+            utilities=jnp.array([10.0, 10.0, 10.0, 0.0, 5.0], dtype=jnp.float32),
+            ages=jnp.full((5,), 10, dtype=jnp.int32),
+            # Candidate 0 (depth 2) is promoted into slot 3.  Candidate 1 reads
+            # slot 3, so its structural depth becomes 3 > max_depth.
+            candidate_ops=jnp.array([OP_PRODUCT, OP_PRODUCT], dtype=jnp.int32),
+            candidate_parent_a=jnp.array([2, 3], dtype=jnp.int32),
+            candidate_parent_b=jnp.array([0, 1], dtype=jnp.int32),
+            candidate_depth=jnp.array([2, 2], dtype=jnp.int32),
+            candidate_utilities=jnp.array([100.0, 0.0], dtype=jnp.float32),
+            candidate_ages=jnp.array([10, 10], dtype=jnp.int32),
+        )
+        observation = jnp.array([0.5, -0.4], dtype=jnp.float32)
+        target = jnp.array([0.3], dtype=jnp.float32)
+
+        result = learner.update(state, observation, target)
+
+        assert bool(result.update_applied)
+        assert int(result.promoted_candidate) == 0
+        assert int(result.state.depth[3]) == 2
+        trace = result.curation_trace
+        assert np.asarray(trace.candidate_rebound_mask).tolist() == [False, True]
+        _assert_valid_active_dag(result.state, feature_dim=2, max_depth=2)
+        _assert_valid_candidate_bank(result.state, max_depth=2)
+        np.testing.assert_array_equal(
+            np.asarray(trace.candidate_final_depth),
+            np.asarray(result.state.candidate_depth),
+        )
+        assert int(result.state.candidate_ages[1]) == 0
+        assert float(result.state.candidate_utilities[1]) == 0.0
+
+        next_state = result.state
+        for _ in range(3):
+            next_result = learner.update(next_state, observation, target)
+            assert bool(next_result.update_applied)
+            next_state = next_result.state
+            _assert_valid_candidate_bank(next_state, max_depth=2)
+        assert int(next_state.step_count) == 4
+
+    def test_default_curation_on_compositional_stream_keeps_learning(self) -> None:
+        """Default promotion and cascades never commit an over-depth candidate."""
+        stream = CompositionalStream(feature_dim=6, n_tasks=3)
+        learner = CompositionalFeatureLearner(n_features=24, n_tasks=3, candidate_count=8)
+
+        result = run_compositional_loop(learner, stream, 600, jr.key(2))
+
+        applied = np.asarray(result.updates_applied)
+        assert applied.all(), f"first rejected update: {int(np.argmin(applied))}"
+        assert int(result.state.step_count) == 600
+        _assert_valid_active_dag(result.state, feature_dim=6, max_depth=learner.max_depth)
+        _assert_valid_candidate_bank(result.state, max_depth=learner.max_depth)
+
     def test_candidate_refresh_respects_min_age(self) -> None:
         """New candidates must get a real evaluation window before recycling."""
         learner = CompositionalFeatureLearner(
@@ -1713,3 +1803,20 @@ def test_compositional_init_rejects_hostile_and_derived_parent_resources() -> No
     )
     with pytest.raises(ValueError, match="recursive parent construction byte count"):
         recursive_with_composition.init(30_000, jr.key(0))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("losses", [(1.0, 1.0, 1.0, 1.0), (1.0, 1.0, 1.0, 0.0)])
+def test_finite_candidate_selector_retains_finite_center(losses, compiled) -> None:
+    selector = FiniteCandidateSelector(n_candidates=4, learning_rate=2e38)
+    update = jax.jit(selector.update) if compiled else selector.update
+    result = update(selector.init(), jnp.asarray(losses, dtype=jnp.float32))
+    raw = -float(np.float32(2e38)) * np.asarray(losses, dtype=np.float64)
+    expected = raw - raw.mean()
+    assert int(result.state.step_count) == 1
+    np.testing.assert_allclose(result.state.log_weights, expected, rtol=1e-6, atol=0.0)
+    np.testing.assert_array_equal(result.state.cumulative_loss, losses)
+    np.testing.assert_array_equal(result.state.action_counts, np.ones(4, dtype=np.int32))
+    probabilities = selector.probabilities(result.state)
+    assert bool(jnp.all(jnp.isfinite(probabilities)))
+    np.testing.assert_allclose(float(probabilities.sum()), 1.0, rtol=1e-6)

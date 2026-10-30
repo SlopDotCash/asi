@@ -446,6 +446,14 @@ def run_step4_scan(
         state,
         (features_array, rewards_array, terminated_array),
     )
+    # These host-only fields are unchanged by learning, but scan narrows
+    # dynamic Python floats to device precision. Restore their incoming values.
+    final_state = final_state.replace(
+        learner_state=final_state.learner_state.replace(
+            birth_timestamp=state.learner_state.birth_timestamp,
+            uptime_s=state.learner_state.uptime_s,
+        )
+    )
     return SARSAArrayResult(
         state=final_state,
         q_values=q_values,

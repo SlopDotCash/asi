@@ -495,14 +495,33 @@ class SpaceSpec:
         )
         if low_count != size or high_count != size:
             raise ValueError("box bounds must contain one value per flattened shape entry")
-        lows = _numeric_array(self.low, name="box low bounds")
-        highs = _numeric_array(self.high, name="box high bounds")
-        if lows.shape != (size,) or highs.shape != (size,):
-            raise ValueError("box bounds must contain one value per flattened shape entry")
-        if np.any(lows > highs):
-            raise ValueError("every box low bound must be <= its high bound")
-        cast_lows = _cast_representable(lows, dtype=dtype, name="box low bounds")
-        cast_highs = _cast_representable(highs, dtype=dtype, name="box high bounds")
+        if dtype.kind in {"i", "u"}:
+            def cast_integer_bounds(
+                values: tuple[float | int, ...], *, name: str
+            ) -> np.ndarray[Any, Any]:
+                converted: list[int] = []
+                for raw in values:
+                    scalar = _numeric_array(raw, name=name)
+                    if scalar.shape != ():
+                        raise ValueError(
+                            "box bounds must contain one value per flattened shape entry"
+                        )
+                    converted.append(
+                        int(_cast_representable(scalar, dtype=dtype, name=name).item())
+                    )
+                return np.asarray(converted, dtype=dtype)
+
+            cast_lows = cast_integer_bounds(self.low, name="box low bounds")
+            cast_highs = cast_integer_bounds(self.high, name="box high bounds")
+        else:
+            lows = _numeric_array(self.low, name="box low bounds")
+            highs = _numeric_array(self.high, name="box high bounds")
+            if lows.shape != (size,) or highs.shape != (size,):
+                raise ValueError("box bounds must contain one value per flattened shape entry")
+            if np.any(lows > highs):
+                raise ValueError("every box low bound must be <= its high bound")
+            cast_lows = _cast_representable(lows, dtype=dtype, name="box low bounds")
+            cast_highs = _cast_representable(highs, dtype=dtype, name="box high bounds")
         if np.any(cast_lows > cast_highs):
             raise ValueError("box bounds reverse in the declared dtype")
         object.__setattr__(
@@ -1076,7 +1095,8 @@ class DispatchReceipt:
                 executor_id=executor_id,
                 executor_epoch="legacy.preview1",
             )
-            applied_action = dispatch.effective_action
+            if applied_action is None:
+                applied_action = dispatch.effective_action
         elif dispatch is not None:
             if executor_id is not None:
                 raise ValueError("receipt constructors cannot mix executor_id with command")

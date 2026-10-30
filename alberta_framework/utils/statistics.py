@@ -176,7 +176,7 @@ class SignificanceResult(_SignificanceResultTuple):
         return type(self)(**values)
 
 
-def _validate_confidence_level(confidence_level: object) -> None:
+def _validate_confidence_level(confidence_level: object) -> float:
     if type(confidence_level) not in _ALLOWED_REAL_TYPES:
         raise ValueError("confidence_level must be strictly between 0 and 1")
     try:
@@ -189,8 +189,11 @@ def _validate_confidence_level(confidence_level: object) -> None:
         )
     except ValueError:
         raise ValueError("confidence_level must be strictly between 0 and 1") from None
-    # validated ensures (0,1); keep for mypy
+    # Keep the original host-double value after preserving the existing domain
+    # gate. The downstream NumPy/SciPy calls cannot consume Fraction objects,
+    # and arithmetic on NumPy float32 scalars would narrow the quantile level.
     _ = validated
+    return float(cast(Any, confidence_level))
 
 
 def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
@@ -278,6 +281,21 @@ def _require_p_value(value: object, *, name: str) -> float:
     return _require_probability(value, name=name, strict=False)
 
 
+def _summary_quartile(sorted_values: NDArray[np.float64], quarter: int) -> float:
+    """Interpolate only the selected neighbors, preserving their original units."""
+    index, remainder = divmod((len(sorted_values) - 1) * quarter, 4)
+    lower = float(sorted_values[index])
+    if remainder == 0:
+        return lower
+    upper = float(sorted_values[index + 1])
+    weight = remainder / 4.0
+    if (lower >= 0.0) == (upper >= 0.0):
+        # Same-sign differences fit even when adding the endpoints would not.
+        return lower + (upper - lower) * weight
+    # Opposite-sign subtraction may overflow; weighted terms cannot do so.
+    return (1.0 - weight) * lower + weight * upper
+
+
 def compute_statistics(
     values: NDArray[np.float64] | list[float],
     confidence_level: float = 0.95,
@@ -301,17 +319,19 @@ def compute_statistics(
     if n == 0:
         raise ValueError("values must be non-empty")
     _require_finite_values(arr, name="values")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
 
     scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
     scale = float(scale_array.item())
+    ordered = np.sort(np.asarray(arr, dtype=np.float64))
     with np.errstate(over="ignore", invalid="ignore"):
         mean = float(np.mean(scaled) * scale)
         std = float(np.std(scaled, ddof=1) * scale) if n > 1 else 0.0
         sem = std / np.sqrt(n) if n > 1 else 0.0
-        median = float(np.median(scaled) * scale)
-        q75, q25 = np.percentile(scaled, [75, 25])
-        iqr = float((q75 - q25) * scale)
+        median = _summary_quartile(ordered, 2)
+        q25 = _summary_quartile(ordered, 1)
+        q75 = _summary_quartile(ordered, 3)
+        iqr = q75 - q25
 
     # Compute confidence interval
     try:
@@ -377,7 +397,7 @@ def compute_timeseries_statistics(
     if metric_array.ndim == 2 and metric_array.shape[1] == 0:
         raise ValueError("metric_array must contain at least one time step")
     _require_finite_values(metric_array, name="metric_array")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
     scaled, scales = _scaled_float64_values(metric_array, name="metric_array", axis=0)
     scale = scales[0]
     mean = np.mean(scaled, axis=0) * scale
@@ -389,8 +409,8 @@ def compute_timeseries_statistics(
         return mean, mean.copy(), mean.copy()
 
     with np.errstate(over="ignore", invalid="ignore"):
-        std = np.std(scaled, axis=0, ddof=1) * scale
-    sem = std / np.sqrt(n_seeds)
+        # A finite confidence interval need not have a representable sample SD.
+        sem = (np.std(scaled, axis=0, ddof=1) / np.sqrt(n_seeds)) * scale
 
     try:
         from scipy import stats
@@ -451,14 +471,32 @@ def cohens_d(
             f"(got n_a={n_a}, n_b={n_b}, pooled_df={pooled_df})"
         )
 
-    mean_a = np.mean(a)
-    mean_b = np.mean(b)
+    # Compute each group's spread at its own bounded scale so a large constant
+    # group cannot erase the smaller group's variance. Cohen's d is unchanged
+    # when both means and standard deviations use the same positive units.
+    a, scale_a_array = _scaled_float64_values(a, name="values_a", axis=None)
+    b, scale_b_array = _scaled_float64_values(b, name="values_b", axis=None)
+    scale_a = float(scale_a_array.item())
+    scale_b = float(scale_b_array.item())
+    common_scale = max(scale_a, scale_b)
+    ratio_a = scale_a / common_scale
+    ratio_b = scale_b / common_scale
+    # Canonical reduction order keeps this unpaired statistic independent of
+    # seed-row permutations (including paired callers that align their rows).
+    a = np.sort(a)
+    b = np.sort(b)
+    mean_a = np.mean(a) * ratio_a
+    mean_b = np.mean(b) * ratio_b
 
     # Pooled standard deviation
-    var_a = np.var(a, ddof=1) if n_a > 1 else 0.0
-    var_b = np.var(b, ddof=1) if n_b > 1 else 0.0
-
-    pooled_std = np.sqrt(((n_a - 1) * var_a + (n_b - 1) * var_b) / pooled_df)
+    std_a = np.std(a, ddof=1) * ratio_a if n_a > 1 else 0.0
+    std_b = np.std(b, ddof=1) * ratio_b if n_b > 1 else 0.0
+    # hypot combines the weighted standard deviations without squaring tiny
+    # values into zero or large values into infinity.
+    pooled_std = np.hypot(
+        np.sqrt((n_a - 1) / pooled_df) * std_a,
+        np.sqrt((n_b - 1) / pooled_df) * std_b,
+    )
 
     if pooled_std == 0:
         mean_difference = mean_a - mean_b
@@ -525,6 +563,7 @@ def ttest_comparison(
     _require_finite_values(a, name="values_a")
     _require_finite_values(b, name="values_b")
 
+    exact_pair_summary: tuple[float, float] | None = None
     if paired:
         if len(a) != len(b):
             raise ValueError(
@@ -532,6 +571,28 @@ def ttest_comparison(
             )
         if len(a) < 2:
             raise ValueError(f"paired t-test requires at least 2 pairs (got {len(a)})")
+        # Subtract integer pairs exactly before conversion: converting large
+        # integer offsets to float64 first would erase small paired differences.
+        # Both paired inference and d_z depend only on those differences.
+        if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+            differences = [int(x) - int(y) for x, y in zip(a, b, strict=True)]
+            a = np.asarray(differences, dtype=np.float64)
+            if any(int(converted) != original for converted, original in zip(a, differences)):
+                exact_mean = Fraction(sum(differences), len(differences))
+                centered = np.asarray(
+                    [float(Fraction(value) - exact_mean) for value in differences],
+                    dtype=np.float64,
+                )
+                exact_pair_summary = (float(exact_mean), float(np.std(centered, ddof=1)))
+            b = np.zeros_like(a)
+        else:
+            # Promote before float subtraction and squared deviations so finite
+            # float32 measurements use the available float64 inference range.
+            with np.errstate(over="ignore", invalid="ignore"):
+                a = np.asarray(a, dtype=np.float64)
+                b = np.asarray(b, dtype=np.float64)
+        _require_finite_values(a, name="values_a")
+        _require_finite_values(b, name="values_b")
         _require_exact_str("method_a", method_a)
         _require_exact_str("method_b", method_b)
         if np.array_equal(a, b):
@@ -549,10 +610,27 @@ def ttest_comparison(
             f"(got {len(a)} and {len(b)})"
         )
 
+    if not paired:
+        # Independent inference squares deviations too; keep it in the same
+        # float64 measurement domain instead of overflowing finite float32 data.
+        with np.errstate(over="ignore", invalid="ignore"):
+            a = np.asarray(a, dtype=np.float64)
+            b = np.asarray(b, dtype=np.float64)
+        _require_finite_values(a, name="values_a")
+        _require_finite_values(b, name="values_b")
+
     try:
         from scipy import stats
 
-        if paired:
+        if exact_pair_summary is not None:
+            mean_difference, difference_std = exact_pair_summary
+            if difference_std == 0.0:
+                stat_val = float(np.copysign(np.inf, mean_difference))
+            else:
+                stat_val = mean_difference / (difference_std / math.sqrt(len(a)))
+            result = (stat_val, 2.0 * stats.t.sf(abs(stat_val), len(a) - 1))
+            test_name = "paired t-test"
+        elif paired:
             result = stats.ttest_rel(a, b)
             test_name = "paired t-test"
         else:
@@ -566,7 +644,15 @@ def ttest_comparison(
     except ImportError:
         raise ImportError("scipy is required for t-test. Install with: pip install scipy")
 
-    effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
+    if exact_pair_summary is not None:
+        mean_difference, difference_std = exact_pair_summary
+        effect = (
+            mean_difference / difference_std
+            if difference_std > 0.0
+            else float(np.copysign(np.inf, mean_difference))
+        )
+    else:
+        effect = _paired_cohens_d(a, b) if paired else cohens_d(a, b)
 
     return SignificanceResult(
         test_name=test_name,
@@ -1051,7 +1137,7 @@ def bootstrap_ci(
     _require_finite_values(arr, name="values")
     if type(statistic) is not str or statistic not in ("mean", "median"):
         raise ValueError("statistic must be either 'mean' or 'median'")
-    _validate_confidence_level(confidence_level)
+    confidence_level = _validate_confidence_level(confidence_level)
     n_bootstrap = _require_positive_int("n_bootstrap", n_bootstrap)
     if n_bootstrap > _BOOTSTRAP_MAX_COUNT:
         raise ValueError(
@@ -1062,12 +1148,14 @@ def bootstrap_ci(
     rng = np.random.default_rng(seed)
 
     stat_func = np.mean if statistic == "mean" else np.median
-    point_estimate = float(stat_func(arr))
+    scaled, scale_array = _scaled_float64_values(arr, name="values", axis=None)
+    scale = float(scale_array.item())
+    point_estimate = float(stat_func(scaled) * scale)
 
     # Generate bootstrap samples
     bootstrap_stats_list: list[float] = []
     for _ in range(n_bootstrap):
-        sample = rng.choice(arr, size=len(arr), replace=True)
+        sample = rng.choice(scaled, size=len(scaled), replace=True)
         bootstrap_stats_list.append(float(stat_func(sample)))
 
     bootstrap_stats = np.array(bootstrap_stats_list)
@@ -1075,7 +1163,7 @@ def bootstrap_ci(
     # Percentile method
     lower_percentile = (1 - confidence_level) / 2 * 100
     upper_percentile = (1 + confidence_level) / 2 * 100
-    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile))
-    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile))
+    ci_lower = float(np.percentile(bootstrap_stats, lower_percentile) * scale)
+    ci_upper = float(np.percentile(bootstrap_stats, upper_percentile) * scale)
 
     return point_estimate, ci_lower, ci_upper

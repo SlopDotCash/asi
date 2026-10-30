@@ -151,11 +151,20 @@ def _require_normal_float32_scale(name: str, value: object) -> float:
 
 
 def _require_finite_nonnegative_float32(name: str, value: object) -> float:
-    """Require a finite non-negative float32 execution value."""
+    """Require a finite non-negative float32 execution value.
+
+    A strictly positive request that narrows to binary32 zero is rejected: the
+    step kernel would execute a stationary stream, a noise-free stream, or
+    identically zero observations while the constructor recorded a positive
+    scale. Exact zero and the smallest representable subnormal stay legal, so
+    this only forbids the silent collapse.
+    """
     message = f"{name} must be a finite non-negative float32 value"
     numerator, _, narrowed = _narrow_real_to_float32(name, value, message)
     if numerator < 0 or narrowed < 0.0:
         raise ValueError(message)
+    if numerator > 0 and narrowed == 0.0:
+        raise ValueError(f"{name} must not be a positive value that narrows to float32 zero")
     return narrowed
 
 

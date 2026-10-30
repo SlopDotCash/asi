@@ -1054,3 +1054,43 @@ def test_maximum_fusion_config_keeps_derived_resources_in_int32_domain() -> None
     for value in budget.to_config().values():
         if type(value) is int:
             assert 0 <= value <= 2**31 - 1
+
+
+@pytest.mark.parametrize("cost", [1.0e8, 1.0e12])
+def test_unavailable_partner_cannot_tie_rounded_score_floor(cost: float) -> None:
+    fusion = _fusion(
+        max_communication_cost=cost,
+        accept_net_value_threshold=-cost,
+        blend_net_value_threshold=-2.0 * cost,
+    )
+    state = fusion.init()
+    messages = _messages(fusion, [
+        {"available": False, "suggested_action": 2, "communication_cost": cost},
+        {"partner_id": 1, "suggested_action": 1, "communication_cost": cost},
+    ])
+
+    def decide(current, batch):
+        return _decide(fusion, current, batch)
+
+    for result in (decide(state, messages), jax.jit(decide)(state, messages)):
+        decision = result.decision
+        np.testing.assert_array_equal(
+            decision.availability.messages_valid, [False, True, False],
+        )
+        assert bool(decision.input_valid)
+        assert int(decision.selected_partner_slot) == 1
+        assert int(decision.selected_partner_id) == 1
+        assert int(decision.route) == ROUTE_ACCEPT
+        assert int(decision.effective_action) == 1
+        assert bool(decision.feedback_armed)
+        assert int(result.state.armed_partner_id) == 1
+        assert int(result.state.armed_action) == 1
+        fusion.validate_state(result.state)
+        _assert_float_leaves_finite(result)
+
+    empty = _decide(fusion, state)
+    assert int(empty.decision.selected_partner_slot) == -1
+    assert int(empty.decision.route) == ROUTE_IGNORE
+    assert int(empty.decision.effective_action) == 0
+    assert not bool(empty.decision.feedback_armed)
+    _assert_float_leaves_finite(empty)

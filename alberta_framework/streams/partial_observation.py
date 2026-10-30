@@ -297,7 +297,7 @@ class PartialObservationWrapper[InnerStateT]:
         masked_obs = jnp.where(
             mask,
             timestep.observation,
-            jnp.full_like(timestep.observation, self._sentinel),
+            jnp.asarray(self._sentinel, dtype=jnp.float32),
         )
 
         new_timestep = TimeStep(  # type: ignore[call-arg]
