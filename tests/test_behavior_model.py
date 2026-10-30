@@ -727,6 +727,68 @@ def test_importance_ratio_and_epsilon_greedy_helpers() -> None:
     assert float(ratio) == 1.25
 
 
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [
+        (np.array([2.0, -1.0], dtype=np.float32), "non-negative"),
+        (np.array([0.1, 0.1], dtype=np.float32), "sum to one"),
+        (np.array([np.nan, 1.0], dtype=np.float32), "finite"),
+        (np.array([np.inf, 0.0], dtype=np.float32), "finite"),
+        (np.array([1e300, 0.0], dtype=np.float64), "finite"),
+        (np.array([1.0], dtype=np.float32), "2 actions"),
+        (np.array(1.0, dtype=np.float32), "2 actions"),
+        (np.array([0.5 + 1.0j, 0.5 - 1.0j], dtype=np.complex64), "real floating"),
+        (np.array([1, 0], dtype=np.int32), "real floating"),
+    ],
+    ids=[
+        "negative",
+        "not-normalized",
+        "nan",
+        "inf",
+        "float32-overflow",
+        "too-few-actions",
+        "scalar",
+        "complex",
+        "integer",
+    ],
+)
+def test_importance_ratio_rejects_invalid_target_distribution(
+    target: np.ndarray, message: str
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+
+    with pytest.raises(ValueError, match=message):
+        model.importance_ratio(
+            state,
+            jnp.ones(2, dtype=jnp.float32),
+            jnp.array(0, dtype=jnp.int32),
+            target,
+        )
+
+
+def test_clipped_importance_ratios_rejects_one_invalid_batch_row() -> None:
+    target = jnp.array([[0.5, 0.5], [0.5, 0.2]], dtype=jnp.float32)
+    behavior = jnp.full((2, 2), 0.5, dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="sum to one"):
+        clipped_importance_ratios(target, behavior, jnp.array([0, 1], dtype=jnp.int32))
+
+
+def test_importance_ratio_keeps_rounded_softmax_and_traced_targets() -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=64, ratio_clip=1000.0))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.ones(2, dtype=jnp.float32)
+    action = jnp.array(3, dtype=jnp.int32)
+    target = jax.nn.softmax(jnp.linspace(-5.0, 5.0, 64, dtype=jnp.float32))
+
+    eager = model.importance_ratio(state, observation, action, target)
+    traced = jax.jit(model.importance_ratio)(state, observation, action, target)
+
+    assert float(eager) == pytest.approx(float(target[3]) * 64.0, rel=1e-5)
+    assert float(traced) == float(eager)
+
+
 def test_behavior_model_config_rejects_booleans_and_non_integers() -> None:
     with pytest.raises(ValueError, match="n_actions"):
         BehaviorModelConfig(n_actions=True)  # type: ignore[arg-type]
