@@ -295,6 +295,27 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Unit-length RLS features lose with the fixed identmap control constants.**
+    A preregistered 60-task x 5,000-step abrupt IPMNIST development screen
+    remeasured `rls_head_resid_identmap50_r_idet003_s005625` against the same
+    arm with only the hidden RLS feature vector normalized to unit length
+    (bias unchanged). On consumed development seeds 0, 1 and 2, control online
+    pre-update accuracy was `0.934567755722` (sample SD `0.000136722460`),
+    candidate `0.906286643389` (sample SD `0.028006850565`). Paired deltas were
+    `[-0.060339999333, -0.014840002167, -0.009663335500]`; mean
+    `-0.028281112333`, sample SD `0.027884200656`. All three lost and the mean
+    crossed the frozen `-0.005` negative threshold. This rejects that fixed
+    configuration on this development sample, not feature normalization in
+    general; n=3 and the large candidate spread support no population-level
+    claim. Both arms bind clean source `9884c20403ff889307f80242ee032692ad0e80ef`,
+    identical runtime/data, and a bit-exact inert-mechanism reduction. No
+    retuning, extra seeds, confirmation or promotion followed. The losing arm
+    is retired from the live tree; the exact source and tests survive in a
+    prerequisite-bound Git bundle. Record:
+    [`unit_features_dev_20261030/`](../../outputs/ipmnist_screening/unit_features_dev_20261030/)
+    (pre-run plan, six v2 shards, official merge, raw-array analysis, source
+    bundle, commands, logs and results). Permanently nonpromoting.
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

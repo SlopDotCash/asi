@@ -7554,14 +7554,13 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """The confirmed identifiers, gated step-size screen and one new
-        unit-feature development endpoint are registered; the
+        """Only the two 200-task-confirmed identifier arms plus the gated
+        idet003_s005625 step-size triple screen are registered; the
         screened intermediates and the round-2 rejections (negative
         result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_learner,
-            _make_rls_head_unit_features_learner,
             _rls_head_frozen_probe_input,
         )
 
@@ -7579,11 +7578,6 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.005625,
             },
-            "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures": {
-                "ident_match_at": 50.0, "ident_match2": 200.0,
-                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
-                "step_size": 0.005625, "unit_features": 1.0,
-            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7591,12 +7585,7 @@ class TestRLSHeadIdentMap:
         assert registered == set(expected)
         for name, overrides in expected.items():
             spec = SCREENING_REGISTRY[name]
-            expected_factory = (
-                _make_rls_head_unit_features_learner
-                if name.endswith("_unitfeatures")
-                else _make_rls_head_identmap_learner
-            )
-            assert spec.factory is expected_factory
+            assert spec.factory is _make_rls_head_identmap_learner
             assert spec.frozen_probe_input is _rls_head_frozen_probe_input
             assert spec.hyperparameters["head_resid"] == 1.0
             assert spec.hyperparameters["rls_lambda"] == 1.0
