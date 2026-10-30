@@ -12496,6 +12496,55 @@ def _require_registered_base_learner(
         )
 
 
+def _require_registered_hyperparameters(
+    config_name: str,
+    per_seed: Mapping[int, dict[str, Any]],
+    registry: Mapping[str, ScreeningSpec],
+) -> None:
+    """Reject an arm whose recorded hyperparameters contradict its registered spec.
+
+    ``load_shard`` applies the exact registered-hyperparameter check to
+    source-bound shards only, and the campaign's live shard format is v1. An
+    arm whose seeds all agree on values its registry entry never registered
+    therefore reaches the merge, which publishes the recorded
+    ``hyperparameters`` as the arm's identity.
+    ``_validate_screening_arm_contract`` runs first and, on its own, only
+    rejects a batch that disagrees with itself.
+
+    Retained v1 shards may record a strict subset of the registered keys,
+    because the registry later gained inert keys, so the v2/v3 exact-set rule
+    would reject them. Every recorded key must instead be registered, and its
+    value must be a finite float bit-identical to the registered float.
+    """
+    registered = registry[config_name].hyperparameters
+    for seed in sorted(per_seed):
+        recorded = per_seed[seed]["hyperparameters"]
+        unregistered = sorted(set(recorded) - set(registered))
+        if unregistered:
+            raise ValueError(
+                f"config {config_name!r} seed {seed} records hyperparameter(s) "
+                f"{unregistered}, but its registered arm registers only "
+                f"{sorted(registered)}; refusing to publish an arm identity the "
+                "registry does not support"
+            )
+        contradicted = sorted(
+            name
+            for name, value in recorded.items()
+            if type(value) is not float
+            or not math.isfinite(value)
+            or value.hex() != registered[name].hex()
+        )
+        if contradicted:
+            recorded_values = {name: recorded[name] for name in contradicted}
+            registered_values = {name: registered[name] for name in contradicted}
+            raise ValueError(
+                f"config {config_name!r} seed {seed} records hyperparameters "
+                f"{recorded_values!r}, but its registered arm registers "
+                f"{registered_values!r}; refusing to publish an arm identity the "
+                "registry does not support"
+            )
+
+
 def _late_window_slope(per_task_accuracy: np.ndarray, window: int) -> float:
     """OLS slope (accuracy per task) over the final ``window`` tasks."""
     tail = per_task_accuracy[-window:]
@@ -12631,6 +12680,7 @@ def merge_shards(
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
         _require_registered_base_learner(name, per_seed, registry)
+        _require_registered_hyperparameters(name, per_seed, registry)
     control = by_config[control_name]
     control_seeds = sorted(control)
     for name, per_seed in sorted(by_config.items()):
