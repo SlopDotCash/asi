@@ -804,6 +804,31 @@ def _make_nlqhac_agent() -> NonlinearQHordeActorCriticAgent:
     )
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        _make_agent,
+        _make_qhorde_agent,
+        _make_nlhac_agent,
+        _make_nlqhac_agent,
+    ],
+)
+def test_horde_actor_critic_construction_requires_exact_schema(
+    factory: Callable[[], Any],
+) -> None:
+    agent = factory()
+    payload = agent.to_config()
+    malformed_payloads = [
+        {key: value for key, value in payload.items() if key != "type"},
+        {**payload, "type": "DifferentAgent"},
+        {**payload, "unexpected": "ignored"},
+    ]
+
+    for malformed in malformed_payloads:
+        with pytest.raises(ValueError, match="construction fields"):
+            type(agent).from_config(malformed)
+
+
 def _init_nlhac(
     agent: NonlinearHordeActorCriticAgent,
 ) -> NonlinearHordeActorCriticState:
@@ -1965,16 +1990,16 @@ def test_actor_resource_budgets_preflight_before_allocation(
     linear = HordeActorCriticConfig(n_actions=2)
     assert linear.actor_resource_budget(3) == {
         "parameter_scalars": 8,
-        "float32_state_scalars": 19,
-        "state_scalars": 23,
-        "state_nbytes": 92,
+        "float32_state_scalars": 20,
+        "state_scalars": 24,
+        "state_nbytes": 96,
     }
     nonlinear = NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(3,))
     budget = nonlinear.actor_resource_budget(4)
     assert budget["parameter_scalars"] == 23
     assert budget["optimizer_tensor_count"] == 4
-    assert budget["float32_state_scalars"] == 128
-    assert budget["state_nbytes"] == 528
+    assert budget["float32_state_scalars"] == 129
+    assert budget["state_nbytes"] == 532
 
     with pytest.raises(ValueError, match="derived actor"):
         HordeActorCriticConfig(n_actions=2**31 - 1)
@@ -2162,6 +2187,27 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert applied.tolist() == [False, True]
     assert final_state.step_count.dtype == jnp.int32
     assert int(final_state.step_count) == 2**31 - 1
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(_linear_value_counter_case, id="linear-value"),
+        pytest.param(_linear_q_counter_case, id="linear-q"),
+        pytest.param(_nonlinear_value_counter_case, id="nonlinear-value"),
+        pytest.param(_nonlinear_q_counter_case, id="nonlinear-q"),
+    ],
+)
+def test_all_horde_actor_critic_updates_reject_negative_lifetime_counters(
+    factory: Callable[[], tuple[Any, CounterUpdate]],
+) -> None:
+    state, update = factory()
+    corrupted = state.replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+
+    for apply_update in (update, jax.jit(update)):
+        result = apply_update(corrupted, jnp.asarray(1.0, dtype=jnp.float32))
+        assert not bool(result.update_applied)
+        _assert_state_unchanged(result.state, corrupted)
 
 
 def test_array_runner_policies_align_with_actions() -> None:
