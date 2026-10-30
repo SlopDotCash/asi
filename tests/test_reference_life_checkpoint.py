@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import fcntl
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import struct
@@ -39,6 +41,38 @@ from tests._forager_matched_platform import HAS_RENAMEAT2, requires_renameat2
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 LIFECYCLE_ID = "prototype.0000001100000012"
+
+
+def _snapshot_after_regular_file_becomes_fifo(
+    source: str,
+    swap_started: Any,
+) -> None:
+    """Exercise the directory-entry/open race in an isolated process."""
+
+    real_open = checkpoint_module.os.open
+    swapped = False
+
+    def swap_before_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == "payload" and dir_fd is not None:
+            os.unlink(path, dir_fd=dir_fd)
+            os.mkfifo(path, dir_fd=dir_fd)
+            swapped = True
+            swap_started.set()
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    checkpoint_module.os.open = swap_before_open
+    try:
+        with pytest.raises(ValueError, match="non-regular"):
+            checkpoint_module._snapshot_checkpoint(Path(source))
+    finally:
+        checkpoint_module.os.open = real_open
 
 
 def test_switching_metric_schedule_is_constant_time_at_counter_horizon() -> None:
@@ -91,6 +125,25 @@ def test_checkpoint_validator_rejects_generation_and_zero_event_metric_forgery()
         forged = dataclasses.replace(state, metrics=forged_metrics)
         with pytest.raises(ValueError, match="zero-event phase"):
             runner.validate_checkpoint_state(forged)
+
+
+def test_checkpoint_decoder_requires_disabled_host_timing_policy() -> None:
+    config = _runner().config.config
+    runner, _prototype_config = checkpoint_module._build_runner(config)
+    accepted = runner.config.config["agent"]["config"].get("host_timing_metadata")
+
+    assert runner.config.config == config
+    assert accepted == "disabled_canonical_float32_positive_zero"
+
+    wall_clock = copy.deepcopy(config)
+    wall_clock["agent"]["config"]["host_timing_metadata"] = "wall_clock"
+    with pytest.raises(ValueError, match="host_timing_metadata is unsupported"):
+        checkpoint_module._build_runner(wall_clock)
+
+    missing = copy.deepcopy(config)
+    del missing["agent"]["config"]["host_timing_metadata"]
+    with pytest.raises(ValueError, match="agent.config fields do not match"):
+        checkpoint_module._build_runner(missing)
 
 
 def _agent_config() -> PrototypeAgentConfig:
@@ -260,6 +313,36 @@ def _rehash_bundle(path: Path) -> None:
     (path / "COMMITTED").write_text(f"{bundle_id}\n", encoding="ascii")
 
 
+def test_snapshot_rejects_same_size_source_mutation_during_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    source = source_root / "child.bin"
+    source.write_bytes(b"a" * (2 * 1024 * 1024))
+    real_read = os.read
+    mutated = False
+
+    def mutate_between_chunks(descriptor: int, count: int) -> bytes:
+        nonlocal mutated
+        chunk = real_read(descriptor, count)
+        if chunk and not mutated:
+            mutated = True
+            source.write_bytes(b"b" * (2 * 1024 * 1024))
+        return chunk
+
+    monkeypatch.setattr(checkpoint_module.os, "read", mutate_between_chunks)
+    snapshot: Path | None = None
+    try:
+        with pytest.raises(ValueError, match="changed while copied"):
+            snapshot = checkpoint_module._snapshot_checkpoint(source_root)
+    finally:
+        if snapshot is not None:
+            shutil.rmtree(snapshot)
+    assert mutated
+
+
 def test_restore_rejects_incomplete_tampered_unknown_and_symlink_bundles(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -346,6 +429,29 @@ def test_restore_rejects_incomplete_tampered_unknown_and_symlink_bundles(
         load_reference_life_checkpoint(symlinked)
 
 
+def test_snapshot_rejects_fifo_swap_without_blocking(tmp_path: Path) -> None:
+    source = tmp_path / "untrusted-checkpoint"
+    source.mkdir()
+    (source / "payload").write_bytes(b"regular before directory scan")
+
+    context = multiprocessing.get_context("spawn")
+    swap_started = context.Event()
+    process = context.Process(
+        target=_snapshot_after_regular_file_becomes_fifo,
+        args=(str(source), swap_started),
+    )
+    process.start()
+    assert swap_started.wait(timeout=15.0), "child did not reach the controlled file swap"
+    process.join(timeout=2.0)
+    exited_without_blocking = not process.is_alive()
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=5.0)
+
+    assert exited_without_blocking, "snapshot blocked while opening a raced FIFO"
+    assert process.exitcode == 0
+
+
 def test_restore_rejects_rehashed_duplicate_prototype_metadata_key(
     saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
     tmp_path: Path,
@@ -364,6 +470,28 @@ def test_restore_rejects_rehashed_duplicate_prototype_metadata_key(
 
     with pytest.raises(ValueError, match="duplicate key 'schema'"):
         load_reference_life_checkpoint(duplicate)
+
+
+def test_restore_bounds_committed_marker_before_reading_payload(
+    saved_case: tuple[ReferenceLifeRunner, ReferenceLifeState, ReferenceLifeState, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, _, checkpoint = saved_case
+    oversized = tmp_path / "oversized-committed-marker"
+    shutil.copytree(checkpoint, oversized)
+    (oversized / "COMMITTED").write_bytes(b"0" * 66)
+    real_read_bytes = Path.read_bytes
+
+    def reject_unbounded_marker_read(path: Path) -> bytes:
+        if path.name == "COMMITTED":
+            raise AssertionError("COMMITTED must be size-checked before its payload is read")
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_unbounded_marker_read)
+
+    with pytest.raises(ValueError, match="COMMITTED marker"):
+        load_reference_life_checkpoint(oversized)
 
 
 def test_publish_failure_and_existing_generation_leave_runner_unchanged(
