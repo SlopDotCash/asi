@@ -16,6 +16,7 @@ from types import MappingProxyType, ModuleType
 from typing import cast
 
 import jax
+import jaxlib
 import numpy as np
 
 _MAX_REGISTRY_ITEMS = 4096
@@ -178,6 +179,9 @@ def collect_development_identity(
     workload_registry: object,
     paper_registry: object,
 ) -> DevelopmentIdentity:
+    jaxlib_version = getattr(jaxlib, "__version__", None)
+    if type(jaxlib_version) is not str or not jaxlib_version:
+        raise RuntimeError("cannot identify the installed jaxlib runtime version")
     modules = {module.__name__: module for module in dependency_modules}
     modules[__name__] = sys.modules[__name__]
     dependencies = tuple(
@@ -194,7 +198,15 @@ def collect_development_identity(
             )
         )
     )
-    versions = tuple(sorted((("jax", jax.__version__), ("numpy", np.__version__))))
+    versions = tuple(
+        sorted(
+            (
+                ("jax", jax.__version__),
+                ("jaxlib", jaxlib_version),
+                ("numpy", np.__version__),
+            )
+        )
+    )
     return DevelopmentIdentity(
         lane_source_sha256=_module_sha256(lane_module),
         dependency_source_sha256=dependencies,

@@ -94,6 +94,17 @@ def _validated_step_size(name: str, value: object) -> float:
     return stored
 
 
+def _finite_nanmean_square(values: Array) -> Array:
+    """Keep a representable NaN-masked mean square across reduction overflow."""
+    direct = jnp.nanmean(values * values)
+    scale = jnp.max(jnp.where(jnp.isnan(values), 0.0, jnp.abs(values)))
+    safe_scale = jnp.where(scale > 0.0, scale, jnp.ones_like(scale))
+    normalized = values / safe_scale
+    stable = scale * (scale * jnp.nanmean(normalized * normalized))
+    reduction_only_overflow = jnp.isinf(direct) & jnp.all(~jnp.isinf(values))
+    return jnp.where(reduction_only_overflow, stable, direct)
+
+
 def _validate_hidden_sizes(value: object) -> tuple[int, ...]:
     if type(value) is not tuple:
         raise ValueError("hidden_sizes must be an actual tuple")
@@ -229,6 +240,28 @@ def _serialized_sequence(name: str, value: object) -> tuple[Any, ...]:
     return tuple(cast(list[Any] | tuple[Any, ...], value))
 
 
+def _serialized_world_model_payload(
+    name: str,
+    value: object,
+    *,
+    expected_type: str,
+) -> dict[str, Any]:
+    """Require the complete outer identity emitted by a world model."""
+    if not issubclass(type(value), Mapping):
+        raise ValueError(f"{name} must be an actual mapping")
+    try:
+        payload = dict(cast(Mapping[Any, Any], value))
+    except Exception as error:
+        raise ValueError(f"{name} must be a readable mapping") from error
+    if any(type(key) is not str for key in payload):
+        raise ValueError(f"{name} keys must be exact strings")
+    if set(payload) != {"type", "config", "learner"}:
+        raise ValueError(f"{name} fields do not match the serialized schema")
+    if type(payload["type"]) is not str or payload["type"] != expected_type:
+        raise ValueError(f"{name} type differs")
+    return payload
+
+
 def _require_scan_resource(name: str, *, float32_scalars: int, bool_scalars: int) -> None:
     if float32_scalars + bool_scalars > _INT32_MAX:
         raise ValueError(f"derived {name} scalar count must fit in signed int32")
@@ -274,10 +307,53 @@ def _float32_operand(
     shape: tuple[int, ...],
 ) -> Array:
     """Narrow one numeric operand while preserving its exact shape contract."""
-    array = jnp.asarray(value, dtype=jnp.float32)
+    array = jnp.asarray(value)
+    if jnp.issubdtype(array.dtype, jnp.complexfloating):
+        raise ValueError(f"{name} must have a real numeric dtype")
+    array = array.astype(jnp.float32)
     if array.shape != shape:
         raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
     return array
+
+
+def _discrete_action_operand(name: str, value: Array | float | int) -> Array:
+    """Preserve an integer action's exact domain while enforcing scalar shape."""
+    array = jnp.asarray(value)
+    if jnp.issubdtype(array.dtype, jnp.complexfloating):
+        raise ValueError(f"{name} must have a real numeric dtype")
+    if array.shape != ():
+        raise ValueError(f"{name} must have shape (), got {array.shape}")
+    return array
+
+
+def _discrete_action_sequence_operand(value: object, n_actions: int) -> Array:
+    """Preserve host integer validity before JAX applies its dtype policy."""
+    dtype = np.dtype(object.__getattribute__(value, "dtype"))
+    if not np.issubdtype(dtype, np.integer):
+        return jnp.asarray(value)
+
+    if not isinstance(value, (jax.Array, jax.core.Tracer)):
+        host = np.asarray(value)
+        if np.issubdtype(dtype, np.unsignedinteger):
+            host_valid = host < n_actions
+        else:
+            host_valid = (host >= 0) & (host < n_actions)
+        safe_host = np.full(host.shape, -1, dtype=np.int32)
+        safe_host[host_valid] = host[host_valid].astype(np.int32)
+        return jnp.asarray(safe_host)
+
+    raw = jnp.asarray(value)
+    if np.issubdtype(dtype, np.unsignedinteger):
+        if dtype.itemsize < 4:
+            raw = raw.astype(jnp.uint32)
+        valid = raw < jnp.asarray(n_actions, dtype=raw.dtype)
+    else:
+        if dtype.itemsize < 4:
+            raw = raw.astype(jnp.int32)
+        valid = (raw >= jnp.asarray(0, dtype=raw.dtype)) & (
+            raw < jnp.asarray(n_actions, dtype=raw.dtype)
+        )
+    return jnp.where(valid, raw.astype(jnp.int32), -1)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -659,7 +735,7 @@ class ActionConditionedWorldModel:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> ActionConditionedWorldModel:
+    def from_config(cls, config: Mapping[str, Any]) -> ActionConditionedWorldModel:
         """Reconstruct from :meth:`to_config` output.
 
         This restores constructor-level model hyperparameters. Optimizer,
@@ -672,8 +748,11 @@ class ActionConditionedWorldModel:
             optimizer_from_config,
         )
 
-        payload = dict(config)
-        payload.pop("type", None)
+        payload = _serialized_world_model_payload(
+            "ActionConditionedWorldModel config",
+            config,
+            expected_type=cls.__name__,
+        )
         model_config = ActionConditionedWorldModelConfig.from_config(payload["config"])
         learner_cfg = dict(payload["learner"])
         optimizer = optimizer_from_config(learner_cfg["optimizer"])
@@ -758,7 +837,7 @@ class ActionConditionedWorldModel:
     @functools.partial(jax.jit, static_argnums=(0,))
     def encode_action(self, action: Array) -> Array:
         """Return the action code, leaving invalid discrete inputs visible."""
-        action = _float32_operand("action", action, ())
+        action = _discrete_action_operand("action", action)
         safe_action, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
@@ -920,7 +999,7 @@ class ActionConditionedWorldModel:
         obs = _float32_operand(
             "observation", observation, (self._config.observation_dim,)
         )
-        action = _float32_operand("action", action, ())
+        action = _discrete_action_operand("action", action)
         action_arr, action_valid = safe_discrete_action(
             action,
             self._config.n_actions,
@@ -1075,7 +1154,7 @@ def run_action_conditioned_world_model_learning_loop(
         bool_scalars=num_steps,
     )
     observations = jnp.asarray(observations, dtype=jnp.float32)
-    actions = jnp.asarray(actions, dtype=jnp.float32)
+    actions = _discrete_action_sequence_operand(actions, model.config.n_actions)
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
     if discounts is None:
@@ -1336,7 +1415,7 @@ class OneStepWorldModel:
         }
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> OneStepWorldModel:
+    def from_config(cls, config: Mapping[str, Any]) -> OneStepWorldModel:
         """Reconstruct from :meth:`to_config` output."""
         from alberta_framework.core.normalizers import normalizer_from_config
         from alberta_framework.core.optimizers import (
@@ -1344,8 +1423,11 @@ class OneStepWorldModel:
             optimizer_from_config,
         )
 
-        payload = dict(config)
-        payload.pop("type", None)
+        payload = _serialized_world_model_payload(
+            "OneStepWorldModel config",
+            config,
+            expected_type=cls.__name__,
+        )
         model_config = WorldModelConfig.from_config(payload["config"])
         learner_cfg = dict(payload["learner"])
         optimizer = optimizer_from_config(learner_cfg["optimizer"])
@@ -1384,7 +1466,7 @@ class OneStepWorldModel:
     def encode_action(self, action: Array) -> Array:
         """Encode a discrete or vector action."""
         if self._config.n_actions is not None:
-            action = _float32_operand("action", action, ())
+            action = _discrete_action_operand("action", action)
             safe_action, action_valid = safe_discrete_action(
                 action,
                 self._config.n_actions,
@@ -1474,7 +1556,7 @@ class OneStepWorldModel:
             (self._config.observation_dim,),
         )
         if self._config.n_actions is not None:
-            action = _float32_operand("action", action, ())
+            action = _discrete_action_operand("action", action)
             safe_action, action_valid = safe_discrete_action(
                 action,
                 self._config.n_actions,
@@ -1500,8 +1582,8 @@ class OneStepWorldModel:
         reward_arr = reward
         next_observation_errors = prediction.next_observation - next_obs
         reward_error = prediction.reward - reward_arr
-        observation_mse = jnp.nanmean(next_observation_errors**2)
-        prediction_error = jnp.nanmean(learner_result.errors**2)
+        observation_mse = _finite_nanmean_square(next_observation_errors)
+        prediction_error = _finite_nanmean_square(learner_result.errors)
         candidate_state = WorldModelState(
             learner_state=learner_result.state,
             step_count=_saturating_increment(state.step_count),
@@ -1605,7 +1687,11 @@ def run_world_model_learning_loop(
         bool_scalars=num_steps,
     )
     observations = jnp.asarray(observations, dtype=jnp.float32)
-    actions = jnp.asarray(actions, dtype=jnp.float32)
+    actions = (
+        _discrete_action_sequence_operand(actions, model.config.n_actions)
+        if model.config.n_actions is not None
+        else jnp.asarray(actions, dtype=jnp.float32)
+    )
     rewards = jnp.asarray(rewards, dtype=jnp.float32)
     next_observations = jnp.asarray(next_observations, dtype=jnp.float32)
 

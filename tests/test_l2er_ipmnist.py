@@ -405,3 +405,42 @@ def test_protocol_pins_sources_and_records_material_differences() -> None:
     )
     assert L2ER_PROTOCOL["development_only"] is True
     assert L2ER_PROTOCOL["scientific_promotion_allowed"] is False
+
+
+def test_result_receipt_carries_exact_correct_counts_from_float32_task_means() -> None:
+    """The runner reports float32 per-task means; the receipt must sit on the lattice.
+
+    ``float32(53 / 100)`` is off the integer correct-count lattice by 3e-9 per
+    unit, four orders of magnitude beyond the validator's 64-ulp tolerance, so
+    every genuine multi-task receipt was rejected. The receipt now inverts the
+    means to exact counts.
+    """
+    config = IPMNISTConfig(
+        n_tasks=2, task_length=100, input_dim=2, hidden1=3, hidden2=2, n_classes=2
+    )
+    data_x = np.random.default_rng(5).normal(size=(200, 2)).astype(np.float32)
+    data_y = (data_x[:, 0] > 0).astype(np.int32)
+    result = run_screening_config(
+        data_x, data_y, screening_spec("l2er_combined"), seed=5, config=config
+    )
+    counts = [round(float(value) * 100) for value in result.per_task_accuracy]
+    assert any(count % 4 != 0 for count in counts), "fixture must leave the exact-float lattice"
+    receipt = l2er_development_result_payload(result, outcome="inconclusive")
+    metrics = receipt["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["mean_online_accuracy"] == sum(counts) / 200
+    validate_l2er_development_result(receipt)
+
+    off_lattice = ScreeningRunResult(
+        config_name="l2er_combined",
+        base_learner="upgd_w",
+        hyperparameters=dict(screening_spec("l2er_combined").hyperparameters),
+        seed=7,
+        config=config,
+        per_task_accuracy=np.asarray([0.6001, 0.5], dtype=np.float64),
+        per_task_loss=np.asarray([0.7, 0.6], dtype=np.float64),
+        per_task_plasticity=np.asarray([0.1, 0.2], dtype=np.float64),
+        wall_clock_seconds=1.5,
+    )
+    with pytest.raises(ValueError, match="float32 mean of correct flags"):
+        l2er_development_result_payload(off_lattice, outcome="inconclusive")
