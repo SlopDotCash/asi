@@ -384,6 +384,30 @@ def _all_integer_leaves_nonnegative(value: Any) -> Bool[Array, ""]:
     return valid
 
 
+def _float32_model_delta(weights: Array, observation: Array) -> Array:
+    """Return one next-state row that keeps large finite cancellation.
+
+    JIT rewrites ``weights @ observation`` into a GEMV. That GEMV turns an
+    exact cancelling pair of large finite products into a huge finite delta
+    and changes the selected option. A power-of-two scaled product sum
+    replaces that result. Eagerly, a direct product that already matches
+    stays bit for bit.
+    """
+
+    products = weights * observation
+    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
+    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
+    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
+    _, exponent = jnp.frexp(max_abs)
+    scaled_sum = jnp.sum(jnp.ldexp(products, -exponent), axis=-1)
+    stable = jnp.ldexp(scaled_sum, jnp.reshape(exponent, (-1,)))
+    direct = weights @ observation
+    gap = jnp.abs(direct - stable)
+    limit = jnp.maximum(jnp.abs(stable), jnp.asarray(1.0, dtype=jnp.float32))
+    use_stable = jnp.isfinite(stable) & (gap > limit * jnp.asarray(1024.0, dtype=jnp.float32))
+    return jnp.where(use_stable, stable, direct)
+
+
 def _array_has_contract(
     value: Any,
     shape: tuple[int, ...],
@@ -739,7 +763,7 @@ class OptionSearchControl:
                 models.next_state_weights[index],
                 jnp.zeros_like(models.next_state_weights[index]),
             )
-            predicted_next = observation + weights @ observation
+            predicted_next = observation + _float32_model_delta(weights, observation)
             next_values = self._agent.base_learner.predict(
                 learner_state,
                 predicted_next,
