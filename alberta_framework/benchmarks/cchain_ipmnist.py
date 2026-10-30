@@ -199,6 +199,15 @@ def _scalar_array(value: object, *, name: str, dtype: np.dtype[Any]) -> Array:
     return array
 
 
+def _stable_mean_square(values: Array) -> Array:
+    """Reduce a finite last axis without overflowing representable mean squares."""
+    scale = jnp.max(jnp.abs(values), axis=-1)
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    normalized = values / safe_scale[..., None]
+    rms = scale * jnp.sqrt(jnp.mean(jnp.square(normalized), axis=-1))
+    return jnp.square(rms)
+
+
 def _masked_reference_objective(
     params: dict[str, Array],
     snapshot_params: dict[str, Array],
@@ -220,9 +229,7 @@ def _masked_reference_objective(
         target_probabilities * (target_log_probabilities - current_log_probabilities),
         axis=-1,
     )
-    per_example_logit_mse = jnp.mean(
-        jnp.square(current_logits - target_logits), axis=-1
-    )
+    per_example_logit_mse = _stable_mean_square(current_logits - target_logits)
     mask = (
         jnp.arange(reference_examples.shape[0], dtype=jnp.int32) < reference_count
     ).astype(jnp.float32)

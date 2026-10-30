@@ -1197,6 +1197,58 @@ class TestSmokeRuns:
         assert np.all(result.per_task_plasticity <= 1.0)
 
 
+# The 44 arms outputs/ipmnist_screening/summary.json retains, pinned here so the
+# completeness check below cannot be redefined by editing the published summary.
+# shards/ also keeps explored arms that never entered the roster; only these arms
+# and their shards are required to be present and exact.
+RETAINED_CAMPAIGN_ROSTER: tuple[str, ...] = (
+    "sigma0_ndecay099",
+    "upgd_ema_norm",
+    "sigma0_gate_beta05",
+    "sigma0_eps1e6",
+    "sigma0_eps1e4",
+    "upgd_ema_norm_sigma0",
+    "sigma0_localgate",
+    "sigma0_gate_beta2",
+    "upgd_ema_norm_wd0005",
+    "sigma0_ndecay09999",
+    "upgd_ema_norm_lr0003",
+    "sgd_ema_norm",
+    "sigma0_hidden_norm",
+    "adamw_cbp_ema_norm",
+    "adamw_cbp_r3e4",
+    "adamw_cbp",
+    "adamw_cbp_m50",
+    "adamw_cbp_m200",
+    "adamw_cbp_noreset",
+    "adamw_cbp_r3e5",
+    "upgd_w_wd0005",
+    "upgd_l2init",
+    "upgd_idbd",
+    "upgd_w_control",
+    "upgd_alpha_utility",
+    "upgd_w_udecay099999",
+    "upgd_w_localgate",
+    "upgd_idbd_meta1e2",
+    "upgd_cbp",
+    "upgd_w_udecay0999",
+    "upgd_w_sigma005",
+    "upgd_ema_norm_lr003",
+    "guarded_cbp_adam",
+    "upgd_w_wclip_k2",
+    "upgd_w_wclip_k2_wd0",
+    "upgd_w_sigma02",
+    "upgd_w_wd002",
+    "upgd_w_fade_head",
+    "adamw_control",
+    "upgd_w_wclip_k1_wd0",
+    "upgd_w_sigma0",
+    "upgd_w_wclip_k1",
+    "upgd_autostep",
+    "upgd_w_idbd_swift",
+)
+
+
 class TestShardsAndMerge:
     def _make_shard(self, tmp_path, small_data, config_name, seed):
         x, y = small_data
@@ -2164,6 +2216,56 @@ class TestShardsAndMerge:
 
         with pytest.raises(ValueError, match="hyperparameters must exactly match"):
             validate_proxy([upgd, changed_path], tmp_path)
+
+    def test_current_stored_summary_reconstructs_from_retained_shards(self) -> None:
+        """The stored campaign summary must re-derive from the shards on disk.
+
+        ``summary.json`` is the published measurement record, and the champion
+        number quoted across the retained reports comes from it.  Its siblings
+        are pinned the same way (``frontier_results.json`` and the ceiling
+        summary), but the record itself was not: a drifted artifact or a
+        changed merge could pass unnoticed.  The retained roster is pinned in
+        this file, not read from the summary, so a coherently edited summary
+        (a dropped row plus a matching shard count) fails the completeness
+        check instead of redefining it.  Only the run stamp and the keys added
+        after this payload was written may differ.
+        """
+        campaign = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+        expected = json.loads((campaign / "summary.json").read_text(encoding="utf-8"))
+        retained = set(RETAINED_CAMPAIGN_ROSTER)
+        paths = []
+        shard_configs = []
+        for path in sorted((campaign / "shards").glob("*.json")):
+            shard = json.loads(path.read_text(encoding="utf-8"))
+            config_name = shard.get("config_name")
+            assert isinstance(config_name, str), f"shard {path.name} has no config_name"
+            if config_name in retained:
+                paths.append(path)
+                shard_configs.append(config_name)
+        # The directory also keeps shards of explored arms that never entered
+        # the roster; only the retained roster must be complete and exact here.
+        assert len(paths) == expected["n_shards"]
+        assert set(shard_configs) == retained
+
+        actual = merge_shards(
+            paths,
+            control_name=expected["control_name"],
+            slope_window=expected["slope_window"],
+        )
+
+        # Current code writes these two keys; the retained v1 payload predates
+        # them.  Assert the exact difference, so that a further new key has to
+        # be a deliberate decision here instead of a silent exemption.
+        assert set(actual) - set(expected) == {"environment", "noise_pool_steps"}
+        assert set(expected) - set(actual) == set()
+
+        actual.pop("environment")
+        actual.pop("noise_pool_steps")
+        # created_unix records when the campaign ran, not what it measured.
+        actual.pop("created_unix")
+        expected.pop("created_unix")
+
+        assert actual == expected
 
 
 class TestPoolConfirmation:
