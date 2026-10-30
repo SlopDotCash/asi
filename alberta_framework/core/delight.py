@@ -293,7 +293,11 @@ class GradientJoyConfig:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError(f"GradientJoyConfig has unsupported fields: {unknown}")
-        return cls(**payload)  # type: ignore[arg-type]
+        restored = cls(**payload)  # type: ignore[arg-type]
+        missing = sorted(allowed - set(payload))
+        if missing:
+            raise ValueError(f"GradientJoyConfig is missing required fields: {missing}")
+        return restored
 
 
 @chex.dataclass(frozen=True)
@@ -1926,7 +1930,13 @@ class DelightfulPolicyGradientConfig:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError(f"DelightfulPolicyGradientConfig has unsupported fields: {unknown}")
-        return cls(**payload)  # type: ignore[arg-type]
+        restored = cls(**payload)  # type: ignore[arg-type]
+        missing = sorted(allowed - set(payload))
+        if missing:
+            raise ValueError(
+                f"DelightfulPolicyGradientConfig is missing required fields: {missing}"
+            )
+        return restored
 
 
 @chex.dataclass(frozen=True)

@@ -3551,7 +3551,9 @@ def run_upgd_arrays(
         return result.state, result.metrics
 
     t0 = time.time()
-    final_state, metrics = jax.lax.scan(step_fn, state, (checked_obs, checked_targets))
+    scan_result = jax.lax.scan(step_fn, state, (checked_obs, checked_targets))
+    jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
+    final_state, metrics = scan_result
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
     return UPGDLearningResult(state=final_state, metrics=metrics)  # type: ignore[call-arg]
@@ -3609,9 +3611,11 @@ def run_upgd_loop[StreamStateT](
         return (result.state, new_s_state), result.metrics
 
     t0 = time.time()
-    (final_learner, _), metrics = jax.lax.scan(
+    scan_result = jax.lax.scan(
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
+    jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
+    (final_learner, _), metrics = scan_result
     elapsed = time.time() - t0
     final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
     return UPGDLearningResult(  # type: ignore[call-arg]

@@ -161,6 +161,32 @@ def test_gradient_decomposition_reconstructs_full_and_is_orthogonal() -> None:
         assert jnp.allclose(projection[name] + orthogonal[name], full[name], atol=1e-5)
 
 
+def test_gradient_decomposition_preserves_finite_wide_parallel_gradients() -> None:
+    task = {
+        name: jnp.full_like(value, 1.0e20)
+        for name, value in _params().items()
+    }
+    churn = {name: value for name, value in task.items()}
+
+    def decompose(
+        task_gradient: dict[str, jax.Array],
+        churn_gradient: dict[str, jax.Array],
+    ) -> tuple[dict[str, jax.Array], dict[str, jax.Array]]:
+        return (
+            cchain_gradient_component(
+                task_gradient, churn_gradient, component="projective"
+            ),
+            cchain_gradient_component(
+                task_gradient, churn_gradient, component="orthogonal"
+            ),
+        )
+
+    for projection, orthogonal in (decompose(task, churn), jax.jit(decompose)(task, churn)):
+        for name in task:
+            assert jnp.array_equal(projection[name], churn[name])
+            assert jnp.array_equal(orthogonal[name], jnp.zeros_like(churn[name]))
+
+
 def test_full_step_has_eager_jit_parity_and_updates_bounded_state() -> None:
     params = _params()
     spec = screening_spec("cchain_full")
