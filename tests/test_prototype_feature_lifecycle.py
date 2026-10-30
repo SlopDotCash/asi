@@ -518,6 +518,52 @@ def test_pair_gradient_pullback_matches_jax_autodiff_oracle() -> None:
     np.testing.assert_array_equal(stale.gradient, jnp.zeros_like(observation))
 
 
+def test_pair_gradient_pullback_preserves_representable_cancelling_sum() -> None:
+    config = dataclasses.replace(_config(), active_pair_slots=3)
+    lifecycle = PrototypeFeatureLifecycle(config)
+    state = lifecycle.init(jr.key(59))
+    float32_max = np.finfo(np.float32).max
+    observation = jnp.asarray([0.0, 1.0, 1.0, 1.0], dtype=jnp.float32)
+    augmented_gradient = jnp.asarray(
+        [0.0, 0.0, 0.0, 0.0, float32_max, float32_max, -float32_max],
+        dtype=jnp.float32,
+    )
+
+    eager = lifecycle.pullback_pair_gradient(
+        state,
+        observation,
+        augmented_gradient,
+        state.router_state.generation_count,
+        state.router_state.descriptors,
+    )
+    compiled = jax.jit(lifecycle.pullback_pair_gradient)(
+        state,
+        observation,
+        augmented_gradient,
+        state.router_state.generation_count,
+        state.router_state.descriptors,
+    )
+
+    expected = np.asarray([float32_max, 0.0, 0.0, 0.0], dtype=np.float32)
+    assert bool(eager.valid)
+    assert bool(compiled.valid)
+    np.testing.assert_array_equal(eager.gradient, expected)
+    np.testing.assert_array_equal(compiled.gradient, expected)
+
+    unrepresentable = lifecycle.pullback_pair_gradient(
+        state,
+        observation,
+        augmented_gradient.at[-1].set(float32_max),
+        state.router_state.generation_count,
+        state.router_state.descriptors,
+    )
+    assert not bool(unrepresentable.valid)
+    np.testing.assert_array_equal(
+        unrepresentable.gradient,
+        np.zeros((config.base_feature_dim,), dtype=np.float32),
+    )
+
+
 def test_descriptor_semantics_cannot_advance_ahead_of_generation() -> None:
     lifecycle = PrototypeFeatureLifecycle(_config())
     state = lifecycle.init(jr.key(6))

@@ -944,6 +944,25 @@ def _nonnegative_int32_sum_within(
     return valid
 
 
+def _scale_safe_pair_gradient_sum(
+    direct: Array,
+    left_indices: Array,
+    left_terms: Array,
+    right_indices: Array,
+    right_terms: Array,
+) -> Array:
+    """Accumulate finite pair-gradient terms without transient float32 overflow."""
+
+    scale = jnp.abs(direct)
+    scale = scale.at[left_indices].max(jnp.abs(left_terms))
+    scale = scale.at[right_indices].max(jnp.abs(right_terms))
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    scaled = direct / safe_scale
+    scaled = scaled.at[left_indices].add(left_terms / safe_scale[left_indices])
+    scaled = scaled.at[right_indices].add(right_terms / safe_scale[right_indices])
+    return scale * scaled
+
+
 class PrototypeFeatureLifecycle:
     """Standalone fixed-budget feature discovery and route transaction."""
 
@@ -1456,12 +1475,30 @@ class PrototypeFeatureLifecycle:
         safe_left = jnp.where(live, left, 0)
         safe_right = jnp.where(live, right, 0)
         pair_gradient = gradient[self._config.base_feature_dim :]
-        pulled = gradient[: self._config.base_feature_dim]
-        pulled = pulled.at[safe_left].add(
-            jnp.where(live, pair_gradient * raw[safe_right], 0.0)
+        left_terms = jnp.where(
+            live,
+            pair_gradient * raw[safe_right],
+            0.0,
         )
-        pulled = pulled.at[safe_right].add(
-            jnp.where(live, pair_gradient * raw[safe_left], 0.0)
+        right_terms = jnp.where(
+            live,
+            pair_gradient * raw[safe_left],
+            0.0,
+        )
+        pulled = gradient[: self._config.base_feature_dim]
+        pulled = pulled.at[safe_left].add(left_terms)
+        pulled = pulled.at[safe_right].add(right_terms)
+        pulled = jax.lax.cond(
+            jnp.all(jnp.isfinite(pulled)),
+            lambda _: pulled,
+            lambda _: _scale_safe_pair_gradient_sum(
+                gradient[: self._config.base_feature_dim],
+                safe_left,
+                left_terms,
+                safe_right,
+                right_terms,
+            ),
+            operand=None,
         )
         valid = (
             self.state_valid(state)
