@@ -259,7 +259,61 @@ def cchain_gradient_component(
         jnp.asarray(0.0, dtype=jnp.float32),
     )
     scale = dot / jnp.maximum(task_energy, epsilon)
-    projection = {name: scale * task[name] for name in _PARAMETER_KEYS}
+    direct_projection = {name: scale * task[name] for name in _PARAMETER_KEYS}
+
+    # A finite task gradient can have an unrepresentable squared norm.  In
+    # that case both ``dot`` and ``task_energy`` may be infinite even though
+    # the projection itself is representable.  Scale both gradients by exact
+    # powers of two and form the projection ratio in that bounded domain,
+    # without ever materializing either overflowing reduction.
+    task_peak = jnp.asarray(0.0, dtype=jnp.float32)
+    churn_peak = jnp.asarray(0.0, dtype=jnp.float32)
+    for name in sorted(_PARAMETER_KEYS):
+        task_peak = jnp.maximum(task_peak, jnp.max(jnp.abs(task[name])))
+        churn_peak = jnp.maximum(churn_peak, jnp.max(jnp.abs(churn[name])))
+    _, task_exponent = jnp.frexp(task_peak)
+    _, churn_exponent = jnp.frexp(churn_peak)
+    scaled_task = {
+        name: jnp.ldexp(task[name], -task_exponent) for name in _PARAMETER_KEYS
+    }
+    scaled_task_energy = sum(
+        (
+            jnp.vdot(scaled_task[name], scaled_task[name]).real
+            for name in sorted(_PARAMETER_KEYS)
+        ),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    safe_scaled_task_energy = jnp.where(
+        scaled_task_energy > 0.0,
+        scaled_task_energy,
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    scaled_churn = {
+        name: jnp.ldexp(churn[name], -churn_exponent)
+        for name in _PARAMETER_KEYS
+    }
+    scaled_dot = sum(
+        (
+            jnp.vdot(scaled_churn[name], scaled_task[name]).real
+            for name in sorted(_PARAMETER_KEYS)
+        ),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    scaled_projection_factor = scaled_dot / safe_scaled_task_energy
+    overflow_safe_projection = {
+        name: jnp.ldexp(
+            scaled_projection_factor * scaled_task[name], churn_exponent
+        )
+        for name in _PARAMETER_KEYS
+    }
+    projection = {
+        name: jnp.where(
+            jnp.isfinite(task_energy),
+            direct_projection[name],
+            overflow_safe_projection[name],
+        )
+        for name in _PARAMETER_KEYS
+    }
     if component == "projective":
         return projection
     return {name: churn[name] - projection[name] for name in _PARAMETER_KEYS}

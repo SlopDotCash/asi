@@ -1017,7 +1017,11 @@ def run_horde_learning_loop(
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, cumulants, next_observations))
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # Host-only clocks are narrowed while carried through the traced scan.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
 
     return HordeLearningResult(  # type: ignore[call-arg]
         state=final_state,

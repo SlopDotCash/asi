@@ -131,6 +131,20 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
     return cast(float, value) if preserve_builtin_float else narrowed
 
 
+def _importance_ratio_operand(value: object) -> Array:
+    """Reject exact host negatives before float32 narrowing can erase their sign."""
+    actual_type = type(value)
+    if any(actual_type is trusted_type for trusted_type in _TRUSTED_STEP_SIZE_TYPES):
+        try:
+            numerator, _, narrowed = round_real_to_float32_with_ratio(cast(Real, value))
+        except (FloatingPointError, OverflowError, TypeError, ValueError):
+            return jnp.asarray(value, dtype=jnp.float32)
+        if numerator < 0:
+            raise ValueError("rho must be non-negative")
+        return jnp.asarray(narrowed, dtype=jnp.float32)
+    return jnp.asarray(value, dtype=jnp.float32)
+
+
 _INT32_MAX = 2**31 - 1
 _CONFIG_FIELDS = {
     "type",
@@ -534,8 +548,8 @@ class StackedLinearHorde:
         cumulants = cumulant_source[self._cumulant_idx]  # (n_demons,)
         requested = ~jnp.isnan(cumulants)
         active = jnp.isfinite(cumulants)
-        rho_vec = jnp.broadcast_to(jnp.asarray(rho, dtype=jnp.float32), (cfg.n_demons,))
-        rho_valid = jnp.isfinite(rho_vec)
+        rho_vec = jnp.broadcast_to(_importance_ratio_operand(rho), (cfg.n_demons,))
+        rho_valid = jnp.isfinite(rho_vec) & (rho_vec >= 0.0)
 
         v = state.weights @ features  # (n_demons,)
         v_next = state.weights @ next_features
@@ -566,6 +580,7 @@ class StackedLinearHorde:
             jnp.all(jnp.isfinite(features))
             & jnp.all(jnp.isfinite(next_features))
             & source_weights_finite
+            & (state.step_count >= 0)
         )
         candidate_finite = jnp.all(jnp.isfinite(proposed_weights), axis=1) & jnp.all(
             jnp.isfinite(proposed_traces), axis=1
