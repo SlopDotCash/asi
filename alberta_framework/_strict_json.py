@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import stat
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -78,11 +80,47 @@ def _scan_json_nesting(text: str) -> None:
 
 
 def _decode_bounded_utf8_json(path: Path) -> str:
+    descriptor: int | None = None
     try:
-        with path.open("rb") as stream:
-            raw = stream.read(_MAX_JSON_BYTES + 1)
+        initial_metadata = os.lstat(path)
+        if not stat.S_ISREG(initial_metadata.st_mode):
+            raise ValueError("strict JSON input must be a regular file, not a symlink")
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+        descriptor = os.open(path, flags)
+        opened_metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened_metadata.st_mode)
+            or opened_metadata.st_dev != initial_metadata.st_dev
+            or opened_metadata.st_ino != initial_metadata.st_ino
+        ):
+            raise ValueError("strict JSON input must be one stable regular file")
+        if opened_metadata.st_size > _MAX_JSON_BYTES:
+            raise ValueError("JSON payload exceeds the byte limit")
+        chunks: list[bytes] = []
+        remaining = _MAX_JSON_BYTES + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        final_metadata = os.fstat(descriptor)
+        stable_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if len(raw) != opened_metadata.st_size or any(
+            getattr(opened_metadata, field) != getattr(final_metadata, field)
+            for field in stable_fields
+        ):
+            raise ValueError("strict JSON input changed while being read")
     except OSError:
         raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
     if len(raw) > _MAX_JSON_BYTES:
         raise ValueError("JSON payload exceeds the byte limit")
     try:
