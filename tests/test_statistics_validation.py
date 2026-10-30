@@ -36,6 +36,7 @@ import pytest
 from alberta_framework.utils.experiments import AggregatedResults
 from alberta_framework.utils.statistics import (
     SignificanceResult,
+    _holm_decisions,
     bonferroni_correction,
     bootstrap_ci,
     cohens_d,
@@ -951,6 +952,15 @@ class TestCorrections:
             False,
         ]
 
+    def test_holm_ties_keep_source_order_for_record_thresholds(self) -> None:
+        significant, thresholds = _holm_decisions(
+            [0.01, 0.01, 0.0, 0.0],
+            alpha=0.05,
+        )
+
+        assert significant == [True, True, True, True]
+        assert thresholds == pytest.approx([0.05 / 2, 0.05, 0.05 / 4, 0.05 / 3])
+
     def test_holm_strictly_more_powerful_fixture(self) -> None:
         # Bonferroni (alpha/3 = 0.0167) rejects only the first two;
         # Holm thresholds [0.0167, 0.025, 0.05] reject all three.
@@ -1274,6 +1284,33 @@ class TestPairwiseComparisons:
         result = pairwise_comparisons({"a": a, "b": b}, test="mann_whitney", window=1)
 
         assert result[("a", "b")].statistic == pytest.approx(0.0)
+
+    def test_final_window_mean_preserves_representable_finite_extremes(self) -> None:
+        maximum = np.finfo(np.float64).max
+        high = AggregatedResults(
+            config_name="high",
+            seeds=[0, 1, 2],
+            metric_arrays={"reward": np.full((3, 2), maximum, dtype=np.float64)},
+            summary={},
+        )
+        low = AggregatedResults(
+            config_name="low",
+            seeds=[10, 11, 12],
+            metric_arrays={"reward": np.full((3, 2), maximum / 2.0, dtype=np.float64)},
+            summary={},
+        )
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = pairwise_comparisons(
+                {"high": high, "low": low},
+                metric="reward",
+                test="mann_whitney",
+                window=2,
+            )[("high", "low")]
+
+        assert result.statistic == pytest.approx(9.0)
+        assert result.effect_size == pytest.approx(1.0)
 
     @staticmethod
     def _settled_trace(name: str, n_steps: int, transient: float) -> AggregatedResults:

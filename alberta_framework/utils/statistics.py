@@ -512,12 +512,13 @@ def ttest_comparison(
         pooled-standard-deviation Cohen's ``d``.
 
     Raises:
-        ValueError: If ``alpha`` is not a finite probability strictly between
-            0 and 1, scipy returns an invalid p-value, ``paired`` samples
-            differ in length or hold fewer than 2 pairs or are identical, or
-            an unpaired group is empty or has no positive pooled degrees of
-            freedom.
+        ValueError: If ``paired`` is not an exact bool, ``alpha`` is not a
+            finite probability strictly between 0 and 1, scipy returns an
+            invalid p-value, ``paired`` samples differ in length or hold fewer
+            than 2 pairs or are identical, or an unpaired group is empty or
+            has no positive pooled degrees of freedom.
     """
+    paired = _require_exact_bool("paired", paired)
     alpha_value = _require_alpha(alpha)
     a = _require_sample_vector(values_a, name="values_a")
     b = _require_sample_vector(values_b, name="values_b")
@@ -801,7 +802,10 @@ def _holm_decisions(
     """Return Holm decisions and each record's effective step-down threshold."""
 
     n_tests = len(p_values)
-    sorted_indices = np.argsort(p_values)
+    # Tied p-values have the same decision, but their rank-specific thresholds
+    # are retained in SignificanceResult.alpha. Keep those record identities
+    # deterministic by preserving the caller's order within a tie.
+    sorted_indices = np.argsort(p_values, kind="stable")
     significant = [False] * n_tests
     thresholds = [alpha] * n_tests
     stopped_threshold: float | None = None
@@ -920,9 +924,19 @@ def pairwise_comparisons(
     final_window = common_final_window(
         {name: arr.shape[1] for name, arr in metric_arrays.items()}, window, metric
     )
-    final_values: dict[str, NDArray[np.float64]] = {
-        name: np.mean(arr[:, -final_window:], axis=1) for name, arr in metric_arrays.items()
-    }
+    final_values: dict[str, NDArray[np.float64]] = {}
+    for name, arr in metric_arrays.items():
+        window_values = arr[:, -final_window:]
+        _require_finite_values(window_values, name=f"metric '{name}' final window")
+        scaled, scales = _scaled_float64_values(
+            window_values,
+            name=f"metric '{name}' final window",
+            axis=1,
+        )
+        with np.errstate(over="ignore", invalid="ignore"):
+            final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
+        _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
+        final_values[name] = final_mean
 
     if test not in ("ttest", "mann_whitney", "wilcoxon"):
         raise ValueError(f"Unknown test: {test}")

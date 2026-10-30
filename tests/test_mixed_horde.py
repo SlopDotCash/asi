@@ -569,6 +569,62 @@ class TestRunMixedHordeLearningLoop:
         )
         chex.assert_shape(result.td_errors, (num_steps, n_demons))
 
+    def test_scan_loop_preserves_initialized_host_clocks(self) -> None:
+        horde = MixedHorde(
+            horde_spec=create_horde_spec(
+                [
+                    _gamma0_demon("d0", 0),
+                    _temporal_demon("d1", 1, gamma=0.9, lamda=0.5),
+                ]
+            ),
+            hidden_sizes=(4,),
+            sparsity=0.0,
+        )
+        state = horde.init(3, jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        assert state.shared_state is not None
+        assert state.independent_state is not None
+        demon_states = tuple(
+            demon.replace(birth_timestamp=birth, uptime_s=uptime)
+            for demon in state.independent_state.demon_states
+        )
+        state = state.replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+            shared_state=state.shared_state.replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+            ),
+            independent_state=state.independent_state.replace(
+                birth_timestamp=birth,
+                uptime_s=uptime,
+                demon_states=demon_states,
+            ),
+        )
+        observations = jnp.zeros((2, 3), dtype=jnp.float32)
+        cumulants = jnp.zeros((2, 2), dtype=jnp.float32)
+        result = run_mixed_horde_learning_loop(
+            horde, state, observations, cumulants, observations
+        )
+        restored = result.state
+        assert restored.shared_state is not None
+        assert restored.independent_state is not None
+        clocks = (
+            restored,
+            restored.shared_state,
+            restored.independent_state,
+            restored.independent_state.demon_states[0],
+        )
+        for clock in clocks:
+            assert type(clock.birth_timestamp) is float
+            assert clock.birth_timestamp == birth
+            assert type(clock.uptime_s) is float
+        assert restored.uptime_s > uptime
+        assert restored.shared_state.uptime_s == uptime
+        assert restored.independent_state.uptime_s == uptime
+        assert restored.independent_state.demon_states[0].uptime_s == uptime
+
 
 # =============================================================================
 # Step3HordeConfig dispatch
