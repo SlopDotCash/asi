@@ -79,6 +79,10 @@ _GAUNTLET_LOOP_MAX_STEPS = NUM_SEGMENTS * 3000
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION = "threefry2x32"
+# JAX's currently supported scalar typed keys use either two uint32 words
+# (Threefry) or four (RBG/unsafe RBG). Config validation cannot know which key
+# a caller will pass to ``init``, so reserve the largest supported payload.
+_MAX_PRNG_KEY_NBYTES = 4 * 4
 
 
 def _skip_zero_scale(scale: Array | float, value: Array) -> Array:
@@ -113,6 +117,24 @@ _GAUNTLET_CONFIG_FIELDS = frozenset(
         "context_noise_std",
     }
 )
+
+
+def _configured_gauntlet_state_nbytes(relevant_dim: int, irrelevant_dim: int) -> int:
+    """Return the largest persistent byte count accepted by ``GauntletStream.init``."""
+    input_dim = relevant_dim + irrelevant_dim
+    weight_nbytes = 4 * 4 * input_dim
+    nonlinear_coefficient_nbytes = 4 * (relevant_dim // 2)
+    return _MAX_PRNG_KEY_NBYTES + 4 + weight_nbytes + nonlinear_coefficient_nbytes
+
+
+def _configured_lifetime_gauntlet_state_nbytes(
+    config: GauntletConfig,
+    *,
+    key_nbytes: int,
+) -> int:
+    """Return exact lifetime-state bytes without constructing its large arrays."""
+    weight_nbytes = 3 * 4 * config.input_dim
+    return key_nbytes + LIFETIME_GAUNTLET_CLOCK_NBYTES + weight_nbytes
 
 
 def _require_int(
@@ -308,6 +330,12 @@ class GauntletConfig:
             or self.segment_length < 1
         ):
             raise ValueError("segment_length must be positive")
+        state_nbytes = _configured_gauntlet_state_nbytes(
+            self.relevant_dim,
+            self.irrelevant_dim,
+        )
+        if state_nbytes > _INT32_MAX:
+            raise ValueError("gauntlet persistent state byte count must fit signed int32")
         for name in (
             "noise_std",
             "feature_std",
@@ -1471,7 +1499,15 @@ def best_fixed_alpha_errors(
         # over the finite steps, so a divergent-late candidate cannot "win"
         # with an undefined mean.
         n_bad = float(jnp.sum(~finite))
-        finite_mean = float(jnp.sum(jnp.where(finite, sq, 0.0)) / jnp.maximum(jnp.sum(finite), 1))
+        finite_values = jnp.where(finite, sq, 0.0)
+        finite_count = jnp.maximum(jnp.sum(finite), 1)
+        direct_mean = jnp.sum(finite_values) / finite_count
+        # Fall back to exact power-of-two scaling only when the ordinary sum
+        # overflows; large reciprocals can flush to zero on XLA:CPU.
+        _, exponent = jnp.frexp(jnp.max(finite_values, initial=0.0))
+        scaled_values = jnp.ldexp(finite_values, -exponent)
+        scaled_mean = jnp.ldexp(jnp.sum(scaled_values) / finite_count, exponent)
+        finite_mean = float(jnp.where(jnp.isfinite(direct_mean), direct_mean, scaled_mean))
         score = (n_bad, finite_mean)
         if best_sq is None or score < best_score:
             best_score = score
