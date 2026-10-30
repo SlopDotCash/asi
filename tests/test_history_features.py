@@ -458,6 +458,19 @@ class TestJitAndScan:
 
 
 class TestConfig:
+    @pytest.mark.parametrize("marker", [None, "WorkingMemoryFeaturizer"])
+    def test_from_config_rejects_missing_or_foreign_type_marker(
+        self, marker: str | None
+    ) -> None:
+        payload = HistoryFeatureExtractor(raw_dim=2).to_config()
+        if marker is None:
+            del payload["type"]
+        else:
+            payload["type"] = marker
+
+        with pytest.raises(ValueError, match="type"):
+            HistoryFeatureExtractor.from_config(payload)
+
     def test_roundtrip(self) -> None:
         original = HistoryFeatureExtractor(
             raw_dim=5,
