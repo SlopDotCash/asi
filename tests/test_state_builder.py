@@ -31,6 +31,8 @@ from alberta_framework.core.state_builder import (
     StateBuilderBudget,
     StateBuilderConfig,
     StateBuilderLearningProposal,
+    _finite_product_matvec,
+    _prefer_scaled_sum,
     load_state_builder_checkpoint,
     replace_state_builder_learning_proposal_update,
     save_state_builder_checkpoint,
@@ -83,6 +85,67 @@ def test_builders_satisfy_runtime_contract_and_exact_state_budget(
     assert budget.state_scalars == _state_scalar_count(state)
     assert budget.state_bytes == 4 * budget.state_scalars
     assert budget.trainable_scalars <= budget.state_scalars
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        IdentityStateBuilder(IdentityStateBuilderConfig(observation_dim=2)),
+        FixedTraceStateBuilder(FixedTraceStateBuilderConfig(observation_dim=2, n_actions=2)),
+        OnlineGatedStateBuilder(
+            OnlineGatedStateBuilderConfig(
+                observation_dim=2,
+                n_actions=2,
+                hidden_dim=2,
+            )
+        ),
+    ],
+    ids=("identity", "fixed-trace", "online-gated"),
+)
+@pytest.mark.parametrize("entry_point", ["encode", "update"])
+@pytest.mark.parametrize("bad_shape", [(1, 2), (2, 1)])
+def test_state_builders_reject_wrong_shaped_observations(
+    builder: StateBuilder[object],
+    entry_point: str,
+    bad_shape: tuple[int, int],
+) -> None:
+    """A batch or column axis must not be flattened into the feature axis."""
+    state = builder.init(jr.key(0))
+    observation = jnp.ones(bad_shape, dtype=jnp.float32)
+
+    with pytest.raises(
+        ValueError,
+        match=r"raw_observation must have shape \(2,\)",
+    ):
+        if entry_point == "encode":
+            builder.encode(state, observation)
+        else:
+            builder.update(state, observation, -1, 0.0, 1.0)
+
+
+@pytest.mark.parametrize("bad_shape", [(1, 2), (2, 1)])
+def test_online_gated_event_rejects_wrong_shaped_observations(
+    bad_shape: tuple[int, int],
+) -> None:
+    """The recurrent event boundary must reject before concatenating fields."""
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_dim=2,
+        )
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"raw_observation must have shape \(2,\)",
+    ):
+        builder._event(
+            jnp.ones(bad_shape, dtype=jnp.float32),
+            -1,
+            0.0,
+            1.0,
+        )
 
 
 def test_identity_is_observation_only_and_encode_is_pure() -> None:
@@ -183,6 +246,179 @@ def test_fixed_trace_episode_reset_clears_memory_but_preserves_event_count() -> 
     restarted_state, _ = builder.start(reset_state, jnp.asarray([-0.5, 0.75]))
     assert int(restarted_state.step_count) == 3
     assert bool(jnp.any(restarted_state.observation_traces != 0.0))
+
+
+@pytest.mark.parametrize(
+    "scale",
+    [
+        pytest.param(1.5e19, id="product-2.25e38-residue-5e30"),
+        pytest.param(1e6, id="product-1e12-residue-4096"),
+        pytest.param(1.1e5, id="product-1.21e10-residue-256"),
+        pytest.param(3.3e4, id="product-1.089e9-residue-64"),
+    ],
+)
+def test_online_gated_update_keeps_a_cancelling_finite_gate_row(scale: float) -> None:
+    """A cancelling finite gate row must not collapse the next hidden state.
+
+    The compiled row dot leaves the float32 rounding error of one product as
+    the row sum; below 1024 in magnitude that residue still saturates the gate.
+    """
+
+    scale_array = jnp.asarray(scale, dtype=jnp.float32)
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(observation_dim=1, n_actions=0, hidden_dim=1)
+    )
+    state = builder.init(jr.key(0))
+    parameters = jnp.zeros((builder.config.parameter_count(),), dtype=jnp.float32)
+    parameters = parameters.at[0].set(scale_array).at[1].set(-scale_array).at[7].set(1.0)
+    state = state.replace(parameters=parameters)
+
+    new_state, representation = builder.update(
+        state,
+        jnp.asarray([scale_array], dtype=jnp.float32),
+        -1,
+        scale_array,
+        0.0,
+    )
+
+    expected_hidden = jnp.tanh(jnp.asarray(1.0, dtype=jnp.float32)) * jnp.asarray(
+        0.5, dtype=jnp.float32
+    )
+    np.testing.assert_array_equal(np.asarray(new_state.hidden), np.asarray(expected_hidden))
+    np.testing.assert_array_equal(
+        np.asarray(representation[1:]),
+        np.asarray(expected_hidden),
+    )
+    assert int(new_state.step_count) == 1
+
+
+def test_prefer_scaled_sum_is_symmetric_and_scale_aware() -> None:
+    """The guard rejects a compiled product that is far above, far below, or non-finite."""
+
+    f32 = lambda value: jnp.asarray(value, dtype=jnp.float32)  # noqa: E731
+    residue = f32(2.0**-24)
+
+    # A cancellation residue over an exact zero sum, at any magnitude once scaled.
+    assert bool(_prefer_scaled_sum(residue, f32(0.0)))
+    assert bool(_prefer_scaled_sum(-residue, f32(0.0)))
+    # A zeroed compiled product against a large finite sum: the other direction.
+    assert bool(_prefer_scaled_sum(f32(0.0), f32(0.75)))
+    assert bool(_prefer_scaled_sum(f32(0.75) / f32(4096.0), f32(0.75)))
+    # A non-finite compiled product with a finite sum is replaced.
+    assert bool(_prefer_scaled_sum(f32(jnp.inf), f32(0.75)))
+    assert bool(_prefer_scaled_sum(f32(-jnp.inf), f32(0.75)))
+    # Agreement to within the bound keeps the compiled product bit for bit.
+    assert not bool(_prefer_scaled_sum(f32(0.75), f32(0.75)))
+    assert not bool(_prefer_scaled_sum(f32(0.75) + residue, f32(0.75)))
+    assert not bool(_prefer_scaled_sum(f32(0.75) * f32(100.0), f32(0.75)))
+    assert not bool(_prefer_scaled_sum(f32(0.0), f32(0.0)))
+    # A non-finite scaled sum never wins, and a NaN compiled product is kept.
+    assert not bool(_prefer_scaled_sum(f32(0.75), f32(jnp.inf)))
+    assert not bool(_prefer_scaled_sum(f32(0.75), f32(jnp.nan)))
+    assert not bool(_prefer_scaled_sum(f32(jnp.nan), f32(0.75)))
+    # Elementwise over a row vector, and the row scale cannot overflow the threshold.
+    rows = _prefer_scaled_sum(f32([residue, 0.0, 3.0, 0.75]), f32([0.0, 0.75, 3.0, 0.75]))
+    np.testing.assert_array_equal(np.asarray(rows), np.asarray([True, True, False, False]))
+
+
+def test_finite_product_matvec_rescues_an_overflowed_running_sum() -> None:
+    """A direct product that overflowed while the exact sum is finite is replaced."""
+
+    matrix = jnp.asarray([[3e38, 3e38, -3e38]], dtype=jnp.float32)
+    vector = jnp.ones((3,), dtype=jnp.float32)
+
+    assert not bool(jnp.isfinite(matrix @ vector)[0])
+    result = _finite_product_matvec(matrix, vector)
+    compiled = jax.jit(_finite_product_matvec)(matrix, vector)
+
+    np.testing.assert_array_equal(np.asarray(result), np.asarray([3e38], dtype=np.float32))
+    np.testing.assert_array_equal(np.asarray(compiled), np.asarray(result))
+
+
+def test_finite_product_matvec_handles_batched_matrices() -> None:
+    """Leading batch dimensions keep one exponent per row."""
+
+    scale = jnp.asarray(1.5e19, dtype=jnp.float32)
+    ordinary = jnp.asarray(
+        [[[0.5, -0.25, 2.0], [1.5, 0.75, -0.125]], [[-3.0, 0.5, 1.0], [0.25, 0.25, 0.25]]],
+        dtype=jnp.float32,
+    )
+    matrix = ordinary.at[1, 0].set(jnp.asarray([scale, -scale, 0.0], dtype=jnp.float32))
+    vector = jnp.asarray([scale, scale, 0.0], dtype=jnp.float32)
+
+    result = _finite_product_matvec(matrix, vector)
+    compiled = jax.jit(_finite_product_matvec)(matrix, vector)
+
+    assert result.shape == (2, 2)
+    expected = jnp.stack([matrix[0] @ vector, matrix[1] @ vector]).at[1, 0].set(0.0)
+    np.testing.assert_array_equal(np.asarray(result), np.asarray(expected))
+    np.testing.assert_array_equal(np.asarray(compiled), np.asarray(expected))
+    assert float(result[1, 0]) == 0.0
+
+
+def test_finite_product_matvec_preserves_a_legitimate_near_cancellation() -> None:
+    """Rounded opposite products must not erase a real finite row sum."""
+
+    matrix = jnp.asarray([[-3764683.75, 4350948.0]], dtype=jnp.float32)
+    vector = jnp.asarray([3.1415927410125732, 2.7182817459106445], dtype=jnp.float32)
+    reference = float(
+        np.asarray(matrix, dtype=np.float64)[0] @ np.asarray(vector, dtype=np.float64)
+    )
+
+    result = _finite_product_matvec(matrix, vector)
+    compiled = jax.jit(_finite_product_matvec)(matrix, vector)
+
+    for observed in (result, compiled):
+        value = float(observed[0])
+        assert np.signbit(value) == np.signbit(reference)
+        assert abs(value - reference) < abs(reference)
+
+
+@pytest.mark.parametrize("shape", [(1, 3), (3, 6), (8, 20)])
+@pytest.mark.parametrize("scale", [1e-3, 1.0, 1e5, 1e15])
+def test_finite_product_matvec_keeps_ordinary_rows_bit_for_bit(
+    shape: tuple[int, int], scale: float
+) -> None:
+    """Ordinary random rows return the compiled product unchanged, eagerly and compiled."""
+
+    rows, cols = shape
+    key = jr.key(rows * 1000 + cols)
+    compiled = jax.jit(_finite_product_matvec)
+    for _ in range(50):
+        key, matrix_key, vector_key = jr.split(key, 3)
+        matrix = jr.normal(matrix_key, (rows, cols), dtype=jnp.float32) * scale
+        vector = jr.normal(vector_key, (cols,), dtype=jnp.float32) * scale
+        direct = matrix @ vector
+        np.testing.assert_array_equal(
+            np.asarray(_finite_product_matvec(matrix, vector)), np.asarray(direct)
+        )
+        np.testing.assert_array_equal(np.asarray(compiled(matrix, vector)), np.asarray(direct))
+
+
+@pytest.mark.parametrize(
+    ("weight", "observation"),
+    [(1e19, 1e19), (1e4, 1e34), (1.5e19, 1.5e19), (3e4, 1e34)],
+)
+def test_online_gated_update_keeps_a_large_finite_gate_product(
+    weight: float, observation: float
+) -> None:
+    """A finite gate product above 2**126 must saturate the gate, not zero it."""
+
+    builder = OnlineGatedStateBuilder(
+        OnlineGatedStateBuilderConfig(observation_dim=1, n_actions=0, hidden_dim=1)
+    )
+    state = builder.init(jr.key(0))
+    parameters = jnp.zeros((builder.config.parameter_count(),), dtype=jnp.float32)
+    parameters = parameters.at[0].set(weight).at[7].set(1.0)
+    state = state.replace(parameters=parameters)
+    obs = jnp.asarray(observation, dtype=jnp.float32)
+
+    new_state, representation = builder.update(state, jnp.asarray([obs]), -1, obs, 0.0)
+
+    expected_hidden = jnp.tanh(jnp.asarray(1.0, dtype=jnp.float32))
+    np.testing.assert_array_equal(np.asarray(new_state.hidden), np.asarray([expected_hidden]))
+    assert bool(jnp.all(jnp.isfinite(representation)))
+    assert int(new_state.step_count) == 1
 
 
 def test_online_gated_builder_updates_recurrent_parameters_from_delayed_gradient() -> None:

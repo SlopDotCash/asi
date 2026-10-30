@@ -8300,17 +8300,10 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
     # 0.8997; a refining identifier rides the upper envelope.  The first
-    # two arms below are the two 200-task/20-seed CONFIRMED members of
-    # the family (identmap_confirm_r1/ and identmap_star_confirm_r1/);
-    # the third is a registered 60-task screen of the gated chain's next
-    # head axis: the RLS head's initial/reset ridge lowered to 0.1 on
-    # the gated idet003_s0031640625 best (wave_identmap50_r_idet003_
-    # s0031640625_r01/), the first ridge cell measured at lambda 1.0,
-    # where the head P matrix is nonincreasing PSD and the lambda-0.999
-    # wind-up collapse (negative result #10) cannot recur; the screened
-    # intermediates (identmap200 single-shot, identmap100_r) and the
-    # round-2 rejections (identmap25_r, identmap50_fast — negative result
-    # #22) are deregistered but retained in the ledger and pinned outputs.
+    # two arms below are the two 200-task/20-seed CONFIRMED members of the
+    # family; the remaining arms are registered 60-task gated-chain screens.
+    # Screened intermediates and round-2 rejections are deregistered but
+    # retained in the ledger and pinned outputs.
     # ident_match_at=0 delegates verbatim to the incumbent factory
     # (bit-exact reduction, pinned by tests).
     for ident_name, ident_overrides, ident_extra in (
@@ -8332,23 +8325,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
         ),
         (
+            "rls_head_resid_identmap50_r_idet003_s005625",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.005625},
+            "the gated idet003 composition with residual body step 0.005625",
+        ),
+        (
             "rls_head_resid_identmap50_r_idet003_s0031640625_r01",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
              "ident_match_at": 50.0, "ident_match2": 200.0,
              "ident_match3": 2000.0, "ident_reset_frac": 0.03,
              "step_size": 0.0031640625, "rls_ridge_init": 0.1},
-            "the gated idet003_s0031640625 composition (identmap50_r"
-            " schedule 50/200/2000, utility gate kept, identifier trigger"
-            " 0.03, body step 0.0031640625 — the gated chain's best"
-            " measured screen, PR #3120) with the RLS head's initial and"
-            " reset ridge lowered 1.0 -> 0.1: P0 becomes 10*I, so earliest"
-            " and post-reset gains rise ~10x and the head converges faster"
-            " to each task's least-squares solution — the within-task"
-            " convergence residue negative result #22 names as the family's"
-            " remaining headroom; the ridge-star collapse (negative result"
-            " #10) was measured at lambda 0.999 under forgetting wind-up, a"
-            " mechanism absent at lambda 1.0 (P nonincreasing PSD, trace <="
-            " n/ridge = 1500, far below the 1e4 cap)",
+            "the gated idet003_s0031640625 composition with initial/reset "
+            "RLS head ridge lowered from 1.0 to 0.1",
         ),
     ):
         specs.append(
@@ -10137,6 +10128,33 @@ class ScreeningRunResult:
             object.__setattr__(self, "mechanism_diagnostics", normalized_diagnostics)
 
 
+def _exact_correct_counts(per_task_accuracy: object, task_length: int) -> tuple[int, ...]:
+    """Invert float32 per-task accuracy means back to their integer correct counts.
+
+    The runner reports each task's online accuracy as the float32 mean of 0/1
+    correct flags, i.e. ``float32(count / task_length)``, whose rounding error
+    is far larger than the strict integer-lattice tolerance the L2-ER receipt
+    validator applies to ``mean_online_accuracy * observations``. Recover the
+    exact count so the receipt carries the lattice value itself.
+    """
+    # Four float32 half-ulps at 1.0 bound the runner's rounding; the count
+    # spacing 1 / task_length must exceed twice that so the inversion is unique.
+    tolerance = 4.0 * 2.0**-24
+    if task_length <= 0 or 1.0 / task_length <= 2.0 * tolerance:
+        raise ValueError("task_length is too large to invert float32 per-task accuracy")
+    counts: list[int] = []
+    for value in np.asarray(per_task_accuracy, dtype=np.float64).tolist():
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("per-task accuracy must lie in [0, 1]")
+        count = round(value * task_length)
+        if abs(value - count / task_length) > tolerance:
+            raise ValueError(
+                "per-task accuracy is not a float32 mean of correct flags over task_length"
+            )
+        counts.append(count)
+    return tuple(counts)
+
+
 def l2er_development_result_payload(
     result: ScreeningRunResult, *, outcome: str
 ) -> dict[str, object]:
@@ -10160,6 +10178,9 @@ def l2er_development_result_payload(
         + config.n_classes
     )
     persistent_bytes = 4 * (parameter_count + er_batch_size * config.input_dim + 1) + 1
+    correct_counts = _exact_correct_counts(result.per_task_accuracy, config.task_length)
+    if len(correct_counts) != config.n_tasks:
+        raise ValueError("per-task accuracy must report exactly n_tasks entries")
     payload: dict[str, object] = {
         "schema": L2ER_RESULT_SCHEMA,
         "comparison_id": L2ER_COMPARISON_ID,
@@ -10181,7 +10202,7 @@ def l2er_development_result_payload(
         "allowed_task_information": ["current_example_label"],
         "hyperparameters": dict(spec.hyperparameters),
         "metrics": {
-            "mean_online_accuracy": float(np.mean(result.per_task_accuracy)),
+            "mean_online_accuracy": sum(correct_counts) / observations,
             "mean_loss": float(np.mean(result.per_task_loss)),
             "mean_plasticity": float(np.mean(result.per_task_plasticity)),
         },

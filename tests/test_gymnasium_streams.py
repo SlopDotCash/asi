@@ -265,6 +265,35 @@ def test_runtime_values_must_match_declared_flattened_shapes_and_be_finite() -> 
         _flatten_action(np.asarray((0.0, np.inf), dtype=np.float32), box)
 
 
+@pytest.mark.parametrize(
+    ("space", "outside"),
+    [
+        (
+            gymnasium.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32),
+            np.asarray((0.0, 2.0), dtype=np.float32),
+        ),
+        (gymnasium.spaces.Discrete(3, start=4), 3),
+        (
+            gymnasium.spaces.MultiDiscrete(
+                np.asarray((2, 3)),
+                start=np.asarray((4, 7)),
+            ),
+            np.asarray((6, 7)),
+        ),
+    ],
+)
+def test_runtime_values_must_belong_to_declared_space(
+    space: gymnasium.spaces.Space[object],
+    outside: object,
+) -> None:
+    assert not space.contains(outside)
+
+    with pytest.raises(ValueError, match="observation.*declared space"):
+        _flatten_observation(outside, space)
+    with pytest.raises(ValueError, match="action.*declared space"):
+        _flatten_action(outside, space)
+
+
 def test_runtime_shape_metadata_rejects_before_jax_conversion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

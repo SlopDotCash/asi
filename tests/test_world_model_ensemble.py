@@ -141,10 +141,37 @@ def test_config_and_ensemble_round_trip_are_strict() -> None:
     with pytest.raises(ValueError, match="not accepted scientific evidence"):
         WorldModelEnsembleConfig.from_config(bad)
 
-    with pytest.raises(ValueError, match="keys"):
+    with pytest.raises(ValueError, match="fields"):
         WorldModelEnsemble.from_config(
             {"type": "WorldModelEnsemble", "config": config.to_config(), "extra": 1}
         )
+
+    incomplete_nested = config.to_config()
+    incomplete_nested["signal_estimator"].pop("change_temperature")
+    with pytest.raises(ValueError, match="serialized schema"):
+        WorldModelEnsembleConfig.from_config(incomplete_nested)
+
+
+@pytest.mark.parametrize(
+    "missing_field",
+    ("type", "development_only", "accepted_scientific_evidence"),
+)
+def test_config_restore_rejects_incomplete_identity_and_policy(
+    missing_field: str,
+) -> None:
+    payload = _config().to_config()
+    payload.pop(missing_field)
+
+    with pytest.raises(ValueError, match="fields"):
+        WorldModelEnsembleConfig.from_config(payload)
+
+
+def test_ensemble_restore_requires_its_construction_type() -> None:
+    payload = WorldModelEnsemble(_config()).to_config()
+    payload.pop("type")
+
+    with pytest.raises(ValueError, match="fields"):
+        WorldModelEnsemble.from_config(payload)
 
 
 @pytest.mark.parametrize(
