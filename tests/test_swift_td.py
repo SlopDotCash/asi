@@ -204,8 +204,10 @@ class TestSwiftTDInit:
         assert state.meta_step_size == 0.0
 
     def test_config_factory_rejects_nonfinite_swifttd_values(self):
+        config = SwiftTD().to_config()
+        config["initial_step_size"] = math.nan
         with pytest.raises(ValueError, match="initial_step_size"):
-            optimizer_from_config({"type": "SwiftTD", "initial_step_size": math.nan})
+            optimizer_from_config(config)
 
     def test_update_returns_correct_shapes(self):
         optimizer = SwiftTD(initial_step_size=0.01)
@@ -734,6 +736,56 @@ def test_swift_td_out_of_range_discount_rolls_back(gamma: float) -> None:
     chex.assert_trees_all_equal(result.bias_delta, jnp.zeros_like(result.bias_delta))
     for value in result.metrics.values():
         chex.assert_trees_all_equal(value, jnp.zeros_like(value))
+
+
+@pytest.mark.parametrize("compiled", (False, True))
+def test_swift_td_preserves_finite_wide_step_size_mean(compiled: bool) -> None:
+    optimizer = SwiftTD(
+        initial_step_size=2e38,
+        meta_step_size=0.0,
+        eta=2e38,
+        eta_min=1e-7,
+    )
+    state = optimizer.init(2)
+    update = jax.jit(optimizer.update) if compiled else optimizer.update
+
+    result = update(
+        state,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    expected = np.mean(
+        np.asarray(jnp.exp(result.new_state.log_step_sizes[:-1]), dtype=np.float64)
+    )
+    assert np.isfinite(result.metrics["mean_step_size"])
+    np.testing.assert_allclose(result.metrics["mean_step_size"], expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("compiled", (False, True))
+def test_swift_td_preserves_finite_wide_eligibility_mean(compiled: bool) -> None:
+    optimizer = SwiftTD(initial_step_size=0.01, meta_step_size=0.0, trace_decay=1.0)
+    state = optimizer.init(2).replace(
+        eligibility_traces=jnp.asarray([2e38, 2e38, 0.0], dtype=jnp.float32)
+    )
+    update = jax.jit(optimizer.update) if compiled else optimizer.update
+
+    result = update(
+        state,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    assert np.isfinite(result.metrics["mean_eligibility_trace"])
+    np.testing.assert_allclose(
+        result.metrics["mean_eligibility_trace"], np.float32(2e38), rtol=1e-6
+    )
 
 
 def test_step_size_decay_clamped_to_eta_min_prevents_underflow() -> None:

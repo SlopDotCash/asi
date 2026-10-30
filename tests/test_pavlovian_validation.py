@@ -244,3 +244,15 @@ def test_pavlovian_valid_construction_and_jit() -> None:
     ts, _ = stream.step(state, jnp.array(0))
     assert ts.observation.shape == (3,)
     assert ts.target.shape == (1,)
+
+
+def test_pavlovian_requires_typed_threefry_keys_at_every_boundary() -> None:
+    stream = _stream()
+    rbg_key = jr.key(0, impl="rbg")
+
+    with pytest.raises(TypeError, match="typed scalar threefry2x32 key"):
+        stream.init(rbg_key)
+
+    invalid_state = stream.init(jr.key(0)).replace(key=rbg_key)
+    with pytest.raises(TypeError, match="typed scalar threefry2x32 key"):
+        stream.step(invalid_state, jnp.asarray(0, dtype=jnp.int32))
