@@ -248,6 +248,52 @@ def test_hidden_ar2_target_depends_on_hidden():
     ), "target must depend on the hidden block"
 
 
+def test_hidden_ar2_cancelling_visible_channels_keep_a_finite_target():
+    """A finite visible block whose direct sum overflows keeps the real total.
+
+    Four channels of magnitude ``2e38`` with opposite signs have a real sum
+    of zero.  ``jnp.sum`` returns ``inf`` because ``2e38 + 2e38`` leaves the
+    float32 range.  The public target must stay at zero.
+    """
+    stream = HiddenStateAR2Stream(
+        feature_dim=6,
+        visible_dim=4,
+        phi1=1.0,
+        phi2=0.0,
+        innovation_std=0.0,
+        nonlinear_coeff=1.0,
+        target_noise_std=0.0,
+    )
+    state = stream.init(jr.key(0))
+    channels = jnp.array(
+        [2.0e38, 2.0e38, -2.0e38, -2.0e38, 0.0, 0.0],
+        dtype=jnp.float32,
+    )
+    timestep, _new_state = stream.step(
+        state.replace(  # type: ignore[attr-defined]
+            x_prev=channels,
+            x_prev2=jnp.zeros_like(channels),
+        ),
+        jnp.array(0),
+    )
+    assert jnp.array_equal(timestep.observation, channels)
+    assert float(timestep.target[0]) == 0.0
+
+    ordinary = jnp.array(
+        [0.25, -0.5, 0.125, 1.0, 3.0, -4.0],
+        dtype=jnp.float32,
+    )
+    ordinary_step, _ordinary_state = stream.step(
+        state.replace(  # type: ignore[attr-defined]
+            x_prev=ordinary,
+            x_prev2=jnp.zeros_like(ordinary),
+        ),
+        jnp.array(0),
+    )
+    expected = jnp.sum(ordinary[:4]) + ordinary[4] * ordinary[5]
+    assert jnp.array_equal(ordinary_step.target, jnp.atleast_1d(expected))
+
+
 def test_hidden_ar2_state_propagates_ar2():
     """``x_prev`` advances to the new ``x_t`` and ``x_prev2`` advances to old
     ``x_prev`` after each step (AR(2) shift register)."""

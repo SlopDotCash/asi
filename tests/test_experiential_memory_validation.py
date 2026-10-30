@@ -342,6 +342,48 @@ def test_experiential_memory_exact_serialized_boundaries() -> None:
         ExperientialMemory.from_config({**outer, "config": HostileDict(payload)})
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "distance_scale",
+        "min_similarity",
+        "min_effective_reliability",
+        "max_uncertainty",
+        "max_safety_cost",
+        "staleness_scale",
+        "utility_decay",
+        "eviction_utility_weight",
+        "eviction_recency_weight",
+        "recency_scale",
+    ],
+)
+def test_experiential_memory_rejects_integer_aliases_for_serialized_floats(
+    field: str,
+) -> None:
+    config = ExperientialMemoryConfig(
+        capacity=4,
+        observation_dim=2,
+        key_dim=2,
+        action_dim=1,
+        outcome_dim=1,
+        distance_scale=1.0,
+        min_similarity=0.0,
+        min_effective_reliability=1.0,
+        max_uncertainty=1.0,
+        max_safety_cost=1.0,
+        staleness_scale=1.0,
+        utility_decay=1.0,
+        eviction_utility_weight=1.0,
+        eviction_recency_weight=1.0,
+        recency_scale=1.0,
+    )
+    payload = config.to_config()
+    payload[field] = int(payload[field])  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="exact JSON scalar types"):
+        ExperientialMemoryConfig.from_config(payload)
+
+
 @pytest.mark.parametrize("field", ["staleness_scale", "recency_scale"])
 def test_age_scale_accepts_smallest_positive_float32_without_operation_overflow(
     field: str,
