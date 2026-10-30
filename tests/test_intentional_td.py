@@ -12,6 +12,53 @@ from alberta_framework.core.intentional_td import (
 )
 
 
+def test_config_rejects_trace_decay_that_rounds_to_one_in_float32():
+    gamma = 0.99999999
+    assert gamma < 1.0
+    assert float(jnp.asarray(gamma, dtype=jnp.float32)) == 1.0
+
+    with pytest.raises(ValueError, match="float32"):
+        IntentionalTDConfig(gamma=gamma, lamda=1.0)
+
+    safe_gamma = float(
+        np.nextafter(np.float32(1.0), np.float32(0.0))
+    )
+    config = IntentionalTDConfig(gamma=safe_gamma, lamda=1.0)
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    changed, state = intentional_td_update(
+        weights,
+        init_intentional_td(weights),
+        jnp.ones(2, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        config,
+    )
+    assert bool(jnp.all(jnp.isfinite(changed)))
+    assert bool(jnp.isfinite(state.sigma))
+    assert bool(jnp.all(changed != weights))
+
+
+@pytest.mark.parametrize("field", ["beta2", "beta_clip"])
+def test_config_rejects_ema_decay_that_rounds_to_one_in_float32(field):
+    decay = 0.99999999
+    assert decay < 1.0
+    assert float(jnp.asarray(decay, dtype=jnp.float32)) == 1.0
+
+    with pytest.raises(ValueError, match=field):
+        IntentionalTDConfig(**{field: decay})
+
+
+@pytest.mark.parametrize("field", ["eta", "clip_mult"])
+@pytest.mark.parametrize("value", [1.0e-50, 1.0e40])
+def test_config_rejects_positive_scale_outside_float32(field, value):
+    assert value > 0.0
+    with np.errstate(over="ignore", under="ignore"):
+        narrowed = np.float32(value)
+    assert not bool(np.isfinite(narrowed)) or float(narrowed) == 0.0
+
+    with pytest.raises(ValueError, match=field):
+        IntentionalTDConfig(**{field: value})
+
+
 def test_linear_prediction_moves_by_intended_fraction_of_frozen_td_error():
     # Same value prediction problem at three feature scales, including bias.
     for scale in (0.1, 1.0, 10.0):
