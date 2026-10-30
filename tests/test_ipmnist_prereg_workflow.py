@@ -1880,12 +1880,12 @@ def test_result_bundle_rejects_symlinked_shard_even_if_summary_is_resigned(
     shards_dir = summary_path.parent / "shards"
     victim = shards_dir / "sigma0_shiftnorm_d099_seed0.json"
     escaped = tmp_path / "escaped-but-inside-root.json"
+    paths = sorted(path.relative_to(tmp_path) for path in shards_dir.glob("*.json"))
+    summary = merge_shards(paths, control_name="sigma0_shiftnorm_d099", slope_window=15)
     escaped.write_bytes(victim.read_bytes())
     victim.unlink()
     victim.symlink_to(escaped)
 
-    paths = sorted(path.relative_to(tmp_path) for path in shards_dir.glob("*.json"))
-    summary = merge_shards(paths, control_name="sigma0_shiftnorm_d099", slope_window=15)
     for entry in summary["shard_manifest"]:
         raw_path = Path(entry["path"])
         entry["path"] = raw_path.resolve(strict=True).relative_to(tmp_path).as_posix()

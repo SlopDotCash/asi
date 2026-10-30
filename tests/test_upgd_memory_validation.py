@@ -591,6 +591,39 @@ def test_upgd_memory_negative_adopted_counter_rolls_back() -> None:
     assert int(result.state.step_count) == -1
 
 
+@pytest.mark.parametrize("component", ["upgd", "memory"])
+def test_upgd_memory_mismatched_adopted_counters_roll_back(component: str) -> None:
+    learner = UPGDMemoryLearner(_base_cfg())
+    initial = learner.init(jax.random.key(0))
+    if component == "upgd":
+        state = initial.replace(  # type: ignore[attr-defined]
+            upgd_state=initial.upgd_state.replace(  # type: ignore[attr-defined]
+                step_count=jnp.asarray(1, dtype=jnp.int32)
+            )
+        )
+    else:
+        state = initial.replace(  # type: ignore[attr-defined]
+            memory_state=initial.memory_state.replace(  # type: ignore[attr-defined]
+                step_count=jnp.asarray(1, dtype=jnp.int32)
+            )
+        )
+
+    result = learner.update(
+        state,
+        jnp.ones((4,), dtype=jnp.float32),
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert jax.tree_util.tree_all(
+        jax.tree_util.tree_map(
+            lambda left, right: jnp.array_equal(left, right),
+            result.state,
+            state,
+        )
+    )
+
+
 def test_upgd_memory_finite_operation_overflow_rolls_back_atomically() -> None:
     learner = UPGDMemoryLearner(_base_cfg())
     state = learner.init(jax.random.key(7))

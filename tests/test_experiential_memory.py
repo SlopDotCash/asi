@@ -160,6 +160,46 @@ def test_single_tiny_positive_neighbor_score_still_has_unit_weight() -> None:
     np.testing.assert_allclose(retrieval.action, entry.action)
 
 
+def test_query_rejects_nonfinite_weighted_payload_aggregation() -> None:
+    maximum = float(np.finfo(np.float32).max)
+    memory = ExperientialMemory(
+        _config(
+            capacity=10,
+            top_k=10,
+            staleness_scale=maximum,
+        )
+    )
+    state = memory.init()
+    for provenance_id in range(10):
+        state = _write(
+            memory,
+            state,
+            _entry(
+                provenance_id,
+                observation=(maximum, maximum),
+                action=(maximum, maximum),
+                outcome=maximum,
+                reward=maximum,
+            ),
+        )
+
+    retrieval = memory.query(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(True, dtype=jnp.bool_),
+    )
+
+    assert not bool(retrieval.accepted)
+    assert bool(retrieval.has_neighbors)
+    chex.assert_tree_all_finite(retrieval)
+    np.testing.assert_array_equal(retrieval.observation, jnp.zeros((2,)))
+    np.testing.assert_array_equal(retrieval.action, jnp.zeros((2,)))
+    np.testing.assert_array_equal(retrieval.outcome, jnp.zeros((1,)))
+    assert float(retrieval.reward) == 0.0
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -826,7 +866,6 @@ def test_dynamic_state_corruption_makes_query_abstain_and_mutations_exact_noops(
     assert not bool(compiled_result.retrieval.state_valid)
 
 
-
 @pytest.mark.parametrize("disable_jit", [True, False])
 @pytest.mark.parametrize("magnitude", [1.5e19, -1.5e19, 1.0])
 @pytest.mark.parametrize("distance_scale", [1e37, 3e38])
@@ -845,3 +884,29 @@ def test_query_preserves_finite_mean_squared_distance(
         assert bool(result.accepted)
         assert float(result.neighbor_similarities[0]) == pytest.approx(expected, rel=2e-6)
         np.testing.assert_array_equal(result.action, [1.0, 0.0])
+
+
+@pytest.mark.parametrize(
+    "counter_name",
+    ("query_count", "write_count", "rejected_write_count"),
+)
+def test_lifetime_counters_cannot_precede_the_step_clock(counter_name: str) -> None:
+    memory = ExperientialMemory(_config())
+    original = memory.init()
+    corrupt = original.replace(
+        **{counter_name: jnp.asarray(1, dtype=jnp.int32)}
+    )
+    query_args = (
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(True),
+    )
+
+    retrieval = memory.query(corrupt, *query_args)
+    write = memory.write(corrupt, _entry(1))
+
+    assert not bool(retrieval.state_valid)
+    assert not bool(retrieval.accepted)
+    assert not bool(write.wrote)
+    _assert_trees_equal(write.state, corrupt)
