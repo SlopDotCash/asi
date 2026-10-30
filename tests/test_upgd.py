@@ -2360,6 +2360,73 @@ class TestCanFitSimpleFunction:
 class TestLoops:
     """Smoke tests for run_upgd_arrays and run_upgd_loop."""
 
+    @pytest.mark.parametrize("stream_runner", [False, True])
+    def test_finishes_device_work_before_stopping_uptime_clock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        stream_runner: bool,
+    ) -> None:
+        """Reported uptime must cover scan execution, not only its dispatch."""
+        import time
+        from types import SimpleNamespace
+
+        import jax
+
+        import alberta_framework.core.upgd as module
+        from alberta_framework.streams.synthetic import RandomWalkStream
+
+        learner = UPGDLearner(
+            n_heads=1,
+            hidden_sizes=(4,),
+            sparsity=0.0,
+            perturbation_sigma=0.0,
+        )
+        blocked: list[object] = []
+        real_scan = jax.lax.scan
+        real_time = time.time
+        scan_finished = False
+
+        def recording_scan(*args: object, **kwargs: object) -> object:
+            nonlocal scan_finished
+            result = real_scan(*args, **kwargs)
+            scan_finished = True
+            return result
+
+        def recording_block(value: object) -> object:
+            assert scan_finished
+            blocked.append(value)
+            return value
+
+        def clock() -> float:
+            if scan_finished:
+                assert blocked
+            return real_time()
+
+        monkeypatch.setattr(jax.lax, "scan", recording_scan)
+        monkeypatch.setattr(jax, "block_until_ready", recording_block)
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+        if stream_runner:
+            result = run_upgd_loop(
+                learner,
+                RandomWalkStream(feature_dim=3),
+                num_steps=4,
+                key=jr.key(271),
+            )
+        else:
+            state = learner.init(feature_dim=3, key=jr.key(271))
+            result = run_upgd_arrays(
+                learner,
+                state,
+                jnp.ones((4, 3), dtype=jnp.float32),
+                jnp.zeros((4, 1), dtype=jnp.float32),
+            )
+
+        assert len(blocked) == 1
+        assert isinstance(blocked[0], tuple)
+        assert int(result.state.step_count) == 4
+        chex.assert_shape(result.metrics, (4, 4))
+
     def test_run_upgd_arrays_smoke(self):
         learner = UPGDLearner(
             n_heads=1, hidden_sizes=(8,), sparsity=0.0,
