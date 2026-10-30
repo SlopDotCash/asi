@@ -127,9 +127,18 @@ def test_rejects_numpy_and_subclass_step_counts_without_index_hooks() -> None:
 
 
 def test_batched_last_fit_seed_count_is_accepted() -> None:
-    keys = jr.split(jr.key(0), _LEARNING_LOOP_MAX_SEEDS)
+    keys = jr.split(jr.key(0, impl="threefry2x32"), _LEARNING_LOOP_MAX_SEEDS)
     assert _require_learning_loop_keys(keys) == 30
     _require_learning_loop_seed_steps(_LEARNING_LOOP_MAX_STEPS, 30)
+
+
+@pytest.mark.parametrize("key_kind", ["legacy", "rbg"])
+def test_batched_keys_require_typed_threefry_roots(key_kind: str) -> None:
+    root = jr.PRNGKey(0) if key_kind == "legacy" else jr.key(0, impl="rbg")
+    keys = jr.split(root, 2)
+
+    with pytest.raises(TypeError, match="typed threefry2x32"):
+        _require_learning_loop_keys(keys)
 
 
 def test_batched_first_overflow_seed_count_is_rejected(

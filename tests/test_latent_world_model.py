@@ -7,6 +7,7 @@ import warnings
 from types import MappingProxyType
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -99,6 +100,141 @@ def test_latent_world_model_update_and_prediction_shapes() -> None:
     chex.assert_tree_all_finite(result.latent_std_mean)
 
 
+@pytest.mark.parametrize("shape", [(1, 2), (2, 1)])
+def test_latent_world_model_rejects_wrong_rank_observation_vectors(
+    shape: tuple[int, int],
+) -> None:
+    """Per-event APIs must not flatten row or column matrices into vectors."""
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(320))
+    observation = jnp.asarray([[0.25, -0.5]], dtype=jnp.float32).reshape(shape)
+    vector = jnp.asarray([0.25, -0.5], dtype=jnp.float32)
+    action = jnp.asarray(1, dtype=jnp.int32)
+    reward = jnp.asarray(0.5, dtype=jnp.float32)
+    discount = jnp.asarray(0.9, dtype=jnp.float32)
+
+    calls = (
+        lambda: model.encode(state, observation),
+        lambda: model.input_features(state, observation, action),
+        lambda: model.targets(state, observation, reward, discount, vector),
+        lambda: model.targets(state, vector, reward, discount, observation),
+        lambda: model.predict(state, observation, action),
+        lambda: model.update(state, observation, action, reward, discount, vector),
+        lambda: model.update(state, vector, action, reward, discount, observation),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            call()
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            jax.jit(call)()
+
+
+@pytest.mark.parametrize("shape", [(1, 2), (2, 1)])
+def test_latent_world_model_rejects_wrong_rank_latent_vectors(
+    shape: tuple[int, int],
+) -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(321))
+    latent = jnp.asarray([[0.25, -0.5]], dtype=jnp.float32).reshape(shape)
+    action = jnp.asarray(1, dtype=jnp.int32)
+
+    calls = (
+        lambda: model.input_features_from_latent(latent, action),
+        lambda: model.predict_from_latent(state, latent, action),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            call()
+        with pytest.raises(ValueError, match=r"must have shape \(2,\)"):
+            jax.jit(call)()
+
+
+@pytest.mark.parametrize(
+    ("operation", "field"),
+    [
+        ("input_features_from_latent", "action"),
+        ("input_features", "action"),
+        ("targets", "reward"),
+        ("targets", "discount"),
+        ("predict_from_latent", "action"),
+        ("predict", "action"),
+        ("update", "action"),
+        ("update", "reward"),
+        ("update", "discount"),
+    ],
+)
+def test_latent_world_model_rejects_size_one_scalar_aliases(
+    operation: str,
+    field: str,
+) -> None:
+    model = LatentWorldModel(
+        LatentWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            latent_dim=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(322))
+    values = {
+        "observation": jnp.asarray([0.25, -0.5], dtype=jnp.float32),
+        "latent": jnp.asarray([0.1, -0.2], dtype=jnp.float32),
+        "action": jnp.asarray(1, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "discount": jnp.asarray(0.9, dtype=jnp.float32),
+        "next_observation": jnp.asarray([0.5, 0.75], dtype=jnp.float32),
+    }
+    values[field] = jnp.ones((1,), dtype=jnp.float32)
+
+    def call() -> object:
+        if operation == "input_features_from_latent":
+            return model.input_features_from_latent(values["latent"], values["action"])
+        if operation == "input_features":
+            return model.input_features(state, values["observation"], values["action"])
+        if operation == "targets":
+            return model.targets(
+                state,
+                values["observation"],
+                values["reward"],
+                values["discount"],
+                values["next_observation"],
+            )
+        if operation == "predict_from_latent":
+            return model.predict_from_latent(state, values["latent"], values["action"])
+        if operation == "predict":
+            return model.predict(state, values["observation"], values["action"])
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["discount"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=field):
+        call()
+    with pytest.raises(ValueError, match=field):
+        jax.jit(call)()
+
+
 def test_latent_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     config = LatentWorldModelConfig(
         observation_dim=2,
@@ -126,6 +262,31 @@ def test_latent_default_discounts_do_not_inherit_the_reward_dtype() -> None:
     )
     chex.assert_trees_all_close(defaulted.discount_errors, explicit.discount_errors)
     chex.assert_trees_all_close(defaulted.discount_predictions, explicit.discount_predictions)
+
+
+def test_latent_learning_loop_rejects_fractional_discrete_action_array() -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=2,
+        n_actions=2,
+        latent_dim=4,
+        hidden_sizes=(),
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(4))
+    observations = jnp.array([[0.0, 0.0]], dtype=jnp.float32)
+    next_observations = jnp.array([[0.1, 0.0]], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="actions must have an integer dtype"):
+        run_latent_world_model_learning_loop(
+            model,
+            state,
+            observations,
+            jnp.array([0.5], dtype=jnp.float32),
+            jnp.array([0.0], dtype=jnp.float32),
+            next_observations,
+        )
+
+
 class _FloatSpoof:
     @property
     def __class__(self) -> type[float]:  # type: ignore[override]
