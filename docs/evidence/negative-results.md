@@ -525,3 +525,28 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Shrink & Perturb at the first identmap remap on idet003_s005625 (2026-10-30)
+
+A preregistered, nonpromoting `development_screening_diagnostic` added Shrink &
+Perturb (Ash & Adams 2020) to `rls_head_resid_identmap50_r_idet003_s005625`:
+once per detected task, at the identifier's first remap, the residual body
+`w1, b1, w2, b2` became `0.8 * theta + 0.01 * fresh` with `fresh` drawn from
+the body's init scale (shrink 0.8 / sigma 0.01 selected over 0.5 / 0.1 on a
+seed-0 3-task tuning run; both cells were below the parent). On seeds 0-2 at 60
+tasks it reduced average online accuracy on every seed: S&P 0.92113, locally
+measured parent 0.93451, paired difference -0.01338 (95% t-CI [-0.01452,
+-0.01224], df=2); 0 of 3 seeds improved. The loss starts at the first remap
+and grows slightly across life (-0.0126 in tasks 1-19, -0.0144 in tasks 40-59).
+The preregistered +0.002 screen bar failed, so seeds 3-9 and held-out seeds
+10-19 were not run. At shrink 1 / sigma 0 the live path is bit-exact with the
+parent (pinned in tests), and `upgd_w_control` reproduced exactly at 0.77776.
+
+This agrees with negative result #3 (perturbation noise is not additive to good
+conditioning) and with the L2-Init rejection in #3125 (-0.01117): in this
+family the body's features keep transferring across permutations once the
+input is realigned, so softening them at the remap only forces a re-fit. The
+[retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_snp/README.md)
+includes the preregistration, tuning, per-seed shards, the local-parent and
+control re-measures, and the summary. This rejects only this S&P configuration;
+the parent, its stored evidence and the screening gates are unchanged.
