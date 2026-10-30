@@ -218,7 +218,7 @@ def _run_arm(seed: int, steps: int, horizon: int, arm_id: str) -> ArmResult:
     model = SparseFTLWorldModel(
         SparseFTLWorldModelConfig(observation_dim=2, action_dim=4, projection_dim=4, bins=4)
     )
-    state = model.init(jr.key(seed))
+    state = model.init(jr.key(seed, impl="threefry2x32"))
     initial_bytes = _tree_nbytes(state)
     updates = queries = candidates = 0
     errors: list[float] = []

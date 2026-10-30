@@ -35,7 +35,12 @@ from alberta_framework.reference_life_checkpoint import (
     load_reference_life_checkpoint,
     save_reference_life_checkpoint,
 )
-from alberta_framework.streams.closed_loop import SwitchingTwoStateConfig
+from alberta_framework.streams.closed_loop import (
+    PHASE_A,
+    PHASE_B,
+    SwitchingTwoStateConfig,
+    SwitchingTwoStateMDP,
+)
 from tests._forager_matched_platform import HAS_RENAMEAT2, requires_renameat2
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -160,10 +165,16 @@ def _agent_config() -> PrototypeAgentConfig:
     )
 
 
-def _runner(*, horizon: int = 6) -> ReferenceLifeRunner:
+def _runner(
+    *,
+    horizon: int = 6,
+    environment_config: SwitchingTwoStateConfig | None = None,
+) -> ReferenceLifeRunner:
+    if environment_config is None:
+        environment_config = SwitchingTwoStateConfig(phase_length=2)  # type: ignore[call-arg]
     return build_prototype_switching_life(
         agent_config=_agent_config(),
-        environment_config=SwitchingTwoStateConfig(phase_length=2),  # type: ignore[call-arg]
+        environment_config=environment_config,
         lifecycle_id=LIFECYCLE_ID,
         seed=29,
         max_accepted_events=horizon,
@@ -280,6 +291,54 @@ def test_quiescent_checkpoint_restores_exact_continuation(
     assert restored_final.transcript_sha256 == uninterrupted_state.transcript_sha256
     assert restored_final.environment_rng_cursor == uninterrupted_state.environment_rng_cursor
     assert restored_final.checkpoint_generation == 1
+
+
+# The toggle cycle is optimal in both phases, and both off-diagonal float32
+# pairs (0.7 + 0.4, 0.1 + 0.2) round when added in float32.
+TOGGLE_OPTIMAL_SWITCHING = SwitchingTwoStateConfig(  # type: ignore[call-arg]
+    phase_length=2,
+    payoffs_a=((0.0, 0.7), (0.4, 0.0)),
+    payoffs_b=((0.0, 0.1), (0.2, 0.0)),
+)
+
+
+def test_checkpoint_validator_uses_the_environment_toggle_oracle() -> None:
+    environment = SwitchingTwoStateMDP(TOGGLE_OPTIMAL_SWITCHING)
+    for phase, payoff in (
+        (PHASE_A, TOGGLE_OPTIMAL_SWITCHING.payoffs_a),
+        (PHASE_B, TOGGLE_OPTIMAL_SWITCHING.payoffs_b),
+    ):
+        right, left = np.float32(payoff[0][1]), np.float32(payoff[1][0])
+        toggle = 0.5 * (float(right) + float(left))
+        assert environment.optimal_average_reward(phase) == toggle
+        assert toggle != 0.5 * float(right + left)
+
+    runner = _runner(environment_config=TOGGLE_OPTIMAL_SWITCHING)
+    state = runner.init()
+    runner.validate_checkpoint_state(state)
+    for _ in range(5):
+        state, _ = _advance(runner, state, 1)
+        assert state.phase is LifePhase.QUIESCENT
+        runner.validate_checkpoint_state(state)
+    assert state.metrics.phase_event_counts == (3, 2)
+
+
+@requires_renameat2
+def test_toggle_optimal_checkpoint_restores_exact_continuation(tmp_path: Path) -> None:
+    runner = _runner(environment_config=TOGGLE_OPTIMAL_SWITCHING)
+    state, _ = _advance(runner, runner.init(), 3)
+    assert state.phase is LifePhase.QUIESCENT
+    barrier_state, checkpoint = save_reference_life_checkpoint(runner, state, tmp_path)
+
+    uninterrupted_state, uninterrupted_steps = _advance(runner, barrier_state, 3)
+    restored_runner, restored_state = load_reference_life_checkpoint(checkpoint)
+    _assert_semantic_state_exact(restored_state, barrier_state)
+    restored_final, restored_steps = _advance(restored_runner, restored_state, 3)
+
+    _assert_typed_exact(restored_steps, uninterrupted_steps, path="steps")
+    assert uninterrupted_state.phase is LifePhase.COMPLETED
+    _assert_semantic_state_exact(restored_final, uninterrupted_state)
+    assert restored_final.transcript_sha256 == uninterrupted_state.transcript_sha256
 
 
 def _write_canonical_json(path: Path, value: dict[str, Any]) -> None:

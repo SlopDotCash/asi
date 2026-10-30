@@ -943,3 +943,38 @@ def test_public_prediction_neutralizes_nonfinite_aggregate_variance() -> None:
         np.asarray(prediction.member_raw_predictions),
         np.zeros((2, 4), dtype=np.float32),
     )
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [1.1754943508222875e-38, -1.1754943508222875e-38, 1.0])
+def test_public_prediction_preserves_small_normal_member_means(
+    disable_jit: bool, magnitude: float
+) -> None:
+    ensemble = WorldModelEnsemble(_config())
+    state = ensemble.init(jr.key(0))
+    members = []
+    for member in state.member_states:
+        heads = member.learner_state.head_params
+        members.append(dataclasses.replace(
+            member, learner_state=dataclasses.replace(
+                member.learner_state, head_params=dataclasses.replace(
+                    heads,
+                    weights=tuple(jnp.zeros_like(weight) for weight in heads.weights),
+                    biases=tuple(jnp.full_like(bias, magnitude) for bias in heads.biases),
+                ),
+            ),
+        ))
+    with jax.disable_jit(disable_jit):
+        prediction = ensemble.predict(
+            dataclasses.replace(state, member_states=tuple(members)),
+            jnp.zeros(2, dtype=jnp.float32), jnp.asarray(0, dtype=jnp.int32),
+        )
+        assert bool(prediction.valid)
+        np.testing.assert_array_equal(
+            np.asarray(prediction.member_rewards), np.full(2, magnitude, dtype=np.float32)
+        )
+        assert float(prediction.mean_reward) == float(np.float32(magnitude))
+        np.testing.assert_array_equal(
+            np.asarray(prediction.mean_raw_prediction), np.full(4, magnitude, dtype=np.float32)
+        )

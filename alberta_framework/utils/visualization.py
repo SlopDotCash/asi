@@ -141,6 +141,7 @@ def set_publication_style(
             "savefig.dpi": _current_style["dpi"],
             "lines.linewidth": _current_style["line_width"],
             "lines.markersize": _current_style["marker_size"],
+            "text.usetex": use_latex,
             "axes.linewidth": 0.8,
             "grid.linewidth": 0.5,
             "grid.alpha": 0.3,
@@ -150,7 +151,6 @@ def set_publication_style(
     if use_latex:
         plt.rcParams.update(
             {
-                "text.usetex": True,
                 "font.family": "serif",
                 "font.serif": ["Computer Modern Roman"],
             }

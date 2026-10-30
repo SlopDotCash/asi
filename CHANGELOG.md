@@ -87,6 +87,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Required every merged screening arm's recorded `base_learner` to match its
+  registered arm. `load_shard` cross-checks the registered arm only for
+  source-bound v2/v3 shards and the campaign's live format is v1, so a v1 arm
+  whose seeds all agreed on a learner its registry entry never registered could
+  still rank, and `merge_shards` publishes that recorded field as the arm's
+  identity. The existing within-arm consistency check runs first and cannot
+  catch a batch that is consistently wrong.
 - `upgd_memory._normalize_simplex` now returns a probability simplex for
   zero, negative, sub-`1e-12`, and float32-overflowing inputs.  The previous
   floored-denominator helper could drop mass (including the reachable

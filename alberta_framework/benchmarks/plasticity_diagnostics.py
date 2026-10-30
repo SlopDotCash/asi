@@ -640,7 +640,7 @@ def _dead_unit_fraction(
 
 
 def _effective_rank(features: np.ndarray) -> float:
-    singular = np.linalg.svd(features, compute_uv=False)
+    singular = np.asarray(np.linalg.svd(features, compute_uv=False), dtype=np.float64)
     total = float(singular.sum())
     if total == 0.0:
         return 0.0
