@@ -436,6 +436,43 @@ def test_working_memory_diagnostics_are_finite() -> None:
     chex.assert_tree_all_finite(diagnostics)
 
 
+def test_working_memory_diagnostics_preserve_extreme_finite_ratios() -> None:
+    memory = WorkingMemoryFeaturizer(
+        WorkingMemoryConfig(
+            observation_dim=2,
+            action_dim=0,
+            reward_dim=0,
+            observation_decay_rates=(0.0,),
+            action_decay_rates=(),
+            reward_decay_rates=(),
+        )
+    )
+    observation = jnp.asarray([1.0e38, 9.0e37], dtype=jnp.float32)
+    update = memory.update_checked(
+        memory.init(),
+        observation,
+        memory.zero_action(),
+        memory.zero_reward(),
+    )
+    expected_values = np.asarray(observation, dtype=np.float64)
+    expected_rms = float(np.sqrt(np.mean(expected_values * expected_values)))
+    normalized = expected_values / np.max(np.abs(expected_values))
+    squared = normalized * normalized
+    expected_dimension = float(np.sum(squared) ** 2 / np.sum(squared * squared))
+
+    assert bool(update.update_applied)
+    diagnostics_results = (
+        memory.diagnostics(update.state),
+        jax.jit(memory.diagnostics)(update.state),
+    )
+    for diagnostics in diagnostics_results:
+        assert float(diagnostics.observation_energy) == pytest.approx(expected_rms, rel=1e-6)
+        assert float(diagnostics.trace_energy) == pytest.approx(expected_rms, rel=1e-6)
+        assert float(diagnostics.effective_dimension) == pytest.approx(
+            expected_dimension, rel=1e-6
+        )
+
+
 def test_working_memory_delayed_action_positive_control() -> None:
     config = WorkingMemoryConfig(
         observation_dim=1,

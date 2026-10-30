@@ -159,6 +159,19 @@ def test_initialization_is_distinct_fixed_width_and_exactly_accounted() -> None:
     assert budget.replay_capacity == 0
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        jr.key(0, impl="rbg"),
+        jr.PRNGKey(0),
+    ],
+)
+def test_init_rejects_keys_outside_the_typed_threefry_contract(key: jax.Array) -> None:
+    model = RecurrentLatentWorldModelEnsemble(_config())
+    with pytest.raises(ValueError, match="typed scalar threefry2x32"):
+        model.init(key)
+
+
 _REAL_SCALAR_FIELDS = (
     "learning_rate",
     "variance_floor",
@@ -307,6 +320,48 @@ def test_start_and_decide_are_read_only_predict_before_update_caches() -> None:
     assert not bool(prediction.availability.epistemic)
     assert not bool(prediction.availability.aleatoric)
     assert float(prediction.aleatoric_uncertainty) > 0.0
+
+
+def test_decide_preserves_legal_large_member_predictions_and_ensemble_means() -> None:
+    """Finite heads must not collapse or overflow at a legal float32 bound."""
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            max_parameter_magnitude=3.0e38,
+            max_prediction_magnitude=3.0e38,
+            max_loss_magnitude=3.0e38,
+            uncertainty_warmup_steps=0,
+        )
+    )
+    state = model.init(jr.key(23))
+    mean_bias = jnp.asarray((2.0e38, 2.0e38, 2.0e38, 0.0), dtype=jnp.float32)
+    members = tuple(
+        member.replace(  # type: ignore[attr-defined]
+            mean_kernel=jnp.zeros_like(member.mean_kernel),
+            mean_bias=mean_bias,
+        )
+        for member in state.member_parameters
+    )
+    state = state.replace(member_parameters=members)  # type: ignore[attr-defined]
+
+    decision = _decision(model, state, jnp.zeros((2,), dtype=jnp.float32))
+    prediction = decision.prediction
+    bound = model.config.max_prediction_magnitude
+    expected = np.float32(bound * np.tanh(float(mean_bias[0]) / bound))
+
+    assert bool(model.state_valid(state))
+    assert bool(decision.valid)
+    assert bool(prediction.valid)
+    np.testing.assert_array_equal(
+        prediction.member_raw_outputs[:, :3],
+        np.full((3, 3), np.float32(2.0e38), dtype=np.float32),
+    )
+    np.testing.assert_allclose(
+        prediction.member_mean_predictions[:, :3], expected, rtol=2.0e-7
+    )
+    np.testing.assert_allclose(prediction.mean_prediction[:3], expected, rtol=2.0e-7)
+    np.testing.assert_array_equal(
+        prediction.per_head_epistemic_variance[:3], np.zeros((3,), dtype=np.float32)
+    )
 
 
 def test_nonboundary_update_commits_one_recurrent_advance_and_masked_nll_updates() -> None:
@@ -459,6 +514,61 @@ def test_member_gradient_validity_is_finiteness_only_not_a_raw_norm_ceiling() ->
     )
     assert bool(result.diagnostics.applied)
     assert bool(jnp.all(result.diagnostics.member_gradients_valid))
+    assert bool(result.diagnostics.candidate_state_valid)
+
+
+def test_finite_low_variance_gradients_are_clipped_instead_of_rejected() -> None:
+    """A representable tree norm must survive overflow in the square reduction."""
+    model = RecurrentLatentWorldModelEnsemble(
+        _config(
+            variance_floor=1.0e-25,
+            max_variance=1.0,
+            gradient_clip_norm=1.0,
+            max_raw_gradient_norm=3.0e38,
+            max_loss_magnitude=3.0e38,
+        )
+    )
+    state = model.init(jr.key(24))
+    state = state.replace(  # type: ignore[attr-defined]
+        member_parameters=tuple(
+            parameters.replace(  # type: ignore[attr-defined]
+                variance_bias=jnp.full_like(parameters.variance_bias, -35.0)
+            )
+            for parameters in state.member_parameters
+        )
+    )
+    decision = _decision(model, state)
+    far_bootstrap = jnp.asarray((900.0, -900.0), dtype=jnp.float32)
+    stopped_targets = jnp.concatenate(
+        (far_bootstrap, jnp.asarray((0.5, 0.9), dtype=jnp.float32))
+    )
+    _, gradient = jax.value_and_grad(model._member_nll)(  # noqa: SLF001
+        state.member_parameters[0],
+        state.member_hidden_states[0],
+        OBSERVATION,
+        ACTION,
+        stopped_targets,
+    )
+
+    gradient_leaves = jax.tree_util.tree_leaves(gradient)
+    assert all(bool(jnp.all(jnp.isfinite(leaf))) for leaf in gradient_leaves)
+    direct_norm = jnp.sqrt(
+        jnp.sum(jnp.stack([jnp.sum(jnp.square(leaf)) for leaf in gradient_leaves]))
+    )
+    assert bool(jnp.isinf(direct_norm))
+    assert bool(jnp.isfinite(_tree_l2_norm(gradient)))
+
+    result = model.update(
+        state,
+        decision,
+        _transition(
+            bootstrap_observation=far_bootstrap,
+            next_decision_observation=far_bootstrap,
+        ),
+    )
+    assert bool(result.diagnostics.applied)
+    assert bool(jnp.all(result.diagnostics.member_gradients_valid))
+    assert bool(result.diagnostics.representation_gradient_valid)
     assert bool(result.diagnostics.candidate_state_valid)
 
 
@@ -867,6 +977,23 @@ def test_digest_bound_checkpoint_roundtrip_preserves_exact_future_stream(tmp_pat
         next_record,
     )
     _assert_tree_equal(original_next, restored_next)
+
+
+def test_internal_templates_ignore_the_ambient_prng_default(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "ambient-rbg.ckpt"
+    with jax.default_prng_impl("rbg"):
+        model = RecurrentLatentWorldModelEnsemble(_config())
+        state = model.init(jr.key(9, impl="threefry2x32"))
+        budget = model.resource_budget()
+        save_recurrent_latent_world_model_ensemble_checkpoint(model, state, checkpoint)
+        restored_model, restored_state = (
+            load_recurrent_latent_world_model_ensemble_checkpoint(checkpoint)
+        )
+
+    assert budget.bootstrap_prng_uint32_scalars == 2
+    assert str(jr.key_impl(restored_state.bootstrap_key)) == "threefry2x32"
+    assert bool(restored_model.state_valid(restored_state))
+    _assert_tree_equal(restored_state, state)
 
 
 def test_checkpoint_restore_does_not_depend_on_an_unrelated_template_draw(

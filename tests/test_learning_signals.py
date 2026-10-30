@@ -124,6 +124,24 @@ def test_config_roundtrip_validation_and_exact_resource_budget() -> None:
         LearningSignalEstimatorConfig.from_config(invalid_claim)
 
 
+def test_config_deserialization_requires_the_complete_exact_schema() -> None:
+    serialized = LearningSignalEstimatorConfig(
+        ensemble_size=3,
+        target_dim=2,
+        change_calibration_steps=8,
+    ).to_config()
+
+    for field_name in serialized:
+        incomplete = dict(serialized)
+        incomplete.pop(field_name)
+        match = "type" if field_name == "type" else "serialized schema"
+        with pytest.raises(ValueError, match=match):
+            LearningSignalEstimatorConfig.from_config(incomplete)
+
+    with pytest.raises(ValueError, match="serialized schema"):
+        LearningSignalEstimatorConfig.from_config({**serialized, "extra": 1})
+
+
 def test_hand_calculation_preserves_units_and_causal_progress() -> None:
     estimator = LearningSignalEstimator(
         LearningSignalEstimatorConfig(
@@ -372,6 +390,29 @@ def test_shape_and_dtype_validation_is_strict() -> None:
             jnp.zeros((1,), dtype=jnp.float32),
             jnp.zeros((1,), dtype=jnp.float32),
         )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "member_means",
+        "predicted_aleatoric_variances",
+        "observed_target",
+        "observed_loss",
+    ),
+)
+def test_learning_signal_inputs_reject_complex_dtypes(field: str) -> None:
+    estimator = _estimator()
+    inputs = {
+        "member_means": jnp.zeros((2, 1), dtype=jnp.float32),
+        "predicted_aleatoric_variances": jnp.ones((2, 1), dtype=jnp.float32),
+        "observed_target": jnp.zeros((1,), dtype=jnp.float32),
+        "observed_loss": jnp.asarray(0.0, dtype=jnp.float32),
+    }
+    inputs[field] = inputs[field].astype(jnp.complex64) + 1.0j
+
+    with pytest.raises(ValueError, match="real floating dtype"):
+        estimator.observe(estimator.init(), **inputs)
 
 
 def test_jit_scan_parity_and_fixed_output_shapes() -> None:
