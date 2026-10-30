@@ -389,6 +389,48 @@ def test_oak_keyboard_dispatch_uses_exact_current_q_and_commits_owner() -> None:
     chex.assert_trees_all_equal(result.state.utility_ema, state.utility_ema)
 
 
+def test_oak_keyboard_dispatch_preserves_large_finite_chord_scale() -> None:
+    agent = OaKAgent(OaKConfig(stomp=_config()))
+    outer_state = agent.init(jr.key(19))
+    stomp_state = _option_owned_state(agent.stomp_agent)
+    q_weights = stomp_state.option_policies.q_weights
+    q_weights = q_weights.at[0].set(
+        jnp.array([[0.0, 0.0], [4.0, 0.0]], dtype=jnp.float32)
+    )
+    q_weights = q_weights.at[1].set(
+        jnp.array([[0.0, 0.0], [-1.0, 0.0]], dtype=jnp.float32)
+    )
+    state = outer_state.replace(
+        stomp_state=stomp_state.replace(
+            option_policies=stomp_state.option_policies.replace(q_weights=q_weights)
+        )
+    )
+    unit_chord = jnp.ones((2,), dtype=jnp.float32)
+    large_chord = jnp.full((2,), jnp.finfo(jnp.float32).max, dtype=jnp.float32)
+    assert bool(jnp.all(jnp.isfinite(large_chord)))
+    assert not bool(jnp.isfinite(jnp.sum(jnp.abs(large_chord))))
+
+    expected_q = agent.keyboard_q_values(state, OBS, unit_chord)
+    eager = agent.dispatch_keyboard_policy(
+        state,
+        OBS,
+        large_chord,
+        jnp.ones((2,), dtype=jnp.bool_),
+    )
+    compiled = jax.jit(agent.dispatch_keyboard_policy)(
+        state,
+        OBS,
+        large_chord,
+        jnp.ones((2,), dtype=jnp.bool_),
+    )
+
+    for result in (eager, compiled):
+        assert bool(result.decision.proposal.available)
+        chex.assert_trees_all_equal(result.decision.proposal.q_values, expected_q)
+        assert int(result.decision.proposal.action) == 1
+        assert int(result.decision.replacement.effective_action) == 1
+
+
 def test_oak_keyboard_dispatch_rejects_nonfinite_or_zero_chord_without_rng_change() -> None:
     agent = OaKAgent(OaKConfig(stomp=_config()))
     outer_state = agent.init(jr.key(23))
