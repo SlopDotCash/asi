@@ -504,3 +504,24 @@ Next work requires a separate bounded control-calibration/bottleneck hypothesis
 and its own plan. Do not relax or retrospectively retune this run’s gates. Timing
 remains telemetry, resource Pareto selection remains unevaluated, and the prior
 run and all pinned evidence are unchanged.
+
+
+## RiverSwim discounted-SARSA exploration decay (2026-10-15)
+
+A separately declared, permanently nonpromoting diagnostic used the full
+reference-life runner for three paired development seeds and 20,000 transitions
+per arm. Changing only `epsilon_decay_steps` from 2,500 to 10,000 reduced mean
+reward on all three seeds: baseline 0.513833, longer decay
+0.411587, paired difference -0.102246
+(mean across development seeds). Late-window rewards matched within each pair;
+the low-return seed did not establish sustained upstream reward. The preset
+all-positive and mean-delta > 0.01 rule failed. This rejects only that tested
+one-parameter change; it does not qualify the frozen scorecard or promote
+`reference-dev`. The matched control payload was 220 numeric bytes at both
+endpoints; native peak memory is unmeasured.
+
+The [retained report](../../outputs/reference_life_control_calibration/discounted-sarsa-decay-2026-10-15/README.md) includes raw trajectories,
+paired spread, source/runtime bindings, exact reproduction and re-derivation
+commands, and the excluded earlier scan attempt. Existing scorecard plans,
+gates and pinned artifacts are unchanged. Any new calibration needs a new
+causal hypothesis and an independently declared development plan.

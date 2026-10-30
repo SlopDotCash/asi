@@ -28,6 +28,7 @@ from alberta_framework import (
     run_multi_head_learning_loop,
     run_multi_head_learning_loop_batched,
 )
+from alberta_framework.core.multi_head_learner import _finite_layer_norm
 
 
 class _HostileRepr:
@@ -359,6 +360,83 @@ class TestMultiHeadInit:
 
 class TestMultiHeadPredict:
     """Tests for MultiHeadMLPLearner.predict."""
+
+    @pytest.mark.parametrize("compiled", (False, True))
+    def test_layer_norm_preserves_ordinary_path_bitwise(self, compiled):
+        values = jnp.array([-2.0, -0.25, 0.5, 3.0], dtype=jnp.float32)
+
+        def ordinary_layer_norm(items):
+            return (items - jnp.mean(items)) / jnp.sqrt(jnp.var(items) + 1e-5)
+
+        normalize = jax.jit(_finite_layer_norm) if compiled else _finite_layer_norm
+        reference = jax.jit(ordinary_layer_norm) if compiled else ordinary_layer_norm
+
+        chex.assert_trees_all_equal(normalize(values), reference(values))
+
+    @staticmethod
+    def _extreme_layer_norm_state(
+        learner: MultiHeadMLPLearner,
+        head_weights: jax.Array,
+    ) -> MultiHeadMLPState:
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        return state.replace(
+            trunk_params=state.trunk_params.replace(
+                weights=(jnp.eye(2, dtype=jnp.float32),),
+                biases=(jnp.zeros(2, dtype=jnp.float32),),
+            ),
+            head_params=state.head_params.replace(
+                weights=(head_weights[None, :],),
+                biases=(jnp.zeros(1, dtype=jnp.float32),),
+            ),
+        )
+
+    def test_layer_norm_preserves_finite_extreme_constant_activation(self):
+        learner = MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(2,),
+            sparsity=0.0,
+            use_layer_norm=True,
+        )
+        state = self._extreme_layer_norm_state(
+            learner,
+            jnp.ones(2, dtype=jnp.float32),
+        )
+
+        prediction = learner.predict(
+            state,
+            jnp.full(2, 2.0e38, dtype=jnp.float32),
+        )
+
+        chex.assert_tree_all_finite(prediction)
+        np.testing.assert_array_equal(
+            np.asarray(prediction),
+            np.zeros(1, dtype=np.float32),
+        )
+
+    def test_layer_norm_preserves_finite_extreme_contrast(self):
+        learner = MultiHeadMLPLearner(
+            n_heads=1,
+            hidden_sizes=(2,),
+            sparsity=0.0,
+            leaky_relu_slope=0.01,
+            use_layer_norm=True,
+        )
+        state = self._extreme_layer_norm_state(
+            learner,
+            jnp.array([1.0, -1.0], dtype=jnp.float32),
+        )
+
+        prediction = learner.predict(
+            state,
+            jnp.array([1.0e38, -1.0e38], dtype=jnp.float32),
+        )
+
+        np.testing.assert_allclose(
+            np.asarray(prediction),
+            np.array([1.01], dtype=np.float32),
+            rtol=1e-5,
+            atol=0.0,
+        )
 
     def test_returns_n_heads_scalars(self):
         """predict should return array of shape (n_heads,)."""

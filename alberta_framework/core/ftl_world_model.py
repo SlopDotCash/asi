@@ -83,6 +83,14 @@ def _skip_zero_scale(scale: Array, value: Array) -> Array:
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
 
 
+def _float32_array_without_complex(name: str, value: object) -> Array:
+    """Narrow an array without silently discarding an imaginary component."""
+    array = jnp.asarray(value)
+    if jnp.issubdtype(array.dtype, jnp.complexfloating):
+        raise ValueError(f"{name} must not have a complex dtype")
+    return jnp.asarray(array, dtype=jnp.float32)
+
+
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
     if not _has_exact_type(value, _ACTUAL_INT_TYPES):
         raise ValueError(f"{name} must be an integer in [{minimum}, {maximum}]")
@@ -455,8 +463,10 @@ class SparseFTLWorldModel:
 
     def _input(self, observation: Array, action: Array) -> Array:
         cfg = self._config
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((cfg.observation_dim,))
-        act = jnp.asarray(action, dtype=jnp.float32).reshape((cfg.action_dim,))
+        obs = _float32_array_without_complex("observation", observation).reshape(
+            (cfg.observation_dim,)
+        )
+        act = _float32_array_without_complex("action", action).reshape((cfg.action_dim,))
         return jnp.concatenate((obs, act))
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -492,7 +502,9 @@ class SparseFTLWorldModel:
     ) -> SparseFTLWorldModelPrediction:
         """Predict the next observation without changing model state."""
         cfg = self._config
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((cfg.observation_dim,))
+        obs = _float32_array_without_complex("observation", observation).reshape(
+            (cfg.observation_dim,)
+        )
         features = self.sparse_features(state, obs, action)
         delta = jnp.clip(
             features.values @ state.weights[features.indices],
@@ -515,8 +527,12 @@ class SparseFTLWorldModel:
     ) -> SparseFTLWorldModelUpdateResult:
         """Predict, then incorporate exactly one real transition."""
         cfg = self._config
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape((cfg.observation_dim,))
-        next_obs = jnp.asarray(next_observation, dtype=jnp.float32).reshape((cfg.observation_dim,))
+        obs = _float32_array_without_complex("observation", observation).reshape(
+            (cfg.observation_dim,)
+        )
+        next_obs = _float32_array_without_complex("next_observation", next_observation).reshape(
+            (cfg.observation_dim,)
+        )
         prediction = self.predict(state, obs, action)
         target_delta = next_obs - obs
         error = target_delta - prediction.delta
@@ -638,9 +654,9 @@ def run_sparse_ftl_world_model(
 
     _require_scan_resource(num_steps, model.config.observation_dim)
 
-    obs_array = jnp.asarray(observations, dtype=jnp.float32)
-    next_obs_array = jnp.asarray(next_observations, dtype=jnp.float32)
-    act_array = jnp.asarray(actions, dtype=jnp.float32)
+    obs_array = _float32_array_without_complex("observations", observations)
+    next_obs_array = _float32_array_without_complex("next_observations", next_observations)
+    act_array = _float32_array_without_complex("actions", actions)
 
     def step_fn(
         carry: SparseFTLWorldModelState,
