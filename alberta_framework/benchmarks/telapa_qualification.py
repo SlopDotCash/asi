@@ -306,6 +306,18 @@ def _config_payload(config: TeLAPASmokeConfig) -> dict[str, object]:
     return payload
 
 
+def _finite_mean(values: Array) -> Array:
+    # A direct float32 mean adds every value before dividing. Values near the
+    # float32 maximum overflow that sum to infinity even when the mean itself
+    # is finite and representable.
+    direct = jnp.mean(values)
+    _, exponent = jnp.frexp(jnp.max(jnp.abs(values)))
+    scaled = jnp.ldexp(values, -exponent)
+    stable = jnp.ldexp(jnp.mean(scaled), exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 @jax.jit
 def rollout_latent_descriptor(
     observations: Array, actions: Array, rewards: Array
@@ -314,10 +326,10 @@ def rollout_latent_descriptor(
 
     return jnp.stack(
         (
-            jnp.mean(observations[:, 0]),
-            jnp.mean(actions.astype(jnp.float32)),
-            jnp.mean(rewards),
-            jnp.mean(jnp.abs(jnp.diff(actions, prepend=actions[:1])).astype(jnp.float32)),
+            _finite_mean(observations[:, 0]),
+            _finite_mean(actions.astype(jnp.float32)),
+            _finite_mean(rewards),
+            _finite_mean(jnp.abs(jnp.diff(actions, prepend=actions[:1])).astype(jnp.float32)),
         )
     ).astype(jnp.float32)
 

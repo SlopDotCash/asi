@@ -249,6 +249,10 @@ def test_manifest_binds_canonical_minimal_config_and_exact_codecs() -> None:
     assert manifest.state_schema == PROTOTYPE_REFERENCE_STATE_SCHEMA
     assert manifest.config["adapter_schema"] == PROTOTYPE_REFERENCE_ADAPTER_SCHEMA
     assert manifest.config["dispatch_mode"] == "exact_only"
+    assert (
+        manifest.config["host_timing_metadata"]
+        == "disabled_canonical_float32_positive_zero"
+    )
     assert manifest.config["prototype_agent"] == _config().to_config()
     assert manifest.config["prototype_state_schema"] == "alberta.prototype_agent.v3"
     assert not manifest.capabilities.dispatch_rebinding
@@ -404,6 +408,68 @@ def test_lifecycle_and_internal_generation_map_exactly_to_host_decision() -> Non
         adapter.init(jr.key(1), lifecycle_id="free-form-life")
     with pytest.raises(DecisionOwnershipError, match="index|generation"):
         adapter.current_decision(dataclasses.replace(state, decision_index=1))
+
+
+def test_reference_adapter_excludes_host_clock_from_persistent_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "alberta_framework.core.multi_head_learner.time.time",
+        lambda: 1_024.0,
+    )
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+
+    state = adapter.init(jr.key(9), lifecycle_id=_LIFE_A)
+    learner = state.agent_state.oak_state.stomp_state.base_learner_state
+
+    assert np.asarray(learner.birth_timestamp).dtype == np.dtype(np.float32)
+    assert np.asarray(learner.birth_timestamp).shape == ()
+    assert float(learner.birth_timestamp) == 0.0
+    assert np.asarray(learner.uptime_s).dtype == np.dtype(np.float32)
+    assert np.asarray(learner.uptime_s).shape == ()
+    assert float(learner.uptime_s) == 0.0
+
+
+@pytest.mark.parametrize("timing_name", ("birth_timestamp", "uptime_s"))
+@pytest.mark.parametrize(
+    "timing_value",
+    (
+        np.asarray(1.0, dtype=np.float32),
+        np.asarray(-0.0, dtype=np.float32),
+        np.asarray(0.0, dtype=np.float64),
+        np.asarray([0.0], dtype=np.float32),
+    ),
+    ids=("nonzero", "negative-zero", "float64", "nonscalar"),
+)
+def test_reference_adapter_rejects_clocked_live_and_checkpoint_state(
+    timing_name: str,
+    timing_value: np.ndarray,
+) -> None:
+    adapter = PrototypeReferenceAdapter.from_config(_config())
+    state, _ = _start(adapter, key_seed=11)
+    oak = state.agent_state.oak_state
+    stomp = oak.stomp_state
+    clocked_agent_state = state.agent_state.replace(
+        oak_state=oak.replace(
+            stomp_state=stomp.replace(
+                base_learner_state=stomp.base_learner_state.replace(
+                    **{timing_name: timing_value}
+                )
+            )
+        )
+    )
+    clocked = dataclasses.replace(state, agent_state=clocked_agent_state)
+
+    with pytest.raises(DecisionOwnershipError, match="timing metadata"):
+        adapter.current_decision(clocked)
+    assert state.current_observation_id is not None
+    with pytest.raises(DecisionOwnershipError, match="timing metadata"):
+        adapter.adopt_checkpoint_state(
+            agent_state=clocked_agent_state,
+            lifecycle_id=state.lifecycle_id,
+            decision_index=state.decision_index,
+            current_observation_id=state.current_observation_id,
+        )
 
 
 def test_relabelled_decision_observation_id_is_rejected_without_learning() -> None:
