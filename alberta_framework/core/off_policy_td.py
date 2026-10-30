@@ -170,6 +170,15 @@ def _scalar_operand(name: str, value: object) -> Array:
     return _array_metadata(name, value, ())
 
 
+def _interest_operand(value: object) -> Array:
+    """Validate non-negative ETD interest before float32 narrowing."""
+    actual_type = type(value)
+    if any(actual_type is allowed_type for allowed_type in _TRUSTED_REAL_TYPES):
+        canonical = validated_float32_scalar("interest", value, lower=0.0)
+        return jnp.asarray(canonical, dtype=jnp.float32)
+    return _array_metadata("interest", value, ())
+
+
 def _discount_operand(value: object) -> Array:
     """Validate a discount in its exact host and consumed float32 domains."""
     actual_type = type(value)
@@ -784,7 +793,7 @@ class ETDLinearLearner:
         reward = _scalar_operand("reward", reward)
         gamma = _discount_operand(gamma)
         rho = _scalar_operand("rho", rho)
-        interest = _scalar_operand("interest", interest)
+        interest = _interest_operand(interest)
         result = self._update_jit(
             state, observation, reward, next_observation, gamma, rho, interest
         )
@@ -860,6 +869,7 @@ class ETDLinearLearner:
             & (gamma_s <= 1.0)
             & jnp.isfinite(rho_s)
             & jnp.isfinite(interest_s)
+            & (interest_s >= 0.0)
         )
         previous_checked = state.replace(  # type: ignore[attr-defined]
             eligibility_traces=_zero_if_unused(trace_decay, state.eligibility_traces),
