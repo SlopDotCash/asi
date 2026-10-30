@@ -1,0 +1,656 @@
+{
+  "arms": {
+    "differential_sarsa": {
+      "early_mean_reward": 0.003950833245025327,
+      "high_end_visit_count": {
+        "max": 0,
+        "mean": 0,
+        "min": 0,
+        "zero_seed_count": 12
+      },
+      "late_mean_reward": 0.00493208322309268,
+      "n": 12,
+      "reward_sum": {
+        "max": 96.81999783590436,
+        "mean": 96.60583117402469,
+        "min": 96.25999784842134,
+        "sample_sd": 0.1447856272244075
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.003837499914225191,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.00491749989008531,
+          "reward_sum": 96.25999784842134,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.003974999911151827,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004919999890029431,
+          "reward_sum": 96.67499783914536,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.003994999910704792,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004934999889694154,
+          "reward_sum": 96.81999783590436,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.003962499911431223,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004954999889247119,
+          "reward_sum": 96.68499783892184,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.003954999911598861,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004889999890699982,
+          "reward_sum": 96.51499784272164,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.0039699999112635855,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004944999889470637,
+          "reward_sum": 96.61999784037471,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.003922499912325293,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004952499889302998,
+          "reward_sum": 96.62499784026295,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 0.003962499911431223,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004919999890029431,
+          "reward_sum": 96.7649978371337,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.003927499912213534,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004942499889526516,
+          "reward_sum": 96.5349978422746,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.004009999910369515,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004947499889414757,
+          "reward_sum": 96.55999784171581,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.003894999912939966,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004939999889582395,
+          "reward_sum": 96.68499783892184,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.003997499910648912,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004919999890029431,
+          "reward_sum": 96.52499784249812,
+          "seed": 70011
+        }
+      ]
+    },
+    "privileged_oracle": {
+      "early_mean_reward": 0.8485,
+      "high_end_visit_count": {
+        "max": 17337,
+        "mean": 17095.416666666668,
+        "min": 16977,
+        "zero_seed_count": 0
+      },
+      "late_mean_reward": 0.8516666666666667,
+      "n": 12,
+      "reward_sum": {
+        "max": 17336.0,
+        "mean": 17094.666666666668,
+        "min": 16976.0,
+        "sample_sd": 102.28243724949543
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.855,
+          "high_end_visit_count": 16977,
+          "late_mean_reward": 0.851,
+          "reward_sum": 16976.0,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.854,
+          "high_end_visit_count": 17056,
+          "late_mean_reward": 0.8995,
+          "reward_sum": 17055.0,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.8435,
+          "high_end_visit_count": 17337,
+          "late_mean_reward": 0.824,
+          "reward_sum": 17336.0,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.867,
+          "high_end_visit_count": 17191,
+          "late_mean_reward": 0.867,
+          "reward_sum": 17190.0,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.8355,
+          "high_end_visit_count": 17201,
+          "late_mean_reward": 0.841,
+          "reward_sum": 17200.0,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.8725,
+          "high_end_visit_count": 17078,
+          "late_mean_reward": 0.866,
+          "reward_sum": 17078.0,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.857,
+          "high_end_visit_count": 17006,
+          "late_mean_reward": 0.8485,
+          "reward_sum": 17005.0,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 0.8505,
+          "high_end_visit_count": 17092,
+          "late_mean_reward": 0.872,
+          "reward_sum": 17091.0,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.845,
+          "high_end_visit_count": 17097,
+          "late_mean_reward": 0.829,
+          "reward_sum": 17097.0,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.847,
+          "high_end_visit_count": 17001,
+          "late_mean_reward": 0.8335,
+          "reward_sum": 17000.0,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.806,
+          "high_end_visit_count": 17068,
+          "late_mean_reward": 0.8495,
+          "reward_sum": 17068.0,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.849,
+          "high_end_visit_count": 17041,
+          "late_mean_reward": 0.839,
+          "reward_sum": 17040.0,
+          "seed": 70011
+        }
+      ]
+    },
+    "prototype": {
+      "early_mean_reward": 0.13133583329043663,
+      "high_end_visit_count": {
+        "max": 13454,
+        "mean": 5713.583333333333,
+        "min": 0,
+        "zero_seed_count": 6
+      },
+      "late_mean_reward": 0.3401156249480555,
+      "n": 12,
+      "reward_sum": {
+        "max": 12741.714999984019,
+        "mean": 5463.068748966558,
+        "min": 78.86499823722988,
+        "sample_sd": 5917.433664481121
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.0034724999223835766,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004662499895785004,
+          "reward_sum": 89.75499799381942,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.29812499999720604,
+          "high_end_visit_count": 12696,
+          "late_mean_reward": 0.6890099999997765,
+          "reward_sum": 12046.734999983571,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.0033724999246187506,
+          "high_end_visit_count": 9480,
+          "late_mean_reward": 0.6475074999998324,
+          "reward_sum": 9035.849999489263,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.004509999899193645,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004582499897573143,
+          "reward_sum": 91.93499794509262,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.3976074999975972,
+          "high_end_visit_count": 13423,
+          "late_mean_reward": 0.674,
+          "reward_sum": 12741.714999984019,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.4142024999842979,
+          "high_end_visit_count": 13454,
+          "late_mean_reward": 0.6985,
+          "reward_sum": 12713.724999961443,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.4442299999948591,
+          "high_end_visit_count": 13225,
+          "late_mean_reward": 0.686,
+          "reward_sum": 12524.969999978319,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 5.749999871477485e-05,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004659999895840883,
+          "reward_sum": 83.76999812759459,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.0022149999504908918,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004719999894499779,
+          "reward_sum": 78.86499823722988,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.0033199999257922173,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.00460999989695847,
+          "reward_sum": 90.0799979865551,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.0015624999650754035,
+          "high_end_visit_count": 6285,
+          "late_mean_reward": 0.6585,
+          "reward_sum": 5969.619999919087,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.0033549999250099063,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004634999896399677,
+          "reward_sum": 89.80499799270183,
+          "seed": 70011
+        }
+      ]
+    },
+    "prototype_frozen": {
+      "early_mean_reward": 0.0554333332957079,
+      "high_end_visit_count": {
+        "max": 13000,
+        "mean": 1467.0833333333333,
+        "min": 0,
+        "zero_seed_count": 6
+      },
+      "late_mean_reward": 0.05976374996337109,
+      "n": 12,
+      "reward_sum": {
+        "max": 12313.004999865778,
+        "mean": 1080.1112492338289,
+        "min": 1.0249999770894647,
+        "sample_sd": 3537.92685677466
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.0026049999529495836,
+          "high_end_visit_count": 189,
+          "late_mean_reward": 0.002229999950155616,
+          "reward_sum": 54.56499902624637,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.004654999895952642,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.00468749989522621,
+          "reward_sum": 93.09999791905284,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.0001649999963119626,
+          "high_end_visit_count": 3,
+          "late_mean_reward": 0.00017999999597668648,
+          "reward_sum": 5.584999919869006,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.013,
+          "high_end_visit_count": 4014,
+          "late_mean_reward": 0.009002499999944121,
+          "reward_sum": 208.01499999966472,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.0001474999967031181,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.00018499999586492778,
+          "reward_sum": 3.6199999190866947,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.00460749989701435,
+          "high_end_visit_count": 269,
+          "late_mean_reward": 0.005169999917969108,
+          "reward_sum": 97.95999805629253,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.6316999999955296,
+          "high_end_visit_count": 13000,
+          "late_mean_reward": 0.686,
+          "reward_sum": 12313.004999865778,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 8.24999981559813e-05,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 4.499999899417162e-05,
+          "reward_sum": 1.0249999770894647,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.002124999952502549,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.002497499944176525,
+          "reward_sum": 50.89999886229634,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.0036274999189190565,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.0035724999201484026,
+          "reward_sum": 73.9499983470887,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.002319999948143959,
+          "high_end_visit_count": 130,
+          "late_mean_reward": 0.003424999945797026,
+          "reward_sum": 56.16499899048358,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.0001649999963119626,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.0001699999962002039,
+          "reward_sum": 3.4449999229982495,
+          "seed": 70011
+        }
+      ]
+    },
+    "random": {
+      "early_mean_reward": 0.0032677082956846185,
+      "high_end_visit_count": {
+        "max": 85,
+        "mean": 54.25,
+        "min": 28,
+        "zero_seed_count": 0
+      },
+      "late_mean_reward": 0.003729166629879425,
+      "n": 12,
+      "reward_sum": {
+        "max": 80.57999924942851,
+        "mean": 60.48291592385309,
+        "min": 42.81499926652759,
+        "sample_sd": 11.079138145821567
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.006117499963846058,
+          "high_end_visit_count": 67,
+          "late_mean_reward": 0.0021499999631196262,
+          "reward_sum": 66.21999925747514,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.004144999963231385,
+          "high_end_visit_count": 85,
+          "late_mean_reward": 0.0036749999625608327,
+          "reward_sum": 80.57999924942851,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.0016824999623931945,
+          "high_end_visit_count": 45,
+          "late_mean_reward": 0.004057499965187162,
+          "reward_sum": 55.61999924853444,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.0030899999644607304,
+          "high_end_visit_count": 85,
+          "late_mean_reward": 0.006737499961163848,
+          "reward_sum": 79.56999927200377,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.0018174999593757093,
+          "high_end_visit_count": 37,
+          "late_mean_reward": 0.0040899999644607304,
+          "reward_sum": 50.57499924954027,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.0022899999599903824,
+          "high_end_visit_count": 28,
+          "late_mean_reward": 0.0020474999654106797,
+          "reward_sum": 42.81499926652759,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.0025899999644607304,
+          "high_end_visit_count": 49,
+          "late_mean_reward": 0.0017524999608285725,
+          "reward_sum": 54.95499926339835,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 0.00528249996015802,
+          "high_end_visit_count": 58,
+          "late_mean_reward": 0.004144999963231385,
+          "reward_sum": 61.64999924786389,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.003617499963846058,
+          "high_end_visit_count": 54,
+          "late_mean_reward": 0.003169999962672591,
+          "reward_sum": 58.0699992608279,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.002739999961107969,
+          "high_end_visit_count": 54,
+          "late_mean_reward": 0.0057599999606609345,
+          "reward_sum": 63.979999240487814,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.004144999963231385,
+          "high_end_visit_count": 47,
+          "late_mean_reward": 0.0016324999635107815,
+          "reward_sum": 59.25499925669283,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.0016949999621137977,
+          "high_end_visit_count": 42,
+          "late_mean_reward": 0.005532499965745956,
+          "reward_sum": 52.50499927345663,
+          "seed": 70011
+        }
+      ]
+    },
+    "sarsa": {
+      "early_mean_reward": 0.09618249994656071,
+      "high_end_visit_count": {
+        "max": 15310,
+        "mean": 6340.166666666667,
+        "min": 0,
+        "zero_seed_count": 3
+      },
+      "late_mean_reward": 0.33764479160196303,
+      "n": 12,
+      "reward_sum": {
+        "max": 15088.124999974854,
+        "mean": 6304.9424987402745,
+        "min": 93.42499791178852,
+        "sample_sd": 7672.065529332969
+      },
+      "seed_values": [
+        {
+          "early_mean_reward": 0.23439999997988342,
+          "high_end_visit_count": 15223,
+          "late_mean_reward": 0.8155,
+          "reward_sum": 15014.869999958202,
+          "seed": 70000
+        },
+        {
+          "early_mean_reward": 0.24479999999329446,
+          "high_end_visit_count": 15303,
+          "late_mean_reward": 0.8635,
+          "reward_sum": 15059.719999983907,
+          "seed": 70001
+        },
+        {
+          "early_mean_reward": 0.003894999912939966,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004942499889526516,
+          "reward_sum": 96.70499783847481,
+          "seed": 70002
+        },
+        {
+          "early_mean_reward": 0.003469999922439456,
+          "high_end_visit_count": 1,
+          "late_mean_reward": 0.004949999889358878,
+          "reward_sum": 95.6749978614971,
+          "seed": 70003
+        },
+        {
+          "early_mean_reward": 0.12575999996066092,
+          "high_end_visit_count": 15089,
+          "late_mean_reward": 0.7171574999964796,
+          "reward_sum": 14906.834999914281,
+          "seed": 70004
+        },
+        {
+          "early_mean_reward": 0.0037899999152868984,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004937499889638275,
+          "reward_sum": 96.24999784864485,
+          "seed": 70005
+        },
+        {
+          "early_mean_reward": 0.2904724999894388,
+          "high_end_visit_count": 15310,
+          "late_mean_reward": 0.8165149999996647,
+          "reward_sum": 15088.124999974854,
+          "seed": 70006
+        },
+        {
+          "early_mean_reward": 0.00394999991171062,
+          "high_end_visit_count": 4,
+          "late_mean_reward": 0.004927499889861792,
+          "reward_sum": 93.42499791178852,
+          "seed": 70007
+        },
+        {
+          "early_mean_reward": 0.004579999919980765,
+          "high_end_visit_count": 8,
+          "late_mean_reward": 0.004937499889638275,
+          "reward_sum": 97.81499785836786,
+          "seed": 70008
+        },
+        {
+          "early_mean_reward": 0.22808749997569247,
+          "high_end_visit_count": 15129,
+          "late_mean_reward": 0.8045024999999442,
+          "reward_sum": 14910.44499994535,
+          "seed": 70009
+        },
+        {
+          "early_mean_reward": 0.007184999962337315,
+          "high_end_visit_count": 15,
+          "late_mean_reward": 0.004937499889638275,
+          "reward_sum": 103.26499793771654,
+          "seed": 70010
+        },
+        {
+          "early_mean_reward": 0.003799999915063381,
+          "high_end_visit_count": 0,
+          "late_mean_reward": 0.004929999889805913,
+          "reward_sum": 96.17999785020947,
+          "seed": 70011
+        }
+      ]
+    }
+  },
+  "claim_scope": "descriptive_secondary_analysis_permanently_nonpromoting",
+  "environment": "riverswim",
+  "horizon_per_shard": 20000,
+  "paired_diagnostics": {
+    "differential_sarsa": {
+      "interpretation": "descriptive association across the 12 retained seeds only",
+      "pearson_reward_vs_high_end_visits": null
+    },
+    "prototype": {
+      "interpretation": "descriptive association across the 12 retained seeds only",
+      "pearson_reward_vs_high_end_visits": 0.9999950647481005
+    },
+    "sarsa": {
+      "interpretation": "descriptive association across the 12 retained seeds only",
+      "pearson_reward_vs_high_end_visits": 0.9999986104667343
+    }
+  },
+  "plan_sha256": "4c4396848da3abebc53fb61c7b241866566ad2b44fa83ee3395a5a389a869b86",
+  "schema": "asi.reference_life_riverswim_shard_audit.v1",
+  "seed_roster": [
+    70000,
+    70001,
+    70002,
+    70003,
+    70004,
+    70005,
+    70006,
+    70007,
+    70008,
+    70009,
+    70010,
+    70011
+  ],
+  "source_run": "run2-2026-10-09"
+}

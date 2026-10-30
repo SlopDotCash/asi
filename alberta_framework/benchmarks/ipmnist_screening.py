@@ -8309,6 +8309,15 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # single-shot, identmap100_r) and the round-2 rejections (identmap25_r,
     # identmap50_fast — negative result #22) are deregistered but retained
     # in the ledger and pinned outputs.
+    # two arms below are the two 200-task/20-seed CONFIRMED members of the
+    # family (identmap_confirm_r1/ and identmap_star_confirm_r1/); the
+    # third is a registered 60-task screen of the gate + trigger +
+    # step-size triple on the gated chain (wave_identmap50_r_idet003_s005625/,
+    # the ungated chain's winning step size composed with the gated
+    # idet003 trigger peak, PRs #3115/#3116); the screened intermediates
+    # (identmap200 single-shot, identmap100_r) and the round-2 rejections
+    # (identmap25_r, identmap50_fast — negative result #22) are
+    # deregistered but retained in the ledger and pinned outputs.
     # ident_match_at=0 delegates verbatim to the incumbent factory
     # (bit-exact reduction, pinned by tests).
     for ident_name, ident_overrides, ident_extra in (
@@ -8343,6 +8352,22 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             " 0.03 (PR #3119), so the step axis is the gated chain's only"
             " remaining open direction, and this bracket was named"
             " unmeasured in the s00421875 wave README (PR #3119)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet003_s005625",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+             "step_size": 0.005625},
+            "the gated idet003 composition (identmap50_r schedule "
+            "50/200/2000, utility gate kept, identifier trigger 0.03 — the "
+            "gated trigger peak, PR #3115) with the residual body's step "
+            "size lowered to 0.005625 from the champion-calibrated 0.01: "
+            "the ungated chain measured the step axis improving through "
+            "0.005625 on every seed (PRs #3109-#3111, +0.01155 cumulative), "
+            "and the gated chain never screened any step below 0.01 — the "
+            "gate + trigger + step triple named unmeasured in the idet002 "
+            "wave README (PR #3116)"
         ),
     ):
         specs.append(
@@ -10131,6 +10156,33 @@ class ScreeningRunResult:
             object.__setattr__(self, "mechanism_diagnostics", normalized_diagnostics)
 
 
+def _exact_correct_counts(per_task_accuracy: object, task_length: int) -> tuple[int, ...]:
+    """Invert float32 per-task accuracy means back to their integer correct counts.
+
+    The runner reports each task's online accuracy as the float32 mean of 0/1
+    correct flags, i.e. ``float32(count / task_length)``, whose rounding error
+    is far larger than the strict integer-lattice tolerance the L2-ER receipt
+    validator applies to ``mean_online_accuracy * observations``. Recover the
+    exact count so the receipt carries the lattice value itself.
+    """
+    # Four float32 half-ulps at 1.0 bound the runner's rounding; the count
+    # spacing 1 / task_length must exceed twice that so the inversion is unique.
+    tolerance = 4.0 * 2.0**-24
+    if task_length <= 0 or 1.0 / task_length <= 2.0 * tolerance:
+        raise ValueError("task_length is too large to invert float32 per-task accuracy")
+    counts: list[int] = []
+    for value in np.asarray(per_task_accuracy, dtype=np.float64).tolist():
+        if not (0.0 <= value <= 1.0):
+            raise ValueError("per-task accuracy must lie in [0, 1]")
+        count = round(value * task_length)
+        if abs(value - count / task_length) > tolerance:
+            raise ValueError(
+                "per-task accuracy is not a float32 mean of correct flags over task_length"
+            )
+        counts.append(count)
+    return tuple(counts)
+
+
 def l2er_development_result_payload(
     result: ScreeningRunResult, *, outcome: str
 ) -> dict[str, object]:
@@ -10154,6 +10206,9 @@ def l2er_development_result_payload(
         + config.n_classes
     )
     persistent_bytes = 4 * (parameter_count + er_batch_size * config.input_dim + 1) + 1
+    correct_counts = _exact_correct_counts(result.per_task_accuracy, config.task_length)
+    if len(correct_counts) != config.n_tasks:
+        raise ValueError("per-task accuracy must report exactly n_tasks entries")
     payload: dict[str, object] = {
         "schema": L2ER_RESULT_SCHEMA,
         "comparison_id": L2ER_COMPARISON_ID,
@@ -10175,7 +10230,7 @@ def l2er_development_result_payload(
         "allowed_task_information": ["current_example_label"],
         "hyperparameters": dict(spec.hyperparameters),
         "metrics": {
-            "mean_online_accuracy": float(np.mean(result.per_task_accuracy)),
+            "mean_online_accuracy": sum(correct_counts) / observations,
             "mean_loss": float(np.mean(result.per_task_loss)),
             "mean_plasticity": float(np.mean(result.per_task_plasticity)),
         },
