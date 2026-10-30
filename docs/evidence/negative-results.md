@@ -525,3 +525,13 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Anneal schedule sweep on anneal_f2t1000 (2026-10-30)
+
+A preregistered, nonpromoting screen changed only the anneal (floor, tau) of `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000`. Each arm was judged on its own against the bar: ≥ +0.002, ≥ 7/10 seeds improved, and a 95% CI and Bonferroni 97.5% CI lower bound above 0. Seeds 0-9, 60 tasks.
+
+- **f2t2000 (gentler):** -0.000256, CI [-0.000345, -0.000167], 0/10 improved. +0.0013 at tasks 1-15, falling to -0.0013 at tasks 46-60.
+- **f4t1000 (stronger):** -0.000077, CI [-0.000168, +0.000013], 2/10 improved. -0.00046 at tasks 1-15, rising to +0.00023 at tasks 46-60.
+- **Secondary, f4t1000 − f2t2000:** +0.000179, CI [+0.000086, +0.000271], 9/10. More annealing pays later in life, but at 60 tasks the parent schedule is near-optimal on this axis.
+- **Integrity:** the parent shards were reused after jaxpr, environment and bit-exact re-run checks. The control was re-measured bit-exactly.
+- [Report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_sweep/RESULTS.md).
