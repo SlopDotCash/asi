@@ -918,6 +918,8 @@ class UPGDMemoryLearner:
             floating_tree_is_finite(state)
             & (state.step_count >= 0)
             & (state.upgd_state.step_count >= 0)
+            & (state.step_count == state.upgd_state.step_count)
+            & (state.step_count == state.memory_state.step_count)
             & self._memory._state_is_valid(state.memory_state)  # noqa: SLF001
         )
 

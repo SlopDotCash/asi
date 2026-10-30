@@ -131,6 +131,20 @@ def _require_positive_normal_float32_step_size(value: object) -> float:
     return cast(float, value) if preserve_builtin_float else narrowed
 
 
+def _importance_ratio_operand(value: object) -> Array:
+    """Reject exact host negatives before float32 narrowing can erase their sign."""
+    actual_type = type(value)
+    if any(actual_type is trusted_type for trusted_type in _TRUSTED_STEP_SIZE_TYPES):
+        try:
+            numerator, _, narrowed = round_real_to_float32_with_ratio(cast(Real, value))
+        except (FloatingPointError, OverflowError, TypeError, ValueError):
+            return jnp.asarray(value, dtype=jnp.float32)
+        if numerator < 0:
+            raise ValueError("rho must be non-negative")
+        return jnp.asarray(narrowed, dtype=jnp.float32)
+    return jnp.asarray(value, dtype=jnp.float32)
+
+
 _INT32_MAX = 2**31 - 1
 _CONFIG_FIELDS = {
     "type",
@@ -198,10 +212,12 @@ def _stacked_horde_update_result_extras_bytes(n_demons: int) -> int:
 
 
 def _stacked_horde_update_working_set_bytes(n_demons: int, feature_dim: int) -> int:
-    """Source persist, proposed persist, committed persist, and returned extras."""
+    """Persist copies, returned extras, and bounded TD recovery buffers."""
+    # Conservatively charge six float32-width per-head buffers (including
+    # the narrower recovery mask) for both TD evaluation orders and selection.
     return 3 * _stacked_horde_persistent_bytes(
         n_demons, feature_dim
-    ) + _stacked_horde_update_result_extras_bytes(n_demons)
+    ) + _stacked_horde_update_result_extras_bytes(n_demons) + 24 * n_demons
 
 
 def _preflight_stacked_horde_update_working_set(n_demons: int, feature_dim: int) -> None:
@@ -534,18 +550,24 @@ class StackedLinearHorde:
         cumulants = cumulant_source[self._cumulant_idx]  # (n_demons,)
         requested = ~jnp.isnan(cumulants)
         active = jnp.isfinite(cumulants)
-        rho_vec = jnp.broadcast_to(jnp.asarray(rho, dtype=jnp.float32), (cfg.n_demons,))
-        rho_valid = jnp.isfinite(rho_vec)
+        rho_vec = jnp.broadcast_to(_importance_ratio_operand(rho), (cfg.n_demons,))
+        rho_valid = jnp.isfinite(rho_vec) & (rho_vec >= 0.0)
 
         v = state.weights @ features  # (n_demons,)
         v_next = state.weights @ next_features
         # gamma=0 must not multiply an inf bootstrap (0*inf).
         bootstrap = jnp.where(self._gammas == 0.0, 0.0, self._gammas * v_next)
-        raw_td_errors = cumulants + bootstrap - v
+        cumulant_bootstrap = cumulants + bootstrap
+        # Keep ordinary rounding; recover only an overflowing partial sum
+        # whose subtraction of the current prediction can make TD finite.
+        raw_td_errors = jnp.where(
+            jnp.isfinite(cumulant_bootstrap),
+            cumulant_bootstrap - v,
+            cumulants + (bootstrap - v),
+        )
         prediction_valid = jnp.isfinite(v) & ((self._gammas == 0.0) | jnp.isfinite(v_next))
         channel_valid = active & rho_valid & prediction_valid & jnp.isfinite(raw_td_errors)
-        safe_cumulants = jnp.where(channel_valid, cumulants, 0.0)
-        td_errors = safe_cumulants + bootstrap - v
+        td_errors = jnp.where(channel_valid, raw_td_errors, 0.0)
 
         # Per-decision IS with the ratio composed into the trace:
         # z_d = rho_d * (gamma_d * lamda_d * z_d + x).
@@ -566,6 +588,7 @@ class StackedLinearHorde:
             jnp.all(jnp.isfinite(features))
             & jnp.all(jnp.isfinite(next_features))
             & source_weights_finite
+            & (state.step_count >= 0)
         )
         candidate_finite = jnp.all(jnp.isfinite(proposed_weights), axis=1) & jnp.all(
             jnp.isfinite(proposed_traces), axis=1

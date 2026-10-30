@@ -375,5 +375,6 @@ interpolation from the pure previous permutation) and every load/merge path
 re-derives that bound from the shard's recorded config; the v3 schema and
 the gradual mode are bound in both directions, so a step-mode payload
 claiming the v3 schema is rejected rather than merging into a v3 summary
-with no gradual window. No gradual wave has been executed; any future wave
-is development-only and permanently nonpromoting.
+with no gradual window. The first gradual wave is retained in `gradual64_r1/`
+(chain families vs the pinned control, seeds 0–2); it is development-only
+and permanently nonpromoting.

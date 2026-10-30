@@ -753,6 +753,17 @@ def _same(actual: object, expected: object) -> bool:
         return False
 
 
+def _validate_frozen_plan(
+    value: Mapping[str, object],
+    expected: dict[str, object],
+    *,
+    location: str,
+    errors: list[str],
+) -> None:
+    if not _same(value, expected):
+        errors.append(f"{location} must equal the frozen v1 plan")
+
+
 def _finite_number(value: object) -> float | None:
     if type(value) is bool or (type(value) is not int and type(value) is not float):
         return None
@@ -1679,6 +1690,22 @@ def validate_evidence_artifact(
             "source_provenance",
         ):
             _required_mapping(content, key, errors)
+        protocol_mapping = content.get("protocol")
+        if isinstance(protocol_mapping, Mapping):
+            _validate_frozen_plan(
+                protocol_mapping,
+                _protocol_payload(),
+                location="content.protocol",
+                errors=errors,
+            )
+        configuration_mapping = content.get("configuration")
+        if isinstance(configuration_mapping, Mapping):
+            _validate_frozen_plan(
+                configuration_mapping,
+                _config_payload(ContinualMultiAgentConfig()),
+                location="content.configuration",
+                errors=errors,
+            )
         _validate_source_provenance(content.get("source_provenance"), errors)
         threshold_mapping = content.get("thresholds")
         if isinstance(threshold_mapping, Mapping):
