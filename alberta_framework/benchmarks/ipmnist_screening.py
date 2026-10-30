@@ -12651,6 +12651,14 @@ def merge_shards(
             "merge_shards ranks configs on paired seeds only"
         )
 
+    n_tasks = shards[0]["config"]["n_tasks"]
+    if slope_window > n_tasks:
+        raise ValueError(
+            f"slope_window ({slope_window}) exceeds the shards' n_tasks "
+            f"({n_tasks}); the slope would silently cover every task while "
+            "the summary records the larger window"
+        )
+
     entries: list[dict[str, Any]] = []
     for name, per_seed in sorted(by_config.items()):
         seeds = sorted(per_seed)
