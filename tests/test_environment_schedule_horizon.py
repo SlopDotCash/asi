@@ -196,7 +196,8 @@ def test_recurring_schema_migration_resources_and_checkpoint(tmp_path) -> None:
 
     path = tmp_path / "recurring"
     save_recurring_two_agent_checkpoint(world, state, path)
-    restored_world, restored = load_recurring_two_agent_checkpoint(path)
+    with jax.default_prng_impl("rbg"):
+        restored_world, restored = load_recurring_two_agent_checkpoint(path)
     assert restored_world.to_config() == config
     chex.assert_trees_all_equal(restored, state)
 
