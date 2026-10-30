@@ -71,6 +71,7 @@ RECURRING_TWO_AGENT_CONFIG_SCHEMA = "alberta.recurring-two-agent-config.v2"
 RECURRING_TWO_AGENT_STATE_SCHEMA = "alberta.recurring-two-agent-state.v2"
 RECURRING_TWO_AGENT_CHECKPOINT_SCHEMA = "alberta.recurring-two-agent-checkpoint.v2"
 _LEGACY_RECURRING_TWO_AGENT_CHECKPOINT_SCHEMA = "alberta.recurring-two-agent-checkpoint.v1"
+_RECURRING_TWO_AGENT_PRNG_IMPLEMENTATION = "threefry2x32"
 RECURRING_TWO_AGENT_CLOCK_NBYTES = 12
 RECURRING_TWO_AGENT_CLOCK_DELTA_NBYTES = 8
 _RECURRING_TWO_AGENT_CONFIG_FIELDS = frozenset(
@@ -124,6 +125,23 @@ def _require_array(
     if array.dtype != dtype:
         raise TypeError(f"{name} must have dtype {dtype}, got {array.dtype}")
     return array
+
+
+def _require_recurring_two_agent_key(key: Array) -> Array:
+    """Require the two-word Threefry key stored by the state schema."""
+
+    try:
+        key_data = jr.key_data(key)
+        key_implementation = str(jr.key_impl(key))
+    except TypeError as error:
+        raise TypeError("recurring two-agent key must use threefry2x32") from error
+    if (
+        key_implementation != _RECURRING_TWO_AGENT_PRNG_IMPLEMENTATION
+        or key_data.shape != (2,)
+        or key_data.dtype != jnp.dtype(jnp.uint32)
+    ):
+        raise TypeError("recurring two-agent key must use threefry2x32")
+    return key
 
 
 def _checked_words_increment(words: Array) -> tuple[Array, Array]:
@@ -509,7 +527,7 @@ class RecurringTwoAgentWorld:
     @property
     def resource_budget(self) -> RecurringTwoAgentResourceBudget:
         """Return exact persistent-state and lifetime-clock accounting."""
-        state = self.init(jr.key(0))
+        state = self.init(jr.key(0, impl=_RECURRING_TWO_AGENT_PRNG_IMPLEMENTATION))
         return RecurringTwoAgentResourceBudget(
             state_nbytes=measure_recurring_two_agent_state_nbytes(state),
             exact_clock_nbytes=RECURRING_TWO_AGENT_CLOCK_NBYTES,
@@ -595,9 +613,7 @@ class RecurringTwoAgentWorld:
             shape=(2,),
             dtype=jnp.dtype(jnp.uint32),
         )
-        key_data = jr.key_data(state.key)
-        if key_data.shape != (2,) or key_data.dtype != jnp.dtype(jnp.uint32):
-            raise TypeError("recurring two-agent key must be a scalar JAX PRNG key")
+        _require_recurring_two_agent_key(state.key)
 
     def state_is_valid(self, state: RecurringTwoAgentState) -> Array:
         """Authenticate exact time and bounded finite physical state."""
@@ -632,6 +648,7 @@ class RecurringTwoAgentWorld:
     def init(self, key: Array) -> RecurringTwoAgentState:
         """Create a deterministic initial state from ``key``."""
 
+        key = _require_recurring_two_agent_key(key)
         next_key, nuisance_key = jr.split(key)
         nuisance = self._sample_nuisance(nuisance_key)
         return RecurringTwoAgentState(  # type: ignore[call-arg]
@@ -1025,7 +1042,7 @@ def load_recurring_two_agent_checkpoint(
     if not isinstance(raw_config, Mapping):
         raise ValueError("recurring two-agent checkpoint world_config is invalid")
     world = RecurringTwoAgentWorld.from_config(raw_config)
-    template = world.init(jr.key(0))
+    template = world.init(jr.key(0, impl=_RECURRING_TWO_AGENT_PRNG_IMPLEMENTATION))
     expected_empty = _recurring_empty_leaf_indices(template)
     if metadata.get("zero_sized_array_leaf_indices") != expected_empty:
         raise ValueError("recurring two-agent empty-array manifest does not match")

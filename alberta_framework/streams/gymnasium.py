@@ -157,6 +157,7 @@ def _flatten_observation(obs: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     expected = _flatten_space(space)
     if flattened.shape != (expected,) or not bool(jnp.all(jnp.isfinite(flattened))):
         raise ValueError("observation must match its declared flattened shape and be finite")
+    _require_space_member("observation", obs, space)
     return flattened
 
 
@@ -190,7 +191,32 @@ def _flatten_action(action: Any, space: gymnasium.spaces.Space[Any]) -> Array:
     expected = _flatten_space(space)
     if flattened.shape != (expected,) or not bool(jnp.all(jnp.isfinite(flattened))):
         raise ValueError("action must match its declared flattened shape and be finite")
+    _require_space_member("action", action, space)
     return flattened
+
+
+def _require_space_member(
+    name: str,
+    value: object,
+    space: gymnasium.spaces.Space[Any],
+) -> None:
+    """Reject a finite, correctly shaped value outside its declared space."""
+    import gymnasium
+
+    candidate = np.asarray(value) if isinstance(value, jax.Array) else value
+    try:
+        if isinstance(space, gymnasium.spaces.Box):
+            contained = gymnasium.spaces.Box.contains(space, candidate)
+        elif isinstance(space, gymnasium.spaces.Discrete):
+            contained = gymnasium.spaces.Discrete.contains(space, candidate)
+        elif isinstance(space, gymnasium.spaces.MultiDiscrete):
+            contained = gymnasium.spaces.MultiDiscrete.contains(space, candidate)
+        else:
+            raise ValueError("unsupported space")
+    except Exception as error:
+        raise ValueError(f"{name} could not be checked against its declared space") from error
+    if not bool(contained):
+        raise ValueError(f"{name} must belong to its declared space")
 
 
 def _require_runtime_shape(name: str, value: object, expected: tuple[int, ...]) -> None:
@@ -550,6 +576,7 @@ def learn_from_trajectory(
 
     t0 = time.time()
     final_state, metrics = jax.lax.scan(step_fn, learner_state, (observations, targets))
+    jax.block_until_ready((final_state, metrics))  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
 
