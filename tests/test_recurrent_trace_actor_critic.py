@@ -936,6 +936,19 @@ def test_update_requires_start_and_valid_transition_scalars() -> None:
         )
 
 
+def test_start_rejects_finite_observation_that_overflows_running_state() -> None:
+    """Do not dispatch an action after the retained Welford state overflows."""
+    agent = RecurrentTraceActorCriticAgent(_small_config())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    observation = jnp.full((2,), jnp.finfo(jnp.float32).max)
+
+    with pytest.raises(
+        jax.errors.JaxRuntimeError,
+        match="observation normalization produced non-finite state",
+    ):
+        agent.start(state, observation)
+
+
 def test_jitted_public_update_enforces_dynamic_lifecycle_and_discount_checks() -> None:
     """The complete public boundary must retain its checks under an outer JIT."""
     agent = RecurrentTraceActorCriticAgent(_small_config())
@@ -2120,6 +2133,20 @@ def test_state_resource_budget_is_exact_and_init_preflights_before_rng(
         RecurrentTraceActorCriticAgent(config).init(2**31 - 1, jr.key(0))
 
 
+@pytest.mark.parametrize(
+    "key",
+    [
+        jr.key(3, impl="rbg"),
+        jr.key_data(jr.key(3, impl="threefry2x32")),
+    ],
+)
+def test_init_rejects_keys_outside_scalar_threefry_state_budget(key: Array) -> None:
+    agent = RecurrentTraceActorCriticAgent(_small_config())
+
+    with pytest.raises(ValueError, match="typed scalar threefry2x32 key"):
+        agent.init(2, key)
+
+
 def test_canonical_discrete_architecture_defaults_and_core_export() -> None:
     config = RecurrentTraceActorCriticConfig(n_actions=4)
     assert config.hidden_size == 192
@@ -2217,6 +2244,53 @@ def test_reference_dense_rtu_and_live_sparse_feedforward_initialization() -> Non
     normalized = parameterless_layer_norm(inputs, epsilon=1e-8)
     assert jnp.allclose(jnp.mean(normalized), 0.0, atol=1e-6)
     assert jnp.allclose(jnp.mean(jnp.square(normalized)), 1.0, atol=1e-6)
+
+
+@pytest.mark.parametrize("magnitude", [7e37, 1e38, 3e38])
+def test_parameterless_layer_norm_preserves_large_finite_contrast(
+    magnitude: float,
+) -> None:
+    inputs = jnp.asarray(
+        (magnitude,) * 4 + (-magnitude,) * 4,
+        dtype=jnp.float32,
+    )
+
+    normalized = parameterless_layer_norm(inputs, epsilon=1e-8)
+    compiled = jax.jit(parameterless_layer_norm)(inputs, epsilon=1e-8)
+
+    assert bool(jnp.all(jnp.isfinite(normalized)))
+    expected = jnp.asarray((1.0,) * 4 + (-1.0,) * 4, dtype=jnp.float32)
+    np.testing.assert_allclose(normalized, expected, rtol=1e-6)
+    np.testing.assert_allclose(compiled, expected, rtol=1e-6)
+
+
+@pytest.mark.parametrize("epsilon", [1e-5, 1e-8])
+@pytest.mark.parametrize("scale", [1e-22, 1e-25])
+def test_parameterless_layer_norm_preserves_tiny_finite_gradients(
+    epsilon: float,
+    scale: float,
+) -> None:
+    inputs = jnp.asarray((-3.0, -1.0, 2.0, 4.0), dtype=jnp.float32) * scale
+    cotangent = jnp.asarray((0.5, -2.0, 1.5, 3.0), dtype=jnp.float32)
+
+    def weighted_norm(values: Array) -> Array:
+        return jnp.sum(cotangent * parameterless_layer_norm(values, epsilon))
+
+    def direct_weighted_norm(values: Array) -> Array:
+        centered = values - jnp.mean(values, keepdims=True)
+        variance = jnp.mean(jnp.square(centered), keepdims=True)
+        normalized = centered * jax.lax.rsqrt(
+            variance + jnp.asarray(epsilon, values.dtype)
+        )
+        return jnp.sum(cotangent * normalized)
+
+    gradient = jax.grad(weighted_norm)(inputs)
+    compiled_gradient = jax.jit(jax.grad(weighted_norm))(inputs)
+    expected_gradient = jax.grad(direct_weighted_norm)(inputs)
+
+    assert bool(jnp.all(jnp.isfinite(gradient)))
+    np.testing.assert_array_equal(gradient, expected_gradient)
+    np.testing.assert_array_equal(compiled_gradient, expected_gradient)
 
 
 def test_initialized_radii_respect_small_configured_interval() -> None:
