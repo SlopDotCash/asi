@@ -283,8 +283,7 @@ class SecurityRewardWeights:
             "compromise_cost",
             "recovery",
         ):
-            if type(getattr(self, name)) is bool:
-                raise ValueError(f"{name} must be a finite real number")
+            object.__setattr__(self, name, _require_finite_real(name, getattr(self, name)))
 
     def to_dict(self) -> dict[str, float]:
         """Return a JSON-serializable weight mapping."""

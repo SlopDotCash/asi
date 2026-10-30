@@ -228,7 +228,7 @@ def environment_rng_schedule_sha256(
     schedule: EnvironmentRngSchedule | str,
 ) -> str:
     """Hash the one shared semantic environment-key schedule identity."""
-    if schedule not in SUPPORTED_ENVIRONMENT_RNG_SCHEDULES:
+    if type(schedule) is not str or schedule not in SUPPORTED_ENVIRONMENT_RNG_SCHEDULES:
         raise ValueError("unsupported environment RNG schedule identity")
     return _canonical_json_sha256(
         {
@@ -1158,6 +1158,11 @@ class EnvironmentRuntimeIdentity:
             self.environment_rng_schedule_sha256,
             label="environment_rng_schedule_sha256",
         )
+        actual_schedule_sha256 = environment_rng_schedule_sha256(
+            self.environment_rng_schedule
+        )
+        if self.environment_rng_schedule_sha256 != actual_schedule_sha256:
+            raise ValueError("environment RNG schedule digest does not verify")
 
 
 def validate_environment_runtime_identity(
