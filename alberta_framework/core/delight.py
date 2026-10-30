@@ -293,7 +293,11 @@ class GradientJoyConfig:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError(f"GradientJoyConfig has unsupported fields: {unknown}")
-        return cls(**payload)  # type: ignore[arg-type]
+        restored = cls(**payload)  # type: ignore[arg-type]
+        missing = sorted(allowed - set(payload))
+        if missing:
+            raise ValueError(f"GradientJoyConfig is missing required fields: {missing}")
+        return restored
 
 
 @chex.dataclass(frozen=True)
@@ -1926,7 +1930,13 @@ class DelightfulPolicyGradientConfig:
         unknown = sorted(set(payload) - allowed)
         if unknown:
             raise ValueError(f"DelightfulPolicyGradientConfig has unsupported fields: {unknown}")
-        return cls(**payload)  # type: ignore[arg-type]
+        restored = cls(**payload)  # type: ignore[arg-type]
+        missing = sorted(allowed - set(payload))
+        if missing:
+            raise ValueError(
+                f"DelightfulPolicyGradientConfig is missing required fields: {missing}"
+            )
+        return restored
 
 
 @chex.dataclass(frozen=True)
@@ -1997,6 +2007,41 @@ class DelightOutcomeStratification:
     rare_advantage_variance: Float[Array, ""]
 
 
+def _finite_mean_value(values: Array) -> Array:
+    """Preserve a representable mean when only the finite reduction overflows."""
+    value_arr = jnp.ravel(jnp.asarray(values, dtype=jnp.float32))
+    direct = jnp.mean(value_arr)
+    all_finite = jnp.all(jnp.isfinite(value_arr))
+    scale = jax.lax.stop_gradient(jnp.max(jnp.abs(value_arr)))
+    scale_mantissa, scale_exponent = jnp.frexp(scale)
+    safe_mantissa = jnp.where(scale > 0.0, scale_mantissa, 1.0)
+    scaled_values = jnp.ldexp(value_arr, -scale_exponent) / safe_mantissa
+    scaled_mean = jnp.mean(scaled_values)
+    bounded_mean = jnp.clip(scaled_mean, -1.0, 1.0)
+    # The clip is only a roundoff guard: every scaled source value lies in
+    # [-1, 1]. Keep the exact mean derivative through that guard.
+    bounded_mean = scaled_mean + jax.lax.stop_gradient(bounded_mean - scaled_mean)
+    recovered = bounded_mean * scale
+    return jnp.where((~jnp.isfinite(direct)) & all_finite, recovered, direct)
+
+
+@jax.custom_jvp
+def _finite_mean(values: Array) -> Array:
+    """Return a scale-safe mean with the exact derivative of a mean."""
+    return _finite_mean_value(values)
+
+
+@_finite_mean.defjvp
+def _finite_mean_jvp(
+    primals: tuple[Array],
+    tangents: tuple[Array],
+) -> tuple[Array, Array]:
+    (values,) = primals
+    (value_tangent,) = tangents
+    divisor = jnp.asarray(value_tangent.size, dtype=value_tangent.dtype)
+    return _finite_mean_value(values), jnp.sum(value_tangent / divisor)
+
+
 def _masked_mean(values: Array, mask: Array) -> Array:
     """Return a finite conditional mean, or zero when the mask is empty."""
     value_arr = jnp.ravel(jnp.asarray(values, dtype=jnp.float32))
@@ -2051,8 +2096,10 @@ def discrete_delightful_policy_gradient(
     )
     ordinary_coefficients = jax.lax.stop_gradient(advantage)
 
-    actor_loss = -jnp.mean(_skip_zero_product(actor_coefficients, log_prob))
-    ordinary_actor_loss = -jnp.mean(_skip_zero_product(ordinary_coefficients, log_prob))
+    actor_loss = -_finite_mean(_skip_zero_product(actor_coefficients, log_prob))
+    ordinary_actor_loss = -_finite_mean(
+        _skip_zero_product(ordinary_coefficients, log_prob)
+    )
 
     flat_weights = jnp.ravel(sample_weights)
     flat_advantages = jnp.ravel(advantage)

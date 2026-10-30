@@ -694,22 +694,53 @@ def bayes_predict(component_means: Array, dim_sigma: Array, x: Array) -> Array:
     ``O(n * n_classes * n_components + n * dim)`` instead of materializing
     the ``(n, C, K, dim)`` difference tensor.  Computing each coordinate
     difference before squaring also avoids the catastrophic cancellation in
-    the expanded ``||x||² - 2 x·mu + ||mu||²`` identity.
+    the expanded ``||x||² - 2 x·mu + ||mu||²`` identity.  A finite direct
+    sum of squares still feeds that rule.  When every class sum overflows,
+    the scaled log distance selects the nearer class.
     """
     c, k, d = component_means.shape
     whitened_means = (component_means / dim_sigma[None, None, :]).reshape(c * k, d)
     whitened_x = x / dim_sigma[None, :]
 
-    def squared_distances(mean: Array) -> Array:
+    def squared_distances(mean: Array) -> tuple[Array, Array]:
         delta = whitened_x - mean[None, :]
-        return jnp.sum(delta * delta, axis=1)
+        direct = jnp.sum(delta * delta, axis=1)
+        max_abs = jnp.max(jnp.abs(delta), axis=1)
+        # Scale by a power of two. Dividing by max_abs compiles to a
+        # reciprocal multiply, and the reciprocal of a value above 2**126
+        # flushes to zero.
+        _, exponent = jnp.frexp(max_abs)
+        scaled_sum = jnp.sum(jnp.square(jnp.ldexp(delta, -exponent[:, None])), axis=1)
+        # A positive max coordinate scales into [0.5, 1), so this sum is at
+        # least 0.25.
+        log_distance = jnp.log(scaled_sum) + (
+            jnp.asarray(2.0 * np.log(2.0), dtype=jnp.float32) * exponent.astype(jnp.float32)
+        )
+        log_distance = jnp.where(
+            max_abs > 0.0,
+            log_distance,
+            jnp.asarray(-jnp.inf, dtype=jnp.float32),
+        )
+        return direct, log_distance
 
     # lax.map evaluates one component at a time.  Unlike vmap/broadcasting,
     # this makes the bounded-memory contract explicit while retaining a
     # vectorized reduction across samples and dimensions for each component.
-    d2 = jax.lax.map(squared_distances, whitened_means).T.reshape(-1, c, k)
+    direct_rows, log_rows = jax.lax.map(squared_distances, whitened_means)
+    d2 = direct_rows.T.reshape(-1, c, k)
+    log_d2 = log_rows.T.reshape(-1, c, k)
     scores = jax.scipy.special.logsumexp(-0.5 * d2, axis=2)
-    return jnp.argmax(scores, axis=1).astype(jnp.int32)
+    ordinary = jnp.argmax(scores, axis=1)
+    # Overflowed sums become -inf, so argmax would return class 0.
+    nearest = jnp.min(log_d2, axis=2)
+    counts = jnp.sum(log_d2 == nearest[:, :, None], axis=2)
+    min_nearest = jnp.min(nearest, axis=1, keepdims=True)
+    at_best = nearest == min_nearest
+    best_count = jnp.max(jnp.where(at_best, counts, 0), axis=1, keepdims=True)
+    eligible = at_best & (counts == best_count)
+    stable = jnp.argmax(eligible.astype(jnp.int32), axis=1)
+    overflow = ~jnp.any(jnp.isfinite(scores), axis=1)
+    return jnp.where(overflow, stable, ordinary).astype(jnp.int32)
 
 
 def two_class_bayes_accuracy(mu0: Array, mu1: Array, dim_sigma: Array) -> float:
@@ -738,14 +769,14 @@ def bayes_reference(
     chunk_size = min(20_000, n_samples)
     class_components = config.n_classes * config.n_components
     # Exact named host-visible arrays retained at the peak of bayes_predict:
-    # geometry + whitened geometry, y/z/eps/x, whitened x, d2, scores, and
-    # predictions. The one-component delta and expression/compiler temporaries
-    # are intentionally outside this explicitly named work contract.
+    # geometry + whitened geometry, y/z/eps/x, whitened x, d2, log_d2,
+    # scores, and predictions. The one-component delta and expression/compiler
+    # temporaries are intentionally outside this explicitly named work contract.
     bayes_work_scalars = (
         2 * class_components * config.dim
         + config.dim
         + 3 * chunk_size * config.dim
-        + chunk_size * class_components
+        + 2 * chunk_size * class_components
         + chunk_size * config.n_classes
         + class_components
         + 4 * chunk_size
