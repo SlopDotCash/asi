@@ -144,6 +144,17 @@ def test_visible_context_sequence_recurs_a_b_a() -> None:
     ]
 
 
+def test_init_and_resource_budget_enforce_the_threefry_state_contract() -> None:
+    world = RecurringTwoAgentWorld(nuisance_dim=0)
+    expected_budget = world.resource_budget
+
+    with pytest.raises(TypeError, match="threefry2x32"):
+        world.init(jr.key(0, impl="rbg"))
+
+    with jax.default_prng_impl("rbg"):
+        assert world.resource_budget == expected_budget
+
+
 def test_context_switch_does_not_reset_physics_or_terminate() -> None:
     world = RecurringTwoAgentWorld(context_length=2, nuisance_dim=0)
     initial_state = world.init(jr.key(1))
