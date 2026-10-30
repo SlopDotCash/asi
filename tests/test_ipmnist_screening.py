@@ -7590,6 +7590,7 @@ class TestRLSHeadIdentMap:
                     ("f2t1000", 0.0028125, 1000.0),
                     ("f4t250", 0.00140625, 250.0),
                     ("f4t1000", 0.00140625, 1000.0),
+                    ("f2t2000", 0.0028125, 2000.0),
                 )
             },
         }
@@ -7748,6 +7749,39 @@ class TestRLSHeadIdentMapIdet003S005625:
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestAnnealSweepRegistry:
+    """Anneal schedule sweep arms: registry-only variants of the parent."""
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+
+    @pytest.mark.parametrize(
+        "tag, floor, tau",
+        [("f2t2000", 0.0028125, 2000.0), ("f4t1000", 0.00140625, 1000.0)],
+    )
+    def test_arm_differs_from_parent_only_in_schedule(self, tag, floor, tau):
+        parent = screening_spec(self.PARENT).hyperparameters
+        arm = screening_spec(
+            f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}"
+        ).hyperparameters
+        assert arm == {**parent, "anneal_floor": floor, "anneal_tau": tau}
+
+    def test_gentler_arm_live_and_distinct(self):
+        """f2t2000 runs the live anneal path and differs from the parent on
+        the shift stream (stays above the parent's step for s > 0)."""
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        res = {}
+        for name in (self.PARENT,
+                     "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t2000"):
+            spec = screening_spec(name)
+            spec = replace(spec, hyperparameters={
+                **spec.hyperparameters, "ident_match_at": 10.0,
+                "ident_match2": 0.0, "ident_match3": 0.0,
+                "anneal_tau": spec.hyperparameters["anneal_tau"] / 500.0})
+            res[name] = run_screening_config(x, y, spec, seed=7, config=SMALL)
+        a, b = (np.asarray(r.per_task_loss) for r in res.values())
+        assert np.all(np.isfinite(b)) and not np.array_equal(a, b)
 
 
 class TestRLSHeadIdentMapStepAnneal:
