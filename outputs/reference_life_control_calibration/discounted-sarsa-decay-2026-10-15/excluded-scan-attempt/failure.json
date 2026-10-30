@@ -1,0 +1,14 @@
+{
+  "schema": "asi.riverswim_sarsa_decay_diagnostic.excluded_attempt.v1",
+  "plan": "calibration-plan.json",
+  "execution": "accelerated JAX scan with a required exact 16-transition prefix",
+  "completed_pairs": [100101, 100102],
+  "failed_seed": 100103,
+  "failed_decay": 2500,
+  "failure": "16-step learner-state parity failed",
+  "candidate_100103_not_run": true,
+  "decision": "incomplete_methodology_attempt_excluded",
+  "use_in_canonical_summary": false,
+  "scientific_promotion_allowed": false,
+  "limitation": "No full three-seed conclusion, no claim that an exact short prefix proves whole-horizon scan equivalence, and no inferred cause of the mismatch."
+}

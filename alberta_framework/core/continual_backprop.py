@@ -90,6 +90,7 @@ from jaxtyping import Float, Int
 from alberta_framework.core._float32_scalars import (
     validated_float32_scalar_with_ratio,
 )
+from alberta_framework.core.baseline_optimizers import AdamParamState
 from alberta_framework.core.initializers import sparse_init
 from alberta_framework.core.multi_head_learner import (
     MULTI_HEAD_MLP_STATE_SCHEMA,
@@ -331,6 +332,37 @@ class ContinualBackpropState:
 # =============================================================================
 # Pure-functional CBP API
 # =============================================================================
+
+
+def _per_element_adam_steps(mlp_state: Any) -> Any:
+    """Give every Adam state one bias-correction step count per parameter.
+
+    A replaced unit's Adam moments restart at zero.  With one shared step
+    count, bias correction then treats those fresh moments as the learner's
+    age, so the unit's first steps miss Adam's nominal size (0.71x after 50
+    updates, 2.5x after 1000, rising toward 5x over the next steps).  A
+    per-element count lets replacement reset the unit's count with its
+    moments, as in the reference CBP Adam.  Adam's update is elementwise in
+    the count, so until a replacement occurs a broadcast count changes the
+    steps only by float32 rounding of the bias-correction power.
+    """
+
+    def expand(leaf: Any) -> Any:
+        if type(leaf) is not AdamParamState or leaf.t.shape == leaf.m.shape:
+            return leaf
+        return leaf.replace(t=jnp.full(leaf.m.shape, leaf.t, dtype=leaf.t.dtype))  # type: ignore[attr-defined]
+
+    def is_adam(leaf: Any) -> bool:
+        return type(leaf) is AdamParamState
+
+    return mlp_state.replace(
+        trunk_optimizer_states=jax.tree_util.tree_map(
+            expand, mlp_state.trunk_optimizer_states, is_leaf=is_adam
+        ),
+        head_optimizer_states=jax.tree_util.tree_map(
+            expand, mlp_state.head_optimizer_states, is_leaf=is_adam
+        ),
+    )
 
 
 def init_cbp_state(
@@ -1172,7 +1204,7 @@ class CBPMultiHeadMLPLearner:
             Initial :class:`CBPMultiHeadMLPState`.
         """
         mlp_key, cbp_key = jr.split(key)
-        mlp_state = self._learner.init(feature_dim, mlp_key)
+        mlp_state = _per_element_adam_steps(self._learner.init(feature_dim, mlp_key))
         cbp_state = init_cbp_state(mlp_state, self._hidden_sizes, cbp_key)
         return CBPMultiHeadMLPState(  # type: ignore[call-arg]
             mlp_state=mlp_state,
@@ -1529,9 +1561,16 @@ def run_cbp_learning_loop(
     final_state, (per_head_metrics, replacements_made) = jax.lax.scan(
         step_fn, state, (obs_array, tgt_array)
     )
+    jax.block_until_ready(  # type: ignore[no-untyped-call]
+        (final_state, per_head_metrics, replacements_made)
+    )
     elapsed = time.time() - t0
+    # The scan carries host clocks through the jitted update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     final_mlp = final_state.mlp_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.mlp_state.uptime_s + elapsed
+        birth_timestamp=state.mlp_state.birth_timestamp,
+        uptime_s=state.mlp_state.uptime_s + elapsed,
     )
     final_state = final_state.replace(mlp_state=final_mlp)  # type: ignore[attr-defined]
 

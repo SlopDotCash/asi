@@ -341,6 +341,56 @@ def isometry_penalty(weights: Array) -> Array:
     )
 
 
+def _adamo_weighted_square(scale: float, value: Array) -> Array:
+    """Weight a square after the mantissa when ``value**2`` overflows.
+
+    A finite square keeps ``scale * value**2``. The split applies the small
+    weight before the square so the product is not fused back together.
+    """
+
+    square = jnp.square(value)
+    ordinary = scale * square
+    scale_array = jnp.asarray(scale, dtype=value.dtype)
+    value_mantissa, value_exponent = jnp.frexp(value)
+    scale_mantissa, scale_exponent = jnp.frexp(scale_array)
+    recovered = jnp.ldexp(
+        scale_mantissa * value_mantissa**2,
+        scale_exponent + 2 * value_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(square) | ~jnp.isfinite(recovered),
+        ordinary,
+        recovered,
+    )
+
+
+def _adamo_second_moment_rms(second_moment: Array, divisor: Array) -> Array:
+    """Take ``sqrt(moment / divisor)`` without an overflowing quotient.
+
+    A finite direct root stays bitwise. An odd exponent still multiplies by
+    ``sqrt(2)`` before ``ldexp`` by the floored half exponent.
+    """
+
+    direct = jnp.sqrt(second_moment / divisor)
+    moment_mantissa, moment_exponent = jnp.frexp(second_moment)
+    divisor_mantissa, divisor_exponent = jnp.frexp(divisor)
+    exponent_delta = moment_exponent - divisor_exponent
+    half_exponent = jnp.floor_divide(exponent_delta, jnp.int32(2))
+    odd_exponent = (exponent_delta & jnp.int32(1)) != 0
+    root = jnp.sqrt(moment_mantissa / divisor_mantissa)
+    root = jnp.where(
+        odd_exponent,
+        root * jnp.sqrt(jnp.asarray(2.0, dtype=second_moment.dtype)),
+        root,
+    )
+    recovered = jnp.ldexp(root, half_exponent)
+    return jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
+
+
 def adamo_update(
     weights: Array,
     task_gradient: Array,
@@ -373,10 +423,11 @@ def adamo_update(
     ):
         raise ValueError("AdamO weights, gradients, and moments must be matching matrices")
     moment = beta1 * first_moment + (1.0 - beta1) * gradient
-    variance = beta2 * second_moment + (1.0 - beta2) * jnp.square(gradient)
+    variance = beta2 * second_moment + _adamo_weighted_square(1.0 - beta2, gradient)
     corrected_moment = moment / (1.0 - beta1**step)
-    corrected_variance = variance / (1.0 - beta2**step)
-    task_delta = learning_rate * corrected_moment / (jnp.sqrt(corrected_variance) + epsilon)
+    variance_correction = jnp.asarray(1.0 - beta2**step, dtype=variance.dtype)
+    corrected_rms = _adamo_second_moment_rms(variance, variance_correction)
+    task_delta = learning_rate * corrected_moment / (corrected_rms + epsilon)
     iso_delta = learning_rate * isometry_strength * isometry_gradient(weights)
     candidate = weights - task_delta - iso_delta
     valid = (
@@ -526,8 +577,30 @@ def nap_project(weights: Array, *, initial_norm: float, enabled: bool = True) ->
     weights = _floating_array("weights", weights)
     if not enabled:
         return weights
-    norm = jnp.linalg.norm(weights)
-    candidate = jnp.where(norm > 0, weights * (initial_norm / norm), weights)
+    norm_dtype = jnp.promote_types(weights.dtype, jnp.float32)
+    norm = jnp.linalg.norm(weights.astype(norm_dtype)).astype(weights.dtype)
+    target_norm = jnp.asarray(initial_norm, dtype=weights.dtype)
+    normalization = target_norm / norm
+    direct = jnp.where(norm > 0, weights * normalization, weights)
+    maximum = jnp.max(jnp.abs(weights))
+    _, exponent = jnp.frexp(maximum)
+    scaled = jnp.ldexp(weights, -exponent)
+    scaled_norm = jnp.linalg.norm(scaled.astype(norm_dtype)).astype(weights.dtype)
+    overflow_safe = jnp.where(
+        scaled_norm > 0,
+        (scaled / scaled_norm) * target_norm,
+        weights,
+    )
+    direct_lost_scale = (target_norm > 0) & (norm > 0) & (
+        (normalization == 0) | ~jnp.isfinite(normalization)
+    )
+    direct_lost_norm = (norm == 0) & (maximum > 0)
+    direct_is_finite = jnp.all(jnp.isfinite(direct))
+    candidate = jnp.where(
+        jnp.isfinite(norm) & direct_is_finite & ~direct_lost_scale & ~direct_lost_norm,
+        direct,
+        overflow_safe,
+    )
     return _finite_result(candidate, weights, name="NaP projection")
 
 

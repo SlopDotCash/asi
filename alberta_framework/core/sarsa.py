@@ -1314,6 +1314,38 @@ def _sarsa_successor_observations(
     return jnp.where(ended[:, None], following, next_observations)
 
 
+def _require_sarsa_transition_continuity(
+    state: SARSAState,
+    observations: Array,
+    terminated: Array,
+    next_observations: Array,
+) -> None:
+    """Bind every declared current observation to the transition the scan consumes."""
+    if observations.ndim != 2 or next_observations.ndim != 2:
+        raise ValueError("SARSA observations must be rank-two transition arrays")
+    if terminated.ndim != 1:
+        raise ValueError("SARSA terminated flags must be a rank-one array")
+
+    source_matches = jnp.array_equal(
+        jnp.asarray(state.last_observation), observations[0]
+    )
+    if not bool(source_matches):
+        raise ValueError(
+            "SARSA transition continuity requires state.last_observation "
+            "to equal observations[0]"
+        )
+    if observations.shape[0] <= 1:
+        return
+
+    continuous_rows = jnp.all(next_observations[:-1] == observations[1:], axis=1)
+    nonterminal_rows = terminated[:-1] == 0
+    if not bool(jnp.all(~nonterminal_rows | continuous_rows)):
+        raise ValueError(
+            "SARSA transition continuity requires each nonterminal "
+            "next_observations[t] to equal observations[t + 1]"
+        )
+
+
 def run_sarsa_from_arrays(
     agent: SARSAAgent,
     state: SARSAState,
@@ -1348,13 +1380,17 @@ def run_sarsa_from_arrays(
         TypeError: If an input is not a JAX array.
         ValueError: If ``observations`` is empty, exceeds the documented
             scan-length ceiling (``_SARSA_SEQUENCE_MAX_STEPS``), or the other
-            step arrays do not share its leading length.
+            step arrays do not share its leading length or describe the same
+            contiguous transitions consumed by the scan.
     """
     num_steps = _require_sarsa_sequence_length("observations", observations)
     _require_sarsa_matching_length("rewards", rewards, expected=num_steps)
     _require_sarsa_matching_length("terminated", terminated, expected=num_steps)
     _require_sarsa_matching_length(
         "next_observations", next_observations, expected=num_steps
+    )
+    _require_sarsa_transition_continuity(
+        state, observations, terminated, next_observations
     )
 
     successor_observations = _sarsa_successor_observations(
@@ -1414,13 +1450,17 @@ def run_sarsa_from_arrays_final_state(
         TypeError: If an input is not a JAX array.
         ValueError: If ``observations`` is empty, exceeds the documented
             scan-length ceiling (``_SARSA_SEQUENCE_MAX_STEPS``), or the other
-            step arrays do not share its leading length.
+            step arrays do not share its leading length or describe the same
+            contiguous transitions consumed by the scan.
     """
     num_steps = _require_sarsa_sequence_length("observations", observations)
     _require_sarsa_matching_length("rewards", rewards, expected=num_steps)
     _require_sarsa_matching_length("terminated", terminated, expected=num_steps)
     _require_sarsa_matching_length(
         "next_observations", next_observations, expected=num_steps
+    )
+    _require_sarsa_transition_continuity(
+        state, observations, terminated, next_observations
     )
 
     successor_observations = _sarsa_successor_observations(
