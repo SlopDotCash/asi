@@ -22,6 +22,22 @@ def test_legal_unset_sentinel_is_valid() -> None:
     assert bool(valid)
 
 
+@pytest.mark.parametrize("shape", [(1,), (1, 1)])
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.float32])
+def test_safe_discrete_action_rejects_nonscalar_aliases(
+    shape: tuple[int, ...],
+    dtype: jnp.dtype,
+) -> None:
+    action = jnp.ones(shape, dtype=dtype)
+
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        safe_discrete_action(action, 3)
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        safe_discrete_action(np.asarray(action), 3)
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        jax.jit(lambda value: safe_discrete_action(value, 3))(action)
+
+
 def test_integer_zero_actions_keeps_empty_domain_branch() -> None:
     safe, valid = safe_discrete_action(0, 0, allow_unset=False)
     assert int(safe) == 0
