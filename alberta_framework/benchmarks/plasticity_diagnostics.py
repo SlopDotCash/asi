@@ -593,7 +593,10 @@ def _dataset_sha(images: np.ndarray, labels: np.ndarray) -> str:
 def _schedule(
     images: np.ndarray, labels: np.ndarray, profile: DiagnosticProfile, seed: int
 ) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
-    key = jr.key(seed)
+    # The schedule root is identity-bearing: it is pinned to explicit threefry2x32
+    # so the frozen seed pins one task schedule regardless of the ambient
+    # jax_default_prng_impl.
+    key = jr.key(seed, impl="threefry2x32")
     permutation = np.arange(INPUT_DIM, dtype=np.int32)
     tasks: list[tuple[np.ndarray, np.ndarray]] = []
     for _ in range(profile.n_tasks):
@@ -653,7 +656,10 @@ def _run_arm(
     profile: DiagnosticProfile,
     seed: int,
 ) -> ArmResult:
-    key = jr.key(seed)
+    # The arm root is identity-bearing: it is pinned to explicit threefry2x32 so
+    # the frozen seed pins one learner trajectory and final-state identity
+    # regardless of the ambient jax_default_prng_impl.
+    key = jr.key(seed, impl="threefry2x32")
     key, init_key = jr.split(key)
     state = _init_diagnostic_state(init_key, profile.hidden_width)
     rate = 0.0 if arm_id in ("sgd_control", "cbp_mechanism_off") else profile.replacement_rate

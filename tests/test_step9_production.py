@@ -17,6 +17,10 @@ import jax.random as jr
 import numpy as np
 import pytest
 
+from alberta_framework.core.world_model import (
+    ActionConditionedWorldModel,
+    ActionConditionedWorldModelConfig,
+)
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step9 import (
     Step9DreamingConfig,
@@ -563,6 +567,105 @@ def test_step9_dreams_accepted_with_zero_warmup_and_high_error_threshold() -> No
     assert bool(jnp.any(result.dream_accepted)), "At least one dream should be accepted"
 
 
+def test_step9_accepts_dream_when_finite_transition_mean_overflows() -> None:
+    """A finite wide residual must not be scored as a non-finite surprise.
+
+    Four residuals of ``1e19`` have finite squares. Their direct mean overflows
+    to infinity and used to reject the only dream. The scaled mean is ``1e38``,
+    and that dream is accepted.
+    """
+
+    observation_dim = 4
+    scale = 1.0e19
+    control = Step6DifferentialSARSAConfig(
+        n_actions=2,
+        q_step_size=1.0e-8,
+        average_reward_step_size=0.0,
+        epsilon_start=0.0,
+        epsilon_end=0.0,
+        trace_decay=0.0,
+    )
+    cfg = Step9DreamingConfig(
+        control=control,
+        observation_dim=observation_dim,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_step_size=0.0,
+        model_sparsity=0.0,
+        model_use_layer_norm=False,
+        model_gamma=0.0,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1.0e30,
+        model_error_decay=0.0,
+        behavior_model_step_size=0.0,
+        planning_budget=1,
+        dream_rollout_horizon=1,
+        dream_candidate_count=1,
+        dream_surprise_weight=1.0,
+        dream_utility_weight=0.0,
+        buffer_capacity=4,
+    )
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=observation_dim,
+            n_actions=2,
+            hidden_sizes=(),
+            step_size=0.0,
+            sparsity=0.0,
+            use_layer_norm=False,
+            gamma=0.0,
+            error_decay=0.0,
+            predict_delta=True,
+            max_delta_scale=1.0,
+            observation_scale=tuple(scale for _ in range(observation_dim)),
+        )
+    )
+    agent, _, buffer = make_step9_components(cfg)
+    initial = jnp.zeros((observation_dim,), dtype=jnp.float32)
+    state = init_step9_state(
+        agent,
+        model,
+        buffer,
+        key=jr.key(0),
+        initial_observation=initial,
+    )
+    learner_state = state.world_model_state.learner_state
+    weights = list(learner_state.head_params.weights)
+    biases = list(learner_state.head_params.biases)
+    for index in range(observation_dim):
+        weights[index] = jnp.zeros_like(weights[index])
+        biases[index] = jnp.full_like(biases[index], 10.0)
+    state = state.replace(
+        world_model_state=state.world_model_state.replace(
+            learner_state=learner_state.replace(
+                head_params=learner_state.head_params.replace(
+                    weights=tuple(weights),
+                    biases=tuple(biases),
+                )
+            )
+        )
+    )
+    prediction = model.predict(
+        state.world_model_state,
+        initial,
+        jnp.asarray(0, dtype=jnp.int32),
+    )
+    squares = (prediction.next_observation - initial) ** 2
+    assert bool(jnp.all(jnp.isfinite(squares)))
+    assert not bool(jnp.isfinite(jnp.mean(squares)))
+    result = step9_update(
+        cfg,
+        agent,
+        model,
+        buffer,
+        state,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        initial,
+    )
+    assert bool(result.dream_accepted[0])
+    assert bool(jnp.isfinite(result.dream_td_errors[0]))
+
+
 def test_step9_dreams_rejected_when_error_too_high() -> None:
     """With a very strict error threshold, dreams should be rejected."""
     cfg = Step9DreamingConfig(
@@ -624,6 +727,63 @@ def test_step9_multi_step_behavior_model_dreaming_path() -> None:
     chex.assert_tree_all_finite(result.dream_td_errors)
     assert int(result.state.behavior_model_state.step_count) == 1
     assert bool(jnp.any(result.dream_accepted))
+
+
+def test_step9_dream_starts_from_empty_eligibility() -> None:
+    """A dream must leave the real-experience traces untouched.
+
+    With ``trace_decay > 0`` a dream used to run on the live traces: the
+    imagined TD error moved every state-action in the real trace, and the
+    imagined gradient stayed in the trace for the next real update.
+    """
+    cfg = Step9DreamingConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=2,
+            trace_decay=0.9,
+            epsilon_start=1.0,
+            epsilon_end=0.0,
+            epsilon_decay_steps=100,
+        ),
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=1,
+        dreaming_warmup_steps=0,
+        dreaming_max_model_error=1e30,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    steps = 16
+    data_key, state_key = jr.split(jr.key(0))
+    observations = jr.normal(data_key, (steps + 1, 2), dtype=jnp.float32)
+    rewards = jnp.tanh(observations[1:, 0])
+    state = init_step9_state(
+        agent, model, buffer, key=state_key, initial_observation=observations[0]
+    )
+    for t in range(steps):
+        result = step9_update(cfg, agent, model, buffer, state, rewards[t], observations[t + 1])
+        assert bool(result.dream_accepted[0])
+        real = result.real_control_result.state
+        final = result.state.control_state
+        chex.assert_trees_all_equal(final.q_trace_weights, real.q_trace_weights)
+        chex.assert_trees_all_equal(final.q_trace_bias, real.q_trace_bias)
+        assert int(final.step_count) == int(real.step_count)
+        chex.assert_trees_all_equal(final.step_words, real.step_words)
+        chex.assert_trees_all_equal(final.epsilon, real.epsilon)
+        # A one-step backup at a buffered anchor moves only the dreamed
+        # action's values, by step * anchor.
+        step = cfg.control.q_step_size * result.dream_td_errors[0]
+        delta_weights = np.asarray(final.q_weights - real.q_weights)
+        delta_bias = np.asarray(final.q_bias - real.q_bias)
+        action = int(np.argmax(np.abs(delta_bias)))
+        np.testing.assert_allclose(delta_bias[action], step, atol=1e-6)
+        np.testing.assert_allclose(np.delete(delta_weights, action, axis=0), 0.0, atol=1e-6)
+        np.testing.assert_allclose(np.delete(delta_bias, action), 0.0, atol=1e-6)
+        buffer_state = result.state.buffer_state
+        buffered = np.asarray(buffer_state.observations[: int(buffer_state.size)])
+        anchor_error = np.max(np.abs(step * buffered - delta_weights[action]), axis=1)
+        assert float(np.min(anchor_error)) <= 1e-6
+        state = result.state
 
 
 def test_step9_prioritized_candidate_selection_path() -> None:
