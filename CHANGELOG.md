@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added a unit test that re-derives the stored
+  `outputs/ipmnist_screening/summary.json` campaign record from the shards on
+  disk, matching its sibling retention tests for `frontier_results.json` and
+  the ceiling summary. Every measurement field, the shard count, the protocol
+  config, the evidence policy, and the rank order must reproduce; only the run
+  stamp and the two keys added after the payload was written may differ.
 - Added the execution-gated `asi-bimu-matched-development` campaign for the
   bounded five-task BiMU mechanism-on versus memory-off comparison. Its fixed
   six-shard namespace, fresh-process roster, paired outcome rule, validators,
