@@ -61,7 +61,7 @@ def _timeseries_result() -> AggregatedResults:
         ],
         dtype=np.float64,
     )
-    final_values = series[:, -1]
+    final_values = np.mean(series, axis=1)
     return AggregatedResults(
         config_name="trace",
         seeds=[17, 29],
@@ -422,6 +422,30 @@ def test_preflight_rejects_metric_surface_mismatch(mode: str, tmp_path: Path) ->
             export_to_json({"mismatch": mismatched}, destination, include_timeseries=True)
         else:
             export_to_csv({"mismatch": mismatched}, destination, metric=_METRIC)
+
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("mode", ["summary_csv", "timeseries_csv", "json"])
+def test_preflight_rejects_summary_values_that_contradict_raw_traces(
+    mode: str,
+    tmp_path: Path,
+) -> None:
+    result = _timeseries_result()
+    forged_values = np.asarray([1000.0, 2000.0], dtype=np.float64)
+    forged_summary = MetricSummary(
+        mean=float(np.mean(forged_values)),
+        std=float(np.std(forged_values, ddof=1)),
+        min=float(np.min(forged_values)),
+        max=float(np.max(forged_values)),
+        n_seeds=2,
+        values=forged_values,
+    )
+    forged = result._replace(summary={_METRIC: forged_summary})
+    destination = tmp_path / f"contradictory-{mode}"
+
+    with pytest.raises(ValueError, match="raw metric trace"):
+        _export_mode(mode, {"trace": forged}, destination)
 
     assert not destination.exists()
 

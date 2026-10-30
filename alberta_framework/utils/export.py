@@ -231,6 +231,13 @@ def _preflight_export_results(
                     f"{qualified_name} seed counts disagree: seeds={seed_count}, "
                     f"n_seeds={summary.n_seeds}, values={value_count}"
                 )
+            metric_values = aggregate.metric_arrays[metric_name]
+            final_window = min(100, metric_values.shape[1])
+            expected_values = np.mean(metric_values[:, -final_window:], axis=1)
+            if not np.array_equal(summary.values, expected_values):
+                raise ValueError(
+                    f"{qualified_name} values do not match the raw metric trace"
+                )
             for statistic in (summary.mean, summary.std, summary.min, summary.max):
                 _exported_number(statistic)
             with np.errstate(over="ignore", invalid="ignore"):

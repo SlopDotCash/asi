@@ -55,6 +55,7 @@ from alberta_framework._float32 import round_real_to_float32
 DUAL_REPLAY_CONFIG_SCHEMA = "alberta.dual-replay.config.v1"
 DUAL_REPLAY_CHECKPOINT_SCHEMA = "alberta.dual-replay.checkpoint.v1"
 MECHANISM_STATUS = "mechanism-only-no-training-integration"
+_DUAL_REPLAY_PRNG_IMPLEMENTATION = "threefry2x32"
 
 LongTermPolicy = Literal["reservoir", "calibrated"]
 AleatoricControl = Literal["veto", "downweight"]
@@ -681,7 +682,10 @@ def _saturating_increment(value: Array) -> Array:
 
 
 def _key_from_data(key_data: Array) -> Array:
-    return cast(Array, jr.wrap_key_data(key_data))
+    return cast(
+        Array,
+        jr.wrap_key_data(key_data, impl=_DUAL_REPLAY_PRNG_IMPLEMENTATION),
+    )
 
 
 def _key_data(key: Array) -> Array:
@@ -2239,6 +2243,15 @@ class DualReplayMemory:
                 array: npt.NDArray[np.float32] = np.asarray(value, dtype=np.float32)
             if not np.all(np.isfinite(array)):
                 raise ValueError(f"{name} must contain finite float32 values")
+            for source, narrowed in zip(untyped, array.flat, strict=True):
+                restored = float(narrowed)
+                if (
+                    type(source) is int
+                    and restored != source
+                    or type(source) is float
+                    and restored.hex() != source.hex()
+                ):
+                    raise ValueError(f"{name} must contain exact float32 values")
             return jnp.asarray(array, dtype=jnp.float32)
         if np.issubdtype(expected, np.bool_):
             if any(type(item) is not bool for item in untyped):

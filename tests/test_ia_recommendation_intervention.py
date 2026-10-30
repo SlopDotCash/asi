@@ -99,6 +99,45 @@ def test_protocol_is_deterministic_and_jittable() -> None:
     assert int(first[1]) == 2
 
 
+@pytest.mark.parametrize("invalid_candidate", ["recommendation", "partner_action"])
+def test_protocol_rejects_wide_action_candidates_before_narrowing(
+    invalid_candidate: str,
+) -> None:
+    candidates = {
+        "recommendation": jnp.array(1, dtype=jnp.int32),
+        "partner_action": jnp.array(0, dtype=jnp.int32),
+    }
+    candidates[invalid_candidate] = jnp.array(2**32 - 1, dtype=jnp.uint32)
+
+    with pytest.raises(ValueError, match="bounded int32 action"):
+        update_recommendation_protocol(
+            RecommendationProtocolConfig(),
+            init_recommendation_protocol_state(),
+            recommendation=candidates["recommendation"],
+            partner_action=candidates["partner_action"],
+            accept_recommendation=jnp.array(False),
+        )
+
+
+def test_compiled_protocol_rolls_back_wide_action_candidate() -> None:
+    state = init_recommendation_protocol_state()
+    compiled = jax.jit(update_recommendation_protocol, static_argnums=0)
+
+    result = compiled(
+        RecommendationProtocolConfig(),
+        state,
+        jnp.array(1, dtype=jnp.int32),
+        jnp.array(2**32 - 1, dtype=jnp.uint32),
+        jnp.array(False),
+    )
+
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(result.update_applied)
+    assert not bool(result.action_candidates_valid)
+    assert int(result.partner_action) == 0
+    assert int(result.effective_action) == 0
+
+
 @pytest.mark.parametrize("decision", [1, 0.5, jnp.array([True])])
 def test_acceptance_gate_is_strictly_bounded_to_a_scalar_boolean(
     decision: object,
