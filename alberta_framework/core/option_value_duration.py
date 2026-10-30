@@ -423,7 +423,10 @@ class OptionValueDurationLearner:
             dtype=jnp.float32,
         )
         heads = jnp.einsum("ohf,f->oh", state.weights, observation)
-        return jnp.where(self._state_values_valid(state), heads, jnp.zeros_like(heads))
+        inputs_valid = self._state_values_valid(state) & jnp.all(
+            jnp.isfinite(observation)
+        )
+        return jnp.where(inputs_valid, heads, jnp.zeros_like(heads))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(
@@ -498,8 +501,18 @@ class OptionValueDurationLearner:
             jnp.zeros_like(next_predictions),
             continuation_discount * next_predictions,
         )
-        td_targets = cumulants + bootstrap
-        td_errors = td_targets - predictions
+        # Keep ordinary rounding. Recover only an overflowing partial sum
+        # whose cancellation against the current prediction is a finite TD error:
+        # reward + V(s') can be outside float32 while reward + (V(s') - V(s)) is not.
+        direct_targets = cumulants + bootstrap
+        direct_td_errors = direct_targets - predictions
+        recovered_td_errors = cumulants + (bootstrap - predictions)
+        td_targets = direct_targets
+        td_errors = jnp.where(
+            jnp.isfinite(direct_targets),
+            direct_td_errors,
+            recovered_td_errors,
+        )
         step_sizes = jnp.array(
             [
                 self._config.reward_step_size,
@@ -558,7 +571,9 @@ class OptionValueDurationLearner:
                 jnp.zeros_like(next_predictions),
             ),
             td_targets=jnp.where(
-                head_updates_applied, td_targets, jnp.zeros_like(td_targets)
+                head_updates_applied & jnp.isfinite(td_targets),
+                td_targets,
+                jnp.zeros_like(td_targets),
             ),
             td_errors=jnp.where(
                 head_updates_applied, td_errors, jnp.zeros_like(td_errors)
@@ -668,6 +683,10 @@ def run_option_value_duration_from_arrays(
             continuation_discounts,
         ),
     )
+    # Concrete calls must finish device work before recording active uptime.
+    # Traced calls defer execution to their caller.
+    if not isinstance(td_errors, jax.core.Tracer):
+        td_errors.block_until_ready()
     final_state = final_state.replace(uptime_s=final_state.uptime_s + (time.time() - start))
     return OptionValueDurationArrayResult(
         state=final_state,
