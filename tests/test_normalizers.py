@@ -1123,4 +1123,3 @@ def test_streaming_batch_finite_weighted_variance_before_square(compiled, moment
         result.state.mean, (1.0 - stored_momentum) * np.asarray(observation), rtol=3e-6
     )
     assert bool(jnp.all(jnp.isfinite(result.normalized)))
-
