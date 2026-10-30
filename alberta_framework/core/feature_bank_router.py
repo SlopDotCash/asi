@@ -625,7 +625,12 @@ class FeatureBankRouter:
             proposed,
             base_dim=self._config.base_dim,
         )
-        counter_invalid = (state.route_count < 0) | (state.generation_count < 0)
+        counter_invalid = (
+            (state.route_count < 0)
+            | (state.generation_count < 0)
+            | (state.generation_count > state.route_count)
+            | (state.route_count >= _INT32_MAX)
+        )
         valid = old_validation.valid & new_validation.valid & ~counter_invalid
 
         identity_match = jnp.all(
