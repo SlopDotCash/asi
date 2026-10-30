@@ -141,6 +141,32 @@ def _validate_state_contract(
             raise TypeError(f"{name}.{field_name} must have dtype int32")
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Require one scalar typed Threefry key without accepting legacy words."""
+
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array) or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    key = cast(Array, value)
+    try:
+        typed = bool(jax.dtypes.issubdtype(key.dtype, jax.dtypes.prng_key))
+        implementation = str(jr.key_impl(key))
+        words = jr.key_data(key)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if (
+        not typed
+        or key.shape != ()
+        or implementation != "threefry2x32"
+        or words.shape != (2,)
+        or words.dtype != jnp.dtype(jnp.uint32)
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    return key
+
+
 def _normalized_finite_float32_reward(name: str, value: object) -> float:
     """Return one hook-free host real canonicalized to the float32 reward sink."""
     message = f"{name} must be finite, concrete, and representable in float32"
@@ -490,6 +516,7 @@ class SwitchingTwoStateMDP:
     def init(self, key: Array) -> SwitchingTwoStateState:
         """Create an initial state with a uniformly random latent state."""
 
+        key = _require_typed_threefry_key("key", key)
         return SwitchingTwoStateState(
             state_index=jr.randint(key, (), 0, _TWO_STATE_N).astype(jnp.int32),
             step_count=jnp.array(0, dtype=jnp.int32),
@@ -843,6 +870,7 @@ class RiverSwimMDP:
         """
 
         _validate_state_contract("state", state, expected_type=RiverSwimState)
+        key = _require_typed_threefry_key("key", key)
         action_index = jnp.clip(jnp.asarray(action, dtype=jnp.int32), 0, 1)
         reward = self._rewards[state.state_index, action_index]
         next_index = jr.categorical(
@@ -868,11 +896,21 @@ class RiverSwimMDP:
             The long-run average reward of the policy.
         """
 
-        actions = np.asarray(policy, dtype=np.int64)
-        if actions.shape != (self._n_states,):
-            raise ValueError(f"policy must have length {self._n_states}, got shape {actions.shape}")
-        if not np.all((actions == LEFT_ACTION) | (actions == RIGHT_ACTION)):
-            raise ValueError("policy actions must be LEFT_ACTION (0) or RIGHT_ACTION (1)")
+        if len(policy) != self._n_states:
+            raise ValueError(f"policy must have length {self._n_states}")
+        canonical_actions: list[int] = []
+        for action in policy:
+            if type(action) not in _ACTUAL_INT_TYPES:
+                raise ValueError(
+                    "policy actions must be exact integers: LEFT_ACTION (0) or RIGHT_ACTION (1)"
+                )
+            canonical = operator.index(cast(SupportsIndex, action))
+            if canonical not in (LEFT_ACTION, RIGHT_ACTION):
+                raise ValueError(
+                    "policy actions must be exact integers: LEFT_ACTION (0) or RIGHT_ACTION (1)"
+                )
+            canonical_actions.append(canonical)
+        actions = np.asarray(canonical_actions, dtype=np.int64)
         states = np.arange(self._n_states)
         kernel = self._transitions_np[actions, states]
         step_rewards = self._rewards_np[states, actions]
