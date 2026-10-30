@@ -150,6 +150,28 @@ def test_action_conditioned_world_model_rejects_size_one_scalar_aliases(
         jax.jit(call)()
 
 
+def test_action_conditioned_world_model_preserves_wide_integer_action_identity() -> None:
+    """A legal int32 action must not be rounded through float32 before encoding."""
+    expected_action = 2**24 + 1
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=expected_action + 1,
+            hidden_sizes=(),
+        )
+    )
+    action = jnp.asarray(expected_action, dtype=jnp.int32)
+
+    @jax.jit
+    def selected_entries(value: jax.Array) -> jax.Array:
+        encoded = model.encode_action(value)
+        # Consume only the two relevant entries so XLA can fuse away the
+        # logically large one-hot vector required to expose the float32 cliff.
+        return jnp.asarray([encoded[expected_action], encoded[expected_action - 1]])
+
+    np.testing.assert_array_equal(selected_entries(action), [1.0, 0.0])
+
+
 def test_action_world_model_preserves_direct_numeric_dtype_canonicalization() -> None:
     model = ActionConditionedWorldModel(
         ActionConditionedWorldModelConfig(
@@ -171,6 +193,50 @@ def test_action_world_model_preserves_direct_numeric_dtype_canonicalization() ->
     )
     assert features.dtype == jnp.float32
     assert targets.dtype == jnp.float32
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["observation", "action", "reward", "discount", "next_observation"],
+)
+def test_action_world_model_update_rejects_complex_operands(field: str) -> None:
+    """A direct update must not discard imaginary transition components."""
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(13))
+    values = {
+        "observation": jnp.zeros((2,), dtype=jnp.float32),
+        "action": jnp.asarray(0, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "discount": jnp.asarray(0.9, dtype=jnp.float32),
+        "next_observation": jnp.ones((2,), dtype=jnp.float32),
+    }
+    values[field] = jnp.full(
+        values[field].shape,
+        1.0 + 2.0j,
+        dtype=jnp.complex64,
+    )
+
+    def call() -> object:
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["discount"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=rf"{field} must have a real numeric dtype"):
+        call()
+    with pytest.raises(ValueError, match=rf"{field} must have a real numeric dtype"):
+        jax.jit(call)()
 
 
 def test_action_conditioned_world_model_update_and_prediction_shapes() -> None:
@@ -222,6 +288,28 @@ def test_action_conditioned_world_model_config_roundtrip() -> None:
     )
     chex.assert_shape(features, (7,))
     chex.assert_trees_all_close(features[-4:], jnp.array([0.0, 0.0, 1.0, 0.0]))
+
+
+@pytest.mark.parametrize("tamper", ["missing_type", "wrong_type", "extra_field"])
+def test_action_world_model_from_config_rejects_noncanonical_outer_schema(
+    tamper: str,
+) -> None:
+    payload = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+        )
+    ).to_config()
+    if tamper == "missing_type":
+        del payload["type"]
+    elif tamper == "wrong_type":
+        payload["type"] = "OneStepWorldModel"
+    else:
+        payload["undeclared"] = None
+
+    with pytest.raises(ValueError, match="fields|type"):
+        ActionConditionedWorldModel.from_config(payload)
 
 
 def test_action_conditioned_world_model_optional_interaction_features() -> None:
@@ -368,6 +456,31 @@ def test_action_conditioned_world_model_scan_loop_shapes() -> None:
     chex.assert_shape(result.discount_predictions, (3,))
     chex.assert_shape(result.per_head_metrics, (3, 4, 3))
     chex.assert_tree_all_finite(result.prediction_errors)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_action_world_model_scan_rejects_wide_host_integer_action(dtype) -> None:
+    """Host integers outside int32 cannot wrap onto a legal scan action."""
+    model = ActionConditionedWorldModel(
+        ActionConditionedWorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    observations = jnp.zeros((1, 1), dtype=jnp.float32)
+    result = run_action_conditioned_world_model_learning_loop(
+        model,
+        model.init(jr.key(0)),
+        observations,
+        np.asarray([2**32], dtype=dtype),
+        jnp.zeros((1,), dtype=jnp.float32),
+        observations,
+    )
+
+    assert not bool(result.updates_applied[0])
+    assert int(result.state.step_count) == 0
 
 
 def test_default_discounts_do_not_inherit_the_reward_dtype() -> None:

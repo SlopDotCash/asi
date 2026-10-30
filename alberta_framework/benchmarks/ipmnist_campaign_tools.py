@@ -166,6 +166,8 @@ def _seed_measurements(
                 f"{path}: config_name {payload_name!r} does not match "
                 f"expected arm {config_name!r}"
             )
+        if any(type(value) is not int and type(value) is not float for value in accuracies):
+            raise ValueError(f"{path} per_task_accuracy must contain JSON numbers")
         values = np.asarray(accuracies, dtype=np.float64)
         if (
             values.ndim != 1
@@ -483,9 +485,16 @@ def _validated_ceiling_run(
 
 
 def _finite_vector(value: object, *, name: str) -> np.ndarray[Any, np.dtype[np.float64]]:
-    array = np.asarray(value, dtype=np.float64)
+    if type(value) is not list or any(
+        type(item) is not int and type(item) is not float for item in value
+    ):
+        raise ValueError(f"{name} must be a finite numeric vector")
+    try:
+        array = np.asarray(value, dtype=np.float64)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite numeric vector") from exc
     if array.ndim != 1 or not bool(np.all(np.isfinite(array))):
-        raise ValueError(f"{name} must be a finite vector")
+        raise ValueError(f"{name} must be a finite numeric vector")
     return array
 
 
