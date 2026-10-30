@@ -52,9 +52,11 @@ def _arm(
     seeds: Sequence[int],
     *,
     expected_n_tasks: int,
-) -> dict[str, Any]:
+    expected_config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
     values = []
     per_seed: dict[int, dict[str, Any]] = {}
+    reference_config = expected_config
     for seed in seeds:
         path = directory / f"{name}_seed{seed}.json"
         if not path.exists():
@@ -74,6 +76,14 @@ def _arm(
             )
         if config["task_length"] != RULE_DISCOVERY_TASK_LENGTH:
             raise ValueError(f"{path}: task_length must be {RULE_DISCOVERY_TASK_LENGTH}")
+        if reference_config is None:
+            reference_config = config
+        elif config != reference_config:
+            raise ValueError(
+                f"{path}: protocol config {config} does not match the "
+                f"stage protocol config {reference_config}; arms and seeds "
+                "in one stage must share one protocol config"
+            )
         if payload["noise_mode"] != RULE_DISCOVERY_NOISE_MODE:
             raise ValueError(f"{path}: noise_mode must be {RULE_DISCOVERY_NOISE_MODE!r}")
         payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
@@ -83,7 +93,7 @@ def _arm(
         accuracy = np.asarray(payload["per_task_accuracy"], dtype=np.float64)
         values.append(float(np.mean(accuracy)))
     ipmnist_screening_module._validate_screening_arm_contract(name, per_seed)
-    return {"per_seed": values, "mean": float(np.mean(values))}
+    return {"per_seed": values, "mean": float(np.mean(values))}, reference_config
 
 
 def build_legacy_rule_discovery_summary(
@@ -94,10 +104,17 @@ def build_legacy_rule_discovery_summary(
 ) -> dict[str, Any]:
     """Reconstruct the exact legacy v1 payload for compatibility checks."""
     seeds = require_unique_jax_seeds(seeds)
-    screen = {
-        name: _arm(screen_dir, name, seeds, expected_n_tasks=SCREEN_N_TASKS)
-        for name in SCREEN_ARMS
-    }
+    screen: dict[str, Any] = {}
+    screen_config: dict[str, Any] | None = None
+    for name in SCREEN_ARMS:
+        arm, screen_config = _arm(
+            screen_dir,
+            name,
+            seeds,
+            expected_n_tasks=SCREEN_N_TASKS,
+            expected_config=screen_config,
+        )
+        screen[name] = arm
     confirm_names = ("disc_r1_pscale_norms", CHAMPION)
     present = [
         (confirm_dir / f"{name}_seed{seed}.json").exists()
@@ -106,14 +123,18 @@ def build_legacy_rule_discovery_summary(
     ]
     if any(present) and not all(present):
         raise ValueError("rule-discovery confirmation seeds are incomplete")
-    full = (
-        {
-            name: _arm(confirm_dir, name, seeds, expected_n_tasks=CONFIRMATION_N_TASKS)
-            for name in confirm_names
-        }
-        if all(present)
-        else {}
-    )
+    full: dict[str, Any] = {}
+    if all(present):
+        confirm_config: dict[str, Any] | None = None
+        for name in confirm_names:
+            arm, confirm_config = _arm(
+                confirm_dir,
+                name,
+                seeds,
+                expected_n_tasks=CONFIRMATION_N_TASKS,
+                expected_config=confirm_config,
+            )
+            full[name] = arm
     champion = np.asarray(screen[CHAMPION]["per_seed"], dtype=np.float64)
     paired: dict[str, Any] = {}
     for name in DISCOVERY_ARMS:
