@@ -332,19 +332,43 @@ class TestStep1StreamsValidation:
 
     def test_alberta_plan_step1_stream_properties_and_boundaries(self) -> None:
         stream = AlbertaPlanStep1Stream(
-            feature_dim=_INT32_MAX,
-            num_relevant=_INT32_MAX,
+            feature_dim=20,
+            num_relevant=20,
             drift_rate_w=0.005,
             drift_rate_b=0.002,
             noise_std=0.5,
             feature_std=2.0,
         )
-        assert stream.feature_dim == _INT32_MAX
-        assert stream.num_relevant == _INT32_MAX
+        assert stream.feature_dim == 20
+        assert stream.num_relevant == 20
         assert stream.drift_rate_w == 0.005
         assert stream.drift_rate_b == 0.002
         assert stream.noise_std == 0.5
         assert stream.feature_std == 2.0
+
+    @pytest.mark.parametrize(
+        ("factory", "maximum_feature_dim"),
+        [
+            (
+                lambda feature_dim: AlbertaPlanStep1Stream(
+                    feature_dim=feature_dim, num_relevant=1
+                ),
+                134_217_724,
+            ),
+            (
+                lambda feature_dim: XDistShiftStream(
+                    feature_dim=feature_dim, num_relevant=1
+                ),
+                76_695_843,
+            ),
+        ],
+    )
+    def test_step1_streams_reject_unnamable_step_working_sets(
+        self, factory: Any, maximum_feature_dim: int
+    ) -> None:
+        assert factory(maximum_feature_dim).feature_dim == maximum_feature_dim
+        with pytest.raises(ValueError, match="step working set byte count"):
+            factory(maximum_feature_dim + 1)
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),

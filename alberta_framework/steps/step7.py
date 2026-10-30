@@ -47,6 +47,7 @@ References:
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass, field
 from fractions import Fraction
 from numbers import Integral
@@ -101,6 +102,8 @@ class Step7DynaConfig:
 
     The real transition update always happens first. Planning then performs a
     fixed number of model-generated one-step backups, gated by model warmup.
+    Each imagined rollout starts from empty eligibility traces, and the
+    real-experience traces are restored afterwards.
     """
 
     control: Step6DifferentialSARSAConfig = field(
@@ -673,19 +676,28 @@ def _update_control_with_linear_rng(
     discount: Array | float = 1.0,
 ) -> DifferentialSARSAUpdateResult:
     """Apply a control backup while advancing its RNG on rejection."""
-    next_action, next_key = agent.select_action(state, next_observation)
+    # This caller owns the linear reservation contract. Action selection is
+    # fail-closed and preserves its key when policy inputs are invalid, while
+    # every attempted Step 7 control transaction must still consume the
+    # randomness reserved before planning begins.
+    next_key, _, _, _ = jr.split(state.rng_key, 4)
+    next_action, _ = agent.select_action(state, next_observation)
     advanced_state = cast(
         DifferentialSARSAState,
         state.replace(rng_key=next_key),  # type: ignore[attr-defined]
     )
     return cast(
         DifferentialSARSAUpdateResult,
-        agent.update(
-            advanced_state,
-            reward,
-            next_observation,
-            next_action=next_action,
-            discount=discount,
+        jax.lax.cond(
+            next_action >= 0,
+            lambda: agent.update(
+                advanced_state,
+                reward,
+                next_observation,
+                next_action=next_action,
+                discount=discount,
+            ),
+            lambda: agent._rejected_update_result(advanced_state),
         ),
     )
 
@@ -710,8 +722,8 @@ def _score_planning_actions(
 
     def predict_action(action: Array) -> Array:
         prediction = model.predict(model_state, anchor_observation, action)
-        transition_magnitude = jnp.sqrt(
-            jnp.mean((prediction.next_observation - anchor_observation) ** 2)
+        transition_magnitude = _root_mean_square(
+            prediction.next_observation - anchor_observation
         )
         reward_priority = jnp.abs(prediction.reward)
         return (
@@ -723,6 +735,43 @@ def _score_planning_actions(
     priorities = jax.vmap(predict_action)(actions)
     selected = jnp.argmax(priorities).astype(jnp.int32)
     return selected, priorities[selected]
+
+
+def _root_mean_square(values: Array) -> Array:
+    """Return an RMS without overflowing solely in the square reduction."""
+    direct = jnp.sqrt(jnp.mean(values * values))
+    scale = jnp.max(jnp.abs(values))
+    _, exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(values, -exponent)
+    stable = jnp.ldexp(jnp.sqrt(jnp.mean(scaled * scaled)), exponent)
+    return jnp.where(jnp.isfinite(direct), direct, stable)
+
+
+def _divide_by_one_plus_mean_square(
+    numerator: Array | float,
+    values: Array,
+    *,
+    axis: int,
+) -> Array:
+    """Evaluate ``numerator / (1 + mean(values**2))`` at finite input range."""
+    direct_distance = jnp.mean(values * values, axis=axis)
+    direct = numerator / (1.0 + direct_distance)
+    scale = jnp.max(jnp.abs(values), axis=axis)
+    _, exponent = jnp.frexp(scale)
+    normalized = jnp.ldexp(values, -jnp.expand_dims(exponent, axis=axis))
+    normalized_mean_square = jnp.mean(normalized * normalized, axis=axis)
+    numerator_mantissa, numerator_exponent = jnp.frexp(
+        jnp.asarray(numerator, dtype=values.dtype)
+    )
+    squared_exponent = 2 * exponent
+    scaled_denominator = normalized_mean_square + jnp.ldexp(
+        jnp.ones_like(normalized_mean_square), -squared_exponent
+    )
+    stable = jnp.ldexp(
+        numerator_mantissa / scaled_denominator,
+        numerator_exponent - squared_exponent,
+    )
+    return jnp.where(jnp.isfinite(direct_distance), direct, stable)
 
 
 def _store_real_transition(
@@ -796,8 +845,9 @@ def _select_planning_anchor(
         memory_utilities + 0.1 * memory_priorities,
         -jnp.inf,
     )
-    predecessor_distance = jnp.mean(
-        (memory_next_observations - reference_observation[None, :]) ** 2,
+    predecessor_similarity = _divide_by_one_plus_mean_square(
+        1.0,
+        memory_next_observations - reference_observation[None, :],
         axis=1,
     )
     # 1/(1 + d) is a bounded similarity kernel on the mean-squared distance
@@ -806,7 +856,7 @@ def _select_planning_anchor(
     # is unavailable), maximal for transitions that lead exactly here.
     predecessor_scores = jnp.where(
         valid,
-        memory_priorities + 1.0 / (1.0 + predecessor_distance),
+        memory_priorities + predecessor_similarity,
         -jnp.inf,
     )
     priority_scores = (
@@ -898,16 +948,16 @@ def _propagate_predecessor_priorities(
     """
     memory_size = memory_priorities.shape[0]
     valid = jnp.arange(memory_size, dtype=jnp.int32) < memory_count
-    predecessor_distance = jnp.mean(
-        (memory_next_observations - anchor_observation[None, :]) ** 2,
-        axis=1,
-    )
     scale = jnp.asarray(propagation_scale, dtype=jnp.float32)
     magnitude = jnp.abs(td_error)
-    # Keep the original (scale * |td|) / (1 + d) association so a non-zero
-    # scale stays bit-exact; only the zero-scale lane is short-circuited.
+    # Keep the original (scale * |td|) / (1 + d) association on finite direct
+    # distances, while still short-circuiting the disabled zero-scale lane.
     scaled = jnp.where(scale == 0.0, jnp.zeros_like(magnitude), scale * magnitude)
-    propagated = scaled / (1.0 + predecessor_distance)
+    propagated = _divide_by_one_plus_mean_square(
+        scaled,
+        memory_next_observations - anchor_observation[None, :],
+        axis=1,
+    )
     return jnp.where(valid, jnp.maximum(memory_priorities, propagated), memory_priorities)
 
 
@@ -1153,12 +1203,19 @@ def step7_update(
                 planned.state.rng_key,
             ), (planned.td_error, prediction.reward, planned.update_applied)
 
+        # An imagined rollout starts from empty eligibility: the real traces
+        # must neither receive imagined TD errors nor absorb imagined
+        # gradients that the next real TD error would then credit.
+        rollout_start_state = carry_state.replace(  # type: ignore[attr-defined]
+            q_trace_weights=jnp.zeros_like(carry_state.q_trace_weights),
+            q_trace_bias=jnp.zeros_like(carry_state.q_trace_bias),
+        )
         (
             (rollout_state, _rollout_observation, _rollout_action, _rollout_key),
             (rollout_td_errors, rollout_rewards, rollout_updates_applied),
         ) = jax.lax.scan(
             rollout_step,
-            (carry_state, anchor_observation, action, key),
+            (rollout_start_state, anchor_observation, action, key),
             jnp.arange(config.planning_rollout_depth, dtype=jnp.int32),
         )
         # A backup counts as accepted only if the core learner actually applied
@@ -1172,6 +1229,11 @@ def step7_update(
             rollout_state.replace(  # type: ignore[attr-defined]
                 last_observation=control_after_real.last_observation,
                 last_action=control_after_real.last_action,
+                epsilon=control_after_real.epsilon,
+                step_count=control_after_real.step_count,
+                step_words=control_after_real.step_words,
+                q_trace_weights=carry_state.q_trace_weights,
+                q_trace_bias=carry_state.q_trace_bias,
             ),
         )
         corrected_state = jax.lax.cond(
@@ -1338,6 +1400,7 @@ def run_step7_scan(
             result.planning_accepted,
         )
 
+    t0 = time.time()
     final_state, (
         real_td_errors,
         average_rewards,
@@ -1353,6 +1416,16 @@ def run_step7_scan(
         planning_importance_ratios,
         planning_accepted,
     ) = jax.lax.scan(scan_step, state, (rewards, next_observations))
+    elapsed = time.time() - t0
+    # Preserve the model's host-only lifecycle clocks at the batch boundary.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        world_model_state=final_state.world_model_state.replace(  # type: ignore[attr-defined]
+            learner_state=final_state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
+                birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
+                uptime_s=state.world_model_state.learner_state.uptime_s + elapsed,
+            ),
+        ),
+    )
     return Step7DynaArrayResult(
         state=final_state,
         real_td_errors=real_td_errors,

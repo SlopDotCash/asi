@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import math
+from fractions import Fraction
 
 import jax
 import jax.numpy as jnp
@@ -281,6 +282,7 @@ def test_executed_control_scalars_are_canonical_actual_float32_values() -> None:
         "sparsity": 0.345678912,
         "leaky_relu_slope": 0.0123456789,
         "lamda": 0.567891234,
+        "initial_q_value": 9.87654321,
     }
     discounted = DiscountedSARSAReferenceConfig.for_switching(
         environment,
@@ -294,6 +296,22 @@ def test_executed_control_scalars_are_canonical_actual_float32_values() -> None:
         assert getattr(discounted, name) == float(np.float32(raw))
     assert differential.core_config().q_step_size == differential.q_step_size
     assert discounted.core_config().gamma == discounted.gamma
+
+
+def test_control_scalars_round_exact_reals_directly_to_float32() -> None:
+    environment = SwitchingTwoStateConfig(phase_length=2)  # type: ignore[call-arg]
+    midpoint = Fraction(1, 1) + Fraction(1, 2**24)
+    above_midpoint = midpoint + Fraction(1, 2**100)
+    expected = float(np.nextafter(np.float32(1.0), np.float32(2.0)))
+
+    differential = DifferentialSARSAReferenceConfig.for_switching(
+        environment,
+        q_step_size=above_midpoint,
+    )
+
+    assert differential.q_step_size == expected
+    assert differential.core_config().q_step_size == expected
+    assert differential.to_config()["q_step_size"] == expected
 
 
 def test_oracle_environment_scalars_bind_the_executed_float32_values() -> None:
@@ -816,6 +834,87 @@ def test_discounted_sarsa_updates_on_continuing_unit_discount_outcome() -> None:
     assert resources.array_elements > 0
     assert resources.persistent_bytes > 0
     assert resources.floating_array_leaves > 0
+
+
+def test_discounted_sarsa_optimistic_initial_q_is_exact_and_resource_neutral() -> None:
+    environment = RiverSwimConfig(n_states=3)  # type: ignore[call-arg]
+    baseline = DiscountedSARSAReferenceAdapter(
+        DiscountedSARSAReferenceConfig.for_riverswim(
+            environment,
+            hidden_sizes=(),
+        )
+    )
+    optimistic = DiscountedSARSAReferenceAdapter(
+        DiscountedSARSAReferenceConfig.for_riverswim(
+            environment,
+            hidden_sizes=(),
+            initial_q_value=10.0,
+        )
+    )
+
+    baseline_state = baseline.init(jr.key(21), lifecycle_id="control.sarsa.baseline")
+    optimistic_state = optimistic.init(
+        jr.key(21),
+        lifecycle_id="control.sarsa.optimistic",
+    )
+    learner = optimistic_state.agent_state
+    assert isinstance(learner, SARSAState)
+    inner = learner.learner_state
+    for weights, bias in zip(
+        inner.head_params.weights,
+        inner.head_params.biases,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(weights, np.full((1, 3), 10.0, dtype=np.float32))
+        np.testing.assert_array_equal(bias, np.zeros((1,), dtype=np.float32))
+    for observation in np.eye(3, dtype=np.float32):
+        values = optimistic._sarsa_agent._horde.predict(  # noqa: SLF001
+            inner,
+            jnp.asarray(observation),
+        )
+        np.testing.assert_array_equal(values, np.full((2,), 10.0, dtype=np.float32))
+
+    assert optimistic.manifest.config["initial_q_value"] == 10.0
+    assert control_state_resource_usage(optimistic_state) == control_state_resource_usage(
+        baseline_state
+    )
+
+
+def test_discounted_sarsa_default_initialization_reduces_to_explicit_none() -> None:
+    environment = RiverSwimConfig(n_states=3)  # type: ignore[call-arg]
+    default = DiscountedSARSAReferenceAdapter(
+        DiscountedSARSAReferenceConfig.for_riverswim(environment, hidden_sizes=())
+    )
+    explicit = DiscountedSARSAReferenceAdapter(
+        DiscountedSARSAReferenceConfig.for_riverswim(
+            environment,
+            hidden_sizes=(),
+            initial_q_value=None,
+        )
+    )
+
+    default_state = default.init(jr.key(22), lifecycle_id="control.sarsa.default")
+    explicit_state = explicit.init(jr.key(22), lifecycle_id="control.sarsa.explicit")
+    default_leaves = jax.tree.leaves(default_state.agent_state)
+    explicit_leaves = jax.tree.leaves(explicit_state.agent_state)
+    assert len(default_leaves) == len(explicit_leaves)
+    for default_leaf, explicit_leaf in zip(default_leaves, explicit_leaves, strict=True):
+        if jax.dtypes.issubdtype(default_leaf.dtype, jax.dtypes.prng_key):
+            np.testing.assert_array_equal(
+                jr.key_data(default_leaf),
+                jr.key_data(explicit_leaf),
+            )
+        else:
+            np.testing.assert_array_equal(default_leaf, explicit_leaf)
+
+
+def test_discounted_sarsa_optimistic_initial_q_requires_tabular_control() -> None:
+    with pytest.raises(ValueError, match="tabular empty-hidden-layer"):
+        DiscountedSARSAReferenceConfig.for_riverswim(
+            RiverSwimConfig(n_states=3),  # type: ignore[call-arg]
+            hidden_sizes=(4,),
+            initial_q_value=10.0,
+        )
 
 
 def test_learning_control_state_validation_requires_exact_persistent_dtypes() -> None:
