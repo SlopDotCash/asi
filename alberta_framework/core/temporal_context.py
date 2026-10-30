@@ -328,12 +328,25 @@ class TemporalContextConfig:
     def from_config(cls, config: object) -> TemporalContextConfig:
         """Reconstruct from :meth:`to_config` output."""
         payload = _copy_mapping(config, name="TemporalContextConfig")
-        payload.pop("type", None)
-        if "periods" in payload:
-            raw = payload["periods"]
-            if type(raw) not in (list, tuple):
-                raise ValueError("periods must be a list or tuple")
-            payload["periods"] = tuple(raw)
+        expected = {
+            "type",
+            "input_dim",
+            "include_raw",
+            "include_ema",
+            "include_delta",
+            "include_phase_products",
+            "ema_decay",
+            "periods",
+        }
+        if set(payload) != expected:
+            raise ValueError("TemporalContextConfig fields do not match its schema")
+        config_type = payload.pop("type")
+        if type(config_type) is not str or config_type != "TemporalContextConfig":
+            raise ValueError("TemporalContextConfig type is invalid")
+        raw = payload["periods"]
+        if type(raw) not in (list, tuple):
+            raise ValueError("periods must be a list or tuple")
+        payload["periods"] = tuple(raw)
         return cls(**payload)
 
 
