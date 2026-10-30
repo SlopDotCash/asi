@@ -32,7 +32,6 @@ from jax import Array
 from jaxtyping import Bool, PRNGKeyArray
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
-from alberta_framework.core.normalizers import _saturating_int32_counter_increment
 from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream
 
@@ -98,6 +97,33 @@ def _require_feature_dim(value: object) -> int:
     if type(value) is not int or not 1 <= value <= 2**31 - 1:
         raise ValueError("inner.feature_dim must be an integer in [1, 2147483647]")
     return value
+
+
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Reject legacy or implementation-ambiguous keys before stream dispatch."""
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    key = cast(Array, value)
+    try:
+        words = jr.key_data(key)
+        implementation = str(jr.key_impl(key))
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"{name} must be a typed scalar threefry2x32 key"
+        ) from error
+    if (
+        key.shape != ()
+        or not jax.dtypes.issubdtype(key.dtype, jax.dtypes.prng_key)  # type: ignore[attr-defined]
+        or words.shape != (2,)
+        or words.dtype != jnp.uint32
+        or implementation != "threefry2x32"
+    ):
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    return key
 
 
 # =============================================================================
@@ -233,6 +259,7 @@ class PartialObservationWrapper[InnerStateT]:
 
     def init(self, key: Array) -> PartialObservationState[InnerStateT]:
         """Initialize wrapper state."""
+        key = _require_typed_threefry_key("key", key)
         k_inner, k_mask = jr.split(key)
         inner_state = self._inner.init(k_inner)
         return PartialObservationState(  # type: ignore[call-arg]
@@ -260,8 +287,12 @@ class PartialObservationWrapper[InnerStateT]:
             mask = jr.uniform(k_use, (self._inner.feature_dim,)) < self._mask_prob
         else:  # PERIODIC
             assert self._schedule is not None
-            mask = self._schedule[state.period_index % self._schedule.shape[0]]
-            new_period_index = _saturating_int32_counter_increment(state.period_index)
+            schedule_length = jnp.asarray(self._schedule.shape[0], dtype=jnp.int32)
+            # Persist the bounded phase itself: a saturated lifetime counter
+            # would pin one mask forever once it reached int32 max.
+            phase = jnp.mod(state.period_index, schedule_length)
+            mask = self._schedule[phase]
+            new_period_index = jnp.mod(phase + jnp.int32(1), schedule_length)
 
         masked_obs = jnp.where(
             mask,
