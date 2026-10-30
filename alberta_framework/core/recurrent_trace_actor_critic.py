@@ -21,6 +21,18 @@ initialization of the audited reference.  These per-step gradients then enter
 ordinary streaming eligibility traces; the TD error is applied exactly once,
 by the final ObGD update.
 
+For a transition from S_t to S_{t+1}, the supplied discount is gamma_{t+1}
+for the bootstrap.  The prior accepted transition's discount, gamma_t, decays
+the accumulated actor and critic traces.  A terminal reward therefore credits
+the completed episode before its stored traces are cleared.
+
+The state persists ``previous_discount``.  Checkpoints made before that
+field existed cannot identify a variable-discount cursor and must not be
+silently migrated.  Restore with a current ``agent.init()`` template: the
+generic checkpoint loader rejects the old leaf structure.  Start a fresh
+state instead of guessing the missing discount from the current
+configuration.
+
 This is a research core, not a claim of state-of-the-art performance.  Online
 parameter changes make retained RTRL sensitivities stale in the precise sense
 discussed by Farr et al.  The default path retains the ordinary stale trace;
@@ -173,6 +185,11 @@ class RecurrentTraceActorCriticState(NamedTuple):
     episode resets and are present only for an adaptive-ObGD configuration.
     ``last_observation``, ``last_action``, ``rng_key``, and ``step_count``
     mirror the lifecycle fields used by Alberta's existing control cores.
+    ``previous_discount`` is the discount of the most recent accepted
+    transition (gamma_t, the discount into the current state's observation);
+    it decays the eligibility traces while the current call's discount only
+    controls the TD bootstrap.  It is initialized to ``config.gamma`` with
+    zero traces.
     """
 
     actor_params: RTUNetworkParameters
@@ -192,6 +209,7 @@ class RecurrentTraceActorCriticState(NamedTuple):
     last_action: Array
     rng_key: Array
     step_count: Array
+    previous_discount: Array
     started: Array
     actor_second_moments: RTUNetworkParameters | None = None
     critic_second_moments: RTUNetworkParameters | None = None
@@ -356,7 +374,9 @@ def _preflight_state_resources(
         + 2 * sensitivity_scalars * (2 if config.rtrl_taylor_correction else 1)
         + 4 * config.hidden_size
         + 4 * width
-        + 3
+        # Reward statistics (mean, m2, discounted return) plus the persisted
+        # previous-discount cursor for eligibility-trace decay.
+        + 4
     )
     # Two statistics counters, last action, typed key, step counter, and the
     # started flag are six logical array elements. The typed key occupies two
@@ -1430,6 +1450,14 @@ def obgd_update(
     denominator = jnp.maximum(1.0, bound_term)
     scale = jnp.reciprocal(denominator)
     step_size = alpha_array * scale
+    # The bound product can overflow even when its alpha-cancelled step fits.
+    # Keep the ordinary path unchanged; divide the remaining factors separately.
+    overflow_step = (
+        jnp.reciprocal(kappa_array) / jnp.maximum(jnp.abs(signal), 1.0) / z_sum
+    )
+    bound_overflow = jnp.isposinf(bound_term)
+    step_size = jnp.where(bound_overflow, overflow_step, step_size)
+    scale = jnp.where(bound_overflow, step_size / alpha_array, scale)
     proposed_updates = jax.tree_util.tree_map(
         lambda trace: step_size * signal * trace,
         traces,
@@ -2074,6 +2102,7 @@ class RecurrentTraceActorCriticAgent:
             last_action=jnp.asarray(-1, dtype=jnp.int32),
             rng_key=policy_key,
             step_count=jnp.asarray(0, dtype=jnp.int32),
+            previous_discount=jnp.array(self._config.gamma, dtype=jnp.float32),
             started=jnp.asarray(False),
         )
 
@@ -2483,7 +2512,9 @@ class RecurrentTraceActorCriticAgent:
         TD bootstrap.  Boundary precedence is ``episode_boundary``, then
         ``terminated``, then an explicitly supplied zero ``discount``.  A call
         that supplies none of them is continuing even when configured
-        ``gamma`` is zero.
+        ``gamma`` is zero.  The accepted transition's discount is saved as
+        ``state.previous_discount``: the next update's eligibility traces
+        decay with this incoming discount, never with the outgoing one.
 
         Examples:
             A true environment termination can use ``terminated=True``.
@@ -2568,6 +2599,9 @@ class RecurrentTraceActorCriticAgent:
             raise ValueError("state.started must have boolean dtype")
         if not isinstance(started, jax.core.Tracer) and not bool(started):
             raise RuntimeError("start must be called before update")
+        previous_discount = state.previous_discount
+        if previous_discount.shape != () or previous_discount.dtype != jnp.float32:
+            raise ValueError("state.previous_discount must be a scalar float32")
 
         reward_scalar = _validated_scalar(
             "reward",
@@ -2781,13 +2815,11 @@ class RecurrentTraceActorCriticAgent:
         _, actor_gradient = self._actor_gradient(state, td_error)
 
         # The terminating reward must still credit traces accumulated within
-        # the episode.  Stream AC(lambda) therefore applies gamma*lambda first
-        # and clears the stored trace only after the terminal update.
-        trace_discount = jnp.where(
-            boundary,
-            jnp.asarray(self._config.gamma, dtype=transition_discount.dtype),
-            transition_discount,
-        )
+        # the episode.  Stream AC(lambda) therefore decays by the incoming
+        # discount gamma_t (the prior accepted transition's discount) and
+        # clears the stored trace only after the terminal update; the current
+        # call's outgoing discount controls just the TD bootstrap above.
+        trace_discount = state.previous_discount
         actor_decay = trace_discount * self._config.actor_lamda
         critic_decay = trace_discount * self._config.critic_lamda
         actor_traces = cast(
@@ -2985,6 +3017,7 @@ class RecurrentTraceActorCriticAgent:
             last_normalized_observation=stored_observation,
             last_observation=stored_raw_observation,
             step_count=step_count,
+            previous_discount=transition_discount,
         )
         candidate_applied = (
             actor_update_applied
@@ -3004,6 +3037,8 @@ class RecurrentTraceActorCriticAgent:
             & state.started
             & (state.last_action >= 0)
             & (state.last_action < self._config.n_actions)
+            & (state.previous_discount >= 0.0)
+            & (state.previous_discount <= 1.0)
         )
         action_state = jax.lax.cond(
             candidate_applied,

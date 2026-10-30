@@ -428,7 +428,7 @@ def test_sliced_sigreg_compiled_vmap_rejects_nonfinite_lane() -> None:
 
 
 def test_epps_pulley_rejects_samples_that_overflow_float32_narrowing() -> None:
-    with jax.enable_x64():
+    with jax.experimental.enable_x64():
         samples = jnp.asarray([1.0e300, 1.0e300], dtype=jnp.float64)
 
         with pytest.raises(ValueError, match="samples must be finite"):
@@ -476,3 +476,25 @@ def test_sample_sigreg_directions_stay_unit_below_eps() -> None:
         sliced_sigreg_loss(embeddings, true_unit, kernel_width=1.0),
         atol=1.0e-6,
     )
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    "samples,width", [([0.0, 1.5e19], 1.5e19), ([-3.0e38, 3.0e38], 1.5e19)]
+)
+def test_sigreg_finite_large_kernel_matches_float64_reference(samples, width, compiled):
+    x = np.asarray(samples, dtype=np.float32).astype(np.float64)
+    w = float(np.float32(width))
+    empirical = np.mean(np.exp(-0.5 * ((x[:, None] - x[None, :]) / w) ** 2))
+    cross = np.mean(w / np.sqrt(w * w + 1.0) * np.exp(-0.5 * x**2 / (w * w + 1.0)))
+    expected = max(empirical - 2.0 * cross + w / np.sqrt(w * w + 2.0), 0.0)
+    with jax.disable_jit(disable=not compiled):
+        direct_fn = (
+            jax.jit(epps_pulley_gaussian_statistic) if compiled else epps_pulley_gaussian_statistic
+        )
+        sliced_fn = jax.jit(sliced_sigreg_loss) if compiled else sliced_sigreg_loss
+        actual = direct_fn(jnp.asarray(samples), kernel_width=width)
+        sliced = sliced_fn(
+            jnp.asarray(samples)[:, None], jnp.ones((1, 1)), kernel_width=width
+        )
+    np.testing.assert_allclose(actual, expected, rtol=2e-6, atol=2e-7)
+    np.testing.assert_allclose(sliced, expected, rtol=2e-6, atol=2e-7)

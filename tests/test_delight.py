@@ -2234,3 +2234,35 @@ def test_policy_loss_at_log_probability_zero_keeps_gradient() -> None:
 
     gradient = jax.grad(loss)(jnp.asarray([0.0], dtype=jnp.float32))
     assert float(gradient[0]) == pytest.approx(-2.0)
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("value", [2e38, -2e38, 2.0, 1.1754943508222875e-38])
+def test_delight_stratification_preserves_finite_conditional_mean(
+    disable_jit: bool, value: float
+) -> None:
+    with jax.disable_jit(disable_jit):
+        result = discrete_delightful_policy_gradient(
+            jnp.zeros(3, dtype=jnp.float32),
+            jnp.array([value, value, 0.0], dtype=jnp.float32),
+            DelightfulPolicyGradientConfig(mode="ordinary_pg"),
+        )
+        summary = jax.jit(stratify_delight_outcomes)(
+            result, jnp.array([False, False, True])
+        )
+        assert float(summary.common_advantage_mean) == float(jnp.float32(value))
+        assert float(summary.common_gated_advantage_mean) == float(jnp.float32(value))
+        assert float(summary.common_advantage_variance) == 0.0
+        assert float(summary.rare_advantage_mean) == 0.0
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_delight_masked_mean_retains_mask_and_poison_behavior(disable_jit: bool) -> None:
+    with jax.disable_jit(disable_jit):
+        mean = jax.jit(delight_module._masked_mean)
+        values = jnp.array([2e38, 1e38, jnp.inf], dtype=jnp.float32)
+        assert float(mean(values, jnp.array([True, True, False]))) == pytest.approx(1.5e38)
+        assert float(mean(values, jnp.array([False, False, False]))) == 0.0
+        assert bool(jnp.isinf(mean(values, jnp.array([True, True, True]))))
+        assert bool(jnp.isnan(mean(jnp.array([jnp.nan]), jnp.array([True]))))

@@ -56,7 +56,7 @@ def _preflight_update_working_set(feature_dim: int) -> None:
     # Logical arrays, independently of backend donation/fusion: five covariance
     # banks (source, outer, unsymmetrized, symmetrized, selected), plus the
     # symmetrizer's two gathered values, two half-scaled values, and sum.
-    # Its i/j/min/max int32 index grids and diagonal boolean mask also count.
+    # Its i/j/min/max int32 index grids and equality boolean mask also count.
     # Nine float32 vectors retain the existing update terms plus the two
     # normalized operands used by the overflow-safe prediction dot product.
     # Twenty-two scalar slots conservatively cover both update and stable-dot
@@ -114,7 +114,8 @@ def _symmetrize_matrix(matrix: Array) -> Array:
     j_max = jnp.maximum(i, j)
     val_a = matrix[i_min, j_max]
     val_b = matrix[j_max, i_min]
-    return jnp.where(i_min == j_max, val_a, half * val_a + half * val_b)
+    # Equal entries already are symmetric; halving tiny normal values can flush to zero.
+    return jnp.where(val_a == val_b, val_a, half * val_a + half * val_b)
 
 
 def _finite_cancelling_dot(left: Array, right: Array) -> Array:
@@ -367,10 +368,11 @@ class RLSRewardModel:
             if self._config.error_decay == 0.0
             else state.abs_error_ema
         )
-        source_finite = (
+        source_valid = (
             jnp.all(jnp.isfinite(state.weights))
             & jnp.all(jnp.isfinite(state.covariance))
             & jnp.isfinite(checked_error_ema)
+            & (state.step_count >= 0)
         )
         inputs_valid = jnp.all(jnp.isfinite(x)) & jnp.isfinite(jnp.squeeze(target))
         denominator_finite = jnp.isfinite(denominator)
@@ -380,7 +382,7 @@ class RLSRewardModel:
             & jnp.isfinite(next_abs_error_ema)
         )
         update_applied = (
-            source_finite & inputs_valid & denominator_finite & proposed_finite
+            source_valid & inputs_valid & denominator_finite & proposed_finite
         )
         committed = jax.lax.cond(
             update_applied,

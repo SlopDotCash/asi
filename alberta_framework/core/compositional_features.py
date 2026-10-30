@@ -812,7 +812,12 @@ class FiniteCandidateSelector:
             update_finite = finite
 
         log_weights = state.log_weights - self._learning_rate * update_losses
-        log_weights = log_weights - jnp.mean(log_weights)
+        center = jnp.mean(log_weights)
+        # A finite mean can have an overflowing reduction sum.
+        center = jnp.where(
+            jnp.isfinite(center), center, jnp.sum(log_weights / self._n_candidates)
+        )
+        log_weights = log_weights - center
         cumulative_loss = state.cumulative_loss + jnp.where(
             update_finite,
             jnp.nan_to_num(bounded_losses, nan=0.0),
@@ -4322,7 +4327,9 @@ class CompositionalFeatureLearner:
             # resets too.  The source slot refreshed by a promotion is born
             # after the root mutation, so only the subsequent cascade can
             # rebound that fresh proposal and its newly sampled theta remains
-            # valid for its post-root parents.
+            # valid for its post-root parents.  A rebound whose structural
+            # depth exceeds ``max_depth`` cannot keep its descriptor; it is
+            # redrawn over the final active bank instead (see below).
             safe_candidate_pa = jnp.clip(candidate_parent_a, 0, self._n_features - 1)
             safe_candidate_pb = jnp.clip(candidate_parent_b, 0, self._n_features - 1)
             references_active_change = (candidate_ops != OP_RAW) & (
@@ -4381,6 +4388,94 @@ class CompositionalFeatureLearner:
                 candidate_rebound_mask,
                 jnp.zeros_like(candidate_ages),
                 candidate_ages,
+            )
+
+            # A promoted or cascaded parent can sit at ``max_depth``, so its
+            # rebound children are structurally one level too deep.  Such a
+            # descriptor is invalid, and keeping it would fail the source-state
+            # depth check on every later update.  Retire it the way the active
+            # cascade retires an invalidated descendant: draw a fresh
+            # composition over the final active bank, born like a refreshed
+            # candidate.  It stays in ``candidate_rebound_mask`` (one new
+            # lifetime) and the trace reports the redrawn final descriptor.
+            # Candidate substreams start after the active refill indices.
+            over_depth_rebound = candidate_rebound_mask & (rebound_depth > self._max_depth)
+
+            def redraw_over_depth(args: tuple[Array, ...]) -> tuple[Array, ...]:
+                co_a, cpa_a, cpb_a, ctheta_a, cdepth_a, cow_a, cgp_a = args
+                final_feature_values = _compute_feature_values(
+                    ops,
+                    parent_a,
+                    parent_b,
+                    theta,
+                    observation,
+                )
+
+                def draw(index: Array) -> tuple[Array, ...]:
+                    redraw_key = jr.fold_in(
+                        cascade_key,
+                        jnp.uint32(self._n_features) + index.astype(jnp.uint32),
+                    )
+                    gen_op, gen_pa, gen_pb, gen_theta, gen_depth = self._generate_one(
+                        redraw_key,
+                        depth,
+                        new_utilities,
+                        existing_ages=ages,
+                        feature_values=final_feature_values,
+                        feature_credit=feature_credit,
+                        forced_op=forced_op,
+                        parent_mode=parent_mode,
+                    )
+                    gen_weights = self._initial_candidate_output_weights(
+                        gen_op,
+                        gen_pa,
+                        gen_pb,
+                        gen_theta,
+                        final_feature_values,
+                        observation,
+                        errors,
+                        active_count,
+                        imprint_scale=imprint_scale,
+                    )
+                    return gen_op, gen_pa, gen_pb, gen_theta, gen_depth, gen_weights
+
+                gen_op, gen_pa, gen_pb, gen_theta, gen_depth, gen_weights = jax.vmap(draw)(
+                    candidate_indices
+                )
+                return (
+                    jnp.where(over_depth_rebound, gen_op, co_a),
+                    jnp.where(over_depth_rebound, gen_pa, cpa_a),
+                    jnp.where(over_depth_rebound, gen_pb, cpb_a),
+                    jnp.where(over_depth_rebound[:, None], gen_theta, ctheta_a),
+                    jnp.where(over_depth_rebound, gen_depth, cdepth_a).astype(jnp.int32),
+                    jnp.where(over_depth_rebound[None, :], gen_weights.T, cow_a),
+                    jnp.where(over_depth_rebound, generator_policy, cgp_a),
+                )
+
+            def keep_candidates(args: tuple[Array, ...]) -> tuple[Array, ...]:
+                return args
+
+            (
+                candidate_ops,
+                candidate_parent_a,
+                candidate_parent_b,
+                candidate_theta,
+                candidate_depth,
+                candidate_output_weights,
+                candidate_generator_policy,
+            ) = jax.lax.cond(
+                jnp.any(over_depth_rebound),
+                redraw_over_depth,
+                keep_candidates,
+                (
+                    candidate_ops,
+                    candidate_parent_a,
+                    candidate_parent_b,
+                    candidate_theta,
+                    candidate_depth,
+                    candidate_output_weights,
+                    candidate_generator_policy,
+                ),
             )
 
         reset_active_traces = active_change_mask
