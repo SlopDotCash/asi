@@ -525,3 +525,26 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+
+## Autostep per-weight body step sizes on idet003_s005625 (2026-10-30)
+
+A preregistered, nonpromoting `development_screening_diagnostic` replaced the
+scalar body step of `rls_head_resid_identmap50_r_idet003_s005625` with Autostep
+per-weight step sizes (Mahmood et al. 2012; meta rate 1e-2 selected over 1e-3 on
+a seed-0 3-task tuning run, tau 1e4, alpha initialised at 0.005625). On seeds
+0-2 at 60 tasks it reduced average online accuracy on every seed: Autostep
+0.92562, locally measured parent 0.93451, paired difference -0.00889 (95% t-CI
+[-0.01018, -0.00761], df=2); 0 of 3 seeds improved. The preregistered +0.002
+screen bar failed, so seeds 3-9 and held-out seeds 10-19 were not run. At meta
+rate 0 the path is bit-exact with the parent (pinned in tests), and the
+`upgd_w_control` reproduced exactly at 0.77776.
+
+The parent did not bit-reproduce in this environment (Python 3.13.5, kernel
+6.12, versus Python 3.14.4, kernel 7.0 for the stored #3117 shards): the local
+parent was 0.00018 below the stored shards, with the same offset at the stored
+commit and at main, so pairing uses the local parent. The gap is about 50 times
+that offset. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/README.md)
+includes the preregistration, per-seed shards, tuning, reproduction diagnostics
+and summary. This rejects only this Autostep configuration; the parent, its
+stored evidence and the screening gates are unchanged.
