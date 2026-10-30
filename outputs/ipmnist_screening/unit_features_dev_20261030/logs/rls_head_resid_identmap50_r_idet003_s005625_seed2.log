@@ -1,0 +1,9 @@
+2026-10-30 21:39:42,835 INFO loading MNIST from data_home=outputs/upgd_ipmnist/reconstructed_openml_cache
+2026-10-30 21:39:44,885 INFO running rls_head_resid_identmap50_r_idet003_s005625 seed=2 for 60 tasks x 5000 steps (noise_mode=step, noise_pool_steps=None, noise_gradual_steps=None)
+2026-10-30 21:39:55,821 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 10/60 online_acc=0.9260 elapsed=9.1s
+2026-10-30 21:40:04,070 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 20/60 online_acc=0.9414 elapsed=17.3s
+2026-10-30 21:40:12,367 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 30/60 online_acc=0.9426 elapsed=25.6s
+2026-10-30 21:40:20,619 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 40/60 online_acc=0.9446 elapsed=33.9s
+2026-10-30 21:40:28,835 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 50/60 online_acc=0.9482 elapsed=42.1s
+2026-10-30 21:40:37,074 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 task 60/60 online_acc=0.9510 elapsed=50.3s
+2026-10-30 21:40:37,676 INFO rls_head_resid_identmap50_r_idet003_s005625 seed=2 done: avg online acc 0.9347 (wall 50.3s) -> outputs/ipmnist_screening/unit_features_dev_20261030/shards/rls_head_resid_identmap50_r_idet003_s005625_seed2.json
