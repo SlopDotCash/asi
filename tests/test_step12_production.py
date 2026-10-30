@@ -115,6 +115,18 @@ def test_exo_cerebellum_config_nonpositive_step_size_raises() -> None:
         ExoCerebellumConfig(n_demons=3, obs_dim=4, step_size=0.0)
 
 
+def test_exo_cerebellum_config_loader_requires_exact_schema() -> None:
+    payload = ExoCerebellumConfig().to_config()
+    malformed = [
+        {key: value for key, value in payload.items() if key != "type"},
+        {**payload, "type": "RecommendationProtocolConfig"},
+        {**payload, "unexpected": 1},
+    ]
+    for candidate in malformed:
+        with pytest.raises(ValueError, match="(type|fields)"):
+            ExoCerebellumConfig.from_config(candidate)
+
+
 # ---------------------------------------------------------------------------
 # IAConfig validation
 # ---------------------------------------------------------------------------
@@ -131,6 +143,24 @@ def test_ia_config_obs_dim_mismatch_raises() -> None:
 def test_ia_config_matching_dims_ok() -> None:
     cfg = _make_ia_config(obs_dim=5)
     assert cfg.cerebellum.obs_dim == cfg.cortex.observation_dim == 5
+
+
+def test_ia_config_loader_requires_exact_schema() -> None:
+    payload = _make_ia_config().to_config()
+    wrong_cerebellum = dict(payload)
+    wrong_cerebellum["cerebellum"] = {
+        **payload["cerebellum"],
+        "type": "RecommendationProtocolConfig",
+    }
+    malformed = [
+        {key: value for key, value in payload.items() if key != "type"},
+        {**payload, "type": "ExoCerebellumConfig"},
+        {**payload, "unexpected": 1},
+        wrong_cerebellum,
+    ]
+    for candidate in malformed:
+        with pytest.raises(ValueError, match="(type|fields)"):
+            IAConfig.from_config(candidate)
 
 
 # ---------------------------------------------------------------------------
@@ -967,6 +997,18 @@ def test_cerebellum_weights_change_after_update() -> None:
 def test_recommendation_protocol_config_roundtrip() -> None:
     cfg = RecommendationProtocolConfig(acceptance_ema_decay=0.5)
     assert RecommendationProtocolConfig.from_config(cfg.to_config()) == cfg
+
+
+def test_recommendation_protocol_config_loader_requires_exact_schema() -> None:
+    payload = RecommendationProtocolConfig().to_config()
+    malformed = [
+        {key: value for key, value in payload.items() if key != "type"},
+        {**payload, "type": "ExoCerebellumConfig"},
+        {**payload, "unexpected": 1},
+    ]
+    for candidate in malformed:
+        with pytest.raises(ValueError, match="(type|fields)"):
+            RecommendationProtocolConfig.from_config(candidate)
 
 
 def test_recommendation_protocol_invalid_decay_raises() -> None:
