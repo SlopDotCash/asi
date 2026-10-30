@@ -867,3 +867,44 @@ def test_independent_horde_loop_preflights_shapes_and_output_budget() -> None:
     _require_loop_output_resources(119_304_647, 1)
     with pytest.raises(ValueError, match="learning-loop outputs"):
         _require_loop_output_resources(119_304_648, 1)
+
+
+
+def test_independent_loop_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import time
+    from types import SimpleNamespace
+
+    import alberta_framework.core.independent_demon_horde as module
+
+    horde = IndependentDemonHorde(
+        horde_spec=create_horde_spec(_make_all_gamma0_spec(3)),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+    )
+    state = horde.init(5, jr.key(0))
+    observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)
+    cumulants = jnp.full((1024, 3), 0.2, dtype=jnp.float32)
+    scan_outputs: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        result = real_scan(*args, **kwargs)
+        scan_outputs.extend(jax.tree.leaves(result))
+        return result
+
+    def clock() -> float:
+        if scan_outputs:
+            assert all(leaf.is_ready() for leaf in scan_outputs if isinstance(leaf, jax.Array))
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+    result = run_independent_horde_learning_loop(
+        horde, state, observations, cumulants, observations
+    )
+    assert scan_outputs
+    assert int(result.state.step_count) == 1024
+    assert bool(jnp.all(result.updates_applied))

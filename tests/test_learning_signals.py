@@ -673,3 +673,28 @@ def test_learning_signal_stable_reductions_remain_finite_at_legal_large_bounds()
     )
     assert bool(jnp.isfinite(signals.epistemic_disagreement))
     assert bool(jnp.isfinite(next_state.calibration_m2))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("ensemble_size,target_dim", [(2, 1), (4, 3)])
+@pytest.mark.parametrize("variance", [2e-38, 4e-38, 1e24, 0.0])
+def test_aleatoric_mean_preserves_representable_small_variance(
+    compiled, ensemble_size, target_dim, variance
+):
+    estimator = LearningSignalEstimator(
+        LearningSignalEstimatorConfig(ensemble_size=ensemble_size, target_dim=target_dim)
+    )
+    observe = jax.jit(estimator.observe) if compiled else estimator.observe
+    value = np.float32(variance)
+    state, signals = observe(
+        estimator.init(),
+        jnp.zeros((ensemble_size, target_dim), dtype=jnp.float32),
+        jnp.full((ensemble_size, target_dim), value, dtype=jnp.float32),
+        jnp.zeros(target_dim, dtype=jnp.float32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    assert bool(signals.availability.aleatoric)
+    assert int(state.valid_count) == 1
+    np.testing.assert_allclose(
+        signals.aleatoric_uncertainty, float(value), rtol=2e-6, atol=0
+    )

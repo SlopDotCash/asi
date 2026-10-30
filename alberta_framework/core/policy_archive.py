@@ -7,8 +7,6 @@ from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
-import numpy as np
-
 _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 4096
 _MAX_IDENTITY_CHARACTERS = 1024
@@ -180,10 +178,10 @@ class BoundedPolicyArchive:
             if len(entry.latent) != len(self.entries[0].latent):
                 raise ValueError("all latent descriptors must have equal width")
             distances = tuple(
-                float(np.linalg.norm(np.asarray(entry.latent) - np.asarray(old.latent)))
+                math.dist(entry.latent, old.latent)
                 for old in self.entries
             )
-            nearest = int(np.argmin(np.asarray(distances)))
+            nearest = min(range(len(distances)), key=distances.__getitem__)
             if distances[nearest] < self.min_latent_distance:
                 if entry.score <= self.entries[nearest].score:
                     return self

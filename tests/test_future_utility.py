@@ -681,3 +681,55 @@ def test_inf_error_silent_feature_scores_zero_not_nan() -> None:
     )
     chex.assert_trees_all_close(traced.contribution_trace, initial_contribution_trace)
     chex.assert_trees_all_close(traced.feature_energy_trace, initial_energy_trace)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("mode", ["one_step", "contribution", "factored"])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+@pytest.mark.parametrize("magnitude,step_size", [(2e19, 1.0), (2e19, 3.0), (3e19, 1.0)])
+def test_loss_reduction_does_not_overflow_expanded_products(
+    compiled, mode, sign, magnitude, step_size
+):
+    error = np.float32(sign * magnitude)
+    expected = max(0.0, float(error) ** 2 * step_size * (1.0 - 0.5 * step_size))
+
+    def estimate(errors):
+        common = dict(
+            errors=errors,
+            feature_values=jnp.array([1.0], dtype=jnp.float32),
+            active_mask=jnp.array([True, False]),
+            step_size_output=step_size,
+            active_count=1.0,
+        )
+        if mode == "one_step":
+            return one_step_output_loss_reduction_with_diagnostics(**common)
+        traces = dict(
+            feature_energy_trace=jnp.zeros(1, dtype=jnp.float32), trace_decay=0.0
+        )
+        if mode == "contribution":
+            return contribution_trace_output_loss_reduction_with_diagnostics(
+                **common, **traces, contribution_trace=jnp.zeros((2, 1), dtype=jnp.float32)
+            )
+        return trace_output_loss_reduction_with_diagnostics(
+            **common, **traces,
+            error_trace=jnp.zeros(2, dtype=jnp.float32),
+            feature_trace=jnp.zeros(1, dtype=jnp.float32),
+        )
+
+    if compiled:
+        estimate = jax.jit(estimate)
+    result = estimate(jnp.array([error, jnp.inf], dtype=jnp.float32))
+    representable = expected <= np.finfo(np.float32).max
+    assert bool(result.update_applied) is bool(representable)
+    np.testing.assert_allclose(
+        result.reductions[0, 0], expected if representable else 0.0, rtol=2e-6, atol=0
+    )
+    np.testing.assert_array_equal(result.reductions[1], 0.0)
+    if mode == "contribution":
+        np.testing.assert_array_equal(
+            result.contribution_trace, [[error], [0.0]] if representable else [[0.0], [0.0]]
+        )
+    elif mode == "factored":
+        np.testing.assert_array_equal(
+            result.error_trace, [error, 0.0] if representable else [0.0, 0.0]
+        )

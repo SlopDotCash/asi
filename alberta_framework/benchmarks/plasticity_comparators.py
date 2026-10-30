@@ -18,6 +18,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 from jax import Array, core
+from jax.nn import sigmoid
 
 _INT32_MAX: Final[int] = (1 << 31) - 1
 _MAX_ARRAY_ELEMENTS: Final[int] = 1_000_000
@@ -656,12 +657,8 @@ def smooth_leaky(value: Array, *, alpha: float, power: float, curvature: float) 
 
 
 def jax_sigmoid(value: Array) -> Array:
-    """Stable sigmoid without importing a larger neural-network facade."""
-    return jnp.where(
-        value >= 0,
-        1.0 / (1.0 + jnp.exp(-value)),
-        jnp.exp(value) / (1 + jnp.exp(value)),
-    )
+    """Stable sigmoid with finite derivatives in both saturation tails."""
+    return sigmoid(value)
 
 
 def interval_dropout(

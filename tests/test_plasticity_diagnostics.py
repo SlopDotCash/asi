@@ -163,6 +163,13 @@ def test_dead_unit_fraction_is_normalized_over_three_hidden_layers() -> None:
     assert fraction == 2.0 / 3.0
 
 
+def test_effective_rank_survives_float32_spectral_overflow() -> None:
+    """A large finite float32 spectrum must not collapse the rank to 1."""
+    features = np.diag(np.array([2e38, 2e38], dtype=np.float32))
+    observed = plasticity_diagnostics._effective_rank(features)
+    assert abs(observed - 2.0) <= 1e-3
+
+
 def test_profiles_are_immutable_and_result_binds_the_complete_profile() -> None:
     assert isinstance(PROFILES, Mapping)
     with pytest.raises(TypeError):
