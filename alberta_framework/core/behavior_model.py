@@ -812,6 +812,8 @@ class BehaviorModel:
             raise ValueError(
                 f"observation must have shape {expected_shape}, got {actual_shape}"
             )
+        if jnp.iscomplexobj(observation):
+            raise ValueError("observation must be real")
         return jnp.asarray(observation, dtype=jnp.float32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
