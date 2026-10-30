@@ -7836,6 +7836,58 @@ class TestRLSHeadIdentMapStepAnneal:
                 _make_rls_head_identmap_learner(hp)
 
 
+class TestRLSHeadIdentMapAnnealPeak(TestRLSHeadIdentMapStepAnneal):
+    """Post-shift starting step (``anneal_peak``) on the anneal_f2t1000 arm.
+
+    Reuses the detector/identifier-firing stream of the anneal pins.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+
+    def test_off_live_path_pin_bitwise(self):
+        """``anneal_peak == step_size`` is the parent bit-exactly."""
+        parent = self._run()
+        off = self._run(anneal_peak=0.005625)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_mechanism_live(self):
+        """Deliberate break: a peak a hair above step_size must diverge."""
+        parent = self._run(anneal_tau=2.0)
+        brk = self._run(anneal_tau=2.0, anneal_peak=0.005625 * 1.0001)
+        assert not np.array_equal(
+            np.asarray(brk.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        hi = self._run(anneal_peak=0.015)
+        assert np.all(np.isfinite(np.asarray(hi.per_task_loss)))
+
+    def test_registered_arms(self):
+        for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015)):
+            hp = screening_spec(self.PARENT + "_" + tag).hyperparameters
+            parent_hp = screening_spec(self.PARENT).hyperparameters
+            assert hp["anneal_peak"] == peak
+            assert {k: v for k, v in hp.items() if k != "anneal_peak"} == parent_hp
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad in (0.001, 0.0, -0.01, float("inf"), float("nan")):
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner({**base, "anneal_peak": bad})
+        no_anneal = {k: v for k, v in base.items()
+                     if k not in ("anneal_floor", "anneal_tau")}
+        with pytest.raises(ValueError):
+            _make_rls_head_identmap_learner({**no_anneal, "anneal_peak": 0.01})
+
+
 class TestPlasticityCounterSaturation:
     """Per-unit plasticity counters must saturate via the declared helper.
 
