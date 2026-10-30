@@ -295,6 +295,59 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Classical body momentum on the confirmed identmap50_r residual head
+    adds nothing: mean paired delta −0.00030 vs the gated-SGD parent.**
+    The cheapest unmeasured noise-reduction baseline on the
+    `rls_head_resid_identmap50_r` head, whose named remaining headroom
+    is within-task convergence (#22): classical bias-corrected EMA
+    momentum (µ 0.9) on the gated residual body gradient, gate
+    arithmetic byte-identical to the incumbent `_gated_sgd` — only the
+    descent direction changes. Mechanism precedent: the
+    `sgd_momentum_gate` EMA form, which predates the identmap family, so
+    the mechanism had never been measured on this head. Standard
+    screening scale, 60 tasks × 5,000 steps, seeds 0–2,
+    `noise_mode=step`: mean 0.91113 vs the parent's 0.91142 —
+    **−0.00030 paired delta, paired stderr 0.00017, 2 of 3 seeds
+    negative**; the only positive seed is +0.00004, within noise of
+    zero. Consistent with the family precedent: this head's noise
+    reduction is already carried by the RLS protocol head and the
+    utility gate, so EMA averaging of the body's descent direction
+    adds nothing measurable and slightly overshoots. Do not retry this
+    mechanism at this composition; higher µ values are unmeasured and
+    unclaimed. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_mom9/` (3 shards,
+    `summary.json`, `README.md` with the full protocol and table).
+
+25. **Classical body momentum at µ 0.99 on the identmap50_r head is
+    clearly worse: mean paired delta −0.00377 vs the gated-SGD parent,
+    3 of 3 seeds negative.** The µ-bracket completion named by #24
+    ("higher µ values are unmeasured and unclaimed"): the confirmed
+    `rls_head_resid_identmap50_r` composition with bias-corrected EMA
+    momentum µ 0.99 on the gated residual body — the retained mom9
+    mechanism, only the registry entry new. µ 0.99 stretches the body
+    averaging window to roughly 100 steps, spanning the identifier's
+    50-sample first match and 200-sample refinement. Standard
+    screening scale, 60 tasks × 5,000 steps, seeds 0–2,
+    `noise_mode=step`, environment verified bit-exact against the
+    pinned control shard before the wave: mean 0.90766 vs the
+    parent's 0.91142 — **−0.00377 paired delta, paired stderr 0.00116,
+    3 of 3 seeds negative** (per-seed −0.00341 / −0.00594 / −0.00196;
+    ~12x the µ 0.9 delta and ~3.3x its own stderr). The µ bracket is
+    now closed on both sides: µ 0.9 ≈ null, µ 0.99 clearly negative.
+    Reading: the head's noise reduction is already carried by the RLS
+    protocol head and the utility gate, and a ~100-step body window
+    drags stale pre-shift descent direction through the re-adaptation
+    phase the parent spends re-fitting after each permutation shift —
+    window length across shift adaptation, not averaging per se, is
+    the cost. The mechanism is closed at this composition for the
+    measured bracket; do not retry `body_momentum` on this head
+    without a mechanism change (e.g. window reset at detected shifts,
+    which would be a new mechanism, not this one). Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_mom99/` (reproduction
+    shard + 3 shards, `summary.json`, `README.md` with the full
+    protocol and table).
+
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

@@ -7554,10 +7554,9 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms plus the gated
-        idet003_s005625 step-size triple screen are registered; the
-        screened intermediates and the round-2 rejections (negative
-        result #22) are deregistered."""
+        """The two 200-task-confirmed identifier arms plus the registered
+        momentum screen arm; the screened intermediates and the round-2
+        rejections (negative result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_learner,
@@ -7572,6 +7571,14 @@ class TestRLSHeadIdentMap:
             "rls_head_resid_identmap200_r": {
                 "ident_match_at": 200.0, "ident_match2": 500.0,
                 "ident_match3": 2000.0,
+            },
+            "rls_head_resid_identmap50_r_mom9": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "body_momentum": 0.9,
+            },
+            "rls_head_resid_identmap50_r_mom99": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "body_momentum": 0.99,
             },
             "rls_head_resid_identmap50_r_idet003_s005625": {
                 "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -7592,7 +7599,6 @@ class TestRLSHeadIdentMap:
             assert spec.hyperparameters["rls_reset_frac"] == 0.05
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
-
 
 class TestRLSHeadIdentMapIdet003S005625:
     """Gated idet003 composition at body step size 0.005625.
@@ -7896,3 +7902,132 @@ class TestRLSHeadSMPrecond:
 
         assert "rls_head_resid_sm3e4_i50r" not in SCREENING_REGISTRY
         assert "rls_head_resid_sm1e3_i50r" not in SCREENING_REGISTRY
+
+
+class TestRLSHeadResidualMomentum:
+    """Classical momentum on the gated residual body (identmap50_r_mom9).
+
+    House convention: the bit-exact reduction pin ships with the
+    mechanism.  ``body_momentum = 0`` never builds the momentum branch, so
+    the incumbent path, state schema, and graph stay byte-for-byte.
+    """
+
+    @staticmethod
+    def _mom_spec(**overrides):
+        spec = screening_spec("rls_head_resid_l1_preset005")
+        return replace(
+            spec,
+            name=spec.name + "_mom_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_reduction_pin_bitwise(self, small_data):
+        """``body_momentum = 0`` is the incumbent, bit for bit."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._mom_spec(body_momentum=0.0),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(incumbent.per_task_loss),
+        )
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """With momentum enabled the trajectory diverges from the incumbent
+        and stays finite in [0, 1]."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        momentum = run_screening_config(
+            x, y, self._mom_spec(body_momentum=0.9),
+            seed=7, config=SMALL,
+        )
+        acc = np.asarray(momentum.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_requires_gated_residual_body(self):
+        """Momentum is registered for the gated residual body only and its
+        coefficient must lie in [0, 1)."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_hp,
+        )
+
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(head_resid=0.0, body_momentum=0.9)
+            )
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(head_resid=1.0, gate_scale=0.0, body_momentum=0.9)
+            )
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(head_resid=1.0, body_momentum=1.0)
+            )
+        with pytest.raises(ValueError):
+            _make_rls_head_learner(
+                _rls_head_hp(
+                    head_resid=1.0, rls_lambda=1.0, rls_reset_frac=0.05,
+                    body_momentum=0.9, resid_newton=1.0,
+                )
+            )
+
+    def test_composes_under_identmap(self, small_data):
+        """The identmap factory passes the momentum knob through to the body:
+        ``ident_match_at = 0`` + inert momentum is still the incumbent
+        bitwise, and the registered arm stays live under the identifier."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        x, y = small_data
+        spec = screening_spec("rls_head_resid_identmap50_r_mom9")
+        assert spec.factory is _make_rls_head_identmap_learner
+        pinned = replace(
+            spec,
+            name=spec.name + "_pin",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 0.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, "body_momentum": 0.0,
+            },
+        )
+        incumbent = run_screening_config(
+            x, y, screening_spec("rls_head_resid_l1_preset005"),
+            seed=7, config=SMALL,
+        )
+        result = run_screening_config(x, y, pinned, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(result.per_task_accuracy),
+            np.asarray(incumbent.per_task_accuracy),
+        )
+
+    def test_registered_arm_mom9_shape(self):
+        """The registered momentum arm is the confirmed identmap50_r
+        composition plus exactly ``body_momentum = 0.9``."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+        )
+
+        spec = SCREENING_REGISTRY["rls_head_resid_identmap50_r_mom9"]
+        parent = SCREENING_REGISTRY["rls_head_resid_identmap50_r"]
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "body_momentum"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value
+        assert spec.hyperparameters["body_momentum"] == 0.9
