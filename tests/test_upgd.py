@@ -21,6 +21,7 @@ so noise effects are unmistakable) and ``sparsity=0.5`` round-trips.
 """
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
@@ -1513,6 +1514,41 @@ class TestObGDBoundCountsTheErrorOnce:
         # The bounded step never overshoots the target.
         assert 0.0 < (after - before) / delta <= 1.0
 
+    def test_obgd_subclass_takes_published_error_carrying_bound(self) -> None:
+        """A valid ObGDBounding subclass must take the published error-carrying bound.
+
+        Exact-type dispatch would route a subclass to the pseudo-error 1.0
+        fallback, overshooting the published bound (min(|delta|, 1) / kappa)
+        by up to 1 / |delta| for small errors.
+        """
+
+        class DerivedObGD(ObGDBounding):
+            pass
+
+        kappa, lr, delta = 2.0, 1.0, 0.1
+        learner = UPGDLearner(
+            n_heads=1,
+            hidden_sizes=(),
+            step_size=lr,
+            sparsity=0.0,
+            perturbation_sigma=0.0,
+            bounder=DerivedObGD(kappa=kappa),
+            track_unit_utilities=False,
+            track_gradient_history=False,
+        )
+        state = learner.init(10, jr.key(0))
+        x = jnp.ones(10, dtype=jnp.float32)
+        z_l1 = float(jnp.sum(jnp.abs(x)) + 1.0)
+        z_sq = float(jnp.sum(x * x) + 1.0)
+        before = float(learner.predict(state, x)[0])
+        target = jnp.array([before + delta], dtype=jnp.float32)
+
+        after = float(learner.predict(learner.update(state, x, target).state, x)[0])
+
+        alpha_eff = lr / max(kappa * max(abs(delta), 1.0) * lr * z_l1, 1.0)
+        assert after - before == pytest.approx(alpha_eff * delta * z_sq, rel=1e-4)
+        assert 0.0 < (after - before) / delta <= 1.0
+
     @pytest.mark.parametrize("delta", [0.0, 0.1, 1.0, 3.0])
     def test_kappa_bound_of_error_carrying_steps_equals_bounding_the_gradient(
         self, delta: float
@@ -2538,3 +2574,16 @@ class TestGradientAlignmentScaleInvariance:
             state_rev = learner.update(state, obs, target_rev).state
             np.testing.assert_allclose(float(state_rev.meta_head_weight_log_scale), -0.5, atol=1e-5)
             np.testing.assert_allclose(float(state_rev.meta_head_bias_log_scale), -0.5, atol=1e-5)
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_update_preserves_finite_step_mse_reductions(disable_jit: bool) -> None:
+    learner = UPGDLearner(n_heads=2, hidden_sizes=(4,), sparsity=0.0, perturbation_sigma=0.0)
+    with jax.disable_jit(disable_jit):
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        result = learner.update(
+            state, jnp.zeros(2, dtype=jnp.float32), jnp.full(2, 1.5e19, dtype=jnp.float32)
+        )
+    assert int(result.state.step_count) == 1
+    assert bool(jnp.isfinite(result.state.loss_fast_ema))
+    assert bool(jnp.isfinite(result.state.loss_slow_ema))

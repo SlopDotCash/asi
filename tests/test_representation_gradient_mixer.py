@@ -812,3 +812,29 @@ def test_mixer_output_byte_bound_still_fires_first() -> None:
 def test_preflight_helper_rejects_the_same_working_set() -> None:
     with pytest.raises(ValueError, match="update working set byte count"):
         _preflight_mixer_update_working_set(_MAX_REPRESENTATION_DIM)
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+@pytest.mark.parametrize("swap", [False, True])
+@pytest.mark.parametrize(
+    "left,right", [([1e-30, 0.0], [1e20, 1e30]), ([3e38, 3e38], [1e-30, 1e-30])]
+)
+def test_dot_diagnostic_restores_units_only_after_mantissa_product(
+    compiled, sign, swap, left, right
+):
+    first = np.asarray(left, dtype=np.float32)
+    second = np.asarray(right, dtype=np.float32) * sign
+    if swap:
+        first, second = second, first
+    expected = np.dot(first.astype(np.float64), second.astype(np.float64))
+    config = RepresentationGradientMixerConfig(representation_dim=2)
+    def fn(a, b):
+        return mix_representation_gradients(config, a, b)
+
+    if compiled:
+        fn = jax.jit(fn)
+    result = fn(jnp.asarray(first), jnp.asarray(second))
+    np.testing.assert_allclose(result.diagnostics.dot_product, expected, rtol=2e-6, atol=0)
+    assert bool(result.valid)
+    assert bool(result.diagnostics.conflict) is (sign < 0)
+    np.testing.assert_array_equal(result.gradient, jnp.asarray(first) + jnp.asarray(second))

@@ -269,18 +269,40 @@ def _make_random_policy(
             raise ValueError("Discrete action bounds must fit JAX signed int32")
     elif isinstance(action_space, gymnasium.spaces.Box):
         _require_float32_allocation("random Box bounds and action", 3 * action_dim)
-        low_array = np.asarray(action_space.low, dtype=np.float32)
-        high_array = np.asarray(action_space.high, dtype=np.float32)
-        if not bool(
-            np.all(
-                np.isfinite(low_array)
-                & np.isfinite(high_array)
-                & (low_array <= high_array)
+        action_dtype = np.dtype(action_space.dtype)
+        integer_box = action_dtype.kind in "biu"
+        if integer_box:
+            _require_allocation(
+                "random integer Box action", action_dim, itemsize=action_dtype.itemsize
             )
-        ):
-            raise ValueError("Box random actions require finite ordered float32 bounds")
-        low = jnp.asarray(low_array)
-        high = jnp.asarray(high_array)
+            integer_lows = []
+            integer_highs = []
+            for raw_low, raw_high in zip(action_space.low.flat, action_space.high.flat):
+                lower, upper = int(raw_low), int(raw_high)
+                # Box bounds are inclusive. Check before narrowing or adding one
+                # in int32, using the same bounded randint domain as Discrete.
+                if not (
+                    _INT32_MIN <= lower <= upper < _INT32_MAX
+                    and 1 <= upper - lower + 1 <= _INT32_MAX
+                ):
+                    raise ValueError("integer Box random action bounds must fit JAX signed int32")
+                integer_lows.append(lower)
+                integer_highs.append(upper + 1)
+            low = jnp.asarray(integer_lows, dtype=jnp.int32).reshape(action_space.shape)
+            high = jnp.asarray(integer_highs, dtype=jnp.int32).reshape(action_space.shape)
+        else:
+            low_array = np.asarray(action_space.low, dtype=np.float32)
+            high_array = np.asarray(action_space.high, dtype=np.float32)
+            if not bool(
+                np.all(
+                    np.isfinite(low_array)
+                    & np.isfinite(high_array)
+                    & (low_array <= high_array)
+                )
+            ):
+                raise ValueError("Box random actions require finite ordered float32 bounds")
+            low = jnp.asarray(low_array)
+            high = jnp.asarray(high_array)
     elif isinstance(action_space, gymnasium.spaces.MultiDiscrete):
         starts = np.asarray(action_space.start).reshape((-1,))
         counts = np.asarray(action_space.nvec).reshape((-1,))
@@ -308,6 +330,11 @@ def _make_random_policy(
         if isinstance(action_space, gymnasium.spaces.Discrete):
             return int(jr.randint(key, (), discrete_low, discrete_high))
         if isinstance(action_space, gymnasium.spaces.Box):
+            if integer_box:
+                return np.asarray(
+                    jr.randint(key, action_space.shape, low, high, dtype=jnp.int32),
+                    dtype=action_dtype,
+                )
             return _sample_finite_box(key, low, high)
         if isinstance(action_space, gymnasium.spaces.MultiDiscrete):
             samples = np.fromiter(
@@ -333,6 +360,10 @@ def _make_random_policy(
 
 def make_random_policy(env: gymnasium.Env[Any, Any], seed: int = 0) -> Callable[[Array], Any]:
     """Create a random action policy for an environment.
+
+    Integer Box actions preserve the space's dtype and inclusive bounds. Their
+    bounds, exclusive upper bound, and per-coordinate range must fit signed
+    int32, matching the JAX randint domain used for discrete exploration.
 
     Args:
         env: Gymnasium environment

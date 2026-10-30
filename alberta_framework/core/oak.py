@@ -721,6 +721,11 @@ def _merge_rebound_stomp_option_slots(
                 rebound.option_policies.average_rewards,
                 source.option_policies.average_rewards,
             ),
+            previous_discounts=jnp.where(
+                mask1,
+                rebound.option_policies.previous_discounts,
+                source.option_policies.previous_discounts,
+            ),
         ),
     )
     models = cast(
@@ -2188,12 +2193,16 @@ class OaKAgent:
             jnp.zeros_like(state.stomp_state.option_policies.traces[idx])
         )
         new_op_average_rewards = state.stomp_state.option_policies.average_rewards.at[idx].set(0.0)
+        new_op_previous_discounts = state.stomp_state.option_policies.previous_discounts.at[
+            idx
+        ].set(1.0)
         new_option_policies = cast(
             IntraOptionPoliciesState,
             state.stomp_state.option_policies.replace(
                 q_weights=new_op_weights,
                 traces=new_op_traces,
                 average_rewards=new_op_average_rewards,
+                previous_discounts=new_op_previous_discounts,
             ),
         )
 

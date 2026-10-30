@@ -4666,6 +4666,9 @@ class PrototypeAgent:
         )
         if lifecycle_id is None:
             lifecycle_words = jr.key_data(session_key)
+            if lifecycle_words.shape != (2,):
+                # RBG keys carry four data words; draw the two-word nonce instead.
+                lifecycle_words = jr.bits(session_key, (2,), jnp.uint32)
         else:
             lifecycle_words = _strict_uint32_words(
                 lifecycle_id,

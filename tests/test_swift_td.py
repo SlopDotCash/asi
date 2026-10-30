@@ -877,3 +877,42 @@ def test_swift_td_accepts_all_numpy_real_families(dtype_code: str) -> None:
     val = np.dtype(dtype_code).type(1)
     opt = SwiftTD(eta=val)
     assert opt._eta == 1.0  # noqa: SLF001
+
+
+@pytest.mark.parametrize("alpha", [1e-35, 1e-30])
+@pytest.mark.parametrize("reward", [-1e12, 1e12])
+def test_zero_meta_trace_preserves_finite_first_learner_update(alpha, reward):
+    learner = TDLinearLearner(SwiftTD(initial_step_size=alpha, eta_min=alpha))
+    state = learner.init(2)
+    observation = jnp.array([1.0, -0.5], dtype=jnp.float32)
+    args = (state, observation, jnp.array(reward), jnp.zeros(2), jnp.array(0.0))
+    with jax.disable_jit():
+        eager = learner.update(*args)
+    compiled = jax.jit(learner.update)(*args)
+    assert bool(eager.update_applied) and bool(compiled.update_applied)
+    phi = np.append(np.asarray(observation, np.float64), 1.0)
+    rates = np.exp(np.asarray(state.optimizer_state.log_step_sizes, np.float64))
+    expected = reward * rates * phi
+    for result in (eager, compiled):
+        actual = np.append(np.asarray(result.state.weights), float(result.state.bias))
+        np.testing.assert_allclose(actual, expected, rtol=5e-6, atol=0.0)
+        np.testing.assert_array_equal(
+            result.state.optimizer_state.log_step_sizes,
+            state.optimizer_state.log_step_sizes,
+        )
+        assert int(result.state.step_count) == 1
+        assert np.all(np.isfinite(np.asarray(result.metrics)))
+
+
+def test_nonzero_meta_trace_still_rejects_overflow_atomically():
+    optimizer = SwiftTD(initial_step_size=1e-35, eta_min=1e-35)
+    state = optimizer.init(2).replace(p_traces=jnp.ones(3, dtype=jnp.float32))
+    result = jax.jit(optimizer.update)(
+        state, jnp.array(1e12), jnp.array([1.0, -0.5]), jnp.zeros(2), jnp.array(0.0)
+    )
+    assert not bool(result.update_applied)
+    for before, after in zip(
+        jax.tree.leaves(state), jax.tree.leaves(result.new_state), strict=True
+    ):
+        np.testing.assert_array_equal(before, after)
+    np.testing.assert_array_equal(result.weight_delta, jnp.zeros(2))

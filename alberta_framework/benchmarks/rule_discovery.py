@@ -658,8 +658,11 @@ def rule_step(
         # ratio**+1; exponent zero (flag off) is exactly 1.0.
         lr_name = lr_eff * jnp.power(p_lratio, f_layer * _LAYER_EXPONENT[name])
         decay_factor = 1.0 - lr_name * p_wd
+        # A blank input can leave the maximum utility at zero. Avoid 0/0
+        # even when the gate is disabled, since zero times NaN is still NaN.
+        utility_scale = jnp.where(global_max == 0.0, _EPS, global_max)
         gate = jax.nn.sigmoid(
-            p_beta * (utility[name] / bias_correction) / global_max
+            p_beta * (utility[name] / bias_correction) / utility_scale
         )
         stepped = (
             params[name] * decay_factor

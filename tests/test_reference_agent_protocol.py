@@ -799,3 +799,30 @@ def test_boundary_without_autoreset_waits_for_explicit_next_arm() -> None:
     )
     state = ledger.arm(state, reset_decision)
     assert state.phase is TransactionPhase.ARMED
+
+
+def test_legacy_receipt_keeps_executor_applied_action_so_divergence_halts() -> None:
+    ledger, state, decision, _authorization, dispatch = _settled()
+    reducer = reference_agent.ReferenceTransactionReducer(ledger.manifest)
+    state, command = reducer.issue_dispatch(
+        state,
+        dispatch,
+        command_id=f"{decision.decision_id}:command",
+        executor_id="tests.environment_executor.v1",
+        executor_epoch="legacy.preview1",
+    )
+    divergent = ledger.manifest.action_spec.encode((0.5, -0.5))
+    assert divergent != dispatch.effective_action
+
+    receipt = DispatchReceipt(
+        receipt_id=f"{decision.decision_id}:receipt",
+        dispatch=dispatch,
+        executor_id="tests.environment_executor.v1",
+        applied_action=divergent,
+    )
+    assert receipt.command == command
+    assert receipt.applied_action == divergent
+
+    state, _receipt = reducer.record_dispatch(state, receipt)
+    assert state.phase is TransactionPhase.HALTED
+    assert state.halt_reason == "executor applied action differs from the settled command"

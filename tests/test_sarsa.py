@@ -1569,6 +1569,66 @@ class TestSARSALambdaTraces:
         assert delta[0] != 0.0
         np.testing.assert_array_equal(delta[1:], 0.0)
 
+    def test_max_steps_cutoff_does_not_leak_traces_into_the_next(self):
+        """Running out of ``max_steps`` also ends the episode, so traces must not survive it.
+
+        The environment never terminates or truncates; the loop's own budget
+        stops it. The next call resets the environment just as it does after a
+        truncation, so the first update of that episode must credit only the
+        feature it visited.
+        """
+        from alberta_framework import run_sarsa_episode
+
+        class _OpenCorridor:
+            """One-hot four-state corridor that never ends an episode itself."""
+
+            def __init__(self) -> None:
+                self._t = 0
+
+            def reset(self):
+                self._t = 0
+                return np.eye(4, dtype=np.float32)[0], {}
+
+            def step(self, action: int):
+                self._t += 1
+                obs = np.eye(4, dtype=np.float32)[min(self._t, 3)]
+                return obs, 1.0, False, False, {}
+
+        agent = _make_agent(
+            n_actions=1,
+            hidden_sizes=(),
+            gamma=0.9,
+            epsilon_start=0.0,
+            lamda=0.8,
+        )
+        state = agent.init(feature_dim=4, key=jr.key(5))
+        result = run_sarsa_episode(agent, state, _OpenCorridor(), max_steps=3)
+        assert result.num_steps == 3
+
+        w_trace, b_trace = result.state.learner_state.head_traces[0]
+        assert jnp.allclose(w_trace, 0.0), "control-head w-trace leaked across max_steps"
+        assert jnp.allclose(b_trace, 0.0), "control-head b-trace leaked across max_steps"
+
+        # The first update of the next episode credits only the feature it visited.
+        env = _OpenCorridor()
+        obs0, _ = env.reset()
+        state = result.state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=jnp.asarray(obs0),
+        )
+        obs1, reward, _, _, _ = env.step(0)
+        before = state.learner_state.head_params.weights[0]
+        after = agent.update(
+            state,
+            jnp.array(reward, dtype=jnp.float32),
+            jnp.asarray(obs1),
+            jnp.array(0.0),
+            jnp.array(0, dtype=jnp.int32),
+        ).state.learner_state.head_params.weights[0]
+        delta = np.asarray(after - before).reshape(-1)
+        assert delta[0] != 0.0
+        np.testing.assert_array_equal(delta[1:], 0.0)
+
     def test_reset_control_traces_clears_only_control_heads(self):
         """The public reset zeroes control-head traces and touches nothing else."""
         agent = _make_agent(n_actions=2, hidden_sizes=(), gamma=0.9, epsilon_start=0.0, lamda=0.8)

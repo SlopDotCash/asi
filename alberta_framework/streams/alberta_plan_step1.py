@@ -368,7 +368,8 @@ class XDistShiftStream:
         noise_std: Std dev of additive mean-zero target noise (default 0.1).
             Only added to the target when ``noise_in_target=True``.
         scale_change_interval: Steps between scale resamplings (default 2000)
-        scale_min: Minimum per-feature scale, inclusive (default 0.1)
+        scale_min: Minimum per-feature scale, inclusive; must remain a normal
+            float32 value (default 0.1)
         scale_max: Maximum per-feature scale, exclusive (default 10.0)
         noise_in_target: If True, add Gaussian noise to the target. If False,
             the target is exactly ``w* . x``.
@@ -423,6 +424,8 @@ class XDistShiftStream:
             )
         narrowed_scale_min = float(np.float32(scale_min_val))
         narrowed_scale_max = float(np.float32(scale_max_val))
+        if narrowed_scale_min < float(np.finfo(np.float32).tiny):
+            raise ValueError("scale_min must be representable as a normal float32 value")
         if narrowed_scale_min >= narrowed_scale_max:
             raise ValueError(
                 f"scale_min ({scale_min_val}) must remain less than "

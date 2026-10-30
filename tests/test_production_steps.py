@@ -89,6 +89,25 @@ def test_step1_kernel_all_public_optimizers_smoke(optimizer: str) -> None:
     assert result.metrics_shape == (12, 4)
 
 
+@pytest.mark.parametrize("optimizer", ["idbd", "autostep", "autostep_gtd", "adagain"])
+def test_step1_kernel_meta_optimizers_use_configured_meta_step_size(
+    optimizer: Literal["idbd", "autostep", "autostep_gtd", "adagain"],
+) -> None:
+    """``meta_step_size`` reaches every Step 1 optimizer that adapts its gains."""
+    config = Step1KernelConfig(optimizer=optimizer, meta_step_size=0.05)
+    assert make_step1_optimizer(config).to_config()["meta_step_size"] == 0.05
+
+    # The smoke record reports ``meta_step_size``, so the run must depend on it.
+    frozen = run_step1_smoke(
+        Step1KernelConfig(optimizer=optimizer, meta_step_size=0.0),
+        steps=64,
+        final_window=16,
+    )
+    adapted = run_step1_smoke(config, steps=64, final_window=16)
+    assert adapted.to_dict()["config"] == config.to_dict()
+    assert adapted.final_window_mse != frozen.final_window_mse
+
+
 @pytest.mark.parametrize(
     ("normalizer", "expected_type", "expected_field", "endpoint"),
     [
