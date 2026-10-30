@@ -79,14 +79,34 @@ jobs:
       - name: Fetch PR data (as data, not code)
         run: |
           mkdir -p "$WORKDIR"
-          gh pr view "$PR_NUMBER" --repo "$REPO" \
+          # One transient GitHub API 5xx (observed 2026-10-12: a graphql 504)
+          # failed this step, the whole triage job, and left a healthy PR
+          # with a failing check until a manual re-trigger. Retry each fetch
+          # a bounded number of times with linear backoff before failing.
+          fetch_with_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              echo "warning: attempt $attempt/3 failed: $*" >&2
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 15)); fi
+            done
+            echo "error: all 3 attempts failed: $*" >&2
+            return 1
+          }
+          fetch_with_retry gh pr view "$PR_NUMBER" --repo "$REPO" \
             --json number,title,body,author,baseRefName,headRefName,isDraft,additions,deletions,mergeable,labels \
             > "$WORKDIR/metadata.json"
-          gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' \
+          fetch_with_retry gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' \
             > "$WORKDIR/changed_files.txt"
           # Cap the diff so a giant PR can't blow out the context; truncation
           # alone disqualifies a PR from auto-merge (the prompt says so).
-          gh pr diff "$PR_NUMBER" --repo "$REPO" | head -c 400000 > "$WORKDIR/diff.patch"
+          # Write the full diff first so the retry function's exit status
+          # survives the cap (the step shell has no pipefail).
+          fetch_with_retry gh pr diff "$PR_NUMBER" --repo "$REPO" > "$WORKDIR/diff.patch.raw"
+          head -c 400000 "$WORKDIR/diff.patch.raw" > "$WORKDIR/diff.patch"
+          rm -f "$WORKDIR/diff.patch.raw"
           echo "AUTHOR=$(jq -r '.author.login' "$WORKDIR/metadata.json")" >> "$GITHUB_ENV"
 
       - name: Claude triage classification

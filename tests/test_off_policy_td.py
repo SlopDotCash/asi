@@ -229,6 +229,25 @@ def test_runtime_negative_rho_rejection_is_atomic_and_neutral(learner) -> None:
             assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
 
 
+def test_etd_runtime_negative_interest_rejection_is_atomic_and_neutral() -> None:
+    learner = ETDLinearLearner(step_size=0.1, trace_decay=0.5)
+    state = learner.init(1)
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(0.5, dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray(-0.25, dtype=jnp.float32),
+    )
+
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(result.update_applied)
+    for name in ("prediction", "td_error", "follow_on_trace", "emphasis", "metrics"):
+        assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+
+
 @pytest.mark.parametrize(
     "learner",
     [
@@ -256,6 +275,31 @@ def test_update_rejects_exact_host_negative_rho_before_float32_narrowing(
             jnp.asarray([2.0], dtype=jnp.float32),
             jnp.asarray(0.5, dtype=jnp.float32),
             rho,
+        )
+
+
+@pytest.mark.parametrize(
+    "interest",
+    [
+        -math.nextafter(0.0, 1.0),
+        -Fraction(1, 2**200),
+    ],
+)
+def test_etd_rejects_exact_host_negative_interest_before_float32_narrowing(
+    interest: object,
+) -> None:
+    learner = ETDLinearLearner(step_size=0.1)
+    state = learner.init(1)
+
+    with pytest.raises(ValueError, match="interest"):
+        learner.update(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.asarray([2.0], dtype=jnp.float32),
+            jnp.asarray(0.5, dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+            interest,
         )
 
 
