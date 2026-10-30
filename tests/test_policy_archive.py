@@ -38,6 +38,20 @@ def test_one_model_and_fixed_snapshot_controls() -> None:
     assert [entry.identity for entry in fixed.entries] == ["a"]
 
 
+@pytest.mark.parametrize("mode", ["one_model", "fixed_snapshot"])
+def test_single_policy_controls_reject_adopted_multi_entry_state(mode: str) -> None:
+    first = _entry("first", (0.0,), 1.0)
+    second = _entry("second", (1.0,), 2.0)
+
+    with pytest.raises(ValueError, match="single-policy control"):
+        BoundedPolicyArchive(
+            byte_budget=1024,
+            min_latent_distance=0.0,
+            mode=mode,  # type: ignore[arg-type]
+            entries=(first, second),
+        )
+
+
 def test_archive_rejects_duplicate_identity() -> None:
     archive = BoundedPolicyArchive(byte_budget=42, min_latent_distance=0.0).add(
         _entry("a", (0.0,), 1.0)
