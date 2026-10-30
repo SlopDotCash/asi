@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import jax
 import numpy as np
 import pytest
 
 from alberta_framework.streams.synthetic import (
+    AbruptChangeStream,
+    CyclicStream,
     DynamicScaleShiftStream,
     HiddenStateAR2Stream,
+    PeriodicChangeStream,
+    RandomWalkStream,
     ScaleDriftStream,
     SuttonExperiment1Stream,
     _require_float32_resource,
@@ -15,6 +20,32 @@ from alberta_framework.streams.synthetic import (
 )
 
 _INT32_MAX = 2**31 - 1
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        RandomWalkStream(feature_dim=4),
+        HiddenStateAR2Stream(feature_dim=4, visible_dim=2),
+        AbruptChangeStream(feature_dim=4),
+        SuttonExperiment1Stream(num_relevant=2, num_irrelevant=2),
+        CyclicStream(feature_dim=4),
+        PeriodicChangeStream(feature_dim=4),
+        DynamicScaleShiftStream(feature_dim=4),
+        ScaleDriftStream(feature_dim=4),
+    ],
+)
+def test_synthetic_initializers_require_typed_scalar_threefry_roots(stream: object) -> None:
+    with pytest.raises(TypeError, match="typed scalar Threefry"):
+        stream.init(jax.random.PRNGKey(0))  # type: ignore[attr-defined]
+    with pytest.raises(TypeError, match="typed scalar Threefry"):
+        stream.init(jax.random.key(0, impl="rbg"))  # type: ignore[attr-defined]
+
+    threefry = jax.random.key(0, impl="threefry2x32")
+    state = stream.init(threefry)  # type: ignore[attr-defined]
+    assert str(jax.random.key_impl(state.key)) == "threefry2x32"
+    compiled_state = jax.jit(stream.init)(threefry)  # type: ignore[attr-defined]
+    assert str(jax.random.key_impl(compiled_state.key)) == "threefry2x32"
 
 
 class _LyingIntSubclass(int):
