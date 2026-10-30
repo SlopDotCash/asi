@@ -1,6 +1,7 @@
 """Tests for sparse initialization."""
 
 import chex
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -56,6 +57,27 @@ class TestSparseInit:
         w2 = sparse_init(jr.key(1), shape)
 
         assert not jnp.allclose(w1, w2)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            jr.key(0, impl="rbg"),
+            jr.split(jr.key(0), 2),
+        ],
+    )
+    def test_rejects_non_scalar_or_non_threefry_key(self, key):
+        """Initializer roots must bind ASI runs to the Threefry algorithm."""
+        with pytest.raises(ValueError, match="scalar threefry2x32 key"):
+            sparse_init(key, (2, 4), sparsity=0.5)
+
+    def test_canonicalizes_legacy_threefry_key(self):
+        """Legacy Threefry callers retain their typed-key initialization stream."""
+        typed = sparse_init(jr.key(0), (2, 4), sparsity=0.5)
+        legacy_key = jr.PRNGKey(0)
+        with jax.default_prng_impl("rbg"):
+            legacy = sparse_init(legacy_key, (2, 4), sparsity=0.5)
+
+        chex.assert_trees_all_equal(legacy, typed)
 
     def test_zero_sparsity(self):
         """With sparsity=0, all weights should be non-zero."""

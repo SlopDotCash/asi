@@ -521,6 +521,28 @@ def test_outcome_rejects_scalar_that_overflows_during_protocol_conversion() -> N
         )
 
 
+def test_outcome_rejects_integer_reward_that_loses_protocol_precision() -> None:
+    ledger, state, _decision_value, _authorization, _dispatch, receipt = _dispatched()
+    before = state
+
+    with pytest.raises(ValueError, match="reward|precision|representable"):
+        ledger.record_outcome(
+            state,
+            receipt,
+            reward=2**53 + 1,
+            discount=0.9,
+            terminated=False,
+            truncated=False,
+            autoreset=False,
+            bootstrap_observation_id="life-a:observation:1",
+            bootstrap_observation=(0.1, 0.2, 0.3),
+            next_decision_observation_id="life-a:observation:1",
+            next_decision_observation=(0.1, 0.2, 0.3),
+        )
+
+    assert state == before
+
+
 def test_ledger_enforces_one_lifecycle_monotonic_decisions_and_exactly_once_phases() -> None:
     ledger, armed, decision = _armed_ledger()
     with pytest.raises(DecisionOwnershipError, match="phase|armed"):

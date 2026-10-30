@@ -239,6 +239,9 @@ class DreamingConfig:
         unknown = set(data) - allowed
         if unknown:
             raise ValueError("DreamingConfig payload has unknown fields")
+        missing = allowed - set(data)
+        if missing:
+            raise ValueError("DreamingConfig payload has missing fields")
         return cls(**data)  # type: ignore[arg-type]
 
 
@@ -345,6 +348,9 @@ class DreamSelectionConfig:
         unknown = set(data) - allowed
         if unknown:
             raise ValueError("DreamSelectionConfig payload has unknown fields")
+        missing = allowed - set(data)
+        if missing:
+            raise ValueError("DreamSelectionConfig payload has missing fields")
         return cls(**data)  # type: ignore[arg-type]
 
 
@@ -603,6 +609,44 @@ def score_dream_candidates(
         + weighted_term(cfg.confidence_weight, confidence_arr)
         - weighted_term(cfg.model_error_weight, error_arr)
     )
+
+    def recover_overflowed_scores(_: None) -> Array:
+        # Preserve ordinary arithmetic exactly. Only recover when finite terms
+        # overflowed before cancelling to a representable weighted sum.
+        weights = jnp.asarray(
+            [
+                cfg.surprise_weight,
+                cfg.utility_weight,
+                cfg.confidence_weight,
+                -cfg.model_error_weight,
+            ],
+            dtype=jnp.float32,
+        )
+        values = jnp.stack(
+            (surprise_arr, utility_arr, confidence_arr, error_arr), axis=0
+        )
+        value_peak = jnp.max(jnp.abs(values), axis=0)
+        weight_peak = jnp.max(jnp.abs(weights))
+        _value_mantissa, value_exponent = jnp.frexp(
+            jnp.where(value_peak > 0.0, value_peak, 1.0)
+        )
+        _weight_mantissa, weight_exponent = jnp.frexp(
+            jnp.where(weight_peak > 0.0, weight_peak, 1.0)
+        )
+        scaled_values = jnp.ldexp(values, -value_exponent[None, :])
+        scaled_weights = jnp.ldexp(weights, -weight_exponent)
+        recovered_scores = jnp.ldexp(
+            jnp.sum(scaled_weights[:, None] * scaled_values, axis=0),
+            value_exponent + weight_exponent,
+        )
+        return jnp.where(jnp.isfinite(raw_scores), raw_scores, recovered_scores)
+
+    raw_scores = jax.lax.cond(
+        jnp.all(jnp.isfinite(raw_scores)),
+        lambda _: raw_scores,
+        recover_overflowed_scores,
+        operand=None,
+    )
     accepted = accepted & jnp.isfinite(raw_scores)
     scores = jnp.where(accepted, raw_scores, -jnp.inf)
     selected_indices = jnp.argsort(-scores)[: cfg.max_items].astype(jnp.int32)
@@ -662,9 +706,13 @@ class RecentObservationBuffer:
         observation: Array,
     ) -> RecentObservationBufferState:
         """Insert one observation into the ring buffer."""
-        obs = jnp.asarray(observation, dtype=jnp.float32).reshape(
-            (self._observation_dim,)
-        )
+        raw_observation = jnp.asarray(observation)
+        expected_shape = (self._observation_dim,)
+        if raw_observation.shape != expected_shape:
+            raise ValueError(
+                f"observation must have shape {expected_shape}, got {raw_observation.shape}"
+            )
+        obs = jnp.asarray(raw_observation, dtype=jnp.float32)
         next_observations = state.observations.at[state.index].set(obs)
         return RecentObservationBufferState(
             observations=next_observations,
@@ -776,6 +824,9 @@ class DreamRolloutConfig:
         unknown = set(data) - allowed
         if unknown:
             raise ValueError("DreamRolloutConfig payload has unknown fields")
+        missing = allowed - set(data)
+        if missing:
+            raise ValueError("DreamRolloutConfig payload has missing fields")
         return cls(**data)  # type: ignore[arg-type]
 
 
