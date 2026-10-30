@@ -3302,6 +3302,16 @@ class STOMPAgent:
                 scan_extended_action_masks,
             ),
         )
+        # The scan traces the base learner and narrows its host clocks to
+        # float32. Restore the incoming Python values. This scan keeps a
+        # no-timing contract: a rejected or replayed scan returns its input
+        # state exactly, so the host clocks gain no elapsed time here.
+        learner_state = final_state.base_learner_state
+        restored_learner = learner_state.replace(
+            birth_timestamp=state.base_learner_state.birth_timestamp,
+            uptime_s=state.base_learner_state.uptime_s,
+        )
+        final_state = final_state.replace(base_learner_state=restored_learner)
         return STOMPArrayResult(
             state=final_state,
             td_errors=td_errors,
