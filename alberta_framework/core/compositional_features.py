@@ -4817,7 +4817,15 @@ def run_compositional_arrays(
         ValueError: If ``num_steps`` is not an exact integer in
             ``[1, 10_000]``.
     """
-    _require_compositional_array_steps(observations, targets)
+    num_steps = _require_compositional_array_steps(observations, targets)
+    host_ops = np.asarray(jax.device_get(state.ops))
+    host_parent_a = np.asarray(jax.device_get(state.parent_a))
+    raw_parents = host_parent_a[host_ops == OP_RAW]
+    if raw_parents.size == 0 or int(np.max(raw_parents)) < 0:
+        raise ValueError("state must contain a valid raw-observation feature prefix")
+    feature_dim = int(np.max(raw_parents)) + 1
+    if observations.shape != (num_steps, feature_dim):
+        raise ValueError(f"observations must have shape ({num_steps}, {feature_dim})")
 
     def step_fn(
         carry: CompositionalFeatureState,

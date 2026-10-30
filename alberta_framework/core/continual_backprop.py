@@ -1561,9 +1561,16 @@ def run_cbp_learning_loop(
     final_state, (per_head_metrics, replacements_made) = jax.lax.scan(
         step_fn, state, (obs_array, tgt_array)
     )
+    jax.block_until_ready(  # type: ignore[no-untyped-call]
+        (final_state, per_head_metrics, replacements_made)
+    )
     elapsed = time.time() - t0
+    # The scan carries host clocks through the jitted update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     final_mlp = final_state.mlp_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.mlp_state.uptime_s + elapsed
+        birth_timestamp=state.mlp_state.birth_timestamp,
+        uptime_s=state.mlp_state.uptime_s + elapsed,
     )
     final_state = final_state.replace(mlp_state=final_mlp)  # type: ignore[attr-defined]
 

@@ -319,6 +319,8 @@ def _float32_operand(
 def _discrete_action_operand(name: str, value: Array | float | int) -> Array:
     """Preserve an integer action's exact domain while enforcing scalar shape."""
     array = jnp.asarray(value)
+    if jnp.issubdtype(array.dtype, jnp.complexfloating):
+        raise ValueError(f"{name} must have a real numeric dtype")
     if array.shape != ():
         raise ValueError(f"{name} must have shape (), got {array.shape}")
     return array

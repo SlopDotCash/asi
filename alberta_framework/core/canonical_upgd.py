@@ -504,15 +504,38 @@ def _local_normalize(
     active_denominator = jnp.where(active, denominator_utility, 0.0)
     if numerator.ndim == 0:
         denominator = jnp.abs(active_denominator)
+        if epsilon is not None:
+            denominator = jnp.maximum(denominator, epsilon)
+        normalized = numerator / denominator
     else:
         denominator = jnp.linalg.norm(
             active_denominator,
             axis=-1,
             keepdims=True,
         )
-    if epsilon is not None:
-        denominator = jnp.maximum(denominator, epsilon)
-    normalized = numerator / denominator
+        # Recover norm overflow of finite utilities by scaling before squaring.
+        scale = jnp.max(jnp.abs(active_denominator), axis=-1, keepdims=True)
+        safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+        _, scale_exponent = jnp.frexp(safe_scale)
+        scaled_denominator = jnp.linalg.norm(
+            jnp.ldexp(active_denominator, -scale_exponent),
+            axis=-1,
+            keepdims=True,
+        )
+        overflow_recovery = jnp.isinf(denominator) & jnp.all(
+            jnp.isfinite(active_denominator), axis=-1, keepdims=True
+        )
+        if epsilon is not None:
+            denominator = jnp.maximum(denominator, epsilon)
+        normalized = numerator / denominator
+        scaled_numerator = jnp.ldexp(numerator, -scale_exponent)
+        # Gate both division operands before the outer where: jnp.where hides
+        # the unselected forward value but JAX still backprops through it, so
+        # an all-zero row would otherwise produce 0/0 -> NaN gradients.
+        safe_scaled_denominator = jnp.where(overflow_recovery, scaled_denominator, 1.0)
+        safe_scaled_numerator = jnp.where(overflow_recovery, scaled_numerator, 0.0)
+        scaled_normalized = safe_scaled_numerator / safe_scaled_denominator
+        normalized = jnp.where(overflow_recovery, scaled_normalized, normalized)
     return jnp.where(active, normalized, 0.0)
 
 

@@ -17,10 +17,58 @@ from alberta_framework.streams.gymnasium import (  # noqa: E402
     _flatten_observation,
     _flatten_space,
     collect_trajectory,
+    learn_from_trajectory,
     make_epsilon_greedy_policy,
     make_gymnasium_stream,
     make_random_policy,
 )
+
+
+def test_trajectory_learning_finishes_device_work_before_stopping_uptime_clock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reported uptime must cover scan execution, not only its dispatch."""
+    import time
+    from types import SimpleNamespace
+
+    import jax
+
+    from alberta_framework.core.learners import LinearLearner
+
+    learner = LinearLearner()
+    observations = jnp.ones((8, 2), dtype=jnp.float32)
+    targets = jnp.zeros((8, 1), dtype=jnp.float32)
+    blocked: list[object] = []
+    real_scan = jax.lax.scan
+    real_time = time.time
+    scan_finished = False
+
+    def recording_scan(*args: object, **kwargs: object) -> object:
+        nonlocal scan_finished
+        result = real_scan(*args, **kwargs)
+        scan_finished = True
+        return result
+
+    def recording_block(value: object) -> object:
+        blocked.append(value)
+        return value
+
+    def clock() -> float:
+        if scan_finished:
+            assert blocked
+        return real_time()
+
+    monkeypatch.setattr(jax.lax, "scan", recording_scan)
+    monkeypatch.setattr(jax, "block_until_ready", recording_block)
+    monkeypatch.setattr(gymnasium_stream_module, "time", SimpleNamespace(time=clock))
+
+    final_state, metrics = learn_from_trajectory(learner, observations, targets)
+
+    assert len(blocked) == 1
+    blocked_state, blocked_metrics = blocked[0]  # type: ignore[misc]
+    assert int(blocked_state.step_count) == 8
+    assert blocked_metrics is metrics
+    assert int(final_state.step_count) == 8
 
 
 class TestPredictionMode:
