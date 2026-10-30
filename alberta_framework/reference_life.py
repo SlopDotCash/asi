@@ -1136,10 +1136,10 @@ class SwitchingTwoStateReferenceEnvironment:
                 dtype=np.float32,
             )
         )
-        if execution.reward != expected_reward:
+        if struct.pack(">d", execution.reward) != struct.pack(">d", expected_reward):
             raise DecisionOwnershipError("execution reward does not match switching dynamics")
         expected_oracle = self._environment.optimal_average_reward(phase)
-        if execution.oracle_reward != expected_oracle:
+        if struct.pack(">d", execution.oracle_reward) != struct.pack(">d", expected_oracle):
             raise DecisionOwnershipError("execution oracle reward does not match its regime")
         if (
             execution.discount != 1.0

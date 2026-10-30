@@ -304,7 +304,21 @@ def _stable_std(values: Array, *, axis: int) -> Array:
     scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
     safe_scale = jnp.where(scale == 0.0, jnp.ones_like(scale), scale)
     normalized = values / safe_scale
-    return jnp.std(normalized, axis=axis) * jnp.squeeze(scale, axis=axis)
+    direct = jnp.std(normalized, axis=axis) * jnp.squeeze(scale, axis=axis)
+
+    # XLA can lower division by a value near FLT_MAX to a reciprocal multiply.
+    # That reciprocal is subnormal and may flush to zero, falsely reporting a
+    # zero spread. Power-of-two scaling keeps both factors representable.
+    _, exponent = jnp.frexp(scale)
+    power_scaled = jnp.ldexp(values, -exponent)
+    stable = jnp.ldexp(
+        jnp.std(power_scaled, axis=axis),
+        jnp.squeeze(exponent, axis=axis),
+    )
+    maximum = jnp.squeeze(jnp.max(values, axis=axis, keepdims=True), axis=axis)
+    minimum = jnp.squeeze(jnp.min(values, axis=axis, keepdims=True), axis=axis)
+    direct_failed = (~jnp.isfinite(direct)) | ((direct == 0.0) & (maximum != minimum))
+    return jnp.where(direct_failed & jnp.isfinite(stable), stable, direct)
 
 
 def _epps_pulley_gaussian_statistic(samples: Array, width: Array) -> Array:
