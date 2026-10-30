@@ -101,6 +101,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still rank, and `merge_shards` publishes that recorded field as the arm's
   identity. The existing within-arm consistency check runs first and cannot
   catch a batch that is consistently wrong.
+- `ipmnist_screening.load_shard` now rejects a non-string `schema` and a legacy
+  v1 shard without a `config` object as `ValueError`s. Testing an unhashable
+  JSON array/object schema against the supported-schema set raised
+  `TypeError: unhashable type`, and the legacy path indexed `payload["config"]`
+  before validating it, so an absent key raised `KeyError`. Both malformed
+  artifacts crashed merge, proxy, and preregistration validation instead of
+  failing closed through the loader's validation contract.
 - `upgd_memory._normalize_simplex` now returns a probability simplex for
   zero, negative, sub-`1e-12`, and float32-overflowing inputs.  The previous
   floored-denominator helper could drop mass (including the reachable
