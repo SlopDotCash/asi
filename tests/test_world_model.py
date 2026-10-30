@@ -144,6 +144,28 @@ def test_world_model_rejects_size_one_scalar_aliases(
         jax.jit(call)()
 
 
+def test_world_model_preserves_wide_integer_action_identity() -> None:
+    """A legal int32 action must not be rounded through float32 before encoding."""
+    expected_action = 2**24 + 1
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=1,
+            n_actions=expected_action + 1,
+            hidden_sizes=(),
+        )
+    )
+    action = jnp.asarray(expected_action, dtype=jnp.int32)
+
+    @jax.jit
+    def selected_entries(value: jax.Array) -> jax.Array:
+        encoded = model.encode_action(value)
+        # Consume only the two relevant entries so XLA can fuse away the
+        # logically large one-hot vector required to expose the float32 cliff.
+        return jnp.asarray([encoded[expected_action], encoded[expected_action - 1]])
+
+    np.testing.assert_array_equal(selected_entries(action), [1.0, 0.0])
+
+
 def test_world_model_preserves_direct_numeric_dtype_canonicalization() -> None:
     model = OneStepWorldModel(
         WorldModelConfig(
@@ -165,6 +187,48 @@ def test_world_model_preserves_direct_numeric_dtype_canonicalization() -> None:
     )
     assert features.dtype == jnp.float32
     assert targets.dtype == jnp.float32
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["observation", "action", "reward", "next_observation"],
+)
+def test_world_model_update_rejects_complex_operands(field: str) -> None:
+    """A direct update must not discard imaginary transition components."""
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=2,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(13))
+    values = {
+        "observation": jnp.zeros((2,), dtype=jnp.float32),
+        "action": jnp.asarray(0, dtype=jnp.int32),
+        "reward": jnp.asarray(0.5, dtype=jnp.float32),
+        "next_observation": jnp.ones((2,), dtype=jnp.float32),
+    }
+    values[field] = jnp.full(
+        values[field].shape,
+        1.0 + 2.0j,
+        dtype=jnp.complex64,
+    )
+
+    def call() -> object:
+        return model.update(
+            state,
+            values["observation"],
+            values["action"],
+            values["reward"],
+            values["next_observation"],
+        )
+
+    with pytest.raises(ValueError, match=rf"{field} must have a real numeric dtype"):
+        call()
+    with pytest.raises(ValueError, match=rf"{field} must have a real numeric dtype"):
+        jax.jit(call)()
 
 
 def test_world_model_update_is_finite_and_shape_stable() -> None:
@@ -194,6 +258,51 @@ def test_world_model_update_is_finite_and_shape_stable() -> None:
     assert int(result.state.step_count) == 1
 
 
+def test_world_model_update_retains_finite_wide_mse() -> None:
+    observation_dim = 8
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=observation_dim,
+            n_actions=2,
+            hidden_sizes=(),
+            step_size=0.0,
+            sparsity=0.0,
+        )
+    )
+    state = model.init(jr.key(20))
+    heads = state.learner_state.head_params
+    state = dataclasses.replace(
+        state,
+        learner_state=dataclasses.replace(
+            state.learner_state,
+            head_params=dataclasses.replace(
+                heads,
+                weights=tuple(jnp.zeros_like(weight) for weight in heads.weights),
+                biases=tuple(
+                    jnp.full_like(bias, 7e18)
+                    if index > 0
+                    else jnp.zeros_like(bias)
+                    for index, bias in enumerate(heads.biases)
+                ),
+            ),
+        ),
+    )
+    zeros = jnp.zeros((observation_dim,), dtype=jnp.float32)
+
+    result = model.update(
+        state,
+        zeros,
+        jnp.asarray(0, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        zeros,
+    )
+
+    assert bool(result.update_applied)
+    assert bool(jnp.isfinite(result.observation_mse))
+    assert float(result.observation_mse) == pytest.approx(4.9e37, rel=1e-6)
+    assert int(result.state.step_count) == 1
+
+
 def test_world_model_config_roundtrip_preserves_action_encoding() -> None:
     cfg = WorldModelConfig(
         observation_dim=5,
@@ -210,6 +319,22 @@ def test_world_model_config_roundtrip_preserves_action_encoding() -> None:
         restored.encode_action(jnp.array(2)),
         jnp.array([0.0, 0.0, 1.0, 0.0], dtype=jnp.float32),
     )
+
+
+@pytest.mark.parametrize("tamper", ["missing_type", "wrong_type", "extra_field"])
+def test_world_model_from_config_rejects_noncanonical_outer_schema(tamper: str) -> None:
+    payload = OneStepWorldModel(
+        WorldModelConfig(observation_dim=2, hidden_sizes=())
+    ).to_config()
+    if tamper == "missing_type":
+        del payload["type"]
+    elif tamper == "wrong_type":
+        payload["type"] = "ActionConditionedWorldModel"
+    else:
+        payload["undeclared"] = None
+
+    with pytest.raises(ValueError, match="fields|type"):
+        OneStepWorldModel.from_config(payload)
 
 
 def test_world_model_nan_targets_mask_missing_heads() -> None:
@@ -269,6 +394,31 @@ def test_world_model_scan_is_jit_compatible() -> None:
     chex.assert_shape(result.next_observation_predictions, (4, 2))
     chex.assert_tree_all_finite(result.reward_predictions)
     chex.assert_tree_all_finite(result.next_observation_predictions)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint64])
+def test_world_model_scan_rejects_wide_host_integer_action(dtype) -> None:
+    """Host integers outside int32 cannot wrap onto a legal scan action."""
+    model = OneStepWorldModel(
+        WorldModelConfig(
+            observation_dim=1,
+            n_actions=2,
+            hidden_sizes=(),
+            sparsity=0.0,
+        )
+    )
+    observations = jnp.zeros((1, 1), dtype=jnp.float32)
+    result = run_world_model_learning_loop(
+        model,
+        model.init(jr.key(0)),
+        observations,
+        np.asarray([2**32], dtype=dtype),
+        jnp.zeros((1,), dtype=jnp.float32),
+        observations,
+    )
+
+    assert not bool(result.updates_applied[0])
+    assert int(result.state.step_count) == 0
 
 
 def test_world_model_learns_action_conditional_deterministic_transition() -> None:

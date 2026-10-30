@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 
 from alberta_framework.core.stacked_horde import (
@@ -16,8 +18,8 @@ from alberta_framework.core.stacked_horde import (
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
 _OVERFLOW_FEATURE_DIM = 90_000_000
-_LAST_FIT_FEATURE_DIM = 89_478_484
-_FIRST_OVERFLOW_FEATURE_DIM = 89_478_485
+_LAST_FIT_FEATURE_DIM = 89_478_483
+_FIRST_OVERFLOW_FEATURE_DIM = 89_478_484
 
 
 def _unit_config(feature_dim: int) -> StackedHordeConfig:
@@ -101,3 +103,49 @@ def test_legal_small_stacked_horde_still_updates() -> None:
         jnp.ones(4, dtype=jnp.float32),
         jnp.ones(1, dtype=jnp.float32),
     )
+
+
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_stacked_horde_recovers_finite_td_cancellation(sign: float) -> None:
+    horde = StackedLinearHorde(StackedHordeConfig(
+        n_demons=3, feature_dim=1, gammas=(1.0,) * 3, lamdas=(0.0,) * 3,
+        cumulant_indices=(0, 1, 2), step_size=0.1,
+    ))
+    state = horde.init().replace(
+        weights=jnp.asarray([[sign * 2e38], [1e-20], [0.0]], dtype=jnp.float32),
+    )
+    features = jnp.ones(1, dtype=jnp.float32)
+    cumulants = jnp.asarray([sign * 2e38, 1e-20, 1.0], dtype=jnp.float32)
+    expected = np.asarray(state.weights, np.float64) + float(np.float32(0.1)) * (
+        np.asarray(cumulants, np.float64)[:, None]
+    )
+    with jax.disable_jit():
+        eager = horde.update(state, features, features, cumulants)
+    compiled = jax.jit(horde.update)(state, features, features, cumulants)
+    for result in (eager, compiled):
+        np.testing.assert_array_equal(result.head_updates_applied, [True, True, True])
+        np.testing.assert_allclose(result.state.weights, expected, rtol=2e-6, atol=0.0)
+        np.testing.assert_array_equal(result.td_errors, cumulants)
+        np.testing.assert_array_equal(result.predictions, state.weights[:, 0])
+        np.testing.assert_array_equal(result.state.traces, np.ones((3, 1)))
+        assert bool(result.update_applied) and int(result.state.step_count) == 1
+
+
+@pytest.mark.parametrize("next_feature, alpha", [(0.0, 0.1)])
+def test_stacked_horde_true_td_or_weight_overflow_still_rejects(next_feature, alpha) -> None:
+    horde = StackedLinearHorde(StackedHordeConfig(
+        n_demons=1, feature_dim=1, gammas=(1.0,), lamdas=(0.0,),
+        cumulant_indices=(0,), step_size=alpha,
+    ))
+    weight = -2e38 if next_feature == 0.0 else 2e38
+    state = horde.init().replace(weights=jnp.asarray([[weight]], dtype=jnp.float32))
+    features = jnp.ones(1, dtype=jnp.float32)
+    cumulants = jnp.asarray([2e38], dtype=jnp.float32)
+    with jax.disable_jit():
+        eager = horde.update(state, features, features * next_feature, cumulants)
+    compiled = jax.jit(horde.update)(state, features, features * next_feature, cumulants)
+    for result in (eager, compiled):
+        assert not bool(result.update_applied) and not bool(result.head_updates_applied[0])
+        for before, after in zip(jax.tree.leaves(state), jax.tree.leaves(result.state)):
+            np.testing.assert_array_equal(before, after)
+        np.testing.assert_array_equal(result.td_errors, [0.0])
