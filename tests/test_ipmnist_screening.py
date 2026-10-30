@@ -7160,9 +7160,9 @@ class TestRLSHeadIdentMap:
 
     def test_registry_arms(self):
         """Only the two 200-task-confirmed identifier arms plus the gated
-        idet003_s005625 step-size triple screen are registered; the
-        screened intermediates and the round-2 rejections (negative
-        result #22) are deregistered."""
+        idet002 trigger and idet003_s005625 step-size triple screens are
+        registered; the screened intermediates and the round-2 rejections
+        (negative result #22) are deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
             _make_rls_head_identmap_learner,
@@ -7177,6 +7177,10 @@ class TestRLSHeadIdentMap:
             "rls_head_resid_identmap200_r": {
                 "ident_match_at": 200.0, "ident_match2": 500.0,
                 "ident_match3": 2000.0,
+            },
+            "rls_head_resid_identmap50_r_idet002": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.02,
             },
             "rls_head_resid_identmap50_r_idet003_s005625": {
                 "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -7197,6 +7201,102 @@ class TestRLSHeadIdentMap:
             assert spec.hyperparameters["rls_reset_frac"] == 0.05
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
+
+
+class TestRLSHeadIdentMapIdet002:
+    """Gated identmap50_r composition at the 0.02 identifier trigger.
+
+    The gated idet003 screen (PR #3115) measured the identifier's own
+    shift-detector trigger (``ident_reset_frac``) at 0.03: +0.01490
+    paired on every seed with the per-seed spread collapsed.  This arm
+    is the far-side bracket cell at 0.02, probing whether the trigger
+    equalization keeps improving below 0.03 or breaks as remaps start
+    firing on noise.  This class pins the gated composition's bit-exact
+    reductions: trigger restored (0.05) follows the gated identmap50_r
+    composition, and identifier disabled follows the gated non-identifier
+    incumbent.
+    """
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec("rls_head_resid_identmap50_r_idet002")
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY["rls_head_resid_identmap50_r_idet002"]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec("rls_head_resid_identmap50_r")
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "ident_reset_frac"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["ident_reset_frac"] == 0.02
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_reset_frac"] == 0.05
+
+    def test_ident_frac_restored_pin_bitwise(self, small_data):
+        """``ident_reset_frac = 0.05`` follows the gated composition."""
+        x, y = small_data
+        base = screening_spec("rls_head_resid_identmap50_r")
+        expected = run_screening_config(
+            x, y, base, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(ident_reset_frac=0.05), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_off_pin_bitwise(self, small_data):
+        """Identifier disabled follows the gated incumbent."""
+        x, y = small_data
+        incumbent = screening_spec("rls_head_resid_l1_preset005")
+        expected = run_screening_config(
+            x, y, incumbent, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._spec(
+                ident_match_at=0.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y,
+            screening_spec("rls_head_resid_identmap50_r_idet002"),
+            seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
 class TestRLSHeadIdentMapIdet003S005625:

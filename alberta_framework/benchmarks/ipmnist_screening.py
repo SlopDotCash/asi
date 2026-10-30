@@ -8302,14 +8302,16 @@ def _build_registry() -> dict[str, ScreeningSpec]:
     # 0.8997; a refining identifier rides the upper envelope.  The first
     # two arms below are the two 200-task/20-seed CONFIRMED members of the
     # family (identmap_confirm_r1/ and identmap_star_confirm_r1/); the
-    # third is a registered 60-task screen of the gate + trigger +
-    # step-size triple on the gated chain (wave_identmap50_r_idet003_s005625/,
-    # the ungated chain's winning step size composed with the gated
-    # idet003 trigger peak, PRs #3115/#3116); the screened intermediates
-    # (identmap200 single-shot, identmap100_r) and the round-2 rejections
-    # (identmap25_r, identmap50_fast — negative result #22) are
-    # deregistered but retained in the ledger and pinned outputs.
-    # ident_match_at=0 delegates verbatim to the incumbent factory
+    # third and fourth are registered 60-task screens of the identifier
+    # trigger axis (wave_identmap50_r_idet002/, the 0.02 far-side bracket
+    # of the gated idet003 screen, PR #3115) and the gate + trigger +
+    # step-size triple on the gated chain
+    # (wave_identmap50_r_idet003_s005625/, the ungated chain's winning step
+    # size composed with the gated idet003 trigger peak, PRs #3115/#3116).
+    # The screened intermediates (identmap200 single-shot, identmap100_r)
+    # and the round-2 rejections (identmap25_r, identmap50_fast — negative
+    # result #22) are deregistered but retained in the ledger and pinned
+    # outputs.  ident_match_at=0 delegates verbatim to the incumbent factory
     # (bit-exact reduction, pinned by tests).
     for ident_name, ident_overrides, ident_extra in (
         (
@@ -8328,6 +8330,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
              "ident_match3": 2000.0},
             "matches at 200/500/2000 post-shift samples — 200-task "
             "confirmed at 0.9091 (+0.03804 vs the incumbent, 20/20 seeds)",
+        ),
+        (
+            "rls_head_resid_identmap50_r_idet002",
+            {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+             "ident_match_at": 50.0, "ident_match2": 200.0,
+             "ident_match3": 2000.0, "ident_reset_frac": 0.02},
+            "the gated identmap50_r schedule (50/200/2000) with the "
+            "identifier's own shift-detector trigger at the more sensitive "
+            "0.02 fraction instead of the 0.05 default (ident_reset_frac, "
+            "distinct from the head's rls_reset_frac, which stays 0.05): "
+            "the utility gate is kept and every other constant is verbatim "
+            "the parent — the far-side bracket cell of the gated idet003 "
+            "trigger screen (PR #3115, +0.01490 paired at 0.03), probing "
+            "whether the trigger equalization keeps improving below 0.03 "
+            "or breaks as remaps start firing on noise",
         ),
         (
             "rls_head_resid_identmap50_r_idet003_s005625",
