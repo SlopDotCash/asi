@@ -406,30 +406,38 @@ def _flatten_traces(state: WorkingMemoryState) -> Array:
 def _root_mean_square(values: Array) -> Array:
     if values.size == 0:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    scale = jnp.max(jnp.abs(values))
-    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
-    normalized = jnp.where(
-        jnp.abs(values) == scale,
-        jnp.sign(values),
-        values / safe_scale,
-    )
+    normalized, scale = _normalize_by_largest_magnitude(values)
     return jnp.where(scale > 0.0, scale * jnp.sqrt(jnp.mean(normalized * normalized)), 0.0)
 
 
 def _effective_dimension(values: Array) -> Array:
     if values.size == 0:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    scale = jnp.max(jnp.abs(values))
-    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
-    normalized = jnp.where(
-        jnp.abs(values) == scale,
-        jnp.sign(values),
-        values / safe_scale,
-    )
+    normalized, _ = _normalize_by_largest_magnitude(values)
     squared = normalized * normalized
     energy = jnp.sum(squared)
     fourth = jnp.sum(squared * squared)
     return jnp.where(fourth > 0.0, (energy * energy) / fourth, 0.0)
+
+
+def _normalize_by_largest_magnitude(values: Array) -> tuple[Array, Array]:
+    """Normalize finite float32 values without an underflowed reciprocal."""
+    scale = jnp.max(jnp.abs(values))
+    use_exponent_scaling = scale > jnp.asarray(
+        1.0 / _FLOAT32_MIN_NORMAL,
+        dtype=jnp.float32,
+    )
+    direct_scale = jnp.where((scale > 0.0) & (~use_exponent_scaling), scale, 1.0)
+    direct = jnp.where(
+        jnp.abs(values) == scale,
+        jnp.sign(values),
+        values / direct_scale,
+    )
+    mantissa, exponent = jnp.frexp(scale)
+    safe_mantissa = jnp.where(scale > 0.0, mantissa, 1.0)
+    exponent_scaled = jnp.ldexp(values, -exponent) / safe_mantissa
+    normalized = jnp.where(use_exponent_scaling, exponent_scaled, direct)
+    return jnp.where(scale > 0.0, normalized, 0.0), scale
 
 
 class WorkingMemoryFeaturizer:
