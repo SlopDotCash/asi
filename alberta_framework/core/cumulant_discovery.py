@@ -411,7 +411,22 @@ class CumulantDiscovery:
         # weights_i += alpha * td_i * obs
         proposed_weights = state.weights + alpha * td[:, None] * observation[None, :]
         proposed_biases = state.biases + alpha * td
-        proposed_utility = decay * state.utility + (1.0 - decay) * (td**2)
+        utility_weight = 1.0 - decay
+        squared_td = td**2
+        direct_surprise = utility_weight * squared_td
+        # A finite TD error can overflow when squared even though applying the
+        # EMA weight first leaves the weighted square representable. Preserve
+        # the ordinary expression bit-for-bit and reassociate only that
+        # overflow case.
+        square_overflowed = jnp.isfinite(td) & ~jnp.isfinite(squared_td)
+        fallback_td = jnp.where(square_overflowed, td, 0.0)
+        reassociated_surprise = (utility_weight * fallback_td) * fallback_td
+        weighted_surprise = jnp.where(
+            square_overflowed,
+            reassociated_surprise,
+            direct_surprise,
+        )
+        proposed_utility = decay * state.utility + weighted_surprise
         proposed_state = CumulantDiscoveryState(  # type: ignore[call-arg]
             projections=state.projections,
             weights=proposed_weights,
@@ -471,6 +486,15 @@ class CumulantDiscovery:
         debias = 1.0 - jnp.power(jnp.asarray(self._decay_rate, dtype=jnp.float32), safe_ages)
         safe_debias = jnp.maximum(debias, jnp.asarray(1e-30, dtype=jnp.float32))
         ranking_utility = state.utility / safe_debias
+        # A common scale preserves ranking when finite utilities overflow on debiasing.
+        eligible_finite = mature & jnp.isfinite(state.utility)
+        utility_scale = jnp.max(jnp.where(eligible_finite, jnp.abs(state.utility), 0.0))
+        safe_scale = jnp.where(utility_scale > 0.0, utility_scale, 1.0)
+        _, scale_exponent = jnp.frexp(safe_scale)
+        scaled_ranking = jnp.ldexp(state.utility, -scale_exponent) / safe_debias
+        ranking_utility = jnp.where(
+            jnp.any(mature & jnp.isfinite(ranking_utility)), ranking_utility, scaled_ranking
+        )
 
         # Disqualify immature candidates by setting their utility to +inf
         masked_utility = jnp.where(

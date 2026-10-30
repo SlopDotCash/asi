@@ -18,7 +18,7 @@ from typing import Any, Literal, SupportsIndex, cast
 import chex
 import jax.numpy as jnp
 import numpy as np
-from jax import Array
+from jax import Array, lax
 from jaxtyping import Bool, Float
 
 from alberta_framework.core._float32_scalars import (
@@ -43,9 +43,9 @@ _OUTPUT_BOOL_SCALARS = 12
 _FIXED_OUTPUT_BYTES = 4 * _DIAGNOSTIC_FLOAT32_SCALARS + _OUTPUT_BOOL_SCALARS
 _MAX_REPRESENTATION_DIM = (_INT32_MAX - _FIXED_OUTPUT_BYTES) // 4
 # Raw pair, safe pair, prepared pair, per-source normalize/clip temps,
-# zeros, for-use pair, contribution pair, safe-contribution pair,
+# zeros, source bit/mask pairs, for-use pair, contribution pair, safe-contribution pair,
 # mixed/unclipped, safe mixed, final candidate, and returned gradient.
-_MIX_WORKING_SET_DIM_VECTORS = 21
+_MIX_WORKING_SET_DIM_VECTORS = 25
 _ACTUAL_INT_TYPES = frozenset(
     {
         int,
@@ -448,6 +448,17 @@ def _scalar_boolean(value: object, *, label: str) -> Array:
     return predicate
 
 
+def _normal_or_zero_mask(value: Array) -> Array:
+    """Identify float32 values that XLA arithmetic will not silently flush."""
+
+    words = lax.bitcast_convert_type(value, jnp.uint32)
+    magnitude = jnp.bitwise_and(words, jnp.uint32(0x7FFFFFFF))
+    return jnp.logical_or(
+        magnitude == jnp.uint32(0),
+        magnitude >= jnp.uint32(0x00800000),
+    )
+
+
 def _scaled_norm_parts(value: Array) -> tuple[Array, Array, Array]:
     """Return max scale, scaled vector, and scaled L2 norm without overflow."""
 
@@ -598,22 +609,38 @@ def mix_representation_gradients(
         label="grounded_world_valid",
     )
 
-    behavior_finite = jnp.all(jnp.isfinite(behavior))
-    world_finite = jnp.all(jnp.isfinite(world))
-    behavior_source_valid = jnp.logical_and(behavior_predicate, behavior_finite)
-    world_source_valid = jnp.logical_and(world_predicate, world_finite)
-    safe_behavior = jnp.where(jnp.isfinite(behavior), behavior, jnp.float32(0.0))
-    safe_world = jnp.where(jnp.isfinite(world), world, jnp.float32(0.0))
+    behavior_finite_mask = jnp.isfinite(behavior)
+    world_finite_mask = jnp.isfinite(world)
+    behavior_arithmetic_mask = jnp.logical_and(
+        behavior_finite_mask,
+        _normal_or_zero_mask(behavior),
+    )
+    world_arithmetic_mask = jnp.logical_and(
+        world_finite_mask,
+        _normal_or_zero_mask(world),
+    )
+    behavior_arithmetic_valid = jnp.all(behavior_arithmetic_mask)
+    world_arithmetic_valid = jnp.all(world_arithmetic_mask)
+    behavior_source_valid = jnp.logical_and(
+        behavior_predicate,
+        behavior_arithmetic_valid,
+    )
+    world_source_valid = jnp.logical_and(
+        world_predicate,
+        world_arithmetic_valid,
+    )
+    safe_behavior = jnp.where(behavior_arithmetic_mask, behavior, jnp.float32(0.0))
+    safe_world = jnp.where(world_arithmetic_mask, world, jnp.float32(0.0))
 
     behavior_raw_finite_norm = _finite_saturated_norm(safe_behavior)
     world_raw_finite_norm = _finite_saturated_norm(safe_world)
     behavior_raw_norm = jnp.where(
-        behavior_finite,
+        behavior_arithmetic_valid,
         behavior_raw_finite_norm,
         jnp.float32(jnp.inf),
     )
     world_raw_norm = jnp.where(
-        world_finite,
+        world_arithmetic_valid,
         world_raw_finite_norm,
         jnp.float32(jnp.inf),
     )
