@@ -525,3 +525,14 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Polyak body iterate averaging on anneal_f2t1000 (2026-10-30)
+
+A preregistered, nonpromoting screen kept a window-capped running average of the residual body (`w1, b1, w2, b2`). The average is reset at each detected shift and at every identifier remap, and is used for prediction only (`polyak_head_avg = 0`) or also for the RLS head update (`= 1`). It ran on `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000`.
+
+- **Tune (seed 0, 30 tasks):** all four cells (W ∈ {100, 1000} × head ∈ {0, 1}) were below the parent, by -0.00035 to -0.00171. Larger windows and head averaging hurt most early in life.
+- **Screen (W=100, head 0; seeds 0-2, 60 tasks):** paired +0.000068, 95% CI [-0.000475, +0.000611], 1/3 improved. This fails the +0.002 / 2-of-3 bar.
+- **Horizon:** -0.00050 (tasks 1-15) rising to +0.00068 (tasks 46-60).
+- **Reading:** with the annealed step size, the raw iterate already carries little step noise, so averaging mainly adds lag after each remap.
+- **Integrity:** the W=1 live path is bitwise the parent (pinned). The stored parent shards were reused after jaxpr, environment and exact-rerun checks. The control was re-measured bit-exactly.
+- [Report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_polyak/RESULTS.md).
