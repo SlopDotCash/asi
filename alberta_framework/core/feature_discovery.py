@@ -1967,6 +1967,8 @@ def run_feature_discovery_arrays(
 
     t0 = time.time()
     final_state, (metrics, updates_applied) = jax.lax.scan(step_fn, state, (observations, targets))
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
     return FeatureDiscoveryLearningResult(
@@ -2006,6 +2008,8 @@ def run_feature_discovery_loop(
     (final_state, _), (metrics, updates_applied) = jax.lax.scan(
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
     return FeatureDiscoveryLearningResult(

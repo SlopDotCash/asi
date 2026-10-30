@@ -82,6 +82,21 @@ _ACTUAL_INT_TYPES = frozenset(
 _ACTUAL_REAL_TYPES = _ACTUAL_INT_TYPES | frozenset(
     {float, *(np.dtype(code).type for code in "efdg")}
 )
+_SERIALIZED_FIELDS = frozenset(
+    {
+        "type",
+        "horde_spec",
+        "hidden_sizes",
+        "optimizer",
+        "bounder",
+        "normalizer",
+        "head_optimizer",
+        "sparsity",
+        "leaky_relu_slope",
+        "use_layer_norm",
+        "trace_mode",
+    }
+)
 
 
 def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _INT32_MAX) -> int:
@@ -292,6 +307,45 @@ def _extract_mean_step_size(
     return jnp.array(0.0, dtype=jnp.float32)
 
 
+def _finite_layer_norm(values: Array) -> Array:
+    """Preserve parameterless layer norm when only its reductions overflow."""
+    mean = jnp.mean(values)
+    variance = jnp.var(values)
+    direct = (values - mean) / jnp.sqrt(variance + 1e-5)
+    reduction_overflowed = (
+        (~jnp.isfinite(mean) | ~jnp.isfinite(variance))
+        & jnp.all(jnp.isfinite(values))
+    )
+
+    def scaled_layer_norm(finite_values: Array) -> Array:
+        scale = jnp.max(jnp.abs(finite_values))
+        _, exponent = jnp.frexp(scale)
+        scaled = jnp.ldexp(finite_values, -exponent)
+        centered = scaled - jnp.mean(scaled)
+        scaled_variance = jnp.mean(centered * centered)
+        positive_variance = scaled_variance > 0.0
+        safe_variance = jnp.where(
+            positive_variance,
+            scaled_variance,
+            jnp.ones_like(scaled_variance),
+        )
+        contrast = centered * jax.lax.rsqrt(safe_variance)
+        constant = jnp.ldexp(centered, exponent) * jax.lax.rsqrt(
+            jnp.asarray(1e-5, dtype=finite_values.dtype)
+        )
+        return jnp.where(positive_variance, contrast, constant)
+
+    return cast(
+        Array,
+        jax.lax.cond(
+            reduction_overflowed,
+            scaled_layer_norm,
+            lambda _: direct,
+            values,
+        ),
+    )
+
+
 def _forward_mlp(
     weights: tuple[Array, ...],
     biases: tuple[Array, ...],
@@ -309,13 +363,31 @@ def _forward_mlp(
     for i in range(n_layers - 1):
         x = weights[i] @ x + biases[i]
         if use_layer_norm:
-            mean = jnp.mean(x)
-            var = jnp.var(x)
-            x = (x - mean) / jnp.sqrt(var + 1e-5)
+            x = _finite_layer_norm(x)
         x = jnp.where(x >= 0, x, leaky_relu_slope * x)
     # Output layer (no activation)
     x = weights[-1] @ x + biases[-1]
     return jnp.squeeze(x)
+
+
+def _finite_cancelled_gvf_td(
+    cumulant: Array,
+    bootstrap: Array,
+    terminal: Array,
+    prediction: Array,
+) -> Array:
+    """Keep ``(c + bootstrap + (1 - gamma) z) - V`` unless that sum overflows.
+
+    When the cumulant and the bootstrap are both huge, their sum can leave
+    float32 before the current prediction cancels the bootstrap. The
+    rearranged error ``c + (bootstrap - V) + (1 - gamma) z`` can still be
+    finite. A TD error that remains outside float32 stays non-finite so the
+    caller rejects the update. A finite sum keeps the left-to-right rounding.
+    """
+    direct_partial = cumulant + bootstrap + terminal
+    direct_td = direct_partial - prediction
+    recovered_td = cumulant + (bootstrap - prediction) + terminal
+    return jnp.where(jnp.isfinite(direct_partial), direct_td, recovered_td)
 
 
 # =============================================================================
@@ -481,7 +553,11 @@ class IndependentDemonHorde:
         )
 
         config = _read_mapping("config", config)
-        config.pop("type", None)
+        if set(config) != _SERIALIZED_FIELDS:
+            raise ValueError("config fields do not match the IndependentDemonHorde schema")
+        marker = config.pop("type")
+        if type(marker) is not str or marker != "IndependentDemonHorde":
+            raise ValueError("config type is invalid")
 
         horde_spec = HordeSpec.from_config(config.pop("horde_spec"))
         optimizer = optimizer_from_config(config.pop("optimizer"))
@@ -673,14 +749,16 @@ class IndependentDemonHorde:
         self,
         demon_state: MLPLearnerState,
         observation: Array,
-        target: Array,
+        cumulant: Array,
+        bootstrap: Array,
+        terminal: Array,
         gamma_lamda: Array,
         active: Array,
     ) -> tuple[MLPLearnerState, Array, Array, Array, Array]:
         """Run a single demon's update step.
 
-        Returns ``(new_state, prediction, error, mean_step_size)``. When
-        ``active`` is ``False`` the demon's parameters, traces, and
+        Returns ``(new_state, prediction, error, mean_step_size, commit)``.
+        When ``active`` is ``False`` the demon's parameters, traces, and
         optimizer states are preserved unchanged; ``error`` and
         ``mean_step_size`` are returned as NaN to flag inactivity.
         Non-finite proposed weights (ObGD ``0 * inf``) are also held.
@@ -715,7 +793,10 @@ class IndependentDemonHorde:
             slope,
             ln,
         )
-        error = jnp.where(active, target - prediction_val, 0.0)
+        finite_error = _finite_cancelled_gvf_td(
+            cumulant, bootstrap, terminal, prediction_val
+        )
+        error = jnp.where(active, finite_error, 0.0)
 
         def pred_fn(weights: tuple[Array, ...], biases: tuple[Array, ...]) -> Array:
             return _forward_mlp(weights, biases, obs, slope, ln)
@@ -903,7 +984,7 @@ class IndependentDemonHorde:
         # MultiHeadMLPLearner's NaN convention).
         reported_error = jnp.where(
             commit,
-            target - prediction_val,
+            error,
             jnp.where(active, 0.0, jnp.nan),
         )
         reported_mean_ss = jnp.where(
@@ -987,9 +1068,12 @@ class IndependentDemonHorde:
         # 2. TD targets: r + gamma * V(s') + (1 - gamma) * z. gamma=0 must not
         # multiply inf V(s'); z is the demon's terminal pseudo-reward.
         bootstrap = jnp.where(gammas == 0.0, 0.0, gammas * next_preds)
-        targets = cumulants + bootstrap + (1.0 - gammas) * self._terminal_rewards
+        terminal = (1.0 - gammas) * self._terminal_rewards
+        targets = cumulants + bootstrap + terminal
 
-        # 3. NaN means inactive; other non-finite values are rejected heads.
+        # 3. NaN means inactive. An overflowing target sum is not rejected
+        # here: the demon cancels that sum against V(s) and still rejects a
+        # TD error or weight step that remains outside float32.
         requested_mask = ~jnp.isnan(cumulants)
         checked_demon_states = tuple(
             demon_state.replace(  # type: ignore[attr-defined]
@@ -1018,9 +1102,8 @@ class IndependentDemonHorde:
             )
         )
         active_mask = (
-            requested_mask & jnp.isfinite(cumulants) & jnp.isfinite(targets) & global_inputs_valid
+            requested_mask & jnp.isfinite(cumulants) & global_inputs_valid
         )
-        safe_targets = jnp.where(active_mask, targets, 0.0)
 
         # 4. Per-demon update
         new_demon_states: list[MLPLearnerState] = []
@@ -1033,7 +1116,9 @@ class IndependentDemonHorde:
             new_ds, pred_i, err_i, mss_i, commit_i = self._update_single(
                 state.demon_states[i],
                 observation,
-                safe_targets[i],
+                cumulants[i],
+                bootstrap[i],
+                terminal[i],
                 gamma_lamda_i,
                 active_mask[i],
             )

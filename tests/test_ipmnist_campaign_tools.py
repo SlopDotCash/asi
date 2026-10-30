@@ -325,6 +325,31 @@ def test_frontier_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
         build_frontier(screen, confirm, base="base", arms=["candidate"], created_unix=0.0)
 
 
+@pytest.mark.parametrize("accuracy", [True, "1.0"], ids=("bool", "numeric-string"))
+def test_frontier_rejects_non_numeric_accuracy_aliases(
+    tmp_path: Path, accuracy: object
+) -> None:
+    screen = tmp_path / "screen"
+    confirm = tmp_path / "confirm"
+    for seed in (0, 1):
+        _shard(screen / f"base_seed{seed}.json", seed=seed, accuracy=0.0)
+        candidate = screen / f"candidate_seed{seed}.json"
+        _shard(candidate, seed=seed, accuracy=0.0)
+        payload = json.loads(candidate.read_text(encoding="utf-8"))
+        payload["per_task_accuracy"] = [accuracy] * 2
+        candidate.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="per_task_accuracy must contain JSON numbers"):
+        build_frontier(
+            screen,
+            confirm,
+            base="base",
+            arms=["candidate"],
+            threshold=0.5,
+            created_unix=0.0,
+        )
+
+
 def test_ceiling_npz_metadata_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
     ceiling = tmp_path / "ceiling"
     ceiling.mkdir()

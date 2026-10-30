@@ -166,6 +166,8 @@ def _seed_measurements(
                 f"{path}: config_name {payload_name!r} does not match "
                 f"expected arm {config_name!r}"
             )
+        if any(type(value) is not int and type(value) is not float for value in accuracies):
+            raise ValueError(f"{path} per_task_accuracy must contain JSON numbers")
         values = np.asarray(accuracies, dtype=np.float64)
         if (
             values.ndim != 1
