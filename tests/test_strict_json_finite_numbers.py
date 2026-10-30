@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from alberta_framework import _strict_json as strict_json
 from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks import (
     _forager_matched_alberta_worker as worker,
@@ -230,3 +232,33 @@ def test_shared_strict_loader_preserves_finite_floats_and_arbitrary_integers(
         "small": -1e-200,
         "integer": integer,
     }
+
+
+def test_shared_strict_loader_requests_binary_mode_for_crlf_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "windows-newlines.json"
+    path.write_bytes(b'{\r\n  "value": 1\r\n}\r\n')
+    binary_flag = 1 << 29
+    real_open = os.open
+
+    def require_binary_mode(open_path: str | bytes | os.PathLike[str], flags: int) -> int:
+        if not flags & binary_flag:
+            raise AssertionError("strict JSON descriptor was not opened in binary mode")
+        return real_open(open_path, flags & ~binary_flag)
+
+    monkeypatch.setattr(strict_json.os, "O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(strict_json.os, "open", require_binary_mode)
+
+    assert load_strict_json_object(path) == {"value": 1}
+
+
+def test_shared_strict_loader_rejects_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.json"
+    target.write_text('{"value":1}', encoding="utf-8")
+    alias = tmp_path / "alias.json"
+    alias.symlink_to(target)
+
+    with pytest.raises(ValueError, match="regular file|symlink"):
+        load_strict_json_object(alias)
