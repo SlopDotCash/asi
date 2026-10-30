@@ -15,7 +15,7 @@ References:
 
 import operator
 from abc import ABC, abstractmethod
-from math import prod
+from math import log, prod
 from typing import Any, SupportsIndex, cast
 
 import chex
@@ -38,6 +38,7 @@ from alberta_framework.core.types import (
     LMSState,
     ObGDState,
     TDIDBDState,
+    finite_float32_log,
 )
 from alberta_framework.core.update_safety import (
     floating_tree_is_finite,
@@ -114,6 +115,13 @@ def _validated_idbd_step_size(
     if numerator != 0 and narrowed == 0.0:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
+
+
+def _finite_idbd_log_step_size(value: float) -> Array:
+    """Keep the float32 log finite when an accepted step size is subnormal."""
+    direct = jnp.log(jnp.asarray(value, dtype=jnp.float32))
+    stable = jnp.asarray(log(float(np.float32(value))), dtype=jnp.float32)
+    return jnp.where(jnp.isfinite(direct), direct, stable)
 
 
 # =============================================================================
@@ -216,6 +224,18 @@ class ObGDBounding(Bounder):
         return _apply_obgd_bound(steps, error, self._kappa)
 
 
+def _unitwise_power_of_two_norm_parts(
+    x: Array, axes: tuple[int, ...]
+) -> tuple[Array, Array, Array]:
+    """Return an L2 norm and its exactly rescaled inputs without reciprocal flush."""
+    maximum = jnp.max(jnp.abs(x), axis=axes, keepdims=True)
+    _, exponent = jnp.frexp(maximum)
+    safe_exponent = jnp.where(jnp.isfinite(maximum) & (maximum > 0.0), exponent, 0)
+    scaled = jnp.ldexp(x, -safe_exponent)
+    scaled_norm = jnp.sqrt(jnp.sum(scaled * scaled, axis=axes, keepdims=True))
+    return jnp.ldexp(scaled_norm, safe_exponent), scaled, scaled_norm
+
+
 def _unitwise_norm(x: Array) -> Array:
     """Compute unit-wise L2 norm.
 
@@ -226,8 +246,46 @@ def _unitwise_norm(x: Array) -> Array:
     For scalars: absolute value.
     """
     if x.ndim >= 2:
-        return jnp.sqrt(jnp.sum(x**2, axis=tuple(range(1, x.ndim)), keepdims=True))
+        axes = tuple(range(1, x.ndim))
+        direct = jnp.sqrt(jnp.sum(x * x, axis=axes, keepdims=True))
+        stable, _, _ = _unitwise_power_of_two_norm_parts(x, axes)
+        reduction_only_overflow = ~jnp.isfinite(direct) & jnp.all(
+            jnp.isfinite(x), axis=axes, keepdims=True
+        )
+        return jnp.where(reduction_only_overflow, stable, direct)
     return jnp.abs(x)
+
+
+def _tuple_root_mean_square(values: tuple[Array, ...], epsilon: float) -> Array:
+    """Return one RMS across parameter arrays without finite reduction overflow."""
+    sum_squares = jnp.asarray(0.0, dtype=jnp.float32)
+    count = 0
+    scale = jnp.asarray(0.0, dtype=jnp.float32)
+    all_finite = jnp.asarray(True)
+    for value in values:
+        sum_squares = sum_squares + jnp.sum(value * value)
+        count += value.size
+        scale = jnp.maximum(scale, jnp.max(jnp.abs(value)))
+        all_finite = all_finite & jnp.all(jnp.isfinite(value))
+    denominator = jnp.maximum(jnp.asarray(count, dtype=jnp.float32), 1.0)
+    direct = jnp.sqrt(sum_squares / denominator + epsilon)
+    _, exponent = jnp.frexp(scale)
+    safe_exponent = jnp.where(jnp.isfinite(scale) & (scale > 0.0), exponent, 0)
+    normalized_sum_squares = jnp.asarray(0.0, dtype=jnp.float32)
+    for value in values:
+        normalized = jnp.ldexp(value, -safe_exponent)
+        normalized_sum_squares = normalized_sum_squares + jnp.sum(
+            normalized * normalized
+        )
+    scaled_epsilon = jnp.ldexp(
+        jnp.asarray(epsilon, dtype=jnp.float32), -2 * safe_exponent
+    )
+    stable = jnp.ldexp(
+        jnp.sqrt(normalized_sum_squares / denominator + scaled_epsilon),
+        safe_exponent,
+    )
+    reduction_only_overflow = ~jnp.isfinite(direct) & all_finite
+    return jnp.where(reduction_only_overflow, stable, direct)
 
 
 class AdaptiveObGDBounding(Bounder):
@@ -281,12 +339,7 @@ class AdaptiveObGDBounding(Bounder):
         bounded, scale = _apply_obgd_bound(steps, error, self._kappa)
 
         # Per-weight RMS normalization across all bounded steps.
-        sum_sq = jnp.array(0.0)
-        n_weights = jnp.array(0)
-        for s in bounded:
-            sum_sq = sum_sq + jnp.sum(s**2)
-            n_weights = n_weights + s.size
-        rms = jnp.sqrt(sum_sq / jnp.maximum(n_weights.astype(jnp.float32), 1.0) + self._eps)
+        rms = _tuple_root_mean_square(bounded, self._eps)
         rms_scale = jnp.maximum(rms, 1.0)
         adaptive = tuple(s / rms_scale for s in bounded)
         return adaptive, scale
@@ -316,8 +369,10 @@ class AGCBounding(Bounder):
     """
 
     def __init__(self, clip_factor: float = 0.01, eps: float = 1e-3):
-        self._clip_factor = clip_factor
-        self._eps = eps
+        self._clip_factor = validated_float32_scalar(
+            "clip_factor", clip_factor, lower=0.0
+        )
+        self._eps = validated_float32_scalar("eps", eps, lower=0.0)
 
     def to_config(self) -> dict[str, Any]:
         """Serialize configuration to dict."""
@@ -356,6 +411,28 @@ class AGCBounding(Bounder):
             scale = max_norm / jnp.maximum(g_norm, 1e-6)
             needs_clip = g_norm > max_norm
             clipped_step = jnp.where(needs_clip, step * scale, step)
+            if step.ndim >= 2:
+                axes = tuple(range(1, step.ndim))
+                direct_s_norm = jnp.sqrt(
+                    jnp.sum(step * step, axis=axes, keepdims=True)
+                )
+                _, scaled_step, scaled_step_norm = _unitwise_power_of_two_norm_parts(
+                    step, axes
+                )
+                reduction_only_overflow = ~jnp.isfinite(direct_s_norm) & jnp.all(
+                    jnp.isfinite(step), axis=axes, keepdims=True
+                )
+                stable_denominator = jnp.maximum(
+                    error_abs * scaled_step_norm, 1e-6
+                )
+                stable_clipped_step = scaled_step * (
+                    max_norm / stable_denominator
+                )
+                clipped_step = jnp.where(
+                    needs_clip & reduction_only_overflow,
+                    stable_clipped_step,
+                    clipped_step,
+                )
             collapsed = needs_clip & (scale == 0)
             clipped.append(zero_if_collapsed_infinity(clipped_step, step, collapsed))
 
@@ -800,10 +877,9 @@ class IDBD(Optimizer[IDBDState]):
         _require_float32_update_working_set(
             "IDBD update working set", 18 * feature_dim + 8
         )
+        log_step_size = _finite_idbd_log_step_size(self._initial_step_size)
         return IDBDState(
-            log_step_sizes=jnp.full(
-                feature_dim, jnp.log(self._initial_step_size), dtype=jnp.float32
-            ),
+            log_step_sizes=jnp.full(feature_dim, log_step_size, dtype=jnp.float32),
             traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             meta_step_size=jnp.array(self._meta_step_size, dtype=jnp.float32),
             bias_step_size=jnp.array(self._initial_step_size, dtype=jnp.float32),
@@ -823,8 +899,9 @@ class IDBD(Optimizer[IDBDState]):
         n = _shape_size(shape)
         _require_float32_state("IDBD parameter state", 2 * n + 1)
         _require_float32_update_working_set("IDBD update working set", 18 * n + 8)
+        log_step_size = _finite_idbd_log_step_size(self._initial_step_size)
         return IDBDParamState(
-            log_step_sizes=jnp.full(shape, jnp.log(self._initial_step_size), dtype=jnp.float32),
+            log_step_sizes=jnp.full(shape, log_step_size, dtype=jnp.float32),
             traces=jnp.zeros(shape, dtype=jnp.float32),
             meta_step_size=jnp.array(self._meta_step_size, dtype=jnp.float32),
         )
@@ -1947,15 +2024,14 @@ class TDIDBD(TDOptimizer[TDIDBDState]):
         _require_float32_update_working_set(
             "TDIDBD update working set", 22 * feature_dim + 8
         )
+        log_step_size = finite_float32_log(self._initial_step_size)
         return TDIDBDState(
-            log_step_sizes=jnp.full(
-                feature_dim, jnp.log(self._initial_step_size), dtype=jnp.float32
-            ),
+            log_step_sizes=jnp.full(feature_dim, log_step_size, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             h_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             meta_step_size=jnp.array(self._meta_step_size, dtype=jnp.float32),
             trace_decay=jnp.array(self._trace_decay, dtype=jnp.float32),
-            bias_log_step_size=jnp.array(jnp.log(self._initial_step_size), dtype=jnp.float32),
+            bias_log_step_size=jnp.array(log_step_size, dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
             previous_gamma=jnp.array(1.0, dtype=jnp.float32),
@@ -2170,17 +2246,16 @@ class AutoTDIDBD(TDOptimizer[AutoTDIDBDState]):
         _require_float32_update_working_set(
             "AutoTDIDBD update working set", 32 * feature_dim + 8
         )
+        log_step_size = finite_float32_log(self._initial_step_size)
         return AutoTDIDBDState(
-            log_step_sizes=jnp.full(
-                feature_dim, jnp.log(self._initial_step_size), dtype=jnp.float32
-            ),
+            log_step_sizes=jnp.full(feature_dim, log_step_size, dtype=jnp.float32),
             eligibility_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             h_traces=jnp.zeros(feature_dim, dtype=jnp.float32),
             normalizers=jnp.ones(feature_dim, dtype=jnp.float32),
             meta_step_size=jnp.array(self._meta_step_size, dtype=jnp.float32),
             trace_decay=jnp.array(self._trace_decay, dtype=jnp.float32),
             normalizer_decay=jnp.array(self._normalizer_decay, dtype=jnp.float32),
-            bias_log_step_size=jnp.array(jnp.log(self._initial_step_size), dtype=jnp.float32),
+            bias_log_step_size=jnp.array(log_step_size, dtype=jnp.float32),
             bias_eligibility_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_h_trace=jnp.array(0.0, dtype=jnp.float32),
             bias_normalizer=jnp.array(1.0, dtype=jnp.float32),
@@ -2377,6 +2452,12 @@ _OPTIMIZER_REGISTRY: dict[str, type] = {
     "ObGD": ObGD,
 }
 
+_OPTIONAL_OPTIMIZER_CONFIG_FIELDS: dict[str, frozenset[str]] = {
+    # The default mode predates this serialized field, so canonical current
+    # configs include it only when the non-default mode is selected.
+    "IDBD": frozenset({"h_decay_mode"}),
+}
+
 _BOUNDER_REGISTRY: dict[str, type] = {
     "ObGDBounding": ObGDBounding,
     "AdaptiveObGDBounding": AdaptiveObGDBounding,
@@ -2427,11 +2508,28 @@ def optimizer_from_config(config: dict[str, Any]) -> Optimizer[Any]:
     """
     _ensure_registry_extras()
     config = dict(config)
+    if any(type(key) is not str for key in config):
+        raise ValueError("optimizer config must use exact string keys")
+    if "type" not in config:
+        raise ValueError("optimizer config fields do not match the schema")
     type_name = config.pop("type")
     host_type = _require_exact_str("type_name", type_name)
     cls = _OPTIMIZER_REGISTRY.get(host_type)
     if cls is None:
         raise ValueError(f"Unknown optimizer type: '{host_type}'")
+    required_fields = set(cls().to_config())
+    allowed_fields = required_fields | _OPTIONAL_OPTIMIZER_CONFIG_FIELDS.get(
+        host_type, frozenset()
+    )
+    observed_fields = {"type", *config}
+    if host_type == "Adam" and observed_fields == required_fields - {"weight_decay"}:
+        # Adam configs written before weight decay was added have one explicit
+        # compatibility route. No other constructor defaults are a serialized
+        # config migration policy.
+        config["weight_decay"] = 0.0
+        observed_fields.add("weight_decay")
+    if not required_fields <= observed_fields <= allowed_fields:
+        raise ValueError("optimizer config fields do not match the schema")
     result: Optimizer[Any] = cls(**config)
     return result
 
@@ -2451,10 +2549,15 @@ def bounder_from_config(config: dict[str, Any]) -> Bounder:
     if type(config) is not dict:
         raise ValueError("bounder config must be an exact dict")
     config = dict(config)
+    if any(type(key) is not str for key in config) or "type" not in config:
+        raise ValueError("bounder config fields do not match the schema")
     type_name = config.pop("type")
     host_type = _require_exact_str("type_name", type_name)
     cls = _BOUNDER_REGISTRY.get(host_type)
     if cls is None:
         raise ValueError(f"Unknown bounder type: '{host_type}'")
+    expected_fields = set(cls().to_config())
+    if {"type", *config} != expected_fields:
+        raise ValueError("bounder config fields do not match the schema")
     result: Bounder = cls(**config)
     return result

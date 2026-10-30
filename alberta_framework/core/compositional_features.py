@@ -116,6 +116,24 @@ def _require_choice(name: str, value: object, choices: frozenset[str]) -> str:
     return value
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Reject legacy or non-Threefry keys before random operations."""
+    if not isinstance(value, jax.Array) or tuple(value.shape) != ():
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    try:
+        implementation = str(jr.key_impl(value))
+        words = jr.key_data(value)
+    except Exception as error:
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if (
+        implementation != "threefry2x32"
+        or tuple(words.shape) != (2,)
+        or words.dtype != jnp.uint32
+    ):
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    return value
+
+
 def _validated_float32_scalar(
     name: str,
     value: object,
@@ -139,6 +157,18 @@ def _validated_float32_scalar(
     if numerator != 0 and abs(numerator) * (1 << 150) <= denominator:
         raise ValueError(f"{name} must remain nonzero once narrowed to float32")
     return stored
+
+
+def _finite_l2_norm(values: Array) -> Array:
+    """Preserve a representable norm when only its square sum overflows."""
+
+    direct = jnp.linalg.norm(values)
+    scale = jnp.max(jnp.abs(values))
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    scaled = values / safe_scale
+    stable = scale * jnp.sqrt(jnp.sum(scaled * scaled))
+    reduction_only_overflow = ~jnp.isfinite(direct) & jnp.all(jnp.isfinite(values))
+    return jnp.where(reduction_only_overflow, stable, direct)
 
 
 def _selector_state_nbytes(n_candidates: int) -> int:
@@ -1850,6 +1880,7 @@ class CompositionalFeatureLearner:
         compositions of the active raw-input slots.
         """
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
+        key = _require_typed_threefry_key("key", key)
         if self._n_features < feature_dim:
             raise ValueError("n_features must be at least feature_dim so raw-input slots fit")
         if self._n_features > feature_dim and self._generation_strategy in {
@@ -3241,7 +3272,7 @@ class CompositionalFeatureLearner:
                 + jnp.sum(jnp.abs(candidate_output_delta))
                 + jnp.sum(jnp.abs(candidate_theta_delta))
             )
-            err_norm = jnp.linalg.norm(errors)
+            err_norm = _finite_l2_norm(errors)
             bound_magnitude = self._obgd_kappa * jnp.maximum(err_norm, 1.0) * total_step
             bounding_scale = 1.0 / jnp.maximum(bound_magnitude, 1.0)
             output_delta = bounding_scale * output_delta
@@ -4614,7 +4645,14 @@ class CompositionalFeatureLearner:
             uptime_s=state.uptime_s,
         )
 
-        loss = jnp.sum(errors**2) / active_count
+        squared_errors = errors**2
+        loss = jnp.sum(squared_errors) / active_count
+        reduction_only_overflow = jnp.isinf(loss) & jnp.all(jnp.isfinite(squared_errors))
+        loss = jnp.where(
+            reduction_only_overflow,
+            jnp.sum(squared_errors / active_count),
+            loss,
+        )
         mean_abs_error = jnp.sum(jnp.abs(errors)) / active_count
         max_candidate_utility = (
             jnp.max(ranking_candidate_utilities)
@@ -4779,7 +4817,15 @@ def run_compositional_arrays(
         ValueError: If ``num_steps`` is not an exact integer in
             ``[1, 10_000]``.
     """
-    _require_compositional_array_steps(observations, targets)
+    num_steps = _require_compositional_array_steps(observations, targets)
+    host_ops = np.asarray(jax.device_get(state.ops))
+    host_parent_a = np.asarray(jax.device_get(state.parent_a))
+    raw_parents = host_parent_a[host_ops == OP_RAW]
+    if raw_parents.size == 0 or int(np.max(raw_parents)) < 0:
+        raise ValueError("state must contain a valid raw-observation feature prefix")
+    feature_dim = int(np.max(raw_parents)) + 1
+    if observations.shape != (num_steps, feature_dim):
+        raise ValueError(f"observations must have shape ({num_steps}, {feature_dim})")
 
     def step_fn(
         carry: CompositionalFeatureState,
@@ -4792,8 +4838,12 @@ def run_compositional_arrays(
     t0 = time.time()
     final_state, (metrics, updates_applied) = jax.lax.scan(step_fn, state, (observations, targets))
     elapsed = time.time() - t0
+    # The scan carries host clocks through the traced update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
     return CompositionalFeatureLearningResult(
         state=final_state,

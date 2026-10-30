@@ -772,6 +772,129 @@ class TestExpandedMechanisms:
             assert moved[klass] == pytest.approx(0.0, abs=1e-8)
         assert float(new_state.nb_count[2]) == pytest.approx(1.0)
 
+    def test_overflowed_nb_sums_keep_the_nearer_class(self) -> None:
+        """Two overflowing square sums must not vote for class 0.
+
+        Class 0 repeats a squared deviation of ``2e38`` on four coordinates.
+        Class 1 repeats it on two.  Both direct float32 sums are ``inf``, so
+        the uncorrected log-likelihoods are ``-inf`` and the vote selects
+        class 0.  The real totals are about ``8e38`` and ``4e38``.
+        """
+        config = self._flagless_config()
+        config["nb_member"] = 1.0
+        genome = jnp.asarray(genome_from_config(config))
+        tiny = IPMNISTConfig(
+            n_tasks=1,
+            task_length=1,
+            input_dim=4,
+            hidden1=1,
+            hidden2=1,
+            n_classes=2,
+        )
+        params = {
+            name: jnp.zeros_like(value)
+            for name, value in init_mlp_params(jr.key(0), tiny).items()
+        }
+        state = init_rule_state(params)
+        delta = np.float32(np.sqrt(np.float64(np.float32(2.0e38))))
+        means = np.zeros((2, 4), dtype=np.float32)
+        means[0, :] = delta
+        means[1, 0] = delta
+        means[1, 1] = delta
+        direct = jnp.sum(jnp.square(jnp.asarray(means)), axis=1)
+        assert not bool(jnp.any(jnp.isfinite(direct)))
+        true_sums = np.sum(np.float64(means) ** 2, axis=1)
+        assert true_sums[1] < true_sums[0]
+        state = dataclasses.replace(
+            state,
+            nb_mean=jnp.asarray(means),
+            nb_var=jnp.ones((2, 4), dtype=jnp.float32),
+            member_acc=jnp.asarray([0.0, 0.0, 1.0], dtype=jnp.float32),
+        )
+        observed = jnp.zeros((4,), dtype=jnp.float32)
+        _new_params, _new_state, correct, loss = rule_step(
+            genome,
+            params,
+            state,
+            observed,
+            jnp.asarray(1, dtype=jnp.int32),
+        )
+        assert bool(jnp.isfinite(loss))
+        assert float(correct) == 1.0
+
+        nearer_zero = np.zeros((2, 4), dtype=np.float32)
+        nearer_zero[1, 0] = 1.0
+        finite_state = dataclasses.replace(
+            state,
+            nb_mean=jnp.asarray(nearer_zero),
+        )
+        _finite_params, _finite_state, finite_correct, finite_loss = rule_step(
+            genome,
+            params,
+            finite_state,
+            observed,
+            jnp.asarray(0, dtype=jnp.int32),
+        )
+        assert bool(jnp.isfinite(finite_loss))
+        assert float(finite_correct) == 1.0
+
+    def _nb_member_correct(
+        self, means: np.ndarray, variances: np.ndarray, label: int
+    ) -> float:
+        """Return ``correct`` for one NB-only ``rule_step`` at a zero observation."""
+        config = self._flagless_config()
+        config["nb_member"] = 1.0
+        genome = jnp.asarray(genome_from_config(config))
+        n_classes, input_dim = means.shape
+        tiny = IPMNISTConfig(
+            n_tasks=1,
+            task_length=1,
+            input_dim=input_dim,
+            hidden1=1,
+            hidden2=1,
+            n_classes=n_classes,
+        )
+        params = {
+            name: jnp.zeros_like(value)
+            for name, value in init_mlp_params(jr.key(0), tiny).items()
+        }
+        state = dataclasses.replace(
+            init_rule_state(params),
+            nb_mean=jnp.asarray(means),
+            nb_var=jnp.asarray(variances),
+            member_acc=jnp.asarray([0.0, 0.0, 1.0], dtype=jnp.float32),
+        )
+        _new_params, _new_state, correct, loss = rule_step(
+            genome,
+            params,
+            state,
+            jnp.zeros((input_dim,), dtype=jnp.float32),
+            jnp.asarray(label, dtype=jnp.int32),
+        )
+        assert bool(jnp.isfinite(loss))
+        return float(correct)
+
+    def test_one_overflowed_nb_sum_keeps_an_exact_finite_class(self) -> None:
+        """An overflowing class must not give an exact-match class ``+inf``."""
+        delta = np.float32(np.sqrt(np.float64(np.float32(2.0e38))))
+        means = np.zeros((2, 4), dtype=np.float32)
+        means[0, :] = delta
+        variances = np.ones((2, 4), dtype=np.float32)
+
+        assert self._nb_member_correct(means, variances, 1) == 1.0
+
+    def test_one_overflowed_nb_sum_keeps_finite_log_variances(self) -> None:
+        """An overflowing class must not drop ``log(variance)`` from finite classes."""
+        delta = np.float32(np.sqrt(np.float64(np.float32(2.0e38))))
+        means = np.zeros((3, 4), dtype=np.float32)
+        means[0, :] = delta
+        means[1, 0] = 1.0
+        means[2, 0] = 3.0
+        variances = np.ones((3, 4), dtype=np.float32)
+        variances[1, :] = 1e30
+
+        assert self._nb_member_correct(means, variances, 2) == 1.0
+
     def test_lr_anneal_fast_when_surprised_slow_when_calm(self) -> None:
         config = self._flagless_config()
         config["lr_anneal"] = 1.0
