@@ -590,6 +590,38 @@ class TestFixedBudgetFeatureLearner:
             GENERATOR_IMPRINT,
         }
 
+    def test_imprint_replacement_normalizes_large_finite_observation(self) -> None:
+        learner = FixedBudgetFeatureLearner(
+            n_features=1,
+            n_tasks=1,
+            step_size_output=0.0,
+            step_size_feature=0.0,
+            replacement_interval=1,
+            min_feature_age=0,
+            candidate_count=0,
+            generator_mix=(0.0, 0.0, 1.0),
+            mutation_scale=0.0,
+            use_obgd=False,
+        )
+        state = learner.init(feature_dim=8, key=jr.key(123))
+        observation = jnp.full((8,), 7e18, dtype=jnp.float32)
+
+        result = learner.update(
+            state,
+            observation,
+            jnp.zeros((1,), dtype=jnp.float32),
+        )
+
+        assert bool(result.update_applied)
+        assert int(result.replaced_slot) == 0
+        assert int(result.state.feature_generator[0]) == GENERATOR_IMPRINT
+        chex.assert_trees_all_close(
+            jnp.linalg.norm(result.state.feature_weights[0]),
+            jnp.array(1.0, dtype=jnp.float32),
+            rtol=1e-6,
+        )
+        assert float(learner.constructed_features(result.state, observation)[0]) == 1.0
+
     def test_age_corrected_promotion_restarts_raw_utility_ema(self) -> None:
         learner = FixedBudgetFeatureLearner(
             n_features=1,

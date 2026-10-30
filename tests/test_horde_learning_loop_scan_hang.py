@@ -232,3 +232,19 @@ class TestRunHordeLearningLoopFinalStateSequenceLengthGuard:
             horde, state, observations, cumulants, next_observations
         )
         assert final_state is not None
+
+
+def test_final_state_scan_preserves_initialized_host_clocks() -> None:
+    horde, state = _shared_horde(feature_dim=3)
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    state = state.replace(birth_timestamp=birth, uptime_s=uptime)
+    observations = jnp.zeros((2, 3), dtype=jnp.float32)
+    cumulants = jnp.zeros((2, 2), dtype=jnp.float32)
+    final_state = run_horde_learning_loop_final_state(
+        horde, state, observations, cumulants, observations
+    )
+    assert type(final_state.birth_timestamp) is float
+    assert final_state.birth_timestamp == birth
+    assert type(final_state.uptime_s) is float
+    assert final_state.uptime_s > uptime

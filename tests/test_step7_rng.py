@@ -317,4 +317,22 @@ def test_step7_eager_jit_and_scan_reproduce_rng_trajectories(
     )
     first = run_step7_scan(cfg, agent, model, state, rewards, observations)
     second = run_step7_scan(cfg, agent, model, state, rewards, observations)
-    chex.assert_trees_all_equal(first, second)
+    first_without_clock = first.replace(  # type: ignore[attr-defined]
+        state=first.state.replace(  # type: ignore[attr-defined]
+            world_model_state=first.state.world_model_state.replace(  # type: ignore[attr-defined]
+                learner_state=first.state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
+                    uptime_s=0.0,
+                ),
+            ),
+        ),
+    )
+    second_without_clock = second.replace(  # type: ignore[attr-defined]
+        state=second.state.replace(  # type: ignore[attr-defined]
+            world_model_state=second.state.world_model_state.replace(  # type: ignore[attr-defined]
+                learner_state=second.state.world_model_state.learner_state.replace(  # type: ignore[attr-defined]
+                    uptime_s=0.0,
+                ),
+            ),
+        ),
+    )
+    chex.assert_trees_all_equal(first_without_clock, second_without_clock)

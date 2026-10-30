@@ -196,6 +196,17 @@ def _guarded_dream_rng_root(stored_real_key: Array) -> Array:
     return jr.fold_in(stored_real_key, _GUARDED_DREAM_STREAM_TAG)
 
 
+def _reduction_safe_l2_norm(value: Array) -> Array:
+    """Preserve a representable L2 norm when only its square sum overflows."""
+    direct = jnp.linalg.norm(value)
+    scale = jnp.max(jnp.abs(value))
+    _, exponent = jnp.frexp(scale)
+    scaled = jnp.ldexp(value, -exponent)
+    stable = jnp.ldexp(jnp.linalg.norm(scaled), exponent)
+    reduction_only_overflow = ~jnp.isfinite(direct) & jnp.all(jnp.isfinite(value))
+    return jnp.where(reduction_only_overflow, stable, direct)
+
+
 def feature_to_subtask_specs(
     oak_state: OaKState,
     *,
@@ -4015,7 +4026,7 @@ class PrototypeAgent:
         )
         td_error = target - prediction
         gradient_finite = jnp.all(jnp.isfinite(raw_gradient))
-        gradient_norm = jnp.linalg.norm(raw_gradient)
+        gradient_norm = _reduction_safe_l2_norm(raw_gradient)
         prediction_finite = jnp.isfinite(prediction)
         target_finite = jnp.isfinite(target)
         td_error_finite = jnp.isfinite(td_error)

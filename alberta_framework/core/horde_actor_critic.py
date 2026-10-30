@@ -1449,12 +1449,51 @@ def _clip_nlhac_actor_grads(
     for grad in (*grad_trunk_w, *grad_trunk_b):
         squared_norm = squared_norm + jnp.sum(jnp.square(grad))
     norm = jnp.sqrt(squared_norm)
+    # Recover squared-sum overflow of finite gradients by scaling before squaring.
+    grads = (grad_head_w, grad_head_b, *grad_trunk_w, *grad_trunk_b)
+    finite = jnp.all(jnp.stack([jnp.all(jnp.isfinite(grad)) for grad in grads]))
+    largest = jnp.max(jnp.stack([jnp.max(jnp.abs(grad), initial=0.0) for grad in grads]))
+    safe_largest = jnp.where(largest > 0.0, largest, 1.0)
+    _, scale_exponent = jnp.frexp(safe_largest)
+    rescaled = jnp.sum(
+        jnp.stack(
+            [
+                jnp.sum(jnp.square(jnp.ldexp(grad, -scale_exponent)))
+                for grad in grads
+            ]
+        )
+    )
+    recover = jnp.isinf(norm) & finite
+    scaled_norm = jnp.sqrt(rescaled)
     scale = jnp.minimum(1.0, jnp.asarray(max_norm, dtype=jnp.float32) / (norm + 1e-8))
+    scaled_scale = jnp.asarray(max_norm, dtype=jnp.float32) / (scaled_norm + 1e-8)
     return (
-        tuple(scale * grad for grad in grad_trunk_w),
-        tuple(scale * grad for grad in grad_trunk_b),
-        scale * grad_head_w,
-        scale * grad_head_b,
+        tuple(
+            jnp.where(
+                recover,
+                scaled_scale * jnp.ldexp(grad, -scale_exponent),
+                scale * grad,
+            )
+            for grad in grad_trunk_w
+        ),
+        tuple(
+            jnp.where(
+                recover,
+                scaled_scale * jnp.ldexp(grad, -scale_exponent),
+                scale * grad,
+            )
+            for grad in grad_trunk_b
+        ),
+        jnp.where(
+            recover,
+            scaled_scale * jnp.ldexp(grad_head_w, -scale_exponent),
+            scale * grad_head_w,
+        ),
+        jnp.where(
+            recover,
+            scaled_scale * jnp.ldexp(grad_head_b, -scale_exponent),
+            scale * grad_head_b,
+        ),
     )
 
 
