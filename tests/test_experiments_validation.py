@@ -8,6 +8,7 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Never
 
+import jax
 import numpy as np
 import pytest
 
@@ -24,6 +25,7 @@ from alberta_framework.utils.experiments import (
     get_final_performance,
     get_metric_timeseries,
     run_multi_seed_experiment,
+    run_single_experiment,
 )
 
 pytestmark = pytest.mark.unit
@@ -176,6 +178,17 @@ def test_integer_seed_count_still_aligns_identities() -> None:
     assert results["baseline"].seeds == [0, 1]
 
 
+def test_single_experiment_seed_is_independent_of_ambient_prng_default() -> None:
+    config = _config("rng-contract", num_steps=4)
+
+    with jax.default_prng_impl("threefry2x32"):
+        threefry = run_single_experiment(config, seed=17)
+    with jax.default_prng_impl("rbg"):
+        rbg = run_single_experiment(config, seed=17)
+
+    assert rbg.metrics_history == threefry.metrics_history
+
+
 @pytest.mark.parametrize("window", [True, False, 1.0])
 def test_get_final_performance_rejects_noncanonical_window(window: object) -> None:
     with pytest.raises(ValueError, match="window"):
@@ -319,6 +332,23 @@ def test_get_final_performance_accepts_unequal_trace_lengths_when_window_fits() 
     )
     performance = get_final_performance({"short": short, "long": long}, window=2)
     assert performance["short"] == performance["long"] == (2.0, pytest.approx(np.sqrt(2.0)))
+
+
+@pytest.mark.parametrize("candidate_seeds", [[2, 3], [1, 0]])
+def test_get_final_performance_rejects_unmatched_seed_schedules(
+    candidate_seeds: list[int],
+) -> None:
+    baseline = _two_seed_trace()._replace(config_name="baseline")
+    candidate = baseline._replace(
+        config_name="candidate",
+        seeds=candidate_seeds,
+    )
+
+    with pytest.raises(ValueError, match="same ordered seed schedule"):
+        get_final_performance(
+            {"baseline": baseline, "candidate": candidate},
+            window=2,
+        )
 
 
 def test_get_final_performance_window_longer_than_trace_uses_full_trace() -> None:

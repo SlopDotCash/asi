@@ -212,6 +212,26 @@ def _require_state_array(
     return array
 
 
+def _require_typed_threefry_key(value: object, *, name: str) -> Array:
+    """Require one typed scalar Threefry key without accepting legacy words."""
+    try:
+        key = jnp.asarray(value)
+        implementation = str(jr.key_impl(value))  # type: ignore[arg-type]
+        words = jr.key_data(value)  # type: ignore[arg-type]
+    except Exception as error:
+        raise TypeError(
+            f"{name} must be a typed scalar threefry2x32 key"
+        ) from error
+    if (
+        key.shape != ()
+        or implementation != "threefry2x32"
+        or words.shape != (2,)
+        or words.dtype != jnp.uint32
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    return key
+
+
 def _require_builtin_int(
     value: object,
     *,
@@ -561,9 +581,7 @@ class ClassicalConditioningStream:
         """Validate static state structure before indexed JAX operations."""
         if type(state) is not PavlovianState:
             raise TypeError("state must be an actual PavlovianState")
-        key = jnp.asarray(state.key)
-        if key.shape != () or not jnp.issubdtype(key.dtype, jax.dtypes.prng_key):
-            raise TypeError("state.key must be a scalar PRNG key")
+        _require_typed_threefry_key(state.key, name="state.key")
         for name, value, shape in (
             (
                 "cs_active_steps_remaining",
@@ -613,11 +631,7 @@ class ClassicalConditioningStream:
         Returns:
             Initial ``PavlovianState``.
         """
-        key_array = jnp.asarray(key)
-        if key_array.shape != () or not jnp.issubdtype(
-            key_array.dtype, jax.dtypes.prng_key
-        ):
-            raise TypeError("key must be a scalar PRNG key")
+        key_array = _require_typed_threefry_key(key, name="key")
         key, k_iti = jr.split(key_array)
         iti = jr.randint(k_iti, (), self._iti_min, self._iti_max + 1)
         return PavlovianState(
