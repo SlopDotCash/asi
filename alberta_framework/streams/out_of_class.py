@@ -53,6 +53,24 @@ _INT32_MAX = int(np.iinfo(np.int32).max)
 _MAX_OUT_OF_CLASS_STATE_BYTES = 64 * 1024 * 1024
 
 
+def _require_typed_threefry_key(value: object, *, name: str) -> Array:
+    """Require the two-word typed key assumed by the state resource budget."""
+    try:
+        key = jnp.asarray(value)
+        implementation = str(jr.key_impl(value))  # type: ignore[arg-type]
+        words = jr.key_data(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as error:
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if (
+        key.shape != ()
+        or implementation != "threefry2x32"
+        or words.shape != (2,)
+        or words.dtype != jnp.dtype(jnp.uint32)
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    return key
+
+
 def _require_positive_dimension(name: str, value: object) -> int:
     """Return a positive builtin int inside the int32 host-dimension domain."""
     canonical = require_positive_builtin_int(value, name=name)
@@ -416,12 +434,14 @@ class OutOfClassPolynomialStream:
         """Initialize stream state.
 
         Args:
-            key: JAX PRNG key.
+            key: Scalar typed ``threefry2x32`` JAX PRNG key.
 
         Returns:
             Initialized ``OutOfClassPolynomialState``.
         """
-        key, k_ctx, k_mask, k_linear = jr.split(key, 4)
+        key, k_ctx, k_mask, k_linear = jr.split(
+            _require_typed_threefry_key(key, name="key"), 4
+        )
         triples_left, triples_middle, triples_right = self._triples()
         n_triples = triples_left.shape[0]
 
@@ -528,6 +548,23 @@ class FrequencyMismatchState:
     step_count: Int[Array, ""]
 
 
+def _finite_frequency_component_sum(products: Array) -> Array:
+    """Sum sinusoidal products without an overflowing partial total.
+
+    ``jnp.sum`` turns a pair of large opposite values into ``inf`` when one
+    partial total leaves the float32 range, even though the real total is
+    finite.  A power-of-two scale keeps that total.  A finite direct sum
+    stays bit for bit.
+    """
+    products = jnp.asarray(products, dtype=jnp.float32)
+    direct = jnp.sum(products, axis=-1)
+    exponent = jnp.frexp(jnp.max(jnp.abs(products), axis=-1))[1]
+    scaled = jnp.ldexp(products, -exponent[:, None])
+    stable = jnp.ldexp(jnp.sum(scaled, axis=-1), exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 class FrequencyMismatchStream:
     """Non-stationary stream whose targets are sums of sinusoids.
 
@@ -624,12 +661,14 @@ class FrequencyMismatchStream:
         """Initialize stream state.
 
         Args:
-            key: JAX PRNG key.
+            key: Scalar typed ``threefry2x32`` JAX PRNG key.
 
         Returns:
             Initialized ``FrequencyMismatchState``.
         """
-        key, k_omega, k_phase, k_active, k_amp = jr.split(key, 5)
+        key, k_omega, k_phase, k_active, k_amp = jr.split(
+            _require_typed_threefry_key(key, name="key"), 5
+        )
         shape = (
             self._n_contexts,
             self._n_tasks,
@@ -688,7 +727,7 @@ class FrequencyMismatchStream:
 
         x_active = x[active]                            # (n_tasks, n_components)
         components = jnp.sin(omegas * x_active + phases)
-        target = jnp.sum(amps * components, axis=-1)    # (n_tasks,)
+        target = _finite_frequency_component_sum(amps * components)
         noise = self._noise_std * jr.normal(
             k_noise, (self._n_tasks,), dtype=jnp.float32
         )
@@ -882,12 +921,14 @@ class CompositionalStream:
         """Initialize stream state.
 
         Args:
-            key: JAX PRNG key.
+            key: Scalar typed ``threefry2x32`` JAX PRNG key.
 
         Returns:
             Initialized ``CompositionalState``.
         """
-        key, k_iw, k_ib, k_ow, k_ob, k_amp = jr.split(key, 6)
+        key, k_iw, k_ib, k_ow, k_ob, k_amp = jr.split(
+            _require_typed_threefry_key(key, name="key"), 6
+        )
 
         inner_shape = (
             self._n_contexts,

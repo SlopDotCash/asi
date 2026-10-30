@@ -1,5 +1,6 @@
 """Tests for checkpoint save/load utilities."""
 
+from pathlib import Path
 from typing import NamedTuple
 
 import chex
@@ -21,6 +22,7 @@ from alberta_framework import (
     load_checkpoint_metadata,
     save_checkpoint,
 )
+from alberta_framework.core.checkpoints import _require_path
 from alberta_framework.core.recurrent_trace_actor_critic import (
     RecurrentTraceActorCriticAgent,
     RecurrentTraceActorCriticConfig,
@@ -510,3 +512,30 @@ class TestCheckpointExists:
         """checkpoint_exists should return False for a regular file."""
         (tmp_path / "not_a_ckpt").touch()
         assert not checkpoint_exists(tmp_path / "not_a_ckpt")
+
+
+@pytest.mark.parametrize("as_string", [False, True])
+def test_checkpoint_path_boundary_resolves_relative_input(tmp_path, monkeypatch, as_string):
+    monkeypatch.chdir(tmp_path)
+    relative = Path("nested") / "agent.ckpt"
+    supplied = str(relative) if as_string else relative
+
+    resolved = _require_path(supplied)
+
+    assert resolved.is_absolute()
+    assert resolved == tmp_path / relative
+
+
+def test_relative_checkpoint_round_trip_pins_absolute_target(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    state = {"weights": jnp.arange(3, dtype=jnp.float32)}
+    relative = Path("nested") / "agent.ckpt"
+    absolute = tmp_path / relative
+
+    save_checkpoint(state, relative, metadata={"epoch": 7})
+
+    assert checkpoint_exists(absolute)
+    restored, metadata = load_checkpoint(state, relative)
+    chex.assert_trees_all_equal(restored, state)
+    assert metadata == {"epoch": 7}
+    assert load_checkpoint_metadata(relative) == {"epoch": 7}
