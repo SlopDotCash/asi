@@ -7,6 +7,7 @@ import json
 import numpy as np
 import pytest
 
+import alberta_framework.utils.metrics as metrics_module
 from alberta_framework.utils.metrics import (
     ContinualLearningSummary,
     StabilityGap,
@@ -34,6 +35,30 @@ def test_compare_learners_uses_population_spread_over_recorded_steps() -> None:
     )
 
     assert summary["learner"]["std"] == pytest.approx(1.0)
+
+
+def test_compare_learners_preserves_finite_cumulative_cancellation() -> None:
+    summary = compare_learners(
+        {
+            "learner": [
+                {"signal": 1e308},
+                {"signal": 1e308},
+                {"signal": -1e308},
+                {"signal": -1e308},
+            ]
+        },
+        metric="signal",
+    )
+
+    assert summary["learner"]["cumulative"] == 0.0
+
+
+def test_compare_learners_rejects_unrepresentable_cumulative_value() -> None:
+    with pytest.raises(ValueError, match="summaries must remain finite"):
+        compare_learners(
+            {"learner": [{"signal": 1e308}, {"signal": 1e308}]},
+            metric="signal",
+        )
 
 
 def test_accuracy_matrix_forgetting_and_backward_transfer() -> None:
@@ -182,6 +207,33 @@ def test_recovery_reports_minus_one_when_threshold_is_not_reached() -> None:
         threshold=0.8,
         window_size=2,
     )
+
+    np.testing.assert_array_equal(recovery, [-1])
+
+
+def test_recovery_does_not_rescan_each_candidate_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legal wide window must not trigger quadratic repeated reductions."""
+
+    original_all = np.all
+    calls = 0
+
+    def bounded_all(*args: object, **kwargs: object) -> np.bool_:
+        nonlocal calls
+        calls += 1
+        if calls > 4:
+            raise AssertionError("recovery search rescanned overlapping windows")
+        return original_all(*args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(metrics_module.np, "all", bounded_all)
+        recovery = compute_recovery_lengths(
+            np.zeros(256, dtype=np.float64),
+            change_points=[0],
+            threshold=1.0,
+            window_size=128,
+        )
 
     np.testing.assert_array_equal(recovery, [-1])
 
