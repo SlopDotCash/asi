@@ -111,6 +111,8 @@ class BoundedPolicyArchive:
             raise ValueError("unknown archive mode")
         if type(self.entries) is not tuple or len(self.entries) > _MAX_ARCHIVE_ENTRIES:
             raise ValueError("entries must be an exact tuple of PolicyEntry values")
+        if self.mode != "diverse_archive" and len(self.entries) > 1:
+            raise ValueError("single-policy control modes accept at most one entry")
         retained_bytes = 0
         identities: set[str] = set()
         latent_width: int | None = None

@@ -156,6 +156,50 @@ class TestStep:
         chex.assert_tree_all_finite(updated.biases)
         chex.assert_tree_all_finite(updated.utility)
 
+    @pytest.mark.parametrize("disable_jit", [False, True], ids=["jit", "eager"])
+    @pytest.mark.parametrize("sign", [-1.0, 1.0])
+    def test_finite_weighted_surprise_commits_when_raw_square_overflows(
+        self,
+        sign: float,
+        disable_jit: bool,
+    ) -> None:
+        """The EMA weight can make a finite TD-error square representable."""
+        discovery = CumulantDiscovery(
+            raw_dim=1,
+            n_candidates=1,
+            decay_rate=0.999,
+            predictor_step_size=1.0e-10,
+            gamma=0.0,
+        )
+        state = discovery.init(jr.key(0)).replace(
+            projections=jnp.ones((1, 1), dtype=jnp.float32),
+        )
+        observation = jnp.zeros((1,), dtype=jnp.float32)
+        next_observation = jnp.asarray([sign * 1.0e20], dtype=jnp.float32)
+        td = next_observation[0]
+        assert bool(jnp.isinf(td * td))
+
+        with jax.disable_jit(disable_jit):
+            updated = discovery.step(state, observation, next_observation)
+
+        expected_utility = np.float32(
+            (1.0 - float(np.float32(0.999))) * float(td) ** 2
+        )
+        np.testing.assert_array_equal(np.asarray(updated.ages), np.asarray(state.ages + 1))
+        np.testing.assert_allclose(
+            np.asarray(updated.biases),
+            np.asarray([sign * 1.0e10], dtype=np.float32),
+            rtol=1.0e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(updated.utility),
+            np.asarray([expected_utility], dtype=np.float32),
+            rtol=1.0e-6,
+        )
+        chex.assert_tree_all_finite(
+            (updated.projections, updated.weights, updated.biases, updated.utility)
+        )
+
     def test_predictor_reduces_td_error(self) -> None:
         d = CumulantDiscovery(
             raw_dim=2, n_candidates=1, predictor_step_size=0.1, gamma=0.0
@@ -551,3 +595,46 @@ def test_require_float32_rejects_builtin_float_subnormal_underflow() -> None:
 
     with pytest.raises(ValueError, match="must remain nonzero once narrowed to float32"):
         _require_float32("gamma", 1e-50, lower=0.0, upper=1.0, preserve_nonzero=True)
+
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.0e38])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_finite_debiased_utility_preserves_maturity_and_order(
+    scale: float, compiled: bool
+) -> None:
+    discovery = CumulantDiscovery(
+        raw_dim=1, n_candidates=3, decay_rate=0.99,
+        maturity_threshold=1, replacement_rate=1.0,
+    )
+    state = discovery.init(jr.key(0)).replace(
+        ages=jnp.asarray([0, 1, 1], dtype=jnp.int32),
+        weights=jnp.ones((3, 1), dtype=jnp.float32),
+        utility=jnp.asarray([0.0, 2.0 * scale, scale], dtype=jnp.float32),
+    )
+    with jax.disable_jit(not compiled):
+        replaced = discovery.maybe_replace(state)
+    np.testing.assert_array_equal(np.asarray(replaced.ages), [0, 1, 0])
+    np.testing.assert_array_equal(np.asarray(replaced.utility[:2]), np.asarray(state.utility[:2]))
+    assert float(replaced.utility[2]) == 0.0
+    np.testing.assert_array_equal(np.asarray(replaced.weights), [[1.0], [1.0], [0.0]])
+    np.testing.assert_array_equal(np.asarray(replaced.projections[:2]),
+                                  np.asarray(state.projections[:2]))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_finite_small_scores_keep_order_alongside_overflow(compiled: bool) -> None:
+    discovery = CumulantDiscovery(
+        raw_dim=1, n_candidates=3, decay_rate=0.99,
+        maturity_threshold=1, replacement_rate=1.0,
+    )
+    tiny = np.finfo(np.float32).tiny
+    state = discovery.init(jr.key(0)).replace(
+        ages=jnp.ones(3, dtype=jnp.int32),
+        weights=jnp.ones((3, 1), dtype=jnp.float32),
+        utility=jnp.asarray([2.0 * tiny, tiny, 2.0e38], dtype=jnp.float32),
+    )
+    with jax.disable_jit(not compiled):
+        replaced = discovery.maybe_replace(state)
+    np.testing.assert_array_equal(np.asarray(replaced.ages), [1, 0, 1])
+    np.testing.assert_array_equal(np.asarray(replaced.weights), [[1.0], [0.0], [1.0]])
