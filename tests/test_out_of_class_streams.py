@@ -885,6 +885,56 @@ class TestFrequencyMismatchStream:
             f" changes in a sinusoidal oracle (got {sign_changes})"
         )
 
+    def test_cancelling_component_sum_stays_finite_and_negative(self) -> None:
+        """A finite component block whose direct sum overflows keeps the real total.
+
+        Five unit sinusoids with amplitudes ``[2e38, 2e38, -2e38, -2e38, -1e38]``
+        have a real sum of ``-1e38``.  ``jnp.sum`` returns ``inf`` because
+        ``2e38 + 2e38`` leaves the float32 range.  The public target must stay
+        at that finite negative value.
+        """
+        stream = FrequencyMismatchStream(
+            feature_dim=1,
+            n_tasks=1,
+            n_components_per_task=5,
+            n_contexts=1,
+            context_length=1,
+            noise_std=0.0,
+        )
+        state = stream.init(jr.key(0))
+        amplitudes = jnp.asarray(
+            [2.0e38, 2.0e38, -2.0e38, -2.0e38, -1.0e38],
+            dtype=jnp.float32,
+        )
+        half_pi = jnp.asarray(jnp.pi / 2, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            omegas=jnp.zeros_like(state.omegas),
+            phases=jnp.full_like(state.phases, half_pi),
+            active_indices=jnp.zeros_like(state.active_indices),
+            amplitudes=amplitudes.reshape(1, 1, 5),
+            step_count=jnp.asarray(0, dtype=jnp.int32),
+        )
+        direct = jnp.sum(amplitudes)
+        assert not bool(jnp.isfinite(direct))
+        expected = np.float32(sum(np.float64(value) for value in amplitudes))
+        timestep, _new_state = stream.step(state, jnp.asarray(0, dtype=jnp.int32))
+        assert bool(jnp.all(jnp.isfinite(timestep.observation)))
+        assert jnp.array_equal(
+            timestep.target,
+            jnp.asarray([expected], dtype=jnp.float32),
+        )
+        assert float(timestep.target[0]) < 0.0
+
+        ordinary = jnp.asarray([1.0, -2.0, 0.5, 0.25, -0.125], dtype=jnp.float32)
+        ordinary_step, _ordinary_state = stream.step(
+            state.replace(  # type: ignore[attr-defined]
+                amplitudes=ordinary.reshape(1, 1, 5),
+            ),
+            jnp.asarray(0, dtype=jnp.int32),
+        )
+        ordinary_sum = jnp.sum(ordinary)
+        assert jnp.array_equal(ordinary_step.target, jnp.atleast_1d(ordinary_sum))
+
 
 # =============================================================================
 # CompositionalStream
@@ -1298,6 +1348,42 @@ def test_out_of_class_resource_budget_matches_resident_state(stream: object) -> 
     budget = stream.resource_budget  # type: ignore[attr-defined]
     assert budget["state_bytes"] == actual_bytes
     assert budget["state_scalars"] * 4 == actual_bytes
+
+
+@pytest.mark.parametrize(
+    "stream",
+    [
+        OutOfClassPolynomialStream(
+            feature_dim=3,
+            n_tasks=1,
+            n_contexts=1,
+            active_triples_per_context=1,
+        ),
+        FrequencyMismatchStream(
+            feature_dim=1,
+            n_tasks=1,
+            n_components_per_task=1,
+            n_contexts=1,
+        ),
+        CompositionalStream(
+            feature_dim=1,
+            n_tasks=1,
+            inner_hidden=1,
+            outer_components=1,
+            n_contexts=1,
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    "key",
+    [
+        pytest.param(jr.PRNGKey(0), id="legacy"),
+        pytest.param(jr.key(0, impl="rbg"), id="rbg"),
+    ],
+)
+def test_out_of_class_init_requires_typed_threefry_key(stream: object, key: object) -> None:
+    with pytest.raises(TypeError, match="typed scalar threefry2x32 key"):
+        stream.init(key)  # type: ignore[attr-defined]
 
 
 def test_out_of_class_derived_state_budgets_fail_at_construction() -> None:
