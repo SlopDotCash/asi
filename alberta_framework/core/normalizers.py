@@ -88,6 +88,8 @@ NORMALIZER_LIFETIME_COUNTER_DELTA_NBYTES = 8
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
 _FLOAT32_CONSECUTIVE_INTEGER_LIMIT = 2**24
+_FLOAT32_TINY = float(np.finfo(np.float32).tiny)
+_FLOAT32_MAX = float(np.finfo(np.float32).max)
 
 _ACTUAL_INT_TYPES: tuple[type, ...] = (
     int,
@@ -252,6 +254,23 @@ class StreamingBatchNormalizerState:
 AnyNormalizerState = EMANormalizerState | WelfordNormalizerState | StreamingBatchNormalizerState
 
 
+def _require_feature_shapes(
+    state: AnyNormalizerState,
+    observation: Array,
+) -> None:
+    """Reject feature-axis drift before JAX can broadcast or trace it."""
+
+    expected = tuple(jnp.shape(state.mean))
+    if len(expected) != 1:
+        raise ValueError("normalizer state mean must be rank one")
+    if tuple(jnp.shape(state.var)) != expected:
+        raise ValueError("normalizer state variance shape must match mean shape")
+    if isinstance(state, WelfordNormalizerState) and tuple(jnp.shape(state.p)) != expected:
+        raise ValueError("normalizer state accumulator shape must match mean shape")
+    if tuple(jnp.shape(observation)) != expected:
+        raise ValueError("observation shape must match normalizer state mean shape")
+
+
 @chex.dataclass(frozen=True)
 class NormalizerCounterStatus:
     """Read-only preflight status for one normalizer update transaction."""
@@ -303,8 +322,10 @@ class Normalizer[
             epsilon: Small constant added to std for numerical stability
         """
         epsilon = _validated_finite_real("epsilon", epsilon)
-        if epsilon <= 0.0:
-            raise ValueError("epsilon must be finite and positive")
+        if not _FLOAT32_TINY <= epsilon <= _FLOAT32_MAX:
+            raise ValueError(
+                "epsilon must remain a positive normal finite float32 value"
+            )
         self._epsilon = epsilon
 
     @abstractmethod
@@ -437,6 +458,7 @@ class Normalizer[
         Returns:
             Normalized observation
         """
+        _require_feature_shapes(state, observation)
         std = jnp.sqrt(state.var)
         normalized = (observation - state.mean) / (std + self._epsilon)
         # Inf observation minus an inf mean is inf-inf = NaN. Zero only
@@ -561,6 +583,7 @@ class EMANormalizer(Normalizer[EMANormalizerState]):
             Tuple of (normalized_observation, new_state)
         """
         status = self.counter_status(state)
+        _require_feature_shapes(state, observation)
         observation_valid = jnp.all(jnp.isfinite(observation))
         zero_decay = state.decay == jnp.asarray(0.0, dtype=jnp.float32)
         checked_state = EMANormalizerState(
@@ -720,6 +743,7 @@ class WelfordNormalizer(Normalizer[WelfordNormalizerState]):
             Tuple of (normalized_observation, new_state)
         """
         status = self.counter_status(state)
+        _require_feature_shapes(state, observation)
         observation_valid = jnp.all(jnp.isfinite(observation))
         source_state_finite = _floating_tree_is_finite(state)
         update_available = (
@@ -847,6 +871,7 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
     ) -> NormalizerUpdateResult:
         """Normalize and conditionally commit BatchNorm-style moments."""
         status = self.counter_status(state)
+        _require_feature_shapes(state, observation)
         observation_valid = jnp.all(jnp.isfinite(observation))
         zero_momentum = state.momentum == jnp.asarray(0.0, dtype=jnp.float32)
         checked_state = StreamingBatchNormalizerState(
@@ -1073,6 +1098,7 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     config = dict(config)
     type_name = config.pop("type")
     host_type_name = _require_exact_str("type_name", type_name)
+    versioned_state_schema_declared = "state_schema" in config
     state_schema = _require_exact_str(
         "state_schema", config.pop("state_schema", NORMALIZER_STATE_SCHEMA)
     )
@@ -1125,6 +1151,17 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     cls = _NORMALIZER_REGISTRY.get(host_type_name)
     if cls is None:
         raise ValueError(f"Unknown normalizer type: '{host_type_name}'")
+    required_parameters = {
+        "EMANormalizer": {"epsilon", "decay"},
+        "WelfordNormalizer": {"epsilon"},
+        "StreamingBatchNormalizer": {"epsilon", "momentum"},
+    }[host_type_name]
+    missing_parameters = required_parameters - config.keys()
+    if versioned_state_schema_declared and missing_parameters:
+        raise ValueError(
+            "normalizer config is missing required fields: "
+            f"{sorted(missing_parameters)}"
+        )
     result: Normalizer[Any] = cls(**config)
     return result
 
