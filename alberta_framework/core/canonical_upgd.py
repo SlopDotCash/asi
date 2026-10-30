@@ -504,15 +504,38 @@ def _local_normalize(
     active_denominator = jnp.where(active, denominator_utility, 0.0)
     if numerator.ndim == 0:
         denominator = jnp.abs(active_denominator)
+        if epsilon is not None:
+            denominator = jnp.maximum(denominator, epsilon)
+        normalized = numerator / denominator
     else:
         denominator = jnp.linalg.norm(
             active_denominator,
             axis=-1,
             keepdims=True,
         )
-    if epsilon is not None:
-        denominator = jnp.maximum(denominator, epsilon)
-    normalized = numerator / denominator
+        # Recover norm overflow of finite utilities by scaling before squaring.
+        scale = jnp.max(jnp.abs(active_denominator), axis=-1, keepdims=True)
+        safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+        _, scale_exponent = jnp.frexp(safe_scale)
+        scaled_denominator = jnp.linalg.norm(
+            jnp.ldexp(active_denominator, -scale_exponent),
+            axis=-1,
+            keepdims=True,
+        )
+        overflow_recovery = jnp.isinf(denominator) & jnp.all(
+            jnp.isfinite(active_denominator), axis=-1, keepdims=True
+        )
+        if epsilon is not None:
+            denominator = jnp.maximum(denominator, epsilon)
+        normalized = numerator / denominator
+        scaled_numerator = jnp.ldexp(numerator, -scale_exponent)
+        # Gate both division operands before the outer where: jnp.where hides
+        # the unselected forward value but JAX still backprops through it, so
+        # an all-zero row would otherwise produce 0/0 -> NaN gradients.
+        safe_scaled_denominator = jnp.where(overflow_recovery, scaled_denominator, 1.0)
+        safe_scaled_numerator = jnp.where(overflow_recovery, scaled_numerator, 0.0)
+        scaled_normalized = safe_scaled_numerator / safe_scaled_denominator
+        normalized = jnp.where(overflow_recovery, scaled_normalized, normalized)
     return jnp.where(active, normalized, 0.0)
 
 
@@ -1296,6 +1319,56 @@ def _adaupgd_select_tree(condition: Array, candidate: Any, fallback: Any) -> Any
     )
 
 
+def _alberta_adaupgd_weighted_square(scale: float, value: Array) -> Array:
+    """Weight a square after the mantissa when ``value**2`` overflows.
+
+    A finite square keeps ``scale * value**2``. The split applies the small
+    weight before the square so the product is not fused back together.
+    """
+
+    square = jnp.square(value)
+    ordinary = _static_zero_scale(scale, square)
+    scale_array = jnp.asarray(scale, dtype=value.dtype)
+    value_mantissa, value_exponent = jnp.frexp(value)
+    scale_mantissa, scale_exponent = jnp.frexp(scale_array)
+    recovered = jnp.ldexp(
+        scale_mantissa * value_mantissa**2,
+        scale_exponent + 2 * value_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(square) | ~jnp.isfinite(recovered),
+        ordinary,
+        recovered,
+    )
+
+
+def _alberta_adaupgd_second_moment_rms(second_moment: Array, divisor: Array) -> Array:
+    """Take ``sqrt(moment / divisor)`` without an overflowing quotient.
+
+    A finite direct root stays bitwise. An odd exponent still multiplies by
+    ``sqrt(2)`` before ``ldexp`` by the floored half exponent.
+    """
+
+    direct = jnp.sqrt(second_moment / divisor)
+    moment_mantissa, moment_exponent = jnp.frexp(second_moment)
+    divisor_mantissa, divisor_exponent = jnp.frexp(divisor)
+    exponent_delta = moment_exponent - divisor_exponent
+    half_exponent = jnp.floor_divide(exponent_delta, jnp.int32(2))
+    odd_exponent = (exponent_delta & jnp.int32(1)) != 0
+    root = jnp.sqrt(moment_mantissa / divisor_mantissa)
+    root = jnp.where(
+        odd_exponent,
+        root * jnp.sqrt(jnp.asarray(2.0, dtype=second_moment.dtype)),
+        root,
+    )
+    recovered = jnp.ldexp(root, half_exponent)
+    return jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
+
+
 class AlbertaAdaUPGD:
     """Opt-in, functional Alberta-derived adaptive first-order UPGD.
 
@@ -1638,18 +1711,18 @@ class AlbertaAdaUPGD:
                 0.0,
             )
 
-            proposed_moment = _static_zero_scale(beta_second, moment) + (
-                1.0 - beta_second
-            ) * jnp.square(gradient)
+            proposed_moment = _static_zero_scale(
+                beta_second, moment
+            ) + _alberta_adaupgd_weighted_square(1.0 - beta_second, gradient)
             moment_clock = jnp.maximum(proposed_step, 1).astype(param.dtype)
             moment_correction = 1.0 - jnp.power(beta_second, moment_clock)
-            corrected_moment = proposed_moment / jnp.maximum(
+            moment_divisor = jnp.maximum(
                 moment_correction,
                 jnp.asarray(self._config.epsilon, dtype=param.dtype),
             )
-            denominator = jnp.sqrt(corrected_moment) + jnp.asarray(
-                self._config.epsilon, dtype=param.dtype
-            )
+            denominator = _alberta_adaupgd_second_moment_rms(
+                proposed_moment, moment_divisor
+            ) + jnp.asarray(self._config.epsilon, dtype=param.dtype)
 
             proposed_utility_leaves.append(proposed_utility)
             proposed_age_leaves.append(proposed_age)

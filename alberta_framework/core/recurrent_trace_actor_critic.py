@@ -254,6 +254,24 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Reject keys whose physical representation violates the state budget."""
+    if not isinstance(value, jax.Array) or tuple(value.shape) != ():
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    try:
+        implementation = str(jr.key_impl(value))
+        words = jr.key_data(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if (
+        implementation != "threefry2x32"
+        or tuple(words.shape) != (2,)
+        or words.dtype != jnp.uint32
+    ):
+        raise ValueError(f"{name} must be a typed scalar threefry2x32 key")
+    return value
+
+
 def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     if type(value) is bool or type(value) is np.bool_:
         raise ValueError(f"{name} must be numeric, not bool")
@@ -602,7 +620,45 @@ def parameterless_layer_norm(inputs: Array, epsilon: float = 1e-5) -> Array:
     mean = jnp.mean(inputs, axis=-1, keepdims=True)
     centered = inputs - mean
     variance = jnp.mean(jnp.square(centered), axis=-1, keepdims=True)
-    return centered * jax.lax.rsqrt(variance + jnp.asarray(epsilon, inputs.dtype))
+    epsilon_array = jnp.asarray(epsilon, inputs.dtype)
+    direct = centered * jax.lax.rsqrt(variance + epsilon_array)
+    reduction_only_overflow = (
+        (~jnp.isfinite(mean) | ~jnp.isfinite(variance))
+        & jnp.all(jnp.isfinite(inputs), axis=-1, keepdims=True)
+    )
+
+    scale = jnp.max(jnp.abs(inputs), axis=-1, keepdims=True)
+    safe_scale = jnp.where(scale > 0.0, scale, jnp.ones_like(scale))
+    fallback_inputs = jnp.where(
+        reduction_only_overflow,
+        inputs,
+        jnp.zeros_like(inputs),
+    )
+    fallback_scale = jnp.where(
+        reduction_only_overflow,
+        safe_scale,
+        jnp.ones_like(safe_scale),
+    )
+    # Dividing by a float32 scale above 2**126 can lower to multiplication by
+    # a subnormal reciprocal that XLA:CPU flushes to zero.  Scaling by the
+    # scale's binary exponent is exact and keeps the largest finite input in
+    # [0.5, 1.0), including values near the float32 ceiling.
+    _, fallback_exponent = jnp.frexp(fallback_scale)
+    scaled_inputs = jnp.ldexp(fallback_inputs, -fallback_exponent)
+    scaled_centered = scaled_inputs - jnp.mean(
+        scaled_inputs, axis=-1, keepdims=True
+    )
+    scaled_variance = jnp.mean(
+        jnp.square(scaled_centered), axis=-1, keepdims=True
+    )
+    scaled_epsilon = jnp.ldexp(epsilon_array, -2 * fallback_exponent)
+    stable_denominator = jnp.where(
+        scaled_variance > 0.0,
+        scaled_variance + scaled_epsilon,
+        jnp.ones_like(scaled_variance),
+    )
+    stable = scaled_centered * jax.lax.rsqrt(stable_denominator)
+    return jnp.where(reduction_only_overflow, stable, direct)
 
 
 def leaky_relu(inputs: Array, negative_slope: float = 0.01) -> Array:
@@ -1401,6 +1457,58 @@ def obgd_update(
     )
 
 
+def _adaptive_obgd_weighted_square(scale: Array, value: Array) -> Array:
+    """Apply the EMA weight before squaring when a finite square overflows.
+
+    ``scale * value**2`` is the ordinary second-moment increment. A finite
+    square keeps that product bitwise. When the square is outside float32,
+    the exponent form applies ``scale`` before the square so a representable
+    weighted moment stays finite. A result that is still outside float32
+    stays non-finite and the caller rejects the update.
+    """
+    square = value**2
+    ordinary = scale * square
+    value_mantissa, value_exponent = jnp.frexp(value)
+    scale_mantissa, scale_exponent = jnp.frexp(scale)
+    recovered = jnp.ldexp(
+        scale_mantissa * value_mantissa**2,
+        scale_exponent + 2 * value_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(square) | ~jnp.isfinite(recovered),
+        ordinary,
+        recovered,
+    )
+
+
+def _adaptive_obgd_second_moment_rms(second_moment: Array, correction: Array) -> Array:
+    """Return ``sqrt(moment / correction)`` without overflowing the quotient.
+
+    Bias correction divides by ``1 - beta2**step``. On the first step that
+    divisor is ``1 - beta2``, so the quotient rebuilds ``(signal * z)**2``.
+    A finite direct root stays bitwise. A still-unrepresentable root stays
+    non-finite so the caller rejects the update.
+    """
+    direct = jnp.sqrt(second_moment / correction)
+    moment_mantissa, moment_exponent = jnp.frexp(second_moment)
+    correction_mantissa, correction_exponent = jnp.frexp(correction)
+    exponent_delta = moment_exponent - correction_exponent
+    half_exponent = jnp.floor_divide(exponent_delta, jnp.int32(2))
+    odd_exponent = (exponent_delta & jnp.int32(1)) != 0
+    root = jnp.sqrt(moment_mantissa / correction_mantissa)
+    root = jnp.where(
+        odd_exponent,
+        root * jnp.sqrt(jnp.asarray(2.0, dtype=second_moment.dtype)),
+        root,
+    )
+    recovered = jnp.ldexp(root, half_exponent)
+    return jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
+
+
 def adaptive_obgd_update(
     traces: Any,
     second_moment: Any,
@@ -1431,23 +1539,24 @@ def adaptive_obgd_update(
 
     beta = jnp.asarray(beta2, dtype=signal.dtype)
     epsilon_array = jnp.asarray(epsilon, dtype=signal.dtype)
+    innovation_scale = 1.0 - beta
     proposed_second_moment = jax.tree_util.tree_map(
         lambda previous, trace: (
             jnp.where(beta == 0.0, jnp.zeros_like(previous), beta * previous)
-            + (1.0 - beta) * jnp.square(signal * trace)
+            + _adaptive_obgd_weighted_square(innovation_scale, signal * trace)
         ),
         second_moment,
         traces,
     )
     bias_correction = 1.0 - beta**step_array
-    corrected_second_moment = jax.tree_util.tree_map(
-        lambda moment: moment / bias_correction,
+    second_moment_rms = jax.tree_util.tree_map(
+        lambda moment: _adaptive_obgd_second_moment_rms(moment, bias_correction),
         proposed_second_moment,
     )
     normalized_traces = jax.tree_util.tree_map(
-        lambda trace, corrected: trace / (jnp.sqrt(corrected) + epsilon_array),
+        lambda trace, root: trace / (root + epsilon_array),
         traces,
-        corrected_second_moment,
+        second_moment_rms,
     )
 
     z_sum = jnp.asarray(0.0, dtype=signal.dtype)
@@ -1909,6 +2018,7 @@ class RecurrentTraceActorCriticAgent:
         feature_dim = _require_int32("feature_dim", feature_dim, minimum=1)
         resources = self._config.state_resource_budget(feature_dim)
         _preflight_update_working_set(self._config, resources)
+        key = _require_typed_threefry_key("key", key)
         actor_key, critic_key, policy_key = jr.split(key, 3)
         actor_params = initialize_rtu_network_parameters(
             actor_key,
@@ -2244,6 +2354,11 @@ class RecurrentTraceActorCriticAgent:
             "observation must contain only finite values",
         )
         normalized, statistics = self._normalize_observation(state, observation)
+        normalized = _runtime_checked_value(
+            normalized,
+            _floating_tree_is_finite((normalized, statistics)),
+            "observation normalization produced non-finite state",
+        )
         actor_inputs = self._network_encode(state.actor_params, normalized)
         critic_inputs = self._network_encode(state.critic_params, normalized)
         reset = jnp.asarray(True)

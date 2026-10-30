@@ -46,6 +46,7 @@ from alberta_framework.reference_agent import (
 PROTOTYPE_REFERENCE_ADAPTER_SCHEMA = "asi.prototype_exact_adapter.preview1"
 PROTOTYPE_REFERENCE_IMPLEMENTATION_ID = "asi.prototype_exact_adapter.preview1"
 PROTOTYPE_REFERENCE_STATE_SCHEMA = "asi.prototype_reference_state.preview1"
+PROTOTYPE_REFERENCE_HOST_TIMING_POLICY = "disabled_canonical_float32_positive_zero"
 PROTOTYPE_OBSERVATION_SEMANTIC_ID = "asi.prototype_raw_observation.preview1"
 PROTOTYPE_ACTION_SEMANTIC_ID = "asi.prototype_primitive_action.preview1"
 PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS = 2**31 - 4
@@ -194,6 +195,54 @@ def _parameter_tree(state: PrototypeAgentState) -> tuple[Any, Any, Any]:
     return base.trunk_params, base.head_params, oak_state.stomp_state.base_average_reward
 
 
+def _without_host_timing_metadata(state: PrototypeAgentState) -> PrototypeAgentState:
+    """Return the reference state with learner host clocks disabled."""
+
+    oak_state = state.oak_state
+    if not isinstance(oak_state, OaKState):
+        raise RuntimeError(
+            "the exact Prototype adapter requires an unwrapped primitive-only OaKState"
+        )
+    stomp_state = oak_state.stomp_state
+    base_state = stomp_state.base_learner_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=jnp.asarray(0.0, dtype=jnp.float32),
+        uptime_s=jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    replaced_stomp = stomp_state.replace(  # type: ignore[attr-defined]
+        base_learner_state=base_state
+    )
+    replaced_oak = oak_state.replace(  # type: ignore[attr-defined]
+        stomp_state=replaced_stomp
+    )
+    return cast(
+        PrototypeAgentState,
+        state.replace(oak_state=replaced_oak),  # type: ignore[attr-defined]
+    )
+
+
+def _require_host_timing_metadata_disabled(state: PrototypeAgentState) -> None:
+    """Reject host-clock values from the deterministic reference state."""
+
+    oak_state = state.oak_state
+    if not isinstance(oak_state, OaKState):
+        raise DecisionOwnershipError(
+            "the exact Prototype adapter requires an unwrapped primitive-only OaKState"
+        )
+    base_state = oak_state.stomp_state.base_learner_state
+    for name in ("birth_timestamp", "uptime_s"):
+        value = np.asarray(getattr(base_state, name))
+        if (
+            value.shape != ()
+            or value.dtype != np.dtype(np.float32)
+            or not bool(np.isfinite(value))
+            or float(value) != 0.0
+            or bool(np.signbit(value))
+        ):
+            raise DecisionOwnershipError(
+                "Prototype reference timing metadata must remain disabled"
+            )
+
+
 def _diagnostic_rejection_reason(diagnostics: PrototypeTransitionDiagnostics) -> str:
     names = (
         "started",
@@ -238,6 +287,7 @@ class PrototypeReferenceAdapter:
                 "adapter_schema": PROTOTYPE_REFERENCE_ADAPTER_SCHEMA,
                 "dispatch_mode": "exact_only",
                 "environment_mode": "continuing_only",
+                "host_timing_metadata": PROTOTYPE_REFERENCE_HOST_TIMING_POLICY,
                 "lifecycle_codec": _LIFECYCLE_CODEC,
                 "prototype_agent": prototype_config,
                 "prototype_state_schema": PROTOTYPE_CHECKPOINT_SCHEMA,
@@ -339,13 +389,16 @@ class PrototypeReferenceAdapter:
             raise DecisionOwnershipError(
                 "state owner is another PrototypeReferenceAdapter instance"
             )
+        _require_host_timing_metadata_disabled(state.agent_state)
 
     def init(self, key: Array, *, lifecycle_id: str) -> PrototypeReferenceState:
         """Initialize complete functional agent state for one host lifecycle."""
 
-        agent_state = self._agent.init(
-            key,
-            lifecycle_id=_lifecycle_words(lifecycle_id),
+        agent_state = _without_host_timing_metadata(
+            self._agent.init(
+                key,
+                lifecycle_id=_lifecycle_words(lifecycle_id),
+            )
         )
         return PrototypeReferenceState(
             schema=PROTOTYPE_REFERENCE_STATE_SCHEMA,
@@ -636,6 +689,7 @@ __all__ = [
     "PROTOTYPE_OBSERVATION_SEMANTIC_ID",
     "PROTOTYPE_REFERENCE_ADAPTER_SCHEMA",
     "PROTOTYPE_REFERENCE_IMPLEMENTATION_ID",
+    "PROTOTYPE_REFERENCE_HOST_TIMING_POLICY",
     "PROTOTYPE_REFERENCE_MAX_ACCEPTED_EVENTS",
     "PROTOTYPE_REFERENCE_STATE_SCHEMA",
     "PrototypeAdapterUpdate",

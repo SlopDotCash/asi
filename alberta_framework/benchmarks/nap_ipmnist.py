@@ -424,7 +424,10 @@ def _run_arm(
     seed: int,
 ) -> NaPArmResult:
     normalization_enabled, projection_enabled = _arm_flags(arm_id)
-    key = jr.key(seed)
+    # The arm root is identity-bearing: it is pinned to explicit threefry2x32 so
+    # the frozen seed pins one learner trajectory and final-state identity
+    # regardless of the ambient jax_default_prng_impl.
+    key = jr.key(seed, impl="threefry2x32")
     key, init_key = jr.split(key)
     state = _init_state(init_key, profile.hidden_width)
     initial_norms = (float(jnp.linalg.norm(state.w1)), float(jnp.linalg.norm(state.w2)))
@@ -584,7 +587,7 @@ def validate_result(value: object) -> NaPResult:
         + profile.hidden_width * profile.hidden_width
         + profile.hidden_width * N_CLASSES
     )
-    initial_state = _init_state(jr.key(0), profile.hidden_width)
+    initial_state = _init_state(jr.key(0, impl="threefry2x32"), profile.hidden_width)
     expected_state_bytes = sum(np.asarray(leaf).nbytes for leaf in jax.tree.leaves(initial_state))
     for arm in value.arms:
         if type(arm) is not NaPArmResult or type(arm.receipt) is not NaPReceipt:
