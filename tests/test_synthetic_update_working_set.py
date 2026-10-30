@@ -7,10 +7,12 @@ import jax.random as jr
 import pytest
 
 from alberta_framework.streams.synthetic import (
+    CyclicStream,
     DynamicScaleShiftStream,
     HiddenStateAR2Stream,
     ScaleDriftStream,
     SuttonExperiment1Stream,
+    _cyclic_persistent_bytes,
     _hidden_state_ar2_persistent_bytes,
     _preflight_synthetic_step_working_set,
     _require_float32_resource,
@@ -29,6 +31,8 @@ _SCALE_FIRST_OVERFLOW = 76_695_844
 _SUTTON_OVERFLOW_FEATURE_DIM = 200_000_000
 _SUTTON_LAST_FIT = 134_217_725
 _SUTTON_FIRST_OVERFLOW = 134_217_726
+_CYCLIC_LAST_FIT_CONFIGURATIONS = 59_652_322
+_CYCLIC_FIRST_OVERFLOW_CONFIGURATIONS = 59_652_323
 
 
 def test_int32_wrap_forges_a_different_published_byte_identity() -> None:
@@ -168,6 +172,44 @@ def test_sutton_last_fit_and_first_overflow_are_adjacent() -> None:
     )
     with pytest.raises(ValueError, match="working set byte count"):
         SuttonExperiment1Stream(num_relevant=1, num_irrelevant=first_overflow - 1)
+
+
+def test_cyclic_configuration_matrix_overflows_only_complete_step_envelope() -> None:
+    feature_dim = 3
+    num_configurations = _CYCLIC_FIRST_OVERFLOW_CONFIGURATIONS
+    persist_bytes = _cyclic_persistent_bytes(feature_dim, num_configurations)
+    working_set_bytes = _synthetic_step_working_set_bytes(persist_bytes, feature_dim)
+    extras_bytes = working_set_bytes - 3 * persist_bytes
+    assert persist_bytes == 715_827_888
+    assert persist_bytes <= _INT32_MAX
+    assert persist_bytes + extras_bytes <= _INT32_MAX
+    assert 4 * feature_dim <= _INT32_MAX
+    assert working_set_bytes == 2_147_483_680
+    assert working_set_bytes > _INT32_MAX
+    with pytest.raises(ValueError, match="working set byte count"):
+        CyclicStream(feature_dim, num_configurations=num_configurations)
+
+
+def test_cyclic_last_fit_and_first_overflow_are_adjacent() -> None:
+    feature_dim = 3
+    last_fit = None
+    first_overflow = None
+    for num_configurations in range(
+        _CYCLIC_LAST_FIT_CONFIGURATIONS,
+        _CYCLIC_FIRST_OVERFLOW_CONFIGURATIONS + 2,
+    ):
+        persist_bytes = _cyclic_persistent_bytes(feature_dim, num_configurations)
+        working_set_bytes = _synthetic_step_working_set_bytes(persist_bytes, feature_dim)
+        if working_set_bytes <= _INT32_MAX:
+            last_fit = num_configurations
+        elif first_overflow is None:
+            first_overflow = num_configurations
+            break
+    assert last_fit is not None and first_overflow == last_fit + 1
+    assert last_fit == _CYCLIC_LAST_FIT_CONFIGURATIONS
+    CyclicStream(feature_dim, num_configurations=last_fit)
+    with pytest.raises(ValueError, match="working set byte count"):
+        CyclicStream(feature_dim, num_configurations=first_overflow)
 
 
 def test_persist_bound_still_fires_before_working_set() -> None:
