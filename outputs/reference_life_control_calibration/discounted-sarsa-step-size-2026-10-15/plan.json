@@ -1,0 +1,42 @@
+{
+  "schema": "asi.riverswim_sarsa_step_size_diagnostic.plan.v1",
+  "framework_base_commit": "415e7d225a4338492275be6cafa69d87c158c30a",
+  "development_only": true,
+  "scientific_promotion_allowed": false,
+  "reference_dev_population_allowed": false,
+  "prior_result": "PR #3218 found that lambda 0.8 at step_size 0.05 lost against lambda 0 on all three development seed pairs. One trace arm discovered upstream reward early but later preferred the left reward. Discovery alone did not explain the failure.",
+  "hypothesis": "At fixed lambda 0.8, lowering step_size from 0.05 to 0.014 will improve lifetime mean reward because accumulated eligibility can make the original per-feature learning step too large. The two no-trace arms test whether any benefit is generic step-size sensitivity rather than a lambda-specific interaction.",
+  "mechanism_basis": "The existing SARSA implementation uses accumulating head eligibility and decays inactive-head traces with gamma * lambda approximately 0.72. A repeatedly activated scalar trace has a geometric accumulation scale approximately 1/(1-0.72). The single prespecified reduced step is 0.05*(1-0.9*0.8)=0.014. This is a heuristic for a mechanism probe, not an optimality or stability guarantee for varying features, shared biases or this control task.",
+  "design": "Matched 2-by-2 factorial. Only lamda and step_size vary; every direct contrast holds one fixed. Each arm is remeasured on the same three fresh seeds. No prior shard is reused.",
+  "arms": {
+    "trace_original": {"lamda": 0.8, "step_size": 0.05},
+    "trace_scaled": {"lamda": 0.8, "step_size": 0.014},
+    "no_trace_original": {"lamda": 0.0, "step_size": 0.05},
+    "no_trace_scaled": {"lamda": 0.0, "step_size": 0.014}
+  },
+  "seeds": [100601, 100602, 100603],
+  "seed_role": "Fresh development seeds, not previous scorecard or calibration seeds and never scientific held-out evaluation.",
+  "horizon": 20000,
+  "fresh_process_shards": 12,
+  "maximum_comparison_events": 240000,
+  "primary_metric": "mean reward across all 20000 transitions",
+  "primary_contrast": "trace_scaled minus trace_original within each seed",
+  "primary_decision": "Support the bounded trace-step-reduction hypothesis only if all three primary paired differences are strictly positive and their mean exceeds 0.01. Otherwise report negative if the mean is nonpositive, or inconclusive for mixed/nonqualifying positive means. No secondary metric can rescue failure.",
+  "interaction_contrast": "(trace_scaled - trace_original) - (no_trace_scaled - no_trace_original) within each seed",
+  "interaction_decision": "Call the bounded result consistent with a lambda-specific step-size interaction only if the primary rule passes and all three interaction contrasts are strictly positive with mean above 0.01. A primary win without that interaction is only fixed-lambda calibration support. Neither outcome establishes that excessive step size was the sole cause of the old failure.",
+  "reference_comparisons": "Report trace_scaled minus each of no_trace_original and no_trace_scaled with all per-seed values and spreads; no reference-dev selection or promotion occurs even if positive.",
+  "secondary_metrics": ["mean reward over last 2000 transitions", "rightmost-state visits", "first upstream reward event (null is censored)", "action counts", "parameter-change event count", "fixed-checkpoint action values and eligibility norms"],
+  "fixed_checkpoints": [0, 100, 1000, 2500, 5000, 10000, 20000],
+  "fixed_controls": "Default six-state RiverSwim, gamma 0.9, epsilon 0.5 to 0.02 over 2500 steps, empty hidden network and shared linear-head biases. Every transition uses the unchanged full ReferenceLifeRunner and exact-dispatch adapter. No forced exploration, reward shaping, horizon change, faster substitute runner or initialization intervention.",
+  "schedule": [
+    [100601, "trace_original", "trace_scaled"],
+    [100601, "no_trace_original", "no_trace_scaled"],
+    [100602, "no_trace_original", "no_trace_scaled"],
+    [100602, "trace_original", "trace_scaled"],
+    [100603, "trace_original", "trace_scaled"],
+    [100603, "no_trace_original", "no_trace_scaled"]
+  ],
+  "resource_policy": "At most two independent CPU processes at once in the declared pair schedule; OMP/OpenBLAS/MKL threads 1 and JAX preallocation false. Equal event/update-attempt budgets. Record endpoint numeric state bytes and leaf counts; total process/native peak memory and calibrated timing are unmeasured. Added trace computation is not assumed free. API preflight seed100699 is excluded.",
+  "integrity_policy": "Commit plan and script and open a draft PR before comparison execution. Record UTC start/end, exact plan/script/source/runtime identities, immutable full raw traces and fixed diagnostics. Stop the schedule on a failed shard without retry or seed substitution; retain its failure prefix if available and logs. Results remain tied to the clean frozen input commit. Do not modify plan, script, parameters, roster, thresholds or horizon after inspecting outcomes.",
+  "scope_limit": "Permanently nonpromoting development-only causal diagnostic. Three seed pairs and two chosen step sizes cannot establish an optimal step, general superiority, statistical confidence, transfer/retention, frozen-scorecard qualification, reference-dev or scientific evidence. Existing artifacts and frozen gates stay unchanged. Any further tuning requires a different preregistered hypothesis and new seeds."
+}

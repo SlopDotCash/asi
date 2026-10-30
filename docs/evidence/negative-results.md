@@ -506,6 +506,25 @@ remains telemetry, resource Pareto selection remains unevaluated, and the prior
 run and all pinned evidence are unchanged.
 
 
+## RiverSwim eligibility-trace step-size factorial (2026-10-15)
+
+The preregistered four-arm, three-seed full reference-life panel completed all
+240,000 events. At fixed lambda 0.8, reducing step size 0.05 to 0.014 produced paired
+lifetime mean-reward delta `0.504521583 +/- 0.436920817`; the no-trace
+step reduction gave `0.005125000 +/- 0.004959583`; the factorial
+interaction was `0.499396583 +/- 0.432498742` (means +/- sample SD).
+Primary decision: `bounded_trace_step_reduction_supported`. The interaction rule passed:
+`false`. These separate rules prevent a
+generic step-size effect or secondary metric from rescuing the trace-specific
+hypothesis. This bounds only the tested configuration and fresh development
+seeds 100601-100603; it establishes no sole-cause, optimality, frozen-scorecard,
+reference-dev or scientific claim. Preserve the full panel and do not retry
+these settings without a new causal hypothesis and separate bounded plan.
+All per-seed values, full raw reward/action/state traces, fixed diagnostics,
+source/runtime/UTC identities, resource exclusions and independent recomputation:
+[`discounted-sarsa-step-size-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-step-size-2026-10-15/README.md).
+
+
 ## RiverSwim discounted-SARSA exploration decay (2026-10-15)
 
 A separately declared, permanently nonpromoting diagnostic used the full
