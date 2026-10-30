@@ -138,3 +138,37 @@ def test_model_replay_rejects_hostile_config_mapping(tmp_path: object) -> None:
         with pytest.raises(ValueError, match="missing composer_config"):
             replay.load_model_replay_rehearsal_checkpoint(path)
     assert _HostileDict.calls == 0
+
+
+def test_model_replay_rejects_undeclared_checkpoint_metadata(tmp_path: object) -> None:
+    """A development checkpoint cannot carry an unvalidated promotion claim."""
+    from pathlib import Path
+    from unittest.mock import Mock, patch
+
+    from alberta_framework.core import model_replay_rehearsal as replay
+
+    config: dict[str, object] = {"composer": "test"}
+    budget = {"bytes": 1}
+    state = object()
+    composer = Mock()
+    composer.to_config.return_value = config
+    composer.init.return_value = state
+    composer.resource_budget.return_value.to_config.return_value = budget
+    metadata = {
+        "schema": replay.MODEL_REPLAY_REHEARSAL_SCHEMA,
+        "mechanism_status": replay.MECHANISM_STATUS,
+        "accepted_scientific_evidence": False,
+        "composer_config": config,
+        "config_sha256": replay._config_digest(config),
+        "resource_budget": budget,
+        "scientific_promotion_allowed": True,
+    }
+    path = Path(str(tmp_path)) / "checkpoint"
+    path.write_bytes(b"dummy")
+    with (
+        patch.object(replay, "load_checkpoint_metadata", return_value=metadata),
+        patch.object(replay.ModelReplayRehearsal, "from_config", return_value=composer),
+        patch.object(replay, "load_checkpoint", return_value=(state, metadata)),
+    ):
+        with pytest.raises(ValueError, match="metadata fields"):
+            replay.load_model_replay_rehearsal_checkpoint(path)

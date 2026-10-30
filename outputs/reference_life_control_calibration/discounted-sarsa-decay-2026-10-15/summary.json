@@ -1,0 +1,110 @@
+{
+  "accepted_events": 120000,
+  "all_seeds_positive": false,
+  "baseline_mean_reward": 0.5138328332964641,
+  "baseline_sample_std": 0.4408026525700728,
+  "decision": "bounded_hypothesis_not_supported",
+  "development_only": true,
+  "inputs": [
+    {
+      "path": "baseline-seed100201.json",
+      "sha256": "ed591bff6d5727c6e22aa35400ee993609d702d0e5f920e629bc0a16e9a0665c"
+    },
+    {
+      "path": "baseline-seed100202.json",
+      "sha256": "37a6cfa7a01ab23a09864b57aa0182b50041c1c968423b78f8fe7b90ca789376"
+    },
+    {
+      "path": "baseline-seed100203.json",
+      "sha256": "e0fb4613e972fbc6ad1180e981ee3593489c8eef34566251846ab0a9c1e448d9"
+    },
+    {
+      "path": "slow-decay-seed100201.json",
+      "sha256": "a9ad9cd2d3b54f951543b86988cfadfd7bf9e286ec9671550f9054f9ab03bfcd"
+    },
+    {
+      "path": "slow-decay-seed100202.json",
+      "sha256": "f1734ed3a9f423d8b772ad739efeae60e4b4c7da98c37b09c457b1c23ee355a2"
+    },
+    {
+      "path": "slow-decay-seed100203.json",
+      "sha256": "f562b23fae1204c218eda46b6efcdd17b0b8744ac16770e398815c8f5c3977de"
+    }
+  ],
+  "limits": [
+    "Three development seeds only; no scientific confidence or general superiority claim.",
+    "The frozen scorecard plan, gates and retained artifacts are unchanged.",
+    "Timing is telemetry only; native peak memory and checkpoint safety are not qualified.",
+    "Hashes are consistency identifiers, not authenticated execution attestation.",
+    "The failed accelerated v1 attempt is excluded entirely."
+  ],
+  "n_paired_seeds": 3,
+  "paired_mean_delta": -0.10224599999822677,
+  "paired_sample_std": 0.08823914901582978,
+  "paired_seeds": [
+    {
+      "baseline_late_mean_reward": 0.004927499889861792,
+      "baseline_mean_reward": 0.004838249891856685,
+      "baseline_rightmost_visits": 0,
+      "paired_delta": -0.00036474999184720174,
+      "seed": 100201,
+      "slow_decay_late_mean_reward": 0.004927499889861792,
+      "slow_decay_mean_reward": 0.004473499900009483,
+      "slow_decay_rightmost_visits": 1
+    },
+    {
+      "baseline_late_mean_reward": 0.8035,
+      "baseline_mean_reward": 0.767726749999402,
+      "baseline_rightmost_visits": 15554,
+      "paired_delta": -0.15432925000158138,
+      "seed": 100202,
+      "slow_decay_late_mean_reward": 0.8035,
+      "slow_decay_mean_reward": 0.6133974999978207,
+      "slow_decay_rightmost_visits": 12718
+    },
+    {
+      "baseline_late_mean_reward": 0.8255,
+      "baseline_mean_reward": 0.7689334999981337,
+      "baseline_rightmost_visits": 15606,
+      "paired_delta": -0.15204400000125173,
+      "seed": 100203,
+      "slow_decay_late_mean_reward": 0.8255,
+      "slow_decay_mean_reward": 0.6168894999968819,
+      "slow_decay_rightmost_visits": 12812
+    }
+  ],
+  "plan_sha256": "47e3b6da63b79ca8ea3e1fd2519cd55205dbf74c4937a15eedc799bc04640f24",
+  "reference_dev_population_allowed": false,
+  "resources": {
+    "final": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "initial": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    }
+  },
+  "runtime": {
+    "backend": "cpu",
+    "machine": "AMD64",
+    "python": "3.12.4",
+    "system": "Windows",
+    "versions": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    }
+  },
+  "schema": "asi.riverswim_sarsa_decay_diagnostic.summary.v2",
+  "scientific_promotion_allowed": false,
+  "script_sha256": "c95e0e62118de4633e55b6f0872fea34ff0895bfd6a29ee1fab7e329a532e024",
+  "slow_decay_mean_reward": 0.41158683329823736,
+  "slow_decay_sample_std": 0.3525748121873723,
+  "source_commit": "415e7d225a4338492275be6cafa69d87c158c30a"
+}
