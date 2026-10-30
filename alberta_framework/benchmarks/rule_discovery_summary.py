@@ -54,6 +54,7 @@ def _arm(
     expected_n_tasks: int,
 ) -> dict[str, Any]:
     values = []
+    per_seed: dict[int, dict[str, Any]] = {}
     for seed in seeds:
         path = directory / f"{name}_seed{seed}.json"
         if not path.exists():
@@ -78,8 +79,10 @@ def _arm(
         payload_seed = require_jax_seed(payload.get("seed"), name=f"{path} seed")
         if payload_seed != seed:
             raise ValueError(f"{path} seed does not match requested seed {seed}")
+        per_seed[seed] = payload
         accuracy = np.asarray(payload["per_task_accuracy"], dtype=np.float64)
         values.append(float(np.mean(accuracy)))
+    ipmnist_screening_module._validate_screening_arm_contract(name, per_seed)
     return {"per_seed": values, "mean": float(np.mean(values))}
 
 

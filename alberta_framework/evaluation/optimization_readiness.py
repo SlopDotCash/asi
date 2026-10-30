@@ -356,13 +356,16 @@ def energy_rank(matrix: object, *, threshold: float = 0.99) -> int:
     if not math.isfinite(threshold) or not 0.0 < threshold <= 1.0:
         raise ValueError("threshold must be a float in (0, 1]")
     resolved = _finite_array(matrix, name="matrix", dimensions=2)
+    scale = float(np.max(np.abs(resolved)))
+    if scale == 0.0:
+        return 0
+    _, exponent = math.frexp(scale)
+    scaled_matrix = np.ldexp(resolved, -exponent)
     try:
-        singular_values = np.linalg.svd(resolved, compute_uv=False)
+        singular_values = np.linalg.svd(scaled_matrix, compute_uv=False)
     except np.linalg.LinAlgError as exc:
         raise ValueError("matrix singular-value decomposition did not converge") from exc
     leading = float(singular_values[0])
-    if leading == 0.0:
-        return 0
     squared = np.square(singular_values / leading)
     total = float(np.sum(squared))
     target = np.nextafter(threshold * total, -math.inf)
