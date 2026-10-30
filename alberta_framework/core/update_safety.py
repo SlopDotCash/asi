@@ -165,6 +165,9 @@ def checked_integer_action_array(
             raise ValueError(range_message)
 
     raw = jnp.asarray(actions)
+    # Narrow input dtypes cannot represent every legal action-space bound.
+    if dtype.itemsize < 4:
+        raw = raw.astype(jnp.int32)
     valid = (raw >= 0) & (raw < n_actions)
     safe = jnp.where(valid, raw, 0).astype(jnp.int32)
     return safe, valid

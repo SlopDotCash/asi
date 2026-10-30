@@ -1982,14 +1982,14 @@ class UPGDLearner:
     ) -> tuple[tuple[Array, ...], Array]:
         """Bound steps that already contain the prediction error.
 
-        ``ObGDBounding`` takes the exact published form through
-        :meth:`_obgd_bound_with_kappa`. Any other bounder receives the
+        ``ObGDBounding`` and its subclasses take the exact published form
+        through :meth:`_obgd_bound_with_kappa`. Any other bounder receives the
         pseudo-error ``1.0``, the same convention ``MultiHeadMLPLearner`` uses
         for its error-in-gradient trunk steps, so the error is never applied
         a second time.
         """
         assert self._bounder is not None
-        if type(self._bounder) is ObGDBounding:
+        if isinstance(self._bounder, ObGDBounding):
             kappa = jnp.asarray(self._bounder.to_config()["kappa"], dtype=jnp.float32)
             return self._obgd_bound_with_kappa(steps, error, kappa)
         return self._bounder.bound(steps, jnp.array(1.0, dtype=jnp.float32), params)
@@ -2468,7 +2468,11 @@ class UPGDLearner:
         )
 
         sq_for_metric = (predictions - safe_targets) ** 2
-        step_mse = jnp.sum(jnp.where(active_mask, sq_for_metric, 0.0)) / n_active
+        active_squared = jnp.where(active_mask, sq_for_metric, 0.0)
+        step_mse = jnp.sum(active_squared) / n_active
+        # Recover reduction overflow only when each active squared error is finite.
+        recover = jnp.isinf(step_mse) & jnp.all(jnp.isfinite(active_squared))
+        step_mse = jnp.where(recover, jnp.sum(active_squared / n_active), step_mse)
         fast_decay = jnp.asarray(self._loss_fast_decay, dtype=jnp.float32)
         slow_decay = jnp.asarray(self._loss_slow_decay, dtype=jnp.float32)
         new_loss_fast_ema = (

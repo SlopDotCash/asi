@@ -80,6 +80,8 @@ def require_jax_leading_length(
 ) -> int:
     """Validate a real JAX array and return its bounded leading dimension."""
 
+    if type(name) is not str or not name:
+        raise ValueError("name must be a nonempty exact string")
     if not isinstance(value, jax.Array):
         raise TypeError(f"{name} must be a JAX array")
     if ranks is not None and value.ndim not in ranks:
@@ -95,6 +97,8 @@ def require_matching_jax_leading_length(
 ) -> None:
     """Require a real JAX array with the already-bounded leading dimension."""
 
+    if type(name) is not str or not name:
+        raise ValueError("name must be a nonempty exact string")
     if not isinstance(value, jax.Array):
         raise TypeError(f"{name} must be a JAX array")
     if value.shape[0] != expected:

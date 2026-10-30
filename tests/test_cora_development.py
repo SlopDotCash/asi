@@ -52,6 +52,28 @@ def test_candidate_evaluation_tie_break_does_not_receive_task_identity() -> None
         assert arm.evaluation_matrix[0] in ((1.0, 0.0, 1.0), (0.0, 1.0, 0.0))
 
 
+def test_unchanged_shared_values_score_the_same_at_every_checkpoint() -> None:
+    # With one step per task, every cycle-0 action of this seed earns reward 0,
+    # so the shared values stay at zero through the first four checkpoints.
+    result = run_cora_development(seed=FROZEN_SEEDS[1], steps_per_task=1)
+
+    for arm in result.arms[:2]:
+        assert len(set(arm.evaluation_matrix[:4])) == 1
+        assert arm.isolated_forward_transfer == 0.0
+
+
+@pytest.mark.parametrize("seed", FROZEN_SEEDS)
+def test_task_id_control_has_no_isolated_forgetting_or_transfer(seed: int) -> None:
+    result = run_cora_development(seed=seed)
+    replay, _, task_control, _ = result.arms
+
+    # Every greedy arm starts from zero values, and training one task's table
+    # leaves the other tables unchanged.
+    assert task_control.evaluation_matrix[0] == replay.evaluation_matrix[0]
+    assert task_control.isolated_forgetting == 0.0
+    assert task_control.isolated_forward_transfer == 0.0
+
+
 def test_jit_and_eager_update_paths_match_except_timing() -> None:
     compiled = run_cora_development(seed=FROZEN_SEEDS[1], steps_per_task=1)
     with jax.disable_jit():
@@ -106,3 +128,33 @@ def test_catalog_is_pinned_blocked_and_cli_is_metadata_only(
     assert OFFICIAL_CODE.endswith("f2754bb282757829765beb4703f24b87efa13ff9")
     assert main(["--catalog"]) == 0
     assert json.loads(capsys.readouterr().out) == catalog_payload()
+
+
+@pytest.mark.parametrize("capacity", [1, 8, 64])
+def test_live_replay_stays_within_its_reported_capacity(capacity: int) -> None:
+    import sys
+    from types import FrameType
+    from typing import Any
+
+    from alberta_framework.benchmarks import cora_development as lane
+
+    peaks: list[int] = []
+
+    def trace(frame: FrameType, event: str, arg: Any) -> Any:
+        if frame.f_code is lane._run_arm.__code__:
+            replay = frame.f_locals.get("replay")
+            if replay is not None:
+                peaks.append(len(replay))
+            return trace
+        return None
+
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        result = run_cora_development(
+            seed=FROZEN_SEEDS[0], steps_per_task=2, replay_capacity=capacity,
+        )
+    finally:
+        sys.settrace(previous)
+    assert max(peaks) == min(capacity, 12)
+    assert result.arms[0].receipt.peak_replay_bytes == max(peaks) * 8

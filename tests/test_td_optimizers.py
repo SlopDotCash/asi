@@ -395,6 +395,35 @@ class TestAutoTDIDBD:
         assert bool(jnp.all(jnp.isfinite(result.weight_delta)))
         chex.assert_trees_all_close(result.new_state.eligibility_traces, obs)
 
+    def test_bias_shares_the_overshoot_normalizer_with_the_weights(self) -> None:
+        """One M bounds the whole value step, bias included.
+
+        The bias is the weight of a constant feature 1. With the observation
+        repeating, Algorithm 6 line 10 gives M = 0.6 * (1 + 0.25) + 0.6 = 1.35,
+        so the value moves exactly delta. A separate M for the bias let the
+        weights and the bias each take a full step: the value moved 1.35 delta
+        and the TD error changed sign on every step.
+        """
+        learner = TDLinearLearner(
+            optimizer=AutoTDIDBD(initial_step_size=0.6, meta_step_size=0.0, trace_decay=0.0)
+        )
+        state = learner.init(feature_dim=2)
+        observation = jnp.asarray([1.0, 0.5], dtype=jnp.float32)
+        reward = jnp.asarray(1.0, dtype=jnp.float32)
+        gamma = jnp.asarray(0.0, dtype=jnp.float32)
+
+        td_errors = []
+        for _ in range(4):
+            result = learner.update(state, observation, reward, observation, gamma)
+            assert bool(result.update_applied)
+            td_errors.append(float(jnp.squeeze(result.td_error)))
+            state = result.state
+
+        # Line 10 sees the trace before line 13 advances it, so the first step
+        # is not normalized: the value moves 1.35 from 0.
+        assert td_errors[:2] == pytest.approx([1.0, -0.35], abs=1e-6)
+        assert td_errors[2:] == pytest.approx([0.0, 0.0], abs=1e-6)
+
 
 # ---------------------------------------------------------------------------
 # Published-algorithm pin: Kearney, Veeriah, Travnik, Pilarski & Sutton (2019),
@@ -418,6 +447,10 @@ class TestAutoTDIDBD:
 # [gamma phi(s') - phi(s)], while the exponential-average argument uses the raw
 # feature phi(s).  That asymmetry is the published text, not a transcription
 # slip, and a "consistency cleanup" of it silently changes the algorithm.
+#
+# The algorithm has no separate bias.  The learner's bias is the weight of a
+# constant feature 1 in both phi(s) and phi(s'), so the pin runs the algorithm
+# on [phi, 1] and line 10's single M covers the bias as well.
 # ---------------------------------------------------------------------------
 
 _ALG6_ALPHA0 = 0.4
@@ -464,6 +497,9 @@ _ALG6_DEVIATION_FLOOR = 1e-3
 def _algorithm_6_weight_deltas(variant: str = "published") -> tuple[np.ndarray, dict[str, int]]:
     """Literal float32 transcription of Algorithm 6's weight path.
 
+    The bias is the last feature, a constant 1, so the last column of the
+    returned deltas is the bias delta.
+
     ``variant`` injects one deliberate departure from the printed algorithm so
     a test can assert that the published choice is load-bearing:
 
@@ -486,7 +522,7 @@ def _algorithm_6_weight_deltas(variant: str = "published") -> tuple[np.ndarray, 
     algorithm and not against a guard.
     """
     f32 = np.float32
-    n_features = _ALG6_OBS.shape[1]
+    n_features = _ALG6_OBS.shape[1] + 1
     h = np.zeros(n_features, dtype=f32)
     z = np.zeros(n_features, dtype=f32)
     beta = np.full(n_features, f32(math.log(_ALG6_ALPHA0)), dtype=f32)
@@ -496,8 +532,8 @@ def _algorithm_6_weight_deltas(variant: str = "published") -> tuple[np.ndarray, 
     diagnostics = {"m_above_one": 0, "positive_part_clamps": 0, "guards_bound": 0}
 
     for step in range(_ALG6_OBS.shape[0]):
-        phi = _ALG6_OBS[step]
-        phi_next = _ALG6_NEXT_OBS[step]
+        phi = np.append(_ALG6_OBS[step], f32(1.0)).astype(f32)
+        phi_next = np.append(_ALG6_NEXT_OBS[step], f32(1.0)).astype(f32)
         td_error = _ALG6_TD_ERRORS[step]
         difference = (f32(_ALG6_GAMMA) * phi_next - phi).astype(f32)
         alpha = np.exp(beta).astype(f32)
@@ -550,7 +586,7 @@ def _algorithm_6_weight_deltas(variant: str = "published") -> tuple[np.ndarray, 
 
 
 def _auto_tdidbd_weight_deltas() -> np.ndarray:
-    """Run :class:`AutoTDIDBD` over the pinned trajectory."""
+    """Run :class:`AutoTDIDBD` over the pinned trajectory, bias delta last."""
     optimizer = AutoTDIDBD(
         initial_step_size=_ALG6_ALPHA0,
         meta_step_size=_ALG6_THETA,
@@ -568,7 +604,7 @@ def _auto_tdidbd_weight_deltas() -> np.ndarray:
             jnp.asarray(_ALG6_GAMMA, dtype=jnp.float32),
         )
         assert bool(result.update_applied)
-        deltas.append(np.asarray(result.weight_delta))
+        deltas.append(np.append(np.asarray(result.weight_delta), np.asarray(result.bias_delta)))
         state = result.new_state
     return np.stack(deltas)
 

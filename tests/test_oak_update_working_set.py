@@ -53,15 +53,15 @@ def test_valid_stomp_reaches_the_oak_only_update_boundary() -> None:
     working_set_bytes = _oak_update_working_set_bytes(stomp)
     extras_bytes = working_set_bytes - 3 * persist_bytes
 
-    assert stomp_persist_bytes == 715_827_848
-    assert stomp_working_set_bytes == 2_147_483_608
+    assert stomp_persist_bytes == 715_827_852
+    assert stomp_working_set_bytes == 2_147_483_620
     assert stomp_working_set_bytes <= _INT32_MAX
-    assert persist_bytes == 715_827_872
+    assert persist_bytes == 715_827_876
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert 4 * _FIRST_OAK_OVERFLOW_HIDDEN <= _INT32_MAX
     assert 4 * 1 <= _INT32_MAX
-    assert working_set_bytes == 2_147_483_672
+    assert working_set_bytes == 2_147_483_684
     with pytest.raises(ValueError, match="update working set byte count"):
         OaKConfig(stomp=stomp)
 
@@ -73,8 +73,8 @@ def test_adjacent_hidden_widths_straddle_only_the_oak_boundary() -> None:
 
     assert _stomp_update_working_set_bytes(last_stomp) <= _INT32_MAX
     assert _stomp_update_working_set_bytes(first_stomp) <= _INT32_MAX
-    assert _oak_update_working_set_bytes(last_stomp) == 2_147_483_564
-    assert _oak_update_working_set_bytes(first_stomp) == 2_147_483_672
+    assert _oak_update_working_set_bytes(last_stomp) == 2_147_483_576
+    assert _oak_update_working_set_bytes(first_stomp) == 2_147_483_684
 
     config = OaKConfig(stomp=last_stomp)
     assert config.stomp.base_hidden_sizes == (_LAST_OAK_FIT_HIDDEN,)
@@ -108,7 +108,7 @@ def test_legal_small_oak_still_constructs() -> None:
         base_hidden_sizes=(),
     )
     persist_bytes = _oak_direct_state_bytes(stomp)
-    assert persist_bytes == 444
+    assert persist_bytes == 448
     agent = OaKAgent(OaKConfig(stomp=stomp))
     state = agent.init(jr.key(0))
     agent.update(

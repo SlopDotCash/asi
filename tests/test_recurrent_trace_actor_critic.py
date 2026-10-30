@@ -2108,6 +2108,63 @@ def test_config_rejects_hostile_numeric_and_serialized_container_hooks() -> None
         RecurrentTraceActorCriticConfig.from_config({**payload, "unknown": 1})
 
 
+def test_update_decays_traces_with_previous_discount() -> None:
+    """Eligibility traces decay with the incoming discount gamma_t.
+
+    The current call's discount is gamma_{t+1} (the TD bootstrap discount);
+    the traces accumulated so far belong to the transition into the current
+    state and must decay with the prior accepted transition's discount.
+    A probe update from a zeroed-trace copy isolates the gradient term, so
+    the carried traces must satisfy ``new = d1 * lam * old + probe`` exactly.
+    """
+    d1, d2 = 0.9, 0.1
+    config = _small_config(actor_lamda=1.0, critic_lamda=1.0, gamma=d1)
+    agent = RecurrentTraceActorCriticAgent(config)
+    state = agent.init(2, jr.key(7))
+    state, _, _ = agent.start(
+        state,
+        jnp.asarray((0.4, -0.2), dtype=jnp.float32),
+    )
+    observation = jnp.asarray((-0.1, 0.6), dtype=jnp.float32)
+    reward = jnp.asarray(0.3, dtype=jnp.float32)
+    first = agent.update(
+        state,
+        reward,
+        observation,
+        discount=jnp.asarray(d1, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    state1 = first.state
+    zeroed = state1.replace(
+        actor_traces=jax.tree.map(jnp.zeros_like, state1.actor_traces),
+        critic_traces=jax.tree.map(jnp.zeros_like, state1.critic_traces),
+    )
+    second = agent.update(
+        state1,
+        reward,
+        observation,
+        discount=jnp.asarray(d2, dtype=jnp.float32),
+    )
+    probe = agent.update(
+        zeroed,
+        reward,
+        observation,
+        discount=jnp.asarray(d2, dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+    assert bool(probe.update_applied)
+    for carried, decayed, gradient in (
+        (state1.actor_traces, second.state.actor_traces, probe.state.actor_traces),
+        (state1.critic_traces, second.state.critic_traces, probe.state.critic_traces),
+    ):
+        expected = jax.tree.map(
+            lambda old, grad: d1 * old + grad,
+            carried,
+            gradient,
+        )
+        _assert_tree_all_close(decayed, expected)
+
+
 def test_state_resource_budget_is_exact_and_init_preflights_before_rng(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2116,9 +2173,9 @@ def test_state_resource_budget_is_exact_and_init_preflights_before_rng(
     assert budget == {
         "parameter_scalars": 124,
         "sensitivity_scalars_per_network": 36,
-        "float32_state_scalars": 343,
-        "state_scalars": 349,
-        "state_nbytes": 1397,
+        "float32_state_scalars": 344,
+        "state_scalars": 350,
+        "state_nbytes": 1401,
     }
     state = RecurrentTraceActorCriticAgent(config).init(2, jr.key(2))
     leaves = jax.tree.leaves(state)
@@ -2537,3 +2594,32 @@ def test_state_resource_budget_matches_optional_state_trees(
     budget = config.state_resource_budget(7)
     assert budget["state_scalars"] == sum(int(leaf.size) for leaf in leaves)
     assert budget["state_nbytes"] == sum(int(leaf.nbytes) for leaf in leaves)
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("alpha,kappa,signal", [(1e30, 1e10, 1.0), (1e20, 1e20, -1e10)])
+def test_obgd_finite_bound_overflow_retains_step(
+    compiled: bool, alpha: float, kappa: float, signal: float
+) -> None:
+    config = _small_config(actor_alpha=alpha, actor_kappa=kappa)
+    traces = {"weight": jnp.ones(1, dtype=jnp.float32)}
+    update = jax.jit(obgd_update, static_argnames=("alpha", "kappa")) if compiled else obgd_update
+    result = update(
+        traces, jnp.asarray(signal, dtype=jnp.float32),
+        alpha=config.actor_alpha, kappa=config.actor_kappa,
+    )
+    expected_step = 1.0 / float(np.float32(kappa)) / max(abs(signal), 1.0)
+    assert bool(result.update_applied)
+    np.testing.assert_allclose(result.step_size, expected_step, rtol=3e-6, atol=0.0)
+    np.testing.assert_allclose(
+        result.updates["weight"], [expected_step * signal], rtol=3e-6, atol=0.0
+    )
+
+
+@pytest.mark.parametrize("alpha,kappa", [(0.0, 2.0), (0.5, 0.0)])
+def test_obgd_zero_factors_keep_unbounded_rule(alpha: float, kappa: float) -> None:
+    traces = {"weight": jnp.asarray([2.0], dtype=jnp.float32)}
+    result = obgd_update(traces, jnp.asarray(3.0), alpha=alpha, kappa=kappa)
+    assert bool(result.update_applied)
+    assert float(result.scale) == 1.0
+    assert float(result.step_size) == alpha
+    np.testing.assert_array_equal(result.updates["weight"], [alpha * 6.0])

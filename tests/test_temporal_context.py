@@ -193,6 +193,34 @@ def test_finite_temporal_context_path_is_bitwise_unchanged() -> None:
     assert int(next_state.step_count) == 18
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_temporal_context_delta_overflow_fails_closed_in_eager_and_jit(
+    disable_jit: bool,
+) -> None:
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(
+            input_dim=1,
+            include_raw=False,
+            include_ema=False,
+            include_delta=True,
+            periods=(),
+        )
+    )
+    limit = jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32)
+    state = TemporalContextState(
+        observation_ema=jnp.asarray([limit], dtype=jnp.float32),
+        step_count=jnp.asarray(0, dtype=jnp.int32),
+    )
+
+    with jax.disable_jit(disable_jit):
+        features = featurizer.features(
+            state,
+            jnp.asarray([-limit], dtype=jnp.float32),
+        )
+
+    chex.assert_trees_all_equal(features, jnp.zeros((1,), dtype=jnp.float32))
+
+
 def test_temporal_context_step_count_saturates_at_int32_max() -> None:
     featurizer = TemporalContextFeaturizer(
         TemporalContextConfig(input_dim=1, periods=())
@@ -520,3 +548,18 @@ def test_phase_code_stays_exact_across_the_int32_lifetime(
     cycles = np.float64(step_count % f32_period) / f32_period
     expected = np.asarray([np.sin(2.0 * np.pi * cycles), np.cos(2.0 * np.pi * cycles)])
     np.testing.assert_allclose(features[1:], expected, rtol=0.0, atol=1e-4)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("value", [np.finfo(np.float32).tiny, -np.finfo(np.float32).tiny, 2.0])
+def test_temporal_ema_preserves_equal_input_fixed_point(compiled, value):
+    """Equal normal inputs must not vanish when weighted terms are subnormal."""
+    featurizer = TemporalContextFeaturizer(
+        TemporalContextConfig(input_dim=1, ema_decay=0.5, periods=())
+    )
+    observation = jnp.full((1,), value, dtype=jnp.float32)
+    state = featurizer.init().replace(observation_ema=observation)
+    with jax.disable_jit(not compiled):
+        updated = featurizer.update(state, observation)
+    np.testing.assert_array_equal(np.asarray(updated.observation_ema), np.asarray(observation))
+    assert int(updated.step_count) == 1

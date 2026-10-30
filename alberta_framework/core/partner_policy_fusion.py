@@ -1219,7 +1219,8 @@ class PartnerPolicyFusion:
             jnp.clip(messages.communication_cost, 0.0, cfg.max_communication_cost),
             cfg.max_communication_cost,
         )
-        score_floor = jnp.float32(-cfg.max_communication_cost * cfg.communication_cost_weight - 2.0)
+        # A finite floor can round up to a valid net score at large costs.
+        score_floor = jnp.float32(-jnp.inf)
         selectable_net = jnp.where(messages_valid, predicted_net, score_floor)
         selected_slot_raw = jnp.argmax(selectable_net).astype(jnp.int32)
         any_valid_message = jnp.any(messages_valid)

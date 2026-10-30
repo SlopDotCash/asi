@@ -171,6 +171,48 @@ def test_partial_reinforcement_rate():
     )
 
 
+@pytest.mark.parametrize("cs_duration", [1, 8])
+def test_iti_is_the_same_after_reinforced_and_unreinforced_trials(cs_duration: int) -> None:
+    """Every trial is followed by exactly ``iti`` idle steps.
+
+    The ITI only ticks on idle steps (no CS on, no US pending). With a fixed
+    ITI, the empty run between a trial's last event (the US, or CS offset
+    when no US is scheduled or the CS outlasts the US) and the next CS onset
+    must equal the ITI in both the reinforced and the unreinforced phase.
+    """
+    iti = 5
+    n_acq = 200
+    n_ext = 200
+    stream = extinction_scenario(
+        n_acquisition=n_acq,
+        n_extinction=n_ext,
+        cs_us_delay=5,
+        cs_duration=cs_duration,
+        iti_min=iti,
+        iti_max=iti,
+        noise_std=0.0,
+        distractor_prob=0.0,
+    )
+    state = stream.init(jr.key(0))
+    _, obs, tgt = _collect(stream, state, n_acq + n_ext)
+
+    cs_on = np.asarray(obs[:, 0] > 0.5)
+    busy = cs_on | np.asarray(tgt[:, 0] > 0.5)
+    onsets = [t for t in range(1, cs_on.size) if cs_on[t] and not cs_on[t - 1]]
+    gaps: dict[str, list[int]] = {"acquisition": [], "extinction": []}
+    for start, next_start in zip(onsets, onsets[1:]):
+        if (start < n_acq) != (next_start < n_acq):
+            # The phase switch cancels the in-flight trial.
+            continue
+        last_event = start + int(np.flatnonzero(busy[start:next_start])[-1])
+        phase = "acquisition" if start < n_acq else "extinction"
+        gaps[phase].append(next_start - last_event - 1)
+
+    assert len(gaps["acquisition"]) > 5 and len(gaps["extinction"]) > 5
+    assert set(gaps["acquisition"]) == {iti}, gaps["acquisition"]
+    assert set(gaps["extinction"]) == {iti}, gaps["extinction"]
+
+
 def test_blocking_compound_phase_only_compound_cs():
     """In the compound phase only the (CS_0, CS_1) pair fires together.
 
