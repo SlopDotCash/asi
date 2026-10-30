@@ -7,6 +7,7 @@ import chex
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from jax import Array
 
 from alberta_framework import (
     DemonType,
@@ -231,6 +232,38 @@ class TestGVFSpec:
 
 class TestHordeSpec:
     """Tests for HordeSpec construction and serialization."""
+
+    @pytest.mark.parametrize(
+        ("field", "drifted"),
+        [
+            ("gammas", jnp.asarray([0.0], dtype=jnp.float32)),
+            ("lamdas", jnp.asarray([0.0], dtype=jnp.float32)),
+            ("gammas", jnp.asarray([0.9, 0.9], dtype=jnp.float32)),
+            ("lamdas", jnp.asarray([], dtype=jnp.float32)),
+        ],
+        ids=("gamma-value", "lamda-value", "gamma-shape", "lamda-shape"),
+    )
+    def test_direct_construction_rejects_cached_question_drift(
+        self,
+        field: str,
+        drifted: Array,
+    ) -> None:
+        demon = GVFSpec(
+            name="d0",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.9,
+            lamda=0.8,
+            cumulant_index=0,
+        )
+        values = {
+            "demons": (demon,),
+            "gammas": jnp.asarray([demon.gamma], dtype=jnp.float32),
+            "lamdas": jnp.asarray([demon.lamda], dtype=jnp.float32),
+        }
+        values[field] = drifted
+
+        with pytest.raises(ValueError, match=field):
+            HordeSpec(**values)
 
     def test_create_horde_spec(self):
         demons = [
