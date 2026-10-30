@@ -3,10 +3,17 @@
 from fractions import Fraction
 from typing import Any, cast
 
+import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import pytest
 
-from alberta_framework.steps.step4 import Step4SARSAConfig
+from alberta_framework.steps.step4 import (
+    Step4SARSAConfig,
+    init_step4_state,
+    make_step4_sarsa_agent,
+    run_step4_scan,
+)
 
 
 class _EvilStr(str):
@@ -164,6 +171,33 @@ def test_numpy_scalars_pass() -> None:
     assert cfg.n_actions == 2
     cfg2 = Step4SARSAConfig(bounder_kappa=cast(Any, Fraction(1, 2)))
     assert cfg2.bounder_kappa == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("complex_input", ["next_features", "rewards", "terminated"])
+def test_scan_rejects_complex_transition_arrays(complex_input: str) -> None:
+    agent = make_step4_sarsa_agent(
+        Step4SARSAConfig(
+            n_actions=2,
+            hidden_sizes=(),
+            epsilon_start=0.0,
+            epsilon_end=0.0,
+        )
+    )
+    state = init_step4_state(
+        agent,
+        feature_dim=2,
+        key=jr.key(0),
+        initial_features=jnp.zeros(2, dtype=jnp.float32),
+    )
+    inputs = {
+        "next_features": jnp.ones((1, 2), dtype=jnp.float32),
+        "rewards": jnp.ones((1,), dtype=jnp.float32),
+        "terminated": jnp.zeros((1,), dtype=jnp.float32),
+    }
+    inputs[complex_input] = inputs[complex_input].astype(jnp.complex64) + 1.0j
+
+    with pytest.raises(ValueError, match=f"{complex_input} must have a real dtype"):
+        run_step4_scan(agent, state, **inputs)
 
 
 def test_float_subclass_with_lying_ratio_is_rejected() -> None:
