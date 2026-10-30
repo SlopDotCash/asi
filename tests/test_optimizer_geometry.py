@@ -88,6 +88,17 @@ def test_flad_jit_removes_gradient_aligned_component() -> None:
     np.testing.assert_allclose(result, [0.0, 4.0])
 
 
+def test_flad_overflowing_coefficient_keeps_the_orthogonal_component() -> None:
+    perturbation = jnp.asarray([3e38, 1.0], dtype=jnp.float32)
+    gradient = jnp.asarray([1.0, 0.0], dtype=jnp.float32)
+    expected = jnp.asarray([0.0, 1.0], dtype=jnp.float32)
+    result = flad_noise_component(perturbation, gradient)
+    np.testing.assert_array_equal(result, expected)
+    safe, valid = flad_noise_component_transaction(perturbation, gradient)
+    np.testing.assert_array_equal(safe, expected)
+    assert bool(valid)
+
+
 def test_streaming_matrix_evaluation_is_frozen_matched_and_nonpromoting() -> None:
     result = run_streaming_matrix_evaluation()
     assert result["schema"] == GEOMETRY_RESULT_SCHEMA
