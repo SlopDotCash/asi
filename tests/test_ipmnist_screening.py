@@ -7578,6 +7578,14 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.005625,
             },
+            "rls_head_resid_identmap50_r_idet003_s005625_as1e3": {
+                "ident_reset_frac": 0.03, "step_size": 0.005625,
+                "body_as_meta": 1e-3, "body_as_tau": 1e4,
+            },
+            "rls_head_resid_identmap50_r_idet003_s005625_as1e2": {
+                "ident_reset_frac": 0.03, "step_size": 0.005625,
+                "body_as_meta": 1e-2, "body_as_tau": 1e4,
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7734,6 +7742,87 @@ class TestRLSHeadIdentMapIdet003S005625:
         )
         assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapAutostep:
+    """Autostep per-weight body step sizes on idet003_s005625.
+
+    Preregistered in
+    ``outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/``.
+    ``body_as_meta = 0`` must reproduce the parent bit-for-bit; a positive
+    meta rate must change the run and keep it finite.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+    ARMS = (PARENT + "_as1e3", PARENT + "_as1e2")
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+        )
+
+        parent = SCREENING_REGISTRY[self.PARENT]
+        for name, meta in zip(self.ARMS, (1e-3, 1e-2), strict=True):
+            spec = SCREENING_REGISTRY[name]
+            assert spec.factory is _make_rls_head_identmap_learner
+            assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+                "body_as_meta", "body_as_tau"
+            }
+            for key, value in parent.hyperparameters.items():
+                assert spec.hyperparameters[key] == value, key
+            assert spec.hyperparameters["body_as_meta"] == meta
+            assert spec.hyperparameters["body_as_tau"] == 1e4
+
+    @pytest.mark.parametrize("arm", ARMS)
+    def test_meta_zero_pin_bitwise(self, small_data, arm):
+        """``body_as_meta = 0`` reproduces the parent bit-for-bit."""
+        x, y = small_data
+        spec = screening_spec(arm)
+        inert = replace(
+            spec,
+            name=spec.name + "_meta0_test",
+            hyperparameters={**spec.hyperparameters, "body_as_meta": 0.0},
+        )
+        expected = run_screening_config(
+            x, y, screening_spec(self.PARENT), seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(x, y, inert, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_mechanism_live_and_finite(self, small_data):
+        x, y = small_data
+        parent = run_screening_config(
+            x, y, screening_spec(self.PARENT), seed=7, config=SMALL,
+        )
+        result = run_screening_config(
+            x, y, screening_spec(self.ARMS[1]), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+        assert not np.array_equal(
+            np.asarray(result.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_rejects_invalid(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = dict(screening_spec(self.ARMS[0]).hyperparameters)
+        with pytest.raises(ValueError, match="body_as_meta"):
+            _make_rls_head_learner({**hp, "body_as_meta": -1.0})
+        with pytest.raises(ValueError, match="body_as_tau"):
+            _make_rls_head_learner({**hp, "body_as_tau": 0.5})
+        with pytest.raises(ValueError, match="gated residual body"):
+            _make_rls_head_learner({**hp, "gate_scale": 0.0})
 
 
 class TestPlasticityCounterSaturation:
