@@ -309,17 +309,28 @@ class LearningSignalEstimatorConfig:
         cls,
         config: dict[str, Any],
     ) -> LearningSignalEstimatorConfig:
-        """Reconstruct a configuration and reject a mismatched type marker."""
+        """Reconstruct only the complete schema emitted by :meth:`to_config`."""
         if type(config) is not dict:
             raise ValueError("config must be an actual dict")
-        payload = dict(config)
-        type_name = payload.pop("type", "LearningSignalEstimatorConfig")
+        expected_fields = {
+            *(field.name for field in dataclasses.fields(cls)),
+            "type",
+            "development_only",
+            "accepted_scientific_evidence",
+        }
+        if any(type(key) is not str for key in config):
+            raise ValueError("config fields do not match the serialized schema")
+        type_name = config.get("type")
         if type(type_name) is not str or type_name != "LearningSignalEstimatorConfig":
             raise ValueError("type must be LearningSignalEstimatorConfig")
-        development_only = payload.pop("development_only", True)
+        if set(config) != expected_fields:
+            raise ValueError("config fields do not match the serialized schema")
+        payload = dict(config)
+        payload.pop("type")
+        development_only = payload.pop("development_only")
         if development_only is not True:
             raise ValueError("learning signal estimator is development_only")
-        accepted_evidence = payload.pop("accepted_scientific_evidence", False)
+        accepted_evidence = payload.pop("accepted_scientific_evidence")
         if accepted_evidence is not False:
             raise ValueError("learning signal estimator is not accepted scientific evidence")
         return cls(**payload)
@@ -542,8 +553,8 @@ class LearningSignalEstimator:
         array = jnp.asarray(value)
         if array.shape != shape:
             raise ValueError(f"{name} must have shape {shape}, got {array.shape}")
-        if not jnp.issubdtype(array.dtype, jnp.inexact):
-            raise ValueError(f"{name} must have a floating dtype")
+        if not jnp.issubdtype(array.dtype, jnp.floating):
+            raise ValueError(f"{name} must have a real floating dtype")
         return jnp.asarray(array, dtype=jnp.float32)
 
     @staticmethod

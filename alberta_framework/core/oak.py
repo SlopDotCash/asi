@@ -1214,6 +1214,29 @@ def update_keyboard_chord_learner(
 # ---------------------------------------------------------------------------
 
 
+def _normalize_keyboard_vector(keyboard_vector: Array) -> Array:
+    """L1-normalize without rejecting finite vectors whose sum overflows."""
+
+    direct_l1 = jnp.sum(jnp.abs(keyboard_vector))
+    direct = keyboard_vector / (direct_l1 + 1e-8)
+
+    max_abs = jnp.max(jnp.abs(keyboard_vector))
+    _, exponent = jnp.frexp(max_abs)
+    scaled = jnp.ldexp(keyboard_vector, -exponent)
+    scaled_l1 = jnp.sum(jnp.abs(scaled))
+    stable = jnp.where(
+        scaled_l1 > 0.0,
+        scaled / scaled_l1,
+        jnp.zeros_like(keyboard_vector),
+    )
+    direct_valid = (
+        jnp.isfinite(direct_l1)
+        & jnp.all(jnp.isfinite(direct))
+        & ((max_abs == 0.0) | jnp.any(direct != 0.0))
+    )
+    return jnp.where(direct_valid, direct, stable)
+
+
 def keyboard_q_values(
     stomp_state: STOMPState,
     observation: Float[Array, " obs_dim"],
@@ -1238,7 +1261,7 @@ def keyboard_q_values(
     Returns:
         Shape ``(n_prim,)`` blended Q-values for each primitive action.
     """
-    w = keyboard_vector / (jnp.sum(jnp.abs(keyboard_vector)) + 1e-8)
+    w = _normalize_keyboard_vector(keyboard_vector)
     blended = jnp.einsum("o,oap->ap", w, stomp_state.option_policies.q_weights)
     return blended @ observation
 
@@ -2031,6 +2054,20 @@ class OaKAgent:
                 scan_extended_action_masks,
             ),
         )
+        # The scan traces the base learner and narrows its host clocks to
+        # float32. Restore the incoming Python values. This scan keeps a
+        # no-timing contract: a rejected or replayed scan returns its input
+        # state exactly, so the host clocks gain no elapsed time here.
+        learner_state = final_state.stomp_state.base_learner_state
+        restored_learner = learner_state.replace(
+            birth_timestamp=state.stomp_state.base_learner_state.birth_timestamp,
+            uptime_s=state.stomp_state.base_learner_state.uptime_s,
+        )
+        final_state = final_state.replace(
+            stomp_state=final_state.stomp_state.replace(
+                base_learner_state=restored_learner
+            )
+        )
 
         return OaKArrayResult(
             state=final_state,
@@ -2279,12 +2316,11 @@ class OaKAgent:
         observation_valid = jnp.asarray(
             observation_static_contract_valid, dtype=jnp.bool_
         ) & jnp.all(jnp.isfinite(observation))
-        chord_l1 = jnp.sum(jnp.abs(chord))
+        chord_max = jnp.max(jnp.abs(chord))
         keyboard_vector_valid = (
             jnp.asarray(keyboard_vector_static_contract_valid, dtype=jnp.bool_)
             & jnp.all(jnp.isfinite(chord))
-            & jnp.isfinite(chord_l1)
-            & (chord_l1 > 0.0)
+            & (chord_max > 0.0)
         )
         safe_observation = jnp.where(observation_valid, observation, 0.0)
         safe_chord = jnp.where(keyboard_vector_valid, chord, 0.0)
