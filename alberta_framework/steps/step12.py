@@ -39,7 +39,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._seed_validation import require_jax_seed
+from alberta_framework._seed_validation import JAX_KEY_SEED_MAX, require_jax_seed
 from alberta_framework.core.intelligence_amplification import (
     ExoCerebellumConfig,
     IAAgent,
@@ -689,7 +689,7 @@ def run_step12_smoke(
         :class:`Step12SmokeResult` with shape/fineness summary.
     """
     steps = _require_int("steps", steps, minimum=1, maximum=_INT32_MAX)
-    seed = _require_int("seed", seed, minimum=0, maximum=_INT32_MAX)
+    seed = _require_int("seed", seed, minimum=0, maximum=JAX_KEY_SEED_MAX)
 
     if config is None:
         cfg = Step12IAConfig()

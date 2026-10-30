@@ -444,6 +444,9 @@ NoiseUpdateFn = Callable[
     tuple[dict[str, Array], Any],
 ]
 FrozenProbeInputFn = Callable[[Any, Array, Mapping[str, float]], Array]
+FrozenProbeLogitsFn = Callable[
+    [dict[str, Array], Any, Array, Mapping[str, float]], Array
+]
 
 
 def _lean_upgd_noise_update(
@@ -2424,6 +2427,139 @@ def _make_upgd_shiftnorm_learner(
     return _make_adaptive_norm_sigma0_learner(
         hp, normalize, lambda d: jnp.zeros(d, dtype=jnp.float32)
     )
+
+
+@chex.dataclass(frozen=True)
+class UPGDShiftnormGatedL2InitState:
+    """Champion adaptive-norm state plus a frozen copy of the initial
+    parameters (see :func:`_make_shiftnorm_gated_l2init_learner`)."""
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    init_params: dict[str, Array]
+
+
+def _make_shiftnorm_gated_l2init_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """``sigma0_shiftnorm_d099`` champion plus an additive, utility-gated
+    pull toward the initial weights.
+
+    The pull term is the one registered for ``sigma0_ndecay099_gated_l2init``
+    (CCBP / Calibrated-Partial-Resets-style graded reset, gated by the
+    learner's own UPGD utility gate; see
+    :func:`_make_sigma0_gated_l2init_learner`), transplanted onto the
+    shift-triggered re-conditioning champion body: the champion's slow/fast
+    EMA statistics, shift detector, utility gate, and decoupled decay are
+    unchanged, and the only new term is
+    ``step_size * l2init_pull_scale * (1 - gate) * (w - w_0)``, concentrated
+    on low-utility (unprotected) parameters. The campaign report identifies
+    decay-toward-init as the one published mechanism additive on top of this
+    conditioning family, and the gated form improved every seed over its
+    ``sigma0_ndecay099`` base; this arm measures the same isolated marginal
+    contribution on the shiftnorm champion.
+
+    ``l2init_pull_scale = 0`` (the default) is inert: the step delegates to
+    the champion factory's own step function with the identical state, so
+    the trajectory is bit-exact against ``sigma0_shiftnorm_d099`` (pinned
+    by a unit test) rather than relying on floating-point cancellation of
+    a zero term.
+    """
+    pull_scale = hp.get("l2init_pull_scale", 0.0)
+    base_init, base_step = _make_upgd_shiftnorm_learner(hp)
+    step_size = hp["step_size"]
+    utility_decay = hp["utility_decay"]
+    param_decay = 1.0 - step_size * hp["weight_decay"]
+
+    def init_fn(params: dict[str, Array]) -> UPGDShiftnormGatedL2InitState:
+        base_state = base_init(params)
+        return UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+            utility=base_state.utility,
+            step=base_state.step,
+            norm=base_state.norm,
+            fast_mean=base_state.fast_mean,
+            init_params={name: value for name, value in params.items()},
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: UPGDShiftnormGatedL2InitState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], UPGDShiftnormGatedL2InitState, StepMetrics]:
+        if pull_scale == 0.0:
+            # Exact champion path: delegate to the champion factory's own
+            # step with the identical adaptive-norm state.
+            base_state = UPGDAdaptiveNormState(  # type: ignore[call-arg]
+                utility=state.utility,
+                step=state.step,
+                norm=state.norm,
+                fast_mean=state.fast_mean,
+            )
+            base_params, new_base, metrics = base_step(params, base_state, x, y, key)
+            return (
+                base_params,
+                UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+                    utility=new_base.utility,
+                    step=new_base.step,
+                    norm=new_base.norm,
+                    fast_mean=new_base.fast_mean,
+                    init_params=state.init_params,
+                ),
+                metrics,
+            )
+        x_norm, new_norm, new_fast, _ = shift_adaptive_normalize(
+            state.norm,
+            state.fast_mean,
+            x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        (loss, logits), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+            params, x_norm, y
+        )
+        count = _next_utility_clock(state.step)
+        utility = {
+            name: _skip_zero_scale(utility_decay, state.utility[name])
+            + (1.0 - utility_decay) * (-grads[name] * params[name])
+            for name in params
+        }
+        bias_correction = 1.0 - jnp.power(
+            jnp.asarray(utility_decay, dtype=jnp.float32), count.astype(jnp.float32)
+        )
+        global_max = jnp.max(
+            jnp.stack([jnp.max(utility[name]) for name in sorted(params)])
+        )
+        new_params: dict[str, Array] = {}
+        for name in params:
+            gate = jax.nn.sigmoid((utility[name] / bias_correction) / global_max)
+            pull = pull_scale * (1.0 - gate) * (params[name] - state.init_params[name])
+            new_params[name] = (
+                params[name] * param_decay
+                - step_size * pull
+                - step_size * (grads[name] * (1.0 - gate))
+            )
+        metrics = _step_metrics(new_params, x_norm, y, loss, logits)
+        return (
+            new_params,
+            UPGDShiftnormGatedL2InitState(  # type: ignore[call-arg]
+                utility=utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                init_params=state.init_params,
+            ),
+            metrics,
+        )
+
+    return init_fn, full_step
 
 
 def _make_upgd_warmnorm_learner(
@@ -4698,6 +4834,18 @@ def _make_rls_head_l2init_learner(
     return _make_rls_head_learner(base_hp, _decay_to_init=True)
 
 
+def _rls_head_forward(
+    params: dict[str, Array], wout: Array, normalized: Array,
+) -> tuple[Array, Array]:
+    """Return deployed logits and bias-augmented features for one normalized input."""
+    m = params["w2"].shape[1] + 1
+    a1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
+    a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+    scale = 1.0 / math.sqrt(m)
+    phi = jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
+    return wout.T @ phi, phi
+
+
 def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
@@ -4755,6 +4903,13 @@ def _make_rls_head_learner(
     if whiten_enabled and not resid:
         raise ValueError(
             "resid_whiten is supported only for the residual body"
+        )
+    if newton and not whiten_enabled:
+        raise ValueError(
+            "resid_newton selects the preconditioner direction of the "
+            "whitened residual signal and requires resid_whiten > 0.0; "
+            "without whitening it is never read, so the configuration "
+            "would silently run the unmodified incumbent"
         )
     if whiten_enabled and _decay_to_init:
         raise ValueError("resid_whiten and L2-Init are not composed")
@@ -4856,13 +5011,6 @@ def _make_rls_head_learner(
             p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
             wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
         )
-
-    def _phi(params: dict[str, Array], x_norm: Array) -> Array:
-        m = params["w2"].shape[1] + 1
-        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
-        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
-        scale = 1.0 / math.sqrt(m)
-        return jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
 
     def _gated_sgd(
         params: dict[str, Array],
@@ -4966,8 +5114,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     surrogate_loss = 0.5 * jnp.sum(err * err)
                     err_c = jax.lax.stop_gradient(err)
@@ -5002,8 +5149,7 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    phi = _phi(merged, x_norm)
-                    logits = state.wout.T @ phi
+                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
                     err = y_onehot - logits
                     return 0.5 * jnp.sum(err * err), (logits, phi)
 
@@ -5087,8 +5233,7 @@ def _make_rls_head_learner(
                 params, grads, state.utility, count,
                 tuple(sorted(params)), guard_zero_max=False,
             )
-            phi = _phi(params, x_norm)
-            logits = state.wout.T @ phi
+            logits, phi = _rls_head_forward(params, state.wout, x_norm)
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
@@ -5112,7 +5257,7 @@ def _make_rls_head_learner(
             # horizon).  Rescale P to the trace cap whenever it exceeds it;
             # under the cap the step is bitwise untouched.
             new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
-        err_after = y_onehot - new_wout.T @ _phi(new_params, x_norm)
+        err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
@@ -5424,6 +5569,23 @@ def _rls_head_frozen_probe_input(
         "model is the champion body + RLS readout, not the protocol MLP head "
         "that the probe harness would score"
     )
+
+
+def _rls_head_frozen_probe_logits(
+    params: dict[str, Array],
+    state: Any,
+    observation: Array,
+    hyperparameters: Mapping[str, float],
+) -> Array:
+    """Read the confirmed RLS arm's deployed head without updating any state.
+
+    As with the MLP control, sentinel inputs use the checkpoint's frozen EMA
+    statistics. Neither the normalizer nor the RLS/body update is executed.
+    """
+    if not isinstance(state, RLSHeadState):
+        raise TypeError("an rls_head frozen probe requires RLSHeadState")
+    normalized = _ema_frozen_probe_input(state, observation, hyperparameters)
+    return jax.vmap(lambda x: _rls_head_forward(params, state.wout, x)[0])(normalized)
 
 
 # =============================================================================
@@ -6965,6 +7127,8 @@ class ScreeningSpec:
         frozen_probe_input: Applies the learner's current input preprocessing
             without updating its state.  Raw-input learners use the identity
             transform; adaptive normalizers must opt in explicitly.
+        frozen_probe_logits: Optional deployed forward for a non-MLP readout.
+            None preserves input preprocessing followed by the protocol MLP.
     """
 
     name: str
@@ -6975,6 +7139,7 @@ class ScreeningSpec:
     description: str = ""
     noise_update: NoiseUpdateFn | None = None
     frozen_probe_input: FrozenProbeInputFn = _raw_frozen_probe_input
+    frozen_probe_logits: FrozenProbeLogitsFn | None = None
 
     def __post_init__(self) -> None:
         for attr in ("name", "base_learner", "mechanism"):
@@ -6997,7 +7162,7 @@ class ScreeningSpec:
         object.__setattr__(self, "hyperparameters", normalized)
         if type(self.factory) is not FunctionType:
             raise TypeError("factory must be an exact Python function")
-        for name in ("noise_update", "frozen_probe_input"):
+        for name in ("noise_update", "frozen_probe_input", "frozen_probe_logits"):
             value = getattr(self, name)
             if value is not None and type(value) is not FunctionType:
                 raise TypeError(f"{name} must be an exact Python function or None")
@@ -7836,6 +8001,31 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         )
     specs.append(
         ScreeningSpec(
+            name="sigma0_shiftnorm_d099_gated_l2init",
+            base_learner="upgd_w",
+            mechanism="gated_l2_init",
+            hyperparameters=_sigma0_ext_hp(
+                norm_decay=0.99,
+                fast_decay=0.9,
+                shift_k=1.0,
+                shift_delta=0.02,
+                shift_refractory=0.0,
+                l2init_pull_scale=0.01,
+            ),
+            factory=_make_shiftnorm_gated_l2init_learner,
+            frozen_probe_input=_ema_frozen_probe_input,
+            description=(
+                "sigma0_shiftnorm_d099 champion plus an additive utility-gated pull "
+                "toward init (the gated-L2-init term registered for "
+                "sigma0_ndecay099_gated_l2init, transplanted onto the shift-triggered "
+                "re-conditioning body; l2init_pull_scale=0.01, matching the repo's "
+                "established L2-Init regularization strength); l2init_pull_scale=0 "
+                "reduces bit-exactly to the champion."
+            ),
+        )
+    )
+    specs.append(
+        ScreeningSpec(
             name="sigma0_warmnorm",
             base_learner="upgd_w",
             mechanism="adaptive_input_normalization",
@@ -8112,6 +8302,16 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "plus a third closed-form member, linear RLS over normalized "
             "pixels (probe c: lin_rls pipeline verbatim)",
         ),
+        (
+            "nb_ensemble_nbreset_rls3",
+            {"ens_nb_reset": 1.0, "ens_use_rls": 1.0},
+            "plus BOTH single-flag additions composed: detector-driven NB "
+            "anneal-clock resets (probe b) AND the third linear-RLS member "
+            "(probe c) — each screened alone (nbreset +0.0018, rls3 "
+            "+0.0001 over the base ensemble) but never together; with both "
+            "flags at 0 the arm reduces bit-exactly to nb_ensemble_champion "
+            "(pinned)",
+        ),
     ):
         specs.append(
             ScreeningSpec(
@@ -8204,6 +8404,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "salvages the forgetting mechanism as a bounded probe)",
         ),
         (
+            "rls_head_l0999_preset005_pcap",
+            {
+                "rls_lambda": 0.999, "rls_reset_frac": 0.05,
+                "rls_p_trace_cap": 1e4,
+            },
+            "forgetting 0.999 with BOTH wind-up/staleness guards composed: "
+            "detector-driven P reset at 0.05 plus the P trace cap 1e4 (the "
+            "two wave-2 salvages screened only in isolation: preset005 "
+            "0.86484, pcap 0.86608; whether the reset makes the cap "
+            "redundant or the two compose was unmeasured)",
+        ),
+        (
             "rls_head_resid_l1_preset005",
             {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0},
             "residual-driven body on the wind-up-immune head (probe c "
@@ -8285,6 +8497,11 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 hyperparameters=_rls_head_hp(**rls_overrides),
                 factory=_make_rls_head_learner,
                 frozen_probe_input=_rls_head_frozen_probe_input,
+                frozen_probe_logits=(
+                    _rls_head_frozen_probe_logits
+                    if rls_name == "rls_head_resid_l1_preset005"
+                    else None
+                ),
                 description=(
                     "Champion body (shift-adaptive EMA-norm d099 + "
                     + body_update
@@ -9572,7 +9789,7 @@ def _validated_recurring_phase_lengths(
 ) -> tuple[int, int, int]:
     lengths = tuple(phase_lengths)
     if len(lengths) != 3 or any(
-        not isinstance(length, int) or isinstance(length, bool) or length <= 0
+        type(length) is not int or type(length) is bool or length <= 0
         for length in lengths
     ):
         raise ValueError("phase_lengths must contain exactly three positive integers")
@@ -9603,8 +9820,8 @@ def build_recurring_ipmnist_online_indices(
     """
     resolved_seed = _validated_recurring_seed(seed)
     if (
-        not isinstance(n_examples, int)
-        or isinstance(n_examples, bool)
+        type(n_examples) is not int
+        or type(n_examples) is bool
         or n_examples <= 0
     ):
         raise ValueError("n_examples must be a positive integer")
@@ -9813,8 +10030,8 @@ def run_recurring_ipmnist_retention_development(
         raise TypeError("config must be an IPMNISTConfig")
     resolved_seed = _validated_recurring_seed(seed)
     if (
-        not isinstance(relearning_window, int)
-        or isinstance(relearning_window, bool)
+        type(relearning_window) is not int
+        or type(relearning_window) is bool
         or relearning_window <= 0
     ):
         raise ValueError("relearning_window must be a positive integer")
@@ -9997,19 +10214,29 @@ def run_recurring_ipmnist_retention_development(
             sentinel_inputs = jnp.asarray(
                 resolved_x[indices][:, permutation], dtype=jnp.float32
             )
-            model_inputs = spec.frozen_probe_input(
-                state, sentinel_inputs, spec.hyperparameters
-            )
-            if model_inputs.shape != sentinel_inputs.shape:
-                raise ValueError("frozen_probe_input must preserve sentinel input shape")
-            logits = np.asarray(jax.device_get(mlp_logits(params, model_inputs)))
+            if spec.frozen_probe_logits is None:
+                model_inputs = spec.frozen_probe_input(
+                    state, sentinel_inputs, spec.hyperparameters
+                )
+                if model_inputs.shape != sentinel_inputs.shape:
+                    raise ValueError("frozen_probe_input must preserve sentinel input shape")
+                probe_logits = mlp_logits(params, model_inputs)
+            else:
+                probe_logits = spec.frozen_probe_logits(
+                    params, state, sentinel_inputs, spec.hyperparameters
+                )
+            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
+            if state_hash_after != state_hash_before:
+                raise ValueError("a frozen sentinel probe must not mutate learner state")
+            logits = np.asarray(jax.device_get(probe_logits))
+            if logits.shape != (len(indices), config.n_classes):
+                raise ValueError("a frozen sentinel probe must return one logit per case/class")
             if not np.all(np.isfinite(logits)):
                 raise ValueError("a frozen sentinel probe produced non-finite logits")
             correctness = tuple(
                 bool(value)
                 for value in np.asarray(np.argmax(logits, axis=-1) == sentinel_labels)
             )
-            state_hash_after = _declared_learner_state_sha256(params, state, key_noise)
             snapshots.append(
                 SentinelProbeSnapshot.from_requirement(
                     requirement,
@@ -12245,6 +12472,30 @@ def _validate_screening_arm_contract(
         )
 
 
+def _require_registered_base_learner(
+    config_name: str,
+    per_seed: Mapping[int, dict[str, Any]],
+    registry: Mapping[str, ScreeningSpec],
+) -> None:
+    """Reject an arm whose recorded learner contradicts its registered spec.
+
+    ``load_shard`` applies this cross-check to source-bound shards only, and the
+    campaign's live shard format is v1. An arm whose seeds all agree on a
+    learner its registry entry never registered therefore reaches the merge,
+    which publishes the recorded ``base_learner`` as the arm's identity.
+    ``_validate_screening_arm_contract`` runs first and, on its own, only
+    rejects a batch that disagrees with itself.
+    """
+    recorded = per_seed[min(per_seed)]["base_learner"]
+    registered = registry[config_name].base_learner
+    if recorded != registered:
+        raise ValueError(
+            f"config {config_name!r} records base_learner {recorded!r}, but its "
+            f"registered arm registers {registered!r}; refusing to publish an "
+            "arm identity the registry does not support"
+        )
+
+
 def _late_window_slope(per_task_accuracy: np.ndarray, window: int) -> float:
     """OLS slope (accuracy per task) over the final ``window`` tasks."""
     tail = per_task_accuracy[-window:]
@@ -12376,8 +12627,10 @@ def merge_shards(
             f"(present: {sorted(by_config)}); a summary without its control "
             "would silently carry no paired_vs_control blocks"
         )
+    registry = SCREENING_REGISTRY if spec_registry is None else spec_registry
     for name, per_seed in sorted(by_config.items()):
         _validate_screening_arm_contract(name, per_seed)
+        _require_registered_base_learner(name, per_seed, registry)
     control = by_config[control_name]
     control_seeds = sorted(control)
     for name, per_seed in sorted(by_config.items()):

@@ -536,7 +536,12 @@ class SparseFTLWorldModel:
         prediction = self.predict(state, obs, action)
         target_delta = next_obs - obs
         error = target_delta - prediction.delta
-        squared_error = jnp.mean(error**2)
+        squared_components = error**2
+        squared_error = jnp.mean(squared_components)
+        # Recover reduction overflow only when each squared component is finite.
+        recover = jnp.isinf(squared_error) & jnp.all(jnp.isfinite(squared_components))
+        bounded_mean = jnp.sum(squared_components / cfg.observation_dim)
+        squared_error = jnp.where(recover, bounded_mean, squared_error)
 
         decay = jnp.asarray(cfg.statistics_decay, dtype=jnp.float32)
         gram = decay * state.gram

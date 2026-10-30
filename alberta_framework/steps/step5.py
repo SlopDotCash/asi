@@ -350,14 +350,17 @@ def _state_feature_dim(state: DifferentialTDState) -> int:
             dtype=jnp.float32,
         )
     _trusted_array("state.step_count", state.step_count, shape=(), dtype=jnp.int32)
-    if type(state.birth_timestamp) is not float or not math.isfinite(state.birth_timestamp):
-        raise ValueError("state.birth_timestamp must be a finite built-in float")
-    if (
-        type(state.uptime_s) is not float
-        or not math.isfinite(state.uptime_s)
-        or state.uptime_s < 0.0
-    ):
-        raise ValueError("state.uptime_s must be a finite non-negative built-in float")
+    for name in ("birth_timestamp", "uptime_s"):
+        value = getattr(state, name)
+        # lax.scan returns the initialized Python clocks as scalar JAX arrays.
+        if isinstance(value, jax.Array):
+            if value.shape != () or not jnp.issubdtype(value.dtype, jnp.floating):
+                raise ValueError(f"state.{name} must be a scalar floating array")
+            value = float(value)
+        if type(value) is not float or not math.isfinite(value):
+            raise ValueError(f"state.{name} must be a finite float")
+        if name == "uptime_s" and value < 0.0:
+            raise ValueError("state.uptime_s must be non-negative")
     return feature_dim
 
 
