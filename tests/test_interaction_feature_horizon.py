@@ -385,3 +385,37 @@ def test_current_checkpoint_resumes_exactly_and_v1_is_rejected_precisely(
     )
     with pytest.raises(ValueError, match="lacks exact step_words.*resave"):
         load_interaction_feature_checkpoint(legacy_path)
+
+
+def test_checkpoint_restore_is_independent_of_ambient_prng_default(tmp_path: Path) -> None:
+    learner = _learner(candidate_count=1)
+    state = learner.init(2, jr.key(13, impl="threefry2x32"))
+    path = tmp_path / "checkpoint"
+    save_interaction_feature_checkpoint(learner, state, path, feature_dim=2)
+
+    with jax.default_prng_impl("rbg"):
+        loaded_learner, loaded_state = load_interaction_feature_checkpoint(path)
+
+    chex.assert_trees_all_equal(loaded_state, state)
+    chex.assert_trees_all_equal(
+        loaded_learner.update(loaded_state, _OBSERVATION, _TARGET),
+        learner.update(state, _OBSERVATION, _TARGET),
+    )
+
+
+def test_init_rejects_non_threefry_key_before_constructing_state() -> None:
+    with pytest.raises(TypeError, match="typed scalar threefry2x32"):
+        _learner().init(2, jr.key(13, impl="rbg"))
+
+
+def test_checkpoint_save_rejects_non_threefry_state(tmp_path: Path) -> None:
+    learner = _learner()
+    state = learner.init(2, jr.key(13, impl="threefry2x32")).replace(  # type: ignore[attr-defined,no-any-return]
+        key=jr.key(14, impl="rbg")
+    )
+    path = tmp_path / "checkpoint"
+
+    with pytest.raises(TypeError, match="typed scalar threefry2x32"):
+        save_interaction_feature_checkpoint(learner, state, path, feature_dim=2)
+
+    assert not path.exists()

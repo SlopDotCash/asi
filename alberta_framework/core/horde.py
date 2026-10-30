@@ -1017,7 +1017,11 @@ def run_horde_learning_loop(
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, cumulants, next_observations))
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # Host-only clocks are narrowed while carried through the traced scan.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
 
     return HordeLearningResult(  # type: ignore[call-arg]
         state=final_state,
@@ -1070,8 +1074,39 @@ def run_mixed_horde_learning_loop(
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, cumulants, next_observations))
     elapsed = time.time() - t0
+    # The scan traces nested learner clocks and narrows them to float32.
+    # Restore the incoming Python values. Add this scan's time to the mixed
+    # state's host uptime, not to a narrowed device value.
+    shared_state = final_state.shared_state
+    original_shared = state.shared_state
+    if original_shared is not None and shared_state is not None:
+        shared_state = shared_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original_shared.birth_timestamp,
+            uptime_s=original_shared.uptime_s,
+        )
+    independent_state = final_state.independent_state
+    original_independent = state.independent_state
+    if original_independent is not None and independent_state is not None:
+        demon_states = tuple(
+            demon.replace(  # type: ignore[attr-defined]
+                birth_timestamp=original.birth_timestamp,
+                uptime_s=original.uptime_s,
+            )
+            for demon, original in zip(
+                independent_state.demon_states,
+                original_independent.demon_states,
+            )
+        )
+        independent_state = independent_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original_independent.birth_timestamp,
+            uptime_s=original_independent.uptime_s,
+            demon_states=demon_states,
+        )
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+        shared_state=shared_state,
+        independent_state=independent_state,
     )
     return MixedHordeLearningResult(  # type: ignore[call-arg]
         state=final_state,
@@ -1121,9 +1156,15 @@ def run_horde_learning_loop_final_state(
         (observations, cumulants, next_observations),
     )
     elapsed = time.time() - t0
+    # The scan carries host clocks through the traced update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
     return cast(
         MultiHeadMLPState,
-        final_state.replace(uptime_s=final_state.uptime_s + elapsed),  # type: ignore[attr-defined]
+        final_state.replace(  # type: ignore[attr-defined]
+            birth_timestamp=state.birth_timestamp,
+            uptime_s=state.uptime_s + elapsed,
+        ),
     )
 
 
