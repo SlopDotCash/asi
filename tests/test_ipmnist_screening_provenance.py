@@ -684,6 +684,36 @@ def test_merge_rejects_invalid_slope_window(
         )
 
 
+@pytest.mark.parametrize("slope_window", [4, 15])
+def test_merge_rejects_slope_window_above_n_tasks(
+    tmp_path: Path, slope_window: int
+) -> None:
+    # The payload config records n_tasks=3; a larger window would silently
+    # cover every task while the summary records the requested window.
+    path = tmp_path / "shard.json"
+    path.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="slope_window"):
+        screening.merge_shards(
+            [path],
+            control_name="upgd_w_control",
+            slope_window=slope_window,
+        )
+
+
+def test_merge_accepts_slope_window_equal_to_n_tasks(tmp_path: Path) -> None:
+    path = tmp_path / "shard.json"
+    path.write_text(json.dumps(_payload()), encoding="utf-8")
+
+    summary = screening.merge_shards(
+        [path],
+        control_name="upgd_w_control",
+        slope_window=3,
+    )
+
+    assert summary["slope_window"] == 3
+
+
 def test_proxy_validation_refuses_mixed_or_mismatched_v2_provenance(
     tmp_path: Path,
 ) -> None:

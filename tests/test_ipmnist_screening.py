@@ -2697,7 +2697,7 @@ class TestGradualConfirmation:
                 json.dumps(_bound_shard_payload(result)), encoding="utf-8"
             )
             shards.append(path)
-        summary = merge_shards(shards)
+        summary = merge_shards(shards, slope_window=2)
         assert summary["schema"] == SUMMARY_SCHEMA_V3
         assert summary["noise_mode"] == "gradual"
         assert summary["noise_gradual_steps"] == 8
