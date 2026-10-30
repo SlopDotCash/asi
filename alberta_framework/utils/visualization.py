@@ -17,6 +17,7 @@ from alberta_framework._scan_resources import (
     require_step_units,
 )
 from alberta_framework.utils.export import (
+    _exported_number,
     _significance_star_count,
 )
 
@@ -395,6 +396,25 @@ def plot_hyperparameter_heatmap(
     )
     require_step_units(n1, n2, _VIS_HEATMAP_BUDGET)
 
+    # Missing configurations/metrics are intentionally represented as NaN,
+    # but a resolved cell is evidence and must not use the same sentinel for a
+    # poisoned summary. Validate the complete grid before creating a figure so
+    # callers cannot mistake a partially rendered plot for an accepted one.
+    data = np.full((n1, n2), np.nan, dtype=np.float64)
+    for i, p1 in enumerate(param1_values):
+        for j, p2 in enumerate(param2_values):
+            name = name_pattern.format(p1=p1, p2=p2)
+            if name in results and metric in results[name].summary:
+                try:
+                    data[i, j] = float(
+                        _exported_number(results[name].summary[metric].mean)
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"heatmap metric mean for {name} must be a finite "
+                        "canonical number"
+                    ) from exc
+
     try:
         import matplotlib.pyplot as plt
     except ImportError:
@@ -404,15 +424,6 @@ def plot_hyperparameter_heatmap(
         fig, ax = plt.subplots()
     else:
         fig = cast("Figure", ax.figure)
-    # Build heatmap data
-    data = np.zeros((n1, n2))
-    for i, p1 in enumerate(param1_values):
-        for j, p2 in enumerate(param2_values):
-            name = name_pattern.format(p1=p1, p2=p2)
-            if name in results and metric in results[name].summary:
-                data[i, j] = results[name].summary[metric].mean
-            else:
-                data[i, j] = np.nan
 
     if lower_is_better:
         cmap_to_use = cmap
