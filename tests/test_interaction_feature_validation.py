@@ -270,3 +270,30 @@ def test_generator_mix_keeps_legal_mass_and_normalizes() -> None:
     assert learner.to_config()["generator_mix"] == [0.5, 0.25, 0.25]
     learner = _construct(generator_mix=(0.0, 0.0, 3.0))
     assert learner.to_config()["generator_mix"] == [0.0, 0.0, 1.0]
+
+
+def test_generator_mix_zero_mass_stays_impossible_during_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded_logits: list[np.ndarray[Any, Any]] = []
+
+    def recording_categorical(
+        _key: jnp.ndarray,
+        logits: jnp.ndarray,
+        *_args: object,
+        **_kwargs: object,
+    ) -> jnp.ndarray:
+        recorded_logits.append(np.asarray(logits))
+        return jnp.asarray(0, dtype=jnp.int32)
+
+    monkeypatch.setattr(jr, "categorical", recording_categorical)
+    learner = _construct(generator_mix=(0.0, 0.0, 1.0))
+    learner._generate_one(
+        jr.key(0),
+        jnp.asarray([1.0, 2.0, 3.0], dtype=jnp.float32),
+        jnp.asarray([0, 0, 1, 1], dtype=jnp.int32),
+        jnp.asarray([1, 2, 2, 0], dtype=jnp.int32),
+        jnp.ones((4,), dtype=jnp.float32),
+    )
+
+    assert np.array_equal(recorded_logits[0], np.asarray([-np.inf, -np.inf, 0.0]))
