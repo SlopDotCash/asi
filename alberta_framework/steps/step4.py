@@ -393,6 +393,8 @@ def _require_trusted_array_metadata(name: str, array: object) -> tuple[int, ...]
         shape = tuple(int(dim) for dim in cast(Any, array).shape)
     except (AttributeError, IndexError, TypeError, ValueError) as error:
         raise TypeError(f"{name} must expose trusted shape metadata") from error
+    if getattr(cast(Any, array).dtype, "kind", None) == "c":
+        raise ValueError(f"{name} must have a real dtype")
     return shape
 
 
