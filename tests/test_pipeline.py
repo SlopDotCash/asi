@@ -3,6 +3,7 @@
 
 import json
 from fractions import Fraction
+from types import SimpleNamespace
 
 import chex
 import jax
@@ -13,6 +14,7 @@ import pytest
 from jax import Array
 
 import alberta_framework as af
+import alberta_framework.pipeline as pipeline_module
 from alberta_framework.pipeline import (
     AlbertaPipeline,
     AlbertaPipelineConfig,
@@ -1239,7 +1241,8 @@ def test_associative_pipeline_requires_exact_label_shapes() -> None:
 
 def test_associative_pipeline_rejects_wide_integer_dtypes_eager_and_jit() -> None:
     pipeline = make_alberta_pipeline(_small_associative_config())
-    with jax.enable_x64():
+    enable_x64 = jax.enable_x64 if hasattr(jax, "enable_x64") else jax.experimental.enable_x64
+    with enable_x64():
         wide_context = jnp.asarray([1, 2, 3, 4, 2**32], dtype=jnp.uint64)
         with pytest.raises(ValueError, match="representable as int32"):
             pipeline.init(jr.key(0), wide_context)
@@ -1336,3 +1339,35 @@ def test_associative_pipeline_update_uses_float32_default_cumulants() -> None:
     )
     assert cumulants.dtype == jnp.float32
     chex.assert_trees_all_close(cumulants, jnp.asarray([7.0, 9.0, 7.0], dtype=jnp.float32))
+
+
+
+def test_pipeline_array_horde_clocks_preserve_initialized_host_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = iter([100.0, 100.25, 100.25, 100.5])
+    monkeypatch.setattr(
+        pipeline_module,
+        "time",
+        SimpleNamespace(time=lambda: next(clock)),
+    )
+    pipeline = make_alberta_pipeline(_small_pipeline_config())
+    initial = pipeline.init(jr.key(0), jnp.zeros(3, dtype=jnp.float32))
+    initial = initial.replace(
+        horde_state=initial.horde_state.replace(uptime_s=7.0),
+    )
+    observations = jnp.ones((2, 3), dtype=jnp.float32)
+    rewards = jnp.asarray([0.5, -0.25], dtype=jnp.float32)
+    terminated = jnp.zeros(2, dtype=jnp.float32)
+    cumulants = jnp.ones((2, 2), dtype=jnp.float32)
+    assert type(initial.horde_state.birth_timestamp) is float
+    current = initial
+    expected_uptime = (7.25, 7.5)
+    for uptime in expected_uptime:
+        result = pipeline.run_arrays(current, observations, rewards, terminated, cumulants)
+        current = result.state
+        assert type(current.horde_state.birth_timestamp) is float
+        assert current.horde_state.birth_timestamp == initial.horde_state.birth_timestamp
+        assert type(current.horde_state.uptime_s) is float
+        assert current.horde_state.uptime_s == uptime
+    assert int(current.step_count) == 4

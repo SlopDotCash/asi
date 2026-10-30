@@ -2080,6 +2080,51 @@ def test_effective_sample_size_and_signed_gate_rates_are_auditable() -> None:
     assert float(result.diagnostics.negative_advantage_gate_rate) < 0.5
 
 
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("mode", ["ordinary_pg", "delightful_pg"])
+def test_policy_gradient_preserves_finite_batch_loss_when_sum_overflows(
+    disable_jit: bool,
+    mode: str,
+) -> None:
+    """Finite per-sample losses must not overflow only while taking their mean."""
+    log_probabilities = jnp.full((2,), -1.0, dtype=jnp.float32)
+    advantages = jnp.full((2,), 2.0e38, dtype=jnp.float32)
+    config = DelightfulPolicyGradientConfig(mode=mode)  # type: ignore[arg-type]
+
+    with jax.disable_jit(disable_jit):
+        def loss(log_prob: Array, advantage: Array) -> Array:
+            return discrete_delightful_policy_gradient(
+                log_prob,
+                advantage,
+                config,
+            ).actor_loss
+
+        result = jax.jit(
+            lambda log_prob, advantage: discrete_delightful_policy_gradient(
+                log_prob,
+                advantage,
+                config,
+            )
+        )(log_probabilities, advantages)
+        gradient = jax.jit(jax.grad(loss))(log_probabilities, advantages)
+
+    expected = float(advantages[0])
+    assert bool(jnp.all(jnp.isfinite(-result.actor_coefficients * log_probabilities)))
+    assert float(result.actor_loss) == expected
+    assert float(result.ordinary_actor_loss) == expected
+    chex.assert_trees_all_equal(gradient, -result.actor_coefficients / 2.0)
+
+
+def test_policy_gradient_does_not_recover_a_nonfinite_sample_loss() -> None:
+    result = discrete_delightful_policy_gradient(
+        jnp.array([-jnp.inf, -1.0], dtype=jnp.float32),
+        jnp.ones((2,), dtype=jnp.float32),
+    )
+
+    assert bool(jnp.isposinf(result.actor_loss))
+    assert bool(jnp.isposinf(result.ordinary_actor_loss))
+
+
 def test_heteroskedastic_gambling_strata_expose_lucky_rare_action_pathology() -> None:
     """A negative-mean rare gamble flips positive after paper-specific DG weighting.
 
