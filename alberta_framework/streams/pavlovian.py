@@ -716,7 +716,12 @@ class ClassicalConditioningStream:
         # ------------------------------------------------------------------
         # 2. Decide whether a new trial starts this step
         # ------------------------------------------------------------------
-        any_cs_active = jnp.any(cs_pre > 0)
+        # Decay current CS active counters (don't go below zero). A counter
+        # of 1 marks the CS's last "on" step, already emitted; the CS is off
+        # this step, so activity is judged on the decayed counter, the same
+        # value the observation reports.
+        decayed_cs = jnp.maximum(cs_pre - 1, 0)
+        any_cs_active = jnp.any(decayed_cs > 0)
         us_in_flight = us_pending_pre >= 0
         idle = (~any_cs_active) & (~us_in_flight)
         iti_done = iti_pre <= 0
@@ -753,9 +758,6 @@ class ClassicalConditioningStream:
         # ------------------------------------------------------------------
         # 5. Update CS / US / ITI counters
         # ------------------------------------------------------------------
-        # Decay current CS active counters (don't go below zero).
-        decayed_cs = jnp.maximum(cs_pre - 1, 0)
-
         # On trial start, replace any (zero) decayed counters with full
         # activation. We assume a new trial can only start when no CS is
         # active, so no overwrite of an active counter occurs.

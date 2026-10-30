@@ -34,6 +34,20 @@ _ACTUAL_FLOAT_TYPES = frozenset(
     {float, Fraction, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
 )
 _ALLOWED_REAL_TYPES = _ACTUAL_INT_TYPES | _ACTUAL_FLOAT_TYPES
+_LATEX_METHOD_NAME_ESCAPES = str.maketrans(
+    {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+)
 
 
 def _require_path(value: object, *, name: str = "path") -> Path:
@@ -247,6 +261,20 @@ def _preflight_export_results(
                     float(np.min(summary.values)),
                     float(np.max(summary.values)),
                 )
+            # Recover reductions whose intermediate sum/squares leave float64.
+            # Keep ordinary exact validation unchanged, including its rounding.
+            if (
+                not all(math.isfinite(value) for value in expected_statistics)
+                or (expected_statistics[1] == 0.0 and np.ptp(summary.values) > 0.0)
+            ):
+                scale = float(np.max(np.abs(summary.values)))
+                scaled = summary.values / scale if scale else summary.values
+                expected_statistics = (
+                    float(np.mean(scaled) * scale),
+                    float(np.std(scaled, ddof=1) * scale) if seed_count > 1 else 0.0,
+                    expected_statistics[2],
+                    expected_statistics[3],
+                )
             actual_statistics = tuple(
                 float(_exported_number(value))
                 for value in (summary.mean, summary.std, summary.min, summary.max)
@@ -450,6 +478,23 @@ def _finite_table_summaries(
     return summaries
 
 
+def _escape_latex_method_name(name: str) -> str:
+    """Render method names in one row without re-escaping inserted LaTeX commands."""
+    normalized = name.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    return normalized.translate(_LATEX_METHOD_NAME_ESCAPES)
+
+
+def _escape_markdown_method_name(name: str) -> str:
+    """Keep method names in one table cell, preserving backslashes and line breaks."""
+    return (
+        name.replace("\\", "\\\\")
+        .replace("|", r"\|")
+        .replace("\r\n", "<br>")
+        .replace("\r", "<br>")
+        .replace("\n", "<br>")
+    )
+
+
 def generate_latex_table(
     results: dict[str, "AggregatedResults"],
     significance_results: dict[tuple[str, str], "SignificanceResult"] | None = None,
@@ -513,8 +558,7 @@ def generate_latex_table(
             sig_marker = _get_significance_marker(name, best_name, significance_results)
             value_str += sig_marker
 
-        # Escape underscores in method name
-        escaped_name = name.replace("_", r"\_")
+        escaped_name = _escape_latex_method_name(name)
         lines.append(rf"{escaped_name} & {value_str} & {summary.n_seeds} \\")
 
     lines.append(r"\bottomrule")
@@ -681,7 +725,8 @@ def generate_markdown_table(
             sig_marker = _get_md_significance_marker(name, best_name, significance_results)
             value_str += sig_marker
 
-        lines.append(f"| {name} | {value_str} | {summary.n_seeds} |")
+        escaped_name = _escape_markdown_method_name(name)
+        lines.append(f"| {escaped_name} | {value_str} | {summary.n_seeds} |")
 
     if significance_results:
         lines.append("")
@@ -756,8 +801,8 @@ def _generate_significance_latex(
 
     for (name_a, name_b), result in significance_results.items():
         sig_str = "Yes" if result.significant else "No"
-        escaped_a = name_a.replace("_", r"\_")
-        escaped_b = name_b.replace("_", r"\_")
+        escaped_a = _escape_latex_method_name(name_a)
+        escaped_b = _escape_latex_method_name(name_b)
         lines.append(
             rf"{escaped_a} & {escaped_b} & {result.statistic:.3f} & "
             rf"{result.p_value:.4f} & {result.effect_size:.3f} & {sig_str} \\"
@@ -780,8 +825,10 @@ def _generate_significance_markdown(
 
     for (name_a, name_b), result in significance_results.items():
         sig_str = "Yes" if result.significant else "No"
+        escaped_a = _escape_markdown_method_name(name_a)
+        escaped_b = _escape_markdown_method_name(name_b)
         lines.append(
-            f"| {name_a} | {name_b} | {result.statistic:.3f} | "
+            f"| {escaped_a} | {escaped_b} | {result.statistic:.3f} | "
             f"{result.p_value:.4f} | {result.effect_size:.3f} | {sig_str} |"
         )
 

@@ -937,7 +937,7 @@ class RiverSwimMDP:
         """Exact average reward of the uniform-random policy."""
 
         kernel = self._transitions_np.mean(axis=0)
-        step_rewards = self._rewards_np.mean(axis=1)
+        step_rewards = self._rewards_np.mean(axis=1, dtype=np.float64)
         return _stationary_average_reward(kernel, step_rewards)
 
     def _enumerate_optimal(self) -> tuple[tuple[int, ...], float]:

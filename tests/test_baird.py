@@ -284,6 +284,7 @@ class TestRhoZeroInvariance:
             bias=jnp.float32(0.5),
             follow_on_trace=jnp.float32(3.0),
             previous_rho=jnp.float32(RHO_SOLID),
+            previous_gamma=jnp.float32(GAMMA),
         )
         result = learner.update(
             state,
@@ -295,8 +296,8 @@ class TestRhoZeroInvariance:
         )
         chex.assert_trees_all_equal(result.state.weights, state.weights)
         chex.assert_trees_all_equal(result.state.bias, state.bias)
-        # F = previous_rho(=RHO_SOLID) * gamma * F_prev + i -- unaffected by
-        # the current call's dashed (rho=0) transition.
+        # F = previous_rho(=RHO_SOLID) * previous_gamma(=GAMMA) * F_prev + i --
+        # unaffected by the current call's dashed (rho=0) transition.
         expected_follow_on = RHO_SOLID * GAMMA * 3.0 + 1.0
         chex.assert_trees_all_close(
             result.state.follow_on_trace, jnp.float32(expected_follow_on)

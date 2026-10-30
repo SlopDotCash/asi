@@ -825,3 +825,20 @@ class TestRunningRMSE:
         assert float(running[-1, 0]) < 0.01
         # Mid-series transition: some error
         assert float(running[19, 0]) > 0.5
+
+
+@pytest.mark.parametrize("n_steps", [8, 32])
+@pytest.mark.parametrize("direction", [3.0e38, -3.0e38])
+def test_rmse_finite_large_directional_derivative(n_steps: int, direction: float) -> None:
+    predictions = jnp.ones((n_steps, 1), dtype=jnp.float32)
+    returns = jnp.zeros_like(predictions)
+    tangent = jnp.full_like(predictions, direction)
+    def evaluate(values: jax.Array) -> jax.Array:
+        return per_horizon_rmse(values, returns)
+
+    for function in (evaluate, jax.jit(evaluate)):
+        primal, derivative = jax.jvp(function, (predictions,), (tangent,))
+        np.testing.assert_allclose(np.asarray(primal), [1.0])
+        np.testing.assert_allclose(
+            np.asarray(derivative), np.asarray([direction], dtype=np.float32), rtol=5e-6
+        )

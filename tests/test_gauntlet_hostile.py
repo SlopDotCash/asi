@@ -109,6 +109,15 @@ def test_gauntlet_benign_still_works() -> None:
         GauntletConfig(noise_std=float("inf"))  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["noise_std", "feature_std", "scale_factor", "drift_rate", "context_noise_std"],
+)
+def test_gauntlet_rejects_scalars_outside_float32_domain(field: str) -> None:
+    with pytest.raises(ValueError, match=rf"{field} must remain finite once narrowed to float32"):
+        GauntletConfig(**{field: 1.0e200})
+
+
 def test_gauntlet_hostile_not_in_repr() -> None:
     hostile = _HostileInt(8)
     _HostileInt.calls = 0
@@ -178,6 +187,24 @@ def test_lifetime_gauntlet_from_config_rejects_invalid_nested_gauntlet_config() 
         LifetimeGauntletStream.from_config(
             {**valid, "gauntlet_config": {**raw_gauntlet, "extra": 1}}
         )
+
+
+def test_lifetime_gauntlet_constructor_rejects_hostile_scale_period_before_range() -> None:
+    hostile = _HostileInt(3)
+    _HostileInt.calls = 0
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream(scale_cycle_period=hostile)  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
+
+    # bool is an int subclass and must be rejected without dispatch too.
+    with pytest.raises(ValueError, match="scale_cycle_period must be an exact integer"):
+        LifetimeGauntletStream(scale_cycle_period=True)  # type: ignore[arg-type]
+    assert _HostileInt.calls == 0
+
+    # A plain negative integer keeps the range error, and zero stays valid.
+    with pytest.raises(ValueError, match="scale_cycle_period must be non-negative"):
+        LifetimeGauntletStream(scale_cycle_period=-1)
+    assert LifetimeGauntletStream(scale_cycle_period=0).scale_cycle_period == 0
 
 
 def test_lifetime_gauntlet_from_config_rejects_invalid_scale_period_type() -> None:

@@ -539,8 +539,9 @@ def _masked_softmax(logits: Array, mask: Array) -> Array:
 def _cross_entropy_from_logits(logits: Array, label: Array) -> Array:
     safe_label = jnp.clip(label.astype(jnp.int32), 0, logits.shape[0] - 1)
     shifted = logits - jnp.max(logits)
-    log_z = jnp.log(jnp.sum(jnp.exp(shifted))) + jnp.max(logits)
-    return log_z - logits[safe_label]
+    # Keep the common offset cancelled before the final subtraction.
+    # Adding it back first can round away a nonzero log-partition.
+    return jnp.log(jnp.sum(jnp.exp(shifted))) - shifted[safe_label]
 
 
 class AssociativeMemoryLearner:
@@ -916,7 +917,9 @@ class AssociativeMemoryLearner:
             effective_budget=self._effective_budget(state),
         )
 
-    def _replacement_slot(self, state: AssociativeMemoryState) -> tuple[Array, Array]:
+    def _replacement_slot(
+        self, state: AssociativeMemoryState, matched: Array
+    ) -> tuple[Array, Array]:
         eligible = (
             jnp.arange(self._config.max_features, dtype=jnp.float32)
             < self._effective_budget(state)
@@ -925,8 +928,11 @@ class AssociativeMemoryLearner:
         has_empty = jnp.any(empty)
         empty_slot = jnp.argmax(empty.astype(jnp.int32))
         occupied = eligible & (~empty)
-        fresh = occupied & (state.last_update == state.step_count)
-        candidate = occupied & (~fresh)
+        # Rows this update already wrote, or matched and will write later in
+        # the same scan, are not victims: evicting a matched row resets its
+        # learned values and makes its key evict a second row when reached.
+        protected = occupied & ((state.last_update == state.step_count) | matched)
+        candidate = occupied & (~protected)
         candidate_score = jnp.where(candidate, state.utility, jnp.inf)
         occupied_score = jnp.where(occupied, state.utility, jnp.inf)
         utility_score = jnp.where(jnp.any(candidate), candidate_score, occupied_score)
@@ -1108,6 +1114,12 @@ class AssociativeMemoryLearner:
             prior=next_state.prior.at[label].add(self._config.write_lr)
         )
 
+        matched = (
+            jnp.zeros((self._config.max_features,), dtype=jnp.bool_)
+            .at[prediction.indices]
+            .max(prediction.found > 0)
+        )
+
         def row_step(
             carry: AssociativeMemoryState,
             inputs: tuple[Array, Array],
@@ -1116,7 +1128,7 @@ class AssociativeMemoryLearner:
             found, indices = self._lookup(carry, key[None, :], active[None])
             found_scalar = found[0]
             existing_slot = indices[0]
-            replacement_slot, used_empty = self._replacement_slot(carry)
+            replacement_slot, used_empty = self._replacement_slot(carry, matched)
             slot = jnp.where(found_scalar, existing_slot, replacement_slot)
             # A slot allocated or reused for a new key starts empty: the values,
             # utility, and count of an evicted occupant must not be inherited.

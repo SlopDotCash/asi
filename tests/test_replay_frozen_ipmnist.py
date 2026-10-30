@@ -315,3 +315,74 @@ def test_disabled_replay_ignores_overflow_from_finite_stored_examples() -> None:
     )
     _, result, _ = step(params, state, jnp.zeros(4), jnp.asarray(0), jr.key(5))
     assert int(result.update_count) == 1
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("label", [0, 1], ids=["soft", "hard"])
+@pytest.mark.parametrize("mechanism", [0.0, 1.0], ids=["off", "on"])
+def test_prol_affine_updates_follow_the_feature_chain_rule(
+    compiled: bool, label: int, mechanism: float
+) -> None:
+    from alberta_framework.benchmarks.replay_frozen_ipmnist import frozen_hyperparameters
+
+    hp = frozen_hyperparameters(method=2.0, mechanism=mechanism)
+    params = init_mlp_params(jr.key(5), _config())
+    init_fn, step_fn = make_frozen_feature_learner(hp)
+    state = init_fn(params).replace(
+        prompt=jnp.linspace(-0.2, 0.3, 64),
+        scale=jnp.linspace(0.5, 1.5, 64),
+        shift=jnp.linspace(0.1, -0.1, 64),
+    )
+    x = jnp.asarray(_data()[0][0])
+    base = jax.nn.relu(state.projection @ x)
+    phi = state.scale * (base + mechanism * state.prompt) + mechanism * state.shift
+    column = jnp.ones(64) / jnp.sum(phi)
+    state = state.replace(readout=jnp.stack((column, -column), axis=1))
+
+    def loss(prompt: jax.Array, scale: jax.Array, shift: jax.Array) -> jax.Array:
+        features = scale * (base + mechanism * prompt) + mechanism * shift
+        return -jax.nn.log_softmax(state.readout.T @ features)[label]
+
+    gradients = jax.grad(loss, argnums=(0, 1, 2))(state.prompt, state.scale, state.shift)
+    rate = hp["head_step_size"] * (hp["soft_update_scale"] if label == 0 else 1.0)
+    assert (float(loss(state.prompt, state.scale, state.shift)) <= 1.0) == (label == 0)
+    run = jax.jit(step_fn) if compiled else step_fn
+    _, result, _ = run(params, state, x, jnp.asarray(label), jr.key(0))
+    for name, gradient in zip(("prompt", "scale", "shift"), gradients, strict=True):
+        expected = getattr(state, name) - rate * gradient
+        if mechanism == 0.0:
+            expected = getattr(state, name)
+        np.testing.assert_allclose(getattr(result, name), expected, atol=2e-7, rtol=1e-6)
+    assert int(result.update_count) == 1
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_prol_sequential_updates_match_differentiated_loss(compiled: bool) -> None:
+    from alberta_framework.benchmarks.replay_frozen_ipmnist import frozen_hyperparameters
+
+    hp = frozen_hyperparameters(method=2.0, mechanism=1.0)
+    params = init_mlp_params(jr.key(5), _config())
+    init_fn, step_fn = make_frozen_feature_learner(hp)
+    state = init_fn(params)
+    run = jax.jit(step_fn) if compiled else step_fn
+    inputs, labels = _data()
+    for index in range(1, 129):
+        row = (index - 1) % len(inputs)
+        x, y = jnp.asarray(inputs[row]), jnp.asarray(labels[row])
+        base = jax.nn.relu(state.projection @ x)
+
+        def loss(prompt: jax.Array, scale: jax.Array, shift: jax.Array) -> jax.Array:
+            features = scale * (base + prompt) + shift
+            return -jax.nn.log_softmax(state.readout.T @ features)[y]
+
+        gradients = jax.grad(loss, argnums=(0, 1, 2))(state.prompt, state.scale, state.shift)
+        soft = float(loss(state.prompt, state.scale, state.shift)) <= 1.0
+        rate = hp["head_step_size"] * (hp["soft_update_scale"] if soft else 1.0)
+        _, result, _ = run(params, state, x, y, jr.key(index))
+        for name, gradient in zip(("prompt", "scale", "shift"), gradients, strict=True):
+            np.testing.assert_allclose(
+                getattr(result, name), getattr(state, name) - rate * gradient,
+                atol=1e-11, rtol=2e-6,
+            )
+        assert int(result.update_count) == index
+        state = result
