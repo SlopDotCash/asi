@@ -184,6 +184,24 @@ def _positive_float32_scalar(name: str, value: object) -> float:
     return narrowed
 
 
+def _exact_config_fields(
+    payload: object,
+    *,
+    expected_type: str,
+    expected_fields: frozenset[str],
+) -> dict[str, Any]:
+    """Return fields from one exact, type-tagged serialized config record."""
+
+    if type(payload) is not dict:
+        raise ValueError(f"{expected_type} config must be an actual dict")
+    data = cast(dict[str, Any], payload).copy()
+    if data.pop("type", None) != expected_type:
+        raise ValueError(f"{expected_type} config type is invalid")
+    if set(data) != expected_fields:
+        raise ValueError(f"{expected_type} config fields do not match its schema")
+    return data
+
+
 # ---------------------------------------------------------------------------
 # Exo-cerebellum
 # ---------------------------------------------------------------------------
@@ -226,8 +244,11 @@ class ExoCerebellumConfig:
 
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> ExoCerebellumConfig:
-        data = dict(payload)
-        data.pop("type", None)
+        data = _exact_config_fields(
+            payload,
+            expected_type="ExoCerebellumConfig",
+            expected_fields=frozenset(field.name for field in dataclasses.fields(cls)),
+        )
         return cls(**data)
 
 
@@ -690,8 +711,11 @@ class IAConfig:
 
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> IAConfig:
-        data = dict(payload)
-        data.pop("type", None)
+        data = _exact_config_fields(
+            payload,
+            expected_type="IAConfig",
+            expected_fields=frozenset(field.name for field in dataclasses.fields(cls)),
+        )
         cerebellum = ExoCerebellumConfig.from_config(cast(dict[str, Any], data["cerebellum"]))
         cortex = OaKConfig.from_config(cast(dict[str, Any], data["cortex"]))
         return cls(cerebellum=cerebellum, cortex=cortex)
@@ -802,8 +826,11 @@ class RecommendationProtocolConfig:
     @classmethod
     def from_config(cls, payload: dict[str, Any]) -> RecommendationProtocolConfig:
         """Reconstruct from :meth:`to_config` output."""
-        data = dict(payload)
-        data.pop("type", None)
+        data = _exact_config_fields(
+            payload,
+            expected_type="RecommendationProtocolConfig",
+            expected_fields=frozenset(field.name for field in dataclasses.fields(cls)),
+        )
         return cls(**data)
 
 
@@ -838,6 +865,7 @@ class RecommendationProtocolResult:
     post_step_words: UInt[Array, " 2"]
     source_state_valid: Bool[Array, ""]
     exact_partition_valid: Bool[Array, ""]
+    action_candidates_valid: Bool[Array, ""]
     lifetime_capacity_available: Bool[Array, ""]
     selected_counter_capacity_available: Bool[Array, ""]
     proposed_state_valid: Bool[Array, ""]
@@ -918,6 +946,28 @@ def init_recommendation_protocol_state() -> RecommendationProtocolState:
     )
 
 
+def _checked_recommendation_protocol_action(
+    action: object,
+    *,
+    name: str,
+) -> tuple[Int[Array, ""], Bool[Array, ""]]:
+    """Preserve an action candidate's integer domain until validation."""
+
+    raw = jnp.asarray(action)
+    if raw.ndim != 0:
+        raise ValueError("recommendation and partner_action must be scalar")
+    if not jnp.issubdtype(raw.dtype, jnp.integer):
+        raise TypeError("recommendation and partner_action must have integer dtypes")
+    validation_source = action if hasattr(action, "shape") and hasattr(action, "dtype") else raw
+    return checked_integer_action_array(
+        validation_source,
+        _INT32_MAX,
+        name=name,
+        expected_shape=(),
+        range_message=f"{name} must be a bounded int32 action",
+    )
+
+
 def update_recommendation_protocol(
     config: RecommendationProtocolConfig,
     state: RecommendationProtocolState,
@@ -958,17 +1008,15 @@ def update_recommendation_protocol(
         Updated counters and the action selected for environment execution.
     """
     _recommendation_protocol_state_contract(state)
-    raw_rec = jnp.asarray(recommendation)
-    raw_action = jnp.asarray(partner_action)
-    if raw_rec.ndim != 0 or raw_action.ndim != 0:
-        raise ValueError("recommendation and partner_action must be scalar")
-    if not jnp.issubdtype(raw_rec.dtype, jnp.integer) or not jnp.issubdtype(
-        raw_action.dtype,
-        jnp.integer,
-    ):
-        raise TypeError("recommendation and partner_action must have integer dtypes")
-    rec = raw_rec.astype(jnp.int32)
-    action = raw_action.astype(jnp.int32)
+    rec, recommendation_valid = _checked_recommendation_protocol_action(
+        recommendation,
+        name="recommendation",
+    )
+    action, partner_action_valid = _checked_recommendation_protocol_action(
+        partner_action,
+        name="partner_action",
+    )
+    action_candidates_valid = recommendation_valid & partner_action_valid
     if accept_recommendation is None:
         accepted = rec == action
     else:
@@ -1025,6 +1073,7 @@ def update_recommendation_protocol(
     proposed_state_valid = recommendation_protocol_state_is_valid(candidate_state)
     update_applied = (
         source_state_valid
+        & action_candidates_valid
         & lifetime_capacity_available
         & selected_counter_capacity_available
         & proposed_state_valid
@@ -1044,6 +1093,7 @@ def update_recommendation_protocol(
         post_step_words=new_state.step_words,
         source_state_valid=source_state_valid,
         exact_partition_valid=exact_partition_valid,
+        action_candidates_valid=action_candidates_valid,
         lifetime_capacity_available=lifetime_capacity_available,
         selected_counter_capacity_available=selected_counter_capacity_available,
         proposed_state_valid=proposed_state_valid,

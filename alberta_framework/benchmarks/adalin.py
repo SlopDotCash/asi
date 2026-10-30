@@ -73,6 +73,20 @@ def _trusted_float_array(value: object, *, name: str) -> Array:
     return array
 
 
+def _three_factor_product(first: Array, second: Array, third: Array) -> Array:
+    # Left-associated multiplication overflows before a small third factor
+    # can bring the rounded product back into the float32 range.
+    direct = first * second * third
+    first_mantissa, first_exponent = jnp.frexp(first)
+    second_mantissa, second_exponent = jnp.frexp(second)
+    third_mantissa, third_exponent = jnp.frexp(third)
+    mantissa = first_mantissa * second_mantissa * third_mantissa
+    exponent = first_exponent + second_exponent + third_exponent
+    stable = jnp.ldexp(mantissa, exponent)
+    use_stable = jnp.isfinite(stable) & ~jnp.isfinite(direct)
+    return jnp.where(use_stable, stable, direct)
+
+
 def _adalin_transaction(
     x: Array, alpha: Array, *, activation: Array, derivative: Array
 ) -> tuple[Array, Array]:
@@ -83,7 +97,7 @@ def _adalin_transaction(
     if math.prod(output_shape) > _MAX_ARRAY_ELEMENTS:
         raise ValueError("broadcast output exceeds the 1000000-element limit")
     gate = jax.lax.stop_gradient(jnp.cos(0.5 * jnp.pi * jnp.abs(derivative)))
-    candidate = activation + alpha * x * gate
+    candidate = activation + _three_factor_product(alpha, x, gate)
     valid = (
         jnp.all(jnp.isfinite(x)) & jnp.all(jnp.isfinite(alpha)) & jnp.all(jnp.isfinite(candidate))
     )

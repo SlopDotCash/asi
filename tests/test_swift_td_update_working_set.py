@@ -15,8 +15,8 @@ from alberta_framework.core.swift_td import (
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
 _OVERFLOW_FEATURE_DIM = 30_000_000
-_LAST_FIT_FEATURE_DIM = 18_512_788
-_FIRST_OVERFLOW_FEATURE_DIM = 18_512_789
+_LAST_FIT_FEATURE_DIM = 17_318_414
+_FIRST_OVERFLOW_FEATURE_DIM = 17_318_415
 
 
 def test_int32_wrap_forges_a_different_published_byte_identity() -> None:
@@ -81,8 +81,11 @@ def test_legal_small_swift_td_still_updates() -> None:
     persist_bytes = _swift_td_persistent_bytes(5)
     assert persist_bytes == 212
     # Four augmented fallback buffers and five scalar temporaries are charged
-    # in addition to the original three-state/result envelope.
-    assert _swift_td_update_working_set_bytes(5) == 3 * 212 + 4 * 5 + 29 + 4 * (4 * 6 + 5)
+    # in addition to the original three-state/result envelope. The two stable
+    # diagnostic means each add one feature buffer and three reduction scalars.
+    assert _swift_td_update_working_set_bytes(5) == (
+        3 * 212 + 4 * 5 + 29 + 4 * (4 * 6 + 5) + 4 * (2 * 5 + 6)
+    )
     optimizer = SwiftTD()
     state = optimizer.init(5)
     observation = jnp.zeros((5,), dtype=jnp.float32)
