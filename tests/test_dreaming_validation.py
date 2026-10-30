@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from types import MappingProxyType
 
 import jax.numpy as jnp
@@ -324,6 +325,30 @@ def test_dreaming_mapping_loaders_preserve_markers_and_exact_keys() -> None:
         )
     with pytest.raises(ValueError, match="payload has unknown fields"):
         GuardedDreamer.from_config({"type": "GuardedDreamer", "config": payload, "extra": 1})
+
+
+@pytest.mark.parametrize(
+    ("loader", "payload"),
+    [
+        (DreamingConfig.from_config, DreamingConfig(max_model_error=0.25).to_config()),
+        (
+            DreamSelectionConfig.from_config,
+            DreamSelectionConfig(utility_weight=0.25).to_config(),
+        ),
+        (
+            DreamRolloutConfig.from_config,
+            DreamRolloutConfig(confidence_threshold=0.25).to_config(),
+        ),
+    ],
+)
+def test_dreaming_config_loaders_reject_every_missing_field(
+    loader: Callable[[object], object], payload: dict[str, object]
+) -> None:
+    for field in payload.keys() - {"type"}:
+        incomplete = dict(payload)
+        del incomplete[field]
+        with pytest.raises(ValueError, match="missing fields"):
+            loader(incomplete)
 
 
 def test_dreaming_valid_construction_and_roundtrip() -> None:
