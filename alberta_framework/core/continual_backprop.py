@@ -563,6 +563,14 @@ def _select_replacement_index(
     mature = age >= jnp.asarray(maturity_threshold, dtype=age.dtype)
     eligible = mature & jnp.isfinite(utility)
     corrected = _bias_corrected_utility(utility, age, decay_rate)
+    finite_corrected = eligible & jnp.isfinite(corrected)
+    # Recover the ordering only when every eligible debiased score overflows.
+    # A common positive scale leaves the per-unit bias correction intact.
+    scale = jnp.max(jnp.where(eligible, jnp.abs(utility), 0.0))
+    scaled = _bias_corrected_utility(
+        utility / jnp.where(scale > 0.0, scale, 1.0), age, decay_rate
+    )
+    corrected = jnp.where(jnp.any(finite_corrected), corrected, scaled)
     eligible = eligible & jnp.isfinite(corrected)
     masked_utility = jnp.where(eligible, corrected, jnp.inf)
     has_candidate = jnp.any(eligible)

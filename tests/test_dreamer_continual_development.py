@@ -113,3 +113,35 @@ def test_validator_replays_reported_metrics() -> None:
     )
     with pytest.raises(ValueError, match="deterministic replay"):
         validate_result(dataclasses.replace(result, arms=(forged_values, *result.arms[1:])))
+
+
+@pytest.mark.parametrize("capacity", [1, 2, 8])
+def test_replay_never_exceeds_the_reported_capacity(capacity: int) -> None:
+    import sys
+    from types import FrameType
+    from typing import Any
+
+    from alberta_framework.benchmarks import dreamer_continual_development as lane
+
+    peaks: list[int] = []
+
+    def trace(frame: FrameType, event: str, arg: Any) -> Any:
+        if frame.f_code is lane._run_arm.__code__:
+            replay = frame.f_locals.get("replay")
+            if replay is not None:
+                peaks.append(len(replay))
+            return trace
+        return None
+
+    previous = sys.gettrace()
+    sys.settrace(trace)
+    try:
+        result = run_development_lane(
+            seed=FROZEN_SEEDS[0], steps_per_task=1,
+            replay_capacity=capacity, imaginations_per_step=1,
+        )
+    finally:
+        sys.settrace(previous)
+    assert max(peaks) == min(capacity, 3)
+    for arm in result.arms[:2]:
+        assert arm.receipt.peak_replay_bytes == max(peaks) * 8

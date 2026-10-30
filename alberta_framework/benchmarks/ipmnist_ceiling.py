@@ -338,6 +338,9 @@ def run_and_publish(
         raise ValueError("mode must be stationary, carried, or full")
     if tasks <= 0:
         raise ValueError("n_tasks must be positive")
+    artifact_path = output_dir / f"{tag}_seed{seed}.npz"
+    if artifact_path.exists():
+        raise FileExistsError(f"refusing to replace {tag} seed {seed} in {output_dir}")
     per_step, per_task, wall_seconds, provenance = run_arm_per_step(
         spec_name, seed, tasks, permutation_mode
     )

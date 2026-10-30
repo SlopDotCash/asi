@@ -141,13 +141,13 @@ def _preflight_cerebellum_resources(n_demons: int, obs_dim: int) -> None:
         "exo-cerebellum persistent state",
         float32_scalars=persistent_scalars,
     )
-    # During update, source weights, the outer-product delta, candidate
-    # weights, and the selected result weights are simultaneously live.  The
+    # Charge source, raw/scaled/recovered/selected deltas, candidate and
+    # result weights, plus the elementwise recovery mask as full matrices. The
     # remaining term covers the retained cumulant indices, predictions,
     # targets, errors, neutral result vectors, two raw/safe observations,
     # lifetime words, and transaction predicates. Charging every element as
     # four bytes conservatively covers int32, uint32, and boolean arrays too.
-    update_scalars = 4 * weight_scalars + 6 * n_demons + 4 * obs_dim + 16
+    update_scalars = 8 * weight_scalars + 7 * n_demons + 4 * obs_dim + 16
     _require_float32_resource(
         "exo-cerebellum update working set",
         float32_scalars=update_scalars,
@@ -387,8 +387,14 @@ class ExoCerebellumAgent:
         predictions = state.weights @ safe_obs
         targets = safe_next_obs[self._cumulant_indices]
         errors = targets - predictions
+        outer = jnp.outer(errors, safe_obs)
+        # Preserve ordinary products, including small errors; only recover
+        # an overflowing outer product by applying the learning rate first.
+        weight_delta = jnp.where(
+            jnp.isfinite(outer), alpha * outer, jnp.outer(alpha * errors, safe_obs)
+        )
         candidate_state = ExoCerebellumState(
-            weights=state.weights + alpha * jnp.outer(errors, safe_obs),
+            weights=state.weights + weight_delta,
             step_count=_saturating_int32_counter_increment(state.step_count),
             step_words=proposed_step_words,
         )

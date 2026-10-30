@@ -54,6 +54,7 @@ from alberta_framework.benchmarks.ipmnist_screening import (
     _make_rff_rls_learner,
     _make_sgd_ema_norm_learner,
     _make_sgd_momentum_gate_learner,
+    _make_shiftnorm_gated_l2init_learner,
     _make_sigma0_gated_l2init_learner,
     _make_snr_ema_norm_learner,
     _make_upgd_alpha_utility_learner,
@@ -2003,6 +2004,26 @@ class TestShardsAndMerge:
             match=r"'upgd_l2init' has inconsistent base_learner across seeds",
         ):
             merge_shards([p0, p1, p2], control_name="upgd_w_control", slope_window=2)
+
+    def test_merge_rejects_registry_contradicting_base_learner(self, tmp_path):
+        """An arm that consistently misreports its learner must not rank.
+
+        The campaign's live format is v1, and ``load_shard`` cross-checks the
+        registered arm only for source-bound v2/v3 shards.  Every seed of a v1
+        arm can therefore agree on a learner its registry entry never
+        registered, and the merged summary publishes the recorded
+        ``base_learner`` as the arm's identity.
+        """
+        control = self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.5)
+        winner = self._write_inband_shard(tmp_path, "upgd_l2init", 0, 0.9)
+        payload = json.loads(winner.read_text(encoding="utf-8"))
+        payload["base_learner"] = "adamw"
+        winner.write_text(json.dumps(payload), encoding="utf-8")
+
+        with pytest.raises(ValueError, match=r"registered arm registers 'upgd_w'"):
+            merge_shards(
+                [control, winner], control_name="upgd_w_control", slope_window=2
+            )
 
     def test_merge_rejects_environment_drift_and_records_environment(
         self, tmp_path, small_data
@@ -4760,6 +4781,139 @@ class TestGatedL2Init:
             np.testing.assert_array_equal(np.asarray(p_a[n]), np.asarray(p_b[n]), err_msg=n)
 
 
+class TestShiftnormGatedL2Init:
+    """``sigma0_shiftnorm_d099_gated_l2init``: the gated-L2-init pull term
+    of ``sigma0_ndecay099_gated_l2init`` transplanted onto the
+    shift-triggered re-conditioning champion body (see
+    :func:`alberta_framework.benchmarks.ipmnist_screening._make_shiftnorm_gated_l2init_learner`)."""
+
+    def test_registry_binds_ema_frozen_probe_input(self):
+        spec = screening_spec("sigma0_shiftnorm_d099_gated_l2init")
+        assert spec.frozen_probe_input is _ema_frozen_probe_input
+
+    def test_pull_scale_zero_reduces_to_shiftnorm_champion_bitwise(self):
+        """``l2init_pull_scale=0`` delegates to the champion factory's own
+        step, so the trajectory equals ``sigma0_shiftnorm_d099``
+        bit-for-bit (same normalizer, same gate, same decay)."""
+        hp = dict(screening_spec("sigma0_shiftnorm_d099_gated_l2init").hyperparameters)
+        hp["l2init_pull_scale"] = 0.0
+        init_fn, step_fn = _make_shiftnorm_gated_l2init_learner(hp)
+        champion = screening_spec("sigma0_shiftnorm_d099")
+        init_ref, step_ref = champion.factory(champion.hyperparameters)
+        params = init_mlp_params(jr.key(29), SMALL)
+        s_ours = init_fn(params)
+        s_ref = init_ref(params)
+        p_ours = p_ref = params
+        key = jr.key(43)
+        for i in range(5):
+            x = jr.normal(jr.fold_in(key, i), (SMALL.input_dim,)) + 0.1
+            y = jnp.array(i % SMALL.n_classes, jnp.int32)
+            p_ours, s_ours, _ = step_fn(p_ours, s_ours, x, y, jr.key(600 + i))
+            p_ref, s_ref, _ = step_ref(p_ref, s_ref, x, y, jr.key(600 + i))
+            for n in p_ours:
+                np.testing.assert_array_equal(
+                    np.asarray(p_ours[n]), np.asarray(p_ref[n]), err_msg=n
+                )
+
+    def test_registered_pull_scale_hand_computed(self):
+        """The registered arm equals a hand-computed shift-normalize ->
+        grad -> gate -> ``w*(1-lr*wd) - lr*pull_scale*(1-gate)*(w-w0) -
+        lr*(1-gate)*grad`` trajectory."""
+        hp = screening_spec("sigma0_shiftnorm_d099_gated_l2init").hyperparameters
+        assert hp["l2init_pull_scale"] == 0.01
+        init_fn, step_fn = _make_shiftnorm_gated_l2init_learner(hp)
+        params = init_mlp_params(jr.key(14), SMALL)
+        w0 = {n: v for n, v in params.items()}
+        state = init_fn(params)
+        ref_params = params
+        ref_utility = {n: jnp.zeros_like(v) for n, v in params.items()}
+        norm_state = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim),
+            var=jnp.ones(SMALL.input_dim),
+            count=jnp.zeros(SMALL.input_dim),
+        )
+        fast_mean = jnp.zeros(SMALL.input_dim)
+        key = jr.key(15)
+        for i in range(4):
+            x = jr.normal(jr.fold_in(key, i), (SMALL.input_dim,)) * 2.0 + 0.5
+            y = jnp.array(i % SMALL.n_classes, jnp.int32)
+            params, state, _ = step_fn(params, state, x, y, jr.key(500 + i))
+            x_norm, norm_state, fast_mean, _ = shift_adaptive_normalize(
+                norm_state,
+                fast_mean,
+                x,
+                decay=hp["norm_decay"],
+                fast_decay=hp["fast_decay"],
+                epsilon=hp["norm_epsilon"],
+                shift_k=hp["shift_k"],
+                shift_delta=hp["shift_delta"],
+                shift_refractory=hp["shift_refractory"],
+            )
+            _, grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(
+                ref_params, x_norm, y
+            )
+            beta = hp["utility_decay"]
+            ref_utility = {
+                n: beta * ref_utility[n] + (1.0 - beta) * (-grads[n] * ref_params[n])
+                for n in ref_params
+            }
+            count = i + 1
+            bias_correction = 1.0 - beta**count
+            global_max = jnp.max(
+                jnp.stack([jnp.max(ref_utility[n]) for n in sorted(ref_params)])
+            )
+            new_ref: dict[str, jnp.ndarray] = {}
+            for n in ref_params:
+                gate = jax.nn.sigmoid((ref_utility[n] / bias_correction) / global_max)
+                pull = hp["l2init_pull_scale"] * (1.0 - gate) * (ref_params[n] - w0[n])
+                new_ref[n] = (
+                    ref_params[n] * (1.0 - hp["step_size"] * hp["weight_decay"])
+                    - hp["step_size"] * pull
+                    - hp["step_size"] * (grads[n] * (1.0 - gate))
+                )
+            ref_params = new_ref
+            for n in ref_params:
+                # Independently reordered floating-point ops can diverge by
+                # a few ULP; the bit-exact contract lives in
+                # test_pull_scale_zero_reduces_to_shiftnorm_champion_bitwise.
+                np.testing.assert_allclose(
+                    np.asarray(params[n]),
+                    np.asarray(ref_params[n]),
+                    atol=1e-6,
+                    rtol=1e-5,
+                    err_msg=n,
+                )
+
+    def test_nonzero_pull_diverges_from_champion_and_stays_finite(self, small_data):
+        """The registered arm's trajectory differs from the champion's and
+        remains finite over a tiny-protocol smoke run."""
+        x, y = small_data
+        champion = run_screening_config(
+            x, y, screening_spec("sigma0_shiftnorm_d099"), seed=19, config=SMALL
+        )
+        result = run_screening_config(
+            x, y, screening_spec("sigma0_shiftnorm_d099_gated_l2init"), seed=19, config=SMALL
+        )
+        assert np.all(np.isfinite(result.per_task_accuracy))
+        assert np.all(np.isfinite(result.per_task_loss))
+        assert not np.array_equal(result.per_task_loss, champion.per_task_loss)
+
+    def test_key_is_unused_for_no_extra_randomness(self):
+        """The arm draws no perturbation noise (noise_std=0 by inheritance
+        from ``_sigma0_ext_hp``): different RNG keys must still reach an
+        identical result."""
+        params = init_mlp_params(jr.key(3), SMALL)
+        x = jr.normal(jr.key(90), (SMALL.input_dim,))
+        y = jnp.array(2, jnp.int32)
+        spec = screening_spec("sigma0_shiftnorm_d099_gated_l2init")
+        init_fn, step_fn = spec.factory(spec.hyperparameters)
+        state = init_fn(params)
+        p_a, _, _ = step_fn(params, state, x, y, jr.key(0))
+        p_b, _, _ = step_fn(params, state, x, y, jr.key(987654))
+        for n in params:
+            np.testing.assert_array_equal(np.asarray(p_a[n]), np.asarray(p_b[n]), err_msg=n)
+
+
 class TestComparisonArms:
     """Reviewer comparison rows: published plasticity mechanisms behind the
     champion's EMA input conditioning (decay 0.99) on a plain-SGD base — no
@@ -5876,6 +6030,29 @@ class TestRLSHead:
         with pytest.raises(ValueError, match="residual"):
             self._factory(gate_scale=0.0)
 
+    def test_resid_newton_without_whiten_is_rejected(self):
+        """``resid_newton=1`` is read only inside the ``resid_whiten > 0``
+        branch, so without whitening it is a dead knob: a 12-step run with
+        ``resid_newton=1.0, resid_whiten=0.0`` reproduced the plain residual
+        incumbent bit-for-bit (max param and readout diff 0.0), while the
+        whitened pair diverged.  Fail closed like the neighbouring
+        composition guards instead of silently running the incumbent."""
+        with pytest.raises(ValueError, match="resid_newton"):
+            self._factory(head_resid=1.0, resid_newton=1.0)
+
+    def test_resid_newton_without_residual_body_is_rejected(self):
+        with pytest.raises(ValueError, match="resid_newton"):
+            self._factory(head_resid=0.0, resid_newton=1.0)
+
+    def test_resid_newton_with_whiten_is_accepted(self):
+        """The one live composition: whitening selects the preconditioner
+        and ``resid_newton`` picks its Newton direction."""
+        init_fn, _step_fn = self._factory(
+            head_resid=1.0, resid_whiten=1.0, resid_newton=1.0
+        )
+        params = init_mlp_params(jr.key(5), SMALL)
+        init_fn(params)
+
     def test_gate_off_two_step_plain_sgd_and_identical_head(self):
         """The ablation does only decayed SGD on the residual body.
 
@@ -6460,6 +6637,121 @@ class TestRLSHead:
             "rls_head_resid_l1_preset005_nogate"
         ).hyperparameters
         assert nogate_hp == {**incumbent_hp, "gate_scale": 0.0}
+
+
+class TestRLSHeadCombo:
+    """Composition pin for ``rls_head_l0999_preset005_pcap``: the two
+    wave-2 wind-up salvages composed on the forgetting-0.999 RLS head.
+
+    Each guard was screened alone (detector-driven P reset at 0.05:
+    0.86484; P trace cap 1e4: 0.86608); the composition is a separate
+    registry arm.  Its reduction pins: the same factory fed the combo
+    hyperparameters with the cap disabled (0) follows
+    ``rls_head_l0999_preset005`` bit-for-bit, with the reset made
+    untriggerable (2.0) follows ``rls_head_l0999_pcap`` bit-for-bit, and
+    with both inert follows the plain ``rls_head_l0999`` head bit-for-bit.
+    """
+
+    def _factory(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_hp,
+        )
+
+        return _make_rls_head_learner(_rls_head_hp(**overrides))
+
+    def _stream(self, n_steps=12, seed=3):
+        key = jr.key(seed)
+        xs, ys = [], []
+        for step in range(n_steps):
+            key, kx = jr.split(key)
+            xs.append(
+                jr.uniform(kx, (SMALL.input_dim,), jnp.float32, -1.0, 1.0)
+                * (1.0 + step % 3)
+            )
+            ys.append(jnp.array(step % SMALL.n_classes, jnp.int32))
+        return xs, ys
+
+    def _run_pair(self, factory_a, factory_b, n_steps=12):
+        params = init_mlp_params(jr.key(5), SMALL)
+        params_a = params_b = params
+        state_a, state_b = factory_a[0](params), factory_b[0](params)
+        xs, ys = self._stream(n_steps=n_steps)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params_a, state_a, m_a = factory_a[1](
+                params_a, state_a, x, y, jr.key(step)
+            )
+            params_b, state_b, m_b = factory_b[1](
+                params_b, state_b, x, y, jr.key(step)
+            )
+            for n in params:
+                np.testing.assert_array_equal(
+                    np.asarray(params_a[n]), np.asarray(params_b[n])
+                )
+            np.testing.assert_array_equal(
+                np.asarray(state_a.p), np.asarray(state_b.p)
+            )
+            np.testing.assert_array_equal(
+                np.asarray(state_a.wout), np.asarray(state_b.wout)
+            )
+            for a, b in zip(m_a, m_b):
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    def test_registry_config(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+            _rls_head_frozen_probe_input,
+            _rls_head_hp,
+        )
+
+        spec = screening_spec("rls_head_l0999_preset005_pcap")
+        assert spec.base_learner == "upgd_w"
+        assert spec.mechanism == "rls_readout"
+        assert spec.factory is _make_rls_head_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        assert spec.noise_update is None
+        assert spec.hyperparameters == _rls_head_hp(
+            rls_lambda=0.999, rls_reset_frac=0.05, rls_p_trace_cap=1e4
+        )
+        # Every other constant is verbatim the plain l0999 head arm.
+        base = screening_spec("rls_head_l0999").hyperparameters
+        hp = spec.hyperparameters
+        assert set(hp) == set(base)
+        for k in base:
+            if k not in ("rls_reset_frac", "rls_p_trace_cap"):
+                assert hp[k] == base[k], k
+
+    def test_cap_off_reduces_to_preset_parent_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=0.05, rls_p_trace_cap=0.0
+        )
+        parent = self._factory(rls_lambda=0.999, rls_reset_frac=0.05)
+        self._run_pair(combo, parent)
+
+    def test_reset_off_reduces_to_pcap_parent_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=2.0, rls_p_trace_cap=1e4
+        )
+        parent = self._factory(rls_lambda=0.999, rls_p_trace_cap=1e4)
+        self._run_pair(combo, parent)
+
+    def test_both_inert_reduces_to_plain_head_bitwise(self):
+        combo = self._factory(
+            rls_lambda=0.999, rls_reset_frac=2.0, rls_p_trace_cap=0.0
+        )
+        plain = self._factory(rls_lambda=0.999)
+        self._run_pair(combo, plain)
+
+    def test_combo_smoke_runs_finite(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec("rls_head_l0999_preset005_pcap"),
+            seed=2, config=SMALL,
+        )
+        acc = np.asarray(result.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
 class TestRLSHeadL2Init:
@@ -7063,6 +7355,109 @@ class TestNBEnsemble:
             assert np.all(np.isfinite(np.asarray(result.per_task_loss))), name
             plas = np.asarray(result.per_task_plasticity)
             assert np.all((plas >= 0.0) & (plas <= 1.0)), name
+
+
+class TestNBEnsembleCombo:
+    """Composition pin for ``nb_ensemble_nbreset_rls3``: probe (b) NB resets
+    and probe (c) linear-RLS third member composed on the base ensemble.
+
+    Each flag was screened alone (nbreset +0.0018, rls3 +0.0001 over
+    ``nb_ensemble_champion``); the composition is a separate registry arm.
+    Its reduction pin: the same factory fed the combo hyperparameters with
+    both mechanism flags at 0 follows ``nb_ensemble_champion`` bit-for-bit.
+    """
+
+    def _hp(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import _nb_ensemble_hp
+
+        return _nb_ensemble_hp(**overrides)
+
+    def _factory(self, **overrides):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        return _make_nb_ensemble_learner(self._hp(**overrides))
+
+    def _stream(self, n_steps=12, seed=3):
+        key = jr.key(seed)
+        xs, ys = [], []
+        for step in range(n_steps):
+            key, kx = jr.split(key)
+            xs.append(
+                jr.uniform(kx, (SMALL.input_dim,), jnp.float32, -1.0, 1.0)
+                * (1.0 + step % 3)
+            )
+            ys.append(jnp.array(step % SMALL.n_classes, jnp.int32))
+        return xs, ys
+
+    def test_registry_config(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        spec = screening_spec("nb_ensemble_nbreset_rls3")
+        assert spec.mechanism == "transient_ensemble"
+        assert spec.factory is _make_nb_ensemble_learner
+        assert spec.noise_update is None
+        hp = spec.hyperparameters
+        assert hp["ens_nb_reset"] == 1.0
+        assert hp["ens_use_rls"] == 1.0
+        # Every other constant is verbatim the base ensemble arm.
+        base = screening_spec("nb_ensemble_champion").hyperparameters
+        assert set(hp) == set(base)
+        for k in base:
+            if k not in ("ens_nb_reset", "ens_use_rls"):
+                assert hp[k] == base[k], k
+
+    def test_inert_flags_reduce_to_base_ensemble_bitwise(self):
+        combo = screening_spec("nb_ensemble_nbreset_rls3").hyperparameters
+        inert = {**combo, "ens_nb_reset": 0.0, "ens_use_rls": 0.0}
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_nb_ensemble_learner,
+        )
+
+        base_init, base_step = self._factory()
+        combo_init, combo_step = _make_nb_ensemble_learner(inert)
+        params = init_mlp_params(jr.key(5), SMALL)
+        base_params, combo_params = params, params
+        base_state, combo_state = base_init(params), combo_init(params)
+        xs, ys = self._stream()
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            base_params, base_state, m_base = base_step(
+                base_params, base_state, x, y, jr.key(step)
+            )
+            combo_params, combo_state, m_combo = combo_step(
+                combo_params, combo_state, x, y, jr.key(step)
+            )
+            for n in params:
+                np.testing.assert_array_equal(
+                    np.asarray(combo_params[n]), np.asarray(base_params[n])
+                )
+            np.testing.assert_array_equal(
+                np.asarray(combo_state.member_acc), np.asarray(base_state.member_acc)
+            )
+            for a, b in zip(m_combo, m_base):
+                np.testing.assert_array_equal(np.asarray(a), np.asarray(b))
+
+    def test_combo_carries_both_mechanisms(self):
+        ens_init, _ = self._factory(ens_nb_reset=1.0, ens_use_rls=1.0)
+        params = init_mlp_params(jr.key(3), SMALL)
+        state = ens_init(params)
+        assert state.rls is not None
+        assert state.member_acc.shape == (3,)
+        assert state.det_norm is not None
+        assert state.det_fast is not None
+
+    def test_combo_smoke_runs_finite(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec("nb_ensemble_nbreset_rls3"), seed=2, config=SMALL
+        )
+        acc = np.asarray(result.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
 class TestRLSHeadIdentMap:

@@ -44,14 +44,15 @@ def test_int32_wrap_forges_a_different_published_byte_identity() -> None:
 
 
 def _unit_persist_bytes(observation_dim: int) -> int:
-    return 4 * (observation_dim * observation_dim + 8 * observation_dim + 37)
+    # The +38 constant counts per-option scalars including previous_discounts.
+    return 4 * (observation_dim * observation_dim + 8 * observation_dim + 38)
 
 
 def test_named_persist_and_width_still_fit_at_overflow() -> None:
     persist_bytes = _unit_persist_bytes(_OVERFLOW_OBS)
     working_set_bytes = 3 * persist_bytes + 64
     extras_bytes = 64
-    assert persist_bytes == 1_600_640_148
+    assert persist_bytes == 1_600_640_152
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert 4 * _OVERFLOW_OBS <= _INT32_MAX
@@ -107,7 +108,7 @@ def test_legal_small_stomp_still_constructs() -> None:
         base_hidden_sizes=(),
     )
     persist_bytes = _stomp_direct_state_bytes(stomp)
-    assert persist_bytes == 420
+    assert persist_bytes == 424
     agent = STOMPAgent(stomp)
     state = agent.init(jr.key(0))
     agent.update(

@@ -1104,3 +1104,15 @@ class TestTrackingKeepsEveryRecording:
         chex.assert_trees_all_close(
             history.recording_indices, jnp.array([0, 4, 8], dtype=jnp.int32)
         )
+
+
+def test_linear_update_preserves_finite_normalizer_variance_means() -> None:
+    learner = LinearLearner(optimizer=LMS(0.1), normalizer=EMANormalizer())
+    state = learner.init(8)
+    observation = jnp.full(8, 1.5e19, dtype=jnp.float32)
+    result = learner.update(state, observation, jnp.asarray(0.0, dtype=jnp.float32))
+    variances = np.asarray(result.state.normalizer_state.var, dtype=np.float64)
+
+    assert bool(result.update_applied)
+    assert np.all(np.isfinite(variances))
+    assert float(result.metrics[3]) == pytest.approx(float(np.mean(variances)), rel=2e-6)
