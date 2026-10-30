@@ -276,6 +276,30 @@ def test_plot_hyperparameter_heatmap_handles_missing_cells(results) -> None:
     assert np.isnan(data[:, 1]).all()
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_plot_hyperparameter_heatmap_rejects_nonfinite_selected_mean_without_figure(
+    results, value: float
+) -> None:
+    """A poisoned selected result must not masquerade as a missing heatmap cell."""
+    poisoned = dict(results)
+    summary = results["lms"].summary["squared_error"]
+    poisoned["lms"] = results["lms"]._replace(
+        summary={"squared_error": summary._replace(mean=value)}
+    )
+    before = tuple(plt.get_fignums())
+
+    with pytest.raises(ValueError, match="heatmap metric mean"):
+        plot_hyperparameter_heatmap(
+            poisoned,
+            param1_name="optimizer",
+            param1_values=["lms"],
+            param2_name="suffix",
+            param2_values=[""],
+            name_pattern="{p1}{p2}",
+        )
+    assert tuple(plt.get_fignums()) == before
+
+
 def test_create_comparison_figure_has_four_panels(results) -> None:
     fig = create_comparison_figure(results)
     assert isinstance(fig, plt.Figure)

@@ -1135,6 +1135,8 @@ def _finite_scalar(value: Any, *, name: str) -> float:
         raise ValueError(f"{name} must remain finite and representable as a protocol float")
     if original != 0 and converted == 0.0:
         raise ValueError(f"{name} must not underflow when represented as a protocol float")
+    if original != converted:
+        raise ValueError(f"{name} must not lose precision as a protocol float")
     return converted
 
 

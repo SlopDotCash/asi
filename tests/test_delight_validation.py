@@ -267,6 +267,11 @@ def test_delight_mapping_loaders_preserve_markers_and_exact_keys() -> None:
         GradientJoyConfig.from_config(without_type)
     with pytest.raises(ValueError, match="unsupported fields"):
         GradientJoyConfig.from_config({**payload, "unknown": 1})
+    for field in set(payload) - {"type"}:
+        incomplete = dict(payload)
+        incomplete.pop(field)
+        with pytest.raises(ValueError, match="missing required fields"):
+            GradientJoyConfig.from_config(incomplete)
     # Delightful
     dconfig = _delight_cfg()
     dpayload = dconfig.to_config()
@@ -280,6 +285,11 @@ def test_delight_mapping_loaders_preserve_markers_and_exact_keys() -> None:
         DelightfulPolicyGradientConfig.from_config(without_type)
     with pytest.raises(ValueError, match="unsupported fields"):
         DelightfulPolicyGradientConfig.from_config({**dpayload, "unknown": 1})
+    for field in set(dpayload) - {"type"}:
+        incomplete = dict(dpayload)
+        incomplete.pop(field)
+        with pytest.raises(ValueError, match="missing required fields"):
+            DelightfulPolicyGradientConfig.from_config(incomplete)
 
     class StringSubclass(str):
         pass
