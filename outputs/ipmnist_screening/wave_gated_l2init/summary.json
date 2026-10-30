@@ -1,0 +1,171 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "sigma0_ndecay099_gated_l2init",
+ "created_unix": 1791683691.11047,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-39-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 3,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8652777545555556,
+   "average_online_accuracy_stderr": 7.660256861752502e-05,
+   "average_plasticity_mean": 0.30269459427777773,
+   "base_learner": "upgd_w",
+   "config_name": "sigma0_ndecay099_gated_l2init",
+   "hyperparameters": {
+    "gate_beta": 1.0,
+    "hidden_rms": 0.0,
+    "l2init_pull_scale": 0.01,
+    "local_gate": 0.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.0003495239523809508,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.8654,
+    0.865137,
+    0.865297
+   ],
+   "per_seed_late_window_slope": [
+    -0.000215,
+    -0.00047928,
+    -0.00035429
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 663.75
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "sigma0_ndecay099_gated_l2init",
+   "path": "/home/hatch/workspace/slop-asi/cycle30-wave/shards/sigma0_ndecay099_gated_l2init_seed0.json",
+   "seed": 0,
+   "sha256": "e27b08c3d04e3b322fa44620dcc36765d252052febe41be3697215d45257eaa1",
+   "size_bytes": 5596
+  },
+  {
+   "config_name": "sigma0_ndecay099_gated_l2init",
+   "path": "/home/hatch/workspace/slop-asi/cycle30-wave/shards/sigma0_ndecay099_gated_l2init_seed1.json",
+   "seed": 1,
+   "sha256": "707120c82c892ab5e7c56cc1635b21ce2fe095be8c6af843bde33e6a7cd9db6b",
+   "size_bytes": 5607
+  },
+  {
+   "config_name": "sigma0_ndecay099_gated_l2init",
+   "path": "/home/hatch/workspace/slop-asi/cycle30-wave/shards/sigma0_ndecay099_gated_l2init_seed2.json",
+   "seed": 2,
+   "sha256": "57fd6bbc0b3c37a908257333593ed7f4893268484745cbc6f207643b4977d74f",
+   "size_bytes": 5601
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "415e7d225a4338492275be6cafa69d87c158c30a",
+  "git_object_format": "sha1",
+  "git_tree": "d44bf1a1b0fed06b92e0d0a6156308acd728a1a2",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "33e76d75df337c78366226bfe640ecbd64c2620de72dc073c4a1fb0ff0490d59",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}

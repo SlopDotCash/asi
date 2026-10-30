@@ -946,7 +946,14 @@ class LatentWorldModel:
             targets,
         )
         target_next_latent = self.encode(state, safe_next_observation)
-        surprise = jnp.mean((prediction.next_latent - target_next_latent) ** 2)
+        squared_latent_error = (prediction.next_latent - target_next_latent) ** 2
+        surprise = jnp.mean(squared_latent_error)
+        # Recover reduction overflow only; genuine nonfinite errors still reject.
+        surprise = jnp.where(
+            jnp.all(jnp.isfinite(squared_latent_error)) & ~jnp.isfinite(surprise),
+            jnp.sum(squared_latent_error / self._config.latent_dim),
+            surprise,
+        )
         reward_error = prediction.reward - safe_reward
         discount_error = prediction.discount - safe_discount
         prediction_error = surprise + reward_error**2 + discount_error**2
@@ -1038,6 +1045,7 @@ class LatentWorldModel:
             inputs_valid
             & learner_result.update_applied
             & floating_tree_is_finite(state)
+            & (state.step_count >= 0)
             & floating_tree_is_finite(candidate_state)
             & diagnostics_finite
         )

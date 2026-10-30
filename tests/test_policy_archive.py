@@ -136,3 +136,25 @@ def test_control_modes_accept_varying_latent_widths_across_steps() -> None:
     fixed = BoundedPolicyArchive(byte_budget=1024, min_latent_distance=0.0, mode="fixed_snapshot")
     fixed = fixed.add(_entry("a", (0.0,), 1.0)).add(_entry("b", (1.0, 2.0), 2.0))
     assert [entry.identity for entry in fixed.entries] == ["a"]
+
+
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_archive_add_preserves_separation_across_scales(scale: float) -> None:
+    first = _entry("first", (0.0,), 1.0)
+    second = _entry("second", (scale,), 2.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024, min_latent_distance=scale / 2.0, entries=(first,)
+    )
+    assert archive.add(second).entries == (first, second)
+
+
+@pytest.mark.parametrize("scale", [1e-200, 1e200])
+def test_archive_add_replaces_actual_nearest_across_scales(scale: float) -> None:
+    far = _entry("far", (3.0 * scale,), 1.0)
+    near = _entry("near", (scale,), 2.0)
+    improved = _entry("improved", (0.0,), 3.0)
+    archive = BoundedPolicyArchive(
+        byte_budget=1024, min_latent_distance=2.0 * scale, entries=(far, near)
+    )
+    assert archive.add(improved).entries == (far, improved)
+    assert archive.entries == (far, near)

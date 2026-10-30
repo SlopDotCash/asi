@@ -433,8 +433,25 @@ def _reverse_binary_gate_jvp(primals: tuple[Array], tangents: tuple[Array]) -> t
 
 def _layer_normalize(value: Array) -> Array:
     mean = jnp.mean(value)
-    variance = jnp.mean((value - mean) ** 2)
-    return (value - mean) * jax.lax.rsqrt(variance + 1e-5)
+    centered = value - mean
+    variance = jnp.mean(centered**2)
+    ordinary = centered * jax.lax.rsqrt(variance + 1e-5)
+
+    scale = jnp.max(jnp.abs(value))
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    scaled = jnp.where(jnp.abs(value) == scale, jnp.sign(value), value / safe_scale)
+    scaled_centered = scaled - jnp.mean(scaled)
+    scaled_variance = jnp.mean(scaled_centered**2)
+    scaled_epsilon = (jnp.asarray(1e-5, dtype=value.dtype) / safe_scale) / safe_scale
+    fallback = jnp.where(
+        scaled_variance > 0.0,
+        scaled_centered * jax.lax.rsqrt(scaled_variance + scaled_epsilon),
+        jnp.zeros_like(value),
+    )
+    use_fallback = jnp.all(jnp.isfinite(value)) & (
+        ~jnp.isfinite(mean) | ~jnp.isfinite(variance)
+    )
+    return jnp.where(use_fallback, fallback, ordinary)
 
 
 def _forward(weights: BiMUState, features: Array) -> Array:

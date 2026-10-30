@@ -438,3 +438,22 @@ def test_jitted_pure_kernel_matches_eager_without_partial_state() -> None:
     assert all(bool(jnp.all(jnp.isnan(value))) for value in updated)
     with pytest.raises(ValueError, match="Threefry"):
         interval_dropout(jnp.ones(1), jnp.asarray([0, 0], dtype=jnp.uint32), relu_probability=1)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("arm", ["smooth_leaky", "smooth_leaky_off"])
+def test_smooth_leaky_training_gradient_is_finite_in_saturation_tails(
+    compiled: bool, arm: str,
+) -> None:
+    from alberta_framework.benchmarks.low_cost_controls_ipmnist import _activate
+
+    values = jnp.asarray([-60.0, -2.0, 0.0, 2.0, 60.0], dtype=jnp.float32)
+    gradient = jax.grad(lambda x: jnp.sum(_activate(arm, x, jr.key(0), True)))
+    if compiled:
+        gradient = jax.jit(gradient)
+    derivatives = gradient(values)
+    assert bool(jnp.all(jnp.isfinite(derivatives)))
+    expected_tails = jnp.asarray([1.0, 1.0] if arm.endswith("_off") else [0.1, 1.0])
+    np.testing.assert_allclose(derivatives[jnp.asarray([0, 4])], expected_tails, rtol=1e-6)
+    if arm.endswith("_off"):
+        np.testing.assert_array_equal(derivatives, jnp.ones_like(values))

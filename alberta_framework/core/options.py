@@ -125,7 +125,9 @@ def _stomp_direct_array_scalars(config: STOMPConfig) -> int:
         base_learner_scalars
         + 2 * n_options * n_actions * observation_dim
         + n_options * observation_dim * observation_dim
-        + 11 * n_options
+        # Per-option scalars now include previous_discounts alongside the
+        # model EMAs, completions, and average rewards.
+        + 12 * n_options
         + 2 * observation_dim
         + 15
     )
@@ -266,11 +268,16 @@ class IntraOptionPoliciesState:
         traces: Accumulating eligibility traces; same shape as ``q_weights``.
         average_rewards: Per-option differential reward rates; shape
             ``(n_options,)``.
+        previous_discounts: Per-option discount of the transition that
+            produced the stored traces (shape ``(n_options,)``). The trace
+            decay on an update uses this prior discount, not the current
+            transition's discount; see :func:`_update_intra_option_policy`.
     """
 
     q_weights: Float[Array, "n_options n_actions obs_dim"]
     traces: Float[Array, "n_options n_actions obs_dim"]
     average_rewards: Float[Array, " n_options"]
+    previous_discounts: Float[Array, " n_options"]
 
 
 # ---------------------------------------------------------------------------
@@ -543,6 +550,7 @@ def _stomp_static_dispatch_contract(
         (state.option_policies.q_weights, (n_options, n_primitive_actions, observation_dim)),
         (state.option_policies.traces, (n_options, n_primitive_actions, observation_dim)),
         (state.option_policies.average_rewards, (n_options,)),
+        (state.option_policies.previous_discounts, (n_options,)),
         (state.option_models.cumreward_ema, (n_options,)),
         (state.option_models.env_return_ema, (n_options,)),
         (state.option_models.duration_ema, (n_options,)),
@@ -1403,6 +1411,7 @@ def _reset_linear_stomp_feature_axes(
             option_policies.traces,
         ),
         average_rewards=option_policies.average_rewards,
+        previous_discounts=option_policies.previous_discounts,
     )
     model_axis_mask = selected[None, :, None] | selected[None, None, :]
     scrubbed_models = OptionModelsState(
@@ -1441,16 +1450,21 @@ def _update_intra_option_policy(
 
     ``terminated`` is the option's own termination decision (goal, duration,
     or environmental termination).  It zeros the bootstrap only.  The supplied
-    transition discount controls both bootstrapping and trace carry, so
-    fractional continuation is not silently promoted to one.  The incoming
-    trace is decayed by that discount even on the terminating step: the goal
-    step's TD error must still reach the earlier actions of the option
-    (``e_t = gamma_t * lambda * e_{t-1} + phi_t``); the caller clears the
-    stored trace after this update when the option's lifecycle ends.
+    transition discount bootstraps this step's TD error and becomes the
+    next step's prior discount, but it must not decay the incoming trace:
+    the trace is built from earlier states, so it decays by the discount of
+    the transition *into* the current state (``previous_discounts``, carried
+    from the previous call), giving ``e_t = gamma_t * lambda * e_{t-1} +
+    phi_t``.  Decaying by the current discount instead would turn the
+    terminating step into TD(0) exactly where sparse pseudo-reward needs
+    multi-step credit: a zero terminating discount would erase the carried
+    trace before the goal step's TD error is applied.  The caller clears
+    the stored trace after this update when the option's lifecycle ends.
     """
     q_i = option_policies.q_weights[option_idx]
     traces_i = option_policies.traces[option_idx]
     avg_r_i = option_policies.average_rewards[option_idx]
+    previous_discount = option_policies.previous_discounts[option_idx]
     transition_discount = jnp.asarray(discount, dtype=jnp.float32)
     bootstrap_discount = jnp.where(terminated, 0.0, transition_discount).astype(jnp.float32)
 
@@ -1460,7 +1474,7 @@ def _update_intra_option_policy(
 
     alpha = jnp.asarray(step_size, dtype=jnp.float32)
     beta = jnp.asarray(avg_reward_step_size, dtype=jnp.float32)
-    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * transition_discount
+    lam = jnp.asarray(trace_decay, dtype=jnp.float32) * previous_discount
     rho = jnp.asarray(importance_ratio, dtype=jnp.float32)
 
     action_mask = jax.nn.one_hot(last_intra_action, n_primitive_actions, dtype=jnp.float32)
@@ -1472,9 +1486,12 @@ def _update_intra_option_policy(
         & jnp.isfinite(jnp.asarray(pseudo_reward, dtype=jnp.float32))
         & jnp.all(jnp.isfinite(next_obs))
         & jnp.isfinite(transition_discount)
+        & jnp.isfinite(previous_discount)
         & jnp.isfinite(rho)
         & (transition_discount >= 0.0)
         & (transition_discount <= 1.0)
+        & (previous_discount >= 0.0)
+        & (previous_discount <= 1.0)
         & (last_intra_action >= 0)
         & (last_intra_action < n_primitive_actions)
         & jnp.all(jnp.isfinite(q_i))
@@ -1499,12 +1516,16 @@ def _update_intra_option_policy(
     new_q_weights = option_policies.q_weights.at[option_idx].set(new_q_i)
     new_traces = option_policies.traces.at[option_idx].set(new_traces_i)
     new_avg_rewards = jnp.where(option_mask, new_avg_r_i, option_policies.average_rewards)
+    new_previous_discounts = option_policies.previous_discounts.at[option_idx].set(
+        jnp.where(update_applied, transition_discount, previous_discount)
+    )
 
     return (
         IntraOptionPoliciesState(
             q_weights=new_q_weights,
             traces=new_traces,
             average_rewards=new_avg_rewards,
+            previous_discounts=new_previous_discounts,
         ),
         jnp.where(update_applied, td_error, jnp.zeros_like(td_error)),
         update_applied,
@@ -1802,6 +1823,8 @@ class STOMPAgent:
         )
         values_valid = (
             _all_floating_leaves_finite(state)
+            & jnp.all(state.option_policies.previous_discounts >= 0.0)
+            & jnp.all(state.option_policies.previous_discounts <= 1.0)
             & (state.option_baseline_mass >= 0.0)
             & (state.option_discount >= 0.0)
             & (state.option_discount <= 1.0)
@@ -1874,6 +1897,7 @@ class STOMPAgent:
                 q_weights=option_q_weights,
                 traces=jnp.zeros((n_opt, n_prim, obs_dim), dtype=jnp.float32),
                 average_rewards=jnp.zeros(n_opt, dtype=jnp.float32),
+                previous_discounts=jnp.ones(n_opt, dtype=jnp.float32),
             ),
             option_models=OptionModelsState(
                 cumreward_ema=jnp.zeros(n_opt, dtype=jnp.float32),
@@ -3584,6 +3608,15 @@ def load_stomp_state_with_migration(payload: dict[str, Any]) -> STOMPState:
         field.name
         for field in dataclasses.fields(IntraOptionPoliciesState)  # type: ignore[arg-type]
     }
+    # Payloads written before prior-discount tracking lack previous_discounts;
+    # their stored traces were decayed by the then-current discount, so the
+    # neutral continuing default (1.0) is the only principled fill. Traces
+    # are zero on a fresh option, where the fill value is irrelevant.
+    if set(policies) == policy_field_names - {"previous_discounts"}:
+        n_policy_options = jnp.asarray(policies["average_rewards"]).shape[0]
+        policies["previous_discounts"] = jnp.ones(
+            (n_policy_options,), dtype=jnp.float32
+        )
     if set(policies) != policy_field_names:
         raise ValueError(
             f"STOMP option-policy payload fields {sorted(policies)} != {sorted(policy_field_names)}"

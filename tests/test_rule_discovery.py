@@ -182,6 +182,36 @@ def test_all_flags_off_is_plain_sgd_with_decay() -> None:
         )
 
 
+@pytest.mark.parametrize("row", [0, 3])
+def test_blank_input_keeps_zero_utility_updates_finite(row: int) -> None:
+    import jax
+
+    from alberta_framework.benchmarks.upgd_ipmnist import cross_entropy_loss
+
+    config = IPMNISTConfig(
+        n_tasks=1, task_length=2, input_dim=4, hidden1=4, hidden2=3, n_classes=2
+    )
+    params = init_mlp_params(jr.key(8, impl="threefry2x32"), config)
+    x = jnp.zeros((4,), dtype=jnp.float32)
+    y = jnp.asarray(1, dtype=jnp.int32)
+    genome = seed_genomes()[row]
+    updated, _, _, loss = jax.jit(rule_step)(
+        genome, params, init_rule_state(params), x, y
+    )
+    assert bool(jnp.isfinite(loss))
+    for value in updated.values():
+        assert bool(jnp.all(jnp.isfinite(value)))
+    if row == 3:
+        constants = decode_genome(genome)
+        (_, _), grads = jax.value_and_grad(cross_entropy_loss, has_aux=True)(params, x, y)
+        for name in params:
+            expected = (
+                params[name] * (1.0 - constants["lr"] * constants["weight_decay"])
+                - constants["lr"] * grads[name]
+            )
+            np.testing.assert_allclose(updated[name], expected, rtol=1e-5, atol=1e-7)
+
+
 def test_decay_to_init_pulls_toward_init_not_zero() -> None:
     config = dict(decode_genome(champion_form_genome()))
     for flag in FLAG_NAMES:
