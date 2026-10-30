@@ -152,6 +152,9 @@ _MAX_JSON_NESTING_DEPTH = 64
 CLAIM_CONTRACT_VERSION = "alberta.evidence_claim_contract.v1"
 DIRTY_STATE_POLICY_VERSION = "alberta.registered_source_dirty_policy.v1"
 REPO_ROOT = Path(__file__).resolve().parents[2]
+_MEASUREMENT_VALIDATION_SOURCE_PATH = Path(
+    "alberta_framework/evaluation/_measurement_validation.py"
+)
 
 _FTL_CLAIM_ID = "ftl_world_model_decision_fidelity"
 _FTL_ARTIFACT_PATH = Path("outputs/ftl_decision/evidence.v1.json")
@@ -719,6 +722,7 @@ EVIDENCE_SPECS: tuple[EvidenceSpec, ...] = (
         source_paths=(
             Path("alberta_framework/core/interaction_features.py"),
             Path("alberta_framework/streams/gauntlet.py"),
+            _MEASUREMENT_VALIDATION_SOURCE_PATH,
             Path("alberta_framework/evaluation/scale_robust_feature.py"),
             Path("alberta_framework/evaluation/scale_robust_feature_artifact.py"),
             Path("alberta_framework/evaluation/scale_robust_feature_cli.py"),
@@ -797,6 +801,7 @@ EVIDENCE_SPECS: tuple[EvidenceSpec, ...] = (
             owner="recurring_multiagent_coadaptation.protocol",
         ),
         source_paths=(
+            _MEASUREMENT_VALIDATION_SOURCE_PATH,
             Path("alberta_framework/evaluation/continual_multiagent.py"),
             Path("alberta_framework/evaluation/continual_multiagent_artifact.py"),
             Path("alberta_framework/evaluation/continual_multiagent_cli.py"),
