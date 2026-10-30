@@ -7554,12 +7554,11 @@ class TestRLSHeadIdentMap:
         assert np.all(np.isfinite(np.asarray(ident.per_task_accuracy)))
 
     def test_registry_arms(self):
-        """Only the two 200-task-confirmed identifier arms plus the gated
-        idet003_s005625 step-size triple screen are registered; the
-        screened intermediates and the round-2 rejections (negative
-        result #22) are deregistered."""
+        """Both development chains' registered identifier arms are retained;
+        screened intermediates and round-2 rejections remain deregistered."""
         from alberta_framework.benchmarks.ipmnist_screening import (
             SCREENING_REGISTRY,
+            _make_rls_head_identmap_l2init_learner,
             _make_rls_head_identmap_learner,
             _rls_head_frozen_probe_input,
         )
@@ -7567,11 +7566,54 @@ class TestRLSHeadIdentMap:
         expected = {
             "rls_head_resid_identmap50_r": {
                 "ident_match_at": 50.0, "ident_match2": 200.0,
-                "ident_match3": 2000.0,
+                "ident_match3": 2000.0, "rls_reset_frac": 0.05,
             },
             "rls_head_resid_identmap200_r": {
                 "ident_match_at": 200.0, "ident_match2": 500.0,
-                "ident_match3": 2000.0,
+                "ident_match3": 2000.0, "rls_reset_frac": 0.05,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.03,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_sgd": 1.0,
+                "rls_head_sgd_step": 0.1,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_diag": 1.0,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_block": 4.0,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_gdiag": 1.0,
+            },
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank": {
+                "ident_match_at": 50.0, "ident_match2": 200.0,
+                "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625, "rls_ridge_init": 0.03,
+                "rls_reset_frac": 0.05, "rls_head_rank": 8.0,
             },
             "rls_head_resid_identmap50_r_idet003_s005625": {
                 "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -7582,16 +7624,564 @@ class TestRLSHeadIdentMap:
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
         }
-        assert registered == set(expected)
+        l2init_name = (
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        assert registered == set(expected) | {l2init_name}
         for name, overrides in expected.items():
             spec = SCREENING_REGISTRY[name]
             assert spec.factory is _make_rls_head_identmap_learner
             assert spec.frozen_probe_input is _rls_head_frozen_probe_input
             assert spec.hyperparameters["head_resid"] == 1.0
             assert spec.hyperparameters["rls_lambda"] == 1.0
-            assert spec.hyperparameters["rls_reset_frac"] == 0.05
             for key, value in overrides.items():
                 assert spec.hyperparameters[key] == value
+        l2init_spec = SCREENING_REGISTRY[l2init_name]
+        assert l2init_spec.factory is _make_rls_head_identmap_l2init_learner
+        assert l2init_spec.frozen_probe_input is _rls_head_frozen_probe_input
+        assert (
+            l2init_spec.hyperparameters
+            == {
+                **SCREENING_REGISTRY[
+                    "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+                ].hyperparameters,
+                "decay_to_init": 1.0,
+            }
+        )
+
+class TestRLSHeadIdentMapIdet003S0031640625R02:
+    """Gated idet003_s0031640625_r01 composition at RLS head ridge 0.03.
+
+    The chain's ridge axis opened at ridge 0.1 (PR #3122, +0.01040 on
+    every seed, above the 0.005 confirmation bar), so this wave measures
+    the axis's smallest named cell: ``rls_ridge_init`` 0.1 -> 0.03.
+    The wave-3 ridge star measured small ridge only at
+    ``rls_lambda=0.999`` (negative result #10's collapse is forgetting
+    wind-up); at lambda 1.0 the head P matrix is nonincreasing PSD, so
+    the cell is unmeasured and structurally safe, and the P-trace cap
+    stays disabled exactly as in the parent. This class pins the
+    bit-exact reductions: ridge restored (0.1) follows the gated
+    idet003_s0031640625_r01 composition, ridge restored with step
+    restored (0.01) follows the gated idet003 composition, and
+    identifier disabled follows the gated non-identifier incumbent at
+    this ridge and step.
+    """
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        ]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec("rls_head_resid_identmap50_r")
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "ident_reset_frac"
+        }
+        for key, value in parent.hyperparameters.items():
+            expected = value
+            if key == "step_size":
+                expected = 0.0031640625
+            elif key == "rls_ridge_init":
+                expected = 0.03
+            assert spec.hyperparameters[key] == expected, key
+        assert spec.hyperparameters["ident_reset_frac"] == 0.03
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_reset_frac"] == 0.05
+
+    def test_ridge_parent_pin_bitwise(self, small_data):
+        """``rls_ridge_init = 0.1`` follows the gated
+        idet003_s0031640625_r01 composition (ridge restored to the r01
+        registered value)."""
+        x, y = small_data
+        base = screening_spec("rls_head_resid_identmap50_r")
+        parent = replace(
+            base,
+            name=base.name + "_idet003_s0031640625_r01_test",
+            hyperparameters={
+                **base.hyperparameters,
+                "ident_reset_frac": 0.03,
+                "step_size": 0.0031640625,
+                "rls_ridge_init": 0.1,
+            },
+        )
+        expected = run_screening_config(
+            x, y, parent, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(rls_ridge_init=0.1), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ridge_default_step_parent_pin_bitwise(self, small_data):
+        """``rls_ridge_init = 1.0`` with ``step_size = 0.01`` follows the
+        gated idet003 composition at its registered step."""
+        x, y = small_data
+        base = screening_spec("rls_head_resid_identmap50_r")
+        idet003 = replace(
+            base,
+            name=base.name + "_idet003_test",
+            hyperparameters={
+                **base.hyperparameters, "ident_reset_frac": 0.03,
+            },
+        )
+        expected = run_screening_config(
+            x, y, idet003, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._spec(rls_ridge_init=1.0, step_size=0.01),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_off_pin_bitwise(self, small_data):
+        """Identifier disabled follows the gated incumbent at the same
+        ridge and step size."""
+        x, y = small_data
+        incumbent = screening_spec("rls_head_resid_l1_preset005")
+        incumbent_s = replace(
+            incumbent,
+            name=incumbent.name + "_s0031640625_r02_test",
+            hyperparameters={
+                **incumbent.hyperparameters,
+                "step_size": 0.0031640625,
+                "rls_ridge_init": 0.03,
+            },
+        )
+        expected = run_screening_config(
+            x, y, incumbent_s, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            self._spec(
+                ident_match_at=0.0, ident_match2=0.0, ident_match3=0.0
+            ),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Preset003:
+    """Gated r02 incumbent at head P-reset detector threshold 0.03.
+
+    The chain's reset axis opens on the r02 incumbent (ridge 0.03, PR
+    #3123) with ``rls_reset_frac`` 0.05 -> 0.03. The reset is
+    level-triggered (every step with ``mean(shifted) >= reset_frac``
+    holds P at I/ridge), so the lower threshold lengthens each hold
+    around the initial shift and the match-induced alignment changes of
+    the 50/200/2000-sample remap refinements and catches weaker
+    disturbances. The 0.05 default was calibrated on the pre-identmap
+    champion, whose inner detector watched the un-remapped stream, so
+    the axis is unmeasured on the identified chain. This class pins the
+    bit-exact reductions: reset restored (0.05) follows the gated r02
+    composition, and reset disabled (2.0) follows the same composition
+    with the reset path off.
+    """
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003"
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003"
+        ]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters)
+        for key, value in parent.hyperparameters.items():
+            expected = value
+            if key == "rls_reset_frac":
+                expected = 0.03
+            assert spec.hyperparameters[key] == expected, key
+        assert spec.hyperparameters["ident_reset_frac"] == 0.03
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_ridge_init"] == 0.03
+        assert spec.hyperparameters["step_size"] == 0.0031640625
+
+    def test_reset_parent_pin_bitwise(self, small_data):
+        """``rls_reset_frac = 0.05`` follows the gated r02 composition
+        (reset threshold restored to the parent's registered value)."""
+        x, y = small_data
+        expected = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(rls_reset_frac=0.05), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_reset_disabled_pin_bitwise(self, small_data):
+        """``rls_reset_frac = 2.0`` is untriggerable and follows the same
+        composition with the reset path disabled."""
+        x, y = small_data
+        base = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        no_reset = replace(
+            base,
+            name=base.name + "_noreset_test",
+            hyperparameters={
+                **base.hyperparameters, "rls_reset_frac": 2.0,
+            },
+        )
+        expected = run_screening_config(
+            x, y, no_reset, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(rls_reset_frac=2.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02_preset003"
+            ),
+            seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02L2Init:
+    """Gated r02 incumbent plus the issue-#14 body L2-Init endpoint.
+
+    The chain's named single-knob axes are all measured (negative result
+    #24) and both recent axis closures localize their costs in the
+    late-life tail (#23/#24), so this cell composes the never-screened
+    code-only ``rls_head_resid_l1_preset005_l2init`` endpoint onto the
+    chain incumbent: decoupled decay pulls w1/b1/w2/b2 toward their
+    initial values at the unchanged weight-decay rate; w3/b3 and the RLS
+    recursion are untouched.  ``decay_to_init = 0.0`` is the inert
+    delegation branch that keeps the reduction to the r02 parent
+    bit-exactly pinnable; the registered cell is the frozen ``1.0``
+    endpoint.
+    """
+
+    _BODY = ("w1", "b1", "w2", "b2")
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_l2init_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        ]
+        assert spec.factory is _make_rls_head_identmap_l2init_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert spec.hyperparameters == {
+            **parent.hyperparameters, "decay_to_init": 1.0,
+        }
+        assert spec.hyperparameters["gate_scale"] == 1.0
+        assert spec.hyperparameters["rls_reset_frac"] == 0.05
+        assert spec.hyperparameters["head_resid"] == 1.0
+        assert spec.hyperparameters["rls_lambda"] == 1.0
+        assert spec.hyperparameters["ident_reset_frac"] == 0.03
+        assert spec.hyperparameters["step_size"] == 0.0031640625
+        assert spec.hyperparameters["rls_ridge_init"] == 0.03
+
+    def test_init_state_binds_body_init(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            RLSHeadIdentState,
+            RLSHeadL2InitState,
+        )
+
+        spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+        )
+        init_fn, _ = spec.factory(spec.hyperparameters)
+        params = TestRLSHeadL2Init._manual_params()
+        state = init_fn(params)
+        assert type(state) is RLSHeadIdentState
+        assert type(state.inner) is RLSHeadL2InitState
+        assert set(state.inner.init_params) == set(self._BODY)
+        for name in self._BODY:
+            np.testing.assert_array_equal(
+                np.asarray(state.inner.init_params[name]),
+                np.asarray(params[name]),
+            )
+
+    def test_decay_off_parent_pin_bitwise(self, small_data):
+        """``decay_to_init = 0.0`` reduces bit-exactly to the registered
+        r02 parent (the delegation branch)."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(
+            x, y, parent, seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y, self._spec(decay_to_init=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_ident_off_l2init_pin_bitwise(self, small_data):
+        """Identifier disabled follows the gated non-identifier learner
+        at the same step and ridge with L2-Init active: the identmap
+        wrapper's delegation passes the L2-Init flag through and the
+        ident keys never leak into the inner learner."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        base = screening_spec("rls_head_resid_l1_preset005")
+        expected_spec = replace(
+            base,
+            name=base.name + "_l2init_s0031640625_r02_test",
+            factory=lambda hp: _make_rls_head_learner(
+                hp, _decay_to_init=True
+            ),
+            hyperparameters={
+                **base.hyperparameters,
+                "step_size": 0.0031640625,
+                "rls_ridge_init": 0.03,
+            },
+        )
+        expected = run_screening_config(
+            x, y, expected_spec, seed=7, config=SMALL,
+        )
+
+        def ident_off_factory(hp):
+            ident_off = {
+                **hp,
+                "ident_match_at": 0.0,
+                "ident_match2": 0.0,
+                "ident_match3": 0.0,
+            }
+            return _make_rls_head_identmap_learner(
+                ident_off, _decay_to_init=True
+            )
+
+        pinned_spec = replace(
+            self._spec(),
+            name=self._spec().name + "_identoff",
+            factory=ident_off_factory,
+        )
+        pinned = run_screening_config(
+            x, y, pinned_spec, seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_l2init_engages_and_stays_finite(self, small_data):
+        """The pull term is live, not a label: one step moves exactly the
+        four residual body tensors (w3/b3 are untouched), and the full
+        run diverges from the r02 parent in the post-update loss while
+        staying finite.  At this fixture's scale the argmax accuracy can
+        stay bitwise equal — the loss is the engagement observable."""
+        import jax
+        import jax.numpy as jnp
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _rls_head_identmap_l2init_hp,
+        )
+
+        hp = {
+            key: value
+            for key, value in _rls_head_identmap_l2init_hp().items()
+            if key != "decay_to_init"
+        }
+        init_plain, step_plain = _make_rls_head_identmap_learner(
+            hp, _decay_to_init=False
+        )
+        init_l2i, step_l2i = _make_rls_head_identmap_learner(
+            hp, _decay_to_init=True
+        )
+        params = {
+            "w1": jnp.full(
+                (SMALL.input_dim, SMALL.hidden1), 0.05, jnp.float32
+            ),
+            "b1": jnp.full((SMALL.hidden1,), 0.10, jnp.float32),
+            "w2": jnp.full(
+                (SMALL.hidden1, SMALL.hidden2), 0.04, jnp.float32
+            ),
+            "b2": jnp.full((SMALL.hidden2,), 0.10, jnp.float32),
+            "w3": jnp.full(
+                (SMALL.hidden2, SMALL.n_classes), 0.03, jnp.float32
+            ),
+            "b3": jnp.full((SMALL.n_classes,), 0.02, jnp.float32),
+        }
+        x_step = jnp.asarray(small_data[0][0])
+        y_step = jnp.asarray(small_data[1][0])
+        key = jax.random.key(3)
+        new_plain, _, _ = step_plain(
+            params, init_plain(params), x_step, y_step, key
+        )
+        new_l2i, _, _ = step_l2i(
+            params, init_l2i(params), x_step, y_step, key
+        )
+        for name in ("w1", "b1", "w2", "b2"):
+            assert not np.array_equal(
+                np.asarray(new_plain[name]), np.asarray(new_l2i[name])
+            ), name
+        for name in ("w3", "b3"):
+            np.testing.assert_array_equal(
+                np.asarray(new_plain[name]), np.asarray(new_l2i[name])
+            )
+
+        x, y = small_data
+        parent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        pinned = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+            ),
+            seed=7, config=SMALL,
+        )
+        assert not np.array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(parent.per_task_loss),
+        )
+        assert np.all(np.isfinite(np.asarray(pinned.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(pinned.per_task_loss)))
+
+    def test_factory_rejects_drift(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_l2init_learner,
+        )
+
+        hp = dict(
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init"
+            ).hyperparameters
+        )
+        with pytest.raises(ValueError, match="differs at"):
+            _make_rls_head_identmap_l2init_learner(
+                {**hp, "decay_to_init": 0.5}
+            )
+        with pytest.raises(ValueError, match="registered keys"):
+            _make_rls_head_identmap_l2init_learner({**hp, "extra": 1.0})
+        with pytest.raises(ValueError, match="differs at"):
+            _make_rls_head_identmap_l2init_learner(
+                {**hp, "step_size": 0.01}
+            )
 
 
 class TestRLSHeadIdentMapIdet003S005625:
@@ -7774,6 +8364,1299 @@ class TestPlasticityCounterSaturation:
         assert "state.silence2 + 1" not in text
         assert "state.age1 + 1" not in text
         assert "cbp.age1 + 1" not in text
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Sgdhead:
+    """Matched-gradient head control on the r02 incumbent.
+
+    Theory §6.3 (open hypotheses) asks whether the RLS-residual body lift
+    comes from the residual's geometry or from the stable head's rapid fit,
+    and §6.6 asks whether the O(d^2) RLS head is removable. This arm keeps
+    the incumbent verbatim and swaps only the head's estimation rule:
+    Sherman-Morrison -> plain decayed SGD on the same one-hot squared loss
+    (head step calibrated on a seed-0 3-task bracket: 0.0001-0.4 all
+    finite, flat optimum at 0.05-0.1, registered endpoint 0.1 with
+    weight_decay 0.01 verbatim). The body still trains on the head's own
+    pre-update residual gradient, so the error signal is matched exactly.
+    Pins: flag off is bitwise the incumbent path, the zero-step head is the
+    documented degenerate frozen head, the first update is exact decayed
+    SGD on the residual, and the composition guards reject untested
+    envelopes.
+    """
+
+    SGDHEAD = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead"
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(TestRLSHeadIdentMapIdet003S0031640625R02Sgdhead.SGDHEAD)
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.SGDHEAD]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_sgd",
+            "rls_head_sgd_step",
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_sgd"] == 1.0
+        assert spec.hyperparameters["rls_head_sgd_step"] == 0.1
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_sgd = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the control is a build-time branch, so the flag-off
+        compiled graph is the unchanged RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y,
+            self._spec(rls_head_sgd=0.0, rls_head_sgd_step=0.1),
+            seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_zero_step_head_is_frozen_degenerate(self):
+        """``rls_head_sgd_step = 0`` freezes the head at wout = 0: every
+        prediction is the constant argmax of the zero vector (class 0) and
+        the pre-update loss is 0.5 per step — the same measurable degenerate
+        the infinite-ridge pin uses for the RLS head."""
+        hp = self._spec(rls_head_sgd_step=0.0).hyperparameters
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        xs, ys = TestRLSHead()._stream(n_steps=8, seed=11)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            assert not np.any(np.asarray(state.wout))
+            expected_acc = 1.0 if int(y) == 0 else 0.0
+            assert float(metrics[0]) == expected_acc
+            assert float(metrics[1]) == 0.5
+
+    def test_first_update_is_exact_decayed_sgd_on_residual(self):
+        """With the body frozen (step_size=0) the head update is exactly
+        ``wout * (1 - step*weight_decay) + step * outer(onehot - logits,
+        phi)`` — descent on the same one-hot squared loss the RLS head
+        solves, with the residual entering in the RLS gain's sign."""
+        import jax
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            EMANormState,
+            _make_rls_head_learner,
+            shift_adaptive_normalize,
+        )
+
+        hp = self._spec(step_size=0.0).hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        x, y = next(iter(zip(*TestRLSHead()._stream(n_steps=1, seed=11))))
+        norm = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim, jnp.float32),
+            var=jnp.ones(SMALL.input_dim, jnp.float32),
+            count=jnp.zeros(SMALL.input_dim, jnp.float32),
+        )
+        x_norm, _, _, _ = shift_adaptive_normalize(
+            norm, jnp.zeros(SMALL.input_dim, jnp.float32), x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        m = SMALL.hidden2 + 1
+        phi = jnp.concatenate(
+            [a2 / jnp.sqrt(m), jnp.ones((1,))], axis=None
+        ).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(int(y), SMALL.n_classes, dtype=jnp.float32)
+        expected = (
+            state.wout * (1.0 - hp["rls_head_sgd_step"] * hp["weight_decay"])
+            + hp["rls_head_sgd_step"] * jnp.outer(phi, y_onehot)
+        )
+        _, state2, _ = step_fn(params, state, x, y, jr.key(0))
+        # The scalar head step enters XLA's fused multiply chain, so changing
+        # the registered constant can shift individual products by 1-2 ulp
+        # even though the formula is unchanged. The pin asserts the update
+        # identity at a 3-ulp tolerance; the flag-off and registry pins stay
+        # bitwise.
+        np.testing.assert_allclose(
+            np.asarray(state2.wout), np.asarray(expected), rtol=0, atol=3e-10
+        )
+        np.testing.assert_array_equal(
+            np.asarray(state2.p), np.asarray(state.p)
+        )
+
+    def test_composition_guards(self):
+        """The control is scoped to the plain gated residual body: invalid
+        endpoint values and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_sgd": 0.5}, "must be 0.0 or 1.0"),
+            ({"rls_head_sgd": 1.0, "head_resid": 0.0}, "residual body"),
+            ({"rls_head_sgd": 1.0, "gate_scale": 0.0}, "gated residual body"),
+            ({"rls_head_sgd": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_sgd": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_sgd": 1.0, "rls_head_sgd_step": -0.1},
+                "nonnegative and finite",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.SGDHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Diaghead:
+    """Per-direction adaptive head on the r02 incumbent.
+
+    Negative result #26 proved the stable head's rapid exact fit is
+    load-bearing and names the only justified further head-replacement
+    probe: a second-order or per-direction adaptive head. This arm keeps
+    the incumbent verbatim and replaces the full Sherman-Morrison P with
+    a diagonal per-direction gain accumulator — each coordinate runs its
+    own scalar RLS on the shared residual (gain
+    K_j = p_j*phi_j / (lambda + p_j*phi_j^2)); O(m) state instead of
+    O(m^2), no new hyperparameter, no calibration bracket. On a
+    single-active-direction phi the gain is bitwise the full head's, so
+    the only removed mechanism is the cross-direction denominator
+    coupling phi^T P phi.
+    """
+
+    DIAGHEAD = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Diaghead.DIAGHEAD
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.DIAGHEAD]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_diag"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_diag"] == 1.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_diag = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_diag=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_infinite_ridge_is_frozen_degenerate(self):
+        """``rls_ridge_init = inf`` starts the diagonal accumulator at
+        zero: every prediction is the constant argmax of the zero vector
+        (class 0) and the pre-update loss is 0.5 per step — the same
+        measurable degenerate the full-P head documents."""
+        hp = {
+            **self._spec().hyperparameters,
+            "rls_ridge_init": float("inf"),
+        }
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        xs, ys = TestRLSHead()._stream(n_steps=8, seed=11)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            assert not np.any(np.asarray(state.wout))
+            expected_acc = 1.0 if int(y) == 0 else 0.0
+            assert float(metrics[0]) == expected_acc
+            assert float(metrics[1]) == 0.5
+
+    def test_first_update_is_exact_per_direction_rls(self):
+        """With the body frozen (step_size=0) and the detector-driven reset
+        at its untriggerable sentinel
+        (``rls_reset_frac = 2.0``, the documented bitwise no-reset path —
+        the fresh-stream shift detector fires on step 0 at any finite
+        threshold), the first head step is exactly the documented
+        per-direction recursion:
+        K_j = p_j*phi_j / (1 + p_j*phi_j^2),
+        wout_1 = wout_0 + outer(K, y_onehot), p_1 = p_0 - K*(p_0*phi) —
+        each coordinate its own scalar RLS on the shared residual."""
+        import jax
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            EMANormState,
+            _make_rls_head_learner,
+            shift_adaptive_normalize,
+        )
+
+        hp = self._spec(step_size=0.0, rls_reset_frac=2.0).hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        x, y = next(iter(zip(*TestRLSHead()._stream(n_steps=1, seed=11))))
+        norm = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim, jnp.float32),
+            var=jnp.ones(SMALL.input_dim, jnp.float32),
+            count=jnp.zeros(SMALL.input_dim, jnp.float32),
+        )
+        x_norm, _, _, _ = shift_adaptive_normalize(
+            norm, jnp.zeros(SMALL.input_dim, jnp.float32), x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        m = SMALL.hidden2 + 1
+        phi = jnp.concatenate(
+            [a2 / jnp.sqrt(m), jnp.ones((1,))], axis=None
+        ).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(int(y), SMALL.n_classes, dtype=jnp.float32)
+        p0 = jnp.full((m,), 1.0 / hp["rls_ridge_init"], jnp.float32)
+        pp = p0 * phi
+        expected_gain = pp / (1.0 + p0 * phi * phi)
+        expected_wout = state.wout + jnp.outer(expected_gain, y_onehot)
+        expected_p = p0 - expected_gain * pp
+        _, state2, _ = step_fn(params, state, x, y, jr.key(0))
+        # The elementwise recursion enters XLA's fused multiply chains, so
+        # individual products can shift by 1-2 float32 ulp (and the
+        # reset-out compilation re-fuses the gain chain); the pin asserts
+        # the update identity well inside one ulp of the largest term.
+        np.testing.assert_allclose(
+            np.asarray(state2.wout), np.asarray(expected_wout),
+            rtol=0, atol=1e-6,
+        )
+        np.testing.assert_allclose(
+            np.asarray(state2.p), np.asarray(expected_p),
+            rtol=0, atol=1e-6,
+        )
+
+    def test_single_direction_gain_is_bitwise_full_rls_gain(self):
+        """The documented reduction: with one active direction the
+        diagonal head's gain equals the full Sherman-Morrison gain exactly
+        (the removed coupling phi^T P phi exists only across simultaneous
+        directions)."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        np.testing.assert_array_equal(
+            np.asarray(gain_diag), np.asarray(gain_full)
+        )
+
+    def test_accumulator_nonincreasing_and_finite(self):
+        """At lambda 1 the per-direction accumulator is nonincreasing in
+        every excited-or-unexcited coordinate (no wind-up) and stays
+        finite across a boundary-heavy stream."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        xs, ys = TestRLSHead()._stream(n_steps=24, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= 0.0)
+            assert np.isfinite(float(metrics[1]))
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The diagonal head runs the whole harness finite, in range, and
+        off both the frozen-head degenerate and the incumbent's
+        trajectory. (The 3x30 toy config is too short for either head to
+        clear the chance floor reliably — the full-P incumbent itself
+        measures 0.10-0.27 here — so no above-chance claim is pinned.)
+        """
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        diag = run_screening_config(
+            x, y, screening_spec(self.DIAGHEAD), seed=7, config=SMALL,
+        )
+        acc = np.asarray(diag.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composes_under_identmap(self, small_data):
+        """The identmap factory delegates to the diag-enabled body learner:
+        ``ident_match_at = 0`` is bitwise the direct diag learner."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        spec = screening_spec(self.DIAGHEAD)
+        composed = replace(
+            spec,
+            name=spec.name + "_nomatch",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 0.0, "ident_match2": 0.0,
+                "ident_match3": 0.0,
+            },
+        )
+        assert spec.factory is _make_rls_head_identmap_learner
+        direct = run_screening_config(x, y, spec, seed=7, config=SMALL)
+        pinned = run_screening_config(x, y, composed, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(direct.per_task_accuracy),
+        )
+        init_fn, _ = _make_rls_head_learner(spec.hyperparameters)
+        params = init_mlp_params(jr.key(6), SMALL)
+        assert init_fn(params).p.ndim == 1
+
+    def test_composition_guards(self):
+        """The diagonal head is scoped to the plain gated residual body at
+        lambda 1: invalid endpoint values and untested compositions fail at
+        build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_diag": 0.5}, "must be 0.0 or 1.0"),
+            (
+                {"rls_head_diag": 1.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_diag": 1.0, "head_resid": 0.0}, "residual body"),
+            ({"rls_head_diag": 1.0, "gate_scale": 0.0}, "gated residual body"),
+            ({"rls_head_diag": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_diag": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_diag": 1.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_diag": 1.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            ({"rls_head_diag": 1.0, "rls_p_trace_cap": 100.0}, "trace cap"),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.DIAGHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Blockhead:
+    """Negative result #27's named escape class: a block-factored head.
+
+    The r02 incumbent verbatim with the full Sherman-Morrison P
+    restricted to G contiguous blocks — each block an exact RLS on its
+    slice, keeping within-block cross-direction coupling and dropping
+    only the cross-block coupling (the named "coupling at sub-O(d^2)
+    cost" mechanism between the full head and the measured diagonal
+    cell). House convention: the bit-exact reduction pin ships with the
+    mechanism, failing-test-first.
+    """
+
+    BLOCKHEAD = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Blockhead.BLOCKHEAD
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.BLOCKHEAD]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_block"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_block"] == 4.0
+
+    def test_flag_one_bitwise_incumbent(self, small_data):
+        """``rls_head_block = 1.0`` (explicit) is bitwise the registered
+        incumbent path: the reduction cell compiles the unchanged full-P
+        RLS graph, so the G ladder's G = 1 endpoint is exact."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_block=1.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_first_update_is_exact_block_rls(self):
+        """With the body frozen (step_size=0) and the detector-driven
+        reset at its untriggerable sentinel, the first head step is
+        exactly the documented per-block recursion
+        K_b = P_b phi_b / (1 + phi_b^T P_b phi_b),
+        wout_1 = wout_0 + outer(K, y_onehot),
+        P_b,1 = P_b,0 - outer(K_b, P_b,0 phi_b), and the zero-padded tail
+        coordinates stay inert at the initial ridge value."""
+        import jax
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            EMANormState,
+            _make_rls_head_learner,
+            shift_adaptive_normalize,
+        )
+
+        hp = self._spec(step_size=0.0, rls_reset_frac=2.0).hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        x, y = next(iter(zip(*TestRLSHead()._stream(n_steps=1, seed=11))))
+        norm = EMANormState(
+            mean=jnp.zeros(SMALL.input_dim, jnp.float32),
+            var=jnp.ones(SMALL.input_dim, jnp.float32),
+            count=jnp.zeros(SMALL.input_dim, jnp.float32),
+        )
+        x_norm, _, _, _ = shift_adaptive_normalize(
+            norm, jnp.zeros(SMALL.input_dim, jnp.float32), x,
+            decay=hp["norm_decay"],
+            fast_decay=hp["fast_decay"],
+            epsilon=hp["norm_epsilon"],
+            shift_k=hp["shift_k"],
+            shift_delta=hp["shift_delta"],
+            shift_refractory=hp["shift_refractory"],
+        )
+        a1 = jax.nn.relu(x_norm @ params["w1"] + params["b1"])
+        a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
+        m = SMALL.hidden2 + 1
+        phi = jnp.concatenate(
+            [a2 / jnp.sqrt(m), jnp.ones((1,))], axis=None
+        ).astype(jnp.float32)
+        y_onehot = jax.nn.one_hot(int(y), SMALL.n_classes, dtype=jnp.float32)
+        n_blocks = int(hp["rls_head_block"])
+        block = -(-m // n_blocks)
+        padded = block * n_blocks
+        phi_b = np.concatenate(
+            [np.asarray(phi), np.zeros(padded - m, np.float32)]
+        ).reshape(n_blocks, block)
+        p0 = np.tile(
+            np.eye(block, dtype=np.float32) / hp["rls_ridge_init"],
+            (n_blocks, 1, 1),
+        )
+        pp = p0 @ phi_b[..., None]
+        denom = 1.0 + np.sum(phi_b[:, :, None] * pp, axis=1)
+        expected_gain = (pp / denom[:, None, :])[:, :, 0]
+        expected_wout = np.asarray(state.wout) + np.outer(
+            expected_gain.reshape(padded)[:m], np.asarray(y_onehot)
+        )
+        expected_p = p0 - expected_gain[:, :, None] * pp[:, None, :, 0]
+        expected_p = 0.5 * (
+            expected_p + np.transpose(expected_p, (0, 2, 1))
+        )
+        _, state2, _ = step_fn(params, state, x, y, jr.key(0))
+        # XLA fuses the einsum chains, so individual products can shift
+        # several float32 ulp where pp/denom cancels hardest; the pin
+        # asserts the update identity well inside float32 fusion noise.
+        np.testing.assert_allclose(
+            np.asarray(state2.wout), expected_wout, rtol=0, atol=1e-5,
+        )
+        np.testing.assert_allclose(
+            np.asarray(state2.p), expected_p, rtol=0, atol=1e-5,
+        )
+        # Padding inertness: tail coordinates keep the initial ridge
+        # value and never couple to a real coordinate.
+        p_now = np.asarray(state2.p)
+        for g in range(n_blocks):
+            lo, hi = g * block, (g + 1) * block
+            pad_idx = [i for i in range(lo, hi) if i >= m]
+            for i in pad_idx:
+                li = i - lo
+                init_val = np.float32(1.0) / np.float32(
+                    hp["rls_ridge_init"]
+                )
+                assert p_now[g, li, li] == init_val
+                for j in range(block):
+                    if j != li:
+                        assert p_now[g, li, j] == np.float32(0.0)
+                        assert p_now[g, j, li] == np.float32(0.0)
+
+    def test_one_block_per_coordinate_is_the_diagonal_head(self, small_data):
+        """The documented G = m endpoint: with one block per coordinate
+        the per-block recursion reduces to the registered diagonal head
+        (negative #27's arm), so the ladder's endpoints are both pinned
+        arms."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        diag_spec = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead"
+        )
+        m = SMALL.hidden2 + 1
+        block_spec = replace(
+            diag_spec,
+            name=diag_spec.name + "_as_block",
+            hyperparameters={
+                **diag_spec.hyperparameters,
+                "rls_head_diag": 0.0, "rls_head_block": float(m),
+            },
+        )
+        diag = run_screening_config(x, y, diag_spec, seed=7, config=SMALL)
+        block = run_screening_config(
+            x, y, block_spec, seed=7, config=SMALL
+        )
+        np.testing.assert_allclose(
+            np.asarray(block.per_task_accuracy),
+            np.asarray(diag.per_task_accuracy), rtol=0, atol=1e-6,
+        )
+        init_fn, _ = _make_rls_head_learner(block_spec.hyperparameters)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        assert state.p.shape == (m, 1, 1)
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The block head runs the whole harness finite, in range, and
+        off both the frozen-head degenerate and the incumbent's
+        trajectory."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        block = run_screening_config(
+            x, y, screening_spec(self.BLOCKHEAD), seed=7, config=SMALL,
+        )
+        acc = np.asarray(block.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composes_under_identmap(self, small_data):
+        """The identmap factory delegates to the block-enabled body
+        learner: ``ident_match_at = 0`` is bitwise the direct block
+        learner."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+            _make_rls_head_learner,
+        )
+
+        x, y = small_data
+        spec = screening_spec(self.BLOCKHEAD)
+        composed = replace(
+            spec,
+            name=spec.name + "_nomatch",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 0.0, "ident_match2": 0.0,
+                "ident_match3": 0.0,
+            },
+        )
+        assert spec.factory is _make_rls_head_identmap_learner
+        direct = run_screening_config(x, y, spec, seed=7, config=SMALL)
+        pinned = run_screening_config(x, y, composed, seed=7, config=SMALL)
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(direct.per_task_accuracy),
+        )
+        init_fn, _ = _make_rls_head_learner(spec.hyperparameters)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        assert state.p.ndim == 3
+
+    def test_head_width_guard(self):
+        """A block count above the head width has no coordinate meaning
+        and fails at init time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec(rls_head_block=1000.0).hyperparameters
+        init_fn, _ = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        with pytest.raises(ValueError, match="head width"):
+            init_fn(params)
+
+    def test_composition_guards(self):
+        """The block head is scoped to the plain gated residual body at
+        lambda 1: invalid endpoint values and untested compositions fail
+        at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_block": 0.5}, "positive"),
+            ({"rls_head_block": -2.0}, "positive"),
+            (
+                {"rls_head_block": 4.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_block": 4.0, "head_resid": 0.0}, "residual body"),
+            (
+                {"rls_head_block": 4.0, "gate_scale": 0.0},
+                "gated residual body",
+            ),
+            ({"rls_head_block": 4.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_block": 4.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_block": 4.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_block": 4.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            (
+                {"rls_head_block": 4.0, "rls_head_diag": 1.0},
+                "does not compose with rls_head_diag",
+            ),
+            ({"rls_head_block": 4.0, "rls_p_trace_cap": 100.0}, "trace cap"),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.BLOCKHEAD), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Gdiag:
+    """Globally-pooled-denominator diagonal head on the r02 incumbent.
+
+    Negative results #27/#28 close scalar-step, diagonal, and block-local
+    head retries and leave exactly one named open cell: global coupling
+    structure at sub-O(d^2) cost. #27's own deficit hypothesis names the
+    mechanism — the diagonal head loses the cross-direction denominator
+    coupling that pools excitation across simultaneously active
+    directions. This arm keeps the diagonal O(m) state and restores only
+    that pooling: the per-direction numerator gain is divided by the
+    diagonal-trace global excitation sum_k p_k*phi_k^2 (the full head's
+    phi^T P phi with P diagonal) instead of the per-coordinate
+    p_j*phi_j^2. No new hyperparameter; on a single-active-direction phi
+    the pooled denominator reduces to the per-coordinate one and the
+    step is bitwise the diagonal head's (and the full head's).
+    """
+
+    GDIAG = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_gdiag"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Gdiag.GDIAG
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.GDIAG]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_gdiag"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_gdiag"] == 1.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_gdiag = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_gdiag=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_single_direction_gain_is_bitwise_diagonal_gain(self):
+        """The documented reduction: with one active direction the
+        pooled denominator reduces to the per-coordinate one, so the
+        gdiag gain equals the diagonal head's gain exactly (and the full
+        Sherman-Morrison gain, per #27's pin)."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        gain_gdiag = pp_diag / (1.0 + jnp.sum(p_diag * phi * phi))
+        np.testing.assert_array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_diag)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_full)
+        )
+
+    def test_multi_direction_gain_differs_from_diagonal(self):
+        """The mechanism is live exactly where the diagonal head is
+        wrong: with two simultaneous active directions the pooled
+        denominator is the diagonal-trace global excitation — equal to
+        the full head's phi^T P phi at the initial isotropic P (where
+        the off-diagonal terms vanish) — and the resulting gain differs
+        from the diagonal head's per-coordinate denominators."""
+        m = 8
+        phi = jnp.zeros((m,), jnp.float32).at[2].set(0.75).at[5].set(1.25)
+        ridge = 0.03
+        p_full = jnp.eye(m, dtype=jnp.float32) / ridge
+        pp_full = p_full @ phi
+        gain_full = pp_full / (1.0 + phi @ pp_full)
+        p_diag = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        pp_diag = p_diag * phi
+        gain_diag = pp_diag / (1.0 + p_diag * phi * phi)
+        gain_gdiag = pp_diag / (1.0 + jnp.sum(p_diag * phi * phi))
+        # Reduction order may shift the pooled sum by a float32 ulp
+        # against the matmul form; the identity is asserted well inside
+        # one ulp of the largest term.
+        np.testing.assert_allclose(
+            np.asarray(gain_gdiag), np.asarray(gain_full),
+            rtol=0, atol=1e-6,
+        )
+        assert not np.array_equal(
+            np.asarray(gain_gdiag), np.asarray(gain_diag)
+        )
+
+    def test_accumulator_nonincreasing_and_finite(self):
+        """At lambda 1 the pooled cell's per-direction accumulator is
+        nonincreasing in every coordinate (no wind-up) and stays finite
+        across a boundary-heavy stream."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        xs, ys = TestRLSHead()._stream(n_steps=24, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= 0.0)
+            assert np.isfinite(float(metrics[1]))
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The pooled cell runs the whole harness finite, in range, and
+        off both the frozen-head degenerate and the incumbent's
+        trajectory."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        gdiag = run_screening_config(
+            x, y, screening_spec(self.GDIAG), seed=7, config=SMALL,
+        )
+        acc = np.asarray(gdiag.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composition_guards(self):
+        """The pooled cell is scoped to the plain gated residual body at
+        lambda 1 and never composes with the other head flags: invalid
+        endpoints and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_gdiag": 0.5}, "must be 0.0 or 1.0"),
+            (
+                {"rls_head_gdiag": 1.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_gdiag": 1.0, "head_resid": 0.0}, "residual body"),
+            (
+                {"rls_head_gdiag": 1.0, "gate_scale": 0.0},
+                "gated residual body",
+            ),
+            ({"rls_head_gdiag": 1.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_gdiag": 1.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_p_trace_cap": 100.0},
+                "trace cap",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_diag": 1.0},
+                "does not compose with rls_head_block or",
+            ),
+            (
+                {"rls_head_gdiag": 1.0, "rls_head_block": 4.0},
+                "does not compose with rls_head_block or",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.GDIAG), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
+class TestRLSHeadIdentMapIdet003S0031640625R02Lowrank:
+    """Sliding-window low-rank head on the r02 incumbent.
+
+    Negative result #29 closes scalar-pooling retries and names the one
+    open escape: a low-rank *matrix* factorization of P that carries
+    cross-feature directional structure. This arm is that cell: with
+    lambda 1 every Sherman-Morrison step is the exact symmetric downdate
+    ``P <- P - outer(v, v)`` with ``v = P phi / sqrt(1 + phi^T P phi)``,
+    so the head keeps a diagonal accumulator (every downdate's diagonal
+    footprint) plus a sliding window of the R most recent downdate
+    directions (the recent cross-direction structure). Nothing is
+    dropped before step R, so an un-dropped window is mathematically the
+    full head; the approximation is exactly the forgetting of dropped
+    directions' cross coupling.
+    """
+
+    LOWRANK = (
+        "rls_head_resid_identmap50_r_idet003_s0031640625_r02_lowrank"
+    )
+
+    @staticmethod
+    def _spec(**overrides):
+        spec = screening_spec(
+            TestRLSHeadIdentMapIdet003S0031640625R02Lowrank.LOWRANK
+        )
+        return replace(
+            spec,
+            name=spec.name + "_test",
+            hyperparameters={**spec.hyperparameters, **overrides},
+        )
+
+    @staticmethod
+    def _factored_p(state):
+        """Reconstruct the dense P from the factored (p, u, s) carry."""
+        u = np.asarray(state.u)
+        s = np.asarray(state.s)
+        m = u.shape[1]
+        p_hat = np.diag(np.asarray(state.p))
+        p_hat += np.einsum("r,ri,rj->ij", s, u, u)
+        p_hat -= (s[:, None] * u * u).sum(axis=0)[:, None] * np.eye(m)
+        return p_hat
+
+    def test_registry_shape(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            SCREENING_REGISTRY,
+            _make_rls_head_identmap_learner,
+            _rls_head_frozen_probe_input,
+        )
+
+        spec = SCREENING_REGISTRY[self.LOWRANK]
+        assert spec.factory is _make_rls_head_identmap_learner
+        assert spec.frozen_probe_input is _rls_head_frozen_probe_input
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        assert set(spec.hyperparameters) == set(parent.hyperparameters) | {
+            "rls_head_rank"
+        }
+        for key, value in parent.hyperparameters.items():
+            assert spec.hyperparameters[key] == value, key
+        assert spec.hyperparameters["rls_head_rank"] == 8.0
+
+    def test_flag_off_bitwise_incumbent(self, small_data):
+        """``rls_head_rank = 0.0`` (explicit) is bitwise the registered
+        incumbent path: the cell is a build-time branch, so the flag-off
+        compiled graph is the unchanged full-P RLS graph."""
+        x, y = small_data
+        parent = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+        )
+        expected = run_screening_config(x, y, parent, seed=7, config=SMALL)
+        pinned = run_screening_config(
+            x, y, self._spec(rls_head_rank=0.0), seed=7, config=SMALL,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_accuracy),
+            np.asarray(expected.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(pinned.per_task_loss),
+            np.asarray(expected.per_task_loss),
+        )
+
+    def test_undropped_window_matches_full_head(self):
+        """The exactness pin: with the window larger than the number of
+        steps nothing is ever dropped, and the factored recursion is
+        mathematically the full head's — wout and the reconstructed
+        factored P track the dense head's over a boundary-heavy stream.
+        The two graphs are not bitwise (the dense head resymmetrizes P
+        each step, the factored form stays symmetric by construction),
+        and the residual feedback loop amplifies that 1-ulp gap roughly
+        tenfold per step to a ~3e-2 plateau by step 12 — the tolerances
+        sit just above that measured plateau, so structural errors
+        (wrong window term, wrong denominator) fail orders of
+        magnitude earlier."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec(rls_head_rank=64.0).hyperparameters
+        lr_init, lr_step = _make_rls_head_learner(hp)
+        full_init, full_step = _make_rls_head_learner(
+            {**hp, "rls_head_rank": 0.0}
+        )
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = lr_init(params)
+        full_state = full_init(params)
+        xs, ys = TestRLSHead()._stream(n_steps=12, seed=13)
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, _ = lr_step(params, state, x, y, jr.key(step))
+            params, full_state, _ = full_step(
+                params, full_state, x, y, jr.key(step)
+            )
+            np.testing.assert_allclose(
+                np.asarray(state.wout), np.asarray(full_state.wout),
+                rtol=2e-2, atol=5e-2,
+            )
+        np.testing.assert_allclose(
+            self._factored_p(state), np.asarray(full_state.p),
+            rtol=5e-2, atol=0.5,
+        )
+
+    def test_active_direction_gain_reduces_to_diagonal(self):
+        """The documented reduction: with one active direction the
+        window terms cancel at the active coordinate (up to ulp-level
+        float cancellation), so the active gain matches the diagonal
+        head's — with a populated window, not just an empty one."""
+        m = 8
+        active = 3
+        phi = jnp.zeros((m,), jnp.float32).at[active].set(0.75)
+        ridge = 0.03
+        p_vec = jnp.full((m,), 1.0 / ridge, jnp.float32)
+        u = jr.normal(jr.key(0), (4, m), dtype=jnp.float32)
+        s = -jnp.ones((4,), jnp.float32)
+        u_phi = u @ phi
+        pp = (
+            p_vec * phi
+            + u.T @ (s * u_phi)
+            - phi * (s @ (u * u))
+        )
+        gain_lowrank = pp / (1.0 + phi @ pp)
+        pp_diag = p_vec * phi
+        gain_diag = pp_diag / (1.0 + p_vec * phi * phi)
+        np.testing.assert_allclose(
+            float(gain_lowrank[active]), float(gain_diag[active]),
+            rtol=0, atol=1e-5,
+        )
+        # The inactive coordinates do mix (the mechanism is live).
+        inactive = [k for k in range(m) if k != active]
+        assert not np.allclose(
+            np.asarray(gain_lowrank)[inactive],
+            np.asarray(gain_diag)[inactive],
+        )
+
+    def test_sliding_window_advances_and_refuses_windup(self):
+        """The window fills (all weights -1), the oldest direction is
+        dropped once steps exceed the rank, the diagonal accumulator
+        never winds up (lambda 1), and every carry stays finite."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        hp = self._spec().hyperparameters
+        init_fn, step_fn = _make_rls_head_learner(hp)
+        params = init_mlp_params(jr.key(6), SMALL)
+        state = init_fn(params)
+        p0 = np.asarray(state.p)
+        rank = int(hp["rls_head_rank"])
+        xs, ys = TestRLSHead()._stream(n_steps=rank + 3, seed=13)
+        u0_at_fill = None
+        for step, (x, y) in enumerate(zip(xs, ys)):
+            params, state, metrics = step_fn(
+                params, state, x, y, jr.key(step)
+            )
+            p_now = np.asarray(state.p)
+            assert np.all(np.isfinite(p_now))
+            assert np.all(p_now <= p0 + 1e-6)
+            assert np.all(p_now >= -1e-4)
+            assert np.all(np.isfinite(np.asarray(state.u)))
+            assert np.isfinite(float(metrics[1]))
+            if step + 1 == rank:
+                u0_at_fill = np.asarray(state.u)[0].copy()
+                assert np.all(np.asarray(state.s) == -1.0)
+        assert u0_at_fill is not None
+        # Two steps past the fill: the oldest stored direction was
+        # dropped and replaced by newer downdates.
+        assert not np.allclose(np.asarray(state.u)[0], u0_at_fill)
+
+    def test_mechanism_live_and_finite(self, small_data):
+        """The low-rank cell runs the whole harness finite, in range,
+        and off both the frozen-head degenerate and the incumbent's
+        trajectory."""
+        x, y = small_data
+        incumbent = run_screening_config(
+            x, y,
+            screening_spec(
+                "rls_head_resid_identmap50_r_idet003_s0031640625_r02"
+            ),
+            seed=7, config=SMALL,
+        )
+        lowrank = run_screening_config(
+            x, y, screening_spec(self.LOWRANK), seed=7, config=SMALL,
+        )
+        acc = np.asarray(lowrank.per_task_accuracy)
+        assert np.all(np.isfinite(acc))
+        assert np.all((acc >= 0.0) & (acc <= 1.0))
+        assert float(np.mean(acc)) > 0.0
+        assert not np.array_equal(acc, np.asarray(incumbent.per_task_accuracy))
+
+    def test_composition_guards(self):
+        """The low-rank cell is scoped to the plain gated residual body
+        at lambda 1 and never composes with the other head flags:
+        invalid endpoints and untested compositions fail at build time."""
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_learner,
+        )
+
+        base = self._spec().hyperparameters
+        for bad, needle in [
+            ({"rls_head_rank": 2.5}, "whole number"),
+            ({"rls_head_rank": -1.0}, "whole number"),
+            (
+                {"rls_head_rank": 8.0, "rls_lambda": 0.999},
+                "pinned to rls_lambda 1.0",
+            ),
+            ({"rls_head_rank": 8.0, "head_resid": 0.0}, "residual body"),
+            (
+                {"rls_head_rank": 8.0, "gate_scale": 0.0},
+                "gated residual body",
+            ),
+            ({"rls_head_rank": 8.0, "resid_whiten": 1.0}, "scoped"),
+            ({"rls_head_rank": 8.0, "resid_newton": 1.0}, "scoped"),
+            (
+                {"rls_head_rank": 8.0, "rls_head_sgd": 1.0,
+                 "rls_head_sgd_step": 0.1},
+                "scoped",
+            ),
+            (
+                {"rls_head_rank": 8.0, "body_sm_decay": 0.999,
+                 "body_sm_step": 0.001, "body_sm_eps": 1e-8},
+                "scoped",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_p_trace_cap": 100.0},
+                "trace cap",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_diag": 1.0},
+                "does not compose with rls_head_block",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_block": 4.0},
+                "does not compose with rls_head_block",
+            ),
+            (
+                {"rls_head_rank": 8.0, "rls_head_gdiag": 1.0},
+                "does not compose with rls_head_block",
+            ),
+        ]:
+            with pytest.raises(ValueError, match=needle):
+                _make_rls_head_learner({**base, **bad})
+
+    def test_finite_smoke(self, small_data):
+        x, y = small_data
+        result = run_screening_config(
+            x, y, screening_spec(self.LOWRANK), seed=7, config=SMALL,
+        )
+        assert np.all(np.isfinite(np.asarray(result.per_task_accuracy)))
+        assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
+
+
 class TestRLSHeadSMPrecond:
     """Second-moment body preconditioning under the identmap frame
     (smprecond_r1 preregistration).
