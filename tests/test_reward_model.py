@@ -55,6 +55,39 @@ def test_rls_reward_model_feature_shape_guard_is_jit_stable() -> None:
             call(jnp.ones((2, 2), dtype=jnp.float32))
 
 
+@pytest.mark.parametrize("operation", ["predict", "update"])
+@pytest.mark.parametrize("compiled", [False, True], ids=["eager", "outer-jit"])
+@pytest.mark.parametrize(
+    "features",
+    [
+        pytest.param(jnp.asarray([True], dtype=jnp.bool_), id="boolean"),
+        pytest.param(jnp.asarray([1.0 + 7.0j], dtype=jnp.complex64), id="complex"),
+    ],
+)
+def test_rls_reward_model_rejects_non_real_feature_dtypes(
+    operation: str,
+    compiled: bool,
+    features: jax.Array,
+) -> None:
+    """Feature coercion must not turn bool or complex data into plausible rewards."""
+    model = RLSRewardModel(RLSRewardModelConfig(feature_dim=1))
+    state = model.init().replace(weights=jnp.asarray([2.0], dtype=jnp.float32))
+
+    def call(value: jax.Array) -> jax.Array:
+        if operation == "predict":
+            return model.predict(state, value)
+        return model.update(
+            state,
+            value,
+            jnp.asarray(3.0, dtype=jnp.float32),
+        ).state.weights
+
+    wrapped = jax.jit(call) if compiled else call
+
+    with pytest.raises(TypeError, match="features must be real numeric"):
+        wrapped(features)
+
+
 def test_rls_reward_model_config_roundtrip() -> None:
     """Config serialization should preserve all fields."""
     config = RLSRewardModelConfig(

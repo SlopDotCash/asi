@@ -804,6 +804,31 @@ def _make_nlqhac_agent() -> NonlinearQHordeActorCriticAgent:
     )
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        _make_agent,
+        _make_qhorde_agent,
+        _make_nlhac_agent,
+        _make_nlqhac_agent,
+    ],
+)
+def test_horde_actor_critic_construction_requires_exact_schema(
+    factory: Callable[[], Any],
+) -> None:
+    agent = factory()
+    payload = agent.to_config()
+    malformed_payloads = [
+        {key: value for key, value in payload.items() if key != "type"},
+        {**payload, "type": "DifferentAgent"},
+        {**payload, "unexpected": "ignored"},
+    ]
+
+    for malformed in malformed_payloads:
+        with pytest.raises(ValueError, match="construction fields"):
+            type(agent).from_config(malformed)
+
+
 def _init_nlhac(
     agent: NonlinearHordeActorCriticAgent,
 ) -> NonlinearHordeActorCriticState:
@@ -1965,16 +1990,16 @@ def test_actor_resource_budgets_preflight_before_allocation(
     linear = HordeActorCriticConfig(n_actions=2)
     assert linear.actor_resource_budget(3) == {
         "parameter_scalars": 8,
-        "float32_state_scalars": 19,
-        "state_scalars": 23,
-        "state_nbytes": 92,
+        "float32_state_scalars": 20,
+        "state_scalars": 24,
+        "state_nbytes": 96,
     }
     nonlinear = NonlinearHordeActorCriticConfig(n_actions=2, hidden_sizes=(3,))
     budget = nonlinear.actor_resource_budget(4)
     assert budget["parameter_scalars"] == 23
     assert budget["optimizer_tensor_count"] == 4
-    assert budget["float32_state_scalars"] == 128
-    assert budget["state_nbytes"] == 528
+    assert budget["float32_state_scalars"] == 129
+    assert budget["state_nbytes"] == 532
 
     with pytest.raises(ValueError, match="derived actor"):
         HordeActorCriticConfig(n_actions=2**31 - 1)
@@ -2164,6 +2189,27 @@ def test_all_horde_actor_critic_counters_saturate_and_rollback(
     assert int(final_state.step_count) == 2**31 - 1
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(_linear_value_counter_case, id="linear-value"),
+        pytest.param(_linear_q_counter_case, id="linear-q"),
+        pytest.param(_nonlinear_value_counter_case, id="nonlinear-value"),
+        pytest.param(_nonlinear_q_counter_case, id="nonlinear-q"),
+    ],
+)
+def test_all_horde_actor_critic_updates_reject_negative_lifetime_counters(
+    factory: Callable[[], tuple[Any, CounterUpdate]],
+) -> None:
+    state, update = factory()
+    corrupted = state.replace(step_count=jnp.asarray(-1, dtype=jnp.int32))
+
+    for apply_update in (update, jax.jit(update)):
+        result = apply_update(corrupted, jnp.asarray(1.0, dtype=jnp.float32))
+        assert not bool(result.update_applied)
+        _assert_state_unchanged(result.state, corrupted)
+
+
 def test_array_runner_policies_align_with_actions() -> None:
     critic = HordeLearner(
         create_horde_spec(
@@ -2216,3 +2262,42 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     )
     np.testing.assert_array_equal(result.policies, jnp.zeros_like(result.policies))
     chex.assert_trees_all_equal(result.state, state)
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_actor_gradient_clip_bounds_finite_gradients_with_overflowing_norms(
+    disable_jit: bool,
+) -> None:
+    from alberta_framework.core.horde_actor_critic import _clip_nlhac_actor_grads
+
+    trunk_w = (jnp.array([[3e19, 0.0]], dtype=jnp.float32),)
+    trunk_b = (jnp.zeros(1, dtype=jnp.float32),)
+    head_w = jnp.array([[4e19]], dtype=jnp.float32)
+    head_b = jnp.zeros(1, dtype=jnp.float32)
+    with jax.disable_jit(disable_jit):
+        clipped = jax.jit(_clip_nlhac_actor_grads, static_argnums=4)(
+            trunk_w, trunk_b, head_w, head_b, 1.0
+        )
+        overflowing = _clip_nlhac_actor_grads(
+            trunk_w, trunk_b, head_w, head_b + jnp.inf, 1.0
+        )
+    np.testing.assert_allclose(clipped[0][0], [[0.6, 0.0]], rtol=1e-5)
+    np.testing.assert_allclose(clipped[2], [[0.8]], rtol=1e-5)
+    assert not np.any(np.asarray(overflowing[2]))
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_actor_gradient_clip_recovers_near_float32_max_norm(
+    disable_jit: bool,
+) -> None:
+    from alberta_framework.core.horde_actor_critic import _clip_nlhac_actor_grads
+
+    trunk_w = (jnp.array([[1e38, 0.0]], dtype=jnp.float32),)
+    trunk_b = (jnp.zeros(1, dtype=jnp.float32),)
+    head_w = jnp.zeros((1, 1), dtype=jnp.float32)
+    head_b = jnp.zeros(1, dtype=jnp.float32)
+    with jax.disable_jit(disable_jit):
+        clipped = jax.jit(_clip_nlhac_actor_grads, static_argnums=4)(
+            trunk_w, trunk_b, head_w, head_b, 1.0
+        )
+    np.testing.assert_allclose(clipped[0][0], [[1.0, 0.0]], rtol=1e-5)

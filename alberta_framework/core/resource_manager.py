@@ -100,6 +100,30 @@ def _require_exact_tuple(name: str, value: object) -> tuple[Any, ...]:
     return value
 
 
+def _require_typed_threefry_key(name: str, value: object) -> Array:
+    """Require one scalar typed Threefry key before stochastic dispatch."""
+    actual_type = type(value)
+    if not (
+        issubclass(actual_type, jax.Array)
+        or issubclass(actual_type, jax.core.Tracer)
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    try:
+        implementation = str(jr.key_impl(value))  # type: ignore[arg-type]
+        words = jr.key_data(value)  # type: ignore[arg-type]
+        shape = tuple(cast(Any, value).shape)
+    except Exception as error:
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key") from error
+    if (
+        shape != ()
+        or implementation != "threefry2x32"
+        or tuple(words.shape) != (2,)
+        or words.dtype != jnp.uint32
+    ):
+        raise TypeError(f"{name} must be a typed scalar threefry2x32 key")
+    return cast(Array, value)
+
+
 def _decode_sequence(name: str, value: object) -> tuple[Any, ...]:
     if type(value) is not list:
         raise ValueError(f"serialized {name} must be an exact JSON list")
@@ -140,7 +164,7 @@ def _require_serialized_fields(
 def _require_manager_state_budget(name: str, n_contexts: int, n_choices: int) -> None:
     """Preflight persistent state and conservative update/select working sets."""
     state_scalars = 3 * n_contexts * n_choices + 1
-    update_scalars = 3 * state_scalars + 40 * n_choices + 32
+    update_scalars = 3 * state_scalars + 41 * n_choices + 32
     if (
         state_scalars > _INT32_MAX
         or 4 * state_scalars > _INT32_MAX
@@ -190,6 +214,29 @@ def _mask_unused_history(
     recoverable = unused & ~jnp.isfinite(current)
     checked = jnp.where(recoverable, jnp.zeros_like(current), current)
     return history.at[context].set(checked)
+
+
+def _finite_convex_reduction(weights: Array, values: Array) -> Array:
+    """Preserve a finite convex sum when only its float32 reduction overflows."""
+    direct = jnp.sum(weights * values)
+    scale = jnp.max(jnp.abs(values))
+    _, exponent = jnp.frexp(scale)
+    scaled_values = jnp.ldexp(values, -exponent)
+    scaled_sum = jnp.sum(weights * scaled_values)
+    # Normalized float32 weights can sum a few ulps outside one. Clamp only
+    # fallback roundoff to the convex hull before restoring the source scale.
+    bounded_scaled_sum = jnp.clip(
+        scaled_sum,
+        jnp.min(scaled_values),
+        jnp.max(scaled_values),
+    )
+    stable = jnp.ldexp(bounded_scaled_sum, exponent)
+    reduction_only_overflow = (
+        ~jnp.isfinite(direct)
+        & jnp.all(jnp.isfinite(weights))
+        & jnp.all(jnp.isfinite(values))
+    )
+    return jnp.where(reduction_only_overflow, stable, direct)
 
 
 def _validated_cost_weight(value: float) -> float:
@@ -604,7 +651,7 @@ class LearnedResourceManager:
         valid_count = jnp.maximum(jnp.sum(valid_actions.astype(jnp.float32)), 1.0)
         uniform = jnp.where(valid_actions, 1.0 / valid_count, 0.0)
         masked_weights = jnp.where(positive, normalized, uniform)
-        baseline = jnp.sum(masked_weights * adjusted)
+        baseline = _finite_convex_reduction(masked_weights, adjusted)
         advantages = jnp.where(valid_actions, baseline - adjusted, 0.0)
         advantages = jnp.clip(
             advantages,
@@ -1064,7 +1111,11 @@ class GeneratorMetaResourceManager:
     ) -> GeneratorMetaResourceDecision:
         """Sample one policy and return the generator knobs it controls."""
         self._require_state_contract(state)
-        return cast(GeneratorMetaResourceDecision, self._select_jit(state, key, context_id))
+        checked_key = _require_typed_threefry_key("key", key)
+        return cast(
+            GeneratorMetaResourceDecision,
+            self._select_jit(state, checked_key, context_id),
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def _select_jit(
@@ -1209,7 +1260,7 @@ class GeneratorMetaResourceManager:
         valid_count = jnp.maximum(jnp.sum(finite.astype(jnp.float32)), 1.0)
         uniform = jnp.where(finite, 1.0 / valid_count, 0.0)
         masked_weights = jnp.where(positive, normalized, uniform)
-        baseline = jnp.sum(masked_weights * adjusted)
+        baseline = _finite_convex_reduction(masked_weights, adjusted)
         selection_input_valid = jnp.asarray(True, dtype=jnp.bool_)
         if self._update_rule == "exp3":
             if selected_action is None:

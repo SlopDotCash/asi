@@ -216,8 +216,9 @@ def test_throughput_measurement_to_dict_is_strict_json() -> None:
     assert "NaN" not in encoded
 
 
-def test_security_to_dict_rejects_nonfinite_numbers() -> None:
-    weights = SecurityRewardWeights(threat_blocked=float("inf"))
+def test_security_records_reject_nonfinite_numbers() -> None:
+    with pytest.raises(ValueError, match="finite real number"):
+        SecurityRewardWeights(threat_blocked=float("inf"))
     with pytest.raises(ValueError, match="finite real number"):
         SecurityRolloutStep(
             state=(0.0, 1.0),
@@ -226,8 +227,6 @@ def test_security_to_dict_rejects_nonfinite_numbers() -> None:
             next_state=(0.0, 1.0),
             terminated=False,
         )
-    with pytest.raises(ValueError, match="RFC-compliant JSON"):
-        weights.to_dict()
     with pytest.raises(ValueError, match="RFC-compliant JSON"):
         SecurityOracleExperience(
             state=(0.0, 1.0),
