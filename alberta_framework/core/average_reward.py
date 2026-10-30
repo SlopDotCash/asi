@@ -80,6 +80,17 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _root_mean_square(values: Array) -> Array:
+    """Keep a representable RMS finite when only its square reduction overflows."""
+    direct = jnp.sqrt(jnp.mean(values * values))
+    scale = jnp.max(jnp.abs(values))
+    _, scale_exponent = jnp.frexp(scale)
+    normalized = jnp.ldexp(values, -scale_exponent)
+    stable = jnp.ldexp(jnp.sqrt(jnp.mean(normalized * normalized)), scale_exponent)
+    reduction_only_overflow = ~jnp.isfinite(direct) & jnp.all(jnp.isfinite(values))
+    return jnp.where(reduction_only_overflow, stable, direct)
+
+
 # Matches the class of ceiling already established for other scan-driven
 # array-loop runners in ``core`` (e.g. ``sarsa._SARSA_SEQUENCE_MAX_STEPS``,
 # ``learners._LEARNING_LOOP_MAX_STEPS``). Set with headroom above this
@@ -369,9 +380,15 @@ class DifferentialTDConfig:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> DifferentialTDConfig:
         """Reconstruct a config from :meth:`to_config` output."""
-        config = dict(config)
-        config.pop("type", None)
-        return cls(**config)
+        if type(config) is not dict:
+            raise ValueError("differential TD config must be an actual dict")
+        payload = dict(config)
+        expected = {field.name for field in dataclasses.fields(cls)} | {"type"}
+        if set(payload) != expected:
+            raise ValueError("differential TD config fields do not match its schema")
+        if payload.pop("type") != "DifferentialTDConfig":
+            raise ValueError("differential TD config type is invalid")
+        return cls(**payload)
 
 
 @chex.dataclass(frozen=True)
@@ -483,9 +500,15 @@ class DifferentialGTDConfig:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> DifferentialGTDConfig:
         """Reconstruct a config from :meth:`to_config` output."""
-        config = dict(config)
-        config.pop("type", None)
-        return cls(**config)
+        if type(config) is not dict:
+            raise ValueError("differential GTD config must be an actual dict")
+        payload = dict(config)
+        expected = {field.name for field in dataclasses.fields(cls)} | {"type"}
+        if set(payload) != expected:
+            raise ValueError("differential GTD config fields do not match its schema")
+        if payload.pop("type") != "DifferentialGTDConfig":
+            raise ValueError("differential GTD config type is invalid")
+        return cls(**payload)
 
 
 @chex.dataclass(frozen=True)
@@ -1280,6 +1303,27 @@ class AverageRewardHordeLearner:
         )
 
 
+def _finite_cancelled_differential_td(
+    reward: Array,
+    baseline: Array,
+    bootstrap: Array,
+    prediction: Array,
+) -> Array:
+    """Keep the historical sum unless that partial sum overflows.
+
+    ``((reward - baseline) + bootstrap) - prediction`` is the ordinary
+    association. When ``reward - baseline + bootstrap`` is non-finite but
+    ``bootstrap - prediction`` cancels, the rearranged error can still be
+    finite. A TD error that remains outside float32 stays non-finite so the
+    caller rejects the update. A finite partial sum keeps the left-to-right
+    rounding.
+    """
+    direct_partial = reward - baseline + bootstrap
+    direct_td = direct_partial - prediction
+    recovered_td = reward - baseline + (bootstrap - prediction)
+    return jnp.where(jnp.isfinite(direct_partial), direct_td, recovered_td)
+
+
 class DifferentialGTDLearner:
     """Linear off-policy differential GTD/TDC prediction.
 
@@ -1317,9 +1361,17 @@ class DifferentialGTDLearner:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> DifferentialGTDLearner:
         """Reconstruct a learner from :meth:`to_config` output."""
-        config = dict(config)
-        config.pop("type", None)
-        return cls(DifferentialGTDConfig.from_config(config["config"]))
+        if type(config) is not dict:
+            raise ValueError("differential GTD learner config must be an actual dict")
+        payload = dict(config)
+        if set(payload) != {"type", "config"}:
+            raise ValueError("differential GTD learner config fields do not match its schema")
+        if payload["type"] != "DifferentialGTDLearner":
+            raise ValueError("differential GTD learner config type is invalid")
+        nested = payload["config"]
+        if type(nested) is not dict:
+            raise ValueError("differential GTD nested config must be an actual dict")
+        return cls(DifferentialGTDConfig.from_config(nested))
 
     def init(
         self,
@@ -1379,7 +1431,12 @@ class DifferentialGTDLearner:
         )
         prediction = self.predict(state, observation)
         next_prediction = self.predict(state, next_observation)
-        td_error = reward_s - state.average_reward + next_prediction - prediction
+        td_error = _finite_cancelled_differential_td(
+            reward_s,
+            state.average_reward,
+            next_prediction,
+            prediction,
+        )
 
         traces = rho_s * (lamda * state.eligibility_traces + observation)
         bias_trace = rho_s * (lamda * state.bias_eligibility_trace + 1.0)
@@ -1436,7 +1493,7 @@ class DifferentialGTDLearner:
                 rho_s,
                 new_state.average_reward,
                 jnp.mean(jnp.abs(new_state.eligibility_traces)),
-                jnp.sqrt(jnp.mean(new_state.secondary_weights**2)),
+                _root_mean_square(new_state.secondary_weights),
             ],
             dtype=jnp.float32,
         )
@@ -1482,9 +1539,17 @@ class DifferentialTDLearner:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> DifferentialTDLearner:
         """Reconstruct a learner from :meth:`to_config` output."""
-        config = dict(config)
-        config.pop("type", None)
-        return cls(DifferentialTDConfig.from_config(config["config"]))
+        if type(config) is not dict:
+            raise ValueError("differential TD learner config must be an actual dict")
+        payload = dict(config)
+        if set(payload) != {"type", "config"}:
+            raise ValueError("differential TD learner config fields do not match its schema")
+        if payload["type"] != "DifferentialTDLearner":
+            raise ValueError("differential TD learner config type is invalid")
+        nested = payload["config"]
+        if type(nested) is not dict:
+            raise ValueError("differential TD nested config must be an actual dict")
+        return cls(DifferentialTDConfig.from_config(nested))
 
     def init(
         self,
@@ -1531,7 +1596,12 @@ class DifferentialTDLearner:
         reward_s = jnp.squeeze(jnp.asarray(reward, dtype=jnp.float32))
         value = self.predict(state, observation)
         next_value = self.predict(state, next_observation)
-        return cast(Array, reward_s - state.average_reward + next_value - value)
+        return _finite_cancelled_differential_td(
+            reward_s,
+            state.average_reward,
+            next_value,
+            value,
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -1550,7 +1620,12 @@ class DifferentialTDLearner:
         reward_s = jnp.squeeze(jnp.asarray(reward, dtype=jnp.float32))
         prediction = self.predict(state, observation)
         next_prediction = self.predict(state, next_observation)
-        td_error = reward_s - state.average_reward + next_prediction - prediction
+        td_error = _finite_cancelled_differential_td(
+            reward_s,
+            state.average_reward,
+            next_prediction,
+            prediction,
+        )
 
         traces = lamda * state.eligibility_traces + observation
         bias_trace = lamda * state.bias_eligibility_trace + 1.0
@@ -1646,7 +1721,12 @@ def run_differential_td_from_arrays(
         (observations, rewards, next_observations),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return DifferentialTDArrayResult(
         state=final_state,
         predictions=predictions,
@@ -1715,7 +1795,12 @@ def run_differential_gtd_from_arrays(
         (observations, rewards, next_observations, rhos),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return DifferentialGTDArrayResult(
         state=final_state,
         predictions=predictions,
@@ -1794,7 +1879,12 @@ def run_average_reward_horde_from_arrays(
         (observations, cumulants, next_observations),
     )
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return AverageRewardHordeLearningResult(
         state=final_state,
         td_errors=td_errors,
@@ -1866,7 +1956,12 @@ def run_average_reward_horde_actor_critic_from_arrays(
         ),
     ) = jax.lax.scan(_scan_fn, state, (rewards, next_observations))
     elapsed = time.time() - start
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return AverageRewardHordeActorCriticArrayResult(
         state=final_state,
         actions=actions,
@@ -2148,8 +2243,10 @@ class DifferentialSARSAAgent:
             raise TypeError("differential SARSA rng_key must be a scalar PRNG key")
         return feature_dim
 
-    def _state_values_valid(self, state: DifferentialSARSAState) -> Bool[Array, ""]:
-        """Return dynamic validity excluding the separately reported clock."""
+    def _policy_state_values_valid(
+        self, state: DifferentialSARSAState
+    ) -> Bool[Array, ""]:
+        """Return dynamic validity for action selection, including fresh state."""
 
         return (
             jnp.all(jnp.isfinite(state.q_weights))
@@ -2161,12 +2258,18 @@ class DifferentialSARSAAgent:
             & jnp.isfinite(state.epsilon)
             & (state.epsilon >= 0.0)
             & (state.epsilon <= 1.0)
-            & (state.last_action >= 0)
+            & (state.last_action >= -1)
             & (state.last_action < self._config.n_actions)
+            & _lifetime_counter_valid(state.step_words, state.step_count)
             & jnp.isfinite(jnp.asarray(state.birth_timestamp, dtype=jnp.float32))
             & jnp.isfinite(jnp.asarray(state.uptime_s, dtype=jnp.float32))
             & (jnp.asarray(state.uptime_s, dtype=jnp.float32) >= 0.0)
         )
+
+    def _state_values_valid(self, state: DifferentialSARSAState) -> Bool[Array, ""]:
+        """Return update validity for a state with an executed prior action."""
+
+        return self._policy_state_values_valid(state) & (state.last_action >= 0)
 
     @staticmethod
     def _candidate_finite(state: DifferentialSARSAState) -> Bool[Array, ""]:
@@ -2195,8 +2298,29 @@ class DifferentialSARSAAgent:
         observation: Array,
     ) -> tuple[Int[Array, ""], Array]:
         """Select an epsilon-greedy action with uniform tie-breaking."""
+        feature_dim = self._require_state_contract(state)
+        raw_observation = jnp.asarray(observation)
+        if raw_observation.shape != (feature_dim,):
+            raise ValueError(
+                f"differential SARSA observation must have shape ({feature_dim},)"
+            )
+        if not (
+            jnp.issubdtype(raw_observation.dtype, jnp.floating)
+            or jnp.issubdtype(raw_observation.dtype, jnp.integer)
+        ):
+            raise TypeError("differential SARSA observation must be real numeric")
+        observation_f = raw_observation.astype(jnp.float32)
+        input_valid = self._policy_state_values_valid(state) & jnp.all(
+            jnp.isfinite(observation_f)
+        )
+        safe_observation = jnp.where(
+            input_valid,
+            observation_f,
+            jnp.zeros_like(observation_f),
+        )
         key, explore_key, noise_key, random_key = jr.split(state.rng_key, 4)
-        q_values = self.q_values(state, observation)
+        q_values = self.q_values(state, safe_observation)
+        policy_valid = input_valid & jnp.all(jnp.isfinite(q_values))
         maximum = jnp.max(q_values)
         tie_noise = jnp.where(
             q_values == maximum,
@@ -2206,7 +2330,11 @@ class DifferentialSARSAAgent:
         greedy_action = jnp.argmax(tie_noise).astype(jnp.int32)
         random_action = jr.randint(random_key, (), 0, self._config.n_actions).astype(jnp.int32)
         explore = jr.uniform(explore_key) < state.epsilon
-        return jax.lax.select(explore, random_action, greedy_action), key
+        action = jax.lax.select(explore, random_action, greedy_action)
+        return (
+            jnp.where(policy_valid, action, jnp.asarray(-1, dtype=jnp.int32)),
+            jax.lax.cond(policy_valid, lambda: key, lambda: state.rng_key),
+        )
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def start(
@@ -2216,9 +2344,15 @@ class DifferentialSARSAAgent:
     ) -> tuple[DifferentialSARSAState, Int[Array, ""]]:
         """Select and store the first action for a continuing stream."""
         action, key = self.select_action(state, observation)
+        observation_f = jnp.asarray(observation, dtype=jnp.float32)
+        accepted = action >= 0
         return state.replace(
-            last_observation=observation,
-            last_action=action,
+            last_observation=jnp.where(
+                accepted,
+                observation_f,
+                state.last_observation,
+            ),
+            last_action=jnp.where(accepted, action, state.last_action),
             rng_key=key,
         ), action
 
@@ -2255,6 +2389,45 @@ class DifferentialSARSAAgent:
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
+    def _rejected_update_result(
+        self,
+        state: DifferentialSARSAState,
+    ) -> DifferentialSARSAUpdateResult:
+        """Report a rejected external-action transaction without a candidate.
+
+        Integrated callers use this when :meth:`select_action` returns its
+        ``-1`` sentinel.  Constructing the ordinary update in that case would
+        index the last Q-value row and form a target from invalid policy input
+        before the transaction eventually rolls back.
+        """
+        self._require_state_contract(state)
+        _, lifetime_capacity_available = _checked_lifetime_words_increment(
+            state.step_words
+        )
+        lifetime_counter_valid = _lifetime_counter_valid(
+            state.step_words,
+            state.step_count,
+        )
+        state_valid = lifetime_counter_valid & self._state_values_valid(state)
+        candidate_state_finite = self._candidate_finite(state)
+        return DifferentialSARSAUpdateResult(
+            state=state,
+            action=state.last_action,
+            q_values=jnp.zeros((self._config.n_actions,), dtype=jnp.float32),
+            td_error=jnp.asarray(0.0, dtype=jnp.float32),
+            average_reward=state.average_reward,
+            reward=jnp.asarray(0.0, dtype=jnp.float32),
+            pre_step_words=state.step_words,
+            post_step_words=state.step_words,
+            lifetime_counter_valid=lifetime_counter_valid,
+            lifetime_capacity_available=lifetime_capacity_available,
+            state_valid=state_valid,
+            input_valid=jnp.asarray(False, dtype=jnp.bool_),
+            candidate_state_finite=candidate_state_finite,
+            update_applied=jnp.asarray(False, dtype=jnp.bool_),
+        )
+
+    @functools.partial(jax.jit, static_argnums=(0,))
     def td_error(
         self,
         state: DifferentialSARSAState,
@@ -2269,9 +2442,11 @@ class DifferentialSARSAAgent:
         discount_s = jnp.squeeze(jnp.asarray(discount, dtype=jnp.float32))
         q_prev = self.q_values(state, state.last_observation)[state.last_action]
         q_next = self.q_values(state, next_observation)[next_action]
-        return cast(
-            Array,
-            reward_s - state.average_reward + discount_s * q_next - q_prev,
+        return _finite_cancelled_differential_td(
+            reward_s,
+            state.average_reward,
+            discount_s * q_next,
+            q_prev,
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -2366,7 +2541,12 @@ class DifferentialSARSAAgent:
         q_next_all = self.q_values(state, next_observation_f)
         q_prev = q_prev_all[state.last_action]
         q_next = q_next_all[selected_next_action]
-        td_error = reward_s - state.average_reward + discount_s * q_next - q_prev
+        td_error = _finite_cancelled_differential_td(
+            reward_s,
+            state.average_reward,
+            discount_s * q_next,
+            q_prev,
+        )
 
         action_mask = jax.nn.one_hot(
             state.last_action,
@@ -2460,7 +2640,7 @@ def run_differential_sarsa_from_arrays(
         ValueError: If ``rewards`` is empty, exceeds the documented
             scan-length ceiling (``_AVERAGE_REWARD_SEQUENCE_MAX_STEPS``), or
             ``next_observations``/``discounts`` do not share its leading
-            length.
+            length, or if ``state`` was not primed with :meth:`start`.
     """
     num_steps = _require_avg_reward_sequence_length("rewards", rewards)
     _require_avg_reward_matching_length(
@@ -2468,6 +2648,12 @@ def run_differential_sarsa_from_arrays(
     )
     if discounts is not None:
         _require_avg_reward_matching_length("discounts", discounts, expected=num_steps)
+    agent._require_state_contract(state)
+    last_action = int(jax.device_get(state.last_action))
+    if not 0 <= last_action < agent.config.n_actions:
+        raise ValueError(
+            "differential SARSA array state must be primed with agent.start"
+        )
     start = time.time()
     if discounts is None:
         discounts = jnp.ones_like(rewards, dtype=jnp.float32)
@@ -2506,8 +2692,12 @@ def run_differential_sarsa_from_arrays(
         (rewards, next_observations, discounts),
     )
     elapsed = time.time() - start
+    # Keep host-only clocks out of the device scan's scalar narrowing. Birth is
+    # always restored; uptime advances from the true host base only when the
+    # scan applied an update, preserving the existing conditional semantics.
+    final_state = final_state.replace(birth_timestamp=state.birth_timestamp)
     if bool(jax.device_get(jnp.any(updates_applied))):
-        final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)
+        final_state = final_state.replace(uptime_s=state.uptime_s + elapsed)
     return DifferentialSARSAArrayResult(
         state=final_state,
         q_values=q_values,

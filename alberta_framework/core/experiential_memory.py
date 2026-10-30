@@ -115,6 +115,24 @@ class ExperientialMemoryConfig:
             raise ValueError("config fields do not match the serialized schema")
         if type(config["type"]) is not str or config["type"] != "ExperientialMemoryConfig":
             raise ValueError("config type differs")
+        integer_fields = {
+            "capacity",
+            "observation_dim",
+            "key_dim",
+            "action_dim",
+            "outcome_dim",
+            "top_k",
+            "min_neighbors",
+            "max_age",
+        }
+        for name, value in config.items():
+            if name == "type":
+                continue
+            expected_type = int if name in integer_fields else float
+            if type(value) is not expected_type:
+                raise ValueError(
+                    "serialized experiential memory config values must use exact JSON scalar types"
+                )
         payload = dict(config)
         payload.pop("type")
         return cls(**payload)
@@ -409,7 +427,7 @@ def _validate_config(config: ExperientialMemoryConfig) -> None:
         + 2 * config.top_k * (payload_values + 4)
         + 9 * config.top_k
         + payload_values
-        + 4
+        + 5
     )
     if persistent_bytes + 4 * query_temporary_scalars > _INT32_MAX:
         raise ValueError(
@@ -747,6 +765,9 @@ class ExperientialMemory:
             (state.active_count == active_count)
             & (state.active_count <= self._config.capacity)
             & (state.accepted_query_count <= state.query_count)
+            & (state.query_count <= state.step_count)
+            & (state.write_count <= state.step_count)
+            & (state.rejected_write_count <= state.step_count)
             & (state.eviction_count <= state.write_count)
             & (state.write_count >= state.active_count)
         )
@@ -1056,6 +1077,16 @@ class ExperientialMemory:
         )
         weighted_reliability = jnp.sum(neighbor_weights * effective_reliabilities[indices])
 
+        aggregate_values_finite = (
+            jnp.all(jnp.isfinite(weighted_observation))
+            & jnp.all(jnp.isfinite(weighted_action))
+            & jnp.all(jnp.isfinite(weighted_outcome))
+            & jnp.isfinite(weighted_reward)
+            & jnp.isfinite(weighted_uncertainty)
+            & jnp.isfinite(weighted_safety_cost)
+            & jnp.isfinite(weighted_reliability)
+        )
+
         has_neighbors = jnp.sum(neighbor_mask.astype(jnp.int32)) >= cfg.min_neighbors
         version_compatible = jnp.any(same_version)
         freshness_ok = jnp.any(fresh)
@@ -1072,9 +1103,9 @@ class ExperientialMemory:
         )
         safety_ok = jnp.any(safety_eligible)
         aggregate_ok = (
-            (weighted_uncertainty <= cfg.max_uncertainty)
+            aggregate_values_finite
+            & (weighted_uncertainty <= cfg.max_uncertainty)
             & (weighted_safety_cost <= cfg.max_safety_cost)
-            & jnp.isfinite(weighted_reliability)
         )
         accepted = (
             state_valid

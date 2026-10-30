@@ -1101,7 +1101,16 @@ class FixedBudgetFeatureLearner:
         mutate_b = parent_b
 
         obs_norm = jnp.linalg.norm(observation) + 1e-6
-        imprint_w = observation / obs_norm + self._mutation_scale * noise / dim_scale
+        _, observation_exponent = jnp.frexp(jnp.max(jnp.abs(observation)))
+        scaled_observation = jnp.ldexp(observation, -observation_exponent)
+        scaled_norm = jnp.linalg.norm(scaled_observation)
+        stable_imprint = scaled_observation / jnp.where(scaled_norm > 0.0, scaled_norm, 1.0)
+        normalized_observation = jnp.where(
+            jnp.isfinite(obs_norm),
+            observation / obs_norm,
+            stable_imprint,
+        )
+        imprint_w = normalized_observation + self._mutation_scale * noise / dim_scale
         imprint_b = -0.5 * jnp.dot(imprint_w, observation)
 
         def random_branch() -> tuple[Array, Array, Array, Array, Array]:
@@ -1967,6 +1976,8 @@ def run_feature_discovery_arrays(
 
     t0 = time.time()
     final_state, (metrics, updates_applied) = jax.lax.scan(step_fn, state, (observations, targets))
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
     return FeatureDiscoveryLearningResult(
@@ -2006,6 +2017,8 @@ def run_feature_discovery_loop(
     (final_state, _), (metrics, updates_applied) = jax.lax.scan(
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
+    if not isinstance(metrics, jax.core.Tracer):
+        metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
     return FeatureDiscoveryLearningResult(

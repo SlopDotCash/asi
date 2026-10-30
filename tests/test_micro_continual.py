@@ -859,6 +859,51 @@ class TestBayesReference:
 
         np.testing.assert_array_equal(predictions, np.asarray([2], dtype=np.int32))
 
+    def test_bayes_predict_keeps_nearer_class_when_squared_distances_overflow(self):
+        """A finite overflow of both squared distances must not select class 0."""
+
+        scale = jnp.asarray(2.0**63, dtype=jnp.float32)
+        big = jnp.asarray(2.0**65, dtype=jnp.float32)
+        means = jnp.zeros((2, 1, 8), dtype=jnp.float32)
+        means = means.at[0, 0, 0].set(big)
+        means = means.at[1, 0, :].set(scale)
+        observations = jnp.zeros((1, 8), dtype=jnp.float32)
+        sigma = jnp.ones((8,), dtype=jnp.float32)
+        delta0 = np.asarray(observations[0] - means[0, 0], dtype=np.float64)
+        delta1 = np.asarray(observations[0] - means[1, 0], dtype=np.float64)
+
+        assert not bool(jnp.isfinite(jnp.sum(jnp.square(observations[0] - means[0, 0]))))
+        assert not bool(jnp.isfinite(jnp.sum(jnp.square(observations[0] - means[1, 0]))))
+        assert float(np.sum(delta1 * delta1)) < float(np.sum(delta0 * delta0))
+
+        predictions = bayes_predict(means, sigma, observations)
+
+        np.testing.assert_array_equal(predictions, np.asarray([1], dtype=np.int32))
+
+    @pytest.mark.parametrize(
+        ("near_offsets", "far_offset", "nearer"),
+        [
+            ((2.0**63,) * 8, 1e38, 0),
+            ((2.0**63,) * 8, 3e38, 0),
+            ((2.0**63,) * 8, 1e38, 1),
+        ],
+    )
+    def test_bayes_predict_keeps_nearer_class_above_two_to_the_126(
+        self, near_offsets, far_offset, nearer
+    ):
+        """A per-sample max coordinate above 2**126 must not scale to zero."""
+
+        means = jnp.zeros((2, 1, 8), dtype=jnp.float32)
+        means = means.at[nearer, 0, :].set(jnp.asarray(near_offsets, dtype=jnp.float32))
+        means = means.at[1 - nearer, 0, 0].set(jnp.asarray(far_offset, dtype=jnp.float32))
+        observations = jnp.zeros((1, 8), dtype=jnp.float32)
+        sigma = jnp.ones((8,), dtype=jnp.float32)
+
+        for jitted in (False, True):
+            predict = jax.jit(bayes_predict) if jitted else bayes_predict
+            predictions = predict(means, sigma, observations)
+            np.testing.assert_array_equal(predictions, np.asarray([nearer], dtype=np.int32))
+
     def test_stream_geometry_matches_reference_geometry(self):
         stream = generate_stream(TINY, seed=5)
         means, dim_sigma = class_geometry(TINY, seed=5)
