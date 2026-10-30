@@ -11,6 +11,7 @@ import pytest
 from alberta_framework.core.canonical_upgd import (
     CanonicalUPGD,
     CanonicalUPGDConfig,
+    _local_normalize,
     _static_zero_scale,
 )
 from alberta_framework.core.checkpoints import load_checkpoint, save_checkpoint
@@ -1298,3 +1299,46 @@ def test_saturated_gate_accepts_finite_inputs_with_overflowing_direction() -> No
     assert float(result.params[0]) == float(params[0])
     assert float(result.params[1]) == pytest.approx(-5e-6)
     chex.assert_tree_all_finite(result.params)
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [2e19, 1e38])
+def test_local_normalization_keeps_finite_utility_rows_with_overflowing_norms(
+    disable_jit: bool, magnitude: float,
+) -> None:
+    optimizer = CanonicalUPGD(CanonicalUPGDConfig(normalization="local", noise_std=0.0))
+    params = {"w": jnp.ones((1, 2), dtype=jnp.float32)}
+    gradients = {"w": jnp.full((1, 2), -magnitude, dtype=jnp.float32)}
+    with jax.disable_jit(disable_jit):
+        result = optimizer.update(optimizer.init(params), params, gradients, jr.key(0))
+    expected = jax.nn.sigmoid(jnp.asarray(2.0**-0.5, dtype=jnp.float32))
+    chex.assert_trees_all_close(
+        result.scaled_utility["w"], jnp.full((1, 2), expected), rtol=1e-6
+    )
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+def test_local_normalization_zero_utility_row_gradients_stay_finite(
+    disable_jit: bool,
+) -> None:
+    """Zero-utility rows must not poison reverse-mode gradients.
+
+    The overflow-recovery division is evaluated for every row before the
+    outer jnp.where selects it. An all-zero active row gives
+    scaled_denominator == 0, so an ungated 0/0 (or x/0) in the unselected
+    branch yields NaN gradients via 0 * inf even though the forward value
+    is hidden by the where.
+    """
+
+    numerator = jnp.array([[1.0, -2.0], [0.5, 0.25]], dtype=jnp.float32)
+    denominator_utility = jnp.array([[3.0, 4.0], [0.0, 0.0]], dtype=jnp.float32)
+    active = jnp.ones_like(denominator_utility, dtype=bool)
+
+    def loss(numerator_input: jax.Array) -> jax.Array:
+        return jnp.sum(_local_normalize(numerator_input, denominator_utility, active, 1e-12))
+
+    with jax.disable_jit(disable_jit):
+        forward = _local_normalize(numerator, denominator_utility, active, 1e-12)
+        gradients = jax.grad(loss)(numerator)
+    chex.assert_tree_all_finite(forward)
+    chex.assert_tree_all_finite(gradients)

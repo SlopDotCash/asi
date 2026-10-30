@@ -1,7 +1,9 @@
 # Contributing to ASI
 
-ASI is a continual-learning hillclimb. Contributions are judged by the uncertainty they resolve
-and the end-to-end progress they enable, not by diff size or the number of new mechanisms.
+ASI is a continual-learning hillclimb. At every stage, the goal is to outperform the current
+best internal benchmark result under a matched protocol and explicit resource accounting, then
+make that verified winner the next baseline. Contributions are judged by the uncertainty they
+resolve and the end-to-end progress they enable, not by diff size or the number of new mechanisms.
 
 Contributions are accepted through GitHub pull requests against `main` and reviewed under the
 repository's normal maintainer process. By submitting a contribution, you agree that it is
