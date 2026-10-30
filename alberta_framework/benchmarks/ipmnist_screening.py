@@ -4836,12 +4836,17 @@ def _make_rls_head_l2init_learner(
 
 def _rls_head_forward(
     params: dict[str, Array], wout: Array, normalized: Array,
+    *, unit_features: bool = False,
 ) -> tuple[Array, Array]:
     """Return deployed logits and bias-augmented features for one normalized input."""
     m = params["w2"].shape[1] + 1
     a1 = jax.nn.relu(normalized @ params["w1"] + params["b1"])
     a2 = jax.nn.relu(a1 @ params["w2"] + params["b2"])
-    scale = 1.0 / math.sqrt(m)
+    scale = (
+        1.0 / jnp.sqrt(jnp.sum(a2 * a2) + 1e-8)
+        if unit_features
+        else 1.0 / math.sqrt(m)
+    )
     phi = jnp.concatenate([a2 * scale, jnp.ones((1,), jnp.float32)])
     return wout.T @ phi, phi
 
@@ -4850,6 +4855,7 @@ def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
     _decay_to_init: bool = False,
+    _unit_features: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Champion body + streaming-RLS readout on the penultimate features.
 
@@ -5114,7 +5120,9 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
+                    logits, phi = _rls_head_forward(
+                        merged, state.wout, x_norm, unit_features=_unit_features
+                    )
                     err = y_onehot - logits
                     surrogate_loss = 0.5 * jnp.sum(err * err)
                     err_c = jax.lax.stop_gradient(err)
@@ -5149,7 +5157,9 @@ def _make_rls_head_learner(
                 ) -> tuple[Array, tuple[Array, Array]]:
                     merged = dict(params)
                     merged.update(body_params)
-                    logits, phi = _rls_head_forward(merged, state.wout, x_norm)
+                    logits, phi = _rls_head_forward(
+                        merged, state.wout, x_norm, unit_features=_unit_features
+                    )
                     err = y_onehot - logits
                     return 0.5 * jnp.sum(err * err), (logits, phi)
 
@@ -5233,7 +5243,9 @@ def _make_rls_head_learner(
                 params, grads, state.utility, count,
                 tuple(sorted(params)), guard_zero_max=False,
             )
-            logits, phi = _rls_head_forward(params, state.wout, x_norm)
+            logits, phi = _rls_head_forward(
+                params, state.wout, x_norm, unit_features=_unit_features
+            )
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
@@ -5257,7 +5269,9 @@ def _make_rls_head_learner(
             # horizon).  Rescale P to the trace cap whenever it exceeds it;
             # under the cap the step is bitwise untouched.
             new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
-        err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
+        err_after = y_onehot - _rls_head_forward(
+            new_params, new_wout, x_norm, unit_features=_unit_features
+        )[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
@@ -5294,6 +5308,33 @@ def _make_rls_head_learner(
         ), (accuracy, loss, plasticity)
 
     return init_fn, full_step
+
+
+def _rls_head_unit_features_hp() -> dict[str, float]:
+    """One fixed unit-feature endpoint of the confirmed residual RLS arm."""
+    return {
+        **_rls_head_hp(
+            rls_lambda=1.0, rls_reset_frac=0.05, head_resid=1.0,
+            ident_match_at=50.0, ident_match2=200.0, ident_match3=2000.0,
+            ident_reset_frac=0.03, step_size=0.005625,
+        ),
+        "unit_features": 1.0,
+    }
+
+
+def _make_rls_head_unit_features_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Change only feature normalization; zero is the exact control reduction."""
+    expected = _rls_head_unit_features_hp()
+    if set(hp) != set(expected) or hp.get("unit_features") not in (0.0, 1.0):
+        raise ValueError("unit-feature arm requires its fixed keys and binary endpoint")
+    for name, value in expected.items():
+        if name != "unit_features" and hp[name] != value:
+            raise ValueError(f"unit-feature arm changes the control at {name}")
+    base_hp = dict(hp)
+    enabled = base_hp.pop("unit_features") == 1.0
+    return _make_rls_head_identmap_learner(base_hp, _unit_features=enabled)
 
 
 @chex.dataclass(frozen=True)
@@ -5361,6 +5402,7 @@ def _identmap_assignment(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *, _unit_features: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5379,13 +5421,13 @@ def _make_rls_head_identmap_learner(
     """
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
-        return _make_rls_head_learner(hp)
+        return _make_rls_head_learner(hp, _unit_features=_unit_features)
     match2 = float(hp.get("ident_match2", 0.0))
     match3 = float(hp.get("ident_match3", 0.0))
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(hp, _unit_features=_unit_features)
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -8513,6 +8555,21 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ),
             )
         )
+    specs.append(
+        ScreeningSpec(
+            name="rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+            base_learner="upgd_w",
+            mechanism="rls_readout",
+            hyperparameters=_rls_head_unit_features_hp(),
+            factory=_make_rls_head_unit_features_learner,
+            frozen_probe_input=_rls_head_frozen_probe_input,
+            description=(
+                "Development-only unit-length penultimate RLS features with bias one; "
+                "all identity-map control constants and reset behavior fixed. "
+                "Mechanism-off endpoint reduces bit-exactly to the control."
+            ),
+        )
+    )
     # Online permutation identification + input remap (V7/V8 chain).  V8
     # measured that a single-shot remap at N=200 post-shift samples and
     # V1's measured 0.62 identification accuracy lifts the incumbent to
