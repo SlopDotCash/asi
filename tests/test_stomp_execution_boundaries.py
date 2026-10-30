@@ -121,10 +121,13 @@ def test_censored_boundary_bootstraps_intra_option_then_clears_trace() -> None:
 def test_goal_termination_credits_earlier_option_steps_through_the_trace() -> None:
     """The goal step's TD error must reach earlier option actions via the carried trace.
 
-    Accumulating traces decay by the discount *entering* the current state, not by
-    the termination that zeros the bootstrap: ``e_t = gamma_t * lambda * e_{t-1} +
-    phi_t``. Zeroing the incoming trace on the goal step turns intra-option
-    learning into TD(0) exactly where sparse pseudo-reward needs multi-step credit.
+    Accumulating traces decay by the discount *entering* the current state (the
+    previous step's discount, 1.0 here from agent init), not by the goal step's
+    own supplied discount (0.5) and not by the termination that zeros the
+    bootstrap: ``e_t = gamma_t * lambda * e_{t-1} + phi_t``. Decaying by the
+    current step's discount would shrink the carried trace on the goal step
+    and, at a zero terminating discount, turn intra-option learning into
+    TD(0) exactly where sparse pseudo-reward needs multi-step credit.
     """
     agent = STOMPAgent(_config(threshold=1.0, option_step_size=0.5, option_trace_decay=0.75))
     state = _active_state(agent)
@@ -149,10 +152,12 @@ def test_goal_termination_credits_earlier_option_steps_through_the_trace() -> No
     assert bool(result.option_terminated)
     assert float(result.pseudo_reward) == 1.0
     # q_prev = 0, bootstrap zeroed by termination, hence TD = pseudo_reward = 1.
+    # The trace decays by the previous discount (1.0 from agent init), not by
+    # this step's supplied discount (0.5).
     td_error = 1.0
     current = np.zeros((N_PRIMITIVE, OBS_DIM), dtype=np.float32)
     current[0] = np.asarray(LAST_OBS)  # the goal step took action 0 on LAST_OBS
-    expected_trace = 0.75 * discount * prior_trace + current
+    expected_trace = 0.75 * 1.0 * prior_trace + current
     expected_q = 0.5 * td_error * expected_trace
     np.testing.assert_allclose(
         np.asarray(result.state.option_policies.q_weights[0]),

@@ -901,10 +901,10 @@ class StreamingBatchNormalizer(Normalizer[StreamingBatchNormalizerState]):
                 jnp.zeros_like(state.var),
                 state.var,
             )
-            candidate_var = (
-                state.momentum * var_for_update
-                + one_minus_m * (centered * centered)
-            )
+            # Apply the variance weight before squaring so a finite weighted
+            # variance does not overflow in the unweighted intermediate.
+            weighted_centered = jnp.sqrt(one_minus_m) * centered
+            candidate_var = state.momentum * var_for_update + weighted_centered * weighted_centered
             new_var = jnp.where(
                 is_first,
                 jnp.ones_like(state.var),
@@ -1046,7 +1046,7 @@ def migrate_legacy_normalizer_state(
     fields = _legacy_state_mapping(legacy_state)
     current_names = {
         field.name
-        for field in dataclasses.fields(state_class)  # type: ignore[arg-type]
+        for field in dataclasses.fields(state_class)
     }
     legacy_names = current_names - {"sample_count_words"}
     supplied_names = set(fields)
@@ -1125,6 +1125,10 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
     elif estimator_schema is not None:
         raise ValueError(f"estimator_schema is not valid for normalizer type '{host_type_name}'")
     elif host_type_name == "EMANormalizer":
+        # Convert once: the semantics check and the constructor must see the
+        # same validated value.
+        if "decay" in config:
+            config["decay"] = _validated_finite_real("decay", config["decay"])
         if _stored_float32_equals_one(config.get("decay", 0.99)):
             expected_semantics = EMA_PRIOR_CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
             legacy_estimator_semantics = CUMULATIVE_FLOAT32_ESTIMATOR_SEMANTICS
@@ -1132,6 +1136,8 @@ def normalizer_from_config(config: dict[str, Any]) -> Normalizer[Any]:
             expected_semantics = EMA_PRIOR_BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
             legacy_estimator_semantics = BOUNDED_RECENCY_ESTIMATOR_SEMANTICS
     elif host_type_name == "StreamingBatchNormalizer":
+        if "momentum" in config:
+            config["momentum"] = _validated_finite_real("momentum", config["momentum"])
         expected_semantics = (
             STATIC_AFTER_FIRST_ESTIMATOR_SEMANTICS
             if _stored_float32_equals_one(config.get("momentum", 0.99))

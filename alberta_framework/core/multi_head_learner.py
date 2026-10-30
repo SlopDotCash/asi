@@ -1695,6 +1695,10 @@ def run_multi_head_learning_loop(
     final_state, (per_head_metrics, updates_applied) = jax.lax.scan(
         step_fn, state, (observations, targets)
     )
+    # Concrete calls must finish device work before recording active uptime.
+    # Traced calls (including the batched wrapper) defer execution to callers.
+    if not isinstance(per_head_metrics, jax.core.Tracer):
+        per_head_metrics.block_until_ready()
     elapsed = time.time() - t0
     final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
 

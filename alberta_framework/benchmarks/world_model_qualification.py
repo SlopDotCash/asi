@@ -207,8 +207,8 @@ def run_native_world_model_smoke(*, seed: object = 0, steps: object = 8) -> Worl
         latent_off_state = latent_off_result.state
         ftl_state = ftl_result.state
         losses[0].append(float(direct_result.observation_mse))
-        losses[1].append(float(latent_result.prediction_error))
-        losses[2].append(float(latent_off_result.prediction_error))
+        losses[1].append(float(latent_result.surprise))
+        losses[2].append(float(latent_off_result.surprise))
         losses[3].append(float(ftl_result.squared_error))
     final_states = (direct_state, latent_state, latent_off_state, ftl_state)
     # Some learner host-only timestamp leaves canonicalize from float64 to

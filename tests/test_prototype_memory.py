@@ -438,3 +438,24 @@ def test_prototype_memory_integer_errors_do_not_interpolate_hostile_repr() -> No
             feature_dim=ClassSpoof(),  # type: ignore[arg-type]
             n_classes=2,
         )
+
+
+@pytest.mark.parametrize("disabled", [True, False])
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_class_distance_mean_preserves_finite_large_components(
+    disabled: bool, sign: float
+) -> None:
+    learner = PrototypeMemoryLearner(
+        PrototypeMemoryConfig(feature_dim=2, n_classes=2, slots_per_class=1, bandwidth=1.0)
+    )
+    state = learner.init().replace(
+        means=jnp.asarray([[[sign * 1.5e19] * 2], [[sign * 1.6e19] * 2]]),
+        counts=jnp.ones((2, 1), dtype=jnp.int32),
+    )
+    observation = jnp.zeros(2, dtype=jnp.float32)
+    expected = -np.mean(np.asarray(state.means, dtype=np.float64) ** 2, axis=2)[:, 0]
+    with jax.disable_jit(disabled):
+        logits = learner.class_logits(state, observation)
+        prediction = learner.predict(state, observation)
+    np.testing.assert_allclose(logits, expected, rtol=2e-6)
+    np.testing.assert_array_equal(prediction, [1.0, 0.0])

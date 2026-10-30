@@ -1,0 +1,177 @@
+{
+ "confirmation_threshold": 0.005,
+ "control_name": "rls_head_l0999_preset005_pcap",
+ "created_unix": 1791691826.6658099,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "7.0.0-39-generic",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": null
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.12.3"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "n_shards": 3,
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "protocol_config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 60,
+  "task_length": 5000
+ },
+ "results": [
+  {
+   "average_online_accuracy_mean": 0.8663366438333333,
+   "average_online_accuracy_stderr": 0.0005806258028740818,
+   "average_plasticity_mean": 0.279514993,
+   "base_learner": "upgd_w",
+   "config_name": "rls_head_l0999_preset005_pcap",
+   "hyperparameters": {
+    "fast_decay": 0.9,
+    "gate_scale": 1.0,
+    "head_resid": 0.0,
+    "noise_std": 0.0,
+    "norm_decay": 0.99,
+    "norm_epsilon": 1e-08,
+    "rls_lambda": 0.999,
+    "rls_p_trace_cap": 10000.0,
+    "rls_reset_frac": 0.05,
+    "rls_ridge_init": 1.0,
+    "shift_delta": 0.02,
+    "shift_k": 1.0,
+    "shift_refractory": 0.0,
+    "step_size": 0.01,
+    "utility_decay": 0.9999,
+    "weight_decay": 0.01
+   },
+   "late_window_slope_mean": -0.00025523805952380995,
+   "n_seeds": 3,
+   "per_seed_average_online_accuracy": [
+    0.865177,
+    0.866963,
+    0.86687
+   ],
+   "per_seed_late_window_slope": [
+    -8.714e-05,
+    -0.000315,
+    -0.00036357
+   ],
+   "seeds": [
+    0,
+    1,
+    2
+   ],
+   "wall_clock_seconds_total": 1535.49
+  }
+ ],
+ "schema": "alberta.ipmnist_screening.summary.v2",
+ "shard_manifest": [
+  {
+   "config_name": "rls_head_l0999_preset005_pcap",
+   "path": "outputs/ipmnist_screening/wave_rls_preset_pcap/shards/rls_head_l0999_preset005_pcap_seed0.json",
+   "seed": 0,
+   "sha256": "45dddd2febcde1d6ac66efb136220d18544e8fb1d841ecea058f2cc1beaec3d2",
+   "size_bytes": 5731
+  },
+  {
+   "config_name": "rls_head_l0999_preset005_pcap",
+   "path": "outputs/ipmnist_screening/wave_rls_preset_pcap/shards/rls_head_l0999_preset005_pcap_seed1.json",
+   "seed": 1,
+   "sha256": "08fed8f833b4ede7569669d5c99b64f5600e797b138def4492c32ce27a302f53",
+   "size_bytes": 5749
+  },
+  {
+   "config_name": "rls_head_l0999_preset005_pcap",
+   "path": "outputs/ipmnist_screening/wave_rls_preset_pcap/shards/rls_head_l0999_preset005_pcap_seed2.json",
+   "seed": 2,
+   "sha256": "db80a66b61334e5a2c301b857af66a6a2e74047e2a66c80688f6073707fea2a5",
+   "size_bytes": 5750
+  }
+ ],
+ "slope_window": 15,
+ "source_provenance": {
+  "git_commit": "6e895e3bd81c3a9ceb48b807115f2926ab7ca927",
+  "git_object_format": "sha1",
+  "git_tree": "4ad940cf873a5766b4104c1684c1978b1d38a29a",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "26ba0ddadf80910bc22da544db56c9ce1ffbb72baac1b658d56c32fece6210d1",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ }
+}
