@@ -810,16 +810,57 @@ class AssociativeMemoryLearner:
             fraction * budget_span
         )
 
+    def _weighted_evidence(self, row_values: Array, weights: Array) -> tuple[Array, Array]:
+        """Reduce active row evidence without overflowing a representable mean."""
+        total_weight = jnp.sum(weights)
+        weight_col = weights[:, None]
+        active_values = jnp.where(
+            weight_col == 0.0,
+            jnp.zeros_like(row_values),
+            row_values,
+        )
+        if not self._config.normalize_by_weight:
+            return jnp.sum(weight_col * active_values, axis=0), total_weight
+
+        evidence_weights = jnp.where(total_weight > 0.0, weights / total_weight, weights)
+        value_scale = jnp.max(jnp.abs(active_values), axis=0)
+        _, value_exponent = jnp.frexp(value_scale)
+        scale_exponent = jnp.maximum(value_exponent - 1, 0)
+        scaled_values = jnp.ldexp(active_values, -scale_exponent)
+        scaled_bound = jnp.max(jnp.abs(scaled_values), axis=0)
+        unit_evidence = jnp.sum(
+            evidence_weights[:, None] * scaled_values,
+            axis=0,
+        )
+        # A normalized, non-negative weight vector forms a convex combination.
+        # Bound only roundoff outside that exact range before restoring scale.
+        unit_evidence = jnp.clip(unit_evidence, -scaled_bound, scaled_bound)
+        return jnp.ldexp(unit_evidence, scale_exponent), total_weight
+
+    def _combined_logits(self, prior: Array, evidence: Array) -> Array:
+        """Combine finite score sources in a softmax-equivalent finite frame."""
+        prior_logits = jnp.asarray(0.05, dtype=jnp.float32) * prior
+        evidence_logits = self._config.logit_scale * evidence
+        centered_prior = prior_logits - jax.lax.stop_gradient(jnp.max(prior_logits))
+        centered_evidence = evidence_logits - jax.lax.stop_gradient(
+            jnp.max(evidence_logits)
+        )
+        prior_gap = -centered_prior
+        evidence_gap = -centered_evidence
+        larger_gap = jnp.maximum(prior_gap, evidence_gap)
+        smaller_gap = jnp.minimum(prior_gap, evidence_gap)
+        ceiling = jnp.asarray(np.finfo(np.float32).max, dtype=jnp.float32)
+        combined_gap = larger_gap + jnp.minimum(smaller_gap, ceiling - larger_gap)
+        combined_gap = combined_gap - jax.lax.stop_gradient(jnp.min(combined_gap))
+        return -combined_gap
+
     def _weighted_feature_loss(self, row_values: Array, weights: Array, label: Array) -> Array:
-        evidence = jnp.sum(weights[:, None] * row_values, axis=0)
+        evidence, total_weight = self._weighted_evidence(row_values, weights)
         # Center on both sides of the scale, as in the per-row loss below;
         # this value feeds cross entropy only, which is shift invariant.
         centered = evidence - jax.lax.stop_gradient(jnp.max(evidence))
         logits = self._config.logit_scale * centered
         logits = logits - jax.lax.stop_gradient(jnp.max(logits))
-        total_weight = jnp.sum(weights)
-        if self._config.normalize_by_weight:
-            logits = jnp.where(total_weight > 0.0, logits / total_weight, logits)
         loss = _cross_entropy_from_logits(logits, label)
         uniform_loss = jnp.log(jnp.asarray(self._config.vocab_size, dtype=jnp.float32))
         return jnp.where(total_weight > 0.0, loss, uniform_loss)
@@ -849,13 +890,7 @@ class AssociativeMemoryLearner:
         window_scope, window_probs = self._window_scope_weights(state)
         scope_weights = family_scope * window_scope * mask.astype(jnp.float32)
         weights = base_weights * scope_weights
-        weight_col = weights[:, None]
-        # Silent features have weight 0. An inf stored value times that
-        # weight is 0*inf = NaN. Skip the product on exact zeros.
-        evidence = jnp.sum(
-            jnp.where(weight_col == 0.0, jnp.zeros_like(row_values), weight_col * row_values),
-            axis=0,
-        )
+        evidence, total_weight = self._weighted_evidence(row_values, weights)
         # The decayed label-frequency prior enters with a small fixed weight:
         # it dominates only when no feature rows match (evidence is zero, so
         # the prediction falls back to base rates) and is otherwise a weak
@@ -863,13 +898,7 @@ class AssociativeMemoryLearner:
         # weight normalization applies to the evidence sum alone, so the
         # prior's coefficient stays fixed instead of scaling with
         # ``1 / total_weight``.
-        scaled_evidence = self._config.logit_scale * evidence
-        total_weight = jnp.sum(weights)
-        if self._config.normalize_by_weight:
-            scaled_evidence = jnp.where(
-                total_weight > 0.0, scaled_evidence / total_weight, scaled_evidence
-            )
-        logits = 0.05 * state.prior + scaled_evidence
+        logits = self._combined_logits(state.prior, evidence)
         probabilities = _softmax(logits)
         return AssociativeMemoryPrediction(
             logits=logits,

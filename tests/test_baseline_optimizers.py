@@ -17,8 +17,10 @@ values so serialization bugs cannot hide behind defaults.
 """
 
 import math
+from typing import Any
 
 import chex
+import jax
 import jax.numpy as jnp
 import pytest
 
@@ -34,6 +36,69 @@ from alberta_framework.core.baseline_optimizers import (
     RMSpropParamState,
     RMSpropState,
 )
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize(
+    ("optimizer", "state_field", "metric_names"),
+    [
+        (Adam(beta1=0.0, beta2=0.0), "v", ("mean_v",)),
+        (RMSprop(decay=0.0), "v", ("mean_v",)),
+        (
+            NADALINE(decay=0.0),
+            "feature_second_moment",
+            ("mean_second_moment", "mean_denom"),
+        ),
+    ],
+)
+def test_finite_wide_moment_mean_does_not_reject_update(
+    compiled: bool,
+    optimizer: Any,
+    state_field: str,
+    metric_names: tuple[str, ...],
+) -> None:
+    """Finite per-feature moments must not overflow only while averaging."""
+    state = optimizer.init(2)
+    error = jnp.asarray(1.0, dtype=jnp.float32)
+    observation = jnp.full((2,), 1.5e19, dtype=jnp.float32)
+    update = jax.jit(optimizer.update) if compiled else optimizer.update
+
+    result = update(state, error, observation)
+
+    expected_moment = float(jnp.float32(1.5e19) ** 2)
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result)
+    chex.assert_trees_all_close(
+        getattr(result.new_state, state_field),
+        jnp.full((2,), expected_moment, dtype=jnp.float32),
+        rtol=1e-6,
+    )
+    for metric_name in metric_names:
+        assert float(result.metrics[metric_name]) == pytest.approx(
+            expected_moment, rel=1e-6
+        )
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_adam_finite_cancelling_first_moment_mean_is_order_independent(
+    compiled: bool,
+) -> None:
+    """A finite signed mean must not depend on overflowing reduction order."""
+    optimizer = Adam(step_size=0.001, beta1=0.5, beta2=0.0, eps=1e30)
+    state = optimizer.init(4).replace(
+        m=jnp.asarray([3e38, 3e38, 3e38, -3e38], dtype=jnp.float32)
+    )
+    update = jax.jit(optimizer.update) if compiled else optimizer.update
+
+    result = update(
+        state,
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.zeros((4,), dtype=jnp.float32),
+    )
+
+    assert bool(result.update_applied)
+    chex.assert_tree_all_finite(result)
+    assert float(result.metrics["mean_m"]) == pytest.approx(7.5e37, rel=1e-6)
 
 # =============================================================================
 # AdaGain
@@ -110,6 +175,25 @@ class TestAdaGain:
         assert bool(result.update_applied)
         chex.assert_trees_all_close(result.new_state.gradient_trace, error * observation)
         assert float(result.new_state.bias_gradient_trace) == pytest.approx(1.0)
+
+    def test_disabled_adaptation_preserves_representable_extreme_step(self) -> None:
+        """A disabled meta/trace path must not reject a finite scaled update."""
+        optimizer = AdaGain(
+            initial_step_size=1.0e-8,
+            meta_step_size=0.0,
+            forgetting_rate=0.0,
+        )
+        state = optimizer.init(feature_dim=1)
+        error = jnp.asarray(2.0, dtype=jnp.float32)
+        observation = jnp.asarray([2.0e38], dtype=jnp.float32)
+        expected = state.step_sizes * error * observation
+
+        assert bool(jnp.all(jnp.isfinite(expected)))
+        result = optimizer.update(state, error, observation)
+
+        assert bool(result.update_applied)
+        chex.assert_trees_all_equal(result.weight_delta, expected)
+        chex.assert_trees_all_equal(result.new_state.gradient_trace, state.gradient_trace)
 
 
 # =============================================================================
@@ -188,6 +272,29 @@ class TestAdam:
         chex.assert_shape(state.t, ())
         chex.assert_trees_all_close(state.m, jnp.zeros((3, 4)))
         chex.assert_trees_all_close(state.v, jnp.zeros((3, 4)))
+
+    def test_parameter_update_rejects_broadcastable_gradient_shape(self) -> None:
+        """A missing leading axis must fail instead of broadcasting across rows."""
+        optimizer = Adam()
+        state = optimizer.init_for_shape((2, 2))
+
+        with pytest.raises(ValueError, match="gradient shape must match optimizer state"):
+            optimizer.update_from_gradient_checked(
+                state,
+                jnp.ones((2,), dtype=jnp.float32),
+            )
+
+    def test_parameter_update_rejects_broadcastable_parameter_shape(self) -> None:
+        """AdamW decay must not broadcast one parameter row across the matrix."""
+        optimizer = Adam(weight_decay=0.1)
+        state = optimizer.init_for_shape((2, 2))
+
+        with pytest.raises(ValueError, match="param shape must match optimizer state"):
+            optimizer.update_from_gradient_checked(
+                state,
+                jnp.ones((2, 2), dtype=jnp.float32),
+                param=jnp.ones((2,), dtype=jnp.float32),
+            )
 
     def test_bias_correction_at_t1(self):
         """At t=1, bias-corrected first moment should equal the gradient.
@@ -410,6 +517,17 @@ class TestRMSprop:
         assert isinstance(state, RMSpropParamState)
         chex.assert_shape(state.v, (3, 4))
         chex.assert_trees_all_close(state.v, jnp.zeros((3, 4)))
+
+    def test_parameter_update_rejects_broadcastable_gradient_shape(self) -> None:
+        """A missing leading axis must fail instead of broadcasting across rows."""
+        optimizer = RMSprop()
+        state = optimizer.init_for_shape((2, 2))
+
+        with pytest.raises(ValueError, match="gradient shape must match optimizer state"):
+            optimizer.update_from_gradient_checked(
+                state,
+                jnp.ones((2,), dtype=jnp.float32),
+            )
 
     def test_zero_decay_does_not_multiply_inf_second_moment(self):
         """decay=0 times an infinite squared-gradient EMA is NaN."""
