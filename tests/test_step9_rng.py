@@ -334,6 +334,8 @@ def test_accepted_dream_uses_dedicated_candidate_behavior_and_control_roots() ->
         last_observation=anchor_observation,
         last_action=candidate.action,
         rng_key=control_root,
+        q_trace_weights=jnp.zeros_like(control_after_real.q_trace_weights),
+        q_trace_bias=jnp.zeros_like(control_after_real.q_trace_bias),
     )
     expected_dream = agent.update(
         dedicated_input,
@@ -345,6 +347,11 @@ def test_accepted_dream_uses_dedicated_candidate_behavior_and_control_roots() ->
         average_reward=dedicated_input.average_reward,
         last_observation=control_after_real.last_observation,
         last_action=control_after_real.last_action,
+        epsilon=control_after_real.epsilon,
+        step_count=control_after_real.step_count,
+        step_words=control_after_real.step_words,
+        q_trace_weights=control_after_real.q_trace_weights,
+        q_trace_bias=control_after_real.q_trace_bias,
         rng_key=reserved,
     )
     expected_behavior = behavior_model.sample_action(
@@ -461,6 +468,29 @@ def test_rejected_rollout_updates_advance_the_local_control_stream() -> None:
     second_expected = jr.split(first_expected, 4)[0]
     _assert_key_equal(first.state.rng_key, first_expected)
     _assert_key_equal(second.state.rng_key, second_expected)
+
+
+def test_invalid_next_observation_rejects_before_building_a_control_candidate() -> None:
+    """The ``-1`` selection sentinel must never index the SARSA target."""
+    config = _config(1)
+    agent, _model, _buffer, state = _init(config, seed=43)
+    control = state.control_state
+    result = _update_control_with_linear_rng(
+        agent,
+        control,
+        jnp.array(0.25, dtype=jnp.float32),
+        jnp.full((OBSERVATION_DIM,), jnp.nan, dtype=jnp.float32),
+        jnp.array(0.9, dtype=jnp.float32),
+    )
+
+    assert not bool(result.update_applied)
+    assert not bool(result.input_valid)
+    assert bool(result.candidate_state_finite)
+    expected_key = jr.split(control.rng_key, 4)[0]
+    chex.assert_trees_all_equal(
+        result.state,
+        control.replace(rng_key=expected_key),
+    )
 
 
 def test_eager_jit_and_scan_reproduce_the_same_rng_trajectory() -> None:

@@ -204,6 +204,112 @@ def test_silent_feature_does_not_turn_inf_value_into_nan() -> None:
     chex.assert_trees_all_equal(result.metrics, jnp.zeros_like(result.metrics))
 
 
+def test_normalized_evidence_stays_finite_when_only_the_sum_overflows() -> None:
+    """Normalize row evidence without first forming an overflowing sum."""
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(
+            vocab_size=2,
+            block_size=4,
+            suffix_length=2,
+            feature_family="position_token",
+            max_features=4,
+            write_lr=2.0e38,
+            retention=0.5,
+            utility_lr=0.0,
+            logit_scale=1.0,
+        )
+    )
+    context = jnp.asarray([0, 1, 0, 1], dtype=jnp.int32)
+    label = jnp.asarray(0, dtype=jnp.int32)
+
+    first = learner.update(learner.init(), context, label)
+    prediction = learner.predict(first.state, context)
+    second = learner.update(first.state, context, label)
+
+    assert bool(first.update_applied)
+    assert bool(jnp.all(jnp.isfinite(first.state.values)))
+    assert not bool(jnp.isfinite(jnp.sum(first.state.values[:, 0])))
+    assert math.isfinite(float(np.asarray(first.state.values[:, 0], dtype=np.float64).mean()))
+    chex.assert_tree_all_finite(prediction)
+    chex.assert_trees_all_close(
+        prediction.probabilities,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+
+
+def test_normalized_evidence_stays_finite_at_float32_ceiling() -> None:
+    """Rounding normalized weight mass above one cannot overflow the mean."""
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(
+            vocab_size=2,
+            block_size=10,
+            suffix_length=2,
+            feature_family="position_token",
+            max_features=20,
+            write_lr=float(np.finfo(np.float32).max),
+            retention=0.0,
+            utility_lr=0.0,
+            logit_scale=1.0,
+        )
+    )
+    first_context = jnp.zeros((10,), dtype=jnp.int32)
+    second_context = jnp.ones((10,), dtype=jnp.int32)
+    label_zero = jnp.asarray(0, dtype=jnp.int32)
+
+    first = learner.update(learner.init(), first_context, label_zero)
+    second = learner.update(
+        first.state,
+        second_context,
+        jnp.asarray(1, dtype=jnp.int32),
+    )
+    prediction = learner.predict(second.state, first_context)
+    third = learner.update(second.state, first_context, label_zero)
+
+    assert bool(first.update_applied)
+    assert bool(second.update_applied)
+    assert bool(jnp.all(jnp.isfinite(second.state.values)))
+    chex.assert_tree_all_finite(prediction)
+    chex.assert_trees_all_close(
+        prediction.probabilities,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert bool(third.update_applied)
+
+
+def test_finite_prior_and_evidence_do_not_overflow_combined_logits() -> None:
+    """Softmax-equivalent prior/evidence combination stays representable."""
+    learner = AssociativeMemoryLearner(
+        AssociativeMemoryConfig(
+            vocab_size=2,
+            block_size=2,
+            suffix_length=2,
+            feature_family="position_token",
+            max_features=2,
+            write_lr=float(np.finfo(np.float32).max),
+            retention=0.0,
+            utility_lr=0.0,
+            logit_scale=1.0,
+        )
+    )
+    context = jnp.zeros((2,), dtype=jnp.int32)
+    label = jnp.asarray(0, dtype=jnp.int32)
+
+    first = learner.update(learner.init(), context, label)
+    prediction = learner.predict(first.state, context)
+    second = learner.update(first.state, context, label)
+
+    assert bool(first.update_applied)
+    assert bool(jnp.all(jnp.isfinite(first.state.values)))
+    assert bool(jnp.all(jnp.isfinite(first.state.prior)))
+    chex.assert_tree_all_finite(prediction)
+    chex.assert_trees_all_close(
+        prediction.probabilities,
+        jnp.asarray([1.0, 0.0], dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+
+
 def test_corrupted_active_family_logits_remain_fail_visible() -> None:
     """An invalid active gate must not masquerade as a uniform valid gate."""
     learner = AssociativeMemoryLearner(

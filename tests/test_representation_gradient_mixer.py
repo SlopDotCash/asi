@@ -348,6 +348,35 @@ def test_any_invalid_actively_weighted_source_atomically_rejects_to_exact_zero(
     assert np.isfinite(np.asarray(result.diagnostics.final_mixed_norm)).all()
 
 
+def test_active_subnormal_source_rejects_instead_of_reporting_a_zero_update() -> None:
+    config = RepresentationGradientMixerConfig(
+        representation_dim=2,
+        mode="behavior_only",
+    )
+    smallest_subnormal = np.nextafter(
+        np.float32(0.0),
+        np.float32(1.0),
+        dtype=np.float32,
+    )
+    behavior = jnp.asarray([smallest_subnormal, 0.0], dtype=jnp.float32)
+    world = jnp.zeros((2,), dtype=jnp.float32)
+
+    def run(active: Array, inactive: Array) -> RepresentationGradientMixResult:
+        return mix_representation_gradients(config, active, inactive)
+
+    assert np.asarray(behavior)[0] != 0.0
+    for result in (run(behavior, world), jax.jit(run)(behavior, world)):
+        np.testing.assert_array_equal(
+            result.gradient,
+            jnp.zeros((2,), dtype=jnp.float32),
+        )
+        assert not bool(result.valid)
+        assert not bool(result.applied)
+        assert bool(result.rejected)
+        assert bool(result.zero_output)
+        assert not bool(result.diagnostics.behavior_valid)
+
+
 def test_masked_or_zero_weight_invalid_source_is_recorded_without_poisoning_output() -> None:
     invalid_world = jnp.asarray([jnp.nan, jnp.inf], dtype=jnp.float32)
     behavior = jnp.asarray([1.0, -2.0], dtype=jnp.float32)

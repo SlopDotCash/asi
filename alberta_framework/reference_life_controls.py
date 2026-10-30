@@ -14,7 +14,6 @@ import hashlib
 import json
 import math
 import re
-from numbers import Real
 from typing import Any, Literal, cast
 
 import jax
@@ -24,6 +23,7 @@ import numpy as np
 from jax import Array
 
 from alberta_framework._bounded_containers import require_json_text_nesting
+from alberta_framework._float32 import round_real_to_float32_with_ratio
 from alberta_framework.core.average_reward import (
     DifferentialSARSAAgent,
     DifferentialSARSAConfig,
@@ -138,33 +138,43 @@ def _canonical_float32(
 ) -> float:
     """Return the actual executed float32 value after checking both domains."""
 
-    if not isinstance(value, Real) or isinstance(value, (bool, np.bool_)):
-        raise ValueError(f"{name} must be a real non-boolean float32 scalar")
     try:
-        raw = float(value)
-        with np.errstate(over="ignore", invalid="ignore", under="ignore"):
-            converted = float(np.float32(raw))
+        numerator, denominator, converted = round_real_to_float32_with_ratio(value)
     except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError(f"{name} must be a finite float32 value") from exc
-    if not math.isfinite(raw) or not math.isfinite(converted):
+        raise ValueError(f"{name} must be a real non-boolean float32 scalar") from exc
+    if not math.isfinite(converted):
         raise ValueError(f"{name} must be a finite float32 value")
 
-    def in_bounds(candidate: float) -> bool:
+    def compare_to_boundary(boundary: float) -> int:
+        boundary_numerator, boundary_denominator = boundary.as_integer_ratio()
+        return (
+            numerator * boundary_denominator
+            - boundary_numerator * denominator
+        )
+
+    def converted_in_bounds(candidate: float) -> bool:
         lower_ok = candidate >= minimum if minimum_inclusive else candidate > minimum
         upper_ok = candidate <= maximum if maximum_inclusive else candidate < maximum
         return lower_ok and upper_ok
 
-    if not in_bounds(raw):
+    lower_comparison = compare_to_boundary(minimum)
+    upper_comparison = compare_to_boundary(maximum)
+    exact_in_bounds = (
+        lower_comparison >= 0 if minimum_inclusive else lower_comparison > 0
+    ) and (
+        upper_comparison <= 0 if maximum_inclusive else upper_comparison < 0
+    )
+    if not exact_in_bounds:
         left = "[" if minimum_inclusive else "("
         right = "]" if maximum_inclusive else ")"
         raise ValueError(
             f"{name} must remain in {left}{minimum}, {maximum}{right} as float32"
         )
-    if not minimum_inclusive and raw > minimum and converted == minimum:
+    if not minimum_inclusive and lower_comparison > 0 and converted == minimum:
         raise ValueError(f"{name} must not collapse to its strict float32 lower bound")
-    if not maximum_inclusive and raw < maximum and converted == maximum:
+    if not maximum_inclusive and upper_comparison < 0 and converted == maximum:
         raise ValueError(f"{name} must not round to its strict float32 upper bound")
-    if not in_bounds(converted):
+    if not converted_in_bounds(converted):
         left = "[" if minimum_inclusive else "("
         right = "]" if maximum_inclusive else ")"
         raise ValueError(
@@ -603,6 +613,7 @@ class DiscountedSARSAReferenceConfig:
     leaky_relu_slope: float = 0.01
     use_layer_norm: bool = False
     lamda: float = 0.0
+    initial_q_value: float | None = None
 
     def __post_init__(self) -> None:
         _require_environment_shape(
@@ -676,6 +687,21 @@ class DiscountedSARSAReferenceConfig:
                 n_actions=self.n_actions,
             ),
         )
+        if self.initial_q_value is not None:
+            object.__setattr__(
+                self,
+                "initial_q_value",
+                _canonical_float32(
+                    self.initial_q_value,
+                    name="initial_q_value",
+                    minimum=0.0,
+                    maximum=_FLOAT32_MAX,
+                ),
+            )
+            if self.hidden_sizes:
+                raise ValueError(
+                    "initial_q_value requires the tabular empty-hidden-layer control"
+                )
         if not isinstance(self.use_layer_norm, bool):
             raise ValueError("use_layer_norm must be boolean")
 
@@ -731,6 +757,7 @@ class DiscountedSARSAReferenceConfig:
             "leaky_relu_slope": self.leaky_relu_slope,
             "use_layer_norm": self.use_layer_norm,
             "lamda": self.lamda,
+            "initial_q_value": self.initial_q_value,
             "rng_schedule": "owned_sarsa_key.preview1",
             "rng_implementation": _THREEFRY_IMPLEMENTATION,
             "initial_key_contract": "scalar_threefry2x32_typed_or_legacy.preview1",
@@ -1940,7 +1967,20 @@ class DiscountedSARSAReferenceAdapter(_BaseReferenceControlAdapter):
         # JIT update otherwise promotes both Python floats into persistent JAX
         # leaves on the first transition.  Canonical scalar arrays keep the
         # whole-life state shape fixed and exclude wall-clock time from state.
-        inner = learner.learner_state.replace(  # type: ignore[attr-defined]
+        inner = learner.learner_state
+        if self.config.initial_q_value is not None:
+            initial_q = jnp.asarray(self.config.initial_q_value, dtype=jnp.float32)
+            head_params = inner.head_params.replace(  # type: ignore[attr-defined]
+                weights=tuple(
+                    jnp.full_like(weights, initial_q)
+                    for weights in inner.head_params.weights
+                ),
+                biases=tuple(
+                    jnp.zeros_like(biases) for biases in inner.head_params.biases
+                ),
+            )
+            inner = inner.replace(head_params=head_params)  # type: ignore[attr-defined]
+        inner = inner.replace(  # type: ignore[attr-defined]
             birth_timestamp=jnp.asarray(0.0, dtype=jnp.float32),
             uptime_s=jnp.asarray(0.0, dtype=jnp.float32),
         )
