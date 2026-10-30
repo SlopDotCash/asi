@@ -16,6 +16,7 @@ from alberta_framework.core.options import (
     STOMP_OPTION_MODEL_EXPANSION_FIELDS,
     STOMP_STATE_EXPANSION_FIELDS,
     STOMP_STATE_LIFETIME_FIELDS,
+    IntraOptionPoliciesState,
     STOMPAgent,
     STOMPConfig,
     STOMPSpecArrays,
@@ -24,6 +25,7 @@ from alberta_framework.core.options import (
     _differential_q_update,
     _differential_semidp_q_update,
     _stomp_direct_array_scalars,
+    _update_intra_option_policy,
     load_stomp_state_with_migration,
     replace_dispatched_primitive_action,
     stomp_state_to_checkpoint_payload,
@@ -83,6 +85,48 @@ def _old_format_payload(state: STOMPState) -> dict:
     for name in STOMP_OPTION_MODEL_EXPANSION_FIELDS:
         del payload["option_models"][name]
     return payload
+
+
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+def test_stomp_start_rejects_nonfinite_observation(bad_value: float) -> None:
+    agent = _agent()
+    source = agent.init(jr.key(17))
+    observation = jnp.asarray((bad_value, 0.25, -0.5), dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="initial_observation must contain only finite values"):
+        agent.start(source, observation)
+
+    valid_observation = jnp.asarray((0.5, -0.25, 1.0), dtype=jnp.float32)
+    valid_started = agent.start(source, valid_observation)
+    result = agent.update(
+        valid_started,
+        jnp.asarray(0.75, dtype=jnp.float32),
+        jnp.asarray((-0.1, 0.4, 0.8), dtype=jnp.float32),
+        jnp.asarray(0.9, dtype=jnp.float32),
+    )
+    assert bool(result.update_applied)
+    assert bool(agent.state_valid(result.state))
+
+    traced_started = jax.jit(agent.start)(source, valid_observation)
+    chex.assert_trees_all_equal(traced_started.base_last_obs, valid_observation)
+    assert bool(agent.state_valid(traced_started))
+
+
+def test_stomp_start_allows_concrete_observation_captured_by_trace() -> None:
+    agent = _agent()
+    source = agent.init(jr.key(19))
+    valid_observation = jnp.asarray((0.5, -0.25, 1.0), dtype=jnp.float32)
+
+    nested_traced_started = jax.jit(
+        lambda current: jax.lax.cond(
+            jnp.asarray(True),
+            lambda selected: agent.start(selected, valid_observation),
+            lambda selected: selected,
+            current,
+        )
+    )(source)
+    chex.assert_trees_all_equal(nested_traced_started.base_last_obs, valid_observation)
+    assert bool(agent.state_valid(nested_traced_started))
 
 
 class TestStompCheckpointRoundTrip:
@@ -335,6 +379,199 @@ def test_semidp_q_infinite_reward_does_not_poison_weights() -> None:
     assert not bool(update_applied)
 
 
+def _differential_family_step(
+    *,
+    q_value: np.float32,
+    reward: np.float32,
+    average_reward: np.float32,
+    next_feature: np.float32,
+    step_size: float,
+    compile: bool,
+) -> dict[str, tuple[object, object, object, object, object]]:
+    """Run the three differential Q updates on one shared scalar transition."""
+    n_actions = 1
+    q = jnp.asarray([[q_value]], dtype=jnp.float32)
+    traces = jnp.zeros((n_actions, 1), dtype=jnp.float32)
+    rbar = jnp.asarray(average_reward, dtype=jnp.float32)
+    obs = jnp.ones((1,), dtype=jnp.float32)
+    action = jnp.int32(0)
+    nxt = jnp.asarray([next_feature], dtype=jnp.float32)
+    reward_arr = jnp.asarray(reward, dtype=jnp.float32)
+    common = dict(step_size=step_size, avg_reward_step_size=0.0, trace_decay=0.0)
+    differential = _differential_q_update
+    semidp = _differential_semidp_q_update
+    intra = _update_intra_option_policy
+    if compile:
+        static = ("step_size", "avg_reward_step_size", "trace_decay")
+        differential = jax.jit(differential, static_argnames=(*static, "n_actions"))
+        semidp = jax.jit(semidp, static_argnames=(*static, "n_actions"))
+        intra = jax.jit(intra, static_argnames=(*static, "n_primitive_actions"))
+    diff_q, diff_z, diff_r, diff_td, diff_applied = differential(
+        q,
+        traces,
+        rbar,
+        obs,
+        action,
+        reward_arr,
+        nxt,
+        n_actions=n_actions,
+        **common,
+    )
+    semi_q, semi_z, semi_r, semi_td, semi_applied = semidp(
+        q,
+        traces,
+        rbar,
+        obs,
+        action,
+        reward_arr,
+        nxt,
+        n_actions=n_actions,
+        baseline_mass=jnp.asarray(1.0, dtype=jnp.float32),
+        discount=jnp.asarray(1.0, dtype=jnp.float32),
+        **common,
+    )
+    policies = IntraOptionPoliciesState(
+        q_weights=q[None, ...],
+        traces=traces[None, ...],
+        average_rewards=rbar[None],
+    )
+    new_policies, intra_td, intra_applied = intra(
+        policies,
+        jnp.int32(0),
+        obs,
+        action,
+        reward_arr,
+        nxt,
+        jnp.asarray(False),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        n_primitive_actions=n_actions,
+        importance_ratio=jnp.asarray(1.0, dtype=jnp.float32),
+        **common,
+    )
+    return {
+        "differential": (diff_q, diff_z, diff_r, diff_td, diff_applied),
+        "semidp": (semi_q, semi_z, semi_r, semi_td, semi_applied),
+        "intra": (
+            new_policies.q_weights[0],
+            new_policies.traces[0],
+            new_policies.average_rewards[0],
+            intra_td,
+            intra_applied,
+        ),
+    }
+
+
+def _assert_differential_family(
+    *,
+    q_value: np.float32,
+    reward: np.float32,
+    average_reward: np.float32,
+    next_feature: np.float32,
+    step_size: float,
+    expected_applied: bool,
+    expected_td: np.float32,
+    expected_weight: np.float32,
+) -> None:
+    shown_weight = expected_weight if expected_applied else q_value
+    expected_q = np.asarray([[shown_weight]], dtype=np.float32)
+    expected_rbar = np.asarray(average_reward, dtype=np.float32)
+    if expected_applied:
+        expected_traces = np.ones((1, 1), dtype=np.float32)
+    else:
+        expected_traces = np.zeros((1, 1), dtype=np.float32)
+    for compile in (False, True):
+        if compile:
+            outcome = _differential_family_step(
+                q_value=q_value,
+                reward=reward,
+                average_reward=average_reward,
+                next_feature=next_feature,
+                step_size=step_size,
+                compile=True,
+            )
+        else:
+            with jax.disable_jit():
+                outcome = _differential_family_step(
+                    q_value=q_value,
+                    reward=reward,
+                    average_reward=average_reward,
+                    next_feature=next_feature,
+                    step_size=step_size,
+                    compile=False,
+                )
+        for name, (new_q, new_z, new_rbar, td, applied) in outcome.items():
+            assert bool(applied) is expected_applied, name
+            np.testing.assert_array_equal(np.asarray(td), expected_td, err_msg=name)
+            np.testing.assert_array_equal(np.asarray(new_q), expected_q, err_msg=name)
+            np.testing.assert_array_equal(np.asarray(new_z), expected_traces, err_msg=name)
+            np.testing.assert_array_equal(np.asarray(new_rbar), expected_rbar, err_msg=name)
+
+
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_overflowing_differential_sum_keeps_finite_cancelled_td(sign: float) -> None:
+    """``R - rbar + Q(s', ·)`` overflows; cancelling it against Q(s, a) does not.
+
+    Matching reward, Q(s, a), and max Q(s', ·) at ``sign * 2e38`` with a zero
+    baseline leaves a TD error of that magnitude. A fresh trace then steps the
+    weight by ``alpha`` times the same magnitude.
+    """
+    magnitude = np.float32(sign * 2.0e38)
+    alpha = np.float32(0.1)
+    _assert_differential_family(
+        q_value=magnitude,
+        reward=magnitude,
+        average_reward=np.float32(0.0),
+        next_feature=np.float32(1.0),
+        step_size=0.1,
+        expected_applied=True,
+        expected_td=magnitude,
+        expected_weight=np.float32(magnitude + alpha * magnitude),
+    )
+
+
+def test_finite_differential_sum_keeps_left_to_right_rounding() -> None:
+    """A finite partial sum keeps ``((R - rbar) + Q') - Q``, even when reordering differs."""
+    reward = np.float32(0.1)
+    baseline = np.float32(0.2)
+    bootstrap = np.float32(1.0e10)
+    prediction = np.float32(1.0e10)
+    expected_td = np.float32((reward - baseline) + bootstrap - prediction)
+    alpha = np.float32(0.1)
+    _assert_differential_family(
+        q_value=prediction,
+        reward=reward,
+        average_reward=baseline,
+        next_feature=np.float32(1.0),
+        step_size=0.1,
+        expected_applied=True,
+        expected_td=expected_td,
+        expected_weight=np.float32(prediction + alpha * expected_td),
+    )
+
+
+@pytest.mark.parametrize(
+    ("next_feature", "step_size"),
+    [(0.0, 0.1), (1.0, 1.0)],
+)
+def test_unrepresentable_differential_update_still_rejects(
+    next_feature: float,
+    step_size: float,
+) -> None:
+    """Reject a TD error or weight step that is still outside float32."""
+    magnitude = np.float32(2.0e38)
+    weight = np.float32(-magnitude if next_feature == 0.0 else magnitude)
+    _assert_differential_family(
+        q_value=weight,
+        reward=magnitude,
+        average_reward=np.float32(0.0),
+        next_feature=np.float32(next_feature),
+        step_size=step_size,
+        expected_applied=False,
+        expected_td=np.float32(0.0),
+        expected_weight=weight,
+    )
+
+
 @pytest.mark.unit
 class TestStompConfigScalarValidation:
     """STOMPConfig must reject non-finite/out-of-range scalar hyperparameters (#523)."""
@@ -547,3 +784,29 @@ def test_stomp_from_config_preserves_historical_mapping_and_sequence_compatibili
     ):
         with pytest.raises(ValueError, match=match):
             STOMPConfig.from_config({"subtask_specs": (bad_spec,)})
+
+
+def test_scan_preserves_base_learner_host_clocks() -> None:
+    agent = _agent()
+    state = agent.start(
+        agent.init(jr.key(0)),
+        jnp.array([0.5, -0.25, 1.0], dtype=jnp.float32),
+    )
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    state = state.replace(
+        base_learner_state=state.base_learner_state.replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        )
+    )
+    result = agent.scan(
+        state,
+        jnp.zeros((2,), dtype=jnp.float32),
+        jnp.zeros((2, OBS_DIM), dtype=jnp.float32),
+    )
+    clocks = result.state.base_learner_state
+    assert type(clocks.birth_timestamp) is float
+    assert clocks.birth_timestamp == birth
+    assert type(clocks.uptime_s) is float
+    assert clocks.uptime_s == uptime
