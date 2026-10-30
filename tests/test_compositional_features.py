@@ -104,6 +104,14 @@ class TestCompositionalFeatureLearner:
             assert pa_np[i] < i
             assert pb_np[i] < i
 
+    def test_init_requires_a_typed_scalar_threefry_key(self) -> None:
+        learner = CompositionalFeatureLearner(n_features=4, n_tasks=1)
+
+        with pytest.raises(ValueError, match="typed scalar threefry2x32"):
+            learner.init(feature_dim=2, key=jr.PRNGKey(0))
+        with pytest.raises(ValueError, match="typed scalar threefry2x32"):
+            learner.init(feature_dim=2, key=jr.key(0, impl="rbg"))
+
     def test_forward_pass_topological_order(self) -> None:
         """Build a tiny DAG by hand and verify the forward gives the right values."""
         # Slots: [raw 0, raw 1, product(0, 1)] -> values [x[0], x[1], x[0]*x[1]]
@@ -189,6 +197,36 @@ class TestCompositionalFeatureLearner:
         chex.assert_shape(result.metrics, (7,))
         chex.assert_tree_all_finite(result.metrics)
         assert int(result.state.step_count) == 1
+
+    @pytest.mark.parametrize("use_obgd", [False, True])
+    def test_update_retains_finite_wide_mean_squared_error(self, use_obgd: bool) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=1,
+            n_tasks=8,
+            candidate_count=0,
+            step_size_output=1.0e-20,
+            step_size_theta=0.0,
+            replacement_interval=0,
+            use_obgd=use_obgd,
+            obgd_kappa=1.0e-20,
+        )
+        state = learner.init(feature_dim=1, key=jr.key(0))
+        observation = jnp.ones((1,), dtype=jnp.float32)
+        target = jnp.full((8,), -7.0e18, dtype=jnp.float32)
+
+        expected_mse = float(np.float64(np.float32(7.0e18)) ** 2)
+        squared_errors = (learner.predict(state, observation) - target) ** 2
+        assert bool(jnp.all(jnp.isfinite(squared_errors)))
+        assert not bool(jnp.isfinite(jnp.sum(squared_errors)))
+        assert np.isfinite(expected_mse)
+
+        result = learner.update(state, observation, target)
+
+        assert bool(result.update_applied)
+        assert int(result.state.step_count) == 1
+        assert bool(jnp.any(result.state.output_weights != state.output_weights))
+        chex.assert_tree_all_finite(result.metrics)
+        assert float(result.metrics[0]) == pytest.approx(expected_mse, rel=1.0e-6)
 
     def test_finite_candidate_selector_probabilities_remain_normalized(self) -> None:
         selector = FiniteCandidateSelector(
@@ -1455,6 +1493,27 @@ class TestCompositionalFeatureLearner:
         # observation because slots [0, feature_dim) are raw passthroughs.
         np.testing.assert_allclose(np.asarray(features[:3]), np.asarray(observation))
 
+    @pytest.mark.parametrize("observation_width", [1, 3])
+    def test_array_runner_rejects_observation_width_drift(
+        self,
+        observation_width: int,
+    ) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=3,
+            n_tasks=2,
+            candidate_count=0,
+            replacement_interval=100,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(8))
+        observations = jnp.arange(2 * observation_width, dtype=jnp.float32).reshape(
+            2,
+            observation_width,
+        )
+        targets = jnp.ones((2, 2), dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="observations must have shape"):
+            run_compositional_arrays(learner, state, observations, targets)
+
     def test_scan_loop_runs(self) -> None:
         learner = CompositionalFeatureLearner(
             n_features=10,
@@ -1476,6 +1535,28 @@ class TestCompositionalFeatureLearner:
         assert int(result.state.step_count) == 50
         # Sanity check the resulting state retains the type.
         assert isinstance(result.state, CompositionalFeatureState)
+
+    def test_array_scan_preserves_initialized_host_clocks(self) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=4,
+            n_tasks=1,
+            candidate_count=0,
+            replacement_interval=100_000,
+            min_feature_age=100_000,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(birth_timestamp=birth, uptime_s=uptime)
+        observations = jnp.zeros((2, 2), dtype=jnp.float32)
+        targets = jnp.zeros((2, 1), dtype=jnp.float32)
+        result = run_compositional_arrays(learner, state, observations, targets)
+        clocks = result.state
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.metrics)
 
 
 class TestImprintConsolidation:
