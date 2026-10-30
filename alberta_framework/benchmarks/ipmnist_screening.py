@@ -4850,6 +4850,7 @@ def _make_rls_head_learner(
     hp: Mapping[str, float],
     *,
     _decay_to_init: bool = False,
+    _pred_head_avg: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Champion body + streaming-RLS readout on the penultimate features.
 
@@ -5090,6 +5091,7 @@ def _make_rls_head_learner(
         y: Array,
         key: Array,
         lr: Array | None = None,
+        pred_body: Mapping[str, Array] | None = None,
     ) -> tuple[
         dict[str, Array],
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
@@ -5098,6 +5100,11 @@ def _make_rls_head_learner(
         del key  # sigma-0 body, closed-form head: no randomness consumed
         if lr is not None and (sm_enabled or not gate_enabled or not resid):
             raise ValueError("a runtime step needs the gated residual body")
+        if pred_body is not None and (
+            sm_enabled or whiten_enabled or _decay_to_init
+            or not gate_enabled or not resid
+        ):
+            raise ValueError("a prediction body needs the plain gated residual body")
         if _decay_to_init:
             if not isinstance(state, RLSHeadL2InitState):
                 raise TypeError("L2-Init learner requires RLSHeadL2InitState")
@@ -5255,8 +5262,25 @@ def _make_rls_head_learner(
             logits, phi = _rls_head_forward(params, state.wout, x_norm)
             err_pre = y_onehot - logits
             loss = 0.5 * jnp.sum(err_pre * err_pre)
-        accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
-        err = y_onehot - logits
+        head_logits = logits
+        deployed_logits = logits
+        if pred_body is not None:
+            # Polyak arm: predict with the averaged body (prediction only;
+            # the raw body's gradient/update above is untouched).  The
+            # reported loss is the deployed prediction's.  ``_pred_head_avg``
+            # (build-time) also trains the RLS head on the averaged features.
+            pred_params = dict(params)
+            pred_params.update(pred_body)
+            deployed_logits, pred_phi = _rls_head_forward(
+                pred_params, state.wout, x_norm
+            )
+            err_dep = y_onehot - deployed_logits
+            loss = 0.5 * jnp.sum(err_dep * err_dep)
+            if _pred_head_avg:
+                head_logits = deployed_logits
+                phi = pred_phi
+        accuracy = (jnp.argmax(deployed_logits) == y).astype(jnp.float32)
+        err = y_onehot - head_logits
         pp = state.p @ phi
         gain = pp / (rls_lambda + phi @ pp)
         new_wout = state.wout + jnp.outer(gain, err)
@@ -5380,6 +5404,8 @@ def _identmap_assignment(
 
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
+    *,
+    _pred_head_avg: bool = False,
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
     """Incumbent + online permutation identification and input remap.
 
@@ -5396,6 +5422,8 @@ def _make_rls_head_identmap_learner(
     protocol permits.  ``ident_match_at = 0`` delegates verbatim to
     :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
     """
+    if "polyak_window" in hp:
+        return _make_rls_head_identmap_polyak_learner(hp)
     match1 = float(hp["ident_match_at"])
     if match1 == 0.0:
         return _make_rls_head_learner(hp)
@@ -5418,7 +5446,9 @@ def _make_rls_head_identmap_learner(
         and math.isfinite(anneal_tau)
     ):
         raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
-    inner_init, inner_step = _make_rls_head_learner(hp)
+    inner_init, inner_step = _make_rls_head_learner(
+        hp, _pred_head_avg=_pred_head_avg
+    )
 
     def raw_normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -5461,10 +5491,14 @@ def _make_rls_head_identmap_learner(
         x: Array,
         y: Array,
         key: Array,
+        pred_body: Mapping[str, Array] | None = None,
     ) -> tuple[dict[str, Array], RLSHeadIdentState, StepMetrics]:
         input_dim = x.shape[0]
         n_classes = state.ref_class_sums.shape[0]
         x_r = x[state.remap]
+        extra: dict[str, Any] = {}
+        if pred_body is not None:
+            extra["pred_body"] = pred_body
         if anneal_on:
             # Pre-step counter; before any detected shift it runs from
             # -2**30, so the offset recovers steps since stream start.
@@ -5479,7 +5513,11 @@ def _make_rls_head_identmap_learner(
                 * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
             )
             new_params, new_inner, metrics = cast(Any, inner_step)(
-                params, state.inner, x_r, y, key, lr=lr
+                params, state.inner, x_r, y, key, lr=lr, **extra
+            )
+        elif extra:
+            new_params, new_inner, metrics = cast(Any, inner_step)(
+                params, state.inner, x_r, y, key, **extra
             )
         else:
             new_params, new_inner, metrics = inner_step(
@@ -5598,6 +5636,93 @@ def _make_rls_head_identmap_learner(
             post_sq_sums=post_sq_sums,
             since_shift=since,
             remap=remap,
+        ), metrics
+
+    return init_fn, full_step
+
+
+@chex.dataclass(frozen=True)
+class RLSHeadIdentPolyakState:
+    """Identmap state plus a Polyak/EMA average of the residual body.
+
+    A distinct state keeps the parent :class:`RLSHeadIdentState` schema
+    unchanged.  ``avg`` holds the averaged ``w1/b1/w2/b2`` used for
+    prediction only; ``avg_n`` counts steps since its last reset (capped).
+    """
+
+    ident: RLSHeadIdentState
+    avg: dict[str, Array]
+    avg_n: Array
+
+
+def _make_rls_head_identmap_polyak_learner(
+    hp: Mapping[str, float],
+) -> tuple[LearnerInitFn, ScreeningStepFn]:
+    """Identmap parent + Polyak-style iterate averaging of the body.
+
+    After each step ``n = 1 if reset else min(n, W) + 1``,
+    ``w = 1 / min(n, W)``, ``A = (1 - w) * A + w * body_new`` (uniform
+    average since the last reset, an EMA of window ``W`` beyond it).
+    Resets: a detected shift (identifier ``since_shift`` restarts at 1) or
+    any identifier remap change.  ``A`` is used for the deployed prediction
+    only (and, with ``polyak_head_avg = 1``, for the RLS head update); the
+    raw body learns exactly as the parent.  ``W = 1`` makes ``A`` the raw
+    body exactly: the live path is bit-exactly the parent (pinned).
+    """
+    window = float(hp["polyak_window"])
+    head_avg = float(hp.get("polyak_head_avg", 0.0))
+    if not (math.isfinite(window) and window >= 1.0
+            and window == math.floor(window)):
+        raise ValueError("polyak_window must be a finite integer >= 1")
+    if head_avg not in (0.0, 1.0):
+        raise ValueError("polyak_head_avg must be 0.0 or 1.0")
+    if float(hp["ident_match_at"]) == 0.0:
+        raise ValueError("polyak averaging is registered on identmap arms only")
+    if (hp.get("body_sm_decay", 0.0) != 0.0
+            or hp.get("resid_whiten", 0.0) != 0.0
+            or hp.get("gate_scale", 1.0) != 1.0):
+        raise ValueError("polyak averaging needs the plain gated residual body")
+    base_hp = {k: v for k, v in hp.items() if not k.startswith("polyak_")}
+    ident_init, ident_step = _make_rls_head_identmap_learner(
+        base_hp, _pred_head_avg=head_avg == 1.0
+    )
+    w_cap = int(window)
+
+    def init_fn(params: dict[str, Array]) -> RLSHeadIdentPolyakState:
+        return RLSHeadIdentPolyakState(  # type: ignore[call-arg]
+            ident=ident_init(params),
+            avg={name: params[name] for name in _RLS_HEAD_BODY},
+            avg_n=jnp.array(1, dtype=jnp.int32),
+        )
+
+    def full_step(
+        params: dict[str, Array],
+        state: RLSHeadIdentPolyakState,
+        x: Array,
+        y: Array,
+        key: Array,
+    ) -> tuple[dict[str, Array], RLSHeadIdentPolyakState, StepMetrics]:
+        new_params, new_ident, metrics = cast(Any, ident_step)(
+            params, state.ident, x, y, key, pred_body=state.avg
+        )
+        reset = jnp.logical_or(
+            new_ident.since_shift == 1,
+            jnp.any(new_ident.remap != state.ident.remap),
+        )
+        n = jnp.where(
+            reset,
+            jnp.array(1, jnp.int32),
+            jnp.minimum(state.avg_n, jnp.int32(w_cap)) + 1,
+        )
+        w = jnp.float32(1.0) / jnp.minimum(n, jnp.int32(w_cap)).astype(
+            jnp.float32
+        )
+        avg = {
+            name: (1.0 - w) * state.avg[name] + w * new_params[name]
+            for name in _RLS_HEAD_BODY
+        }
+        return new_params, RLSHeadIdentPolyakState(  # type: ignore[call-arg]
+            ident=new_ident, avg=avg, avg_n=n
         ), metrics
 
     return init_fn, full_step
@@ -8631,6 +8756,30 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("f2t1000", 0.0028125, 1000.0),
                 ("f4t250", 0.00140625, 250.0),
                 ("f4t1000", 0.00140625, 1000.0),
+            )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_polyak_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "polyak_window": window,
+                 "polyak_head_avg": head_avg},
+                "the anneal_f2t1000 composition with the deployed prediction "
+                "read from a Polyak/EMA average of the body (window "
+                f"{window}, reset at detected shifts and remaps; head trained "
+                f"on {'averaged' if head_avg else 'raw'} features) "
+                "(wave_identmap50_r_idet003_s005625_anneal_polyak/ screen; "
+                "development screening diagnostic)"
+            )
+            for tag, window, head_avg in (
+                ("w100h0", 100.0, 0.0),
+                ("w100h1", 100.0, 1.0),
+                ("w1000h0", 1000.0, 0.0),
+                ("w1000h1", 1000.0, 1.0),
             )
         ),
     ):

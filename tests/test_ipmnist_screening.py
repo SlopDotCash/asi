@@ -7592,6 +7592,22 @@ class TestRLSHeadIdentMap:
                     ("f4t1000", 0.00140625, 1000.0),
                 )
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_polyak_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "polyak_window": window,
+                    "polyak_head_avg": head_avg,
+                }
+                for tag, window, head_avg in (
+                    ("w100h0", 100.0, 0.0),
+                    ("w100h1", 100.0, 1.0),
+                    ("w1000h0", 1000.0, 0.0),
+                    ("w1000h1", 1000.0, 1.0),
+                )
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7834,6 +7850,113 @@ class TestRLSHeadIdentMapStepAnneal:
                   .hyperparameters, **bad}
             with pytest.raises(ValueError):
                 _make_rls_head_identmap_learner(hp)
+
+
+class TestRLSHeadIdentMapPolyak:
+    """Polyak-style body iterate averaging on the anneal_f2t1000 parent.
+
+    The reduction pin runs the LIVE averaging path (``polyak_window = 1``,
+    both head settings) on a stream where the detector fires and the
+    identifier remaps, and requires bitwise equality with the PARENT.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_polyak_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, "anneal_tau": 2.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(
+            x, y, self._spec(**overrides), seed=7, config=SMALL
+        )
+
+    def test_stream_exercises_identifier(self):
+        parent = self._run()
+        no_ident = self._run(ident_match_at=0.0)
+        assert not np.array_equal(
+            np.asarray(parent.per_task_loss), np.asarray(no_ident.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("head_avg", [0.0, 1.0])
+    def test_window_one_live_path_pin_bitwise(self, head_avg):
+        """``polyak_window = 1`` through the live average is the parent
+        bit-exactly, for both head settings."""
+        parent = self._run()
+        off = self._run(polyak_window=1.0, polyak_head_avg=head_avg)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("head_avg", [0.0, 1.0])
+    def test_mechanism_live(self, head_avg):
+        """A real window diverges from the parent and stays finite."""
+        parent = self._run()
+        arm = self._run(polyak_window=8.0, polyak_head_avg=head_avg)
+        assert not np.array_equal(
+            np.asarray(arm.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(arm.per_task_loss)))
+
+    def test_avg_resets_at_shift_and_remap(self):
+        """Direct state check: after a remap step the average equals the
+        raw body exactly and the counter is 1."""
+        import jax.random as jr_
+
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        hp = dict(self._spec(polyak_window=4.0).hyperparameters)
+        init_fn, step_fn = _make_rls_head_identmap_learner(hp)
+        params = init_mlp_params(jr_.key(0), SMALL)
+        state = init_fn(params)
+        saw_reset = saw_avg = False
+        for t in range(x.shape[0]):
+            prev_remap = np.asarray(state.ident.remap)
+            params, state, _ = step_fn(
+                params, state, jnp.asarray(x[t]), jnp.asarray(y[t]), jr_.key(t)
+            )
+            reset = int(state.ident.since_shift) == 1 or not np.array_equal(
+                prev_remap, np.asarray(state.ident.remap)
+            )
+            if reset:
+                saw_reset = True
+                assert int(state.avg_n) == 1
+                for k in state.avg:
+                    np.testing.assert_array_equal(
+                        np.asarray(state.avg[k]), np.asarray(params[k])
+                    )
+            elif int(state.avg_n) > 1:
+                saw_avg = True
+        assert saw_reset and saw_avg
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        base = self._spec(polyak_window=100.0).hyperparameters
+        for bad in ({"polyak_window": 0.0}, {"polyak_window": 2.5},
+                    {"polyak_window": float("inf")},
+                    {"polyak_head_avg": 0.5}, {"ident_match_at": 0.0}):
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner({**base, **bad})
 
 
 class TestPlasticityCounterSaturation:
