@@ -95,7 +95,9 @@ class Step9DreamingConfig:
     fires a fixed dreaming budget: for each dream the agent samples a recent
     anchor observation, picks a random action, queries the world model, and
     applies the imagined update **only** when the model passes two guards:
-    sufficient warm-up data and a low running prediction-error EMA.
+    sufficient warm-up data and a low running prediction-error EMA.  Each
+    dream starts from empty eligibility traces, and the real-experience
+    traces are restored afterwards.
 
     Args:
         control: Step 6 differential SARSA configuration.
@@ -625,18 +627,49 @@ def _update_control_with_linear_rng(
     proposed next action.  Select that action explicitly so the advanced key
     can remain linear even when the numerical update is rejected.
     """
-    next_action, next_key = agent.select_action(state, next_observation)
+    # This caller owns the linear reservation contract.  Action selection is
+    # deliberately fail-closed and preserves its key when policy inputs are
+    # invalid, but a rejected Step 9 transaction must still move past the
+    # randomness reserved for that attempt.
+    next_key, _, _, _ = jr.split(state.rng_key, 4)
+    next_action, _ = agent.select_action(state, next_observation)
     advanced_state = state.replace(rng_key=next_key)
     return cast(
         DifferentialSARSAUpdateResult,
-        agent.update(
-            advanced_state,
-            reward,
-            next_observation,
-            next_action=next_action,
-            discount=discount,
+        jax.lax.cond(
+            next_action >= 0,
+            lambda: agent.update(
+                advanced_state,
+                reward,
+                next_observation,
+                next_action=next_action,
+                discount=discount,
+            ),
+            lambda: agent._rejected_update_result(advanced_state),
         ),
     )
+
+
+def _mean_squared_deviation(delta: Array) -> Array:
+    """Return the mean square of one finite residual without a sum overflow.
+
+    ``jnp.mean(delta ** 2)`` adds every square before dividing. A wide finite
+    residual can overflow that sum even though the mean is a finite float32
+    value. The direct mean is kept whenever it is already finite, so ordinary
+    residuals stay bit-identical. Only an overflowing reduction is rebuilt
+    from a power-of-two scaling.
+    """
+
+    squares = delta * delta
+    direct = jnp.mean(squares)
+    peak = jnp.max(jnp.abs(delta))
+    safe_peak = jnp.where(peak > 0.0, peak, jnp.asarray(1.0, dtype=jnp.float32))
+    _, exponent = jnp.frexp(safe_peak)
+    scaled = jnp.ldexp(delta, -exponent)
+    count = jnp.asarray(delta.shape[0], dtype=jnp.float32)
+    scaled_mean = jnp.sum(scaled * scaled) / count
+    stable = jnp.ldexp(scaled_mean, exponent + exponent)
+    return jnp.where(jnp.isfinite(direct), direct, stable)
 
 
 @functools.partial(jax.jit, static_argnums=(0, 1, 2, 3))
@@ -733,8 +766,8 @@ def step9_update(
                 anchor_obs,
             )
             prediction = model.predict(model_state, anchor_obs, behavior_sample.action)
-            transition_magnitude = jnp.mean(
-                (prediction.next_observation - anchor_obs) ** 2
+            transition_magnitude = _mean_squared_deviation(
+                prediction.next_observation - anchor_obs
             )
             surprise = transition_magnitude + jnp.abs(prediction.reward)
             utility = jnp.abs(prediction.reward)
@@ -783,8 +816,13 @@ def step9_update(
         selected_index = selection.selected_indices[0]
         anchor_obs = candidate_anchors[selected_index]
         action = candidate_actions[selected_index]
+        # A dream starts from empty eligibility: the real traces must neither
+        # receive imagined TD errors nor absorb imagined gradients that the
+        # next real TD error would then credit.
         initial_control_state = ctrl_state.replace(
-            rng_key=control_rollout_key
+            rng_key=control_rollout_key,
+            q_trace_weights=jnp.zeros_like(ctrl_state.q_trace_weights),
+            q_trace_bias=jnp.zeros_like(ctrl_state.q_trace_bias),
         )
         initial_behavior_state = behavior_state.replace(
             rng_key=behavior_rollout_key
@@ -865,6 +903,11 @@ def step9_update(
         restored = rollout_ctrl.replace(
             last_observation=control_after_real.last_observation,
             last_action=control_after_real.last_action,
+            epsilon=control_after_real.epsilon,
+            step_count=control_after_real.step_count,
+            step_words=control_after_real.step_words,
+            q_trace_weights=ctrl_state.q_trace_weights,
+            q_trace_bias=ctrl_state.q_trace_bias,
         )
         next_ctrl = cast(
             DifferentialSARSAState,
