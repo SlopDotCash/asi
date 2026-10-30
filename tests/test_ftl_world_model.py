@@ -312,6 +312,64 @@ def test_soft_bin_features_are_bounded_local_and_boundary_safe() -> None:
         assert float(features.dense.sum()) == pytest.approx(config.projection_dim)
 
 
+@pytest.mark.parametrize(
+    ("boundary", "field"),
+    [
+        ("sparse_features", "observation"),
+        ("sparse_features", "action"),
+        ("predict", "observation"),
+        ("predict", "action"),
+        ("update", "observation"),
+        ("update", "action"),
+        ("update", "next_observation"),
+        ("scan", "observations"),
+        ("scan", "actions"),
+        ("scan", "next_observations"),
+    ],
+)
+def test_model_rejects_complex_transition_arrays(boundary: str, field: str) -> None:
+    model = SparseFTLWorldModel(
+        SparseFTLWorldModelConfig(
+            observation_dim=1,
+            action_dim=1,
+            projection_dim=2,
+            bins=3,
+        )
+    )
+    state = model.init(jr.key(102))
+    real = jnp.array([0.25], dtype=jnp.float32)
+    complex_value = jnp.array([0.25 + 7.0j], dtype=jnp.complex64)
+
+    with pytest.raises(ValueError, match=rf"{field} must not have a complex dtype"):
+        if boundary == "sparse_features":
+            model.sparse_features(
+                state,
+                complex_value if field == "observation" else real,
+                complex_value if field == "action" else real,
+            )
+        elif boundary == "predict":
+            model.predict(
+                state,
+                complex_value if field == "observation" else real,
+                complex_value if field == "action" else real,
+            )
+        elif boundary == "update":
+            model.update(
+                state,
+                complex_value if field == "observation" else real,
+                complex_value if field == "action" else real,
+                complex_value if field == "next_observation" else real,
+            )
+        else:
+            run_sparse_ftl_world_model(
+                model,
+                state,
+                (complex_value if field == "observations" else real)[None, :],
+                complex_value if field == "actions" else real,
+                (complex_value if field == "next_observations" else real)[None, :],
+            )
+
+
 def test_update_reports_prediction_made_before_observing_target() -> None:
     model = SparseFTLWorldModel(
         SparseFTLWorldModelConfig(

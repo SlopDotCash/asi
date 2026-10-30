@@ -115,13 +115,16 @@ def test_sigreg_rejects_mismatched_or_empty_representation_shapes() -> None:
         epps_pulley_gaussian_statistic(jnp.asarray([], dtype=jnp.float32))
 
 
-def test_sigreg_diagnostics_std_is_finite_at_float32_extremes() -> None:
+def test_sigreg_diagnostics_preserve_std_at_float32_extremes() -> None:
     maximum = np.finfo(np.float32).max
     embeddings = jnp.asarray([[maximum], [-maximum]], dtype=jnp.float32)
     directions = jnp.ones((1, 1), dtype=jnp.float32)
     assert not bool(jnp.isfinite(jnp.std(embeddings, axis=0)[0]))
     diagnostics = sigreg_diagnostics(embeddings, directions, SIGRegConfig(n_projections=1))
     chex.assert_tree_all_finite(diagnostics)
+    np.testing.assert_array_equal(diagnostics.latent_std_mean, maximum)
+    np.testing.assert_array_equal(diagnostics.latent_std_min, maximum)
+    np.testing.assert_array_equal(diagnostics.projected_std_mean, maximum)
 
 
 def _bhep_reference_statistic(samples: np.ndarray, kernel_width: float) -> float:
