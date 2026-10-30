@@ -295,6 +295,210 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+24. **Lowering the head P-reset threshold loses on the identified gated
+    chain: the reset axis is bracketed at the pre-identmap calibration
+    value.** The first cell of the gated chain's reset axis —
+    `rls_reset_frac` 0.05 -> 0.03 on the `..._idet003_s0031640625_r02`
+    incumbent (PR #3123) — measured -0.00039 +/- 0.00016 (paired, ~2.4
+    sigma) with 3/3 seeds negative. The 0.05 default was calibrated at a
+    2.8x margin over the within-task detector maximum of the pre-identmap
+    champion, whose inner detector watched the un-remapped stream; on the
+    identmap chain the inner detector watches `x[remap]`, whose statistics
+    step-change at each match-induced remap refinement (50/200/2000
+    samples), so the calibration premise was stale and the axis genuinely
+    unmeasured. The loss concentrates late (tasks 31-60 diffs
+    -0.00106/-0.00089/-0.00041)
+    while the early block is slightly positive — the longer level-
+    triggered holds re-inflate the `33*I` head through the recovery tails
+    of each disturbance window and the large updates on partially
+    misaligned inputs land as steady-state cost, the same tail trade the
+    ridge axis measured to saturation at its r02 cell (PR #3123). Task 0
+    is bit-identical to the parent on every seed (no within-task inner-
+    stream event reached even 0.03 through 5,000 steps), so the upward
+    direction is closed structurally: raising the threshold would only
+    truncate the recovery tails of genuine windows, giving back the r02
+    early-gain win. The axis is measured closed at 0.05; do not re-probe
+    `rls_reset_frac` on this chain without a mechanism that changes
+    post-disturbance recovery behaviour. With this closure the gated
+    chain's named single-knob axes are all measured (ridge saturated,
+    body step at its monotone boundary, trigger peaked, match schedule
+    closed by #22, reset bracketed); new movement needs a new mechanism
+    class. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/`
+    (3 candidate shards binding commit `3286e2c2`, repro shards,
+    `summary.json`, `README.md`).
+
+25. **Decay-toward-init (L2-Init) loses uniformly on the identified gated
+    chain: the first new-mechanism-class probe after #24 is a decisive
+    rejection.** The never-screened code-only issue-#14 endpoint
+    (`rls_head_resid_l1_preset005_l2init`, PR #183) composed onto the
+    `..._idet003_s0031640625_r02` incumbent (PR #3123) as
+    `..._r02_l2init` — decoupled decay pulls `w1/b1/w2/b2` toward their
+    initial values at the unchanged weight-decay rate; gate, step, RLS
+    recursion, `w3/b3`, and every identifier constant verbatim the
+    parent — measured -0.01117 +/- 0.000018 (paired stderr) with 3/3
+    seeds negative (~600 sigma), the family's largest screen loss to
+    date. The loss is uniform across the whole life (task blocks 1-10
+    -0.0067/-0.0082, 11-30 -0.0124/-0.0126, 31-60 -0.0118/-0.0121),
+    mean plasticity drops 0.700/0.691/0.701 -> 0.597/0.589/0.594, and
+    the last-15-task slopes stay at the parent's plateau, so L2-Init's
+    premise (trade early diversity for late-life retention) never
+    appears: there is no early phase where the candidate is competitive
+    and no late phase where it recovers. Mechanism reading: the chain's
+    decay term is ungated, so swapping its target from zero to the
+    random task-0 draw taxes every step of learning equally; on an
+    identified-input, gated, small-step body whose RLS head re-solves to
+    the current features, that drag erodes the matured feature map
+    faster than the head can compensate, and the late-life plasticity
+    loss L2-Init targets is absent here (parent slopes ~0, plasticity
+    ~0.70). Do not re-probe decay-toward-init on this chain with a
+    smaller pull strength or a gate-modulated pull without reasoning
+    that changes the uniform erosion of matured features. Wall-clock per
+    shard is unchanged (64.2-64.5 s vs 64.9-65.6 s, sequential).
+    Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_l2init/`
+    (3 candidate shards binding commit `2a50483e`, control repro shard,
+    `summary.json`, `README.md`).
+
+26. **A matched-gradient SGD head cannot replace the RLS head on the
+    identified gated chain: the residual's geometry alone does not carry
+    the body lift.** Theory §6.3/§6.6's control
+    (`rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead`, local
+    registration commit `ec23f65a`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced only the Sherman-Morrison head update with plain
+    decayed SGD on the same one-hot squared loss, the residual entering in
+    the RLS gain's sign so both rules descend the same loss; the head step
+    was calibrated on a seed-0 3-task bracket (0.0001-0.4 all finite,
+    accuracy rising monotonically to a flat optimum at 0.05-0.1; the
+    parallel-head family's 0.01 constant is mis-scaled for the body's
+    hidden-feature head input), and the registered endpoint took the
+    bracket's best cell 0.1 with weight_decay 0.01 verbatim. The preregistered
+    60-task screen measured **-0.49854 +/- 0.00349 (paired stderr) with 3/3
+    seeds negative**: candidate 0.44358/0.45230/0.45426 vs the parent's
+    0.94896/0.94867/0.94814 — **0.33 below even the plain `upgd_w_control`**
+    (0.77776). The deficit is a lower asymptote, not a transient: task
+    blocks sit at 0.29-0.33 (1-10), 0.47-0.48 (11-30), and 0.475-0.48
+    (31-60) vs the parent's 0.925 -> 0.954, and task 0 — before any detected
+    boundary — is 0.117-0.125 vs the parent's 0.844-0.853, so the within-task
+    fit itself collapses: plain SGD at its calibrated-best step cannot match
+    exact second-order within-task convergence in 5,000 steps, and the body
+    then trains on the resulting poor residual (the stable, non-overflowing
+    analogue of #11's feedback failure; mean plasticity drops
+    0.700/0.691/0.701 -> 0.213/0.216/0.216). No instability artifact is
+    present: every loss is finite, per-seed minima are the candidates' own
+    task-0 values, and wall-clock per shard is unchanged (62.5-63.4 s vs
+    64.8-65.6 s, sequential). Conclusions: the convergence-shortfall account
+    is confirmed on the identified chain — the stable head's rapid exact fit,
+    not the residual's geometry alone, carries the body lift — and the O(d^2)
+    RLS head is not removable at this horizon by an O(d) SGD head at its
+    best calibrated step. The conclusion is invariant across the whole stable
+    bracket (every cell 0.0001-0.4 measured far below the parent; best 3-task
+    cell 0.171). A pre-publication registration draft had the residual
+    entering with the wrong sign (gradient ascent); the 3-task calibration
+    probes caught it (chance-level accuracy, non-finite loss at steps >= 0.003)
+    and the sign was fixed and the registration amended before any 60-task
+    shard was retained. Do not re-probe plain-SGD-head replacements on this
+    chain without a mechanism that changes within-task convergence rate
+    (e.g., a second-order or per-direction adaptive head), not merely a
+    step-size retune. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_sgdhead/`
+    (3 candidate shards binding commit `ec23f65a`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, calibration-bracket
+    table in the wave README, `summary.json`, `README.md`).
+
+27. **A diagonal per-direction adaptive head loses a small uniform margin on
+    the identified gated chain: the RLS head's cross-direction coupling is
+    load-bearing at the margin.** Negative result #26's named escape class
+    ("a second-order or per-direction adaptive head") and theory §6.6's
+    removability question, one cell further than #26:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead` (local
+    registration commit `e562e60b`) kept the r02 incumbent (PR #3123)
+    verbatim and replaced only the head's full Sherman-Morrison `P` with a
+    diagonal per-direction gain accumulator — each coordinate runs its own
+    scalar RLS on the shared one-hot squared-loss residual,
+    `K_j = p_j*phi_j/(lambda + p_j*phi_j^2)`, `p_j` nonincreasing at
+    `lambda = 1` (no wind-up), O(m) state and work per step instead of
+    O(m^2), the detector-driven reset keeping its parent meaning and the
+    trace cap rejected at build time. No new hyperparameter and no
+    calibration: on a single-active-direction `phi` the diagonal gain is
+    bitwise the full head's gain, so the only removed mechanism is the
+    cross-direction denominator coupling `phi^T P phi`. The preregistered
+    60-task screen measured **-0.00096 +/- 0.00010 (paired stderr) with 3/3
+    seeds negative**: candidate 0.94811/0.94752/0.94727 vs the parent's
+    0.94896/0.94867/0.94814 — still +0.16987 above the plain control and
+    ~0.50 above #26's SGD-head collapse. The deficit is uniform across
+    life (block diffs -0.0005 to -0.0017 in every block of every seed,
+    slightly larger early) and the within-task fit itself is slower: task 0
+    — before any detected boundary — measures 0.8358-0.8436 vs the parent's
+    0.8444-0.8526, consistent with the coupling pooling excitation across
+    simultaneously active directions the way the ridge axis's saturation
+    picture implies. Plasticity is unchanged (0.713-0.721 vs 0.691-0.701)
+    and wall-clock per shard drops (61.7-61.9 s vs 64.8-65.6 s, sequential)
+    — the O(m) head is measurably cheaper, just 0.001 worse here.
+    Conclusions: the per-direction second-order structure carries
+    essentially all of the head's rapid within-task fit (#26's collapse is
+    fully explained by the missing adaptive gain), but the O(d^2) head is
+    not freely removable at O(d) cost — a diagonal second-order head
+    retains ~99.9% of the incumbent's level and loses on every seed. Head
+    ladder on the chain: full Sherman-Morrison 0.94859 > diagonal 0.94763 >
+    plain SGD 0.45005. Any future head replacement must keep cross-direction
+    coupling (e.g. factored/low-rank curvature); scalar-step and
+    diagonal-head retries without new coupling structure are closed. Do
+    not re-probe this class on this chain without a mechanism that adds
+    coupling at sub-O(d^2) cost, not a retuned diagonal. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_diaghead/`
+    (3 candidate shards binding commit `e562e60b`, control + 3 parent repro
+    shards bit-exact against the retained r02 prefixes, `summary.json`,
+    `README.md`).
+
+28. **A block-factored head (coupling at sub-O(d^2) cost) loses a smaller
+    but still uniform margin on the identified gated chain: the RLS head's
+    cross-block coupling is load-bearing, and its value scales with the
+    coupled-pair fraction.** Negative result #27's named escape class
+    ("coupling at sub-O(d^2) cost, e.g. factored/low-rank curvature"), one
+    interior cell further:
+    `rls_head_resid_identmap50_r_idet003_s0031640625_r02_blockhead` (local
+    registration commit `5c96b398`) kept the r02 incumbent (PR #3123)
+    verbatim and restricted the head's full Sherman-Morrison `P` to `G = 4`
+    contiguous blocks of the `m = 151` head coordinates (38/38/38/37, tail
+    zero-padded inert): each block an exact Sherman-Morrison RLS on the
+    shared one-hot squared-loss residual with per-block denominators, the
+    parent's symmetrization, reset meaning, and every other constant — the
+    block count `G` being the measured axis itself (`G = 1` bitwise the
+    full head by a pinned test; `G = m` exactly the #27 diagonal).
+    Within-block cross-direction coupling is kept exactly; the removed
+    mechanism is solely the cross-block coupling (8,550 of 11,325
+    coordinate pairs, ~75.5%), at O(m^2/4) state and measurably lower
+    wall-clock. The preregistered 60-task screen measured **-0.00032
+    (paired stderr 0.00008) with 3/3 seeds negative**: candidate
+    0.94848/0.94840/0.94794 vs the parent's 0.94896/0.94867/0.94814 —
+    still +0.17051 above the plain control and one third of #27's diagonal
+    deficit. The profile differs from #27's: task blocks 1-10 are mixed
+    (+0.00078/+0.00022/-0.00000; task 0 bit-identical on seed 0) while
+    blocks 11-30 and 31-60 are negative on every seed, so within-block
+    coupling carries essentially all of the rapid within-task fit and the
+    cross-block coupling is worth a small uniform steady-state margin.
+    Plasticity is unchanged (0.706-0.712 vs 0.691-0.701), all losses are
+    finite, and wall-clock per shard drops (62.4-62.5 s vs 64.8-65.6 s,
+    sequential). Conclusions: the G ladder is now measured at both
+    endpoints and an interior cell — full 0.94859 (G = 1) > block 0.94827
+    (G = 4) > diagonal 0.94763 (G = m) — with the loss shrinking smoothly
+    as the coupled-pair fraction grows, so the cross-block coupling's
+    ~0.001 value is roughly proportional to the fraction of pairs it
+    couples. Negative #27's escape class is measured and rejected: a
+    block-local exact-RLS replacement does not retain the incumbent's
+    level. Any future sub-O(d^2) head replacement must pool excitation
+    globally (e.g. a low-rank/factored global curvature), not
+    block-locally; scalar-step (#26), diagonal (#27), and block-local
+    retries without global coupling structure are closed. Do not re-probe
+    this class on this chain without a mechanism that adds global coupling
+    structure at sub-O(d^2) cost, not a different block partition or
+    count. Records:
+    `outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_blockhead/`
+    (3 candidate shards binding commit `5c96b398`, control + 3 parent repro
+    shards bit-exact against the retained prior-wave prefixes,
+    `summary.json`, `README.md`).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
