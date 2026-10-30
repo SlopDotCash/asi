@@ -655,6 +655,31 @@ class TestRunHordeLearningLoop:
         chex.assert_shape(result.per_demon_metrics, (num_steps, n_demons, 3))
         chex.assert_shape(result.td_errors, (num_steps, n_demons))
 
+    def test_preserves_initialized_host_clocks(self) -> None:
+        """The scan boundary should not narrow host-only lifecycle metadata."""
+        horde, state = _shape_contract_horde()
+        birth_timestamp = 1_700_000_000.125
+        uptime_s = float(2**24) + 0.25
+        state = state.replace(
+            birth_timestamp=birth_timestamp,
+            uptime_s=uptime_s,
+        )
+        observations = jnp.ones((2, 5), dtype=jnp.float32)
+        cumulants = jnp.zeros((2, 3), dtype=jnp.float32)
+
+        result = run_horde_learning_loop(
+            horde,
+            state,
+            observations,
+            cumulants,
+            observations,
+        )
+
+        assert isinstance(result.state.birth_timestamp, float)
+        assert result.state.birth_timestamp == birth_timestamp
+        assert isinstance(result.state.uptime_s, float)
+        assert result.state.uptime_s > uptime_s
+
     def test_deterministic(self):
         """Same inputs should give identical results."""
         spec = create_horde_spec(_make_all_gamma0_spec(2))

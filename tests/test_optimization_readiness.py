@@ -182,6 +182,12 @@ def test_energy_rank_is_scale_stable() -> None:
     assert energy_rank(np.diag([9e307, 1e307]), threshold=0.99) == 2
 
 
+def test_energy_rank_scales_before_singular_value_overflow() -> None:
+    matrix = np.full((2, 2), np.finfo(np.float64).max)
+
+    assert energy_rank(matrix, threshold=0.99) == 1
+
+
 def test_protocol_is_prospective_and_nonpromoting() -> None:
     assert OPTIMIZATION_READINESS_PROTOCOL["paper_revision"] == "arXiv:2605.09044v1"
     assert OPTIMIZATION_READINESS_PROTOCOL["population_gradient_estimator"] == (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -19,6 +20,22 @@ def test_legal_unset_sentinel_is_valid() -> None:
     safe, valid = safe_discrete_action(-1, 3, allow_unset=True)
     assert int(safe) == -1
     assert bool(valid)
+
+
+@pytest.mark.parametrize("shape", [(1,), (1, 1)])
+@pytest.mark.parametrize("dtype", [jnp.int32, jnp.float32])
+def test_safe_discrete_action_rejects_nonscalar_aliases(
+    shape: tuple[int, ...],
+    dtype: jnp.dtype,
+) -> None:
+    action = jnp.ones(shape, dtype=dtype)
+
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        safe_discrete_action(action, 3)
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        safe_discrete_action(np.asarray(action), 3)
+    with pytest.raises(ValueError, match="action must be a scalar"):
+        jax.jit(lambda value: safe_discrete_action(value, 3))(action)
 
 
 def test_integer_zero_actions_keeps_empty_domain_branch() -> None:
