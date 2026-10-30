@@ -199,6 +199,15 @@ def _scalar_array(value: object, *, name: str, dtype: np.dtype[Any]) -> Array:
     return array
 
 
+def _stable_mean_square(values: Array) -> Array:
+    """Reduce a finite last axis without overflowing representable mean squares."""
+    scale = jnp.max(jnp.abs(values), axis=-1)
+    safe_scale = jnp.where(scale > 0.0, scale, 1.0)
+    normalized = values / safe_scale[..., None]
+    rms = scale * jnp.sqrt(jnp.mean(jnp.square(normalized), axis=-1))
+    return jnp.square(rms)
+
+
 def _masked_reference_objective(
     params: dict[str, Array],
     snapshot_params: dict[str, Array],
@@ -220,9 +229,7 @@ def _masked_reference_objective(
         target_probabilities * (target_log_probabilities - current_log_probabilities),
         axis=-1,
     )
-    per_example_logit_mse = jnp.mean(
-        jnp.square(current_logits - target_logits), axis=-1
-    )
+    per_example_logit_mse = _stable_mean_square(current_logits - target_logits)
     mask = (
         jnp.arange(reference_examples.shape[0], dtype=jnp.int32) < reference_count
     ).astype(jnp.float32)
@@ -259,7 +266,61 @@ def cchain_gradient_component(
         jnp.asarray(0.0, dtype=jnp.float32),
     )
     scale = dot / jnp.maximum(task_energy, epsilon)
-    projection = {name: scale * task[name] for name in _PARAMETER_KEYS}
+    direct_projection = {name: scale * task[name] for name in _PARAMETER_KEYS}
+
+    # A finite task gradient can have an unrepresentable squared norm.  In
+    # that case both ``dot`` and ``task_energy`` may be infinite even though
+    # the projection itself is representable.  Scale both gradients by exact
+    # powers of two and form the projection ratio in that bounded domain,
+    # without ever materializing either overflowing reduction.
+    task_peak = jnp.asarray(0.0, dtype=jnp.float32)
+    churn_peak = jnp.asarray(0.0, dtype=jnp.float32)
+    for name in sorted(_PARAMETER_KEYS):
+        task_peak = jnp.maximum(task_peak, jnp.max(jnp.abs(task[name])))
+        churn_peak = jnp.maximum(churn_peak, jnp.max(jnp.abs(churn[name])))
+    _, task_exponent = jnp.frexp(task_peak)
+    _, churn_exponent = jnp.frexp(churn_peak)
+    scaled_task = {
+        name: jnp.ldexp(task[name], -task_exponent) for name in _PARAMETER_KEYS
+    }
+    scaled_task_energy = sum(
+        (
+            jnp.vdot(scaled_task[name], scaled_task[name]).real
+            for name in sorted(_PARAMETER_KEYS)
+        ),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    safe_scaled_task_energy = jnp.where(
+        scaled_task_energy > 0.0,
+        scaled_task_energy,
+        jnp.asarray(1.0, dtype=jnp.float32),
+    )
+    scaled_churn = {
+        name: jnp.ldexp(churn[name], -churn_exponent)
+        for name in _PARAMETER_KEYS
+    }
+    scaled_dot = sum(
+        (
+            jnp.vdot(scaled_churn[name], scaled_task[name]).real
+            for name in sorted(_PARAMETER_KEYS)
+        ),
+        jnp.asarray(0.0, dtype=jnp.float32),
+    )
+    scaled_projection_factor = scaled_dot / safe_scaled_task_energy
+    overflow_safe_projection = {
+        name: jnp.ldexp(
+            scaled_projection_factor * scaled_task[name], churn_exponent
+        )
+        for name in _PARAMETER_KEYS
+    }
+    projection = {
+        name: jnp.where(
+            jnp.isfinite(task_energy),
+            direct_projection[name],
+            overflow_safe_projection[name],
+        )
+        for name in _PARAMETER_KEYS
+    }
     if component == "projective":
         return projection
     return {name: churn[name] - projection[name] for name in _PARAMETER_KEYS}
