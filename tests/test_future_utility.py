@@ -224,6 +224,41 @@ def test_future_utility_normalization_is_finite_and_causal() -> None:
     assert float(second[1]) > float(second[0])
 
 
+@pytest.mark.parametrize("compiled", [False, True])
+def test_future_utility_normalization_preserves_finite_weighted_second_moment(
+    compiled: bool,
+) -> None:
+    signal_value = np.float32(2.0e19)
+    decay_value = np.float32(0.99)
+    with np.errstate(over="ignore"):
+        direct_square = signal_value * signal_value
+    assert not np.isfinite(direct_square)
+
+    expected_second = (np.float64(1.0) - np.float64(decay_value)) * np.float64(
+        signal_value
+    ) ** 2
+    assert expected_second < np.finfo(np.float32).max
+    expected_normalized = np.float64(signal_value) / np.sqrt(expected_second)
+
+    def normalize(signal: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return normalize_future_utility_signal(
+            signal,
+            ages=jnp.ones(1, dtype=jnp.int32),
+            second_moment=jnp.zeros(1, dtype=jnp.float32),
+            moment_decay=jnp.asarray(decay_value),
+            utility_decay=0.9,
+            mode="uncertainty",
+        )
+
+    operation = jax.jit(normalize) if compiled else normalize
+    normalized, second = operation(jnp.asarray([signal_value]))
+
+    chex.assert_tree_all_finite(normalized)
+    chex.assert_tree_all_finite(second)
+    np.testing.assert_allclose(second, expected_second, rtol=2e-6, atol=0.0)
+    np.testing.assert_allclose(normalized, expected_normalized, rtol=2e-6, atol=0.0)
+
+
 def test_age_normalization_does_not_scale_the_ema_increment() -> None:
     """Warm-up correction belongs after the raw EMA, not on each input."""
     signal = jnp.ones((3,), dtype=jnp.float32)
