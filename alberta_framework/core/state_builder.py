@@ -408,6 +408,18 @@ def _static_array_contract(
         raise TypeError(f"{name} must have dtype {expected_dtype}; got {actual_dtype}")
 
 
+def _observation_vector(raw_observation: object, observation_dim: int) -> Array:
+    """Convert one observation without flattening batch or column axes."""
+    observation = jnp.asarray(raw_observation, dtype=jnp.float32)
+    _static_array_contract(
+        observation,
+        name="raw_observation",
+        shape=(observation_dim,),
+        dtype=jnp.float32,
+    )
+    return observation
+
+
 def _scale_safe_l2_norm(values: Array) -> Float[Array, ""]:
     """Return a finite, saturating float32 L2 norm without squaring overflow."""
     vector = jnp.asarray(values, dtype=jnp.float32).reshape((-1,))
@@ -806,9 +818,7 @@ class IdentityStateBuilder:
     ) -> Float[Array, " observation_dim"]:
         """Return the raw observation without touching ``state``."""
         del state
-        return jnp.asarray(raw_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        return _observation_vector(raw_observation, self._config.observation_dim)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -1128,9 +1138,7 @@ class FixedTraceStateBuilder:
         raw_observation: Array,
     ) -> Float[Array, " feature_dim"]:
         """Combine a raw observation with the already-current trace state."""
-        observation = jnp.asarray(raw_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        observation = _observation_vector(raw_observation, self._config.observation_dim)
         return cast(
             Float[Array, " feature_dim"],
             self._memory.features(
@@ -1151,9 +1159,7 @@ class FixedTraceStateBuilder:
         previous_discount: Array | float,
     ) -> tuple[WorkingMemoryState, Float[Array, " feature_dim"]]:
         """Advance all trace banks and emit the post-update memory state."""
-        observation = jnp.asarray(raw_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        observation = _observation_vector(raw_observation, self._config.observation_dim)
         safe_action, action_valid = safe_discrete_action(
             previous_action,
             self._config.n_actions,
@@ -1335,7 +1341,10 @@ def _online_gated_update_working_set_bytes(
     materializes another sensitivity matrix, the proposed sensitivity is
     live before it is stored, and the caller-visible representation plus
     its neutralized NaN copy are returned beside the selected state.
-    Event / safe-event / gate temporaries are charged as well.
+    Event / safe-event / gate temporaries are charged as well.  The stabilized
+    matvec charge includes its float32 product decomposition and aligned sums;
+    its custom JVP keeps those per-product intermediates out of the Jacobian
+    batch.
     """
 
     event_dim = observation_dim + n_actions + 2
@@ -1352,6 +1361,10 @@ def _online_gated_update_working_set_bytes(
         + hidden_dim
         + 16
     )
+    stabilized_matvec_scalars = (
+        11 * hidden_dim * event_dim + 5 * event_dim + 10 * hidden_dim
+    )
+    update_scalars += stabilized_matvec_scalars
     return 4 * update_scalars
 
 
@@ -1503,6 +1516,130 @@ class OnlineGatedStateBuilderState:
     last_gradient_norm: Float[Array, ""]
 
 
+_SCALED_SUM_RELATIVE_GAP = 1024.0
+"""Disagreement, in units of the smaller magnitude, that rejects a compiled product.
+
+A correct row sum and the error-corrected scaled sum both lie within a few ulp
+of the exact sum, so on an ordinary row their gap is a small fraction of the
+value they agree on. A truly cancelling row leaves the compiled residue against
+an error-corrected zero, so any nonzero residue exceeds this bound at every
+magnitude.
+"""
+
+_FLOAT32_SPLITTER = 4097.0
+"""Dekker splitter for the 24-bit float32 significand."""
+
+
+def _float32_product_parts(lhs: Array, rhs: Array) -> tuple[Array, Array]:
+    """Return high and residual parts of products of bounded float32 mantissas."""
+
+    product = lhs * rhs
+    splitter = jnp.asarray(_FLOAT32_SPLITTER, dtype=product.dtype)
+    split_lhs = splitter * lhs
+    split_rhs = splitter * rhs
+    lhs_high = split_lhs - (split_lhs - lhs)
+    rhs_high = split_rhs - (split_rhs - rhs)
+    lhs_low = lhs - lhs_high
+    rhs_low = rhs - rhs_high
+    residual = (
+        (lhs_high * rhs_high - product)
+        + lhs_high * rhs_low
+        + lhs_low * rhs_high
+        + lhs_low * rhs_low
+    )
+    return product, residual
+
+
+def _error_corrected_scaled_sum(
+    matrix: Array,
+    vector: Array,
+    row_exponent: Array,
+) -> Array:
+    """Sum each row's products without discarding float32 multiplication residuals."""
+
+    matrix_mantissa, matrix_exponent = jnp.frexp(matrix)
+    vector_mantissa, vector_exponent = jnp.frexp(vector)
+    product, residual = _float32_product_parts(matrix_mantissa, vector_mantissa)
+    shift = matrix_exponent + vector_exponent - row_exponent
+    scaled_products = jnp.ldexp(product, shift)
+    scaled_residuals = jnp.ldexp(residual, shift)
+    return jnp.sum(scaled_products, axis=-1) + jnp.sum(scaled_residuals, axis=-1)
+
+
+def _prefer_scaled_sum(scaled_direct: Array, scaled_sum: Array) -> Array:
+    """Return where the compiled product disagrees with the scaled product sum.
+
+    Both arguments carry the same power-of-two scale, that of the largest
+    product in the row, so the gap and the threshold cannot overflow. The test
+    is symmetric: a compiled product far above the scaled sum (a cancellation
+    residue), far below it (a zeroed row), or non-finite is rejected whenever
+    ``|scaled_direct - scaled_sum|`` exceeds ``_SCALED_SUM_RELATIVE_GAP`` times
+    the smaller of the two magnitudes. A non-finite scaled sum never wins, and a
+    NaN compiled product is kept because every comparison with it is false.
+    """
+
+    gap = jnp.abs(scaled_direct - scaled_sum)
+    reference = jnp.minimum(jnp.abs(scaled_direct), jnp.abs(scaled_sum))
+    threshold = reference * jnp.asarray(_SCALED_SUM_RELATIVE_GAP, dtype=scaled_sum.dtype)
+    return jnp.isfinite(scaled_sum) & (gap > threshold)
+
+
+@jax.custom_jvp
+def _finite_product_matvec(matrix: Array, vector: Array) -> Array:
+    """Return ``matrix @ vector`` unless a compiled residue corrupts a cancelling row.
+
+    ``matrix`` has shape ``(..., rows, cols)`` and ``vector`` shape ``(cols,)``;
+    the result has shape ``(..., rows)`` like ``matrix @ vector``.
+
+    XLA lowers a row dot to a fused multiply-add chain, so a pair of finite
+    products that cancel exactly returns the float32 rounding error of one
+    product (at most half an ulp of that product) instead of zero. That
+    residue is ``-4096`` for products of ``1e12``, ``-256`` for ``1.21e10``,
+    ``-64`` for ``1.089e9``, and about ``5e30`` for ``2.25e38``; it saturates a
+    sigmoid gate at any of those magnitudes. The fallback decomposes each
+    bounded float32 mantissa product into its rounded and residual parts before
+    an exact power-of-two alignment, so true cancellation remains zero without
+    erasing a legitimate sum that was hidden below product-rounding precision.
+
+    The compiled product is returned bit for bit whenever it agrees with the
+    scaled sum to within ``_SCALED_SUM_RELATIVE_GAP`` times the smaller
+    magnitude, which holds for every ordinary row. Otherwise the finite scaled
+    sum replaces it, whether the compiled product is far above (a cancellation
+    residue over a zero sum), far below (a zeroed row), or non-finite while
+    the exact sum is finite (a running sum that overflowed). A row where both
+    values are finite and agree to within that factor keeps the compiled
+    product even when it differs by a few ulp of the exact sum.
+    """
+
+    products = matrix * vector
+    max_abs = jnp.max(jnp.abs(products), axis=-1, keepdims=True)
+    # Scale by a power of two. Dividing by max_abs compiles to a reciprocal
+    # multiply, and the reciprocal of a value above 2**126 flushes to zero.
+    _, exponent = jnp.frexp(max_abs)
+    row_exponent = exponent
+    scaled_sum = _error_corrected_scaled_sum(matrix, vector, row_exponent)
+    row_exponent = row_exponent[..., 0]
+    stable = jnp.ldexp(scaled_sum, row_exponent)
+    direct = matrix @ vector
+    scaled_direct = jnp.ldexp(direct, -row_exponent)
+    use_stable = _prefer_scaled_sum(scaled_direct, scaled_sum) & jnp.isfinite(stable)
+    return jnp.where(use_stable, stable, direct)
+
+
+@_finite_product_matvec.defjvp
+def _finite_product_matvec_jvp(
+    primals: tuple[Array, Array],
+    tangents: tuple[Array, Array],
+) -> tuple[Array, Array]:
+    """Differentiate the mathematical matvec without expanding fallback intermediates."""
+
+    matrix, vector = primals
+    matrix_tangent, vector_tangent = tangents
+    value = _finite_product_matvec(matrix, vector)
+    tangent = matrix_tangent @ vector + matrix @ vector_tangent
+    return value, tangent
+
+
 class OnlineGatedStateBuilder:
     """Learnable gated recurrent state with an online sensitivity trace.
 
@@ -1632,8 +1769,8 @@ class OnlineGatedStateBuilder:
         gate_weights, gate_bias, candidate_weights, candidate_bias = self._unpack_parameters(
             parameters
         )
-        gate = jax.nn.sigmoid(gate_weights @ event + gate_bias)
-        candidate = jnp.tanh(candidate_weights @ event + candidate_bias)
+        gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, event) + gate_bias)
+        candidate = jnp.tanh(_finite_product_matvec(candidate_weights, event) + candidate_bias)
         return hidden + gate * (candidate - hidden)
 
     def _event(
@@ -1643,9 +1780,7 @@ class OnlineGatedStateBuilder:
         previous_reward: Array | float,
         previous_discount: Array | float,
     ) -> Array:
-        observation = jnp.asarray(raw_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        observation = _observation_vector(raw_observation, self._config.observation_dim)
         return jnp.concatenate(
             [
                 observation,
@@ -1662,9 +1797,7 @@ class OnlineGatedStateBuilder:
         raw_observation: Array,
     ) -> Float[Array, " feature_dim"]:
         """Pair raw input with the current hidden state without advancing it."""
-        observation = jnp.asarray(raw_observation, dtype=jnp.float32).reshape(
-            (self._config.observation_dim,)
-        )
+        observation = _observation_vector(raw_observation, self._config.observation_dim)
         if self._config.include_raw_observation:
             return jnp.concatenate([observation, state.hidden])
         return state.hidden
@@ -1700,7 +1833,7 @@ class OnlineGatedStateBuilder:
         )
 
         gate_weights, gate_bias, _, _ = self._unpack_parameters(state.parameters)
-        gate = jax.nn.sigmoid(gate_weights @ safe_event + gate_bias)
+        gate = jax.nn.sigmoid(_finite_product_matvec(gate_weights, safe_event) + gate_bias)
         new_sensitivity = direct_sensitivity + ((1.0 - gate)[:, None] * state.parameter_sensitivity)
         candidate_state = OnlineGatedStateBuilderState(
             parameters=state.parameters,

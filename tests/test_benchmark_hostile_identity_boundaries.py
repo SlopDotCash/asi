@@ -48,6 +48,19 @@ class _HostileList(list[object]):
         raise AssertionError("hostile sequence iteration hook executed")
 
 
+class _HostileValidatorDict(dict[str, object]):
+    calls = 0
+
+    def get(self, key: str, default: object = None) -> object:
+        del key, default
+        type(self).calls += 1
+        raise AssertionError("hostile mapping get hook executed")
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        type(self).calls += 1
+        raise AssertionError("hostile mapping iteration hook executed")
+
+
 def test_open_screen_helpers_reject_hostile_identities_before_hooks() -> None:
     hostile = _HostileString("results")
     _HostileString.calls = 0
@@ -80,6 +93,22 @@ def test_scorecard_canonical_json_rejects_hostile_identities_before_hooks() -> N
         scorecard.canonical_json_bytes(_HostileDict({"field": "value"}))
     assert scorecard._is_sha256(_HostileString("a" * 64)) is False
     assert _HostileString.calls == 0
+
+
+@pytest.mark.parametrize(
+    "validator",
+    (scorecard.validate_scorecard_run_record, scorecard.validate_scorecard_artifact),
+)
+def test_scorecard_public_validators_admit_exact_json_before_mapping_hooks(
+    validator: object,
+) -> None:
+    hostile = _HostileValidatorDict()
+    _HostileValidatorDict.calls = 0
+
+    with pytest.raises(ValueError, match="exact JSON object"):
+        validator(hostile)  # type: ignore[operator]
+
+    assert _HostileValidatorDict.calls == 0
 
 
 def test_forager_result_specs_reject_hostile_strings_before_hooks(tmp_path: Path) -> None:
