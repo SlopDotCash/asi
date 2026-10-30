@@ -302,7 +302,9 @@ def _finite_rmse_jvp(
         scaled_rmse,
         jnp.ones_like(scaled_rmse),
     )
-    rmse_dot = jnp.mean(scaled_errors * errors_dot, axis=0) / safe_scaled_rmse
+    # Normalize derivative weights before summing finite tangent contributions.
+    weights = scaled_errors / safe_scaled_rmse / errors.shape[0]
+    rmse_dot = jnp.sum(weights * errors_dot, axis=0)
     return rmse, rmse_dot
 
 

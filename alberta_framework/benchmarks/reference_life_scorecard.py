@@ -1480,9 +1480,13 @@ def _open_output_parent(path: Path, *, create: bool) -> tuple[Path, int]:
 
     destination = Path(os.path.abspath(os.fspath(path)))
     parent = destination.parent
+    # Path traversal needs only search permission.  Linux O_PATH descriptors
+    # keep a search-only ancestor (for example a 0711 home or tenant root)
+    # usable as dir_fd without requiring read permission on it.
+    access = getattr(os, "O_PATH", os.O_RDONLY)
     descriptor = os.open(
         os.path.sep,
-        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+        access | os.O_DIRECTORY | os.O_CLOEXEC,
     )
     try:
         for component in parent.parts[1:]:
@@ -1495,7 +1499,7 @@ def _open_output_parent(path: Path, *, create: bool) -> tuple[Path, int]:
                     pass
             next_descriptor = os.open(
                 component,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
+                access | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW,
                 dir_fd=descriptor,
             )
             os.close(descriptor)
