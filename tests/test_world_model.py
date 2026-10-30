@@ -589,3 +589,26 @@ def test_world_model_config_rejects_hostile_float_subclass_without_hooks() -> No
     with pytest.raises(ValueError, match="finite real scalar"):
         WorldModelConfig(observation_dim=2, step_size=HostileFloat(0.1))
     assert not hook_ran
+
+
+
+def test_world_model_scan_preserves_initialized_host_clocks() -> None:
+    model = OneStepWorldModel(
+        WorldModelConfig(observation_dim=2, n_actions=2, hidden_sizes=())
+    )
+    initial = model.init(jr.key(17))
+    observations = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+    actions = jnp.array([0, 1], dtype=jnp.int32)
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    result = run_world_model_learning_loop(
+        model, initial, observations, actions, rewards, observations[::-1]
+    )
+    continued = run_world_model_learning_loop(
+        model, result.state, observations, actions, rewards, observations[::-1]
+    )
+    for returned in (result.state, continued.state):
+        assert type(returned.learner_state.birth_timestamp) is float
+        assert returned.learner_state.birth_timestamp == initial.learner_state.birth_timestamp
+        assert type(returned.learner_state.uptime_s) is float
+        assert returned.learner_state.uptime_s == initial.learner_state.uptime_s
+    assert int(continued.state.step_count) == 4

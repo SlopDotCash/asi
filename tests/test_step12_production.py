@@ -1155,7 +1155,7 @@ def test_step12_config_preserves_float32_boundaries() -> None:
         ({"steps": True}, "steps"),
         ({"steps": "64"}, "steps"),
         ({"seed": -1}, "seed"),
-        ({"seed": 2**31}, "seed"),
+        ({"seed": 2**32}, "seed"),
         ({"seed": True}, "seed"),
     ],
 )
@@ -1311,3 +1311,12 @@ def test_step12_smoke_result_rejects_hostile_and_boundary_scalars(
 def test_step12_smoke_result_canonicalizes_supported_numpy_step_identity() -> None:
     result = _legal_step12_smoke_result(steps=np.int64(8))
     assert type(result.steps) is int
+
+
+@pytest.mark.parametrize("seed", [0, 2**31 - 1, 2**31, 2**32 - 1, np.uint32(2**32 - 1)])
+def test_step12_smoke_preserves_full_jax_seed_domain(seed: int) -> None:
+    result = run_step12_smoke(steps=2, seed=seed)
+    assert result.finite
+    assert type(result.seed) is int
+    assert result.seed == int(seed)
+    assert json.loads(json.dumps(result.to_dict(), allow_nan=False))["seed"] == int(seed)

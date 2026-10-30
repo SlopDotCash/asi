@@ -113,3 +113,30 @@ def test_smoke_record_requires_exact_config_metric_schema_and_nonnegative_mse() 
         config=Step1KernelConfig(normalizer="none"), metrics_shape=(4, 3)
     )
     assert without_normalizer.metrics_shape == (4, 3)
+
+
+@pytest.mark.parametrize("noise_std", [1.0, 3e18])
+@pytest.mark.parametrize("normalizer", ["none", "ema"])
+def test_smoke_mean_remains_finite_for_finite_metrics(noise_std, normalizer) -> None:
+    import jax.numpy as jnp
+    import jax.random as jr
+    import numpy as np
+
+    from alberta_framework.core.learners import run_learning_loop
+
+    config = Step1KernelConfig(
+        optimizer="lms", normalizer=normalizer, step_size=0.0,
+        drift_rate_w=0.0, drift_rate_b=0.0, noise_std=noise_std,
+    )
+    _, metrics = run_learning_loop(
+        make_step1_learner(config), make_step1_stream(config), num_steps=64, key=jr.key(0),
+    )
+    assert bool(jnp.all(jnp.isfinite(metrics)))
+    expected = float(np.asarray(metrics[:, 0], dtype=np.float64).mean())
+    if noise_std > 1.0:
+        assert not bool(jnp.isfinite(jnp.mean(metrics[:, 0])))
+    result = run_step1_smoke(config, steps=64, seed=0, final_window=64)
+    assert result.finite
+    assert result.final_window_mse == pytest.approx(expected, rel=1e-6)
+    if noise_std == 1.0:
+        assert result.final_window_mse == float(jnp.mean(metrics[:, 0]))

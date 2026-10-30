@@ -1718,6 +1718,15 @@ def run_world_model_learning_loop(
         per_head_metrics,
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, actions, rewards, next_observations))
+    # Scan materializes host-only lifecycle clocks as float32 leaves.
+    final_state = dataclasses.replace(
+        final_state,
+        learner_state=dataclasses.replace(
+            final_state.learner_state,
+            birth_timestamp=state.learner_state.birth_timestamp,
+            uptime_s=state.learner_state.uptime_s,
+        )
+    )
     return WorldModelLearningResult(
         state=final_state,
         reward_predictions=reward_predictions,

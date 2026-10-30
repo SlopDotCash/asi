@@ -356,9 +356,11 @@ def _validate_config(config: WorkingMemoryConfig) -> None:
     )
     signal_scalars = observation_dim + action_dim + reward_dim
     feature_work = total_state_scalars + feature_dim + 2 * signal_scalars
+    # Five extra per-trace slots cover the weighted fallback's two terms,
+    # sum, selection and finiteness mask (conservatively charged as float32).
     update_work = (
         3 * total_state_scalars
-        + 6 * trace_scalars
+        + 11 * trace_scalars
         + 4 * signal_scalars
         + decay_scalars
         + feature_dim
@@ -580,10 +582,15 @@ class WorkingMemoryFeaturizer:
         update_rate = (1.0 - decay) * gate
         persist = 1.0 - update_rate
         delta_update = traces + update_rate * (value[None, :] - traces)
+        # Opposite finite endpoints can overflow the difference even though
+        # their convex combination is representable. Weight before adding in
+        # that case; keep the delta form for its equal-input fixed points.
+        weighted_update = persist * traces + update_rate * value[None, :]
+        finite_update = jnp.where(jnp.isfinite(delta_update), delta_update, weighted_update)
         return jnp.where(
             persist == 0.0,
             jnp.broadcast_to(value[None, :], traces.shape),
-            jnp.where(update_rate == 0.0, traces, delta_update),
+            jnp.where(update_rate == 0.0, traces, finite_update),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -890,7 +897,7 @@ def transform_working_memory_arrays(
     )
     per_step_work = (
         3 * state_scalars
-        + 6 * trace_scalars
+        + 11 * trace_scalars
         + 4 * signal_scalars
         + decay_scalars
         + cfg.feature_dim()

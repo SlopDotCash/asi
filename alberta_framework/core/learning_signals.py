@@ -119,9 +119,12 @@ def _ratio_less_equal(left: tuple[int, int], right: tuple[int, int]) -> bool:
 
 
 def _stable_mean(values: Array, *, axis: int | None = None) -> Array:
-    """Average bounded float32 values without overflowing the reduction sum."""
+    """Average bounded values without overflowing or erasing small inputs."""
     count = values.size if axis is None else values.shape[axis]
-    return jnp.sum(values / jnp.asarray(count, dtype=jnp.float32), axis=axis)
+    scale = jnp.max(jnp.abs(values), axis=axis, keepdims=True)
+    safe_scale = jnp.where(scale > 0.0, scale, jnp.ones_like(scale))
+    mean = jnp.sum(values / safe_scale, axis=axis) / jnp.asarray(count, dtype=jnp.float32)
+    return mean * jnp.squeeze(safe_scale, axis=axis)
 
 
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
@@ -903,7 +906,7 @@ class LearningSignalEstimator:
         next_state = jax.tree_util.tree_map(
             lambda valid_value, invalid_value, corrupt_value: jnp.where(
                 state_valid,
-                jnp.where(input_valid, valid_value, invalid_value),
+                cast(Array, jnp.where(input_valid, valid_value, invalid_value)),
                 corrupt_value,
             ),
             next_state_if_valid,

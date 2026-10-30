@@ -727,7 +727,7 @@ def run_step10_smoke(
     agent = make_step10_stomp_agent(cfg)
     obs_dim = cfg.observation_dim
 
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(data_key, (steps + 1, obs_dim), dtype=jnp.float32)
     rewards = jnp.tanh(observations[1:, 0])
 
