@@ -577,8 +577,30 @@ def nap_project(weights: Array, *, initial_norm: float, enabled: bool = True) ->
     weights = _floating_array("weights", weights)
     if not enabled:
         return weights
-    norm = jnp.linalg.norm(weights)
-    candidate = jnp.where(norm > 0, weights * (initial_norm / norm), weights)
+    norm_dtype = jnp.promote_types(weights.dtype, jnp.float32)
+    norm = jnp.linalg.norm(weights.astype(norm_dtype)).astype(weights.dtype)
+    target_norm = jnp.asarray(initial_norm, dtype=weights.dtype)
+    normalization = target_norm / norm
+    direct = jnp.where(norm > 0, weights * normalization, weights)
+    maximum = jnp.max(jnp.abs(weights))
+    _, exponent = jnp.frexp(maximum)
+    scaled = jnp.ldexp(weights, -exponent)
+    scaled_norm = jnp.linalg.norm(scaled.astype(norm_dtype)).astype(weights.dtype)
+    overflow_safe = jnp.where(
+        scaled_norm > 0,
+        (scaled / scaled_norm) * target_norm,
+        weights,
+    )
+    direct_lost_scale = (target_norm > 0) & (norm > 0) & (
+        (normalization == 0) | ~jnp.isfinite(normalization)
+    )
+    direct_lost_norm = (norm == 0) & (maximum > 0)
+    direct_is_finite = jnp.all(jnp.isfinite(direct))
+    candidate = jnp.where(
+        jnp.isfinite(norm) & direct_is_finite & ~direct_lost_scale & ~direct_lost_norm,
+        direct,
+        overflow_safe,
+    )
     return _finite_result(candidate, weights, name="NaP projection")
 
 
