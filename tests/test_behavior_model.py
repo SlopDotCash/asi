@@ -129,6 +129,43 @@ def test_init_predict_update_finite_and_shapes() -> None:
     assert float(result.loss) > 0.0
 
 
+@pytest.mark.parametrize("shape", ((1, 2), (2, 1)))
+@pytest.mark.parametrize(
+    "entrypoint",
+    (
+        "predict_logits",
+        "predict_probabilities",
+        "action_probability",
+        "action_log_likelihood",
+        "input_loss_gradient",
+        "update",
+        "sample_action",
+        "importance_ratio",
+    ),
+)
+def test_behavior_model_rejects_wrong_shaped_observations(
+    shape: tuple[int, int],
+    entrypoint: str,
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3, step_size=0.1))
+    state = model.init(feature_dim=2, key=jax.random.key(0))
+    observation = jnp.ones(shape, dtype=jnp.float32)
+    action = jnp.array(1, dtype=jnp.int32)
+
+    with pytest.raises(ValueError, match=r"observation must have shape \(2,\)"):
+        if entrypoint in {"predict_logits", "predict_probabilities", "sample_action"}:
+            getattr(model, entrypoint)(state, observation)
+        elif entrypoint == "importance_ratio":
+            model.importance_ratio(
+                state,
+                observation,
+                action,
+                jnp.full((3,), 1.0 / 3.0, dtype=jnp.float32),
+            )
+        else:
+            getattr(model, entrypoint)(state, observation, action)
+
+
 def test_infinite_observation_does_not_poison_weights() -> None:
     """Inf obs makes softmax NaN and logit_error * x = 0*inf on a silent feature."""
     model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
@@ -241,8 +278,8 @@ def test_input_loss_gradient_verdict_is_consistent_eager_jit_and_vmap() -> None:
     chex.assert_trees_all_close(batched_committed[1], builder_state)
 
 
-def test_input_loss_gradient_rejects_finite_gradient_with_overflowed_norm() -> None:
-    """The verdict covers every numeric field, including derived diagnostics."""
+def test_input_loss_gradient_rejects_finite_gradient_with_unrepresentable_norm() -> None:
+    """A true norm above float32 range remains invalid after safe reduction."""
     model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
     state = model.init(feature_dim=2, key=jax.random.key(2))
     maximum = jnp.finfo(jnp.float32).max
@@ -254,16 +291,79 @@ def test_input_loss_gradient_rejects_finite_gradient_with_overflowed_norm() -> N
         bias=jnp.zeros((2,), dtype=jnp.float32),
     )
 
-    result = model.input_loss_gradient(
-        state,
-        jnp.zeros((2,), dtype=jnp.float32),
-        jnp.array(0, dtype=jnp.int32),
+    observation = jnp.zeros((2,), dtype=jnp.float32)
+    action = jnp.array(0, dtype=jnp.int32)
+    probabilities = jax.nn.softmax(state.weights @ observation + state.bias)
+    raw_gradient = state.weights.T @ (
+        probabilities - jax.nn.one_hot(action, 2, dtype=jnp.float32)
     )
+
+    assert bool(jnp.all(jnp.isfinite(raw_gradient)))
+    assert np.linalg.norm(np.asarray(raw_gradient, dtype=np.float64)) > float(maximum)
+
+    result = model.input_loss_gradient(state, observation, action)
 
     assert not bool(result.valid)
     chex.assert_tree_all_finite(result)
     chex.assert_trees_all_close(result.gradient, jnp.zeros((2,), dtype=jnp.float32))
     assert float(result.gradient_norm) == 0.0
+
+
+def test_input_loss_gradient_keeps_representable_norm_when_square_sum_overflows() -> None:
+    """A finite bridge gradient must not be rejected by its norm reduction."""
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2, step_size=0.1))
+    state = model.init(feature_dim=8, key=jax.random.key(3)).replace(
+        weights=jnp.stack(
+            [
+                jnp.full((8,), -7e18, dtype=jnp.float32),
+                jnp.full((8,), 7e18, dtype=jnp.float32),
+            ]
+        )
+    )
+    observation = jnp.zeros((8,), dtype=jnp.float32)
+    action = jnp.asarray(0, dtype=jnp.int32)
+    expected_gradient = jnp.full((8,), 7e18, dtype=jnp.float32)
+
+    assert bool(jnp.all(jnp.isfinite(expected_gradient * expected_gradient)))
+    assert bool(jnp.isinf(jnp.linalg.norm(expected_gradient)))
+
+    result = model.input_loss_gradient(state, observation, action)
+
+    assert bool(result.valid)
+    chex.assert_trees_all_close(result.gradient, expected_gradient)
+    assert bool(jnp.isfinite(result.gradient_norm))
+    expected_norm = float(np.float64(np.float32(7e18)) * np.sqrt(8.0))
+    np.testing.assert_allclose(float(result.gradient_norm), expected_norm, rtol=1e-6)
+
+
+def test_gradient_clipping_keeps_finite_update_when_square_sum_overflows() -> None:
+    """Global clipping must scale a representable norm instead of zeroing it."""
+    model = BehaviorModel(
+        BehaviorModelConfig(
+            n_actions=2,
+            step_size=1.0,
+            max_gradient_norm=2.0,
+        )
+    )
+    state = model.init(feature_dim=8, key=jax.random.key(4))
+    observation = jnp.full((8,), 1e19, dtype=jnp.float32)
+    action = jnp.asarray(0, dtype=jnp.int32)
+    raw_weight_gradient = jnp.stack((observation * 0.5, observation * -0.5))
+
+    assert bool(jnp.all(jnp.isfinite(raw_weight_gradient * raw_weight_gradient)))
+    assert bool(jnp.isinf(jnp.sqrt(jnp.sum(raw_weight_gradient * raw_weight_gradient))))
+
+    result = model.update(state, observation, action)
+
+    assert bool(result.update_applied)
+    expected_weights = jnp.stack(
+        (
+            jnp.full((8,), 0.5, dtype=jnp.float32),
+            jnp.full((8,), -0.5, dtype=jnp.float32),
+        )
+    )
+    chex.assert_trees_all_close(result.state.weights, expected_weights, rtol=1e-6)
+    assert int(result.state.step_count) == 1
 
 
 @pytest.mark.parametrize(
@@ -341,6 +441,23 @@ def test_resource_budget_matches_initialized_state_arrays_exactly() -> None:
     assert budget.learned_float32_scalars_touched_per_update == 3 * 5 + 3 + 3
     assert budget.replay_capacity == 0
     assert budget.to_dict()["state_nbytes"] == actual_nbytes
+
+
+@pytest.mark.parametrize(
+    "key",
+    (
+        jax.random.key(0, impl="rbg"),
+        jax.random.PRNGKey(0),
+    ),
+    ids=("rbg", "legacy"),
+)
+def test_init_requires_typed_scalar_threefry_key_for_exact_resource_accounting(
+    key: jax.Array,
+) -> None:
+    model = BehaviorModel(BehaviorModelConfig(n_actions=3))
+
+    with pytest.raises(ValueError, match="typed scalar threefry2x32 key"):
+        model.init(feature_dim=5, key=key)
 
 
 def test_preupdate_input_gradient_matches_autodiff_and_does_not_advance_state() -> None:
@@ -662,7 +779,7 @@ def test_behavior_model_preflights_resource_bytes_before_allocation(
 ) -> None:
     model = BehaviorModel(BehaviorModelConfig(n_actions=2))
     persist_last_legal = ((2**31 - 1) - 32) // 8
-    update_last_legal = 48_806_441
+    update_last_legal = 41_297_757
     with pytest.raises(ValueError, match="update working set byte count"):
         model.resource_budget(persist_last_legal)
     with pytest.raises(ValueError, match="state_nbytes"):
@@ -771,7 +888,7 @@ def test_behavior_model_persist_fits_while_update_working_set_does_not() -> None
 def test_behavior_model_last_fit_and_first_overflow_are_adjacent() -> None:
     last_fit = None
     first_overflow = None
-    for feature_dim in range(89_478_476, 89_478_480):
+    for feature_dim in range(76_695_836, 76_695_840):
         working_set_bytes = _behavior_model_update_working_set_bytes(1, feature_dim)
         _, persist_bytes = _resource_counts(1, feature_dim)
         assert persist_bytes <= _INT32_MAX
