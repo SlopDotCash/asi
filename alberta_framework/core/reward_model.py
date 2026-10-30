@@ -77,6 +77,19 @@ def _validated_config_float(name: str, value: object, **bounds: Any) -> float:
     return validated_float32_scalar(name, value, **bounds)
 
 
+def _validated_feature_vector(features: Array, *, feature_dim: int) -> Array:
+    """Validate feature identity before narrowing to the model's float32 domain."""
+    raw = jnp.asarray(features)
+    if raw.shape != (feature_dim,):
+        raise ValueError(f"features must have shape ({feature_dim},), got {raw.shape}")
+    if not (
+        jnp.issubdtype(raw.dtype, jnp.floating)
+        or jnp.issubdtype(raw.dtype, jnp.integer)
+    ):
+        raise TypeError("features must be real numeric")
+    return raw.astype(jnp.float32)
+
+
 def _skip_zero_scale(scale: Array, value: Array) -> Array:
     """Skip ``0 * inf`` so a disabled error EMA does not poison the diagnostic."""
     return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
@@ -240,11 +253,7 @@ class RLSRewardModel:
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(self, state: RLSRewardModelState, features: Array) -> Array:
         """Predict reward from one feature vector."""
-        x = jnp.asarray(features, dtype=jnp.float32)
-        if x.shape != (self._config.feature_dim,):
-            raise ValueError(
-                f"features must have shape ({self._config.feature_dim},), got {x.shape}"
-            )
+        x = _validated_feature_vector(features, feature_dim=self._config.feature_dim)
         return jnp.dot(state.weights, x)
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -271,11 +280,7 @@ class RLSRewardModel:
         unless the reward function is genuinely nonstationary and the
         feature stream stays exciting.
         """
-        x = jnp.asarray(features, dtype=jnp.float32)
-        if x.shape != (self._config.feature_dim,):
-            raise ValueError(
-                f"features must have shape ({self._config.feature_dim},), got {x.shape}"
-            )
+        x = _validated_feature_vector(features, feature_dim=self._config.feature_dim)
         raw_target = jnp.asarray(reward)
         if raw_target.shape != ():
             raise ValueError("reward must be a scalar")
