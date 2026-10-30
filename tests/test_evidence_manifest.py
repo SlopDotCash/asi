@@ -17,6 +17,7 @@ from alberta_framework.evaluation import evidence_manifest_cli
 from alberta_framework.evaluation.evidence_manifest import (
     CLAIM_CONTRACT_VERSION,
     DIRTY_STATE_POLICY_VERSION,
+    EVIDENCE_SPECS,
     MANIFEST_SCHEMA_VERSION,
     EvidenceClass,
     EvidenceLevel,
@@ -142,6 +143,29 @@ def _write_artifact(
 def _claims(manifest: Mapping[str, object]) -> dict[str, dict[str, object]]:
     claims = cast(list[dict[str, object]], manifest["claims"])
     return {cast(str, claim["claim_id"]): claim for claim in claims}
+
+
+@pytest.mark.unit
+def test_shared_measurement_validator_is_registered_for_current_source_inventories() -> None:
+    helper = Path("alberta_framework/evaluation/_measurement_validation.py")
+    importer_claims = {
+        "scale_robust_pair_features",
+        "ftl_world_model_decision_fidelity",
+        "recurring_multiagent_coadaptation",
+        "continual_intelligence_amplification",
+    }
+    specs = {spec.name: spec for spec in EVIDENCE_SPECS}
+
+    assert importer_claims <= specs.keys()
+    registered_claims = {
+        claim for claim in importer_claims if helper in specs[claim].source_paths
+    }
+    # The FTL and IA historical chains retain immutable exact source-path sets;
+    # they cannot retroactively attest helper bytes that their artifacts omitted.
+    assert registered_claims == {
+        "scale_robust_pair_features",
+        "recurring_multiagent_coadaptation",
+    }
 
 
 @pytest.mark.unit

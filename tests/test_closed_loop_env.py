@@ -712,6 +712,22 @@ class TestRiverSwim:
         with pytest.raises(ValueError, match="policy"):
             RiverSwimMDP(RiverSwimConfig(n_states=3)).policy_average_reward([0, 1])
 
+    @pytest.mark.parametrize(
+        "policy",
+        [
+            [0.9, 0.9, 0.9],
+            [1.9, 1.9, 1.9],
+            [False, True, True],
+            [np.float32(0.0), np.float32(1.0), np.float32(1.0)],
+        ],
+    )
+    def test_policy_gain_rejects_noninteger_action_identities(self, policy: object) -> None:
+        """The oracle must not measure a coerced policy under the caller's identity."""
+        env = RiverSwimMDP(RiverSwimConfig(n_states=3))
+
+        with pytest.raises(ValueError, match="policy actions"):
+            env.policy_average_reward(policy)  # type: ignore[arg-type]
+
     def test_riverswim_config_rejects_bool_and_nan_identities(self):
         """The public config record must not persist True/NaN step identities."""
         with pytest.raises(ValueError, match="p_right_up must be finite"):
@@ -908,6 +924,26 @@ def test_closed_loop_step_counts_saturate_eager_and_outer_jit() -> None:
     )
     advanced = river.step(river_state, jnp.asarray(0), jr.key(1))[2]
     assert int(advanced.step_count) == _INT32_MAX
+
+
+@pytest.mark.parametrize(
+    "invalid_key",
+    (
+        jr.PRNGKey(0),
+        jr.key(0, impl="rbg"),
+    ),
+)
+def test_closed_loop_rng_consumers_require_typed_threefry_keys(
+    invalid_key: jax.Array,
+) -> None:
+    switching = SwitchingTwoStateMDP()
+    with pytest.raises(TypeError, match="typed scalar threefry2x32"):
+        switching.init(invalid_key)
+
+    river = RiverSwimMDP()
+    river_state = river.init(jr.key(0, impl="threefry2x32"))
+    with pytest.raises(TypeError, match="typed scalar threefry2x32"):
+        river.step(river_state, jnp.asarray(RIGHT_ACTION), invalid_key)
 
 
 @pytest.mark.parametrize(

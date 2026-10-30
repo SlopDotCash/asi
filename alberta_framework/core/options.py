@@ -81,6 +81,19 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+def _require_concrete_finite(name: str, value: Array) -> Array:
+    """Reject non-finite values at an eager, state-committing boundary.
+
+    Traced inputs pass through because runtime gates remain authoritative
+    under ``jax.jit`` and ``jax.lax.scan``.
+    """
+    if not isinstance(value, jax.core.Tracer) and not bool(
+        np.all(np.isfinite(np.asarray(value)))
+    ):
+        raise ValueError(f"{name} must contain only finite values")
+    return value
+
+
 def _validate_hidden_sizes(sizes: object) -> tuple[int, ...]:
     if type(sizes) is not tuple:
         raise ValueError("base_hidden_sizes must be an actual tuple")
@@ -1104,6 +1117,26 @@ def _clipped_epsilon_greedy_importance_ratio(
     return jnp.minimum(ratio, jnp.asarray(clip, dtype=jnp.float32))
 
 
+def _finite_cancelled_td(
+    reward: Array,
+    baseline: Array,
+    bootstrap: Array,
+    prediction: Array,
+) -> Array:
+    """Keep the historical sum unless that partial sum overflows.
+
+    ``((reward - baseline) + bootstrap) - prediction`` is the ordinary
+    association. When ``reward - baseline + bootstrap`` is non-finite but
+    ``bootstrap - prediction`` cancels, the rearranged error can still be
+    finite. A TD error that remains outside float32 stays non-finite so the
+    caller rejects the update.
+    """
+    direct_partial = reward - baseline + bootstrap
+    direct_td = direct_partial - prediction
+    recovered_td = reward - baseline + (bootstrap - prediction)
+    return jnp.where(jnp.isfinite(direct_partial), direct_td, recovered_td)
+
+
 def _differential_q_update(
     q_weights: Array,
     traces: Array,
@@ -1128,7 +1161,7 @@ def _differential_q_update(
 
     q_prev = q_weights[last_action] @ last_obs
     q_next = jnp.max(_q_values_for_obs(q_weights, next_obs))
-    td_error = reward - average_reward + q_next - q_prev
+    td_error = _finite_cancelled_td(reward, average_reward, q_next, q_prev)
 
     action_mask = jax.nn.one_hot(last_action, n_actions, dtype=jnp.float32)
     new_traces = lam * traces + action_mask[:, None] * last_obs[None, :]
@@ -1213,7 +1246,13 @@ def _differential_semidp_q_update(
     q_prev = q_weights[last_action] @ last_obs
     q_next = jnp.max(_q_values_for_obs(q_weights, next_obs))
     # The discounted reward and baseline must use the same γ powers.
-    td_error = reward - average_reward * baseline_coefficient + gamma_o * q_next - q_prev
+    # Pass those products in so a finite sum keeps this association.
+    td_error = _finite_cancelled_td(
+        reward,
+        average_reward * baseline_coefficient,
+        gamma_o * q_next,
+        q_prev,
+    )
 
     action_mask = jax.nn.one_hot(last_action, n_actions, dtype=jnp.float32)
     new_traces = lam * traces + action_mask[:, None] * last_obs[None, :]
@@ -1417,7 +1456,7 @@ def _update_intra_option_policy(
 
     q_prev = q_i[last_intra_action] @ last_obs
     q_next = _discounted_bootstrap(bootstrap_discount, jnp.max(_q_values_for_obs(q_i, next_obs)))
-    td_error = pseudo_reward - avg_r_i + q_next - q_prev
+    td_error = _finite_cancelled_td(pseudo_reward, avg_r_i, q_next, q_prev)
 
     alpha = jnp.asarray(step_size, dtype=jnp.float32)
     beta = jnp.asarray(avg_reward_step_size, dtype=jnp.float32)
@@ -1857,13 +1896,25 @@ class STOMPAgent:
             step_words=jnp.zeros((2,), dtype=jnp.uint32),
         )
 
-    @functools.partial(jax.jit, static_argnums=(0,))
     def start(self, state: STOMPState, initial_observation: Array) -> STOMPState:
         """Prime state and select the first primitive action for dispatch.
 
         Use :meth:`start_with_action` when the caller needs the action
         explicitly. The state also records it in ``last_primitive_action``.
+
+        A concrete non-finite observation is rejected before it can enter
+        persistent state and make every later update fail closed. Traced
+        inputs pass through to the runtime state-finiteness gates.
         """
+        observation = jnp.asarray(initial_observation, dtype=jnp.float32).reshape(
+            (self._config.observation_dim,)
+        )
+        observation = _require_concrete_finite("initial_observation", observation)
+        return self._start(state, observation)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def _start(self, state: STOMPState, initial_observation: Array) -> STOMPState:
+        """Jitted implementation of one checked stream start."""
         cfg = self._config
         obs = jnp.asarray(initial_observation, dtype=jnp.float32).reshape((cfg.observation_dim,))
         key = state.rng_key
@@ -3251,6 +3302,16 @@ class STOMPAgent:
                 scan_extended_action_masks,
             ),
         )
+        # The scan traces the base learner and narrows its host clocks to
+        # float32. Restore the incoming Python values. This scan keeps a
+        # no-timing contract: a rejected or replayed scan returns its input
+        # state exactly, so the host clocks gain no elapsed time here.
+        learner_state = final_state.base_learner_state
+        restored_learner = learner_state.replace(
+            birth_timestamp=state.base_learner_state.birth_timestamp,
+            uptime_s=state.base_learner_state.uptime_s,
+        )
+        final_state = final_state.replace(base_learner_state=restored_learner)
         return STOMPArrayResult(
             state=final_state,
             td_errors=td_errors,
