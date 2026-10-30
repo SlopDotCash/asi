@@ -226,6 +226,40 @@ def test_active_churn_path_has_eager_jit_parity() -> None:
     assert int(eager[1].diagnostic_count) == 1
 
 
+@pytest.mark.parametrize("use_jit", [False, True])
+def test_wide_finite_logit_mse_does_not_rollback_valid_churn_update(
+    use_jit: bool,
+) -> None:
+    params = {name: jnp.zeros_like(value) for name, value in _params().items()}
+    params["b3"] = jnp.asarray([2.0e19, 0.0], dtype=jnp.float32)
+    spec = screening_spec("cchain_full")
+    init_fn, step_fn = spec.factory(spec.hyperparameters)
+    state = init_fn(params)
+    state = state.replace(
+        snapshot_params={name: jnp.zeros_like(value) for name, value in params.items()},
+        reference_examples=state.reference_examples.at[0].set(
+            jnp.zeros((_config().input_dim,), dtype=jnp.float32)
+        ),
+        reference_count=jnp.asarray(1, dtype=jnp.int32),
+        reference_cursor=jnp.asarray(1, dtype=jnp.int32),
+        update_count=jnp.asarray(2, dtype=jnp.int32),
+    )
+    evaluate = jax.jit(step_fn) if use_jit else step_fn
+
+    _, next_state, _ = evaluate(
+        params,
+        state,
+        jnp.zeros((_config().input_dim,), dtype=jnp.float32),
+        jnp.asarray(0, dtype=jnp.int32),
+        jr.key(0),
+    )
+
+    assert int(next_state.update_count) == 3
+    assert int(next_state.diagnostic_count) == 1
+    assert np.isfinite(float(next_state.cumulative_logit_mse))
+    assert np.isclose(float(next_state.cumulative_logit_mse), 2.0e38, rtol=1.0e-6)
+
+
 def test_hostile_state_is_rejected_eager_and_cannot_commit_under_jit() -> None:
     params = _params()
     spec = screening_spec("cchain_full")

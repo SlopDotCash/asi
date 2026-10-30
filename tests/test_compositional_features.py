@@ -1493,6 +1493,27 @@ class TestCompositionalFeatureLearner:
         # observation because slots [0, feature_dim) are raw passthroughs.
         np.testing.assert_allclose(np.asarray(features[:3]), np.asarray(observation))
 
+    @pytest.mark.parametrize("observation_width", [1, 3])
+    def test_array_runner_rejects_observation_width_drift(
+        self,
+        observation_width: int,
+    ) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=3,
+            n_tasks=2,
+            candidate_count=0,
+            replacement_interval=100,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(8))
+        observations = jnp.arange(2 * observation_width, dtype=jnp.float32).reshape(
+            2,
+            observation_width,
+        )
+        targets = jnp.ones((2, 2), dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="observations must have shape"):
+            run_compositional_arrays(learner, state, observations, targets)
+
     def test_scan_loop_runs(self) -> None:
         learner = CompositionalFeatureLearner(
             n_features=10,

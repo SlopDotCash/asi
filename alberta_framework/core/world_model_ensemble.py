@@ -906,7 +906,9 @@ class WorldModelEnsemble:
         self._config = config
         self._model = ActionConditionedWorldModel(config.model)
         self._signals = LearningSignalEstimator(config.signal_estimator)
-        self._member_state_static_signature = _tree_static_signature(self._model.init(jr.key(0)))
+        self._member_state_static_signature = _tree_static_signature(
+            self._model.init(jr.key(0, impl="threefry2x32"))
+        )
         self._signal_state_static_signature = _tree_static_signature(self._signals.init())
 
     @property
