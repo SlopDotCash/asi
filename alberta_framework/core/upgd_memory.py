@@ -1052,15 +1052,20 @@ class UPGDMemoryLearner:
         state: UPGDMemoryState,
         observation: Float[Array, " feature_dim"],
     ) -> Float[Array, " n_heads"]:
-        upgd_prediction = self._upgd.predict(state.upgd_state, observation)
-        memory_prediction = self._memory.predict(state.memory_state, observation)
+        observation_valid = jnp.all(jnp.isfinite(observation))
+        safe_observation = jnp.where(
+            observation_valid, observation, jnp.zeros_like(observation)
+        )
+        upgd_prediction = self._upgd.predict(state.upgd_state, safe_observation)
+        memory_prediction = self._memory.predict(state.memory_state, safe_observation)
         prediction, _gate = self._blend_predictions(
             state,
             upgd_prediction,
             memory_prediction,
             include_target_trace=False,
         )
-        return prediction
+        # _normalize_simplex maps NaN to uniform, which would pass for an answer.
+        return jnp.where(observation_valid, prediction, jnp.full_like(prediction, jnp.nan))
 
     def update(
         self,
