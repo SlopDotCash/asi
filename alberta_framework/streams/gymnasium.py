@@ -99,6 +99,12 @@ def _discounted_bootstrap(gamma: float, next_value: float) -> float:
     return float(gamma) * float(next_value)
 
 
+def _float32_scalar_target(value: object) -> Array:
+    """Build one scalar target only when its float32 value remains finite."""
+    target = validated_float32_scalar("target", value)
+    return jnp.atleast_1d(jnp.asarray(target, dtype=jnp.float32))
+
+
 def _flatten_space(space: gymnasium.spaces.Space[Any]) -> int:
     """Get the flattened dimension of a Gymnasium space.
 
@@ -492,7 +498,7 @@ def collect_trajectory(
 
         # Construct target based on mode
         if mode == PredictionMode.REWARD:
-            target = jnp.atleast_1d(jnp.array(reward, dtype=jnp.float32))
+            target = _float32_scalar_target(reward)
         elif mode == PredictionMode.NEXT_STATE:
             target = next_obs
         else:  # VALUE mode
@@ -503,9 +509,7 @@ def collect_trajectory(
                 bootstrap = _discounted_bootstrap(gamma, float(value_estimator(next_obs)))
             else:
                 bootstrap = 0.0
-            target = jnp.atleast_1d(
-                jnp.array(float(reward) + bootstrap, dtype=jnp.float32)
-            )
+            target = _float32_scalar_target(float(reward) + bootstrap)
 
         observations.append(features)
         targets.append(target)
@@ -765,14 +769,14 @@ class GymnasiumStream:
     ) -> Array:
         """Construct target based on prediction mode."""
         if self._mode == PredictionMode.REWARD:
-            return jnp.atleast_1d(jnp.array(reward, dtype=jnp.float32))
+            return _float32_scalar_target(reward)
 
         elif self._mode == PredictionMode.NEXT_STATE:
             return next_obs
 
         elif self._mode == PredictionMode.VALUE:
             if terminated:
-                return jnp.atleast_1d(jnp.array(reward, dtype=jnp.float32))
+                return _float32_scalar_target(reward)
 
             if self._value_estimator is not None:
                 next_value = self._value_estimator(next_obs)
@@ -780,7 +784,7 @@ class GymnasiumStream:
                 next_value = 0.0
 
             target = reward + _discounted_bootstrap(self._gamma, next_value)
-            return jnp.atleast_1d(jnp.array(target, dtype=jnp.float32))
+            return _float32_scalar_target(target)
 
         else:
             raise ValueError(f"Unknown mode: {self._mode}")
@@ -937,14 +941,14 @@ class TDStream:
         features = self._construct_features(self._current_obs, flat_action)
 
         if terminated:
-            target = jnp.atleast_1d(jnp.array(reward, dtype=jnp.float32))
+            target = _float32_scalar_target(reward)
         else:
             next_action = self._policy(next_obs)
             next_flat_action = _flatten_action(next_action, self._env.action_space)
             next_features = self._construct_features(next_obs, next_flat_action)
             bootstrap = self._value_fn(next_features)
             target_val = float(reward) + _discounted_bootstrap(self._gamma, float(bootstrap))
-            target = jnp.atleast_1d(jnp.array(target_val, dtype=jnp.float32))
+            target = _float32_scalar_target(target_val)
 
         self._step_count += 1
 
