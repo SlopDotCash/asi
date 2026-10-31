@@ -304,6 +304,26 @@ def _digest(value: object, name: str) -> str:
     return value
 
 
+def _same_scalars(actual: object, expected: object) -> bool:
+    """Compare JSON-shaped values without equating ``1``, ``1.0``, and ``True``."""
+    if type(actual) is not type(expected):
+        return False
+    if type(expected) is dict:
+        left = cast(dict[str, object], actual)
+        right = cast(dict[str, object], expected)
+        return set(left) == set(right) and all(
+            _same_scalars(left[key], right[key]) for key in right
+        )
+    if type(expected) is list:
+        left_items = cast(list[object], actual)
+        right_items = cast(list[object], expected)
+        return len(left_items) == len(right_items) and all(
+            _same_scalars(left_item, right_item)
+            for left_item, right_item in zip(left_items, right_items, strict=True)
+        )
+    return actual == expected
+
+
 def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
     """Fail closed on malformed, drifted, promoting, or unmatched receipts."""
     if type(payload) is not dict:
@@ -336,10 +356,10 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
     seed = _exact_int(result["seed"], "seed")
     if seed not in FROZEN_DEVELOPMENT_SEEDS:
         raise ValueError("seed is outside the frozen development schedule")
-    if result["frozen_development_seeds"] != list(FROZEN_DEVELOPMENT_SEEDS):
+    if not _same_scalars(result["frozen_development_seeds"], list(FROZEN_DEVELOPMENT_SEEDS)):
         raise ValueError("frozen seed schedule drift")
     config = PROFILES[profile].config
-    if result["config"] != asdict(config):
+    if not _same_scalars(result["config"], asdict(config)):
         raise ValueError("profile configuration drift")
     dataset = result["dataset"]
     if type(dataset) is not dict or set(dataset) != {
@@ -399,9 +419,9 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
         } or arm.get("arm") != expected_name:
             raise ValueError("arm ordering or identity drift")
         expected_spec = screening_spec(expected_name)
-        if arm.get("mechanism") != expected_spec.mechanism or arm.get(
-            "hyperparameters"
-        ) != expected_spec.hyperparameters:
+        if arm.get("mechanism") != expected_spec.mechanism or not _same_scalars(
+            arm.get("hyperparameters"), dict(expected_spec.hyperparameters)
+        ):
             raise ValueError("arm mechanism or hyperparameter drift")
         for curve_name in ("per_task_accuracy", "per_task_loss", "per_task_plasticity"):
             curve = arm.get(curve_name)
@@ -420,7 +440,7 @@ def validate_adamo_diagnostic(payload: object) -> dict[str, object]:
                 "jacobian_min_singular_value", "jacobian_max_singular_value",
                 "jacobian_mean_singular_value", "jacobian_condition_number_clipped_1e12",
                 "jacobian_rms_distance_from_one", "weight_gram_penalty",
-            } or snapshot.get("task_index") != index:
+            } or not _same_scalars(snapshot.get("task_index"), index):
                 raise ValueError("diagnostic task index mismatch")
             _digest(snapshot.get("parameter_sha256"), "parameter_sha256")
             _digest(snapshot.get("learner_state_sha256"), "learner_state_sha256")

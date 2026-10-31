@@ -119,6 +119,30 @@ def test_hostile_scalar_alias_and_unfrozen_seed_are_rejected(
         run_adamo_diagnostic(*tiny_data, profile="contract-smoke", seed=9)
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (lambda value: value["frozen_development_seeds"].__setitem__(0, 15600.0),
+         "frozen seed schedule"),
+        (lambda value: value["config"].update(n_tasks=2.0), "profile configuration"),
+        (lambda value: value["arms"][0]["hyperparameters"].update(beta1=0),
+         "hyperparameter drift"),
+        (lambda value: value["arms"][0]["post_task_diagnostics"][1].update(task_index=True),
+         "task index"),
+        (lambda value: value["arms"][0]["post_task_diagnostics"][0].update(task_index=0.0),
+         "task index"),
+    ],
+)
+def test_serialized_scalar_aliases_are_rejected(
+    receipt: dict[str, object], mutation: object, message: str,
+) -> None:
+    hostile = json.loads(json.dumps(receipt))
+    assert validate_adamo_diagnostic(hostile) == receipt
+    mutation(hostile)
+    with pytest.raises(ValueError, match=message):
+        validate_adamo_diagnostic(hostile)
+
+
 def test_runner_observer_is_a_downstream_exact_function_only(
     tiny_data: tuple[np.ndarray, np.ndarray],
 ) -> None:
