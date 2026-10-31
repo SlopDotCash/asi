@@ -414,6 +414,41 @@ def _scaled_std(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
     return np.asarray(np.std(values / scale, axis=axis, ddof=1) * np.squeeze(scale, axis=axis))
 
 
+def _finite_mean(values: NDArray[np.float64], axis: int) -> NDArray[np.float64]:
+    """Mean each slice, rescaling only a slice whose plain sum leaves float64.
+
+    Ordinary slices keep NumPy's rounding, which the export preflight checks
+    exactly; the rescaled form replaces only a non-finite plain mean.
+    """
+    with np.errstate(over="ignore", invalid="ignore"):
+        plain = np.mean(values, axis=axis)
+    finite = np.isfinite(plain)
+    if np.all(finite):
+        return np.asarray(plain)
+    return np.asarray(np.where(finite, plain, _scaled_mean(values, axis)))
+
+
+def _finite_mean_std(
+    values: NDArray[np.float64], axis: int
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Seed mean and sample spread under the export preflight's recovery rule.
+
+    Plain NumPy reductions are kept unless the mean or spread leaves float64
+    or a nonzero spread underflows to zero; those slices use the rescaled form.
+    """
+    count = values.shape[axis]
+    with np.errstate(over="ignore", invalid="ignore"):
+        mean = np.mean(values, axis=axis)
+        std = np.std(values, axis=axis, ddof=1) if count > 1 else np.zeros_like(mean)
+        spread = np.ptp(values, axis=axis)
+    recover = ~(np.isfinite(mean) & np.isfinite(std)) | ((std == 0.0) & (spread > 0.0))
+    if np.any(recover):
+        mean = np.where(recover, _scaled_mean(values, axis), mean)
+        if count > 1:
+            std = np.where(recover, _scaled_std(values, axis), std)
+    return np.asarray(mean), np.asarray(std)
+
+
 def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
     """Aggregate results from multiple seeds into summary statistics.
 
@@ -477,10 +512,11 @@ def aggregate_metrics(results: list[SingleRunResult]) -> AggregatedResults:
     for key in metric_keys:
         # Use mean of last 100 steps as the final value
         window = min(100, metric_arrays[key].shape[1])
-        final_values = _scaled_mean(metric_arrays[key][:, -window:], axis=1)
+        final_values = _finite_mean(metric_arrays[key][:, -window:], axis=1)
+        mean, std = _finite_mean_std(final_values, axis=0)
         summary[key] = MetricSummary(
-            mean=float(_scaled_mean(final_values, axis=0)),
-            std=float(_scaled_std(final_values, axis=0)) if n_seeds > 1 else 0.0,
+            mean=float(mean),
+            std=float(std),
             min=float(np.min(final_values)),
             max=float(np.max(final_values)),
             n_seeds=n_seeds,
@@ -655,8 +691,7 @@ def get_metric_timeseries(
     """
     arr = results.metric_arrays[metric]
     _require_finite_metric_array(arr, metric)
-    mean = _scaled_mean(arr, axis=0)
-    std = np.zeros_like(mean) if arr.shape[0] == 1 else _scaled_std(arr, axis=0)
+    mean, std = _finite_mean_std(arr, axis=0)
     return mean, mean - std, mean + std
 
 
@@ -723,9 +758,9 @@ def get_final_performance(
 
     performance: dict[str, tuple[float, float]] = {}
     for name, arr in metric_arrays.items():
-        final_means = _scaled_mean(arr[:, -final_window:], axis=1)
-        std = float(_scaled_std(final_means, axis=0)) if len(final_means) > 1 else 0.0
-        performance[name] = (float(_scaled_mean(final_means, axis=0)), std)
+        final_means = _finite_mean(arr[:, -final_window:], axis=1)
+        mean, std = _finite_mean_std(final_means, axis=0)
+        performance[name] = (float(mean), float(std))
     return performance
 
 

@@ -903,3 +903,64 @@ def test_exports_validate_finite_scaled_summary(tmp_path: Path, scale: float) ->
     with pytest.raises(ValueError, match="statistics do not match values"):
         export_to_json({"finite": bad}, tmp_path / "bad.json")
     assert not (tmp_path / "bad.json").exists()
+
+
+def _aggregate_traces(traces: list[list[float]]) -> AggregatedResults:
+    from alberta_framework.core.optimizers import LMSState
+    from alberta_framework.core.types import LearnerState
+    from alberta_framework.utils import experiments as ex
+
+    state = LearnerState(
+        weights=jnp.zeros(1),
+        bias=jnp.zeros(()),
+        optimizer_state=LMSState(step_size=jnp.asarray(0.1)),
+        step_count=jnp.asarray(0),
+    )
+    return ex.aggregate_metrics(
+        [
+            ex.SingleRunResult(
+                config_name="traces",
+                seed=seed,
+                metrics_history=[{_METRIC: value} for value in trace],
+                final_state=state,
+            )
+            for seed, trace in enumerate(traces)
+        ]
+    )
+
+
+# Ordinary traces whose rescaled means round differently from NumPy's.
+_ORDINARY_TRACES = [[0.1, 0.2, 0.3], [0.25, 0.7, 0.3], [0.9, 0.4, 0.15]]
+
+
+@pytest.mark.parametrize(
+    "traces",
+    [
+        _ORDINARY_TRACES,
+        [[1e308] * 3, [1e308] * 3],
+        [[0.0] * 3, [2e200] * 3],
+        [[0.0] * 3, [2e-200] * 3],
+    ],
+)
+def test_aggregate_metrics_output_exports(tmp_path: Path, traces: list[list[float]]) -> None:
+    aggregate = _aggregate_traces(traces)
+    summary = aggregate.summary[_METRIC]
+    results = {"traces": aggregate}
+    export_to_json(results, tmp_path / "traces.json")
+    export_to_csv(results, tmp_path / "traces.csv")
+    assert "traces" in generate_markdown_table(results, metric=_METRIC)
+    payload = json.loads((tmp_path / "traces.json").read_text())["traces"]["summary"][_METRIC]
+    assert payload["values"] == summary.values.tolist()
+    assert (payload["mean"], payload["std"]) == (summary.mean, summary.std)
+
+
+def test_aggregate_metrics_keeps_plain_rounding_for_ordinary_traces() -> None:
+    from alberta_framework.utils.experiments import get_final_performance
+
+    aggregate = _aggregate_traces(_ORDINARY_TRACES)
+    summary = aggregate.summary[_METRIC]
+    values = np.mean(np.asarray(_ORDINARY_TRACES), axis=1)
+    np.testing.assert_array_equal(summary.values, values)
+    assert (summary.mean, summary.std) == (float(np.mean(values)), float(np.std(values, ddof=1)))
+    performance = get_final_performance({"traces": aggregate}, window=3)
+    assert performance["traces"] == (summary.mean, summary.std)
