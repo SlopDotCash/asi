@@ -2264,6 +2264,197 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     chex.assert_trees_all_equal(result.state, state)
 
 
+def _actor_grad_weights_matrix(action: int, obs: np.ndarray, n_actions: int = 2) -> np.ndarray:
+    """Policy gradient of the log-softmax weights under a uniform policy.
+
+    With zero actor weights and temperature 1.0 the policy is uniform, so
+    ``grad log pi(a | s) = (one_hot(a) - 1/n_actions)`` for the bias and its
+    outer product with the observation for the weights.
+    """
+    bias = np.eye(n_actions, dtype=np.float64)[action] - 1.0 / n_actions
+    return bias[:, None] * np.asarray(obs, dtype=np.float64)[None, :]
+
+
+def _zero_critic_head_params(state):  # type: ignore[no-untyped-def]
+    """Zero the critic head weights so the TD error equals the reward.
+
+    The regression tests below isolate the *actor* trace decay; a randomly
+    initialized critic would add arbitrary value offsets to the TD error.
+    Head-parameter surgery mirrors
+    ``test_qhorde_terminal_does_not_multiply_inf_next_value``.
+    """
+    head_params = state.critic_state.head_params
+    zeroed = head_params.replace(
+        weights=tuple(jnp.zeros_like(w) for w in head_params.weights),
+        biases=tuple(jnp.zeros_like(b) for b in head_params.biases),
+    )
+    return state.replace(  # type: ignore[attr-defined]
+        critic_state=state.critic_state.replace(head_params=zeroed)
+    )
+
+
+def test_terminal_reward_credits_episode_qhorde_actor_trace() -> None:
+    """Terminal reward must credit the Q-horde episode's actor trace.
+
+    For episodic AC(lambda), the terminating transition's TD error is
+    computed with discount 0 (no bootstrap), but the eligibility traces
+    accumulated over the episode must still be decayed by the *incoming*
+    discount (the prior transition's discount) so the terminal reward
+    credits the whole episode. Decaying with the outgoing (zero) discount
+    wipes the episode trace before the terminal TD error is applied, so
+    only the final step's gradient receives the terminal credit.
+    """
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name=f"q_{idx}",
+            demon_type=DemonType.CONTROL,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+        for idx in range(2)
+    ]
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    agent = QHordeActorCriticAgent(
+        QHordeActorCriticConfig(
+            n_actions=2,
+            gamma=1.0,
+            actor_step_size=0.1,
+            actor_lamda=1.0,
+        ),
+        critic=critic,
+    )
+    s0 = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    s1 = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    state = _zero_critic_head_params(state)
+    state, action0, _ = agent.start(state, s0)
+    a0 = int(action0)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        terminated=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+    a1 = int(first.state.last_action)
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 0.0], dtype=jnp.float32),
+        terminated=jnp.array(True),
+    )
+    assert bool(second.update_applied)
+    assert abs(float(second.td_error) - 1.0) < 1e-6
+
+    # Weights stay zero through the episode, so both step policies are
+    # uniform and each step's actor gradient is
+    # (one_hot(action) - 0.5) outer observation (temperature 1.0).
+    expected_weights = 0.1 * (
+        _actor_grad_weights_matrix(a0, np.asarray(s0))
+        + _actor_grad_weights_matrix(a1, np.asarray(s1))
+    )
+    # The mutant that decays the actor trace with the outgoing (zero)
+    # discount at the terminal step drops the a0 term above, leaving the
+    # earlier state's column at zero instead of carrying its credit.
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_weights),
+        expected_weights,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    # Stored traces are still cleared after the terminal update.
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_trace_weights),
+        np.zeros((2, 2)),
+        atol=1e-7,
+    )
+
+
+def test_terminal_reward_credits_episode_horde_actor_trace() -> None:
+    """Terminal reward must credit the horde episode's actor trace.
+
+    The ``HordeActorCriticAgent`` accepts an explicit per-transition discount.
+    Passing ``discount=0.0`` on the terminating transition must still credit
+    the episode's accumulated actor trace: the trace decays with the
+    *incoming* discount (the prior accepted transition's discount), while the
+    current call's discount only controls the TD bootstrap.
+    """
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name="value",
+            demon_type=DemonType.PREDICTION,
+            gamma=1.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+    ]
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    agent = HordeActorCriticAgent(
+        HordeActorCriticConfig(
+            n_actions=2,
+            actor_step_size=0.1,
+            actor_lamda=1.0,
+        ),
+        critic=critic,
+    )
+    s0 = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    s1 = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    state = _zero_critic_head_params(state)
+    state, action0, _ = agent.start(state, s0)
+    a0 = int(action0)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+    )
+    assert bool(first.update_applied)
+    a1 = int(first.state.last_action)
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 0.0], dtype=jnp.float32),
+        discount=jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+    assert abs(float(second.td_error) - 1.0) < 1e-6
+
+    expected_weights = 0.1 * (
+        _actor_grad_weights_matrix(a0, np.asarray(s0))
+        + _actor_grad_weights_matrix(a1, np.asarray(s1))
+    )
+    # The mutant that decays the actor trace with the outgoing (zero)
+    # discount at the terminal step drops the a0 term above, leaving the
+    # earlier state's column at zero instead of carrying its credit.
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_weights),
+        expected_weights,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    # Stored traces are still cleared after the terminal update.
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_trace_weights),
+        np.zeros((2, 2)),
+        atol=1e-7,
+    )
+
+
 @pytest.mark.parametrize("disable_jit", [True, False])
 def test_actor_gradient_clip_bounds_finite_gradients_with_overflowing_norms(
     disable_jit: bool,
