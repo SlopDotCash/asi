@@ -1301,3 +1301,40 @@ def test_stable_helpers_track_eager_across_temperature_and_scale_grid() -> None:
         )
         assert int(np.argmax(probabilities)) == int(np.argmax(eager_probabilities)), context
 
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("magnitude", [2e-20, 2e19, 2e38])
+@pytest.mark.parametrize("sign", [-1.0, 1.0])
+def test_input_gradient_norm_retains_representable_scales(compiled, magnitude, sign):
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(2, jax.random.key(0))
+    row = jnp.asarray([sign * magnitude, -sign * magnitude], dtype=jnp.float32)
+    state = state.replace(weights=jnp.stack([row, -row]))
+    gradient_fn = model.input_loss_gradient
+    if compiled:
+        gradient_fn = jax.jit(gradient_fn)
+    with jax.disable_jit(not compiled):
+        result = gradient_fn(state, jnp.zeros(2), jnp.asarray(0, dtype=jnp.int32))
+    expected_gradient = -np.asarray(row, dtype=np.float64)
+    expected_norm = float(np.linalg.norm(expected_gradient))
+    assert bool(result.valid)
+    np.testing.assert_allclose(np.asarray(result.gradient), expected_gradient, rtol=2e-6, atol=0)
+    assert float(result.gradient_norm) == pytest.approx(expected_norm, rel=2e-6, abs=0)
+    assert float(result.loss) == pytest.approx(np.log(2.0), rel=2e-6)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_input_gradient_true_norm_overflow_remains_invalid(compiled):
+    model = BehaviorModel(BehaviorModelConfig(n_actions=2))
+    state = model.init(2, jax.random.key(0))
+    row = jnp.full(2, 3e38, dtype=jnp.float32)
+    state = state.replace(weights=jnp.stack([row, -row]))
+    gradient_fn = model.input_loss_gradient
+    if compiled:
+        gradient_fn = jax.jit(gradient_fn)
+    with jax.disable_jit(not compiled):
+        result = gradient_fn(state, jnp.zeros(2), jnp.asarray(0, dtype=jnp.int32))
+    assert not bool(result.valid)
+    np.testing.assert_array_equal(np.asarray(result.gradient), np.zeros(2))
+    assert float(result.gradient_norm) == 0.0
