@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # envcheck (VOID-stop) -> tune seed 30 -> [tiebreak 31-39] -> screen 40-42 (gate) -> confirm 43-49 -> final.
 # Cap 4 one-thread workers, 3 GB available-RAM floor; defers to cargo-build-sbf / pytest. Every stop is final (no auto re-run).
-cd /home/pumpdev/asi-wd-sweep-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/wd_sweep_screen; L=/tmp/ws_launch.log; PY=.venv/bin/python
 P=rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000
 echo "HEAD $(git rev-parse HEAD)" > $L
