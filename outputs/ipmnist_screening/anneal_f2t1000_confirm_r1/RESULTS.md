@@ -58,7 +58,7 @@ Development screening diagnostic; permanently nonpromoting. Bars, seeds and arms
 ## Seeds and holdout
 - Seeds 10-19 are now seen for this arm at 200 tasks.
 - The 60-task holdout cells (seeds 10-19 at 60 tasks) remain unrun.
-- Lantern confirmed this seed choice and the parent reuse.
+- Our reviewer confirmed this seed choice and the parent reuse.
 
 ## Interruptions
 - The executor session was interrupted twice during monitoring, at about 19:05 and about 19:20 GMT.

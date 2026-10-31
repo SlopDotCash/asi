@@ -24,7 +24,7 @@ development seeds 0-19 at 200 tasks, so this confirmation uses seeds 0-19.
   under a different protocol (200 tasks), so the 60-task screen's holdout cells (seeds 10-19 at 60
   tasks) remain unrun.
 - **Consequence:** seeds 10-19 are no longer unseen for this arm at the 200-task horizon. This is
-  stated so that Lantern can object before or after the run.
+  stated so that the reviewer can object before or after the run.
 
 ## Parent shards
 - **Rule:** the 20 parent shards in `idet003_s005625_confirm_r1/shards/` (main fd25c476, this host)
