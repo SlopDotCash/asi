@@ -1464,3 +1464,38 @@ def test_bootstrap_opposite_extremes_finite(statistic: str) -> None:
             [-1.0e308, 1.0e308], statistic=statistic, n_bootstrap=100
         )
     assert (point, lower, upper) == (0.0, -1.0e308, 1.0e308)
+
+
+_T_TEST_A = np.asarray([1.0, 1.1, 0.9, 1.05], dtype=np.float64)
+_T_TEST_B = np.asarray([-1.0, -1.1, -0.8, -1.25], dtype=np.float64)
+
+
+@pytest.mark.parametrize("paired", [True, False])
+@pytest.mark.parametrize("scale", [1.0e-300, 1.0e-200, 1.0e160, 1.0e300, 2.0**1022])
+def test_ttest_verdict_does_not_depend_on_measurement_units(paired: bool, scale: float) -> None:
+    expected = ttest_comparison(_T_TEST_A, _T_TEST_B, paired=paired)
+    result = ttest_comparison(_T_TEST_A * scale, _T_TEST_B * scale, paired=paired)
+    assert expected.significant
+    assert result.significant
+    assert result.statistic == pytest.approx(expected.statistic)
+    assert result.p_value == pytest.approx(expected.p_value)
+    assert result.effect_size == pytest.approx(expected.effect_size)
+
+
+@pytest.mark.parametrize("paired", [True, False])
+def test_ttest_does_not_report_overlapping_tiny_samples_as_significant(paired: bool) -> None:
+    a = np.asarray([1.0, 2.0, 3.0, 4.0], dtype=np.float64)
+    b = np.asarray([2.0, 1.0, 4.0, 3.5], dtype=np.float64)
+    expected = ttest_comparison(a, b, paired=paired)
+    result = ttest_comparison(a * 1.0e-200, b * 1.0e-200, paired=paired)
+    assert not result.significant
+    assert result.p_value == pytest.approx(expected.p_value)
+
+
+def test_ttest_binary_scaling_keeps_ordinary_values_exact() -> None:
+    a = np.asarray([0.1, 0.2, 0.35], dtype=np.float64)
+    b = np.asarray([0.3, 0.1, 0.7], dtype=np.float64)
+    from scipy import stats
+
+    assert ttest_comparison(a, b, paired=False).statistic == float(stats.ttest_ind(a, b)[0])
+    assert ttest_comparison(a, b, paired=True).statistic == float(stats.ttest_rel(a, b)[0])
