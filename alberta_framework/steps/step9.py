@@ -903,8 +903,8 @@ def step9_update(
         restored = rollout_ctrl.replace(
             last_observation=control_after_real.last_observation,
             last_action=control_after_real.last_action,
-            epsilon=control_after_real.epsilon,
             step_count=control_after_real.step_count,
+            epsilon=control_after_real.epsilon,
             step_words=control_after_real.step_words,
             q_trace_weights=ctrl_state.q_trace_weights,
             q_trace_bias=ctrl_state.q_trace_bias,

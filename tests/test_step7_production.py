@@ -972,6 +972,39 @@ def test_step7_planning_accepted_tracks_the_core_learner_rollback() -> None:
     assert smoke.planning_acceptance_count == sum(replayed)
 
 
+def test_step7_planning_preserves_real_control_clock() -> None:
+    """Imagined updates must not consume real control transitions."""
+    cfg = Step7DynaConfig(
+        control=Step6DifferentialSARSAConfig(
+            n_actions=N_ACTIONS,
+            epsilon_decay_steps=100,
+        ),
+        world_model=Step8WorldModelConfig(
+            observation_dim=3, n_actions=N_ACTIONS, hidden_sizes=(), use_layer_norm=False
+        ),
+        planning_steps=1,
+        planning_rollout_depth=1,
+        planning_warmup_steps=0,
+        planning_memory_size=8,
+        planning_strategy="random",
+    )
+    agent, model = make_step7_components(cfg)
+    state = init_step7_state(
+        agent,
+        model,
+        key=jr.key(0),
+        initial_observation=jnp.zeros(3),
+        memory_size=8,
+    )
+    result = step7_update(cfg, agent, model, state, jnp.array(0.5), jnp.ones(3))
+    assert bool(result.planning_accepted[0])
+    real = result.real_control_result.state
+    final = result.state.control_state
+    assert int(final.step_count) == int(real.step_count)
+    chex.assert_trees_all_equal(final.step_words, real.step_words)
+    np.testing.assert_allclose(final.epsilon, real.epsilon)
+
+
 def test_step7_planning_backup_starts_from_empty_eligibility() -> None:
     """An imagined backup must leave the real-experience traces untouched.
 
