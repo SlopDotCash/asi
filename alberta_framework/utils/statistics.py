@@ -960,8 +960,10 @@ def pairwise_comparisons(
 
     Raises:
         ValueError: If ``alpha`` is not a finite probability strictly between
-            0 and 1, ``window`` is not positive, a metric has no steps, seed
-            identities are duplicated, seeds do not match metric rows, seeds
+            0 and 1, ``test`` or ``correction`` is unknown (even when fewer than
+            two methods leave nothing to compare), ``window`` is not positive, a
+            metric has no steps, seed identities are duplicated, seeds do not match
+            metric rows, seeds
             differ between methods used by a paired test, or ``window`` exceeds
             the shortest trace while trace lengths differ between methods.
             Paired rows are aligned by seed identity; Mann-Whitney samples
@@ -971,6 +973,10 @@ def pairwise_comparisons(
 
     if type(test) is not str:
         raise ValueError("test is invalid")
+    if test not in ("ttest", "mann_whitney", "wilcoxon"):
+        raise ValueError(f"Unknown test: {test}")
+    if type(correction) is not str or correction not in ("bonferroni", "holm"):
+        raise ValueError(f"Unknown correction: {correction}")
     alpha_value = _require_alpha(alpha)
     window = _require_positive_int("window", window)
 
@@ -1023,9 +1029,6 @@ def pairwise_comparisons(
             final_mean = np.mean(scaled, axis=1) * np.squeeze(scales, axis=1)
         _require_finite_statistics(final_mean, name=f"metric '{name}' final window")
         final_values[name] = final_mean
-
-    if test not in ("ttest", "mann_whitney", "wilcoxon"):
-        raise ValueError(f"Unknown test: {test}")
 
     # Perform all pairwise comparisons
     comparisons: dict[tuple[str, str], SignificanceResult] = {}
@@ -1080,10 +1083,8 @@ def pairwise_comparisons(
     if correction == "bonferroni":
         significant_list, corrected_alpha = bonferroni_correction(p_values, alpha_value)
         decision_thresholds = [corrected_alpha] * len(p_values)
-    elif correction == "holm":
-        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
     else:
-        raise ValueError(f"Unknown correction: {correction}")
+        significant_list, decision_thresholds = _holm_decisions(p_values, alpha_value)
 
     # Update significance based on correction
     corrected_comparisons: dict[tuple[str, str], SignificanceResult] = {}
