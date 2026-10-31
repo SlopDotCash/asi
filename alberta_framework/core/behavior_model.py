@@ -185,6 +185,8 @@ def _stable_temperature_log_softmax(
 # axis that ``run_behavior_model_from_arrays`` hands straight to
 # ``jax.lax.scan``.
 _BEHAVIOR_MODEL_SEQUENCE_MAX_STEPS = 50_000
+# Admits float32 softmax rounding, not an unnormalized target policy.
+_TARGET_PROBABILITY_SUM_TOLERANCE = 1e-4
 
 
 def _require_behavior_model_sequence_length(name: str, value: object) -> int:
@@ -385,6 +387,23 @@ def action_log_likelihoods(
     )
 
 
+def _require_target_distribution(target_probabilities: Array, n_actions: int) -> None:
+    """Reject a target policy that is not a distribution over ``n_actions``."""
+    target = jnp.asarray(target_probabilities)
+    if not jnp.issubdtype(target.dtype, jnp.floating):
+        raise ValueError("target_probabilities must have a real floating dtype")
+    if target.ndim == 0 or target.shape[-1] != n_actions:
+        raise ValueError(f"target_probabilities must have {n_actions} actions on the last axis")
+    if isinstance(target, jax.core.Tracer):
+        return
+    probabilities = np.asarray(target, dtype=np.float64)
+    if not bool(np.all(np.isfinite(probabilities))) or bool(np.any(probabilities < 0.0)):
+        raise ValueError("target_probabilities must be finite and non-negative")
+    totals = np.sum(probabilities, axis=-1)
+    if bool(np.any(np.abs(totals - 1.0) > _TARGET_PROBABILITY_SUM_TOLERANCE)):
+        raise ValueError("target_probabilities must sum to one")
+
+
 def clipped_importance_ratios(
     target_probabilities: Array,
     behavior_probabilities: Array,
@@ -406,7 +425,13 @@ def clipped_importance_ratios(
 
     Returns:
         Per-sample ratios with shape ``target_probabilities.shape[:-1]``.
+
+    Raises:
+        ValueError: If ``target_probabilities`` is not real floating with one
+            entry per behavior action or, when concrete, is not a finite
+            non-negative distribution along its last axis.
     """
+    _require_target_distribution(target_probabilities, jnp.shape(behavior_probabilities)[-1])
     target = selected_action_probabilities(
         target_probabilities,
         actions,
