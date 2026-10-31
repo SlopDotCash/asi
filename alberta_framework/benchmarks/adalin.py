@@ -801,6 +801,13 @@ def validate_adalin_result(value: object) -> None:
     _require_keys(
         dataset, {"sha256", "train_examples", "test_examples", "input_dim", "classes"}, "dataset"
     )
+    dataset_digest = dataset["sha256"]
+    if (
+        type(dataset_digest) is not str
+        or len(dataset_digest) != 64
+        or any(char not in "0123456789abcdef" for char in dataset_digest)
+    ):
+        raise ValueError("dataset.sha256 must be a lowercase SHA-256 digest")
     for field in ("train_examples", "test_examples", "input_dim", "classes"):
         if type(dataset[field]) is not int or cast(int, dataset[field]) < 1:
             raise ValueError(f"dataset.{field} must be a positive exact integer")
