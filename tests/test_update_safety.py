@@ -117,6 +117,37 @@ def test_integer_action_above_float32_mantissa_keeps_its_identity(action: object
     assert int(safe) == 2**24 + 1
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        pytest.param(1.00000001, id="python-near-one"),
+        pytest.param(np.float64(1.00000001), id="numpy-near-one"),
+        pytest.param(-0.99999999, id="python-near-unset"),
+        pytest.param(float(2**24 + 1), id="python-wide-integer"),
+        pytest.param(np.float64(2**24 + 1), id="numpy-wide-integer"),
+    ],
+)
+def test_host_float_action_is_rejected_before_float32_rounding(action: object) -> None:
+    # A host float that changes when narrowed to float32 must not be accepted
+    # as the neighbouring integer action (or the -1 unset sentinel).
+    safe, valid = safe_discrete_action(
+        action, 2**24 + 2, allow_unset=True  # type: ignore[arg-type]
+    )
+    assert not bool(valid)
+    assert int(safe) == -1
+
+
+def test_float64_array_action_is_rejected_before_float32_rounding() -> None:
+    with jax.enable_x64():
+        action = jnp.asarray(2**24 + 1, dtype=jnp.float64)
+        eager = safe_discrete_action(action, 2**24 + 2)
+        compiled = jax.jit(lambda value: safe_discrete_action(value, 2**24 + 2))(action)
+
+    for safe, valid in (eager, compiled):
+        assert not bool(valid)
+        assert int(safe) == 0
+
+
 def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(jnp.asarray(2**32 - 1, dtype=jnp.uint32), 3)
     assert not bool(valid)
