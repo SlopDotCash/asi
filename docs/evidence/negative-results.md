@@ -295,6 +295,15 @@ postmortem.
     `outputs/ipmnist_screening/smprecond_confirm_r1/` (40 shards,
     `PREREGISTRATION.md`, `RESULTS.md`, `summary.json`).
 
+25. **At weight_decay 0, kappa weight clipping of the s02 RLS-head body
+    stops at the tune gate.** The opt-in `body_wclip_kappa` bound
+    (kappa/sqrt(fan_in) on w1/b1/w2/b2) with kappa 2, 4 and 8 was tuned on
+    seed 154 at 60 tasks against s02 (0.964493): -0.000517, +0.000020 and
+    +0.000000 (kappa 8 is bit-identical; the clip never binds). None
+    cleared the +0.0005 gate, so no 10-seed screen ran. No divergence. At
+    wd0 the body weights do not grow large enough for a norm bound to
+    matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift
