@@ -554,6 +554,27 @@ def test_geometry_magnitude_witness_sees_what_the_arithmetic_loses(
         assert not bool(jax.jit(_nonzero_magnitude_bits)(zero))
 
 
+def test_flad_rejects_a_gradient_the_backend_flushed() -> None:
+    # A flushed gradient reads as the zero-gradient reduction, so a real direction
+    # would be left in the "noise" component and certified valid.
+    perturbation = jnp.array([1.0, 1.0])
+    gradient = jnp.asarray(np.array([2.938736e-39, 0.0], dtype=np.float32))
+    assert float(jnp.max(jnp.abs(gradient))) == 0.0
+
+    for evaluate in (flad_noise_component_transaction, jax.jit(flad_noise_component_transaction)):
+        safe, valid = evaluate(perturbation, gradient)
+        assert not bool(valid)
+        np.testing.assert_array_equal(safe, jnp.zeros_like(perturbation))
+    with pytest.raises(ValueError, match="FLAD decomposition must be finite"):
+        flad_noise_component(perturbation, gradient)
+
+    # The exact zero gradient stays the mechanism-off reduction for both signs.
+    for zero in (jnp.zeros(2), jnp.full(2, -0.0)):
+        safe, valid = flad_noise_component_transaction(perturbation, zero)
+        assert bool(valid)
+        np.testing.assert_array_equal(safe, perturbation)
+
+
 def test_flad_noise_component_scale_freedom() -> None:
     delta = np.array([1.0, -2.0, 0.5, 3.0], dtype=np.float32)
     grad = np.array([2.0, 1.0, -1.0, 0.5], dtype=np.float32)
