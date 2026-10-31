@@ -658,6 +658,32 @@ def test_actor_critic_start_rejects_policy_overflow_from_finite_inputs() -> None
         agent.start(state, observation)
 
 
+def test_actor_critic_select_action_rejects_policy_overflow_from_finite_inputs() -> None:
+    """A finite observation must not draw an arbitrary action from NaN probabilities."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(1, jr.key(0)).replace(
+        actor_weights=jnp.asarray([[2.0], [-2.0]], dtype=jnp.float32)
+    )
+    observation = jnp.asarray([np.finfo(np.float32).max], dtype=jnp.float32)
+
+    with pytest.raises(ValueError, match="action selection"):
+        agent.select_action(state, observation)
+
+
+def test_actor_critic_select_action_keeps_traced_and_finite_draws() -> None:
+    """The eager gate must leave ordinary and jitted action draws unchanged."""
+    agent = ActorCriticAgent(ActorCriticConfig(n_actions=2))
+    state = agent.init(1, jr.key(0))
+    observation = jnp.asarray([1.0], dtype=jnp.float32)
+
+    eager = agent.select_action(state, observation)
+    traced = jax.jit(agent.select_action)(state, observation)
+
+    assert int(eager[0]) == int(traced[0])
+    assert np.array_equal(jr.key_data(eager[1]), jr.key_data(traced[1]))
+    assert np.array_equal(np.asarray(eager[2]), np.asarray(traced[2]))
+
+
 def test_actor_critic_start_nonfinite_observation_would_wedge_updates() -> None:
     """Document the wedge the start gate prevents (traced inputs, pre-fix).
 
