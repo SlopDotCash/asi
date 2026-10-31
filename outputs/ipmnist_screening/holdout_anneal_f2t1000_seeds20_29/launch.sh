@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detached queue: global cap 4 screening workers, 3 GB available-RAM floor, no sbf builds.
-cd /home/pumpdev/asi-holdout-wt
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 D=outputs/ipmnist_screening/holdout_anneal_f2t1000_seeds20_29
 while read -r cfg seed nt sub; do
   [ -z "$cfg" ] && continue

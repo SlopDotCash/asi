@@ -1,6 +1,6 @@
 # Preregistration: holdout of anneal_f2t1000 on unseen seeds 20-29 (60 tasks)
 
-Committed before any run. Branch `holdout/identmap50-r-idet003-s005625-anneal-seeds20-29` is cut from 3c38b025. origin/main is fd25c476, fetched as pumpdev from the main clone `~pumpdev/asi` at 20:43 GMT, unmoved.
+Committed before any run. Branch `holdout/identmap50-r-idet003-s005625-anneal-seeds20-29` is cut from 3c38b025. origin/main is fd25c476, fetched from the main local clone at 20:43 GMT, unmoved.
 Lane status: development_screening_diagnostic, nonpromoting.
 
 ## Why seeds 20-29 rather than the preregistered 10-19 holdout
