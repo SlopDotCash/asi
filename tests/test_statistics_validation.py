@@ -1184,6 +1184,14 @@ class TestPairwiseComparisons:
         with pytest.raises(ValueError, match="Unknown correction"):
             pairwise_comparisons(self._results(), correction="fdr")
 
+    @pytest.mark.parametrize("n_methods", [0, 1])
+    def test_unknown_options_raise_with_nothing_to_compare(self, n_methods: int) -> None:
+        results = {"only": _make_aggregated("only", 0.1, seed=4)} if n_methods else {}
+        with pytest.raises(ValueError, match="Unknown test"):
+            pairwise_comparisons(results, test="anova")
+        with pytest.raises(ValueError, match="Unknown correction"):
+            pairwise_comparisons(results, correction="fdr")
+
     @pytest.mark.parametrize("window", [0, -1])
     def test_nonpositive_window_rejected_without_warnings(self, window: int) -> None:
         with warnings.catch_warnings():
