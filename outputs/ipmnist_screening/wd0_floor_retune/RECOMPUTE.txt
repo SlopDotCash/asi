@@ -1,0 +1,25 @@
+HEAD d5ae1c5a3507bf8dc41a39c6ff98ad0f04c744b2
+Independent recompute from the shard JSONs, 2026-10-31 09:02:35 GMT
+TUNE seed 70 (60 tasks), mean acc / paired gain vs f2
+  f1t1000 floor 0.005625: acc 0.956970 gain +0.005663
+  f2t1000 floor 0.0028125: acc 0.951307 gain +0.000000
+  f4t1000 floor 0.00140625: acc 0.950863 gain -0.000443
+  f8t1000 floor 0.000703125: acc 0.950863 gain -0.000443
+  f4 == f8 bitwise per task: True
+  min within-task step at s=4999: 0.005625/sqrt(1+4999/1000) = 0.0022965880241695054
+seed 71: f1 0.956533 f2 0.951090 gain +0.005443
+seed 72: f1 0.957163 f2 0.951270 gain +0.005893
+seed 73: f1 0.956767 f2 0.951173 gain +0.005593
+seed 74: f1 0.955747 f2 0.950350 gain +0.005397
+seed 75: f1 0.955830 f2 0.950173 gain +0.005657
+seed 76: f1 0.956207 f2 0.950233 gain +0.005973
+seed 77: f1 0.956200 f2 0.950250 gain +0.005950
+seed 78: f1 0.956617 f2 0.950663 gain +0.005953
+seed 79: f1 0.956527 f2 0.951020 gain +0.005507
+seed 80: f1 0.957103 f2 0.951987 gain +0.005117
+mean +0.005648 SD 0.000291 SE 0.000092 CI95 t=2.262 [+0.005440, +0.005856] improved 10/10
+mean acc f1 0.956469 f2 0.950821
+10-task blocks: +0.009862 / +0.006398 / +0.005360 / +0.004716 / +0.004078 / +0.003476
+20-task blocks: +0.008130 / +0.005038 / +0.003777
+30-task blocks: +0.007207 / +0.004090
+per-task gain >0 fraction: 0.998

@@ -1,0 +1,14 @@
+seed 71 +0.005443
+seed 72 +0.005893
+seed 73 +0.005593
+seed 74 +0.005397
+seed 75 +0.005657
+seed 76 +0.005973
+seed 77 +0.005950
+seed 78 +0.005953
+seed 79 +0.005507
+seed 80 +0.005117
+rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0 vs rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_wd0
+halves (30 tasks): +0.007207 / +0.004090
+mean +0.005648 SE 0.000092 CI95 [+0.005440, +0.005856] improved 10/10
+BARS: mean>=+0.002 True, >=7/10 True, CI_lo>0 True -> PASS
