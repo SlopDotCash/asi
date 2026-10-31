@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stages: envcheck (VOID-stop on mismatch, no auto re-run) -> parent + A + B + B2 on fresh seeds 30-39 -> analysis.
 # Cap 4 one-thread workers, 3 GB available-RAM floor, defers to cargo-build-sbf / pytest. No gates between arms (no tuning).
-cd /home/pumpdev/asi-decayonly-fresh-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/decayonly_fresh_screen; L=/tmp/dk_launch.log
 echo "HEAD $(git rev-parse HEAD)" > $L
 log(){ echo "$(date +%T) $*" >> $L; }
