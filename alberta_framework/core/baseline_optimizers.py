@@ -186,8 +186,8 @@ def _preflight_rmsprop_resources(n: int) -> None:
         n,
         persistent_vectors=1,
         persistent_scalars=4,
-        update_vectors=9,
-        update_scalars=9,
+        update_vectors=11,
+        update_scalars=10,
     )
 
 
@@ -209,6 +209,14 @@ def _skip_zero_scale(configured_scale: float, scale: Array, value: Array) -> Arr
         # nonzero state scale to a zero-configured optimizer.
         return jnp.where(scale == 0.0, jnp.zeros_like(value), scale * value)
     return scale * value
+
+
+def _weighted_square(configured_scale: float, scale: Array, value: Array) -> Array:
+    """Apply the EMA weight before squaring when a finite square overflows."""
+    square = value**2
+    ordinary = _skip_zero_scale(configured_scale, scale, square)
+    scaled = jnp.sqrt(scale) * value
+    return jnp.where(jnp.isfinite(square), ordinary, scaled**2)
 
 
 def _zero_if_disabled(configured_scale: float, scale: Array, value: Array) -> Array:
@@ -1024,8 +1032,8 @@ class RMSprop(Optimizer[Any]):
             _require_shape_scalars(shape),
             persistent_vectors=1,
             persistent_scalars=3,
-            update_vectors=8,
-            update_scalars=6,
+            update_vectors=11,
+            update_scalars=10,
         )
         return RMSpropParamState(
             v=jnp.zeros(shape, dtype=jnp.float32),
@@ -1082,8 +1090,8 @@ class RMSprop(Optimizer[Any]):
         else:
             g = gradient
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
-            1.0 - self._decay, 1.0 - state.decay, g**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _weighted_square(
+            1.0 - self._decay, 1.0 - state.decay, g
         )
         step = state.step_size * g / (jnp.sqrt(new_v) + state.eps)
         if error is not None:
@@ -1142,12 +1150,12 @@ class RMSprop(Optimizer[Any]):
         g = -error_scalar * observation
         g_b = -error_scalar
 
-        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _skip_zero_scale(
-            1.0 - self._decay, 1.0 - state.decay, g**2
+        new_v = _skip_zero_scale(self._decay, state.decay, state.v) + _weighted_square(
+            1.0 - self._decay, 1.0 - state.decay, g
         )
         new_bias_v = _skip_zero_scale(
             self._decay, state.decay, state.bias_v
-        ) + _skip_zero_scale(1.0 - self._decay, 1.0 - state.decay, g_b**2)
+        ) + _weighted_square(1.0 - self._decay, 1.0 - state.decay, g_b)
 
         weight_delta = -state.step_size * g / (jnp.sqrt(new_v) + state.eps)
         bias_delta = -state.step_size * g_b / (jnp.sqrt(new_bias_v) + state.eps)
