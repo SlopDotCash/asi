@@ -118,6 +118,31 @@ def _saturating_int32_increment(value: Array) -> Array:
     return jnp.where(value < maximum, value + jnp.asarray(1, dtype=jnp.int32), maximum)
 
 
+def _reduction_safe_l2_norm(*values: Array) -> Array:
+    """Recover a representable joint norm when input-scale squaring overflows."""
+    direct_square_sum = jnp.asarray(0.0, dtype=jnp.float32)
+    maximum = jnp.asarray(0.0, dtype=jnp.float32)
+    inputs_finite = jnp.asarray(True, dtype=jnp.bool_)
+    for value in values:
+        direct_square_sum = direct_square_sum + jnp.sum(jnp.square(value))
+        maximum = jnp.maximum(
+            maximum,
+            jnp.max(jnp.abs(value), initial=jnp.asarray(0.0, dtype=jnp.float32)),
+        )
+        inputs_finite = inputs_finite & jnp.all(jnp.isfinite(value))
+    direct = jnp.sqrt(direct_square_sum)
+
+    mantissa, exponent = jnp.frexp(maximum)
+    safe_mantissa = jnp.where(maximum > 0.0, mantissa, 1.0)
+    scaled_square_sum = jnp.asarray(0.0, dtype=jnp.float32)
+    for value in values:
+        scaled = jnp.ldexp(value, -exponent) / safe_mantissa
+        scaled_square_sum = scaled_square_sum + jnp.sum(jnp.square(scaled))
+    recovered = maximum * jnp.sqrt(scaled_square_sum)
+    reduction_only_overflow = ~jnp.isfinite(direct) & inputs_finite
+    return jnp.where(reduction_only_overflow, recovered, direct)
+
+
 def _float32_operand(
     name: str,
     value: Array | float | int,
@@ -859,7 +884,7 @@ class LatentWorldModel:
         grads_finite = jnp.all(jnp.isfinite(grad_matrix)) & jnp.all(jnp.isfinite(grad_bias))
         gradient_norm = jnp.where(
             grads_finite,
-            jnp.sqrt(jnp.sum(grad_matrix**2) + jnp.sum(grad_bias**2)),
+            _reduction_safe_l2_norm(grad_matrix, grad_bias),
             jnp.asarray(0.0, dtype=jnp.float32),
         )
         step_size = jnp.asarray(config.encoder_step_size, dtype=jnp.float32)
