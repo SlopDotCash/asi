@@ -432,6 +432,16 @@ class LowCostResult:
                 raise ValueError("preactivation width differs from the frozen arm geometry")
             if arm.parameter_updates != expected_updates:
                 raise ValueError("parameter updates differ from the frozen schedule")
+            if arm.model_queries != 2 * expected_updates + profile.n_tasks:
+                raise ValueError("model queries differ from the frozen schedule")
+            params = jax.eval_shape(
+                lambda key, width=arm.preactivation_width: _init_params(
+                    key, profile.hidden_width, width
+                ),
+                jr.key(self.seed),
+            )
+            if arm.persistent_bytes != _persistent_bytes(params):
+                raise ValueError("persistent bytes differ from the frozen arm geometry")
 
 
 def run_comparator(
