@@ -340,6 +340,38 @@ def test_collect_ceiling_length_still_succeeds(monkeypatch: pytest.MonkeyPatch) 
 
 
 @pytest.mark.parametrize(
+    "stream",
+    [
+        NonlinearFeatureDiscoveryStream(feature_dim=4, latent_scale=3e38),
+        NonlinearFeatureDiscoveryStream(feature_dim=4, linear_scale=3e38),
+        NonlinearFeatureDiscoveryStream(feature_dim=4, noise_std=3e38),
+        InteractionFeatureDiscoveryStream(feature_dim=4, feature_std=3e38),
+        InteractionFeatureDiscoveryStream(feature_dim=4, noise_std=3e38),
+    ],
+)
+def test_collect_rejects_samples_that_overflow_from_finite_scales(
+    stream: NonlinearFeatureDiscoveryStream | InteractionFeatureDiscoveryStream,
+) -> None:
+    """Each scale is a valid float32, but the sampled data leaves float32."""
+    from alberta_framework.streams.feature_discovery import collect_feature_discovery_stream
+
+    with pytest.raises(ValueError, match="finite"):
+        collect_feature_discovery_stream(stream, 3, jr.key(0))
+
+
+def test_collect_leaves_traced_outputs_to_the_caller() -> None:
+    """The host-side gate must not concretize values under an outer transform."""
+    from alberta_framework.streams.feature_discovery import collect_feature_discovery_stream
+
+    stream = NonlinearFeatureDiscoveryStream(feature_dim=2, n_tasks=1, n_latents=1)
+    observations, targets = jax.jit(
+        lambda key: collect_feature_discovery_stream(stream, 2, key)
+    )(jr.key(0))
+    assert observations.shape == (2, 2)
+    assert targets.shape == (2, 1)
+
+
+@pytest.mark.parametrize(
     "factory", [NonlinearFeatureDiscoveryStream, InteractionFeatureDiscoveryStream]
 )
 def test_init_requires_scalar_typed_threefry_key(

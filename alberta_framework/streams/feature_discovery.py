@@ -471,9 +471,10 @@ def collect_feature_discovery_stream(
 
     Raises:
         ValueError: If ``num_steps`` is out of range, the output resource
-            total would overflow signed int32, or ``num_steps`` exceeds the
+            total would overflow signed int32, ``num_steps`` exceeds the
             documented scan-length ceiling
-            (``_FEATURE_DISCOVERY_LOOP_MAX_STEPS``).
+            (``_FEATURE_DISCOVERY_LOOP_MAX_STEPS``), or a concrete sample
+            overflows float32 under finite stream scales.
     """
     num_steps = _require_int("num_steps", num_steps, minimum=1, maximum=_INT32_MAX)
     if type(stream) not in (NonlinearFeatureDiscoveryStream, InteractionFeatureDiscoveryStream):
@@ -504,6 +505,9 @@ def collect_feature_discovery_stream(
     _, (observations, targets) = jax.lax.scan(
         step_fn, state, jnp.arange(num_steps, dtype=jnp.int32)
     )
+    finite = jnp.all(jnp.isfinite(observations)) & jnp.all(jnp.isfinite(targets))
+    if not isinstance(finite, jax.core.Tracer) and not bool(finite):
+        raise ValueError("collected feature-discovery samples must be finite")
     return observations, targets
 
 
