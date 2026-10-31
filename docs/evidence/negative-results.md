@@ -525,3 +525,15 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Shift-timed decay relief (anneal decay clock) on identmap50_r_idet003 (2026-10-31)
+
+Preregistered fresh-seed screen (seeds 30-39, 60 tasks, prereg ccb788d6). It tested the pr50 decay-only clock (f_s 0, f_d 0.5) against the `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000` parent.
+
+- Decay-only gained +0.001706 (CI [+0.001580, +0.001831], 10/10 seeds). This fails the +0.002 mean bar.
+- A plain constant weight_decay of 0.0084, matched to decay-only's average effective decay, did better: +0.002432.
+- D = A − B = −0.000727, CI [−0.000828, −0.000625], so the verdict is AMOUNT-ONLY.
+- The gain comes from less weight decay overall, not from when the decay is relaxed. Do not pursue the decay clock as a mechanism.
+- The descriptive arm at weight_decay 0.005 gained +0.008022. That is post hoc and nonpromoting; it would need its own preregistered sweep.
+
+Evidence: [decayonly_fresh_screen](../../outputs/ipmnist_screening/decayonly_fresh_screen/RESULTS.md).
