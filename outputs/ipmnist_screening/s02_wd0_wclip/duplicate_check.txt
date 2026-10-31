@@ -1,0 +1,10 @@
+duplicate check, 2026-10-31 18:3x GMT, gh search (read-only), SlopDotCash/asi, open+closed+merged PRs and issues
+base 484546ad; refs scanned for seeds 154-179 in shard names: 3126 unique commits, hits 0
+-- "weight clipping" (PRs, issues): none
+-- "wclip": #405 (merged; gated L2-init arm, not clipping), issue #149 (noise_pool_steps): unrelated
+-- "kappa": ObGD / AGC bounder fixes only (#3311, #3354, #3269, #3290, #3150, #3518, #393, ...): a different mechanism
+-- "clip rls": none
+-- "identmap50": our own identmap lane (#3646, #3573, #3585, #3106-#3131); none clips the body weights
+-- PRs merged since 2026-10-28: none touch weight clipping or the RLS-head lane
+verdict: no PR or issue tests weight clipping on the RLS-head / identmap lane; the existing clipping arms
+(upgd_w_wclip_*, wclip_ema_norm) are plain-SGD comparison arms without an RLS head.
