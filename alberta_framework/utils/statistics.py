@@ -198,6 +198,9 @@ def _validate_confidence_level(confidence_level: object) -> float:
 
 def _require_finite_values(values: NDArray[np.floating], *, name: str) -> None:
     """Reject NaN/inf samples so summaries cannot gold-plate a poisoned seed."""
+    # float64 conversion would drop imaginary parts and read dates as day counts.
+    if values.dtype.kind in "cmM":
+        raise ValueError(f"{name} must be real numeric samples, got dtype {values.dtype}")
     if not np.isfinite(values).all():
         raise ValueError(f"{name} must be finite")
 
