@@ -8813,6 +8813,25 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("01", 0.01, "about 1.78x the incumbent step"),
             )
         ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": step, "anneal_floor": step,
+                 "anneal_tau": 1000.0, "weight_decay": 0.0},
+                f"anneal_f1t1000_wd0 (constant step, floor == step_size, "
+                f"weight_decay 0) with the body step set to {step} ({desc}); "
+                "extends the constant-step grid above the 0.01 winner "
+                "(wd0_const_step_extend/; development screening diagnostic)"
+            )
+            for tag, step, desc in (
+                ("0125", 0.0125, "1.25x the 0.01 incumbent step"),
+                ("015", 0.015, "1.5x the 0.01 incumbent step"),
+                ("02", 0.02, "2x the 0.01 incumbent step"),
+            )
+        ),
     ):
         specs.append(
             ScreeningSpec(

@@ -7650,6 +7650,7 @@ class TestRLSHeadIdentMap:
                 }
                 for tag, step in (
                     ("004", 0.004), ("0075", 0.0075), ("01", 0.01),
+                    ("0125", 0.0125), ("015", 0.015), ("02", 0.02),
                 )
             },
         }
@@ -8348,3 +8349,13 @@ class TestRLSHeadIdentMapWd0ConstStepRegistry:
                 assert np.asarray(lr) == np.float32(step)
                 d = 1.0 - lr * jnp.float32(hp["weight_decay"])
                 assert np.asarray(d, dtype=np.float32) == np.float32(1.0)
+
+
+class TestRLSHeadIdentMapWd0ConstStepExtendRegistry(TestRLSHeadIdentMapWd0ConstStepRegistry):
+    """Extended constant-step grid above the 0.01 winner (wd0_const_step_extend/)."""
+
+    ARMS = (("0125", 0.0125), ("015", 0.015), ("02", 0.02))
+
+    def test_steps_distinct_in_float32(self):
+        steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.01)]
+        assert len(set(steps)) == 4
