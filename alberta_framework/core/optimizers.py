@@ -1415,6 +1415,7 @@ class Autostep(Optimizer[AutostepState]):
         state: AutostepState,
         error: Array,
         observation: Array,
+        bias_feature: Float[Array, ""] | None = None,
     ) -> OptimizerUpdate:
         """Compute Autostep weight update following Mahmood et al. 2012, Table 1.
 
@@ -1422,14 +1423,22 @@ class Autostep(Optimizer[AutostepState]):
 
         1. Eq. 4: ``v_i = max(|δ*x_i*h_i|, v_i + (1/τ)*α_i*x_i²*(|δ*x_i*h_i| - v_i))``
         2. Eq. 5: ``α_i *= exp(μ * δ*x_i*h_i / v_i)`` where ``v_i > 0``
-        3. Eq. 6-7: ``M = max(Σ α_i*x_i² + α_bias, 1)``; ``α_i /= M``, ``α_bias /= M``
+        3. Eq. 6-7: ``M = max(Σ α_i*x_i² + α_bias*x_bias², 1)``; ``α_i /= M``, ``α_bias /= M``
         4. Weight update: ``w_i += α_i * δ * x_i`` (with NEW alpha)
         5. Trace update: ``h_i = h_i*(1 - α_i*x_i²) + α_i*δ*x_i``
+
+        The bias is a weight on one scalar feature: ``x_bias`` defaults to the
+        historical implicit constant ``1``. Callers that accumulate a separate
+        bias eligibility trace (e.g. Autostep-for-GTD(lambda)) pass it here so
+        the bias meta-gradient, normalizer, effective-step normalization,
+        delta, and trace update all use the same accumulated feature the
+        weight path uses.
 
         Args:
             state: Current Autostep state
             error: Prediction error (scalar)
             observation: Feature vector
+            bias_feature: Scalar feature the bias weight acts on; ``1`` when omitted
 
         Returns:
             OptimizerUpdate with weight deltas and updated state
@@ -1456,6 +1465,7 @@ class Autostep(Optimizer[AutostepState]):
 
         x = observation
         x_sq = x**2
+        bias_x = jnp.ones_like(state.bias_trace) if bias_feature is None else bias_feature
 
         # --- Weights ---
         # Meta-gradient: δ*x_i*h_i
@@ -1488,21 +1498,14 @@ class Autostep(Optimizer[AutostepState]):
         )
 
         # --- Bias ---
-        # The bias is a feature coordinate too: δ*x_bias*h_bias.
-        bias_meta_gradient = (
-            error_scalar * state.bias_trace
-            if bias_feature is None
-            else error_scalar * bias_feature * state.bias_trace
-        )
+        # Meta-gradient for bias (scalar feature x_bias): δ*x_bias*h_bias
+        bias_meta_gradient = error_scalar * bias_x * state.bias_trace
         abs_bias_meta_gradient = jnp.abs(bias_meta_gradient)
 
         # Eq. 4 for bias. Apply the same non-finite correlation guard.
-        bias_v_scale = (1.0 / tau) * state.bias_step_size
-        if bias_feature is not None:
-            bias_v_scale = bias_v_scale * bias_feature**2
-        bias_v_update = state.bias_normalizer + bias_v_scale * (
-            abs_bias_meta_gradient - state.bias_normalizer
-        )
+        bias_v_update = state.bias_normalizer + (1.0 / tau) * state.bias_step_size * (
+            bias_x**2
+        ) * (abs_bias_meta_gradient - state.bias_normalizer)
         bias_normalizer_candidate = jnp.maximum(abs_bias_meta_gradient, bias_v_update)
         valid_bias_meta_update = jnp.logical_and(
             jnp.isfinite(bias_meta_gradient),
@@ -1531,10 +1534,7 @@ class Autostep(Optimizer[AutostepState]):
         # operation on α so the overshoot bound holds at update time
         # (Algorithm 5 lines 8-10).
         effective_terms = new_step_sizes * x_sq
-        bias_effective_step = new_bias_step_size
-        if bias_feature is not None:
-            bias_effective_step = bias_effective_step * bias_feature**2
-        effective_step = jnp.sum(effective_terms) + bias_effective_step
+        effective_step = jnp.sum(effective_terms) + new_bias_step_size * bias_x**2
         m_factor = jnp.maximum(effective_step, 1.0)
         new_step_sizes = new_step_sizes / m_factor
         new_bias_step_size = new_bias_step_size / m_factor
@@ -1542,10 +1542,8 @@ class Autostep(Optimizer[AutostepState]):
         # Weight update with NEW alpha: α_i * δ * x_i
         weight_delta = new_step_sizes * error_scalar * x
 
-        # Bias update: α_bias * δ * x_bias, with the same NEW alpha.
-        bias_delta = new_bias_step_size * error_scalar
-        if bias_feature is not None:
-            bias_delta = bias_delta * bias_feature
+        # Bias update: α_bias * δ * x_bias
+        bias_delta = new_bias_step_size * error_scalar * bias_x
 
         # Trace update: h_i = h_i*(1 - α_i*x_i²) + α_i*δ*x_i
         trace_decay = 1.0 - new_step_sizes * x_sq
@@ -1554,12 +1552,12 @@ class Autostep(Optimizer[AutostepState]):
         )
         new_traces = jnp.where(jnp.isfinite(trace_candidate), trace_candidate, state.traces)
 
-        # Bias h uses the squared feature in its decay, as for every weight.
-        bias_trace_step = new_bias_step_size
-        if bias_feature is not None:
-            bias_trace_step = bias_trace_step * bias_feature**2
-        bias_trace_decay = 1.0 - bias_trace_step
-        bias_trace_candidate = _skip_zero_scale(bias_trace_decay, state.bias_trace) + bias_delta
+        # Bias trace: h_bias = h_bias*(1 - α_bias*x_bias²) + α_bias*δ*x_bias
+        bias_trace_decay = 1.0 - new_bias_step_size * bias_x**2
+        bias_trace_candidate = (
+            _skip_zero_scale(bias_trace_decay, state.bias_trace)
+            + new_bias_step_size * error_scalar * bias_x
+        )
         new_bias_trace = jnp.where(
             jnp.isfinite(bias_trace_candidate),
             bias_trace_candidate,
@@ -1733,6 +1731,7 @@ class AutostepGTDLambda(Optimizer[AutostepGTDLambdaState]):
             & floating_tree_is_finite(previous_checked)
             & jnp.all(jnp.isfinite(observation))
             & floating_tree_is_finite(candidate_state)
+            & jnp.isfinite(base_update.bias_delta)
         )
         new_state = select_transaction(update_applied, candidate_state, state)
         return OptimizerUpdate(
