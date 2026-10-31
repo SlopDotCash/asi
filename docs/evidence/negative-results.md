@@ -525,3 +525,14 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## IPMNIST partial anneal reset on anneal_f2t1000 (2026-10-31)
+
+A preregistered (b1c5e283) development screen. On a detected shift, the body-step anneal clock of `..._s005625_anneal_f2t1000` restarts at `1 + floor(f·s)` instead of 1. The identifier's clock is untouched.
+- Seed-0 tune: f=0.25 gave +0.000183 and f=0.5 gave +0.000807, so f=0.5 was chosen.
+- Screen, seeds 1-3: mean +0.000544, GO.
+- Confirm, seeds 4-13: +0.000613 paired, 10/10 seeds improved, 95% CI [+0.000547, +0.000680]. It FAILS the preregistered +0.002 mean bar.
+- The bit-exact environment check passed.
+- The gain is negative in tasks 1-15 and grows through tasks 46-60. A longer horizon was not tested.
+
+Evidence: [`outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md).
