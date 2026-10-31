@@ -1381,6 +1381,14 @@ class TestPairwiseComparisons:
         with pytest.raises(ValueError, match="window must be a positive integer"):
             common_final_window({"learner": 10}, window, "squared_error")
 
+    @pytest.mark.parametrize("n_steps", [0, -1, True, 1.5, 10.0, "10", None])
+    def test_common_final_window_requires_positive_step_counts(self, n_steps: object) -> None:
+        with pytest.raises(ValueError, match="step count must be a positive integer"):
+            common_final_window({"learner": n_steps}, 10, "squared_error")
+
+    def test_common_final_window_keeps_positive_numpy_step_counts(self) -> None:
+        assert common_final_window({"learner": np.int64(4)}, 10, "squared_error") == 4
+
 
 @pytest.mark.parametrize("timeseries", [False, True])
 def test_unrepresentable_maximum_spread_raises_without_runtime_warning(timeseries: bool) -> None:
