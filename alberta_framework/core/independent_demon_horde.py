@@ -1271,8 +1271,20 @@ def run_independent_horde_learning_loop(
     if not isinstance(per_demon_metrics, jax.core.Tracer):
         per_demon_metrics.block_until_ready()
     elapsed = time.time() - t0
+    # The scan traces the horde and demon clocks and narrows them to float32.
+    # Restore the incoming Python values. Add this scan's time to the horde's
+    # host uptime, not to a narrowed device value.
+    demon_states = tuple(
+        demon.replace(  # type: ignore[attr-defined]
+            birth_timestamp=original.birth_timestamp,
+            uptime_s=original.uptime_s,
+        )
+        for demon, original in zip(final_state.demon_states, state.demon_states)
+    )
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+        demon_states=demon_states,
     )
 
     return IndependentDemonHordeLearningResult(  # type: ignore[call-arg]

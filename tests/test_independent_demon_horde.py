@@ -908,3 +908,35 @@ def test_independent_loop_finishes_device_work_before_stopping_uptime_clock(
     assert scan_outputs
     assert int(result.state.step_count) == 1024
     assert bool(jnp.all(result.updates_applied))
+
+
+def test_independent_loop_preserves_initialized_host_clocks() -> None:
+    horde = IndependentDemonHorde(
+        horde_spec=create_horde_spec(_make_all_gamma0_spec(2)),
+        hidden_sizes=(4,),
+        sparsity=0.0,
+    )
+    state = horde.init(3, jr.key(0))
+    birth = 1700000000.125
+    uptime = 2**24 + 0.25
+    state = state.replace(
+        birth_timestamp=birth,
+        uptime_s=uptime,
+        demon_states=tuple(
+            demon.replace(birth_timestamp=birth, uptime_s=uptime)
+            for demon in state.demon_states
+        ),
+    )
+    observations = jnp.zeros((2, 3), dtype=jnp.float32)
+    cumulants = jnp.zeros((2, 2), dtype=jnp.float32)
+    result = run_independent_horde_learning_loop(
+        horde, state, observations, cumulants, observations
+    )
+    restored = result.state
+    for clock in (restored, *restored.demon_states):
+        assert type(clock.birth_timestamp) is float
+        assert clock.birth_timestamp == birth
+        assert type(clock.uptime_s) is float
+    assert restored.uptime_s > uptime
+    for demon in restored.demon_states:
+        assert demon.uptime_s == uptime
