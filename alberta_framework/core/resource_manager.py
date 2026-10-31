@@ -1132,7 +1132,7 @@ class GeneratorMetaResourceManager:
         selection_valid = (
             context_valid & floating_tree_is_finite(state) & jnp.all(jnp.isfinite(weights))
         )
-        action = jr.categorical(key, jnp.log(weights + 1e-8)).astype(jnp.int32)
+        action = jr.categorical(key, jnp.log(weights)).astype(jnp.int32)
         op_ids = jnp.asarray(self._op_ids, dtype=jnp.int32)
         parent_modes = jnp.asarray(self._parent_modes, dtype=jnp.int32)
         replacement = jnp.asarray(self._replacement_multipliers, dtype=jnp.float32)
