@@ -1,0 +1,16 @@
+duplicate check, 2026-10-31 12:37:52 GMT, gh search, SlopDotCash/asi, open+closed PRs and issues
+base ef85fff8; refs scanned for seeds 123-133 in shard names: 3218, hits 0
+-- s03_anneal
+-- s04_anneal
+-- s05_anneal
+-- step 0.03
+-- step 0.05
+#3354: fix: consume error once in MLPLearner ObGD bounding for error-carrying steps
+#2992: fix(options): run STOMP option-model planning backups without real eligibility
+-- constant step
+#3632: IPMNIST: at weight_decay 0, dropping the within-task step anneal (constant step 0.005625) 
+#3634: IPMNIST: at weight_decay 0, a constant step (f1t1000_wd0) beats anneal_f2t1000_wd0 over th
+#3636: IPMNIST: at weight_decay 0, raising the constant body step from 0.005625 to 0.01 gives +0.
+#3585: IPMNIST: anneal_f2t1000 holdout on unseen seeds 20-29 (60 tasks), thin pass
+#3126: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead: 0.45005 vs 0.94859 par
+verdict: no PR or issue tests step 0.03/0.04/0.05 constant-step cells at wd0; nearest are our own #3632, #3634, #3636 (smaller steps).

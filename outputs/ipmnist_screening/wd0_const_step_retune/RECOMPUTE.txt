@@ -1,0 +1,21 @@
+independent recompute (numpy, separate from analyze.py)
+tune seed 101 (gain vs step 0.005625; 10-task blocks):
+  s004: -0.003050 | -0.006640 -0.003640 -0.002920 -0.002020 -0.001620 -0.001460
+  s0075: +0.002197 | +0.004280 +0.002600 +0.001940 +0.001500 +0.001400 +0.001460
+  s01: +0.004013 | +0.008860 +0.004760 +0.003080 +0.002740 +0.002560 +0.002080
+  incumbent mean acc seed101: 0.956670
+seed 102 gain +0.004043 (winner 0.961007 vs incumbent 0.956963)
+seed 103 gain +0.003997 (winner 0.959840 vs incumbent 0.955843)
+seed 104 gain +0.004393 (winner 0.960937 vs incumbent 0.956543)
+seed 105 gain +0.004470 (winner 0.960420 vs incumbent 0.955950)
+seed 106 gain +0.004217 (winner 0.960303 vs incumbent 0.956087)
+seed 107 gain +0.004123 (winner 0.960447 vs incumbent 0.956323)
+seed 108 gain +0.004180 (winner 0.961070 vs incumbent 0.956890)
+seed 109 gain +0.004390 (winner 0.960900 vs incumbent 0.956510)
+seed 110 gain +0.003877 (winner 0.961207 vs incumbent 0.957330)
+seed 111 gain +0.004423 (winner 0.960270 vs incumbent 0.955847)
+mean +0.004211 SE 0.000064 CI95 t=2.262 [+0.004066, +0.004357] improved 10/10 min +0.003877 max +0.004470
+10-task blocks: +0.009320 / +0.004876 / +0.003548 / +0.002964 / +0.002456 / +0.002104
+blocks improved seeds: 10 10 10 10 10 10
+mean acc winner 0.960640 incumbent 0.956429
+shards: 20 screen 4 tune 2 envcheck

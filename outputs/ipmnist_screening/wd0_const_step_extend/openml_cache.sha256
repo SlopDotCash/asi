@@ -1,0 +1,5 @@
+696302e876ac48249004f18e63fa218cc7b20bea9dac5fc5a0175ac191245cf4  ./openml/openml.org/api/v1/json/data/554.gz
+2869a5734c3edf5949d2902c11730fe7ed0f69c933b9acb79bd95550c4d1c8f1  ./openml/openml.org/api/v1/json/data/features/554.gz
+b65c4b90d908010ce383a2c7566d15c832151df9f579e4a4d3ac805b2a912b4c  ./openml/openml.org/api/v1/json/data/list/data_name/mnist_784/limit/2/data_version/1.gz
+3ccc92f732c16818ca8ed5c5624420eeacde4068f1da2fe4291019e0ad6b2707  ./openml/openml.org/api/v1/json/data/qualities/554.gz
+fe4410d8dbb50f6db6482b187557c5cb8bccfbcec74eeb6abc47c858f4ffab78  ./openml/openml.org/data/v1/download/52667/mnist_784.arff.gz
