@@ -516,6 +516,11 @@ class ActorCriticState:
         previous_discount: Discount into the current state, from the prior
             accepted transition. Initialized to config.gamma with zero traces.
         step_count: Number of update steps taken.
+        previous_discount: Discount of the most recent accepted transition
+            (``gamma_t``, the discount into the current state's observation);
+            it decays the eligibility traces while the current call's discount
+            only controls the TD bootstrap. Initialized to ``config.gamma``
+            with zero traces.
     """
 
     actor_weights: Float[Array, "n_actions feature_dim"]
@@ -531,6 +536,7 @@ class ActorCriticState:
     rng_key: Array
     previous_discount: Float[Array, ""]
     step_count: Int[Array, ""]
+    previous_discount: Float[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -612,6 +618,11 @@ class ActorCriticAgent:
     linear softmax logits in the policy-gradient direction
     ``delta_t e^pi_t``, with
     ``e^pi_t = gamma_t lambda_pi e^pi_{t-1} + grad log pi(A_t | S_t)``.
+    Here ``gamma_{t+1}`` is the current transition's discount (the TD
+    bootstrap discount) while ``gamma_t`` is the prior accepted transition's
+    discount into ``S_t``: the traces accumulated so far decay with the
+    incoming discount, so a terminal reward credits the completed episode
+    before its stored traces are cleared.
     Because logits are divided by ``temperature`` before the softmax,
     ``grad log pi`` includes the corresponding ``1 / temperature`` factor.
     """
@@ -730,6 +741,11 @@ class ActorCriticAgent:
             raise ValueError("state.last_action must be a scalar int32")
         if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
             raise ValueError("state.step_count must be a scalar int32")
+        if (
+            state.previous_discount.shape != ()
+            or state.previous_discount.dtype != jnp.float32
+        ):
+            raise ValueError("state.previous_discount must be a scalar float32")
         _require_key(state.rng_key)
         return feature_dim
 
@@ -836,10 +852,12 @@ class ActorCriticAgent:
             terminated: Backward-compatible scalar terminal flag. Non-zero
                 maps to transition discount ``0``; false maps to
                 ``config.gamma``. Ignored when ``discount`` is provided.
-            discount: Optional scalar bootstrap discount ``gamma_{t+1}``.
-                Use this for continuing logs, variable discounts, time-limit
-                truncation semantics, and pre-collected trajectories.
-                Traces decay on the prior accepted transition's discount.
+            discount: Optional scalar per-transition discount ``gamma_{t+1}``
+                for the TD bootstrap. Use this for continuing logs, variable
+                discounts, time-limit truncation semantics, and pre-collected
+                trajectories. The eligibility traces decay with the prior
+                accepted transition's discount (``state.previous_discount``),
+                which the update then refreshes to this transition's discount.
 
         Returns:
             ``ActorCriticUpdateResult`` containing the updated state and metrics.
@@ -871,8 +889,16 @@ class ActorCriticAgent:
         actor_grad_bias = (one_hot - old_policy) / cfg.temperature
         actor_grad_weights = actor_grad_bias[:, None] * prev_obs[None, :]
 
-        actor_decay = state.previous_discount * cfg.actor_lamda
-        critic_decay = state.previous_discount * cfg.critic_lamda
+        # Eligibility traces decay with the incoming discount: the discount of
+        # the prior accepted transition into the current state's observation.
+        # The current call's discount only controls the TD bootstrap. Decaying
+        # with the outgoing discount would wipe the episode trace at a
+        # terminal transition (discount 0) before the terminal TD error
+        # credits it, so the terminal reward would reach only the final
+        # step's gradient instead of the completed episode.
+        trace_discount = state.previous_discount
+        actor_decay = trace_discount * cfg.actor_lamda
+        critic_decay = trace_discount * cfg.critic_lamda
         actor_trace_weights = (
             jnp.where(
                 actor_decay == 0.0,
@@ -982,6 +1008,8 @@ class ActorCriticAgent:
             & jnp.isfinite(actor_metric)
             & jnp.isfinite(critic_metric)
             & (state.step_count >= 0)
+            & (state.previous_discount >= 0.0)
+            & (state.previous_discount <= 1.0)
         )
         candidate_ok = (
             inputs_valid & _floating_tree_is_finite(state) & _floating_tree_is_finite(updated)
@@ -1348,6 +1376,11 @@ class ContinuousActorCriticState:
         previous_discount: Discount into the current state, from the prior
             accepted transition. Initialized to config.gamma with zero traces.
         step_count: Number of update steps taken.
+        previous_discount: Discount of the most recent accepted transition
+            (``gamma_t``, the discount into the current state's observation);
+            it decays the eligibility traces while the current call's discount
+            only controls the TD bootstrap. Initialized to ``config.gamma``
+            with zero traces.
     """
 
     mean_weights: Float[Array, "action_dim feature_dim"]
@@ -1366,6 +1399,7 @@ class ContinuousActorCriticState:
     rng_key: Array
     previous_discount: Float[Array, ""]
     step_count: Int[Array, ""]
+    previous_discount: Float[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -1565,6 +1599,11 @@ class ContinuousActorCriticAgent:
                 raise ValueError(f"state.{name} must be a scalar float32")
         if state.step_count.shape != () or state.step_count.dtype != jnp.int32:
             raise ValueError("state.step_count must be a scalar int32")
+        if (
+            state.previous_discount.shape != ()
+            or state.previous_discount.dtype != jnp.float32
+        ):
+            raise ValueError("state.previous_discount must be a scalar float32")
         _require_key(state.rng_key)
         return feature_dim
 
@@ -1719,8 +1758,11 @@ class ContinuousActorCriticAgent:
             terminated: Backward-compatible scalar terminal flag. Non-zero
                 maps to transition discount ``0``; false maps to
                 ``config.gamma``. Ignored when ``discount`` is provided.
-            discount: Optional scalar bootstrap discount ``gamma_{t+1}``.
-                Traces decay on the prior accepted transition's discount.
+            discount: Optional scalar per-transition discount ``gamma_{t+1}``
+                for the TD bootstrap. The eligibility traces decay with the
+                prior accepted transition's discount
+                (``state.previous_discount``), which the update then refreshes
+                to this transition's discount.
 
         Returns:
             ``ContinuousActorCriticUpdateResult`` containing the updated state.
@@ -1762,8 +1804,16 @@ class ContinuousActorCriticAgent:
         mean_grad_weights = mean_grad_bias[:, None] * prev_obs[None, :]
         log_sigma_grad = standardized_diff * standardized_diff - 1.0
 
-        actor_decay = state.previous_discount * cfg.actor_lamda
-        critic_decay = state.previous_discount * cfg.critic_lamda
+        # Eligibility traces decay with the incoming discount: the discount of
+        # the prior accepted transition into the current state's observation.
+        # The current call's discount only controls the TD bootstrap. Decaying
+        # with the outgoing discount would wipe the episode trace at a
+        # terminal transition (discount 0) before the terminal TD error
+        # credits it, so the terminal reward would reach only the final
+        # step's gradient instead of the completed episode.
+        trace_discount = state.previous_discount
+        actor_decay = trace_discount * cfg.actor_lamda
+        critic_decay = trace_discount * cfg.critic_lamda
         mean_trace_weights = (
             jnp.where(
                 actor_decay == 0.0,
@@ -1889,6 +1939,8 @@ class ContinuousActorCriticAgent:
             & jnp.isfinite(actor_metric)
             & jnp.isfinite(critic_metric)
             & (state.step_count >= 0)
+            & (state.previous_discount >= 0.0)
+            & (state.previous_discount <= 1.0)
         )
         candidate_ok = (
             inputs_valid & _floating_tree_is_finite(state) & _floating_tree_is_finite(updated)

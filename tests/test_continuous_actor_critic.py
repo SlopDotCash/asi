@@ -907,3 +907,90 @@ def test_continuous_actor_critic_fixed_actions_are_scored_as_samples() -> None:
     np.testing.assert_array_equal(result.state.mean_bias, manual.mean_bias)
     np.testing.assert_array_equal(result.state.log_sigma, manual.log_sigma)
     assert float(jnp.abs(result.state.mean_bias[0])) > 0.0
+
+
+def test_terminal_reward_credits_episode_continuous_traces() -> None:
+    """Terminal reward must credit the continuous episode's eligibility traces.
+
+    With the traces decayed by the *incoming* discount (the prior accepted
+    transition's discount), the terminating transition's TD error credits the
+    accumulated critic trace (earlier observations) and the accumulated mean
+    trace (earlier policy gradients). Decaying with the outgoing (zero)
+    discount wipes the episode traces first, so only the final step's
+    gradients receive the terminal credit.
+    """
+    agent = ContinuousActorCriticAgent(
+        ContinuousActorCriticConfig(
+            action_dim=1,
+            gamma=1.0,
+            actor_step_size=0.1,
+            critic_step_size=0.1,
+            actor_lamda=1.0,
+            critic_lamda=1.0,
+            log_sigma_init=0.0,
+        )
+    )
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    s0 = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    s1 = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    state, _action, _mean, _sigma = agent.start(state, s0)
+    sample0 = np.asarray(state.last_sample)  # shape (1,)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        terminated=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+    sample1 = np.asarray(first.state.last_sample)
+
+    # Zero weights and sigma == 1 keep the mean gradient simple:
+    # grad log pi w.r.t. mean = (sample - mean) / sigma^2 = sample.
+    expected_mean_trace0 = sample0[:, None] * np.asarray(s0)[None, :]
+    np.testing.assert_allclose(
+        np.asarray(first.state.mean_trace_weights),
+        expected_mean_trace0,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=jnp.array([0.0, 0.0], dtype=jnp.float32),
+        terminated=jnp.array(True),
+    )
+    assert bool(second.update_applied)
+    assert abs(float(second.td_error) - 1.0) < 1e-6
+
+    # Critic: the trace is s0 + s1 = [1, 1], so
+    # critic_weights += 0.1 * 1.0 * [1, 1].
+    np.testing.assert_allclose(
+        np.asarray(second.state.critic_weights), [0.1, 0.1], rtol=1e-6, atol=1e-7
+    )
+    # Mean: the trace is the sum of both steps' gradients, so
+    # mean_weights += 0.1 * 1.0 * (sample0 outer s0 + sample1 outer s1).
+    # The mutant that decays with the outgoing (zero) discount at the
+    # terminal step drops the sample0 term above and the s0 critic term,
+    # failing both assertions.
+    expected_mean_trace = (
+        expected_mean_trace0 + sample1[:, None] * np.asarray(s1)[None, :]
+    )
+    np.testing.assert_allclose(
+        np.asarray(second.state.mean_weights),
+        0.1 * expected_mean_trace,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    # Stored traces are still cleared after the terminal update.
+    np.testing.assert_allclose(
+        np.asarray(second.state.critic_trace_weights),
+        np.zeros(2),
+        atol=1e-7,
+    )
+    np.testing.assert_allclose(
+        np.asarray(second.state.mean_trace_weights),
+        np.zeros((1, 2)),
+        atol=1e-7,
+    )
