@@ -687,7 +687,13 @@ def run_option_value_duration_from_arrays(
     # Traced calls defer execution to their caller.
     if not isinstance(td_errors, jax.core.Tracer):
         td_errors.block_until_ready()
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + (time.time() - start))
+    elapsed = time.time() - start
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return OptionValueDurationArrayResult(
         state=final_state,
         predictions=predictions,
