@@ -707,7 +707,11 @@ class RecentObservationBuffer:
         state: RecentObservationBufferState,
         observation: Array,
     ) -> RecentObservationBufferState:
-        """Insert one observation into the ring buffer."""
+        """Insert one observation into the ring buffer.
+
+        A non-finite observation leaves the buffer unchanged, so a transition
+        the learners rejected can never be sampled as a dream anchor.
+        """
         raw_observation = jnp.asarray(observation)
         expected_shape = (self._observation_dim,)
         if raw_observation.shape != expected_shape:
@@ -715,11 +719,20 @@ class RecentObservationBuffer:
                 f"observation must have shape {expected_shape}, got {raw_observation.shape}"
             )
         obs = jnp.asarray(raw_observation, dtype=jnp.float32)
+        accepted = jnp.all(jnp.isfinite(obs))
         next_observations = state.observations.at[state.index].set(obs)
         return RecentObservationBufferState(
-            observations=next_observations,
-            size=jnp.minimum(state.size + 1, self._capacity).astype(jnp.int32),
-            index=((state.index + 1) % self._capacity).astype(jnp.int32),
+            observations=jnp.where(accepted, next_observations, state.observations),
+            size=jnp.where(
+                accepted,
+                jnp.minimum(state.size + 1, self._capacity).astype(jnp.int32),
+                state.size,
+            ),
+            index=jnp.where(
+                accepted,
+                ((state.index + 1) % self._capacity).astype(jnp.int32),
+                state.index,
+            ),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
