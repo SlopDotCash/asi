@@ -762,6 +762,40 @@ class TestFixedBudgetFeatureLearner:
         chex.assert_shape(result.metrics, (10, 7))
         chex.assert_tree_all_finite(result.metrics)
 
+    @pytest.mark.parametrize("runner_kind", ("arrays", "loop"))
+    def test_runners_preserve_initialized_host_clocks(self, runner_kind: str) -> None:
+        stream = NonlinearFeatureDiscoveryStream(
+            feature_dim=4,
+            n_tasks=2,
+            n_latents=8,
+        )
+        learner = FixedBudgetFeatureLearner(
+            n_features=8,
+            n_tasks=2,
+            replacement_interval=0,
+        )
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = learner.init(feature_dim=4, key=jr.key(7)).replace(
+            birth_timestamp=birth,
+            uptime_s=uptime,
+        )
+        if runner_kind == "arrays":
+            observations, targets = collect_feature_discovery_stream(
+                stream, num_steps=2, key=jr.key(6)
+            )
+            result = run_feature_discovery_arrays(learner, state, observations, targets)
+        else:
+            result = run_feature_discovery_loop(
+                learner, stream, num_steps=2, key=jr.key(6), learner_state=state
+            )
+        clocks = result.state
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.metrics)
+
 
 def _conditional_probe_learner() -> FixedBudgetInteractionLearner:
     return FixedBudgetInteractionLearner(
