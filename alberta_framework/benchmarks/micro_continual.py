@@ -1530,6 +1530,23 @@ def merge_micro_shards(
 # =============================================================================
 
 
+def _transfer_curve(value: object, arm: str, seed: int) -> np.ndarray:
+    """Return one per-regime accuracy curve, refusing it outside [0, 1]."""
+    entries = np.asarray(value).tolist()
+    if not isinstance(entries, list) or not entries:
+        raise ValueError(f"arm {arm!r} seed {seed}: per-regime curve must be a non-empty vector")
+    return np.asarray(
+        _validated_curve(
+            entries,
+            n_regimes=len(entries),
+            lower=0.0,
+            upper=1.0,
+            context=f"arm {arm!r} seed {seed}: per-regime curve",
+        ),
+        dtype=np.float64,
+    )
+
+
 def transfer_validation(
     per_arm: Mapping[str, Mapping[int, np.ndarray]],
 ) -> dict[str, Any]:
@@ -1565,18 +1582,17 @@ def transfer_validation(
     seeds = list(seed_sets[LADDER_ARMS[0]])
     if not seeds:
         raise ValueError("no seeds given")
-    lengths = {
-        np.asarray(per_arm[arm][seed]).shape[0] for arm in LADDER_ARMS for seed in seeds
+    checked = {
+        arm: {seed: _transfer_curve(per_arm[arm][seed], arm, seed) for seed in seeds}
+        for arm in LADDER_ARMS
     }
+    lengths = {checked[arm][seed].shape[0] for arm in LADDER_ARMS for seed in seeds}
     if len(lengths) != 1:
         raise ValueError(f"per-regime curves differ in length: {sorted(lengths)}")
     n_regimes = lengths.pop()
     quarter = max(1, n_regimes // 4)
 
-    curves = {
-        arm: np.stack([np.asarray(per_arm[arm][seed], dtype=np.float64) for seed in seeds])
-        for arm in LADDER_ARMS
-    }
+    curves = {arm: np.stack([checked[arm][seed] for seed in seeds]) for arm in LADDER_ARMS}
     overall = {arm: curves[arm].mean(axis=1) for arm in LADDER_ARMS}
     first_regime = {arm: curves[arm][:, 0] for arm in LADDER_ARMS}
     first_window = {arm: curves[arm][:, :quarter].mean(axis=1) for arm in LADDER_ARMS}

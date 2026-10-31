@@ -1796,6 +1796,31 @@ class TestTransferValidation:
         with pytest.raises(ValueError, match="seed"):
             transfer_validation(ladder)
 
+    @pytest.mark.parametrize(
+        "poison",
+        [float("nan"), float("inf"), -0.5, 1.5],
+        ids=["nan", "inf", "negative", "above_one"],
+    )
+    def test_out_of_domain_accuracy_rejected(self, poison: float):
+        ladder = _synthetic_ladder()
+        ladder["sgd_raw"][1] = ladder["sgd_raw"][1].copy()
+        ladder["sgd_raw"][1][3] = poison
+        with pytest.raises(ValueError, match="sgd_raw"):
+            transfer_validation(ladder)
+
+    @pytest.mark.parametrize(
+        "curve",
+        [np.zeros(0), np.float64(0.5), np.full((8, 2), 0.5)],
+        ids=["empty", "scalar", "matrix"],
+    )
+    def test_non_vector_curve_rejected(self, curve: np.ndarray):
+        ladder = _synthetic_ladder()
+        for arm in ladder:
+            ladder[arm][0] = curve
+            ladder[arm][1] = curve
+        with pytest.raises(ValueError, match="per-regime curve"):
+            transfer_validation(ladder)
+
     def test_from_shards(self, tmp_path: Path):
         paths = []
         for arm in LADDER_ARMS:
