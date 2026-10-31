@@ -27,7 +27,7 @@ mechanism already used by `upgd_w_wclip_*` and `wclip_ema_norm`, help that incum
   except for `body_wclip_kappa`. kappa 2 is the paper's value; 4 and 8 are looser bounds, closer to the parent.
 
 ## Seeds (unseen; 0 hits for seeds 154-179 in shard names across 3126 unique commits on all local and
-PR refs, 2026-10-31 18:3x GMT; seeds 0-153 are used)
+PR refs, 2026-10-31 18:35 GMT; seeds 0-153 are used)
 - Tune (development) seed: 154. Screen seeds: 155-164. All at 60 tasks, task length 5000.
 - Seeds 165-179 are not reserved here; a 200-task confirmation would need its own plan and check.
 

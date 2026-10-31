@@ -1,4 +1,4 @@
-duplicate check, 2026-10-31 18:3x GMT, gh search (read-only), SlopDotCash/asi, open+closed+merged PRs and issues
+duplicate check, 2026-10-31 18:35 GMT, gh search (read-only), SlopDotCash/asi, open+closed+merged PRs and issues
 base 484546ad; refs scanned for seeds 154-179 in shard names: 3126 unique commits, hits 0
 -- "weight clipping" (PRs, issues): none
 -- "wclip": #405 (merged; gated L2-init arm, not clipping), issue #149 (noise_pool_steps): unrelated
