@@ -525,3 +525,13 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## 2026-10-31: pr50 partial reset is decay-driven; the step part hurts (pr50_wd_decoupled_screen)
+- Branch screen/identmap50-r-idet003-s005625-anneal-pr50-wd-decoupled.
+- Setup: 60 tasks, seeds 4-13, paired vs #3580 parent.
+- In the partial-reset screen, the +0.000613 pr50 gain was attributed to the step clock. Decoupling shows otherwise:
+  - step-only (pr50 step, parent decay): −0.001071, CI [−0.001163, −0.000979], 0/10 seeds improved.
+  - decay-only (parent step, pr50 decay): +0.001656, CI [+0.001565, +0.001748], 10/10 seeds improved.
+  - interaction: +0.000028, CI includes 0.
+- Preregistered verdict: DECAY-DRIVEN. Do not run f=0.5 at 200 tasks.
+- Decay-only is a post hoc lead and needs its own preregistration on fresh seeds.
