@@ -26,7 +26,7 @@ Done before branching; full output is in wd-sweep-plan.md. No PR or issue lowers
 - **Tie-break seeds: 31-39.** Also seen in #3596; used only if needed.
 - **Evaluation seeds: 40-49.** Never run for this family. Method:
   - `git log --all --name-only` over all 3143 refs, which include 3042 PR heads: 381 family files, seeds 0-39 only.
-  - `find` over every pumpdev worktree and job list.
+  - `find` over every local worktree and job list.
   - Zero hits for seeds 40-49 in both.
 
 ## Arms (60 tasks × 5000 steps)
