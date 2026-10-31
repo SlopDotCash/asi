@@ -79,6 +79,7 @@ _GAUNTLET_LOOP_MAX_STEPS = NUM_SEGMENTS * 3000
 
 _INT32_MAX = 2**31 - 1
 _UINT32_MAX = 2**32 - 1
+_LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION = "threefry2x32"
 # JAX's currently supported scalar typed keys use either two uint32 words
 # (Threefry) or four (RBG/unsafe RBG). Config validation cannot know which key
 # a caller will pass to ``init``, so reserve the largest supported payload.
@@ -174,6 +175,25 @@ def _require_array(
     if array.dtype != dtype:
         raise TypeError(f"{name} must have dtype {dtype}, got {array.dtype}")
     return array
+
+
+def _require_lifetime_gauntlet_key(value: Array) -> Array:
+    """Require the two-word Threefry key encoded by the persisted state."""
+
+    try:
+        key_data = jr.key_data(value)
+        implementation = str(jr.key_impl(value))
+    except (TypeError, ValueError) as error:
+        raise TypeError(
+            "lifetime gauntlet key must be a threefry2x32 JAX PRNG key"
+        ) from error
+    if (
+        implementation != _LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION
+        or key_data.shape != (2,)
+        or key_data.dtype != jnp.dtype(jnp.uint32)
+    ):
+        raise TypeError("lifetime gauntlet key must be a threefry2x32 JAX PRNG key")
+    return value
 
 
 def _checked_lifetime_words_increment(words: Array) -> tuple[Array, Array]:
@@ -774,11 +794,9 @@ class LifetimeGauntletStream:
     @property
     def resource_budget(self) -> LifetimeGauntletResourceBudget:
         """Return exact persistent-state and clock accounting."""
-        template_key = jr.key(0)
         return LifetimeGauntletResourceBudget(
-            state_nbytes=_configured_lifetime_gauntlet_state_nbytes(
-                self._config,
-                key_nbytes=int(template_key.dtype.itemsize),
+            state_nbytes=measure_lifetime_gauntlet_state_nbytes(
+                self.init(jr.key(0, impl=_LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION))
             ),
             exact_clock_nbytes=LIFETIME_GAUNTLET_CLOCK_NBYTES,
             exact_clock_delta_nbytes=LIFETIME_GAUNTLET_CLOCK_DELTA_NBYTES,
@@ -850,9 +868,7 @@ class LifetimeGauntletStream:
             shape=(2,),
             dtype=jnp.dtype(jnp.uint32),
         )
-        key_data = jr.key_data(state.key)
-        if key_data.shape != (2,) or key_data.dtype != jnp.dtype(jnp.uint32):
-            raise TypeError("lifetime gauntlet key must be a scalar JAX PRNG key")
+        _require_lifetime_gauntlet_key(state.key)
 
     def state_is_valid(self, state: LifetimeState) -> Array:
         """Authenticate exact time and finite persistent task weights."""
@@ -883,6 +899,7 @@ class LifetimeGauntletStream:
 
     def init(self, key: Array) -> LifetimeState:
         """Initialize the persistent tasks and the first fresh task."""
+        key = _require_lifetime_gauntlet_key(key)
         key, k_c, k_d, k_f = jr.split(key, 4)
         return LifetimeState(
             key=key,
@@ -1102,7 +1119,10 @@ def load_lifetime_gauntlet_checkpoint(
     if not isinstance(raw_config, Mapping):
         raise ValueError("lifetime-gauntlet checkpoint stream_config is invalid")
     stream = LifetimeGauntletStream.from_config(raw_config)
-    restored, restored_metadata = load_checkpoint(stream.init(jr.key(0)), path)
+    restored, restored_metadata = load_checkpoint(
+        stream.init(jr.key(0, impl=_LIFETIME_GAUNTLET_PRNG_IMPLEMENTATION)),
+        path,
+    )
     if restored_metadata != metadata:
         raise ValueError("lifetime-gauntlet checkpoint metadata changed between reads")
     state = cast(LifetimeState, restored)
