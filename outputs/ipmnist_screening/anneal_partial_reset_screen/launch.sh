@@ -6,8 +6,8 @@ D=outputs/ipmnist_screening/anneal_partial_reset_screen; L=/tmp/pr_partial_reset
 log(){ echo "$(date +%T) $*" >> $L; }
 gate(){ while :; do n=$(pgrep -fc "alberta_framework.benchmarks.ipmnist_screening run"); a=$(free -g | awk '/Mem:/{print $7}')
   if [ "$n" -lt 4 ] && [ "$a" -ge 3 ] && ! pgrep -f cargo-build-sbf >/dev/null && ! pgrep -f pytest >/dev/null; then return; fi; sleep 20; done; }
-stage(){ # jobs file; waits for all
-  local pids=(); while read -r cfg seed nt sub; do [ -z "$cfg" ] && continue
+stage(){ # jobs file; waits for all (locals: must not clobber the chosen $cfg)
+  local pids=() cfg seed nt sub; while read -r cfg seed nt sub; do [ -z "$cfg" ] && continue
     gate; bash $D/worker.sh "$cfg" "$seed" "$nt" "$sub" >> $L 2>&1 < /dev/null & pids+=($!); log "launched $cfg $seed $nt $sub pid $!"; sleep 8
   done < "$1"; local f=0; for p in "${pids[@]}"; do wait $p || f=1; done; return $f; }
 stage $D/envcheck_jobs.txt || { log "VOID: envcheck job failed"; echo VOID > $D/ENVCHECK_STATUS; exit 1; }
