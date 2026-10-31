@@ -525,3 +525,14 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## IPMNIST anneal peak on anneal_f2t1000 (2026-10-31)
+
+A preregistered (b9deafcd) development screen that raised the post-shift starting body step of `..._s005625_anneal_f2t1000` from 0.005625 to a peak of 0.0075, 0.01 or 0.015. The floor stayed at 0.0028125 and tau at 1000.
+- It stopped at the seed-0 tune gate: every peak lost to the parent. The paired gains were −0.001323, −0.003407 and −0.008810, monotone in the peak.
+- Each arm gained in tasks 1-15 (+0.0011 to +0.0029) but lost more in every later 15-task block.
+- The bit-exact environment check passed: control and parent seed 0 at 60 tasks.
+- The screen and confirmation seeds were never run, so the bars were not evaluated.
+- Conclusion: a larger starting step does not pay. With the floor axis (f2t2000, f4t1000) already closed, both ends of the anneal schedule are closed.
+
+Evidence: [`outputs/ipmnist_screening/anneal_peak_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_peak_screen/RESULTS.md).
