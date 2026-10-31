@@ -5341,6 +5341,7 @@ class RLSHeadIdentState:
     post_sq_sums: Array
     since_shift: Array
     remap: Array
+    anneal_clock: Array
 
 
 def _identmap_assignment(
@@ -5418,6 +5419,19 @@ def _make_rls_head_identmap_learner(
         and math.isfinite(anneal_tau)
     ):
         raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
+    # Partial anneal reset.  Key absent: ``anneal_clock`` mirrors
+    # ``since_shift`` exactly and the anneal reads ``since_shift`` (parent
+    # verbatim).  Key present: the anneal reads ``anneal_clock``, which on a
+    # detected shift restarts at ``1 + floor(f * s)`` (s = decoded pre-step
+    # clock) instead of 1, and otherwise counts +1.  ``f == 0`` restarts at
+    # 1, bit-exactly the parent (pinned).  The identifier keeps
+    # ``since_shift`` untouched in every case.
+    partial_on = "anneal_reset_frac" in hp
+    reset_frac = float(hp.get("anneal_reset_frac", 0.0))
+    if partial_on and not (
+        anneal_on and math.isfinite(reset_frac) and 0.0 <= reset_frac < 1.0
+    ):
+        raise ValueError("anneal_reset_frac needs anneal_floor and 0 <= f < 1")
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5453,6 +5467,7 @@ def _make_rls_head_identmap_learner(
             post_sq_sums=jnp.zeros((input_dim,), dtype=jnp.float32),
             since_shift=jnp.array(-(2**30), dtype=jnp.int32),
             remap=jnp.arange(input_dim, dtype=jnp.int32),
+            anneal_clock=jnp.array(-(2**30), dtype=jnp.int32),
         )
 
     def full_step(
@@ -5468,10 +5483,11 @@ def _make_rls_head_identmap_learner(
         if anneal_on:
             # Pre-step counter; before any detected shift it runs from
             # -2**30, so the offset recovers steps since stream start.
+            clock = state.anneal_clock if partial_on else state.since_shift
             s = jnp.where(
-                state.since_shift < 0,
-                state.since_shift + (2**30),
-                state.since_shift,
+                clock < 0,
+                clock + (2**30),
+                clock,
             ).astype(jnp.float32)
             lr = jnp.maximum(
                 jnp.float32(anneal_floor),
@@ -5532,6 +5548,18 @@ def _make_rls_head_identmap_learner(
         since = jnp.where(
             trigger, jnp.array(1, jnp.int32), state.since_shift + 1
         )
+        if partial_on:
+            prev = jnp.where(
+                state.anneal_clock < 0,
+                state.anneal_clock + (2**30),
+                state.anneal_clock,
+            )
+            restart = 1 + jnp.floor(
+                jnp.float32(reset_frac) * prev.astype(jnp.float32)
+            ).astype(jnp.int32)
+            new_clock = jnp.where(trigger, restart, state.anneal_clock + 1)
+        else:
+            new_clock = since
         remap = jnp.where(
             trigger, jnp.arange(input_dim, dtype=jnp.int32), state.remap
         )
@@ -5598,6 +5626,7 @@ def _make_rls_head_identmap_learner(
             post_sq_sums=post_sq_sums,
             since_shift=since,
             remap=remap,
+            anneal_clock=new_clock,
         ), metrics
 
     return init_fn, full_step
@@ -8632,6 +8661,23 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("f4t250", 0.00140625, 250.0),
                 ("f4t1000", 0.00140625, 1000.0),
             )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_reset_frac": frac},
+                "anneal_f2t1000 with a partial anneal reset: on a detected "
+                f"shift the anneal clock restarts at 1 + floor({frac} * "
+                "clock) instead of 1 (identifier clock untouched; "
+                "anneal_partial_reset_screen/; development screening "
+                "diagnostic)"
+            )
+            for tag, frac in (("25", 0.25), ("50", 0.5))
         ),
     ):
         specs.append(
