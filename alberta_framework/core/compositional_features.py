@@ -962,6 +962,12 @@ FEATURE_VALUE_CLIP = 10.0
 CANDIDATE_IMPRINT_SCALE = 0.1
 
 
+def _observation_width_matches(ops: Array, parent_a: Array, observation: Array) -> Array:
+    """Return whether ``observation`` has the width the raw-feature prefix was built for."""
+    raw_width = jnp.max(jnp.where(ops == OP_RAW, parent_a, -1)) + 1
+    return raw_width == observation.shape[0]
+
+
 def _compute_feature_values(
     ops: Array,
     parent_a: Array,
@@ -2656,12 +2662,18 @@ class CompositionalFeatureLearner:
         These literal compositions are the Step 2 hand-off representation:
         downstream Horde or SARSA learners can consume them as fixed features.
         """
-        return _compute_feature_values(
+        values = _compute_feature_values(
             state.ops,
             state.parent_a,
             state.parent_b,
             state.theta,
             observation,
+        )
+        # Indexing clamps a wrong-width observation onto the wrong raw inputs.
+        return jnp.where(
+            _observation_width_matches(state.ops, state.parent_a, observation),
+            values,
+            jnp.nan,
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -3062,6 +3074,7 @@ class CompositionalFeatureLearner:
             jnp.all(jnp.isfinite(observation))
             & jnp.all(jnp.isfinite(targets) | jnp.isnan(targets))
             & jnp.all(jnp.isfinite(context_input))
+            & _observation_width_matches(state.ops, state.parent_a, observation)
         )
         context = jnp.asarray(context_id, dtype=jnp.int32)
         active_mask = ~jnp.isnan(targets)
