@@ -1,0 +1,4 @@
+tune seed 70 rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0: +0.005663
+tune seed 70 rls_head_resid_identmap50_r_idet003_s005625_anneal_f4t1000_wd0: -0.000443
+tune seed 70 rls_head_resid_identmap50_r_idet003_s005625_anneal_f8t1000_wd0: -0.000443
+best +0.005663 -> winner rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0

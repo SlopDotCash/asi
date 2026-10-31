@@ -1,0 +1,14 @@
+seed 102 +0.004043
+seed 103 +0.003997
+seed 104 +0.004393
+seed 105 +0.004470
+seed 106 +0.004217
+seed 107 +0.004123
+seed 108 +0.004180
+seed 109 +0.004390
+seed 110 +0.003877
+seed 111 +0.004423
+rls_head_resid_identmap50_r_idet003_s01_anneal_f1t1000_wd0 vs rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0
+blocks (10 tasks, seed mean): +0.009320 / +0.004876 / +0.003548 / +0.002964 / +0.002456 / +0.002104
+mean +0.004211 SE 0.000064 CI95 [+0.004066, +0.004357] improved 10/10
+BARS: mean>=+0.002 True, >=7/10 True, CI_lo>0 True -> PASS
