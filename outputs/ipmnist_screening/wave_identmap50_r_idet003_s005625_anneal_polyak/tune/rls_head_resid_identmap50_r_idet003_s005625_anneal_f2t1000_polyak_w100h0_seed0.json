@@ -1,0 +1,231 @@
+{
+ "base_learner": "upgd_w",
+ "config": {
+  "hidden1": 300,
+  "hidden2": 150,
+  "input_dim": 784,
+  "n_classes": 10,
+  "n_tasks": 30,
+  "task_length": 5000
+ },
+ "config_name": "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_polyak_w100h0",
+ "created_unix": 1793389721.686855,
+ "dataset_provenance": {
+  "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+  "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+  "source": {
+   "name": "mnist_784",
+   "provider": "openml",
+   "row_start": 0,
+   "row_stop_exclusive": 60000,
+   "version": 1
+  },
+  "x": {
+   "dtype": "<f4",
+   "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+   "shape": [
+    60000,
+    784
+   ]
+  },
+  "y": {
+   "dtype": "<i4",
+   "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+   "shape": [
+    60000
+   ]
+  }
+ },
+ "environment": {
+  "jax": {
+   "backend": "cpu",
+   "config": {
+    "jax_default_matmul_precision": null,
+    "jax_default_prng_impl": "threefry2x32",
+    "jax_disable_jit": false,
+    "jax_enable_x64": false,
+    "jax_numpy_dtype_promotion": "standard",
+    "jax_numpy_rank_promotion": "allow",
+    "jax_random_seed_offset": 0,
+    "jax_threefry_partitionable": true
+   },
+   "devices": [
+    {
+     "device_kind": "cpu",
+     "id": 0,
+     "platform": "cpu",
+     "process_index": 0
+    }
+   ]
+  },
+  "packages": {
+   "chex": "0.1.92",
+   "jax": "0.11.0",
+   "jaxlib": "0.11.0",
+   "numpy": "2.5.1",
+   "scikit-learn": "1.9.0"
+  },
+  "platform": {
+   "machine": "x86_64",
+   "release": "6.12.94+",
+   "system": "Linux"
+  },
+  "process_environment": {
+   "CUDA_VISIBLE_DEVICES": null,
+   "JAX_DEFAULT_MATMUL_PRECISION": null,
+   "JAX_ENABLE_X64": null,
+   "JAX_PLATFORMS": null,
+   "JAX_PLATFORM_NAME": null,
+   "OMP_NUM_THREADS": "1",
+   "XLA_FLAGS": "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+  },
+  "python": {
+   "implementation": "CPython",
+   "version": "3.13.5"
+  },
+  "schema": "alberta.ipmnist_screening.runtime.v1"
+ },
+ "evidence_policy": {
+  "development_only": true,
+  "evidence_class": "development_screening_diagnostic",
+  "scientific_promotion_allowed": false
+ },
+ "hyperparameters": {
+  "anneal_floor": 0.0028125,
+  "anneal_tau": 1000.0,
+  "fast_decay": 0.9,
+  "gate_scale": 1.0,
+  "head_resid": 1.0,
+  "ident_match2": 200.0,
+  "ident_match3": 2000.0,
+  "ident_match_at": 50.0,
+  "ident_reset_frac": 0.03,
+  "noise_std": 0.0,
+  "norm_decay": 0.99,
+  "norm_epsilon": 1e-08,
+  "polyak_head_avg": 0.0,
+  "polyak_window": 100.0,
+  "rls_lambda": 1.0,
+  "rls_p_trace_cap": 0.0,
+  "rls_reset_frac": 0.05,
+  "rls_ridge_init": 1.0,
+  "shift_delta": 0.02,
+  "shift_k": 1.0,
+  "shift_refractory": 0.0,
+  "step_size": 0.005625,
+  "utility_decay": 0.9999,
+  "weight_decay": 0.01
+ },
+ "noise_mode": "step",
+ "noise_pool_steps": null,
+ "per_task_accuracy": [
+  0.68180001,
+  0.86439997,
+  0.89139998,
+  0.90099996,
+  0.90959996,
+  0.92199999,
+  0.91639996,
+  0.92539996,
+  0.92519999,
+  0.92439997,
+  0.91979998,
+  0.92640001,
+  0.93159997,
+  0.93359995,
+  0.93739998,
+  0.94379997,
+  0.93699998,
+  0.93559998,
+  0.93199998,
+  0.94119996,
+  0.94159997,
+  0.9418,
+  0.94259995,
+  0.94559997,
+  0.9418,
+  0.94739997,
+  0.9472,
+  0.94499999,
+  0.94999999,
+  0.94299996
+ ],
+ "per_task_loss": [
+  0.27701944,
+  0.15446433,
+  0.12173913,
+  0.10812419,
+  0.09881994,
+  0.0913498,
+  0.0909792,
+  0.08722799,
+  0.08251245,
+  0.0816332,
+  0.08128425,
+  0.07894713,
+  0.0760835,
+  0.07320648,
+  0.07057773,
+  0.0666787,
+  0.07000841,
+  0.06736193,
+  0.07194103,
+  0.06659585,
+  0.0651015,
+  0.06536147,
+  0.06522106,
+  0.06367628,
+  0.06395067,
+  0.06271505,
+  0.06123955,
+  0.06063087,
+  0.05990535,
+  0.06103315
+ ],
+ "per_task_plasticity": [
+  0.0640168,
+  0.12469192,
+  0.15181336,
+  0.1497775,
+  0.16844632,
+  0.18410994,
+  0.19454388,
+  0.20871358,
+  0.22130644,
+  0.22268617,
+  0.2336705,
+  0.24785931,
+  0.2586222,
+  0.26604155,
+  0.27775425,
+  0.28159413,
+  0.28857532,
+  0.2941902,
+  0.3062627,
+  0.31058139,
+  0.31638205,
+  0.33181697,
+  0.33282891,
+  0.33685154,
+  0.35594329,
+  0.35422853,
+  0.3546977,
+  0.35580415,
+  0.36624956,
+  0.37417996
+ ],
+ "schema": "alberta.ipmnist_screening.shard.v2",
+ "seed": 0,
+ "source_provenance": {
+  "git_commit": "aa879362ee85f0a18687749c38454dd8a150de8e",
+  "git_object_format": "sha1",
+  "git_tree": "f9737963b0fde380c3e4ca7ac1294f7a5cc367e4",
+  "relevant_source_file_count": 232,
+  "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+  "relevant_source_sha256": "58f15fea3adfd214abc0e0f09d5cee6d29f4cb18d926efcef6f339f29298bc88",
+  "schema": "alberta.ipmnist_screening.source_provenance.v1",
+  "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+  "worktree_clean": true
+ },
+ "wall_clock_seconds": 105.93
+}
