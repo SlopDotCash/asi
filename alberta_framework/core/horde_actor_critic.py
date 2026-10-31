@@ -259,6 +259,7 @@ def _nonlinear_actor_resources(
     _check_actor_resources({"head_product": head_product})
     parameters += head_product + n_actions
     tensor_count = 2 * (len(hidden_sizes) + 1)
+    # The final ``+ 2`` counts the carried observation and previous discount.
     float32_state = 5 * parameters + 2 * tensor_count + 2 + width
     logical_state = float32_state + 4
     return _check_actor_resources(
@@ -1651,6 +1652,12 @@ class NonlinearHordeActorCriticState:
         last_action: Previous action index.
         rng_key: JAX random key.
         step_count: Number of updates taken.
+        previous_discount: Discount of the most recent accepted transition
+            (``gamma_t``, the discount into the current state's observation);
+            it decays the eligibility traces while the current call's discount
+            only controls the TD bootstrap. Initialized to the value head's
+            configured demon gamma (nonlinear Horde critic) or ``config.gamma``
+            (nonlinear Q-Horde critic) with zero traces.
     """
 
     actor_trunk: MLPParams
@@ -1669,6 +1676,7 @@ class NonlinearHordeActorCriticState:
     last_action: Int[Array, ""]
     rng_key: Array
     step_count: Int[Array, ""]
+    previous_discount: Float[Array, ""]
 
 
 @chex.dataclass(frozen=True)
@@ -1868,12 +1876,15 @@ class NonlinearHordeActorCriticAgent:
             actor_head_opt_w=self._actor_optimizer.init_for_shape(actor_head_w.shape),
             actor_head_opt_b=self._actor_optimizer.init_for_shape(actor_head_b.shape),
             actor_td_error_normalizer=jnp.array(0.0, dtype=jnp.float32),
-            previous_discount=jnp.array(1.0, dtype=jnp.float32),
             critic_state=self._critic.init(feature_dim, critic_key),
             last_observation=jnp.zeros((feature_dim,), dtype=jnp.float32),
             last_action=jnp.array(-1, dtype=jnp.int32),
             rng_key=actor_key,
             step_count=jnp.array(0, dtype=jnp.int32),
+            previous_discount=jnp.asarray(
+                self._critic.horde_spec.gammas[self._config.value_head_index],
+                dtype=jnp.float32,
+            ),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -1949,14 +1960,22 @@ class NonlinearHordeActorCriticAgent:
     ) -> NonlinearHordeActorCriticUpdateResult:
         """Update MLP actor and Horde critic from one transition.
 
+        The actor eligibility traces decay with the incoming discount
+        (``state.previous_discount``, the prior accepted transition's discount
+        into the current observation); the current call's discount only
+        controls the TD bootstrap. The update then refreshes
+        ``previous_discount`` to the current call's discount, so a terminal
+        reward credits the completed episode before its stored traces are
+        cleared.
+
         Args:
             state: Current state with a valid previous observation/action.
             reward: Scalar reward for the value head.
             observation: Next observation.
             auxiliary_cumulants: Optional cumulants for non-value heads.
-            discount: Optional outgoing value-head discount, saved for the
-                next accepted actor update; prior eligibility uses the last
-                accepted transition discount.
+            discount: Optional outgoing value-head discount ``gamma_{t+1}``
+                for the TD bootstrap, saved for the next accepted actor update;
+                prior eligibility uses the last accepted transition discount.
 
         Returns:
             :class:`NonlinearHordeActorCriticUpdateResult`.
@@ -2043,6 +2062,8 @@ class NonlinearHordeActorCriticAgent:
 
         # Incoming gamma_t retains earlier credit; outgoing gamma_{t+1}
         # controls bootstrapping and clears traces only after reward learning.
+        # Using the outgoing discount here would wipe terminal eligibility
+        # before the terminal TD error credits the completed episode.
         actor_decay = state.previous_discount * cfg.actor_lamda
         n_hidden = len(cfg.hidden_sizes)
 
@@ -2595,12 +2616,12 @@ class NonlinearQHordeActorCriticAgent:
             actor_head_opt_w=self._actor_optimizer.init_for_shape(actor_head_w.shape),
             actor_head_opt_b=self._actor_optimizer.init_for_shape(actor_head_b.shape),
             actor_td_error_normalizer=jnp.array(0.0, dtype=jnp.float32),
-            previous_discount=jnp.array(1.0, dtype=jnp.float32),
             critic_state=self._critic.init(feature_dim, critic_key),
             last_observation=jnp.zeros((feature_dim,), dtype=jnp.float32),
             last_action=jnp.array(-1, dtype=jnp.int32),
             rng_key=actor_key,
             step_count=jnp.array(0, dtype=jnp.int32),
+            previous_discount=jnp.array(self._config.gamma, dtype=jnp.float32),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
@@ -2672,7 +2693,16 @@ class NonlinearQHordeActorCriticAgent:
         terminated: Array,
         prediction_cumulants: Array | None = None,
     ) -> NonlinearQHordeActorCriticUpdateResult:
-        """Update actor and action-value Horde critic from one transition."""
+        """Update actor and action-value Horde critic from one transition.
+
+        The actor eligibility traces decay with the incoming discount
+        (``state.previous_discount``, the prior accepted transition's discount
+        into the current observation); the current call's discount (``0`` when
+        ``terminated``) only controls the TD bootstrap. The update then
+        refreshes ``previous_discount`` to the current call's discount, so a
+        terminal reward credits the completed episode before its stored traces
+        are cleared.
+        """
         cfg = self._config
         prev_obs = state.last_observation
         action_valid = (state.last_action >= 0) & (state.last_action < cfg.n_actions)
@@ -2750,8 +2780,10 @@ class NonlinearQHordeActorCriticAgent:
             cfg.actor_gradient_clip_norm,
         )
 
-        # Credit retained within-episode eligibility before clearing terminal traces.
-        actor_decay = jnp.asarray(cfg.gamma, dtype=jnp.float32) * cfg.actor_lamda
+        # Credit retained within-episode eligibility before clearing terminal
+        # traces. The current call's discount (0 when terminated) only controls
+        # the TD bootstrap; using it here would erase terminal episode credit.
+        actor_decay = state.previous_discount * cfg.actor_lamda
         n_hidden = len(cfg.hidden_sizes)
         new_trunk_traces: list[Array] = []
         for i in range(n_hidden):
@@ -2856,6 +2888,7 @@ class NonlinearQHordeActorCriticAgent:
             actor_head_opt_b=new_head_opt_b,
             critic_state=critic_result.state,
             step_count=_saturating_int32_counter_increment(state.step_count),
+            previous_discount=effective_gamma,
         )
         next_action, key, policy = (
             (sampled_next_action, sampled_key, sampled_policy)

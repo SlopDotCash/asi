@@ -2264,6 +2264,179 @@ def test_nonlinear_array_runner_neutralizes_policy_on_rejected_update() -> None:
     chex.assert_trees_all_equal(result.state, state)
 
 
+def _zero_nlhac_critic_head_params(state):  # type: ignore[no-untyped-def]
+    """Zero the critic head weights so the TD error equals the reward.
+
+    The regression tests below isolate the *actor* trace decay; a randomly
+    initialized critic would add arbitrary value offsets to the TD error.
+    """
+    head_params = state.critic_state.head_params
+    zeroed = head_params.replace(
+        weights=tuple(jnp.zeros_like(w) for w in head_params.weights),
+        biases=tuple(jnp.zeros_like(b) for b in head_params.biases),
+    )
+    return state.replace(  # type: ignore[attr-defined]
+        critic_state=state.critic_state.replace(head_params=zeroed)
+    )
+
+
+def _zero_nlhac_actor_traces(state):  # type: ignore[no-untyped-def]
+    """Return a copy of the state with every actor eligibility trace zeroed."""
+    return state.replace(  # type: ignore[attr-defined]
+        actor_trunk_traces=tuple(jnp.zeros_like(t) for t in state.actor_trunk_traces),
+        actor_head_trace_w=jnp.zeros_like(state.actor_head_trace_w),
+        actor_head_trace_b=jnp.zeros_like(state.actor_head_trace_b),
+    )
+
+
+def test_nonlinear_horde_actor_trace_decays_with_prior_discount() -> None:
+    """Actor traces must decay with the incoming discount, not the outgoing one.
+
+    The first update runs with discount 0.9 and the second with discount 0.1.
+    Decaying with the outgoing (0.1) discount would shrink the stored trace
+    far below ``0.9 * actor_lamda`` times the first step's trace plus the
+    second step's gradient, which the zeroed-trace twin isolates exactly.
+    """
+    agent = _make_nlhac_agent()
+    s0 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[0].set(1.0)
+    s1 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[1].set(1.0)
+    s2 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[2].set(1.0)
+    state = _zero_nlhac_critic_head_params(_init_nlhac(agent))
+    state, _, _ = agent.start(state, s0)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        discount=jnp.array(0.9, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+    assert float(first.state.previous_discount) == pytest.approx(0.9)
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        discount=jnp.array(0.1, dtype=jnp.float32),
+    )
+    twin = agent.update(
+        _zero_nlhac_actor_traces(first.state),
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        discount=jnp.array(0.1, dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+    assert float(second.state.previous_discount) == pytest.approx(0.1)
+    expected = (
+        0.9 * float(agent.config.actor_lamda) * np.asarray(first.state.actor_head_trace_w)
+        + np.asarray(twin.state.actor_head_trace_w)
+    )
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_head_trace_w),
+        expected,
+        rtol=1e-5,
+        atol=1e-6,
+    )
+
+
+def test_nonlinear_horde_terminal_reward_credits_episode_trace() -> None:
+    """A terminal reward must credit the nonlinear Horde episode's actor trace.
+
+    The terminating transition's TD error is computed with discount 0 (no
+    bootstrap), but the eligibility traces accumulated over the episode must
+    still be decayed by the incoming discount, so the terminal reward credits
+    the whole episode. Decaying with the outgoing (zero) discount wipes the
+    episode trace before the terminal TD error is applied, so the weight
+    update from the full-trace state would be identical to the update from
+    the zeroed-trace twin. Stored traces are still cleared after the update.
+    """
+    agent = _make_nlhac_agent()
+    s0 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[0].set(1.0)
+    s1 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[1].set(1.0)
+    s2 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[2].set(1.0)
+    state = _zero_nlhac_critic_head_params(_init_nlhac(agent))
+    state, _, _ = agent.start(state, s0)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        discount=jnp.array(0.9, dtype=jnp.float32),
+    )
+    assert bool(first.update_applied)
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        discount=jnp.array(0.0, dtype=jnp.float32),
+    )
+    twin = agent.update(
+        _zero_nlhac_actor_traces(first.state),
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        discount=jnp.array(0.0, dtype=jnp.float32),
+    )
+    assert bool(second.update_applied)
+    assert abs(float(second.td_error) - 1.0) < 1e-6
+    full_delta = np.asarray(second.state.actor_head_w) - np.asarray(first.state.actor_head_w)
+    twin_delta = np.asarray(twin.state.actor_head_w) - np.asarray(first.state.actor_head_w)
+    assert float(np.max(np.abs(full_delta - twin_delta))) > 1e-4
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_head_trace_w),
+        np.zeros_like(np.asarray(second.state.actor_head_trace_w)),
+        atol=1e-7,
+    )
+
+
+def test_nonlinear_qhorde_terminal_reward_credits_episode_trace() -> None:
+    """A terminal reward must credit the nonlinear Q-Horde episode's trace.
+
+    Same bug class as the nonlinear Horde critic test above, for the
+    action-value agent whose current call's discount is ``0`` when
+    ``terminated``: decaying with it wipes the episode trace before the
+    terminal TD error is applied, so the full-trace weight update would be
+    identical to the zeroed-trace twin's update.
+    """
+    agent = _make_nlqhac_agent()
+    s0 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[0].set(1.0)
+    s1 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[1].set(1.0)
+    s2 = jnp.zeros(OBS_DIM, dtype=jnp.float32).at[2].set(1.0)
+    state = _zero_nlhac_critic_head_params(agent.init(feature_dim=OBS_DIM, key=jr.key(0)))
+    state, _, _ = agent.start(state, s0)
+
+    first = agent.update(
+        state,
+        reward=jnp.array(0.0, dtype=jnp.float32),
+        observation=s1,
+        terminated=jnp.array(False),
+    )
+    assert bool(first.update_applied)
+
+    second = agent.update(
+        first.state,
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        terminated=jnp.array(True),
+    )
+    twin = agent.update(
+        _zero_nlhac_actor_traces(first.state),
+        reward=jnp.array(1.0, dtype=jnp.float32),
+        observation=s2,
+        terminated=jnp.array(True),
+    )
+    assert bool(second.update_applied)
+    assert abs(float(second.td_error) - 1.0) < 1e-6
+    full_delta = np.asarray(second.state.actor_head_w) - np.asarray(first.state.actor_head_w)
+    twin_delta = np.asarray(twin.state.actor_head_w) - np.asarray(first.state.actor_head_w)
+    assert float(np.max(np.abs(full_delta - twin_delta))) > 1e-4
+    np.testing.assert_allclose(
+        np.asarray(second.state.actor_head_trace_w),
+        np.zeros_like(np.asarray(second.state.actor_head_trace_w)),
+        atol=1e-7,
+    )
+
+
 @pytest.mark.parametrize("disable_jit", [True, False])
 def test_actor_gradient_clip_bounds_finite_gradients_with_overflowing_norms(
     disable_jit: bool,
