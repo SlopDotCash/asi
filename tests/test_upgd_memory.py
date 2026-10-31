@@ -843,3 +843,30 @@ def test_public_prediction_preserves_cancelling_large_blend_terms(
     expected_gradient = 2.0 * (0.5 - bias) * gate * (1.0 - gate)
     chex.assert_tree_all_finite(gradient)
     chex.assert_trees_all_close(gradient, expected_gradient, rtol=1e-6, atol=1e-6)
+
+
+@pytest.mark.parametrize("readout_mode", ["softmax_ce", "linear_mse"])
+@pytest.mark.parametrize("bad_value", [float("nan"), float("inf"), float("-inf")])
+@pytest.mark.parametrize("compiled", [False, True])
+def test_predict_does_not_publish_a_finite_answer_for_non_finite_observation(
+    readout_mode: str,
+    bad_value: float,
+    compiled: bool,
+) -> None:
+    """The update path rejects this observation, so predict must not answer it."""
+    config = UPGDMemoryConfig(
+        feature_dim=4,
+        n_heads=3,
+        hidden_sizes=(8,),
+        readout_mode=readout_mode,
+    )
+    learner = UPGDMemoryLearner(config)
+    state = learner.init(jr.key(0))
+    observation = jnp.zeros(4, dtype=jnp.float32).at[1].set(bad_value)
+
+    predict = jax.jit(learner.predict) if compiled else learner.predict
+    prediction = predict(state, observation)
+
+    chex.assert_shape(prediction, (3,))
+    assert bool(jnp.all(jnp.isnan(prediction)))
+    assert not bool(learner.update(state, observation, jnp.zeros(3)).update_applied)
