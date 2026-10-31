@@ -2051,8 +2051,13 @@ def _masked_mean(values: Array, mask: Array) -> Array:
     selected = jnp.where(mask_arr, value_arr, 0.0)
     mean = jnp.sum(selected) / jnp.maximum(count, 1.0)
     # A finite conditional mean can have an overflowing intermediate sum.
+    # Scale by an exact power of two, as _finite_mean_value does: XLA turns
+    # division by a scale above 2**126 into a multiply by a subnormal
+    # reciprocal and flushes it to zero.
     scale = jnp.max(jnp.abs(selected), initial=0.0)
-    scaled_mean = jnp.sum(selected / jnp.where(scale > 0.0, scale, 1.0))
+    scale_mantissa, scale_exponent = jnp.frexp(scale)
+    safe_mantissa = jnp.where(scale > 0.0, scale_mantissa, 1.0)
+    scaled_mean = jnp.sum(jnp.ldexp(selected, -scale_exponent) / safe_mantissa)
     scaled_mean = jnp.clip(scaled_mean / jnp.maximum(count, 1.0), -1.0, 1.0)
     recover = (~jnp.isfinite(mean)) & jnp.all(jnp.isfinite(selected))
     return jnp.where(recover, scaled_mean * scale, mean)
