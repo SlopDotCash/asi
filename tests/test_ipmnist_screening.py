@@ -8662,3 +8662,12 @@ class TestS02Ridge200TaskConfirm:
             (d / f"{c}_seed176.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 176) is None
+
+    def test_memguard_stop_sentinel_is_ignored_and_untracked(self):
+        import subprocess
+        root = Path(__file__).resolve().parents[1]
+        rel = "outputs/ipmnist_screening/s02_wd0_ridge_200task/MEMGUARD_STOP"
+        assert subprocess.run(["git", "check-ignore", "-q", "--no-index", rel], cwd=root).returncode == 0
+        tracked = subprocess.run(["git", "ls-files", "outputs/ipmnist_screening/s02_wd0_ridge_200task/"],
+                                 cwd=root, capture_output=True, text=True, check=True).stdout.split()
+        assert not any(f.endswith("MEMGUARD_STOP") for f in tracked)
