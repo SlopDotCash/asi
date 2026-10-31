@@ -746,3 +746,69 @@ def test_terminal_dream_retains_sarsa_weight_without_bootstrap(
     chex.assert_trees_all_close(items.weights, jnp.array([expected_weight], dtype=jnp.float32))
     chex.assert_trees_all_close(items.discounts, jnp.zeros((1,), dtype=jnp.float32))
     assert float(items.weights[0] * items.rewards[0]) == pytest.approx(expected_weight * 3.7)
+
+
+class _NanAfterFirstActionBehaviorModel:
+    def sample_action(
+        self,
+        state: DeterministicBehaviorState,
+        observation: jnp.ndarray,
+        key: Any,
+    ) -> DreamBehaviorModelPrediction:
+        del key
+        return DreamBehaviorModelPrediction(
+            action=jnp.where(observation[0] > 0.25, jnp.nan, state.action),
+            action_probability=jnp.array(1.0, dtype=jnp.float32),
+            log_probability=jnp.array(0.0, dtype=jnp.float32),
+        )
+
+
+def test_sarsa_items_never_bootstrap_from_a_rejected_next_row() -> None:
+    rollout = dream_rollout(
+        MockWorldModel(),
+        _world_state(),
+        _NanAfterFirstActionBehaviorModel(),
+        DeterministicBehaviorState(action=jnp.array(1.0, dtype=jnp.float32)),
+        init_dream_rollout_state(jnp.zeros((2,), dtype=jnp.float32), jr.key(13)),
+        DreamRolloutConfig(rollout_horizon=3),
+    )
+    assert rollout.transitions.valid.tolist() == [True, False, False]
+
+    items = imagined_rollout_to_sarsa_items(
+        rollout,
+        bootstrap_action=jnp.array(1.0, dtype=jnp.float32),
+    )
+
+    chex.assert_trees_all_close(items.weights, jnp.zeros((3,), dtype=jnp.float32))
+    assert bool(jnp.all(jnp.isfinite(items.next_actions)))
+
+
+@pytest.mark.parametrize(("discount", "expected_weight"), [(0.9, 0.0), (0.0, 1.0)])
+def test_sarsa_items_keep_rows_before_a_rejected_row_only_without_bootstrap(
+    discount: float, expected_weight: float
+) -> None:
+    class TerminatingWorldModel(MockWorldModel):
+        def predict(self, state, observation, action, key):  # type: ignore[no-untyped-def]
+            prediction = super().predict(state, observation, action, key)
+            return dataclasses.replace(
+                prediction,
+                discount=jnp.array(discount, dtype=jnp.float32),
+                terminated=jnp.array(True),
+            )
+
+    rollout = dream_rollout(
+        TerminatingWorldModel(),
+        _world_state(),
+        DeterministicBehaviorModel(),
+        DeterministicBehaviorState(action=jnp.array(1, dtype=jnp.int32)),
+        init_dream_rollout_state(jnp.zeros((2,), dtype=jnp.float32), jr.key(13)),
+        DreamRolloutConfig(rollout_horizon=2),
+    )
+    assert rollout.transitions.valid.tolist() == [True, False]
+
+    items = imagined_rollout_to_sarsa_items(rollout, bootstrap_action=jnp.array(1))
+
+    chex.assert_trees_all_close(
+        items.weights,
+        jnp.array([expected_weight, 0.0], dtype=jnp.float32),
+    )
