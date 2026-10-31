@@ -7592,6 +7592,15 @@ class TestRLSHeadIdentMap:
                     ("f4t1000", 0.00140625, 1000.0),
                 )
             },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_peak": peak,
+                }
+                for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
