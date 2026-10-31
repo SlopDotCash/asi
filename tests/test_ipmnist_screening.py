@@ -7623,7 +7623,10 @@ class TestRLSHeadIdentMap:
                     "step_size": 0.005625, "anneal_floor": 0.0028125,
                     "anneal_tau": 1000.0, "weight_decay": wd,
                 }
-                for tag, wd in (("00084", 0.0084), ("0005", 0.005))
+                for tag, wd in (
+                    ("00084", 0.0084), ("0005", 0.005), ("00025", 0.0025),
+                    ("0001", 0.001), ("0", 0.0),
+                )
             },
         }
         registered = {
@@ -8181,7 +8184,10 @@ class TestRLSHeadIdentMapAnnealConstantWeightDecay:
     def test_registered_arms(self):
         parent = dict(screening_spec(self.PARENT).hyperparameters)
         assert parent["weight_decay"] == 0.01
-        for tag, wd in (("00084", 0.0084), ("0005", 0.005)):
+        for tag, wd in (
+            ("00084", 0.0084), ("0005", 0.005), ("00025", 0.0025),
+            ("0001", 0.001), ("0", 0.0),
+        ):
             hp = dict(screening_spec(self.PARENT + f"_wd{tag}").hyperparameters)
             assert hp.pop("weight_decay") == wd
             rest = dict(parent)
@@ -8204,3 +8210,12 @@ class TestRLSHeadIdentMapAnnealConstantWeightDecay:
     def test_invalid_weight_decay_rejected(self, wd):
         with pytest.raises(ValueError, match="weight_decay|finite"):
             self._run(weight_decay=wd)
+
+    @pytest.mark.parametrize("wd", [0.005, 0.0025, 0.001, 0.0])
+    def test_sweep_value_differs_and_is_finite(self, wd):
+        parent = self._run(anneal_tau=2.0)
+        arm = self._run(anneal_tau=2.0, weight_decay=wd)
+        loss = np.asarray(arm.per_task_loss)
+        assert np.all(np.isfinite(loss))
+        assert np.all(np.isfinite(np.asarray(arm.per_task_accuracy)))
+        assert not np.array_equal(loss, np.asarray(parent.per_task_loss))
