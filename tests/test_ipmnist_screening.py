@@ -7653,6 +7653,17 @@ class TestRLSHeadIdentMap:
                     ("0125", 0.0125), ("015", 0.015), ("02", 0.02),
                 )
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+                f"_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.02, "anneal_floor": 0.02,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                    "rls_ridge_init": ridge,
+                }
+                for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8448,3 +8459,115 @@ class TestWd0ConstStep200TaskConfirm:
             (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 134) is None
+
+
+class TestRLSHeadIdentMapS02Wd0Ridge:
+    """RLS head ridge cells on the s02 wd0 incumbent (s02_wd0_ridge/)."""
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+    RIDGES = (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+
+    def _spec(self, **overrides):
+        spec = screening_spec(self.INCUMBENT)
+        return replace(
+            spec,
+            name=spec.name + "_ridge_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(x, y, self._spec(**overrides), seed=7, config=SMALL)
+
+    def test_registry_differs_only_in_ridge(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert inc["rls_ridge_init"] == 1.0
+        for tag, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + tag)
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("rls_ridge_init") == ridge
+            inc_rest = dict(inc); inc_rest.pop("rls_ridge_init")
+            assert hp == inc_rest
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_initial_p_is_identity_over_ridge(self):
+        for _, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + _)
+            init_fn, _step = spec.factory(dict(spec.hyperparameters))
+            state = init_fn(init_mlp_params(jr.key(0), SMALL))
+            p = np.asarray(state.inner.p)
+            np.testing.assert_allclose(p, np.eye(p.shape[0]) / ridge, rtol=1e-6)
+
+    def test_ridge_one_override_is_bit_exact_with_parent(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=1.0)
+        assert np.array_equal(np.asarray(a.per_task_accuracy), np.asarray(b.per_task_accuracy))
+        assert np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+    def test_small_ridge_is_live_and_finite(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=0.03)
+        acc = np.asarray(b.per_task_accuracy)
+        assert np.all(np.isfinite(acc)) and np.all(np.isfinite(np.asarray(b.per_task_loss)))
+        assert not np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+
+def _load_s02_ridge_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "s02_wd0_ridge" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("s02_ridge_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestS02Wd0RidgeDivergenceRules:
+    """Development-plan rules of s02_wd0_ridge/analyze.py on synthetic inputs."""
+
+    A = _load_s02_ridge_analyze()
+    OK = [0.95] * 60
+    LOSS = [0.1] * 60
+
+    def test_cells_registered_and_seeds_fixed(self):
+        for c, r in self.A.CELLS:
+            assert SCREENING_REGISTRY[c].hyperparameters["rls_ridge_init"] == r
+        assert self.A.INC in SCREENING_REGISTRY
+        assert self.A.TUNE_SEED == 165 and list(self.A.SCREEN_SEEDS) == list(range(166, 176))
+        assert self.A.EDGE == self.A.INC + "_r003"
+
+    def test_classify(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+        assert "missing" in self.A.classify(None, None)
+        acc = list(self.OK); acc[5] = float("nan")
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        assert self.A.FLOOR == 0.5
+
+    def test_tune_gate_diverged_and_ties_to_larger_ridge(self):
+        T = self.A.tune_decision
+        assert T([("a", 0.03, 0.001), ("b", 0.1, None), ("c", 0.3, 0.002)]) == "c"
+        assert T([("a", 0.03, None), ("b", 0.1, None)]) == "STOP_ALL_DIVERGED"
+        assert T([("a", 0.03, 0.0005), ("b", 0.1, -0.01)]) == "STOP"
+        assert T([("a", 0.03, 0.003), ("b", 0.1, 0.003)]) == "b"
+
+    def test_screen_verdict(self):
+        V = self.A.screen_verdict
+        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = V([0.5] * 9 + [None])
+        assert v["diverged"] == 1 and v["verdict"] == "FAIL"
+        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "tune"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
+            (d / f"{c}_seed165.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("tune", self.A.CELLS[0][0], 165)
