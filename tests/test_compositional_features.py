@@ -1648,6 +1648,27 @@ class TestCompositionalFeatureLearner:
         assert clocks.uptime_s > uptime
         chex.assert_tree_all_finite(result.metrics)
 
+    def test_loop_scan_preserves_initialized_host_clocks(self) -> None:
+        learner = CompositionalFeatureLearner(
+            n_features=4,
+            n_tasks=1,
+            candidate_count=0,
+            replacement_interval=100_000,
+            min_feature_age=100_000,
+        )
+        stream = CompositionalStream(feature_dim=2, n_tasks=1)
+        state = learner.init(feature_dim=2, key=jr.key(0))
+        birth = 1700000000.125
+        uptime = 2**24 + 0.25
+        state = state.replace(birth_timestamp=birth, uptime_s=uptime)
+        result = run_compositional_loop(learner, stream, 2, jr.key(1), learner_state=state)
+        clocks = result.state
+        assert type(clocks.birth_timestamp) is float
+        assert clocks.birth_timestamp == birth
+        assert type(clocks.uptime_s) is float
+        assert clocks.uptime_s > uptime
+        chex.assert_tree_all_finite(result.metrics)
+
 
 class TestImprintConsolidation:
     """_initial_candidate_output_weights delegates to the module-level imprint."""

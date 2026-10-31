@@ -4983,8 +4983,11 @@ def run_compositional_loop(
         step_fn, (learner_state, stream_state), jnp.arange(num_steps)
     )
     elapsed = time.time() - t0
+    # Restore the incoming host clocks narrowed by the scan, as in
+    # run_compositional_arrays.
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
     )
     return CompositionalFeatureLearningResult(
         state=final_state,

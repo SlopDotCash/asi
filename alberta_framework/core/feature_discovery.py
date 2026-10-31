@@ -1989,7 +1989,13 @@ def run_feature_discovery_arrays(
     if not isinstance(metrics, jax.core.Tracer):
         metrics.block_until_ready()
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # The scan carries host clocks through the traced update and narrows them
+    # to float32. Restore the incoming Python values and add this scan's time
+    # to the host uptime base.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )
     return FeatureDiscoveryLearningResult(
         state=final_state,
         metrics=metrics,
@@ -2030,7 +2036,12 @@ def run_feature_discovery_loop(
     if not isinstance(metrics, jax.core.Tracer):
         metrics.block_until_ready()
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # Restore the incoming host clocks narrowed by the scan, as in
+    # run_feature_discovery_arrays.
+    final_state = final_state.replace(  # type: ignore[attr-defined]
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )
     return FeatureDiscoveryLearningResult(
         state=final_state,
         metrics=metrics,
