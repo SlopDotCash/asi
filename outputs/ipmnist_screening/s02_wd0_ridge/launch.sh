@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# s02 wd0 residual-body weight clipping per DEVELOPMENT_PLAN.md. Phase 0: OpenML cache pre-flight (fail fast).
+# s02 wd0 RLS head ridge (rls_ridge_init) per DEVELOPMENT_PLAN.md. Phase 0: OpenML cache pre-flight (fail fast).
 # Phase 1: env check (2 jobs, VOID-stop on any failure or mismatch). Phase 2: tune on seed 165
 # (4 jobs) -> gate. Phase 3: screen on seeds 166-175 (20 jobs) -> verdict. Cap 4 one-thread
 # workers; 3 GB floor at job start (wait_slot) and during the run (memguard.sh). Resumable.
