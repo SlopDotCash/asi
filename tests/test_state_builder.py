@@ -33,6 +33,7 @@ from alberta_framework.core.state_builder import (
     StateBuilderLearningProposal,
     _finite_product_matvec,
     _prefer_scaled_sum,
+    _state_builder_config_digest,
     load_state_builder_checkpoint,
     replace_state_builder_learning_proposal_update,
     save_state_builder_checkpoint,
@@ -1303,6 +1304,58 @@ def test_state_builder_checkpoint_config_digest_rejects_behavior_tampering(
 
     with pytest.raises(ValueError, match="config is not canonical|fields do not match the schema"):
         load_state_builder_checkpoint(noncanonical_path)
+
+
+def _invalid_state_builder_states() -> list[tuple[StateBuilder[object], object]]:
+    builders: list[StateBuilder[object]] = [
+        IdentityStateBuilder(IdentityStateBuilderConfig(observation_dim=2)),
+        FixedTraceStateBuilder(
+            FixedTraceStateBuilderConfig(
+                observation_dim=2,
+                n_actions=2,
+                observation_decay_rates=(0.5, 0.9),
+            )
+        ),
+        OnlineGatedStateBuilder(
+            OnlineGatedStateBuilderConfig(observation_dim=2, hidden_dim=3, step_size=0.02)
+        ),
+    ]
+    invalid: list[tuple[StateBuilder[object], object]] = []
+    for builder in builders:
+        leaves, treedef = jax.tree.flatten(builder.init(jr.key(5)))
+        corrupt = [
+            jnp.full_like(leaf, jnp.nan)
+            if jnp.issubdtype(leaf.dtype, jnp.floating)
+            else jnp.full_like(leaf, -1)
+            for leaf in leaves
+        ]
+        invalid.extend(
+            (builder, jax.tree.unflatten(treedef, [*leaves[:i], corrupt[i], *leaves[i + 1 :]]))
+            for i in range(len(leaves))
+        )
+    return invalid
+
+
+def test_state_builder_checkpoint_refuses_invalid_states(tmp_path: Path) -> None:
+    for index, (builder, state) in enumerate(_invalid_state_builder_states()):
+        assert not bool(builder.state_valid(state))
+        with pytest.raises(ValueError, match="cannot save an invalid"):
+            save_state_builder_checkpoint(builder, state, tmp_path / f"saved_{index}")
+        assert not (tmp_path / f"saved_{index}").exists()
+
+        forged_path = tmp_path / f"forged_{index}"
+        save_checkpoint(
+            state,
+            forged_path,
+            metadata={
+                "schema": STATE_BUILDER_CHECKPOINT_SCHEMA,
+                "builder_config": builder.to_config(),
+                "config_sha256": _state_builder_config_digest(builder.to_config()),
+                "resource_budget": builder.resource_budget().to_config(),
+            },
+        )
+        with pytest.raises(ValueError, match="restored state is invalid"):
+            load_state_builder_checkpoint(forged_path)
 
 
 def test_state_builder_v1_checkpoint_without_config_digest_fails_closed(
