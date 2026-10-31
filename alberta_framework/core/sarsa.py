@@ -1331,6 +1331,8 @@ def _require_sarsa_transition_continuity(
         raise ValueError("SARSA observations must be rank-two transition arrays")
     if terminated.ndim != 1:
         raise ValueError("SARSA terminated flags must be a rank-one array")
+    if not bool(state.last_action >= 0):
+        raise ValueError("SARSA array state must be primed with a selected last_action")
 
     source_matches = jnp.array_equal(
         jnp.asarray(state.last_observation), observations[0]

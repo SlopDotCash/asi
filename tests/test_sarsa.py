@@ -980,6 +980,27 @@ class TestSARSAScan:
                 next_observations,
             )
 
+    @pytest.mark.parametrize(
+        "runner",
+        [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],
+    )
+    def test_scan_rejects_unprimed_state(self, runner) -> None:
+        """An unprimed state would refuse every row without learning or raising."""
+        agent = _make_agent(n_actions=2, hidden_sizes=(), epsilon_start=0.0)
+        state = agent.init(feature_dim=2, key=jr.key(7))
+        observations = jnp.asarray([[0.0, 0.0], [1.0, 0.0]], dtype=jnp.float32)
+        next_observations = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float32)
+
+        with pytest.raises(ValueError, match="must be primed"):
+            runner(
+                agent,
+                state,
+                observations,
+                jnp.ones((2,), dtype=jnp.float32),
+                jnp.zeros((2,), dtype=jnp.float32),
+                next_observations,
+            )
+
     def test_scan_shapes(self):
         """Scan loop produces correct output shapes."""
         agent = _make_agent(n_actions=2, hidden_sizes=(8,))
