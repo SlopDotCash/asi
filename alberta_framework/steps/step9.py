@@ -25,6 +25,7 @@ floats; legal endpoints stay valid.
 from __future__ import annotations
 
 import functools
+import time
 from dataclasses import asdict, dataclass, field
 from numbers import Integral
 from typing import Any, cast
@@ -1048,6 +1049,7 @@ def run_step9_scan(
             result.dream_accepted,
         )
 
+    t0 = time.time()
     final_state, (
         real_td_errors,
         average_rewards,
@@ -1057,6 +1059,16 @@ def run_step9_scan(
         dream_td_errors,
         dream_accepted,
     ) = jax.lax.scan(scan_step, state, (rewards, next_observations))
+    elapsed = time.time() - t0
+    # Preserve the model's host-only lifecycle clocks at the batch boundary.
+    final_state = final_state.replace(
+        world_model_state=final_state.world_model_state.replace(
+            learner_state=final_state.world_model_state.learner_state.replace(
+                birth_timestamp=state.world_model_state.learner_state.birth_timestamp,
+                uptime_s=state.world_model_state.learner_state.uptime_s + elapsed,
+            ),
+        ),
+    )
     return Step9ArrayResult(
         state=final_state,
         real_td_errors=real_td_errors,
