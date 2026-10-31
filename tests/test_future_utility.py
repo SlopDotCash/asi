@@ -733,3 +733,113 @@ def test_loss_reduction_does_not_overflow_expanded_products(
         np.testing.assert_array_equal(
             result.error_trace, [error, 0.0] if representable else [0.0, 0.0]
         )
+
+
+@pytest.mark.parametrize(
+    ("signal_shape", "second_moment_shape"),
+    [((3,), (1,)), ((1,), (3,)), ((3,), ()), ((3,), (3, 1))],
+)
+def test_normalization_rejects_second_moment_broadcast(
+    signal_shape: tuple[int, ...],
+    second_moment_shape: tuple[int, ...],
+) -> None:
+    with pytest.raises(ValueError, match="second_moment must match signal exactly"):
+        normalize_future_utility_signal(
+            jnp.ones(signal_shape, dtype=jnp.float32),
+            jnp.ones(signal_shape, dtype=jnp.int32),
+            jnp.zeros(second_moment_shape, dtype=jnp.float32),
+            0.9,
+            0.99,
+            "uncertainty",
+        )
+
+
+def test_normalization_rejects_mismatched_ages() -> None:
+    with pytest.raises(ValueError, match="ages must match signal exactly"):
+        normalize_future_utility_signal(
+            jnp.ones(3, dtype=jnp.float32),
+            jnp.ones(2, dtype=jnp.int32),
+            jnp.zeros(3, dtype=jnp.float32),
+            0.9,
+            0.99,
+            "uncertainty",
+        )
+
+
+@pytest.mark.parametrize("ages_shape", [(1,), (3, 1), ()])
+def test_bias_correction_rejects_age_broadcast(ages_shape: tuple[int, ...]) -> None:
+    with pytest.raises(ValueError, match="ages must match utilities exactly"):
+        bias_correct_future_utility(
+            jnp.ones(3, dtype=jnp.float32),
+            jnp.ones(ages_shape, dtype=jnp.int32),
+            0.9,
+            "age",
+        )
+
+
+@pytest.mark.parametrize("mode", ["bogus", "", "AGE"])
+def test_utility_helpers_reject_unknown_modes(mode: str) -> None:
+    signal = jnp.ones(3, dtype=jnp.float32)
+    ages = jnp.ones(3, dtype=jnp.int32)
+    with pytest.raises(ValueError, match="mode must be one of"):
+        normalize_future_utility_signal(signal, ages, jnp.zeros(3), 0.9, 0.99, mode)
+    with pytest.raises(ValueError, match="mode must be one of"):
+        bias_correct_future_utility(signal, ages, 0.9, mode)
+
+
+@pytest.mark.parametrize("decay", [float("nan"), float("inf"), -0.5, 1.0, 1.5, True, "0.9"])
+def test_utility_helpers_reject_host_decays_outside_ema_domain(decay: object) -> None:
+    signal = jnp.ones(3, dtype=jnp.float32)
+    ages = jnp.ones(3, dtype=jnp.int32)
+    with pytest.raises(ValueError, match="moment_decay must narrow"):
+        normalize_future_utility_signal(
+            signal,
+            ages,
+            jnp.zeros(3),
+            decay,  # type: ignore[arg-type]
+            0.99,
+            "uncertainty",
+        )
+    with pytest.raises(ValueError, match="utility_decay must narrow"):
+        bias_correct_future_utility(
+            signal,
+            ages,
+            decay,  # type: ignore[arg-type]
+            "age",
+        )
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+@pytest.mark.parametrize("decay", [float("nan"), float("inf"), -0.5, 1.0, 1.5])
+def test_utility_helpers_expose_device_decays_outside_ema_domain(
+    decay: float,
+    compiled: bool,
+) -> None:
+    signal = jnp.ones(2, dtype=jnp.float32)
+    ages = jnp.ones(2, dtype=jnp.int32)
+
+    def normalize(value: jax.Array) -> tuple[jax.Array, jax.Array]:
+        return normalize_future_utility_signal(
+            signal, ages, jnp.zeros(2), value, 0.99, "uncertainty"
+        )
+
+    def correct(value: jax.Array) -> jax.Array:
+        return bias_correct_future_utility(signal, ages, value, "age")
+
+    decay_array = jnp.asarray(decay, dtype=jnp.float32)
+    normalized, second = (jax.jit(normalize) if compiled else normalize)(decay_array)
+    corrected = (jax.jit(correct) if compiled else correct)(decay_array)
+
+    assert bool(jnp.all(jnp.isnan(normalized)))
+    assert bool(jnp.all(jnp.isnan(second)))
+    assert bool(jnp.all(jnp.isnan(corrected)))
+
+
+def test_utility_helpers_reject_non_scalar_decays() -> None:
+    signal = jnp.ones(2, dtype=jnp.float32)
+    ages = jnp.ones(2, dtype=jnp.int32)
+    decay = jnp.full(2, 0.9, dtype=jnp.float32)
+    with pytest.raises(ValueError, match="moment_decay must be a scalar"):
+        normalize_future_utility_signal(signal, ages, jnp.zeros(2), decay, 0.99, "uncertainty")
+    with pytest.raises(ValueError, match="utility_decay must be a scalar"):
+        bias_correct_future_utility(signal, ages, decay, "age")
