@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import pytest
 from jax import tree_util
 
 from alberta_framework.core.dual_replay import DualReplayConfig
@@ -110,6 +114,35 @@ def test_default_checkpoint_template_ignores_the_ambient_prng_default(
             strict=True,
         )
     )
+
+
+def _tampered_checkpoint(
+    tmp_path: Path,
+    tamper: Callable[[dict[str, Any]], None],
+) -> Path:
+    rehearsal = _rehearsal("scalar_index")
+    path = tmp_path / "model_replay"
+    save_model_replay_rehearsal_checkpoint(
+        rehearsal, rehearsal.init(jr.key(7, impl="threefry2x32")), path
+    )
+    metadata_path = path / "metadata" / "metadata"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    tamper(metadata)
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    return path
+
+
+def test_checkpoint_rejects_float_aliased_resource_budget(tmp_path: Path) -> None:
+    """The undigested budget must keep its integer scalars, as sibling loaders do."""
+
+    def tamper(metadata: dict[str, Any]) -> None:
+        budget = metadata["resource_budget"]
+        budget["persistent_state_bytes"] = float(budget["persistent_state_bytes"])
+
+    path = _tampered_checkpoint(tmp_path, tamper)
+
+    with pytest.raises(ValueError, match="resource budget"):
+        load_model_replay_rehearsal_checkpoint(path)
 
 
 def _event(
