@@ -7582,6 +7582,30 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.005625,
             },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": floor,
+                    "anneal_tau": tau,
+                }
+                for tag, floor, tau in (
+                    ("f2t250", 0.0028125, 250.0),
+                    ("f2t1000", 0.0028125, 1000.0),
+                    ("f4t250", 0.00140625, 250.0),
+                    ("f4t1000", 0.00140625, 1000.0),
+                )
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_reset_frac": frac,
+                }
+                for tag, frac in (("25", 0.25), ("50", 0.5))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7834,6 +7858,92 @@ class TestRLSHeadIdentMapIdet003S005625:
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
+class TestRLSHeadIdentMapStepAnneal:
+    """Within-task body step anneal keyed on since_shift (anneal wave).
+
+    The reduction pin runs the LIVE schedule (keys present,
+    ``anneal_floor == step_size``, short tau) on a stream where the
+    detector and identifier fire, and requires bitwise equality with the
+    PARENT.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+
+    @staticmethod
+    def _offset_data():
+        key = jr.key(4321)
+        kx, ky = jr.split(key)
+        offsets = jnp.linspace(-2.0, 2.0, SMALL.input_dim)
+        x = np.asarray(
+            jr.uniform(kx, (64, SMALL.input_dim), jnp.float32, -0.3, 0.3)
+            + offsets[None, :]
+        )
+        y = np.asarray(jr.randint(ky, (64,), 0, SMALL.n_classes))
+        return x, y
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_anneal_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = self._offset_data()
+        return run_screening_config(
+            x, y, self._spec(**overrides), seed=7, config=SMALL
+        )
+
+    def test_stream_exercises_identifier(self):
+        """The pin stream really remaps: disabling the identifier moves
+        the parent's trajectory."""
+        parent = self._run()
+        no_ident = self._run(ident_match_at=0.0)
+        assert not np.array_equal(
+            np.asarray(parent.per_task_loss), np.asarray(no_ident.per_task_loss)
+        )
+
+    def test_off_live_path_pin_bitwise(self):
+        """``anneal_floor == step_size`` through the live schedule is the
+        parent bit-exactly."""
+        parent = self._run()
+        off = self._run(anneal_floor=0.005625, anneal_tau=2.0)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_mechanism_live(self):
+        """A real floor below the step diverges from the parent."""
+        parent = self._run()
+        ann = self._run(anneal_floor=0.00140625, anneal_tau=2.0)
+        assert not np.array_equal(
+            np.asarray(ann.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(ann.per_task_loss)))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        for bad in ({"anneal_floor": 0.0}, {"anneal_floor": 0.01},
+                    {"anneal_tau": 0.0}, {"anneal_tau": float("inf")}):
+            hp = {**self._spec(anneal_floor=0.0028125, anneal_tau=250.0)
+                  .hyperparameters, **bad}
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner(hp)
+
+
 class TestPlasticityCounterSaturation:
     """Per-unit plasticity counters must saturate via the declared helper.
 
@@ -7994,3 +8104,70 @@ class TestRLSHeadSMPrecond:
 
         assert "rls_head_resid_sm3e4_i50r" not in SCREENING_REGISTRY
         assert "rls_head_resid_sm1e3_i50r" not in SCREENING_REGISTRY
+
+
+class TestRLSHeadIdentMapAnnealPartialReset:
+    """Partial anneal reset (``anneal_reset_frac``) on anneal_f2t1000.
+
+    Pins: f = 0 is the parent bit-exactly; a deliberate f > 0 moves the
+    trajectory on a stream where the detector fires; invalid f rejected.
+    The pin stream uses a short tau so the clock difference reaches the
+    step within the 64-sample stream.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    # Reuse the anneal pin stream and helpers (not its tests).
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+
+    def test_stream_fires_detector(self):
+        """The pin stream moves the parent off the no-identifier path."""
+        assert not np.array_equal(
+            np.asarray(self._run().per_task_loss),
+            np.asarray(self._run(ident_match_at=0.0).per_task_loss),
+        )
+
+    def test_registered_arms(self):
+        for tag, frac in (("25", 0.25), ("50", 0.5)):
+            spec = screening_spec(self.PARENT + f"_pr{tag}")
+            assert spec.hyperparameters["anneal_reset_frac"] == frac
+            parent = screening_spec(self.PARENT).hyperparameters
+            rest = dict(spec.hyperparameters)
+            del rest["anneal_reset_frac"]
+            assert rest == parent
+
+    def test_frac_zero_pin_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        off = self._run(anneal_tau=2.0, anneal_reset_frac=0.0)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_deliberate_break_differs(self):
+        parent = self._run(anneal_tau=2.0)
+        on = self._run(anneal_tau=2.0, anneal_reset_frac=0.9)
+        assert not np.array_equal(
+            np.asarray(on.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("frac", [-0.1, 1.0, 1.5, float("nan")])
+    def test_invalid_frac_rejected(self, frac):
+        # NaN is already refused by the generic finite-number guard.
+        with pytest.raises(ValueError, match="anneal_reset_frac|finite"):
+            self._run(anneal_reset_frac=frac)
+
+    def test_frac_requires_anneal(self):
+        spec = screening_spec(self.PARENT)
+        hp = {k: v for k, v in spec.hyperparameters.items()
+              if k not in ("anneal_floor", "anneal_tau")}
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        with pytest.raises(ValueError, match="anneal_reset_frac"):
+            _make_rls_head_identmap_learner({**hp, "anneal_reset_frac": 0.5})
