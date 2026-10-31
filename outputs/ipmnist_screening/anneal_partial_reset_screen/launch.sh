@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stages: envcheck (VOID-stop on mismatch) -> parent reuse -> tune seed 0 -> screen seeds 1-3 -> confirm seeds 4-13.
 # Cap 4 one-thread workers, 3 GB available-RAM floor, defers to cargo-build-sbf / pytest.
-cd /home/pumpdev/asi-anneal-partial-reset-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/anneal_partial_reset_screen; L=/tmp/pr_partial_reset_launch.log
 log(){ echo "$(date +%T) $*" >> $L; }
 gate(){ while :; do n=$(pgrep -fc "alberta_framework.benchmarks.ipmnist_screening run"); a=$(free -g | awk '/Mem:/{print $7}')
