@@ -534,5 +534,6 @@ A preregistered (b1c5e283) development screen. On a detected shift, the body-ste
 - Confirm, seeds 4-13: +0.000613 paired, 10/10 seeds improved, 95% CI [+0.000547, +0.000680]. It FAILS the preregistered +0.002 mean bar.
 - The bit-exact environment check passed.
 - The gain is negative in tasks 1-15 and grows through tasks 46-60. A longer horizon was not tested.
+- Caveat: the anneal step is coupled to weight decay (`1 - lr*weight_decay`), so this arm changes both, and they were not separated.
 
 Evidence: [`outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md).
