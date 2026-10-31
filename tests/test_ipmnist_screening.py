@@ -7641,6 +7641,17 @@ class TestRLSHeadIdentMap:
                     ("f8t1000", 0.000703125),
                 )
             },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": step, "anneal_floor": step,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                }
+                for tag, step in (
+                    ("004", 0.004), ("0075", 0.0075), ("01", 0.01),
+                )
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8292,3 +8303,48 @@ class TestRLSHeadIdentMapAnnealWd0FloorRegistry:
         assert wd0.pop("weight_decay") == 0.0
         del parent["weight_decay"]
         assert wd0 == parent
+
+
+class TestRLSHeadIdentMapWd0ConstStepRegistry:
+    """Constant-step size retune on anneal_f1t1000_wd0 (wd0_const_step_retune/).
+
+    Each arm differs from the incumbent only in ``step_size`` and
+    ``anneal_floor`` (kept equal, so the step is constant); at weight_decay 0
+    the body decay is exactly 1.
+    """
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0"
+    ARMS = (("004", 0.004), ("0075", 0.0075), ("01", 0.01))
+
+    def _arm(self, tag):
+        return f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0"
+
+    def test_registry_resolves_and_differs_only_in_step(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert inc["step_size"] == inc["anneal_floor"] == 0.005625
+        assert inc["weight_decay"] == 0.0
+        for tag, step in self.ARMS:
+            spec = screening_spec(self._arm(tag))
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("step_size") == step
+            assert hp.pop("anneal_floor") == step
+            rest = {k: v for k, v in inc.items() if k not in ("step_size", "anneal_floor")}
+            assert hp == rest
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_steps_distinct_in_float32(self):
+        steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.005625)]
+        assert len(set(steps)) == 4
+
+    def test_schedule_constant_and_decay_one(self):
+        for tag, step in self.ARMS:
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            for s in (0.0, 1.0, 999.0, 4999.0):
+                lr = jnp.maximum(
+                    jnp.float32(hp["anneal_floor"]),
+                    jnp.float32(hp["step_size"])
+                    * jax.lax.rsqrt(1.0 + jnp.float32(s) / jnp.float32(hp["anneal_tau"])),
+                )
+                assert np.asarray(lr) == np.float32(step)
+                d = 1.0 - lr * jnp.float32(hp["weight_decay"])
+                assert np.asarray(d, dtype=np.float32) == np.float32(1.0)
