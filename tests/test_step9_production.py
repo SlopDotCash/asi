@@ -9,6 +9,7 @@ constructible.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 import chex
@@ -21,6 +22,7 @@ from alberta_framework.core.world_model import (
     ActionConditionedWorldModel,
     ActionConditionedWorldModelConfig,
 )
+from alberta_framework.steps import step9 as step9_module
 from alberta_framework.steps.step6 import Step6DifferentialSARSAConfig
 from alberta_framework.steps.step9 import (
     Step9DreamingConfig,
@@ -929,6 +931,50 @@ def test_step9_scan_exposes_rejected_model_updates() -> None:
         result.model_updates_applied,
         jnp.asarray([False]),
     )
+
+
+@pytest.mark.parametrize("planning_budget", [0, 1])
+def test_step9_scan_preserves_initialized_world_model_host_clocks(
+    planning_budget: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = iter([100.0, 100.25, 100.25, 100.5])
+    monkeypatch.setattr(
+        step9_module,
+        "time",
+        SimpleNamespace(time=lambda: next(clock)),
+        raising=False,
+    )
+    cfg = Step9DreamingConfig(
+        observation_dim=2,
+        n_actions=2,
+        model_hidden_sizes=(),
+        model_sparsity=0.0,
+        planning_budget=planning_budget,
+        dreaming_warmup_steps=0,
+    )
+    agent, model, buffer = make_step9_components(cfg)
+    initial = init_step9_state(
+        agent, model, buffer, key=jr.key(17), initial_observation=jnp.zeros(2)
+    )
+    initial = initial.replace(
+        world_model_state=initial.world_model_state.replace(
+            learner_state=initial.world_model_state.learner_state.replace(uptime_s=7.0),
+        ),
+    )
+    rewards = jnp.array([0.5, -0.25], dtype=jnp.float32)
+    observations = jnp.ones((2, 2), dtype=jnp.float32)
+    batch = run_step9_scan(cfg, agent, model, buffer, initial, rewards, observations)
+    continued = run_step9_scan(cfg, agent, model, buffer, batch.state, rewards, observations)
+    expected = initial.world_model_state.learner_state
+    expected_uptime = (7.25, 7.5)
+    for returned, uptime in zip((batch.state, continued.state), expected_uptime, strict=True):
+        actual = returned.world_model_state.learner_state
+        assert type(actual.birth_timestamp) is float
+        assert actual.birth_timestamp == expected.birth_timestamp
+        assert type(actual.uptime_s) is float
+        assert actual.uptime_s == uptime
+    assert int(continued.state.step_count) == 4
+    assert int(continued.state.world_model_state.step_count) == 4
 
 
 def test_step9_scan_actions_in_range() -> None:
