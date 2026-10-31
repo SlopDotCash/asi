@@ -244,6 +244,31 @@ class TestGymnasiumTrajectoryScanValidation:
         with pytest.raises(TypeError, match="learner_state must be an exact LearnerState"):
             learn_from_trajectory(learner, obs, targets, learner_state=cast(Any, object()))
 
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    @pytest.mark.parametrize("field", ["weights", "bias"])
+    def test_rejects_nonfinite_learner_state(self, learner, field: str, value: float) -> None:
+        obs = jnp.ones((5, 3), dtype=jnp.float32)
+        targets = jnp.ones((5, 1), dtype=jnp.float32)
+        state = learner.init(3)
+        poisoned = state.replace(**{field: jnp.full_like(getattr(state, field), value)})
+        with pytest.raises(ValueError, match=f"learner_state.{field} must be finite"):
+            learn_from_trajectory(learner, obs, targets, learner_state=poisoned)
+
+    def test_rejects_nonscalar_learner_state_bias(self, learner) -> None:
+        obs = jnp.ones((5, 3), dtype=jnp.float32)
+        targets = jnp.ones((5, 1), dtype=jnp.float32)
+        state = learner.init(3).replace(bias=jnp.ones(4, dtype=jnp.float32))
+        with pytest.raises(ValueError, match="learner_state.bias must be a scalar"):
+            learn_from_trajectory(learner, obs, targets, learner_state=state)
+
+    def test_resumes_from_finite_learner_state(self, learner) -> None:
+        obs = jnp.ones((8, 3), dtype=jnp.float32)
+        targets = jnp.ones((8, 1), dtype=jnp.float32)
+        state, _ = learn_from_trajectory(learner, obs, targets)
+        resumed, metrics = learn_from_trajectory(learner, obs, targets, learner_state=state)
+        assert int(resumed.step_count) == 16
+        assert bool(jnp.all(jnp.isfinite(metrics)))
+
     def test_valid_trajectory_learning_runs_cleanly(self, learner) -> None:
         obs = jnp.ones((8, 3), dtype=jnp.float32)
         targets = jnp.ones((8, 1), dtype=jnp.float32)
