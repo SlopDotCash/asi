@@ -1257,7 +1257,9 @@ def test_average_reward_actor_preflights_state_before_allocation() -> None:
 
 def test_differential_sarsa_preflights_state_before_allocation() -> None:
     agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=1))
-    last_legal_feature_dim = (2**29 - 1 - 10) // 3
+    # One action owns 3 * feature_dim + 5 float32 scalars (bias, bias trace,
+    # previous_discount, average_reward, epsilon) plus 6 fixed integer words.
+    last_legal_feature_dim = (2**29 - 1 - 11) // 3
 
     with pytest.raises(ValueError, match="state bytes"):
         agent.init(last_legal_feature_dim + 1, jr.key(0))

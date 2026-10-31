@@ -72,7 +72,7 @@ UNIFORM_RANDOM_STATE_SCHEMA = "asi.uniform_random_exact_control_state.preview1"
 ANALYTIC_ORACLE_IMPLEMENTATION_ID = "asi.analytic_oracle_exact_control.preview1"
 ANALYTIC_ORACLE_STATE_SCHEMA = "asi.analytic_oracle_exact_control_state.preview1"
 DIFFERENTIAL_SARSA_IMPLEMENTATION_ID = "asi.differential_sarsa_exact_control.preview1"
-DIFFERENTIAL_SARSA_STATE_SCHEMA = "asi.differential_sarsa_exact_control_state.preview1"
+DIFFERENTIAL_SARSA_STATE_SCHEMA = "asi.differential_sarsa_exact_control_state.preview2"
 DISCOUNTED_SARSA_IMPLEMENTATION_ID = "asi.discounted_sarsa_exact_control.preview1"
 DISCOUNTED_SARSA_STATE_SCHEMA = "asi.discounted_sarsa_exact_control_state.preview1"
 
@@ -1831,6 +1831,7 @@ class DifferentialSARSAReferenceAdapter(_BaseReferenceControlAdapter):
                 (self.config.n_actions, self.config.observation_dim),
             ),
             ("q_trace_bias", learner.q_trace_bias, (self.config.n_actions,)),
+            ("previous_discount", learner.previous_discount, ()),
             ("average_reward", learner.average_reward, ()),
             ("last_observation", learner.last_observation, (self.config.observation_dim,)),
             ("epsilon", learner.epsilon, ()),
@@ -1879,6 +1880,9 @@ class DifferentialSARSAReferenceAdapter(_BaseReferenceControlAdapter):
         epsilon = float(learner.epsilon)
         if not 0.0 <= epsilon <= 1.0:
             raise DecisionOwnershipError("differential-SARSA epsilon is invalid")
+        previous_discount = float(learner.previous_discount)
+        if not 0.0 <= previous_discount <= 1.0:
+            raise DecisionOwnershipError("differential-SARSA previous discount is invalid")
 
     def _advance_payload(
         self,
