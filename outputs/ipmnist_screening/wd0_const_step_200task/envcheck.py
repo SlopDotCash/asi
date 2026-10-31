@@ -1,4 +1,4 @@
-"""Bit-for-bit env check per PREREGISTRATION.md. Exit 0 only if all three match."""
+"""Bit-for-bit env check per DEVELOPMENT_PLAN.md. Exit 0 only if all three match."""
 import json, subprocess, sys
 D='outputs/ipmnist_screening/wd0_const_step_200task/envcheck/'
 B='rls_head_resid_identmap50_r_idet003_s'

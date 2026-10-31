@@ -8372,7 +8372,7 @@ def _load_step200_analyze():
 
 
 class TestWd0ConstStep200TaskConfirm:
-    """Preregistered rules of wd0_const_step_200task/analyze.py (adapted from our own earlier 60-task screen)."""
+    """Development-plan rules of wd0_const_step_200task/analyze.py (adapted from our own earlier 60-task screen)."""
 
     A = _load_step200_analyze()
     OK = [0.95] * 200

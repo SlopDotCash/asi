@@ -1,4 +1,4 @@
-# Preregistration: wd0 constant step 0.02 vs anneal_f2t1000_wd0 over the full 200-task life
+# Development plan: wd0 constant step 0.02 vs anneal_f2t1000_wd0 over the full 200-task life
 
 Written and committed before any run (2026-10-31, GMT). Base commit ef85fff8 (head of our own #3638),
 which is behind `main` (11 commits at 13:19 GMT; it does not contain main's head). Line citations are to

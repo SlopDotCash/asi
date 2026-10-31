@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wd0 constant-step 200-task confirmation per PREREGISTRATION.md. Phase 0: OpenML cache pre-flight (fail fast).
+# wd0 constant-step 200-task confirmation per DEVELOPMENT_PLAN.md. Phase 0: OpenML cache pre-flight (fail fast).
 # Phase 1: env check (3 jobs, VOID-stop on any failure or mismatch). Phase 2: confirm on seeds 134-153
 # (40 jobs, 200 tasks) -> verdict. Cap 4 one-thread workers; 3 GB floor at job start (wait_slot) and
 # during the run (memguard.sh). Resumable. A candidate shard that still fails after one retry is scored

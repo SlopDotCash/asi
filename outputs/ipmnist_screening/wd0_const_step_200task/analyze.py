@@ -1,11 +1,11 @@
-"""Confirmation verdict per PREREGISTRATION.md (200 tasks, 20 paired seeds 134-153).
+"""Confirmation verdict per DEVELOPMENT_PLAN.md (200 tasks, 20 paired seeds 134-153).
 usage: analyze.py -> per-seed gains, 50-task blocks, mean/SE/CI (t=2.093), bars, divergence.
 The divergence logic is adapted from our own earlier 60-task follow-up screen (unpublished) and rewritten
 here self-contained: pure functions classify / screen_verdict, testable on synthetic inputs.
 An incumbent shard that diverges raises VoidRun (exit 3)."""
 import json, math, os, statistics as st, sys
 
-FLOOR = 0.5          # single-task accuracy floor (justified in PREREGISTRATION.md)
+FLOOR = 0.5          # single-task accuracy floor (justified in DEVELOPMENT_PLAN.md)
 T19 = 2.093          # t(0.975, df 19)
 NTASK = 200
 BLOCK = 50
