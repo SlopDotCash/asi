@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Phase 1: 3 env checks in parallel, then verify bit-for-bit; stop (VOID) on any mismatch.
 # Phase 2: reuse the parent shards, then queue the 20 arm runs (cap 4 workers, 3 GB floor).
-cd /home/pumpdev/asi-f4t1000-200-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/anneal_f4t1000_confirm200; L=/tmp/pd_f4t1000_launch.log
 log(){ echo "$(date +%T) $*" >> $L; }
 pids=()
