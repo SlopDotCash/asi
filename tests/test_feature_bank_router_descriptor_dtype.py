@@ -13,7 +13,7 @@ from alberta_framework.core.feature_bank_router import FeatureBankRouter, Featur
 @pytest.mark.parametrize("offset", [0, 2**32])
 @pytest.mark.parametrize("boundary", ["init", "validate_descriptors", "route"])
 def test_descriptor_source_dtype_is_checked(boundary: str, offset: int, x64: bool) -> None:
-    with jax.experimental.enable_x64(x64):
+    with jax.enable_x64(x64):
         router = FeatureBankRouter(FeatureBankRouterConfig(base_dim=4, active_slots=1))
         descriptors = np.asarray([[offset, offset + 1]], dtype=np.int64)
         state = router.init(jnp.asarray([[0, 1]], dtype=jnp.int32))
