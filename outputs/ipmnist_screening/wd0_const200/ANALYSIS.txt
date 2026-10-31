@@ -1,0 +1,29 @@
+seed 81 arm 0.973898 parent 0.970285 delta +0.003613
+seed 82 arm 0.973114 parent 0.969580 delta +0.003534
+seed 83 arm 0.973035 parent 0.969468 delta +0.003567
+seed 84 arm 0.973362 parent 0.969559 delta +0.003803
+seed 85 arm 0.973498 parent 0.970002 delta +0.003496
+seed 86 arm 0.973208 parent 0.969717 delta +0.003491
+seed 87 arm 0.973190 parent 0.969667 delta +0.003523
+seed 88 arm 0.973434 parent 0.969769 delta +0.003665
+seed 89 arm 0.973097 parent 0.969515 delta +0.003582
+seed 90 arm 0.973235 parent 0.969665 delta +0.003570
+seed 91 arm 0.973592 parent 0.969930 delta +0.003662
+seed 92 arm 0.973511 parent 0.970085 delta +0.003426
+seed 93 arm 0.973171 parent 0.969711 delta +0.003460
+seed 94 arm 0.973233 parent 0.969483 delta +0.003750
+seed 95 arm 0.973475 parent 0.969769 delta +0.003706
+seed 96 arm 0.973556 parent 0.970036 delta +0.003520
+seed 97 arm 0.973322 parent 0.969821 delta +0.003501
+seed 98 arm 0.973197 parent 0.969812 delta +0.003385
+seed 99 arm 0.973581 parent 0.970052 delta +0.003529
+seed 100 arm 0.972783 parent 0.968825 delta +0.003958
+mean acc arm 0.973325 parent 0.969738
+per-task diffs > 0: 3986/4000
+mean +0.003587 SD 0.000138 SE 0.000031 CI95 [+0.003523, +0.003652] (t=2.093) improved 20/20
+block 1-50: mean +0.005953 CI95 [+0.005816, +0.006090] improved 20/20 (descriptive)
+block 51-100: mean +0.003253 CI95 [+0.003150, +0.003356] improved 20/20 (descriptive)
+block 101-150: mean +0.002757 CI95 [+0.002602, +0.002912] improved 20/20 (descriptive)
+block 151-200: mean +0.002385 CI95 [+0.002305, +0.002465] improved 20/20 (descriptive)
+late-block flag: not raised (151-200 mean > 0)
+BARS: mean>=+0.002 True, >=14/20 True, CI_lo>0 True -> PASS
