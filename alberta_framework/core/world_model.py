@@ -319,7 +319,8 @@ def _float32_operand(
 def _discrete_action_operand(name: str, value: Array | float | int) -> Array:
     """Preserve an integer action's exact domain while enforcing scalar shape."""
     array = jnp.asarray(value)
-    if jnp.issubdtype(array.dtype, jnp.complexfloating):
+    # A boolean is not an action code: JAX would read True as action 1.
+    if jnp.issubdtype(array.dtype, jnp.complexfloating) or array.dtype == jnp.bool_:
         raise ValueError(f"{name} must have a real numeric dtype")
     if array.shape != ():
         raise ValueError(f"{name} must have shape (), got {array.shape}")
@@ -1730,9 +1731,9 @@ def run_world_model_learning_loop(
         updates_applied,
     ) = jax.lax.scan(step_fn, state, (observations, actions, rewards, next_observations))
     # Scan materializes host-only lifecycle clocks as float32 leaves.
-    final_state = dataclasses.replace(
+    final_state = dataclasses.replace(  # type: ignore[type-var]
         final_state,
-        learner_state=dataclasses.replace(
+        learner_state=dataclasses.replace(  # type: ignore[type-var]
             final_state.learner_state,
             birth_timestamp=state.learner_state.birth_timestamp,
             uptime_s=state.learner_state.uptime_s,
