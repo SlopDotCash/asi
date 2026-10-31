@@ -4765,6 +4765,27 @@ class RLSHeadSMState:
     sm: dict[str, Array]
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadASState:
+    """Opt-in RLS carry plus Autostep per-weight body step sizes.
+
+    Distinct state so the incumbent :class:`RLSHeadState` schema is
+    unchanged (the L2-Init / second-moment precedent).  ``alpha``,
+    ``trace`` (Autostep ``h``) and ``normalizer`` (Autostep ``v``) hold one
+    entry per weight of the four residual-trained body tensors.
+    """
+
+    utility: dict[str, Array]
+    step: Array
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+    alpha: dict[str, Array]
+    trace: dict[str, Array]
+    normalizer: dict[str, Array]
+
+
 def _rls_head_hp(**overrides: float) -> dict[str, float]:
     """Champion (``sigma0_shiftnorm_d099``) constants plus RLS-head defaults.
 
@@ -4944,6 +4965,27 @@ def _make_rls_head_learner(
             raise ValueError("body_sm_step must be positive and finite")
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
+    as_meta = hp.get("body_as_meta", 0.0)
+    if as_meta < 0.0 or not math.isfinite(as_meta):
+        raise ValueError("body_as_meta must be non-negative and finite")
+    # Build-time flag: the Autostep path is compiled only when the key is
+    # present.  At body_as_meta = 0 that path keeps alpha = step_size and
+    # reproduces the incumbent bit-for-bit (pinned by tests), so the pin
+    # exercises the mechanism's own arithmetic, not a delegation.
+    as_enabled = "body_as_meta" in hp
+    as_tau = hp.get("body_as_tau", 1e4)
+    if as_enabled:
+        if not resid or not gate_enabled:
+            raise ValueError(
+                "body Autostep is supported only for the gated residual body"
+            )
+        if whiten_enabled or newton or _decay_to_init or sm_enabled:
+            raise ValueError(
+                "body Autostep is not composed with resid_whiten, "
+                "resid_newton, L2-Init, or body_sm preconditioning"
+            )
+        if as_tau < 1.0 or not math.isfinite(as_tau):
+            raise ValueError("body_as_tau must be finite and >= 1")
 
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
@@ -4960,10 +5002,35 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
+        if as_enabled:
+            return RLSHeadASState(  # type: ignore[call-arg]
+                utility={
+                    name: jnp.zeros_like(value) for name, value in params.items()
+                },
+                step=jnp.array(0, dtype=jnp.int32),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+                alpha={
+                    name: jnp.full_like(params[name], step_size)
+                    for name in _RLS_HEAD_BODY
+                },
+                trace={
+                    name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY
+                },
+                normalizer={
+                    name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY
+                },
+            )
         if sm_enabled:
             return RLSHeadSMState(  # type: ignore[call-arg]
                 utility={
@@ -5070,13 +5137,13 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         x: Array,
         y: Array,
         key: Array,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
@@ -5156,7 +5223,101 @@ def _make_rls_head_learner(
                 (loss, (logits, phi)), body_grads = jax.value_and_grad(
                     head_loss, has_aux=True
                 )(body)
-            if sm_enabled:
+            if as_enabled:
+                assert isinstance(state, RLSHeadASState)
+                # Champion utility EMA and sigmoid gate byte-identical to
+                # _gated_sgd; the scalar step becomes Autostep per-weight
+                # alpha (Mahmood et al. 2012 Table 1, the repo's
+                # upgd_autostep_update form): z = gated body gradient,
+                # error-free meta gradient z * h, self-regulated normalizer
+                # v, effective-step bound M over the four body tensors.
+                new_utility = dict(state.utility)
+                for name in _RLS_HEAD_BODY:
+                    new_utility[name] = utility_decay * state.utility[name] + (
+                        1.0 - utility_decay
+                    ) * (-body_grads[name] * params[name])
+                bias_correction = 1.0 - jnp.power(
+                    jnp.asarray(utility_decay, dtype=jnp.float32),
+                    count.astype(jnp.float32),
+                )
+                global_max = jnp.max(
+                    jnp.stack(
+                        [
+                            jnp.max(new_utility[name])
+                            for name in sorted(_RLS_HEAD_BODY)
+                        ]
+                    )
+                )
+                global_max = jnp.where(global_max == 0.0, 1.0, global_max)
+                z_all = {
+                    name: body_grads[name]
+                    * (
+                        1.0
+                        - jax.nn.sigmoid(
+                            (new_utility[name] / bias_correction) / global_max
+                        )
+                    )
+                    for name in _RLS_HEAD_BODY
+                }
+                raw_alpha: dict[str, Array] = {}
+                new_normalizer: dict[str, Array] = {}
+                for name in _RLS_HEAD_BODY:
+                    z = z_all[name]
+                    meta_gradient = z * state.trace[name]
+                    abs_meta = jnp.abs(meta_gradient)
+                    v_update = state.normalizer[name] + (1.0 / as_tau) * state.alpha[
+                        name
+                    ] * z * z * (abs_meta - state.normalizer[name])
+                    v_candidate = jnp.maximum(abs_meta, v_update)
+                    valid = jnp.logical_and(
+                        jnp.isfinite(meta_gradient), jnp.isfinite(v_candidate)
+                    )
+                    v_new = jnp.where(valid, v_candidate, state.normalizer[name])
+                    safe_v = jnp.maximum(v_new, 1e-38)
+                    raw_alpha[name] = jnp.where(
+                        valid & (v_new > 0.0),
+                        state.alpha[name] * jnp.exp(as_meta * meta_gradient / safe_v),
+                        state.alpha[name],
+                    )
+                    new_normalizer[name] = v_new
+                effective = jnp.sum(
+                    jnp.stack(
+                        [
+                            jnp.sum(
+                                jnp.where(
+                                    jnp.isfinite(z_all[name]),
+                                    raw_alpha[name] * z_all[name] * z_all[name],
+                                    0.0,
+                                )
+                            )
+                            for name in sorted(_RLS_HEAD_BODY)
+                        ]
+                    )
+                )
+                m_factor = jnp.maximum(effective, 1.0)
+                new_params = dict(params)
+                new_alpha: dict[str, Array] = {}
+                new_trace: dict[str, Array] = {}
+                for name in _RLS_HEAD_BODY:
+                    z = z_all[name]
+                    alpha = jnp.clip(
+                        raw_alpha[name] / m_factor,
+                        _AUTOSTEP_ALPHA_MIN,
+                        _AUTOSTEP_ALPHA_MAX,
+                    )
+                    new_params[name] = (
+                        params[name] * (1.0 - alpha * weight_decay) - alpha * z
+                    )
+                    new_alpha[name] = alpha
+                    trace_candidate = (
+                        state.trace[name] * (1.0 - alpha * z * z) + alpha * z
+                    )
+                    new_trace[name] = jnp.where(
+                        jnp.isfinite(trace_candidate),
+                        trace_candidate,
+                        state.trace[name],
+                    )
+            elif sm_enabled:
                 assert isinstance(state, RLSHeadSMState)
                 # Champion utility EMA and sigmoid gate byte-identical to
                 # _gated_sgd; only the step geometry changes: the raw body
@@ -5262,6 +5423,19 @@ def _make_rls_head_learner(
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
         )
+        if as_enabled:
+            assert isinstance(state, RLSHeadASState)
+            return new_params, RLSHeadASState(  # type: ignore[call-arg]
+                utility=new_utility,
+                step=count,
+                norm=new_norm,
+                fast_mean=new_fast,
+                p=new_p,
+                wout=new_wout,
+                alpha=new_alpha,
+                trace=new_trace,
+                normalizer=new_normalizer,
+            ), (accuracy, loss, plasticity)
         if sm_enabled:
             assert isinstance(state, RLSHeadSMState)
             return new_params, RLSHeadSMState(  # type: ignore[call-arg]
@@ -5310,7 +5484,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadSMState | RLSHeadASState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -8575,6 +8749,26 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "and the gated chain never screened any step below 0.01 — the "
             "gate + trigger + step triple named unmeasured in the idet002 "
             "wave README (PR #3116)"
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_as{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "body_as_meta": meta,
+                 "body_as_tau": 1e4},
+                "the idet003_s005625 composition with Autostep per-weight "
+                f"body step sizes (Mahmood et al. 2012; meta rate {tag_text}, "
+                "tau 1e4, alpha initialised at 0.005625, effective-step "
+                "bound over the four body tensors) replacing the scalar "
+                "step — wave_identmap50_r_idet003_s005625_autostep/ "
+                "(preregistered)",
+            )
+            for tag, tag_text, meta in (
+                ("1e3", "1e-3", 1e-3),
+                ("1e2", "1e-2", 1e-2),
+            )
         ),
     ):
         specs.append(
