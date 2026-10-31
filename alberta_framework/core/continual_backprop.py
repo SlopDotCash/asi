@@ -565,10 +565,13 @@ def _select_replacement_index(
     corrected = _bias_corrected_utility(utility, age, decay_rate)
     finite_corrected = eligible & jnp.isfinite(corrected)
     # Recover the ordering only when every eligible debiased score overflows.
-    # A common positive scale leaves the per-unit bias correction intact.
+    # A common positive scale leaves the per-unit bias correction intact. It
+    # is an exact power of two: XLA turns division by a scale above 2**126
+    # into a multiply by a subnormal reciprocal and flushes every score to 0.
     scale = jnp.max(jnp.where(eligible, jnp.abs(utility), 0.0))
+    _, scale_exponent = jnp.frexp(scale)
     scaled = _bias_corrected_utility(
-        utility / jnp.where(scale > 0.0, scale, 1.0), age, decay_rate
+        jnp.ldexp(utility, -scale_exponent), age, decay_rate
     )
     corrected = jnp.where(jnp.any(finite_corrected), corrected, scaled)
     eligible = eligible & jnp.isfinite(corrected)
