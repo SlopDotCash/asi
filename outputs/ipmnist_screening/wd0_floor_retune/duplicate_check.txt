@@ -40,3 +40,6 @@ wd0_floor:
 #3610 [OPEN] by w3-bounty: IPMNIST: dropping the body weight_decay to 0 on anneal_f2t1000 gives +0.013667 paired (10/10 unseen seeds, 95% CI [+0.013334, +0.014000]) (development, nonpromoting)
 #3577 [OPEN] by w3-bounty: ipmnist_screening: shrink-and-perturb at remap on identmap50_r_idet003_s005625 is negative (-0.0134 paired, 0/3 seeds)
 #3125 [OPEN] by lumix5: Screen rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init: 0.93742 vs 0.94859 parent (rejected 3/3 seeds, L2-Init axis closed, development)
+
+== pre-launch re-check 2026-10-31 08:24:57 GMT (after git fetch origin, HEAD d5ae1c5a)
+refs scanned: 3151; IPMNIST shards with seeds 70-89 for any config: 0
