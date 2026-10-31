@@ -917,13 +917,16 @@ def common_final_window(step_counts: Mapping[str, int], window: int, metric: str
     would silently compare methods over different horizons.
 
     Raises:
-        ValueError: If ``step_counts`` is empty or the per-method
-            ``min(window, n_steps)`` values disagree.
+        ValueError: If ``step_counts`` is empty, a step count is not a positive
+            integer, or the per-method ``min(window, n_steps)`` values disagree.
     """
     window = _require_positive_int("window", window)
     if not step_counts:
         raise ValueError("at least one method is required to derive a final window")
-    final_windows = {min(window, n_steps) for n_steps in step_counts.values()}
+    final_windows = {
+        min(window, _require_positive_int("step count", n_steps))
+        for n_steps in step_counts.values()
+    }
     if len(final_windows) != 1:
         described = ", ".join(
             f"{name}: {n_steps} steps" for name, n_steps in sorted(step_counts.items())
