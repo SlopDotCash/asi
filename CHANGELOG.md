@@ -87,6 +87,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `AverageRewardHordeActorCriticAgent.policy` now centers and shift-scales
+  temperature-scaled logits before `softmax`, matching the construction the
+  actor-critic, behavior-model, and Horde actors already use. A validated
+  finite temperature such as `1e-10` previously divided directly, so XLA's
+  fused multiply-then-subtract left a rounding residual at the argmax that
+  drove the exponential to `inf`: the policy became NaN and the update
+  finiteness gates then rejected every transition, leaving the agent at zero
+  steps forever (SlopDotCash/asi#2886).
 - Required every merged screening arm's recorded `base_learner` to match its
   registered arm. `load_shard` cross-checks the registered arm only for
   source-bound v2/v3 shards and the campaign's live format is v1, so a v1 arm

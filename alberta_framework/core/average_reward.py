@@ -80,6 +80,46 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+# Smallest normal binary32 (2**-126): the largest temperature whose reciprocal
+# 1 / temperature is guaranteed to stay finite in float32 arithmetic, so a
+# temperature-scaled division can never overflow through its reciprocal.
+_MIN_STABLE_TEMPERATURE = 2.0**-126
+
+
+def _temperature_scaled_logits(logits: Array, temperature: float) -> Array:
+    """Scale logits for softmax without exposing a rounded argmax to fusion.
+
+    XLA may recompute ``logits * (1 / temperature)`` inside both fused
+    subcomputations of a compiled ``jax.nn.softmax``.  The contracted
+    multiply-then-subtract leaves a rounding residual at the argmax instead of
+    an exact zero; once ``|logits / temperature|`` is large enough that
+    residual drives the exponential to ``inf``, a finite input yields a NaN
+    policy and the update finiteness gates then reject every transition
+    (SlopDotCash/asi#2886).
+
+    Both shifts below are exact (softmax is shift invariant), and each blocks
+    one of the two recomputations.  When the temperature exceeds one, halving
+    both operands first is equally exact and keeps the pre-scale centering
+    finite for opposite finite extreme logits.
+
+    XLA also lowers the division itself to multiply-by-reciprocal, and for a
+    subnormal temperature that reciprocal overflows to ``+inf``: the centered
+    argmax zero becomes ``0 * inf = NaN`` and every accepted equal-logit state
+    yields an all-NaN policy (e.g. the minimum positive subnormal).  The
+    effective temperature is therefore floored at the smallest normal
+    binary32, whose reciprocal stays finite; the centered argmax keeps its
+    exact zero, equal logits stay exactly uniform, and below the floor the
+    exact softmax is already one-hot for every representable logit
+    difference.
+    """
+    if temperature > 1.0:
+        logits = logits * 0.5
+        temperature *= 0.5
+    centered = logits - jax.lax.stop_gradient(jnp.max(logits))
+    scaled = centered / max(temperature, _MIN_STABLE_TEMPERATURE)
+    return scaled - jax.lax.stop_gradient(jnp.max(scaled))
+
+
 def _root_mean_square(values: Array) -> Array:
     """Keep a representable RMS finite when only its square reduction overflows."""
     direct = jnp.sqrt(jnp.mean(values * values))
@@ -892,7 +932,7 @@ class AverageRewardHordeActorCriticAgent:
         features = self._actor_features(state, observation)
         logits = state.actor_weights @ features + state.actor_bias
         logits = jnp.clip(logits, -self._config.logit_clip, self._config.logit_clip)
-        return jax.nn.softmax(logits / self._config.temperature)
+        return jax.nn.softmax(_temperature_scaled_logits(logits, self._config.temperature))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def behavior_policy(
