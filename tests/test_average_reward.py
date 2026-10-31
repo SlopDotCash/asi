@@ -788,6 +788,36 @@ def test_differential_sarsa_config_roundtrip_and_exact_td_error() -> None:
     chex.assert_trees_all_close(result.average_reward, state.average_reward)
 
 
+@pytest.mark.parametrize(
+    "key",
+    (
+        jr.PRNGKey(13),
+        jr.key(13, impl="rbg"),
+        jr.split(jr.key(13, impl="threefry2x32"), 1),
+    ),
+)
+def test_differential_sarsa_init_requires_scalar_typed_threefry_key(
+    key: jax.Array,
+) -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+
+    with pytest.raises(TypeError, match="scalar typed Threefry"):
+        agent.init(2, key)
+
+
+def test_differential_sarsa_update_rejects_legacy_key_state() -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+    state = agent.init(2, jr.key(17)).replace(rng_key=jr.PRNGKey(17))
+
+    with pytest.raises(TypeError, match="scalar typed Threefry"):
+        agent.update(
+            state,
+            jnp.asarray(0.0, dtype=jnp.float32),
+            jnp.asarray((0.0, 1.0), dtype=jnp.float32),
+            next_action=jnp.asarray(0, dtype=jnp.int32),
+        )
+
+
 def test_differential_sarsa_start_with_action_rejects_fractional_action() -> None:
     agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=3))
     state = agent.init(2, jr.key(0))
