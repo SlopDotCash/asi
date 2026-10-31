@@ -8769,6 +8769,9 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("00084", 0.0084, "matched to the decayonly arm's mean "
                  "effective decay, computed analytically"),
                 ("0005", 0.005, "the ancestor upgd_w_wd0005 value"),
+                ("00025", 0.0025, "wd_sweep_screen/ tuning grid"),
+                ("0001", 0.001, "wd_sweep_screen/ tuning grid"),
+                ("0", 0.0, "wd_sweep_screen/ tuning grid; no decay"),
             )
         ),
     ):
