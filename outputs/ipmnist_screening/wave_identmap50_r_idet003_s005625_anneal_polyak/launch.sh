@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Detached queue: global cap 4 screening workers, 3 GB available-RAM floor, no sbf builds.
-cd /home/pumpdev/asi-polyak-wt
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
 D=outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_polyak
 while read -r cfg seed nt sub; do
   [ -z "$cfg" ] && continue
