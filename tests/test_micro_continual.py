@@ -859,6 +859,69 @@ class TestBayesReference:
 
         np.testing.assert_array_equal(predictions, np.asarray([2], dtype=np.int32))
 
+    @pytest.mark.parametrize("offset", [1_000_000.0, 10_000_000.0])
+    def test_bayes_nonunit_sigma_shared_offset(self, offset):
+        # Synthetic numerical inputs, not a benchmark or scientific evaluation.
+        means = np.asarray(
+            [[[offset, offset]], [[offset + 1.0, offset + 1.0]]],
+            dtype=np.float32,
+        )
+        sigma = np.asarray([3.0, 7.0], dtype=np.float32)
+        coordinates = np.linspace(-1.0, 2.0, 49, dtype=np.float32)
+        grid = np.stack(np.meshgrid(coordinates, coordinates), axis=-1).reshape(-1, 2)
+        observations = np.unique(np.float32(offset) + grid, axis=0)
+
+        # Promote stored float32 inputs before independent oracle arithmetic.
+        distances = np.sum(
+            (
+                (observations.astype(np.float64)[:, None, :]
+                 - means.astype(np.float64)[None, :, 0, :])
+                / sigma.astype(np.float64)
+            ) ** 2,
+            axis=2,
+        )
+        # Exclude ties and cases too close to a tie for a float32 comparison.
+        selected = np.abs(distances[:, 0] - distances[:, 1]) > 1e-5
+        expected = np.argmin(distances[selected], axis=1).astype(np.int32)
+        assert expected.size > 0
+        assert np.unique(expected).size == 2
+        inputs = (
+            jnp.asarray(means),
+            jnp.asarray(sigma),
+            jnp.asarray(observations[selected]),
+        )
+        for actual in (
+            np.asarray(bayes_predict(*inputs)),
+            np.asarray(jax.jit(bayes_predict)(*inputs)),
+        ):
+            assert actual.dtype == np.int32
+            np.testing.assert_array_equal(actual, expected)
+
+    def test_bayes_predict_handles_opposite_sign_overflow_after_sigma(self):
+        # Synthetic numerical inputs, not a benchmark or scientific evaluation.
+        means = jnp.asarray([[[-3e38]], [[-1e38]]], dtype=jnp.float32)
+        sigma = jnp.asarray([1e20], dtype=jnp.float32)
+        observations = jnp.asarray([[3e38]], dtype=jnp.float32)
+
+        # Promote stored float32 inputs before independent oracle arithmetic.
+        means64 = np.asarray(means, dtype=np.float64)
+        sigma64 = np.asarray(sigma, dtype=np.float64)
+        observations64 = np.asarray(observations, dtype=np.float64)
+        distances = np.sum(
+            ((observations64[:, None, :] - means64[None, :, 0, :]) / sigma64) ** 2,
+            axis=2,
+        )
+        expected = np.argmin(distances, axis=1).astype(np.int32)
+        np.testing.assert_array_equal(expected, np.asarray([1], dtype=np.int32))
+
+        for actual in (
+            np.asarray(bayes_predict(means, sigma, observations)),
+            np.asarray(jax.jit(bayes_predict)(means, sigma, observations)),
+        ):
+            assert actual.dtype == np.int32
+            np.testing.assert_array_equal(actual, expected)
+
+
     def test_bayes_predict_keeps_nearer_class_when_squared_distances_overflow(self):
         """A finite overflow of both squared distances must not select class 0."""
 
