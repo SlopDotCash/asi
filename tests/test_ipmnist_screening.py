@@ -7582,6 +7582,92 @@ class TestRLSHeadIdentMap:
                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
                 "step_size": 0.005625,
             },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": floor,
+                    "anneal_tau": tau,
+                }
+                for tag, floor, tau in (
+                    ("f2t250", 0.0028125, 250.0),
+                    ("f2t1000", 0.0028125, 1000.0),
+                    ("f4t250", 0.00140625, 250.0),
+                    ("f4t1000", 0.00140625, 1000.0),
+                )
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_reset_frac": frac,
+                }
+                for tag, frac in (("25", 0.25), ("50", 0.5))
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr50_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_reset_frac": f_s,
+                    "anneal_decay_reset_frac": f_d,
+                }
+                for tag, f_s, f_d in (
+                    ("steponly", 0.5, 0.0), ("decayonly", 0.0, 0.5)
+                )
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_wd{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "weight_decay": wd,
+                }
+                for tag, wd in (
+                    ("00084", 0.0084), ("0005", 0.005), ("00025", 0.0025),
+                    ("0001", 0.001), ("0", 0.0),
+                )
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal"
+                f"_{tag}_wd0": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": floor,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                }
+                for tag, floor in (
+                    ("f1t1000", 0.005625), ("f4t1000", 0.00140625),
+                    ("f8t1000", 0.000703125),
+                )
+            },
+            **{
+                f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": step, "anneal_floor": step,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                }
+                for tag, step in (
+                    ("004", 0.004), ("0075", 0.0075), ("01", 0.01),
+                    ("0125", 0.0125), ("015", 0.015), ("02", 0.02),
+                )
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+                f"_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.02, "anneal_floor": 0.02,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                    "rls_ridge_init": ridge,
+                }
+                for tag, ridge in (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -7834,6 +7920,92 @@ class TestRLSHeadIdentMapIdet003S005625:
         assert np.all(np.isfinite(np.asarray(result.per_task_loss)))
 
 
+class TestRLSHeadIdentMapStepAnneal:
+    """Within-task body step anneal keyed on since_shift (anneal wave).
+
+    The reduction pin runs the LIVE schedule (keys present,
+    ``anneal_floor == step_size``, short tau) on a stream where the
+    detector and identifier fire, and requires bitwise equality with the
+    PARENT.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625"
+
+    @staticmethod
+    def _offset_data():
+        key = jr.key(4321)
+        kx, ky = jr.split(key)
+        offsets = jnp.linspace(-2.0, 2.0, SMALL.input_dim)
+        x = np.asarray(
+            jr.uniform(kx, (64, SMALL.input_dim), jnp.float32, -0.3, 0.3)
+            + offsets[None, :]
+        )
+        y = np.asarray(jr.randint(ky, (64,), 0, SMALL.n_classes))
+        return x, y
+
+    @classmethod
+    def _spec(cls, **overrides):
+        spec = screening_spec(cls.PARENT)
+        return replace(
+            spec,
+            name=spec.name + "_anneal_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = self._offset_data()
+        return run_screening_config(
+            x, y, self._spec(**overrides), seed=7, config=SMALL
+        )
+
+    def test_stream_exercises_identifier(self):
+        """The pin stream really remaps: disabling the identifier moves
+        the parent's trajectory."""
+        parent = self._run()
+        no_ident = self._run(ident_match_at=0.0)
+        assert not np.array_equal(
+            np.asarray(parent.per_task_loss), np.asarray(no_ident.per_task_loss)
+        )
+
+    def test_off_live_path_pin_bitwise(self):
+        """``anneal_floor == step_size`` through the live schedule is the
+        parent bit-exactly."""
+        parent = self._run()
+        off = self._run(anneal_floor=0.005625, anneal_tau=2.0)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_mechanism_live(self):
+        """A real floor below the step diverges from the parent."""
+        parent = self._run()
+        ann = self._run(anneal_floor=0.00140625, anneal_tau=2.0)
+        assert not np.array_equal(
+            np.asarray(ann.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(ann.per_task_loss)))
+
+    def test_rejects_bad_settings(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        for bad in ({"anneal_floor": 0.0}, {"anneal_floor": 0.01},
+                    {"anneal_tau": 0.0}, {"anneal_tau": float("inf")}):
+            hp = {**self._spec(anneal_floor=0.0028125, anneal_tau=250.0)
+                  .hyperparameters, **bad}
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner(hp)
+
+
 class TestPlasticityCounterSaturation:
     """Per-unit plasticity counters must saturate via the declared helper.
 
@@ -7994,3 +8166,506 @@ class TestRLSHeadSMPrecond:
 
         assert "rls_head_resid_sm3e4_i50r" not in SCREENING_REGISTRY
         assert "rls_head_resid_sm1e3_i50r" not in SCREENING_REGISTRY
+
+
+class TestRLSHeadIdentMapAnnealPartialReset:
+    """Partial anneal reset (``anneal_reset_frac``) on anneal_f2t1000.
+
+    Pins: f = 0 is the parent bit-exactly; a deliberate f > 0 moves the
+    trajectory on a stream where the detector fires; invalid f rejected.
+    The pin stream uses a short tau so the clock difference reaches the
+    step within the 64-sample stream.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    # Reuse the anneal pin stream and helpers (not its tests).
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+
+    def test_stream_fires_detector(self):
+        """The pin stream moves the parent off the no-identifier path."""
+        assert not np.array_equal(
+            np.asarray(self._run().per_task_loss),
+            np.asarray(self._run(ident_match_at=0.0).per_task_loss),
+        )
+
+    def test_registered_arms(self):
+        for tag, frac in (("25", 0.25), ("50", 0.5)):
+            spec = screening_spec(self.PARENT + f"_pr{tag}")
+            assert spec.hyperparameters["anneal_reset_frac"] == frac
+            parent = screening_spec(self.PARENT).hyperparameters
+            rest = dict(spec.hyperparameters)
+            del rest["anneal_reset_frac"]
+            assert rest == parent
+
+    def test_frac_zero_pin_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        off = self._run(anneal_tau=2.0, anneal_reset_frac=0.0)
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_accuracy),
+            np.asarray(parent.per_task_accuracy),
+        )
+        np.testing.assert_array_equal(
+            np.asarray(off.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    def test_deliberate_break_differs(self):
+        parent = self._run(anneal_tau=2.0)
+        on = self._run(anneal_tau=2.0, anneal_reset_frac=0.9)
+        assert not np.array_equal(
+            np.asarray(on.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("frac", [-0.1, 1.0, 1.5, float("nan")])
+    def test_invalid_frac_rejected(self, frac):
+        # NaN is already refused by the generic finite-number guard.
+        with pytest.raises(ValueError, match="anneal_reset_frac|finite"):
+            self._run(anneal_reset_frac=frac)
+
+    def test_frac_requires_anneal(self):
+        spec = screening_spec(self.PARENT)
+        hp = {k: v for k, v in spec.hyperparameters.items()
+              if k not in ("anneal_floor", "anneal_tau")}
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        with pytest.raises(ValueError, match="anneal_reset_frac"):
+            _make_rls_head_identmap_learner({**hp, "anneal_reset_frac": 0.5})
+
+
+class TestRLSHeadIdentMapAnnealDecayDecoupled:
+    """Decoupled-decay control (``anneal_decay_reset_frac``) for pr50.
+
+    Pins on the anneal pin stream (short tau so clocks reach the step):
+    f_d == f_s is the coupled partial-reset arm bit-exactly; f_s = f_d = 0
+    is the parent bit-exactly; a deliberate f_d != f_s differs; invalid
+    values rejected.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+
+    @staticmethod
+    def _same(a, b):
+        np.testing.assert_array_equal(
+            np.asarray(a.per_task_accuracy), np.asarray(b.per_task_accuracy)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(a.per_task_loss), np.asarray(b.per_task_loss)
+        )
+
+    def test_registered_arms(self):
+        pr50 = screening_spec(self.PARENT + "_pr50").hyperparameters
+        for tag, f_s, f_d in (("steponly", 0.5, 0.0), ("decayonly", 0.0, 0.5)):
+            hp = dict(screening_spec(self.PARENT + f"_pr50_{tag}").hyperparameters)
+            assert hp.pop("anneal_decay_reset_frac") == f_d
+            assert hp.pop("anneal_reset_frac") == f_s
+            rest = dict(pr50)
+            del rest["anneal_reset_frac"]
+            assert hp == rest
+
+    def test_matched_fracs_equal_coupled_arm_bitwise(self):
+        coupled = self._run(anneal_tau=2.0, anneal_reset_frac=0.5)
+        matched = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.5, anneal_decay_reset_frac=0.5
+        )
+        self._same(matched, coupled)
+
+    def test_zero_fracs_equal_parent_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        zero = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.0, anneal_decay_reset_frac=0.0
+        )
+        self._same(zero, parent)
+
+    def test_deliberate_break_differs(self):
+        coupled = self._run(anneal_tau=2.0, anneal_reset_frac=0.5)
+        split = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.5, anneal_decay_reset_frac=0.9
+        )
+        assert not np.array_equal(
+            np.asarray(split.per_task_loss), np.asarray(coupled.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("frac", [-0.1, 1.0, 2.0, float("nan")])
+    def test_invalid_frac_rejected(self, frac):
+        with pytest.raises(ValueError, match="anneal_decay_reset_frac|finite"):
+            self._run(anneal_reset_frac=0.5, anneal_decay_reset_frac=frac)
+
+    def test_requires_partial_reset_key(self):
+        with pytest.raises(ValueError, match="anneal_decay_reset_frac"):
+            self._run(anneal_decay_reset_frac=0.5)
+
+
+class TestRLSHeadIdentMapAnnealConstantWeightDecay:
+    """Plain constant weight_decay arms on anneal_f2t1000 (decayonly_fresh).
+
+    The arm differs from the parent only in ``weight_decay``; the registered
+    0.01 override is the parent bit-exactly, a lower value differs, invalid
+    values are rejected.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+    _same = staticmethod(TestRLSHeadIdentMapAnnealDecayDecoupled._same)
+
+    def test_registered_arms(self):
+        parent = dict(screening_spec(self.PARENT).hyperparameters)
+        assert parent["weight_decay"] == 0.01
+        for tag, wd in (
+            ("00084", 0.0084), ("0005", 0.005), ("00025", 0.0025),
+            ("0001", 0.001), ("0", 0.0),
+        ):
+            hp = dict(screening_spec(self.PARENT + f"_wd{tag}").hyperparameters)
+            assert hp.pop("weight_decay") == wd
+            rest = dict(parent)
+            del rest["weight_decay"]
+            assert hp == rest
+
+    def test_parent_value_equals_parent_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        same = self._run(anneal_tau=2.0, weight_decay=0.01)
+        self._same(same, parent)
+
+    def test_lower_decay_differs(self):
+        parent = self._run(anneal_tau=2.0)
+        lower = self._run(anneal_tau=2.0, weight_decay=0.0084)
+        assert not np.array_equal(
+            np.asarray(lower.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("wd", [-0.01, float("nan"), float("inf")])
+    def test_invalid_weight_decay_rejected(self, wd):
+        with pytest.raises(ValueError, match="weight_decay|finite"):
+            self._run(weight_decay=wd)
+
+    @pytest.mark.parametrize("wd", [0.005, 0.0025, 0.001, 0.0])
+    def test_sweep_value_differs_and_is_finite(self, wd):
+        parent = self._run(anneal_tau=2.0)
+        arm = self._run(anneal_tau=2.0, weight_decay=wd)
+        loss = np.asarray(arm.per_task_loss)
+        assert np.all(np.isfinite(loss))
+        assert np.all(np.isfinite(np.asarray(arm.per_task_accuracy)))
+        assert not np.array_equal(loss, np.asarray(parent.per_task_loss))
+
+
+class TestRLSHeadIdentMapAnnealWd0FloorRegistry:
+    """Anneal-floor retune arms on anneal_f2t1000_wd0 (wd0_floor_retune/).
+
+    Each arm differs from the wd0 parent only in ``anneal_floor``; at
+    weight_decay 0 the decay is exactly 1 on both branches of the coupling.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    WD0 = PARENT + "_wd0"
+    ARMS = (
+        ("f1t1000", 0.005625),
+        ("f4t1000", 0.00140625),
+        ("f8t1000", 0.000703125),
+    )
+
+    def _arm(self, tag):
+        return "rls_head_resid_identmap50_r_idet003_s005625_anneal_" + tag + "_wd0"
+
+    def test_registry_resolves_and_differs_only_in_floor(self):
+        wd0 = dict(screening_spec(self.WD0).hyperparameters)
+        for tag, floor in self.ARMS:
+            spec = screening_spec(self._arm(tag))
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("anneal_floor") == floor
+            rest = dict(wd0)
+            del rest["anneal_floor"]
+            assert hp == rest
+            assert spec.factory is screening_spec(self.WD0).factory
+
+    def test_floor_values_relative_to_peak(self):
+        for (tag, floor), k in zip(self.ARMS, (1, 4, 8)):
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            assert hp["step_size"] == 0.005625
+            assert hp["anneal_tau"] == 1000.0
+            assert floor * k == hp["step_size"]
+            assert 0.0 < hp["anneal_floor"] <= hp["step_size"]
+
+    def test_decay_exactly_one_at_wd0(self):
+        for tag, _ in self.ARMS:
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            wd = hp["weight_decay"]
+            assert wd == 0.0
+            step = hp["step_size"]
+            assert 1.0 - step * wd == 1.0
+            for lr in (step, hp["anneal_floor"], step * 0.5):
+                d = 1.0 - jnp.float32(lr) * jnp.float32(wd)
+                assert np.asarray(d, dtype=np.float32) == np.float32(1.0)
+
+    def test_parent_configs_unchanged(self):
+        parent = dict(screening_spec(self.PARENT).hyperparameters)
+        assert parent["weight_decay"] == 0.01
+        assert parent["anneal_floor"] == 0.0028125
+        assert parent["anneal_tau"] == 1000.0
+        assert parent["step_size"] == 0.005625
+        wd0 = dict(screening_spec(self.WD0).hyperparameters)
+        assert wd0.pop("weight_decay") == 0.0
+        del parent["weight_decay"]
+        assert wd0 == parent
+
+
+class TestRLSHeadIdentMapWd0ConstStepRegistry:
+    """Constant-step size retune on anneal_f1t1000_wd0 (wd0_const_step_retune/).
+
+    Each arm differs from the incumbent only in ``step_size`` and
+    ``anneal_floor`` (kept equal, so the step is constant); at weight_decay 0
+    the body decay is exactly 1.
+    """
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f1t1000_wd0"
+    ARMS = (("004", 0.004), ("0075", 0.0075), ("01", 0.01))
+
+    def _arm(self, tag):
+        return f"rls_head_resid_identmap50_r_idet003_s{tag}_anneal_f1t1000_wd0"
+
+    def test_registry_resolves_and_differs_only_in_step(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert inc["step_size"] == inc["anneal_floor"] == 0.005625
+        assert inc["weight_decay"] == 0.0
+        for tag, step in self.ARMS:
+            spec = screening_spec(self._arm(tag))
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("step_size") == step
+            assert hp.pop("anneal_floor") == step
+            rest = {k: v for k, v in inc.items() if k not in ("step_size", "anneal_floor")}
+            assert hp == rest
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_steps_distinct_in_float32(self):
+        steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.005625)]
+        assert len(set(steps)) == 4
+
+    def test_schedule_constant_and_decay_one(self):
+        for tag, step in self.ARMS:
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            for s in (0.0, 1.0, 999.0, 4999.0):
+                lr = jnp.maximum(
+                    jnp.float32(hp["anneal_floor"]),
+                    jnp.float32(hp["step_size"])
+                    * jax.lax.rsqrt(1.0 + jnp.float32(s) / jnp.float32(hp["anneal_tau"])),
+                )
+                assert np.asarray(lr) == np.float32(step)
+                d = 1.0 - lr * jnp.float32(hp["weight_decay"])
+                assert np.asarray(d, dtype=np.float32) == np.float32(1.0)
+
+
+class TestRLSHeadIdentMapWd0ConstStepExtendRegistry(TestRLSHeadIdentMapWd0ConstStepRegistry):
+    """Extended constant-step grid above the 0.01 winner (wd0_const_step_extend/)."""
+
+    ARMS = (("0125", 0.0125), ("015", 0.015), ("02", 0.02))
+
+    def test_steps_distinct_in_float32(self):
+        steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.01)]
+        assert len(set(steps)) == 4
+
+
+def _load_step200_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "wd0_const_step_200task" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("step200_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestWd0ConstStep200TaskConfirm:
+    """Development-plan rules of wd0_const_step_200task/analyze.py (adapted from our own earlier 60-task screen)."""
+
+    A = _load_step200_analyze()
+    OK = [0.95] * 200
+    LOSS = [0.1] * 200
+
+    def test_both_cells_registered(self):
+        reg = ipmnist_screening.SCREENING_REGISTRY
+        assert self.A.CAND in reg and self.A.INC in reg
+
+    def test_constants(self):
+        assert self.A.FLOOR == 0.5 and self.A.T19 == 2.093 and self.A.NTASK == 200 and self.A.BLOCK == 50
+        assert list(self.A.SEEDS) == list(range(134, 154))
+
+    def test_healthy_shard_passes(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+
+    def test_missing_shard_diverged(self):
+        assert "missing" in self.A.classify(None, None)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_accuracy_diverged(self, bad):
+        acc = list(self.OK); acc[117] = bad
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_loss_diverged(self, bad):
+        loss = list(self.LOSS); loss[199] = bad
+        assert "non-finite loss" in self.A.classify(self.OK, loss)
+
+    def test_missing_loss_diverged(self):
+        assert "non-finite loss" in self.A.classify(self.OK, None)
+
+    def test_floor(self):
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        acc[3] = 0.5
+        assert self.A.classify(acc, self.LOSS) is None
+
+    def test_out_of_range_accuracy_diverged(self):
+        acc = list(self.OK); acc[0] = 1.5
+        assert "outside" in self.A.classify(acc, self.LOSS)
+
+    def test_pass(self):
+        v = self.A.screen_verdict([0.003 + 0.0001 * i for i in range(20)])
+        assert v["verdict"] == "PASS" and v["diverged"] == 0 and v["improved"] == 20
+
+    def test_improved_bar_is_14_of_20(self):
+        g = [0.01] * 14 + [-0.0001] * 6
+        assert self.A.screen_verdict(g)["verdict"] == "PASS"
+        assert self.A.screen_verdict([0.01] * 13 + [-0.0001] * 7)["verdict"] == "FAIL"
+
+    def test_any_diverged_seed_fails_regardless_of_mean(self):
+        v = self.A.screen_verdict([0.5] * 19 + [None])
+        assert v["mean"] >= 0.002 and v["improved"] == 19 and v["diverged"] == 1
+        assert v["verdict"] == "FAIL"
+
+    def test_bars_fail(self):
+        assert self.A.screen_verdict([0.001] * 19 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "confirm"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 199), (self.A.CAND, self.OK)):
+            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("confirm", self.A.CAND, 134)
+
+    def test_candidate_divergence_scored_not_void(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "confirm"; d.mkdir()
+        for c, acc in ((self.A.INC, self.OK), (self.A.CAND, [0.3] + [0.9] * 199)):
+            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        assert self.A.diff("confirm", self.A.CAND, 134) is None
+
+
+class TestRLSHeadIdentMapS02Wd0Ridge:
+    """RLS head ridge cells on the s02 wd0 incumbent (s02_wd0_ridge/)."""
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+    RIDGES = (("r03", 0.3), ("r01", 0.1), ("r003", 0.03))
+
+    def _spec(self, **overrides):
+        spec = screening_spec(self.INCUMBENT)
+        return replace(
+            spec,
+            name=spec.name + "_ridge_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(x, y, self._spec(**overrides), seed=7, config=SMALL)
+
+    def test_registry_differs_only_in_ridge(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert inc["rls_ridge_init"] == 1.0
+        for tag, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + tag)
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("rls_ridge_init") == ridge
+            inc_rest = dict(inc); inc_rest.pop("rls_ridge_init")
+            assert hp == inc_rest
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_initial_p_is_identity_over_ridge(self):
+        for _, ridge in self.RIDGES:
+            spec = screening_spec(self.INCUMBENT + "_" + _)
+            init_fn, _step = spec.factory(dict(spec.hyperparameters))
+            state = init_fn(init_mlp_params(jr.key(0), SMALL))
+            p = np.asarray(state.inner.p)
+            np.testing.assert_allclose(p, np.eye(p.shape[0]) / ridge, rtol=1e-6)
+
+    def test_ridge_one_override_is_bit_exact_with_parent(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=1.0)
+        assert np.array_equal(np.asarray(a.per_task_accuracy), np.asarray(b.per_task_accuracy))
+        assert np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+    def test_small_ridge_is_live_and_finite(self):
+        a = self._run()
+        b = self._run(rls_ridge_init=0.03)
+        acc = np.asarray(b.per_task_accuracy)
+        assert np.all(np.isfinite(acc)) and np.all(np.isfinite(np.asarray(b.per_task_loss)))
+        assert not np.array_equal(np.asarray(a.per_task_loss), np.asarray(b.per_task_loss))
+
+
+def _load_s02_ridge_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "s02_wd0_ridge" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("s02_ridge_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestS02Wd0RidgeDivergenceRules:
+    """Development-plan rules of s02_wd0_ridge/analyze.py on synthetic inputs."""
+
+    A = _load_s02_ridge_analyze()
+    OK = [0.95] * 60
+    LOSS = [0.1] * 60
+
+    def test_cells_registered_and_seeds_fixed(self):
+        for c, r in self.A.CELLS:
+            assert SCREENING_REGISTRY[c].hyperparameters["rls_ridge_init"] == r
+        assert self.A.INC in SCREENING_REGISTRY
+        assert self.A.TUNE_SEED == 165 and list(self.A.SCREEN_SEEDS) == list(range(166, 176))
+        assert self.A.EDGE == self.A.INC + "_r003"
+
+    def test_classify(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+        assert "missing" in self.A.classify(None, None)
+        acc = list(self.OK); acc[5] = float("nan")
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        assert self.A.FLOOR == 0.5
+
+    def test_tune_gate_diverged_and_ties_to_larger_ridge(self):
+        T = self.A.tune_decision
+        assert T([("a", 0.03, 0.001), ("b", 0.1, None), ("c", 0.3, 0.002)]) == "c"
+        assert T([("a", 0.03, None), ("b", 0.1, None)]) == "STOP_ALL_DIVERGED"
+        assert T([("a", 0.03, 0.0005), ("b", 0.1, -0.01)]) == "STOP"
+        assert T([("a", 0.03, 0.003), ("b", 0.1, 0.003)]) == "b"
+
+    def test_screen_verdict(self):
+        V = self.A.screen_verdict
+        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = V([0.5] * 9 + [None])
+        assert v["diverged"] == 1 and v["verdict"] == "FAIL"
+        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "tune"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
+            (d / f"{c}_seed165.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("tune", self.A.CELLS[0][0], 165)

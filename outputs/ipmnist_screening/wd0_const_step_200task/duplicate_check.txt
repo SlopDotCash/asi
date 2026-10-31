@@ -1,0 +1,11 @@
+duplicate check, 2026-10-31 13:20:06 GMT, gh search, SlopDotCash/asi, open+closed PRs and issues
+base ef85fff8; refs scanned for seeds 134-153 in shard names: 3220, hits 0 (positive control seed113 at ef85fff8: 2)
+-- s02_anneal_f1t1000_wd0
+-- 200-task constant step
+-- 200 tasks step 0.02
+#200 [merged] Kayvan-Zahiri: Do not form 0*inf stacked-Horde bootstraps at gamma 0
+-- f1t1000_wd0 200
+#200 [merged] Kayvan-Zahiri: Do not form 0*inf stacked-Horde bootstraps at gamma 0
+-- const-step-200task
+#3634 [open] w3-bounty: IPMNIST: at weight_decay 0, a constant step (f1t1000_wd0) beats anneal_f2t1000_wd0 over the full 200
+verdict: no PR or issue confirms the step-0.02 constant-step wd0 cell over 200 tasks; nearest is our own #3634 (constant step 0.005625 over 200 tasks).
