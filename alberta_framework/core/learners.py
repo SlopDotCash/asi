@@ -204,6 +204,14 @@ def _require_exact_bool(name: str, value: object) -> bool:
     return value
 
 
+def _require_prediction_observation(observation: Observation, feature_dim: int) -> None:
+    """Reject inputs ``dot`` would broadcast into many predictions or keep complex."""
+    if jnp.shape(observation) != (feature_dim,):
+        raise ValueError(f"observation must have shape ({feature_dim},)")
+    if jnp.iscomplexobj(observation):
+        raise ValueError("observation must be real")
+
+
 def _preflight_float32_resources(name: str, scalar_count: int) -> None:
     byte_count = 4 * scalar_count
     if scalar_count > _INT32_MAX or byte_count > _INT32_MAX:
@@ -398,6 +406,7 @@ class LinearLearner:
             Scalar prediction ``y = w @ phi(x) + b`` where ``phi`` is the
             configured normalizer (identity when none is configured)
         """
+        _require_prediction_observation(observation, state.weights.size)
         obs = observation
         if self._normalizer is not None and state.normalizer_state is not None:
             obs = self._normalizer.normalize_only(state.normalizer_state, observation)
@@ -1530,6 +1539,7 @@ class MLPLearner:
         Returns:
             Scalar prediction
         """
+        _require_prediction_observation(observation, state.params.weights[0].shape[1])
         obs = observation
         if self._normalizer is not None and state.normalizer_state is not None:
             obs = self._normalizer.normalize_only(state.normalizer_state, observation)
@@ -2088,6 +2098,7 @@ class TDLinearLearner:
         Returns:
             Scalar value prediction ``V(s) = w @ phi(s) + b``
         """
+        _require_prediction_observation(observation, state.weights.size)
         return jnp.atleast_1d(jnp.dot(state.weights, observation) + state.bias)
 
     def update(
@@ -2271,6 +2282,7 @@ class TrueOnlineTDLearner:
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(self, state: TrueOnlineTDState, observation: Observation) -> Prediction:
         """Compute scalar value prediction."""
+        _require_prediction_observation(observation, state.weights.size)
         return jnp.atleast_1d(jnp.dot(state.weights, observation) + state.bias)
 
     @functools.partial(jax.jit, static_argnums=(0,))
