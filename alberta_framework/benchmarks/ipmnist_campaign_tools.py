@@ -112,6 +112,14 @@ def _seed_measurements(
     config_name = _safe_identifier(config_name, name="config_name")
     result: dict[int, float] = {}
     protocol_signature: tuple[str, str, str, int | None] | None = None
+    # The protocol signature above covers schema, config and noise only.
+    # base_learner and hyperparameters live at the top level of a shard,
+    # not inside config, so they need their own consistency check, matching
+    # _validate_screening_arm_contract in ipmnist_screening.py. Without it,
+    # runs of different mechanisms could be averaged under one arm name.
+    # A missing field is consistent only with another missing field, so
+    # synthetic shards that omit both fields keep working.
+    learner_signature: tuple[object, object] | None = None
     for path in sorted(root.glob(f"{config_name}_seed*.json")):
         payload = _json_object(path)
         raw_seed = payload.get("seed")
@@ -165,6 +173,23 @@ def _seed_measurements(
             raise ValueError(
                 f"{path}: config_name {payload_name!r} does not match "
                 f"expected arm {config_name!r}"
+            )
+        base_learner = payload.get("base_learner")
+        if base_learner is not None and (
+            type(base_learner) is not str or not base_learner
+        ):
+            raise ValueError(f"{path} base_learner must be a non-empty string")
+        hyperparameters = payload.get("hyperparameters")
+        if hyperparameters is not None and type(hyperparameters) is not dict:
+            raise ValueError(f"{path} hyperparameters must be a dict")
+        current_learner = (base_learner, hyperparameters)
+        if learner_signature is None:
+            learner_signature = current_learner
+        elif current_learner != learner_signature:
+            raise ValueError(
+                f"config {config_name!r} has inconsistent base_learner or "
+                f"hyperparameters across seeds; refusing to average runs of "
+                f"different mechanisms under one config_name"
             )
         if any(type(value) is not int and type(value) is not float for value in accuracies):
             raise ValueError(f"{path} per_task_accuracy must contain JSON numbers")
