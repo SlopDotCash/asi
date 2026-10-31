@@ -947,6 +947,89 @@ class TestSARSAConfigSerialization:
 class TestSARSAScan:
     """Tests for run_sarsa_from_arrays scan loop."""
 
+    @pytest.mark.parametrize("final_state_only", [False, True])
+    def test_finishes_device_work_before_stopping_uptime_clock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        final_state_only: bool,
+    ) -> None:
+        """Reported uptime must cover scan execution, not only its dispatch."""
+        import time
+        from types import SimpleNamespace
+
+        import alberta_framework.core.sarsa as module
+
+        agent = _make_agent(n_actions=2, hidden_sizes=(4,))
+        observations = jnp.ones((4, 3), dtype=jnp.float32)
+        rewards = jnp.zeros((4,), dtype=jnp.float32)
+        terminated = jnp.zeros((4,), dtype=jnp.float32)
+        state = agent.init(feature_dim=3, key=jr.key(271))
+        action, key = agent.select_action(state, observations[0])
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=action,
+            last_observation=observations[0],
+            rng_key=key,
+        )
+
+        blocked: list[object] = []
+        real_scan = jax.lax.scan
+        real_time = time.time
+        scan_finished = False
+
+        def recording_scan(*args: object, **kwargs: object) -> object:
+            nonlocal scan_finished
+            result = real_scan(*args, **kwargs)
+            scan_finished = True
+            return result
+
+        def recording_block(value: object) -> object:
+            assert scan_finished
+            blocked.append(value)
+            return value
+
+        def clock() -> float:
+            if scan_finished:
+                assert blocked
+            return real_time()
+
+        monkeypatch.setattr(jax.lax, "scan", recording_scan)
+        monkeypatch.setattr(jax, "block_until_ready", recording_block)
+        monkeypatch.setattr(module, "time", SimpleNamespace(time=clock))
+
+        if final_state_only:
+            result = run_sarsa_from_arrays_final_state(
+                agent,
+                state,
+                observations,
+                rewards,
+                terminated,
+                observations,
+            )
+            assert len(blocked) == 1
+            blocked_state = blocked[0]
+            assert isinstance(blocked_state, SARSAState)
+            assert blocked_state.step_count == result.step_count
+        else:
+            result = run_sarsa_from_arrays(
+                agent,
+                state,
+                observations,
+                rewards,
+                terminated,
+                observations,
+            )
+            assert len(blocked) == 1
+            (
+                blocked_state,
+                blocked_q_values,
+                blocked_td_errors,
+                blocked_actions,
+            ) = blocked[0]  # type: ignore[misc]
+            assert blocked_state.step_count == result.state.step_count
+            assert blocked_q_values is result.q_values
+            assert blocked_td_errors is result.td_errors
+            assert blocked_actions is result.actions
+
     @pytest.mark.parametrize(
         "runner",
         [run_sarsa_from_arrays, run_sarsa_from_arrays_final_state],

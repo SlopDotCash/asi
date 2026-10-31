@@ -1423,6 +1423,9 @@ def run_sarsa_from_arrays(
     final_state, (q_vals, td_errs, actions) = jax.lax.scan(
         _scan_fn, state, (rewards, terminated, successor_observations)
     )
+    jax.block_until_ready(  # type: ignore[no-untyped-call]
+        (final_state, q_vals, td_errs, actions)
+    )
     elapsed = time.time() - t0
 
     # Update uptime on the inner learner state
@@ -1491,6 +1494,7 @@ def run_sarsa_from_arrays_final_state(
         state,
         (rewards, terminated, successor_observations),
     )
+    jax.block_until_ready(final_state)  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
     final_learner = final_state.learner_state.replace(  # type: ignore[attr-defined]
         uptime_s=final_state.learner_state.uptime_s + elapsed,
