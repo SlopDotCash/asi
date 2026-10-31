@@ -1032,6 +1032,8 @@ def migrate_legacy_normalizer_state(
     value may represent that exact event or any number of later updates lost
     to float32 rounding.  Such states, as well as negative, non-finite, or
     fractional counts, are rejected rather than assigned invented history.
+    Statistics must be float32 arrays of one feature shape, finite, with
+    nonnegative variance terms and a persisted rate inside ``[0, 1]``.
     """
 
     classes: dict[str, type[AnyNormalizerState]] = {
@@ -1046,7 +1048,7 @@ def migrate_legacy_normalizer_state(
     fields = _legacy_state_mapping(legacy_state)
     current_names = {
         field.name
-        for field in dataclasses.fields(state_class)
+        for field in dataclasses.fields(state_class)  # type: ignore[arg-type]
     }
     legacy_names = current_names - {"sample_count_words"}
     supplied_names = set(fields)
@@ -1056,6 +1058,23 @@ def migrate_legacy_normalizer_state(
         raise ValueError(
             f"legacy normalizer field manifest is not exact; missing={missing}, extra={extra}"
         )
+    feature_shape = jnp.shape(fields["mean"])
+    if len(feature_shape) != 1:
+        raise TypeError("legacy normalizer mean must be rank one")
+    for name in sorted(legacy_names - {"sample_count"}):
+        statistic = jnp.asarray(fields[name])
+        is_rate = name in {"decay", "momentum"}
+        if statistic.shape != (() if is_rate else feature_shape):
+            raise TypeError(f"legacy normalizer {name} shape does not match its feature shape")
+        if statistic.dtype != jnp.dtype(jnp.float32):
+            raise TypeError(f"legacy normalizer {name} must have dtype float32")
+        if not bool(jnp.all(jnp.isfinite(statistic))):
+            raise ValueError(f"legacy normalizer {name} must be finite")
+        if bool(jnp.any(statistic < 0.0)) and name != "mean":
+            raise ValueError(f"legacy normalizer {name} must be nonnegative")
+        if is_rate and float(statistic) > 1.0:
+            raise ValueError(f"legacy normalizer {name} must be at most 1")
+        fields[name] = statistic
     count_array = jnp.asarray(fields["sample_count"])
     if count_array.shape != () or count_array.dtype != jnp.dtype(jnp.float32):
         raise TypeError("legacy normalizer sample_count must be scalar float32")

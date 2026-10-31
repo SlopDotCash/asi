@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
+import jax.numpy as jnp
+import jax.random as jr
 import pytest
 
+from alberta_framework.core.multi_head_learner import (
+    MultiHeadMLPLearner,
+    migrate_legacy_multi_head_mlp_state,
+)
 from alberta_framework.core.normalizers import (
+    EMANormalizer,
+    StreamingBatchNormalizer,
+    WelfordNormalizer,
     _require_exact_str,
     migrate_legacy_normalizer_state,
     normalizer_from_config,
@@ -114,6 +124,99 @@ def test_migrate_sanitized() -> None:
     with pytest.raises(ValueError, match="Unknown normalizer type") as exc:
         migrate_legacy_normalizer_state({}, normalizer_type="bad")
     assert "!r" not in str(exc.value)
+
+
+def _legacy_normalizer_fields(type_name: str) -> dict[str, Any]:
+    """Build one well-formed pre-v2 normalizer field manifest."""
+    fields: dict[str, Any] = {
+        "mean": jnp.zeros(2, dtype=jnp.float32),
+        "var": jnp.ones(2, dtype=jnp.float32),
+        "sample_count": jnp.asarray(0.0, dtype=jnp.float32),
+    }
+    extra = {
+        "EMANormalizer": "decay",
+        "StreamingBatchNormalizer": "momentum",
+        "WelfordNormalizer": "p",
+    }[type_name]
+    fields[extra] = (
+        jnp.zeros(2, dtype=jnp.float32)
+        if extra == "p"
+        else jnp.asarray(0.99, dtype=jnp.float32)
+    )
+    return fields
+
+
+@pytest.mark.parametrize(
+    ("type_name", "normalizer"),
+    [
+        ("EMANormalizer", EMANormalizer(decay=0.99)),
+        ("StreamingBatchNormalizer", StreamingBatchNormalizer(momentum=0.99)),
+        ("WelfordNormalizer", WelfordNormalizer()),
+    ],
+)
+def test_migrate_keeps_well_formed_legacy_state(type_name: str, normalizer: Any) -> None:
+    state = migrate_legacy_normalizer_state(
+        _legacy_normalizer_fields(type_name),
+        normalizer_type=type_name,
+    )
+    assert bool(normalizer.counter_status(state).update_available)
+    assert normalizer.normalize_only(state, jnp.ones(2)).tolist() == pytest.approx(
+        [1.0, 1.0], rel=1e-4
+    )
+
+
+_FLOAT32 = jnp.float32
+
+
+@pytest.mark.parametrize(
+    ("type_name", "name", "value", "error"),
+    [
+        ("EMANormalizer", "mean", jnp.asarray([jnp.nan, 0.0], dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "mean", jnp.asarray([jnp.inf, 0.0], dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "mean", jnp.asarray(0.0, dtype=_FLOAT32), TypeError),
+        ("EMANormalizer", "mean", jnp.ones(2, dtype=jnp.complex64), TypeError),
+        ("EMANormalizer", "mean", jnp.ones(2, dtype=jnp.int32), TypeError),
+        ("EMANormalizer", "var", jnp.ones(3, dtype=_FLOAT32), TypeError),
+        ("EMANormalizer", "var", jnp.asarray([-1.0, 1.0], dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "var", jnp.asarray([jnp.inf, 1.0], dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "decay", jnp.asarray(5.0, dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "decay", jnp.asarray(-0.5, dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "decay", jnp.asarray(jnp.nan, dtype=_FLOAT32), ValueError),
+        ("EMANormalizer", "decay", jnp.full((1,), 0.99, dtype=_FLOAT32), TypeError),
+        ("StreamingBatchNormalizer", "momentum", jnp.asarray(5.0, dtype=_FLOAT32), ValueError),
+        ("WelfordNormalizer", "p", jnp.asarray([jnp.nan, 0.0], dtype=_FLOAT32), ValueError),
+        ("WelfordNormalizer", "p", jnp.asarray([-1.0, 0.0], dtype=_FLOAT32), ValueError),
+        ("WelfordNormalizer", "p", jnp.zeros(3, dtype=_FLOAT32), TypeError),
+    ],
+)
+def test_migrate_rejects_malformed_legacy_statistics(
+    type_name: str,
+    name: str,
+    value: Any,
+    error: type[Exception],
+) -> None:
+    fields = {**_legacy_normalizer_fields(type_name), name: value}
+
+    with pytest.raises(error, match=f"legacy normalizer {name}"):
+        migrate_legacy_normalizer_state(fields, normalizer_type=type_name)
+
+
+def test_multi_head_migration_rejects_non_finite_legacy_normalizer() -> None:
+    """The STOMP legacy path reaches the normalizer through this learner migration."""
+    learner = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(), normalizer=EMANormalizer())
+    state = learner.init(feature_dim=2, key=jr.key(0))
+    learner_fields = {
+        name: getattr(state, name)
+        for name in type(state).__dataclass_fields__
+        if name != "step_words"
+    }
+    learner_fields["normalizer_state"] = {
+        **_legacy_normalizer_fields("EMANormalizer"),
+        "mean": jnp.asarray([jnp.nan, 0.0], dtype=jnp.float32),
+    }
+
+    with pytest.raises(ValueError, match="legacy normalizer mean"):
+        migrate_legacy_multi_head_mlp_state(learner_fields)
 
 
 def test_from_config_rejects_evil_type_without_hooks() -> None:
