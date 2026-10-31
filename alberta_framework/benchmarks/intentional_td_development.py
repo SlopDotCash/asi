@@ -98,6 +98,8 @@ def _numeric_bytes(tree: Any) -> int:
 
 def run_arm(environment: str, arm: str, seed: int) -> dict[str, Any]:
     """One uninterrupted, fixed-budget development life in an existing MDP."""
+    if type(environment) is not str or environment not in ENVIRONMENTS:
+        raise ValueError(f"unknown development environment: {environment!r}")
     config = ARMS[arm]
     env: Any = (
         SwitchingTwoStateMDP(SwitchingTwoStateConfig(phase_length=PHASE_LENGTH))  # type: ignore[call-arg]
