@@ -18,7 +18,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from alberta_framework._seed_validation import require_unique_jax_seeds
-from alberta_framework.utils.experiments import AggregatedResults, MetricSummary
+from alberta_framework.utils.experiments import AggregatedResults, MetricSummary, _finite_mean
 from alberta_framework.utils.statistics import SignificanceResult, common_final_window
 
 if TYPE_CHECKING:
@@ -247,7 +247,7 @@ def _preflight_export_results(
                 )
             metric_values = aggregate.metric_arrays[metric_name]
             final_window = min(100, metric_values.shape[1])
-            expected_values = np.mean(metric_values[:, -final_window:], axis=1)
+            expected_values = _finite_mean(metric_values[:, -final_window:], axis=1)
             if not np.array_equal(summary.values, expected_values):
                 raise ValueError(
                     f"{qualified_name} values do not match the raw metric trace"
