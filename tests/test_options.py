@@ -434,6 +434,9 @@ def _differential_family_step(
         q_weights=q[None, ...],
         traces=traces[None, ...],
         average_rewards=rbar[None],
+        # The fresh-state value: traces decay by the same unit discount that
+        # the semi-gradient reference uses.
+        previous_discounts=jnp.ones((1,), dtype=jnp.float32),
     )
     new_policies, intra_td, intra_applied = intra(
         policies,
