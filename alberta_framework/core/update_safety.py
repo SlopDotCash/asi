@@ -115,17 +115,32 @@ def safe_discrete_action(
     integer_code = _integer_action_code(action, n_actions, allow_unset=allow_unset)
     if integer_code is not None:
         return integer_code
-    raw = jnp.asarray(action, dtype=jnp.float32)
-    lower = -1.0 if allow_unset else 0.0
-    valid = (
+    raw = jnp.asarray(action, dtype=jnp.float32).reshape(())
+    fallback = -1 if allow_unset else 0
+    # Compare an integral floating code in the int32 domain.  Converting the
+    # domain bound to float32 first can round ``2**24 + 1`` down to ``2**24``
+    # and reject that exact, legal action.  The open upper bound ``2**31`` is
+    # exactly representable, so it safely gates the narrowing conversion.
+    convertible = (
         jnp.isfinite(raw)
         & (raw == jnp.floor(raw))
-        & (raw >= lower)
-        & (raw < float(n_actions))
+        & (raw >= -(2.0**31))
+        & (raw < 2.0**31)
     )
-    fallback = -1 if allow_unset else 0
-    safe = jnp.where(valid, raw, jnp.asarray(fallback, dtype=jnp.float32))
-    return safe.astype(jnp.int32), valid
+    candidate = jnp.where(
+        convertible,
+        raw,
+        jnp.asarray(fallback, dtype=jnp.float32),
+    )
+    candidate = candidate.astype(jnp.int32)
+    lower = -1 if allow_unset else 0
+    valid = (
+        convertible
+        & (candidate >= jnp.asarray(lower, dtype=jnp.int32))
+        & (candidate < jnp.asarray(n_actions, dtype=jnp.int32))
+    )
+    safe = jnp.where(valid, candidate, jnp.asarray(fallback, dtype=jnp.int32))
+    return safe, valid
 
 
 def checked_integer_action_array(
