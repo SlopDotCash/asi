@@ -1572,10 +1572,10 @@ class AlbertaPipeline:
             # Only the value head's discount is a per-transition control
             # quantity. Zero it at episode boundaries so the value head does
             # not bootstrap through termination and the actor eligibility
-            # trace decays to zero; auxiliary GVF demons keep their configured
-            # gammas. At ``terminated == 0.0`` this reproduces the value head's
-            # configured gamma bit-for-bit, so the non-terminal path is
-            # unchanged versus omitting ``discount``.
+            # trace is empty after the terminal update; auxiliary GVF demons
+            # keep their configured gammas. At ``terminated == 0.0`` this
+            # reproduces the value head's configured gamma bit-for-bit, so the
+            # non-terminal path is unchanged versus omitting ``discount``.
             value_gamma = self._horde.horde_spec.gammas[value_index]
             control_discount = jnp.where(
                 terminated == 0.0, value_gamma, jnp.zeros_like(value_gamma)
