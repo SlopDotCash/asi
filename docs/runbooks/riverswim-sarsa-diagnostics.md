@@ -28,7 +28,9 @@ executed. Both source schemas are supported; other schemas fail closed.
   eligibility, one-hot observations, and continuing unit environment discount.
   Discounted SARSA still applies its configured gamma in its own TD target.
 - Initial Q values and the complete action sequence are inputs, not verified
-  outcomes of initialization or the policy. Source/runtime provenance,
+  outcomes of initialization or the policy. Records with and without the
+  control config's `initial_q_value` field are accepted; a numeric value must
+  equal every initial Q value. Source/runtime provenance,
   epsilon-greedy choices, RNG keys, and environment stochastic samples are
   **not verified**. Use the original artifact validator and provenance checks
   as well; this tool does not replace them.

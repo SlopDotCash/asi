@@ -24,20 +24,30 @@ def _checker() -> ModuleType:
     return module
 
 
-@pytest.fixture(scope="module", params=[0.0, 0.8])
+@pytest.fixture(
+    scope="module",
+    params=[(0.0, None), (0.8, None), (0.0, 1.0), (0.8, 1.0)],
+    ids=["lambda0", "lambda08", "lambda0-optimistic", "lambda08-optimistic"],
+)
 def source_record(request: pytest.FixtureRequest) -> dict[str, Any]:
     """Use the real public update, with a fixed, legal trajectory and actions."""
     import jax.numpy as jnp
     import jax.random as jr
 
     from alberta_framework.core.sarsa import SARSAAgent, SARSAConfig
-    from alberta_framework.reference_life_controls import DiscountedSARSAReferenceConfig
+    from alberta_framework.reference_life_controls import (
+        DiscountedSARSAReferenceAdapter,
+        DiscountedSARSAReferenceConfig,
+    )
     from alberta_framework.streams.closed_loop import RiverSwimConfig
 
+    lamda, initial_q_value = request.param
     # Chex generates these constructors/replace at runtime; match the existing
     # repository's narrow annotations for that static-typing limitation.
     env = RiverSwimConfig(n_states=3)  # type: ignore[call-arg]
-    config = DiscountedSARSAReferenceConfig.for_riverswim(env, lamda=request.param)
+    config = DiscountedSARSAReferenceConfig.for_riverswim(
+        env, lamda=lamda, initial_q_value=initial_q_value
+    )
     agent = SARSAAgent(
         SARSAConfig(n_actions=2, gamma=config.gamma),  # type: ignore[call-arg]
         hidden_sizes=(),
@@ -46,7 +56,13 @@ def source_record(request: pytest.FixtureRequest) -> dict[str, Any]:
         use_layer_norm=False,
         lamda=config.lamda,
     )
-    state = agent.init(3, jr.key(42))
+    if initial_q_value is None:
+        state = agent.init(3, jr.key(42))
+    else:
+        # The reference adapter owns optimistic initialization.
+        state = DiscountedSARSAReferenceAdapter(config).init(
+            jr.key(42), lifecycle_id="replay.optimistic"
+        ).agent_state
     actions = [0, 1, 1, 1, 0]
     positions = [0, 1, 2, 2, 1]
     rewards = [env.reward_left, 0.0, 0.0, env.reward_right, 0.0]
@@ -177,6 +193,32 @@ def test_unsupported_config_fails_closed(record: dict[str, Any], change: dict[st
         _checker().check_record(record)
 
 
+def test_current_config_declares_initial_q_value(record: dict[str, Any]) -> None:
+    # The checker must accept what the current control config serializes.
+    assert "initial_q_value" in record["config"]
+
+
+def test_records_from_before_initial_q_value_still_check(record: dict[str, Any]) -> None:
+    if record["config"]["initial_q_value"] is not None:
+        pytest.skip("only the default initialization existed before initial_q_value")
+    del record["config"]["initial_q_value"]
+    assert _checker().check_record(record)["events_checked"] == 5
+
+
+@pytest.mark.parametrize("value", [True, "1.0", -0.5, float("inf"), [1.0]])
+def test_malformed_initial_q_value_fails_closed(record: dict[str, Any], value: object) -> None:
+    record["config"]["initial_q_value"] = value
+    with pytest.raises(ValueError, match="initial_q_value"):
+        _checker().check_record(record)
+
+
+def test_declared_initial_q_value_must_match_initial_snapshot(record: dict[str, Any]) -> None:
+    declared = record["config"]["initial_q_value"]
+    record["config"]["initial_q_value"] = 0.5 if declared is None else declared + 0.25
+    with pytest.raises(ValueError, match="initial_q_value"):
+        _checker().check_record(record)
+
+
 def test_initial_trace_and_parameter_norm_are_checked(record: dict[str, Any]) -> None:
     record["snapshots"][0]["eligibility_l2"] = 1.0
     with pytest.raises(ValueError, match="snapshot 0"):
@@ -204,6 +246,9 @@ def test_ambiguous_last_bootstrap_is_reported_instead_of_invented(record: dict[s
         rewards=[record["environment"]["reward_left"]],
     )
     zero = [[0.0, 0.0] for _ in range(record["environment"]["n_states"])]
+    if record["config"]["initial_q_value"] is not None:
+        # The synthetic record starts from zero Q; declare that start.
+        record["config"]["initial_q_value"] = 0.0
     record["snapshots"] = [
         {
             "accepted_events": 0,
