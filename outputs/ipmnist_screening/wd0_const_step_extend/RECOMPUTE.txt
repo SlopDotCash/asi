@@ -1,0 +1,14 @@
+tune s0125 seed112 +0.001363 finite=True min_acc=0.7816
+tune s015 seed112 +0.002097 finite=True min_acc=0.7884
+tune s02 seed112 +0.003407 finite=True min_acc=0.8014
+seed 113 +0.002910
+seed 114 +0.003230
+seed 115 +0.003147
+seed 116 +0.003093
+seed 117 +0.003103
+seed 118 +0.003383
+seed 119 +0.003383
+seed 120 +0.003200
+seed 121 +0.003433
+seed 122 +0.003587
+mean +0.003247 SE 0.000063 CI95(t9) [+0.003104, +0.003390] improved 10/10 min_task_acc 0.7584
