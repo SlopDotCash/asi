@@ -113,6 +113,64 @@ def test_fixed_step_control_is_exact_sgd_with_mechanism_off():
 
 
 @pytest.mark.parametrize("compiled", [False, True])
+def test_rms_normalization_preserves_finite_wide_gradient_update(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([2.0e19, -2.0e19], dtype=jnp.float32)
+    config = IntentionalTDConfig(eta=0.1, lamda=0.0)
+
+    def update(w, state):
+        return intentional_td_update(w, state, gradient, jnp.array(1.0), config)
+
+    step = jax.jit(update) if compiled else update
+    changed, state = step(weights, init_intentional_td(weights))
+
+    np.testing.assert_allclose(changed, [2.5e-21, -2.5e-21], rtol=2e-5)
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_adaptive_clip_preserves_finite_wide_td_error(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([1.0, -1.0], dtype=jnp.float32)
+    td_error = jnp.array(2.0e19, dtype=jnp.float32)
+    config = IntentionalTDConfig(lamda=0.0)
+
+    def update(w, state):
+        return intentional_td_update(w, state, gradient, td_error, config)
+
+    step = jax.jit(update) if compiled else update
+    changed, state = step(weights, init_intentional_td(weights))
+
+    expected_clip_second = (1.0 - config.beta_clip) * float(td_error) ** 2
+    np.testing.assert_allclose(changed, [5.0e18, -5.0e18], rtol=2e-5)
+    np.testing.assert_allclose(state.clip_squared_error, expected_clip_second, rtol=2e-5)
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_adaptive_clip_preserves_finite_wide_cap(compiled):
+    weights = jnp.zeros(2, dtype=jnp.float32)
+    gradient = jnp.array([1.0, -1.0], dtype=jnp.float32)
+    td_error = jnp.array(5.8e20, dtype=jnp.float32)
+    config = IntentionalTDConfig(lamda=0.0)
+    state = init_intentional_td(weights).replace(step=jnp.array(999, dtype=jnp.int32))
+
+    def update(w, optimizer_state):
+        return intentional_td_update(w, optimizer_state, gradient, td_error, config)
+
+    step = jax.jit(update) if compiled else update
+    changed, state = step(weights, state)
+
+    count = 1000.0
+    clip_second = (1.0 - config.beta_clip) * float(td_error) ** 2
+    clip_bias = 1.0 - config.beta_clip**count
+    expected_cap = config.clip_mult * np.sqrt(clip_second / clip_bias)
+    np.testing.assert_allclose(changed, [0.25 * expected_cap, -0.25 * expected_cap], rtol=2e-4)
+    np.testing.assert_allclose(state.clip_squared_error, clip_second, rtol=2e-5)
+    assert all(np.all(np.isfinite(value)) for value in jax.tree.leaves(state))
+
+
+@pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("adaptive", [False, True])
 @pytest.mark.parametrize("error", [-10.0, 10.0])
 def test_binding_clip_limits_prediction_change(compiled, adaptive, error):
