@@ -5021,6 +5021,7 @@ def _make_rls_head_learner(
         guard_zero_max: bool,
         init_params: Mapping[str, Array] | None = None,
         lr: Array | None = None,
+        decay_lr: Array | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """Champion utility-EMA + global-max sigmoid gate + gated decayed SGD
         over ``names``; other tensors pass through with untouched utility."""
@@ -5047,10 +5048,13 @@ def _make_rls_head_learner(
             if init_params is not None:
                 raise ValueError("a runtime step is not defined for L2-Init")
             step = lr
+            # ``decay_lr`` (decoupled-decay control) only replaces the step
+            # in the decay expression; absent, the decay reads ``lr``.
+            dl = lr if decay_lr is None else decay_lr
             decay = jnp.where(
-                lr == jnp.float32(step_size),
+                dl == jnp.float32(step_size),
                 jnp.float32(param_decay),
-                1.0 - lr * weight_decay,
+                1.0 - dl * weight_decay,
             )
         for name in names:
             if init_params is None:
@@ -5090,6 +5094,7 @@ def _make_rls_head_learner(
         y: Array,
         key: Array,
         lr: Array | None = None,
+        decay_lr: Array | None = None,
     ) -> tuple[
         dict[str, Array],
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
@@ -5232,6 +5237,7 @@ def _make_rls_head_learner(
                     guard_zero_max=True,
                     init_params=init_params,
                     lr=lr,
+                    **({} if decay_lr is None else {"decay_lr": decay_lr}),
                 )
             else:
                 # Issue #52's frozen ablation endpoint: do not compute or
@@ -5342,6 +5348,7 @@ class RLSHeadIdentState:
     since_shift: Array
     remap: Array
     anneal_clock: Array
+    decay_clock: Array
 
 
 def _identmap_assignment(
@@ -5432,6 +5439,21 @@ def _make_rls_head_identmap_learner(
         anneal_on and math.isfinite(reset_frac) and 0.0 <= reset_frac < 1.0
     ):
         raise ValueError("anneal_reset_frac needs anneal_floor and 0 <= f < 1")
+    # Decoupled-decay control.  Key absent: the body decay reads the same
+    # runtime step as the update (``1 - lr*weight_decay``), unchanged.
+    # Key present (f_d): a separate ``decay_clock`` restarts at
+    # ``1 + floor(f_d * s)`` on a detected shift, and the decay reads the
+    # anneal schedule evaluated on that clock, while the step keeps the
+    # ``anneal_reset_frac`` clock.  f_d == 0 is the parent's full-reset
+    # decay; f_d == anneal_reset_frac is the coupled arm bit-exactly.
+    decay_on = "anneal_decay_reset_frac" in hp
+    decay_frac = float(hp.get("anneal_decay_reset_frac", 0.0))
+    if decay_on and not (
+        partial_on and math.isfinite(decay_frac) and 0.0 <= decay_frac < 1.0
+    ):
+        raise ValueError(
+            "anneal_decay_reset_frac needs anneal_reset_frac and 0 <= f < 1"
+        )
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5468,6 +5490,7 @@ def _make_rls_head_identmap_learner(
             since_shift=jnp.array(-(2**30), dtype=jnp.int32),
             remap=jnp.arange(input_dim, dtype=jnp.int32),
             anneal_clock=jnp.array(-(2**30), dtype=jnp.int32),
+            decay_clock=jnp.array(-(2**30), dtype=jnp.int32),
         )
 
     def full_step(
@@ -5494,9 +5517,24 @@ def _make_rls_head_identmap_learner(
                 jnp.float32(anneal_step)
                 * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
             )
-            new_params, new_inner, metrics = cast(Any, inner_step)(
-                params, state.inner, x_r, y, key, lr=lr
-            )
+            if decay_on:
+                ds = jnp.where(
+                    state.decay_clock < 0,
+                    state.decay_clock + (2**30),
+                    state.decay_clock,
+                ).astype(jnp.float32)
+                decay_lr = jnp.maximum(
+                    jnp.float32(anneal_floor),
+                    jnp.float32(anneal_step)
+                    * jax.lax.rsqrt(1.0 + ds / jnp.float32(anneal_tau)),
+                )
+                new_params, new_inner, metrics = cast(Any, inner_step)(
+                    params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr
+                )
+            else:
+                new_params, new_inner, metrics = cast(Any, inner_step)(
+                    params, state.inner, x_r, y, key, lr=lr
+                )
         else:
             new_params, new_inner, metrics = inner_step(
                 params, state.inner, x_r, y, key
@@ -5560,6 +5598,18 @@ def _make_rls_head_identmap_learner(
             new_clock = jnp.where(trigger, restart, state.anneal_clock + 1)
         else:
             new_clock = since
+        if decay_on:
+            dprev = jnp.where(
+                state.decay_clock < 0,
+                state.decay_clock + (2**30),
+                state.decay_clock,
+            )
+            drestart = 1 + jnp.floor(
+                jnp.float32(decay_frac) * dprev.astype(jnp.float32)
+            ).astype(jnp.int32)
+            new_dclock = jnp.where(trigger, drestart, state.decay_clock + 1)
+        else:
+            new_dclock = new_clock
         remap = jnp.where(
             trigger, jnp.arange(input_dim, dtype=jnp.int32), state.remap
         )
@@ -5627,6 +5677,7 @@ def _make_rls_head_identmap_learner(
             since_shift=since,
             remap=remap,
             anneal_clock=new_clock,
+            decay_clock=new_dclock,
         ), metrics
 
     return init_fn, full_step
@@ -8678,6 +8729,26 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 "diagnostic)"
             )
             for tag, frac in (("25", 0.25), ("50", 0.5))
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr50_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_reset_frac": f_s,
+                 "anneal_decay_reset_frac": f_d},
+                f"decoupled-decay control for pr50 ({desc}): step clock "
+                f"restarts at 1 + floor({f_s} * s), weight-decay clock at "
+                f"1 + floor({f_d} * s) (pr50_wd_decoupled_screen/; "
+                "development screening diagnostic)"
+            )
+            for tag, f_s, f_d, desc in (
+                ("steponly", 0.5, 0.0, "pr50 step, parent decay"),
+                ("decayonly", 0.0, 0.5, "parent step, pr50 decay"),
+            )
         ),
     ):
         specs.append(
