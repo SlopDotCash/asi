@@ -525,3 +525,15 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## IPMNIST anneal floor f4t1000 at 200 tasks (2026-10-30)
+
+A preregistered (4b2d6de0) development comparison, run at the full 200-task horizon on seeds 0-19. It lowered the anneal floor from 0.0028125 (`..._s005625_anneal_f2t1000`, the incumbent parent) to 0.00140625 (`..._anneal_f4t1000`), with the rest of the schedule unchanged.
+- Paired mean +0.000143, 95% CI [+0.000104, +0.000181], 19/20 seeds improved.
+- Block gains: −0.000123 (tasks 1-50), then +0.0002 to +0.0003 per 50-task block.
+- The preregistered +0.002 mean bar failed, so there is no promotion.
+- The three-way bit-exact environment check passed: the control, the stored parent at 200 tasks, and the stored arm at 60 tasks.
+- f4t1000 had already failed at 60 tasks (0240ff25), with seeds 0-9 seen there.
+- Conclusion: more within-task decay does not pay materially over a full life.
+
+Evidence: [`outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md`](../../outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md).
