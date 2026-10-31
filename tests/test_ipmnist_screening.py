@@ -7651,6 +7651,7 @@ class TestRLSHeadIdentMap:
                 for tag, step in (
                     ("004", 0.004), ("0075", 0.0075), ("01", 0.01),
                     ("0125", 0.0125), ("015", 0.015), ("02", 0.02),
+                    ("03", 0.03), ("04", 0.04), ("05", 0.05),
                 )
             },
         }
@@ -8359,3 +8360,103 @@ class TestRLSHeadIdentMapWd0ConstStepExtendRegistry(TestRLSHeadIdentMapWd0ConstS
     def test_steps_distinct_in_float32(self):
         steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.01)]
         assert len(set(steps)) == 4
+
+
+class TestRLSHeadIdentMapWd0ConstStepExtend2Registry(TestRLSHeadIdentMapWd0ConstStepRegistry):
+    """Constant-step grid above the 0.02 edge winner (wd0_const_step_extend2/)."""
+
+    ARMS = (("03", 0.03), ("04", 0.04), ("05", 0.05))
+
+    def test_steps_distinct_in_float32(self):
+        steps = [np.float32(s) for _, s in self.ARMS] + [np.float32(0.02)]
+        assert len(set(steps)) == 4
+
+    def test_tags_do_not_collide_with_small_steps(self):
+        # s004 is 0.004 (wd0_const_step_retune); the new 0.04 cell is s04.
+        base = "rls_head_resid_identmap50_r_idet003_s{}_anneal_f1t1000_wd0"
+        assert SCREENING_REGISTRY[base.format("004")].hyperparameters["step_size"] == 0.004
+        assert SCREENING_REGISTRY[base.format("04")].hyperparameters["step_size"] == 0.04
+
+
+def _load_extend2_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "wd0_const_step_extend2" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("extend2_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestWd0ConstStepExtend2DivergenceRules:
+    """Preregistered divergence rules of wd0_const_step_extend2/analyze.py on synthetic inputs."""
+
+    A = _load_extend2_analyze()
+    OK = [0.95] * 60
+    LOSS = [0.1] * 60
+
+    def test_healthy_shard_passes(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+
+    def test_missing_shard_diverged(self):
+        assert "missing" in self.A.classify(None, None)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_accuracy_diverged(self, bad):
+        acc = list(self.OK); acc[17] = bad
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+    def test_non_finite_loss_diverged(self, bad):
+        loss = list(self.LOSS); loss[59] = bad
+        assert "non-finite loss" in self.A.classify(self.OK, loss)
+
+    def test_missing_loss_diverged(self):
+        assert "non-finite loss" in self.A.classify(self.OK, None)
+
+    def test_floor(self):
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        acc[3] = 0.5
+        assert self.A.classify(acc, self.LOSS) is None
+        assert self.A.FLOOR == 0.5
+
+    def test_out_of_range_accuracy_diverged(self):
+        acc = list(self.OK); acc[0] = 1.5
+        assert "outside" in self.A.classify(acc, self.LOSS)
+
+    def test_tune_diverged_cell_never_wins(self):
+        cells = [("a", 0.03, 0.001), ("b", 0.04, None), ("c", 0.05, 0.002)]
+        assert self.A.tune_decision(cells) == "c"
+        assert self.A.tune_decision([("a", 0.03, 0.001), ("b", 0.04, None)]) == "a"
+
+    def test_tune_all_diverged_stops(self):
+        cells = [("a", 0.03, None), ("b", 0.04, None), ("c", 0.05, None)]
+        assert self.A.tune_decision(cells) == "STOP_ALL_DIVERGED"
+
+    def test_tune_gate_and_ties(self):
+        assert self.A.tune_decision([("a", 0.03, 0.0005), ("b", 0.04, -0.01)]) == "STOP"
+        assert self.A.tune_decision([("b", 0.04, 0.003), ("a", 0.03, 0.003)]) == "a"
+
+    def test_screen_pass(self):
+        v = self.A.screen_verdict([0.003 + 0.0001 * i for i in range(10)])
+        assert v["verdict"] == "PASS" and v["diverged"] == 0 and v["improved"] == 10
+
+    def test_screen_any_diverged_seed_fails_regardless_of_mean(self):
+        # nine large gains keep the mean and CI bars nominally satisfied
+        v = self.A.screen_verdict([0.5] * 9 + [None])
+        assert v["mean"] >= 0.002 and v["improved"] == 9 and v["diverged"] == 1
+        assert v["verdict"] == "FAIL"
+
+    def test_screen_bars_fail(self):
+        assert self.A.screen_verdict([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        B = self.A.B
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
+            d = tmp_path / "tune"; d.mkdir(exist_ok=True)
+            (d / f"{c}_seed123.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("tune", self.A.CELLS[0][0], 123)
