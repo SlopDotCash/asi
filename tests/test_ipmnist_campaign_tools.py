@@ -308,6 +308,27 @@ def test_across_seed_spread_uses_sample_estimator() -> None:
     assert across_seed_spread([0.5]) == 0.0
 
 
+@pytest.mark.parametrize(
+    "values",
+    [
+        [float("nan")],
+        [float("inf")],
+        [float("nan"), 0.5],
+        [float("inf"), 0.5],
+        [float("-inf"), 0.5],
+        np.asarray([0.5, np.nan, 0.75]),
+    ],
+)
+def test_across_seed_spread_rejects_non_finite_observations(values: Any) -> None:
+    with pytest.raises(ValueError, match="values must be finite"):
+        across_seed_spread(values)
+
+
+def test_across_seed_spread_rejects_an_unrepresentable_spread() -> None:
+    with pytest.raises(ValueError, match="spread must be finite"):
+        across_seed_spread([1e308, -1e308])
+
+
 def test_frontier_rejects_duplicate_json_object_keys(tmp_path: Path) -> None:
     """Plain json.loads kept the last per_task_accuracy and scored a poisoned shard."""
     screen = tmp_path / "screen"
