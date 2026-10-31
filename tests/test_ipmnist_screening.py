@@ -7615,6 +7615,16 @@ class TestRLSHeadIdentMap:
                     ("steponly", 0.5, 0.0), ("decayonly", 0.0, 0.5)
                 )
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_wd{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "weight_decay": wd,
+                }
+                for tag, wd in (("00084", 0.0084), ("0005", 0.005))
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8152,3 +8162,45 @@ class TestRLSHeadIdentMapAnnealDecayDecoupled:
     def test_requires_partial_reset_key(self):
         with pytest.raises(ValueError, match="anneal_decay_reset_frac"):
             self._run(anneal_decay_reset_frac=0.5)
+
+
+class TestRLSHeadIdentMapAnnealConstantWeightDecay:
+    """Plain constant weight_decay arms on anneal_f2t1000 (decayonly_fresh).
+
+    The arm differs from the parent only in ``weight_decay``; the registered
+    0.01 override is the parent bit-exactly, a lower value differs, invalid
+    values are rejected.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+    _same = staticmethod(TestRLSHeadIdentMapAnnealDecayDecoupled._same)
+
+    def test_registered_arms(self):
+        parent = dict(screening_spec(self.PARENT).hyperparameters)
+        assert parent["weight_decay"] == 0.01
+        for tag, wd in (("00084", 0.0084), ("0005", 0.005)):
+            hp = dict(screening_spec(self.PARENT + f"_wd{tag}").hyperparameters)
+            assert hp.pop("weight_decay") == wd
+            rest = dict(parent)
+            del rest["weight_decay"]
+            assert hp == rest
+
+    def test_parent_value_equals_parent_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        same = self._run(anneal_tau=2.0, weight_decay=0.01)
+        self._same(same, parent)
+
+    def test_lower_decay_differs(self):
+        parent = self._run(anneal_tau=2.0)
+        lower = self._run(anneal_tau=2.0, weight_decay=0.0084)
+        assert not np.array_equal(
+            np.asarray(lower.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("wd", [-0.01, float("nan"), float("inf")])
+    def test_invalid_weight_decay_rejected(self, wd):
+        with pytest.raises(ValueError, match="weight_decay|finite"):
+            self._run(weight_decay=wd)
