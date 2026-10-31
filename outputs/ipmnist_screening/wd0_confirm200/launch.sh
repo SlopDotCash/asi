@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Phase 1: 3 env checks, verify bit for bit, VOID-stop on mismatch. Phase 2: 40 shards (cap 4, 3 GB floor), then analyze.
-cd /home/pumpdev/asi-wd0-200task-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/wd0_confirm200; L=/tmp/wc200_launch.log
 echo "HEAD $(git rev-parse HEAD)" > $L
 log(){ echo "$(date +%T) $*" >> $L; }
