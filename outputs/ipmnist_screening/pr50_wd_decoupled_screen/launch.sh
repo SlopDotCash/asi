@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stages: envcheck (VOID-stop on mismatch) -> reuse stored parent + pr50 -> steponly/decayonly seeds 4-13 -> analysis. No gates between arms (no tuning).
 # Cap 4 one-thread workers, 3 GB available-RAM floor, defers to cargo-build-sbf / pytest.
-cd /home/pumpdev/asi-pr50-wd-decoupled-wt || exit 1
+cd "$(git -C "$(dirname "$0")" rev-parse --show-toplevel)" || exit 1
 D=outputs/ipmnist_screening/pr50_wd_decoupled_screen; L=/tmp/wd_decoupled_launch.log
 log(){ echo "$(date +%T) $*" >> $L; }
 gate(){ while :; do n=$(pgrep -fc "alberta_framework.benchmarks.ipmnist_screening run"); a=$(free -g | awk '/Mem:/{print $7}')
