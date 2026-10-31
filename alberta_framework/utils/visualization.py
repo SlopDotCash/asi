@@ -189,6 +189,8 @@ def plot_learning_curves(
         _require_positive_int("window_size", window_size),
         _VIS_WINDOW_BUDGET,
     )
+    if not results:
+        raise ValueError("plot_learning_curves requires at least one result")
 
     try:
         import matplotlib.pyplot as plt
@@ -480,6 +482,8 @@ def plot_step_size_evolution(
         Tuple of (figure, axes)
     """
     show_ci = _require_exact_bool("show_ci", show_ci)
+    if not any(metric in agg.metric_arrays for agg in results.values()):
+        raise ValueError(f"plot_step_size_evolution found no result with metric '{metric}'")
 
     try:
         import matplotlib.pyplot as plt
