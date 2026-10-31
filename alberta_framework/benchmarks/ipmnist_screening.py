@@ -5020,6 +5020,8 @@ def _make_rls_head_learner(
         names: tuple[str, ...],
         guard_zero_max: bool,
         init_params: Mapping[str, Array] | None = None,
+        lr: Array | None = None,
+        decay_lr: Array | None = None,
     ) -> tuple[dict[str, Array], dict[str, Array]]:
         """Champion utility-EMA + global-max sigmoid gate + gated decayed SGD
         over ``names``; other tensors pass through with untouched utility."""
@@ -5037,10 +5039,27 @@ def _make_rls_head_learner(
         if guard_zero_max:
             global_max = jnp.where(global_max == 0.0, 1.0, global_max)
         new_params = dict(params)
+        step: float | Array = step_size
+        decay: float | Array = param_decay
+        if lr is not None:
+            # Runtime (annealed) step.  At ``lr == float32(step_size)`` the
+            # decay is the parent's own constant, so that point of the live
+            # path is bit-exactly the parent (pinned).
+            if init_params is not None:
+                raise ValueError("a runtime step is not defined for L2-Init")
+            step = lr
+            # ``decay_lr`` (decoupled-decay control) only replaces the step
+            # in the decay expression; absent, the decay reads ``lr``.
+            dl = lr if decay_lr is None else decay_lr
+            decay = jnp.where(
+                dl == jnp.float32(step_size),
+                jnp.float32(param_decay),
+                1.0 - dl * weight_decay,
+            )
         for name in names:
             if init_params is None:
                 # Keep the incumbent expression byte-for-byte unchanged.
-                new_params[name] = params[name] * param_decay - step_size * (
+                new_params[name] = params[name] * decay - step * (
                     grads[name]
                     * (
                         1.0
@@ -5074,12 +5093,16 @@ def _make_rls_head_learner(
         x: Array,
         y: Array,
         key: Array,
+        lr: Array | None = None,
+        decay_lr: Array | None = None,
     ) -> tuple[
         dict[str, Array],
         RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
+        if lr is not None and (sm_enabled or not gate_enabled or not resid):
+            raise ValueError("a runtime step needs the gated residual body")
         if _decay_to_init:
             if not isinstance(state, RLSHeadL2InitState):
                 raise TypeError("L2-Init learner requires RLSHeadL2InitState")
@@ -5213,6 +5236,8 @@ def _make_rls_head_learner(
                     _RLS_HEAD_BODY,
                     guard_zero_max=True,
                     init_params=init_params,
+                    lr=lr,
+                    **({} if decay_lr is None else {"decay_lr": decay_lr}),
                 )
             else:
                 # Issue #52's frozen ablation endpoint: do not compute or
@@ -5322,6 +5347,8 @@ class RLSHeadIdentState:
     post_sq_sums: Array
     since_shift: Array
     remap: Array
+    anneal_clock: Array
+    decay_clock: Array
 
 
 def _identmap_assignment(
@@ -5385,6 +5412,50 @@ def _make_rls_head_identmap_learner(
     ident_frac = float(hp.get("ident_reset_frac", 0.05))
     if hp["head_resid"] == 0.0:
         raise ValueError("identmap is registered for the residual arm only")
+    # Within-task body step anneal keyed on since_shift.  Key absent: the
+    # parent verbatim (no runtime step traced).  Key present: the live
+    # schedule ``max(floor, step * (1 + s/tau)^-1/2)`` runs every step;
+    # ``floor == step`` is bit-exactly the parent (pinned).
+    anneal_on = "anneal_floor" in hp
+    anneal_step = float(hp["step_size"])
+    anneal_floor = float(hp.get("anneal_floor", anneal_step))
+    anneal_tau = float(hp.get("anneal_tau", 1.0))
+    if anneal_on and not (
+        0.0 < anneal_floor <= anneal_step
+        and 0.0 < anneal_tau
+        and math.isfinite(anneal_tau)
+    ):
+        raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
+    # Partial anneal reset.  Key absent: ``anneal_clock`` mirrors
+    # ``since_shift`` exactly and the anneal reads ``since_shift`` (parent
+    # verbatim).  Key present: the anneal reads ``anneal_clock``, which on a
+    # detected shift restarts at ``1 + floor(f * s)`` (s = decoded pre-step
+    # clock) instead of 1, and otherwise counts +1.  ``f == 0`` restarts at
+    # 1, bit-exactly the parent (pinned).  The identifier keeps
+    # ``since_shift`` untouched in every case.
+    partial_on = "anneal_reset_frac" in hp
+    reset_frac = float(hp.get("anneal_reset_frac", 0.0))
+    if partial_on and not (
+        anneal_on and math.isfinite(reset_frac) and 0.0 <= reset_frac < 1.0
+    ):
+        raise ValueError("anneal_reset_frac needs anneal_floor and 0 <= f < 1")
+    # Decoupled-decay control.  Key absent: the body decay reads the same
+    # runtime step as the update (``1 - lr*weight_decay``), unchanged.
+    # Key present (f_d): a separate ``decay_clock`` restarts at
+    # ``1 + floor(f_d * s)`` on a detected shift, and the decay reads the
+    # anneal schedule evaluated on that clock, while the step keeps the
+    # ``anneal_reset_frac`` clock.  f_d == 0 is the parent's full-reset
+    # decay; f_d == anneal_reset_frac is the coupled arm bit-exactly.
+    if not float(hp["weight_decay"]) >= 0.0:
+        raise ValueError("weight_decay must be >= 0 for the identmap learner")
+    decay_on = "anneal_decay_reset_frac" in hp
+    decay_frac = float(hp.get("anneal_decay_reset_frac", 0.0))
+    if decay_on and not (
+        partial_on and math.isfinite(decay_frac) and 0.0 <= decay_frac < 1.0
+    ):
+        raise ValueError(
+            "anneal_decay_reset_frac needs anneal_reset_frac and 0 <= f < 1"
+        )
     inner_init, inner_step = _make_rls_head_learner(hp)
 
     def raw_normalize(
@@ -5420,6 +5491,8 @@ def _make_rls_head_identmap_learner(
             post_sq_sums=jnp.zeros((input_dim,), dtype=jnp.float32),
             since_shift=jnp.array(-(2**30), dtype=jnp.int32),
             remap=jnp.arange(input_dim, dtype=jnp.int32),
+            anneal_clock=jnp.array(-(2**30), dtype=jnp.int32),
+            decay_clock=jnp.array(-(2**30), dtype=jnp.int32),
         )
 
     def full_step(
@@ -5432,9 +5505,42 @@ def _make_rls_head_identmap_learner(
         input_dim = x.shape[0]
         n_classes = state.ref_class_sums.shape[0]
         x_r = x[state.remap]
-        new_params, new_inner, metrics = inner_step(
-            params, state.inner, x_r, y, key
-        )
+        if anneal_on:
+            # Pre-step counter; before any detected shift it runs from
+            # -2**30, so the offset recovers steps since stream start.
+            clock = state.anneal_clock if partial_on else state.since_shift
+            s = jnp.where(
+                clock < 0,
+                clock + (2**30),
+                clock,
+            ).astype(jnp.float32)
+            lr = jnp.maximum(
+                jnp.float32(anneal_floor),
+                jnp.float32(anneal_step)
+                * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
+            )
+            if decay_on:
+                ds = jnp.where(
+                    state.decay_clock < 0,
+                    state.decay_clock + (2**30),
+                    state.decay_clock,
+                ).astype(jnp.float32)
+                decay_lr = jnp.maximum(
+                    jnp.float32(anneal_floor),
+                    jnp.float32(anneal_step)
+                    * jax.lax.rsqrt(1.0 + ds / jnp.float32(anneal_tau)),
+                )
+                new_params, new_inner, metrics = cast(Any, inner_step)(
+                    params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr
+                )
+            else:
+                new_params, new_inner, metrics = cast(Any, inner_step)(
+                    params, state.inner, x_r, y, key, lr=lr
+                )
+        else:
+            new_params, new_inner, metrics = inner_step(
+                params, state.inner, x_r, y, key
+            )
         _x_norm, new_raw_norm, new_raw_fast, shifted = raw_normalize(
             state.raw_norm, state.raw_fast, x
         )
@@ -5482,6 +5588,30 @@ def _make_rls_head_identmap_learner(
         since = jnp.where(
             trigger, jnp.array(1, jnp.int32), state.since_shift + 1
         )
+        if partial_on:
+            prev = jnp.where(
+                state.anneal_clock < 0,
+                state.anneal_clock + (2**30),
+                state.anneal_clock,
+            )
+            restart = 1 + jnp.floor(
+                jnp.float32(reset_frac) * prev.astype(jnp.float32)
+            ).astype(jnp.int32)
+            new_clock = jnp.where(trigger, restart, state.anneal_clock + 1)
+        else:
+            new_clock = since
+        if decay_on:
+            dprev = jnp.where(
+                state.decay_clock < 0,
+                state.decay_clock + (2**30),
+                state.decay_clock,
+            )
+            drestart = 1 + jnp.floor(
+                jnp.float32(decay_frac) * dprev.astype(jnp.float32)
+            ).astype(jnp.int32)
+            new_dclock = jnp.where(trigger, drestart, state.decay_clock + 1)
+        else:
+            new_dclock = new_clock
         remap = jnp.where(
             trigger, jnp.arange(input_dim, dtype=jnp.int32), state.remap
         )
@@ -5548,6 +5678,8 @@ def _make_rls_head_identmap_learner(
             post_sq_sums=post_sq_sums,
             since_shift=since,
             remap=remap,
+            anneal_clock=new_clock,
+            decay_clock=new_dclock,
         ), metrics
 
     return init_fn, full_step
@@ -8575,6 +8707,86 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "and the gated chain never screened any step below 0.01 — the "
             "gate + trigger + step triple named unmeasured in the idet002 "
             "wave README (PR #3116)"
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": floor,
+                 "anneal_tau": tau},
+                "the idet003_s005625 composition with the body step annealed "
+                "within each detected task, max(floor, 0.005625 * (1 + "
+                f"since_shift/tau)^-1/2), floor {floor}, tau {tau} "
+                "(wave_identmap50_r_idet003_s005625_anneal/ screen; "
+                "development screening diagnostic)"
+            )
+            for tag, floor, tau in (
+                ("f2t250", 0.0028125, 250.0),
+                ("f2t1000", 0.0028125, 1000.0),
+                ("f4t250", 0.00140625, 250.0),
+                ("f4t1000", 0.00140625, 1000.0),
+            )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_reset_frac": frac},
+                "anneal_f2t1000 with a partial anneal reset: on a detected "
+                f"shift the anneal clock restarts at 1 + floor({frac} * "
+                "clock) instead of 1 (identifier clock untouched; "
+                "anneal_partial_reset_screen/; development screening "
+                "diagnostic)"
+            )
+            for tag, frac in (("25", 0.25), ("50", 0.5))
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr50_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_reset_frac": f_s,
+                 "anneal_decay_reset_frac": f_d},
+                f"decoupled-decay control for pr50 ({desc}): step clock "
+                f"restarts at 1 + floor({f_s} * s), weight-decay clock at "
+                f"1 + floor({f_d} * s) (pr50_wd_decoupled_screen/; "
+                "development screening diagnostic)"
+            )
+            for tag, f_s, f_d, desc in (
+                ("steponly", 0.5, 0.0, "pr50 step, parent decay"),
+                ("decayonly", 0.0, 0.5, "parent step, pr50 decay"),
+            )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_wd{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "weight_decay": wd},
+                f"anneal_f2t1000 with a plain constant weight_decay {wd} "
+                f"({desc}; decayonly_fresh_screen/; development screening "
+                "diagnostic)"
+            )
+            for tag, wd, desc in (
+                ("00084", 0.0084, "matched to the decayonly arm's mean "
+                 "effective decay, computed analytically"),
+                ("0005", 0.005, "the ancestor upgd_w_wd0005 value"),
+                ("00025", 0.0025, "wd_sweep_screen/ tuning grid"),
+                ("0001", 0.001, "wd_sweep_screen/ tuning grid"),
+                ("0", 0.0, "wd_sweep_screen/ tuning grid; no decay"),
+            )
         ),
     ):
         specs.append(
