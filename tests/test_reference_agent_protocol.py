@@ -826,3 +826,41 @@ def test_legacy_receipt_keeps_executor_applied_action_so_divergence_halts() -> N
     state, _receipt = reducer.record_dispatch(state, receipt)
     assert state.phase is TransactionPhase.HALTED
     assert state.halt_reason == "executor applied action differs from the settled command"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        [True, 0.5],
+        (0.5, False),
+        [np.bool_(True), 0.5],
+    ],
+)
+def test_box_space_rejects_booleans_mixed_into_float_values(value: object) -> None:
+    space = SpaceSpec.box(shape=(2,), dtype="float32", low=None, high=None, semantic_id="obs")
+
+    with pytest.raises(ValueError, match="not bool"):
+        space.encode(value)
+
+
+def test_box_space_rejects_booleans_mixed_into_integer_values() -> None:
+    space = SpaceSpec.box(shape=(2,), dtype="int32", low=None, high=None, semantic_id="obs")
+
+    with pytest.raises(ValueError, match="not bool"):
+        space.encode([True, 2])
+
+
+def test_box_space_rejects_nested_booleans_mixed_into_values() -> None:
+    space = SpaceSpec.box(shape=(2, 2), dtype="float32", low=None, high=None, semantic_id="obs")
+
+    with pytest.raises(ValueError, match="not bool"):
+        space.encode([[0.5, 0.5], [0.5, True]])
+
+
+@pytest.mark.parametrize("field", ["low", "high"])
+def test_float_box_bounds_reject_booleans_like_integer_bounds(field: str) -> None:
+    bounds: dict[str, object] = {"low": (0.0, 0.0), "high": (2.0, 2.0)}
+    bounds[field] = (True, 1.0)
+
+    with pytest.raises(ValueError, match="not bool"):
+        SpaceSpec(kind="box", shape=(2,), dtype="float32", semantic_id="obs", **bounds)
