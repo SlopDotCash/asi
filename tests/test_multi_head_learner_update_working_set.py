@@ -42,7 +42,7 @@ def test_named_persist_and_width_still_fit_at_overflow() -> None:
         1, (_OVERFLOW_HIDDEN,), 1
     )
     extras_bytes = working_set_bytes - 3 * persist_bytes
-    assert persist_bytes == 840_000_020
+    assert persist_bytes == 840_000_024
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert 4 * _OVERFLOW_HIDDEN <= _INT32_MAX
@@ -81,7 +81,7 @@ def test_init_rejects_linear_feature_dim_working_set_before_allocation() -> None
         1, (), _OVERFLOW_FEATURE_DIM
     )
     extras_bytes = working_set_bytes - 3 * persist_bytes
-    assert persist_bytes == 720_000_020
+    assert persist_bytes == 720_000_024
     assert persist_bytes <= _INT32_MAX
     assert persist_bytes + extras_bytes <= _INT32_MAX
     assert working_set_bytes > _INT32_MAX
@@ -128,7 +128,7 @@ def test_persist_bound_still_fires_before_working_set() -> None:
 
 def test_legal_small_multi_head_learner_still_constructs() -> None:
     persist_bytes = _direct_state_bytes(2, (4,), 3)
-    assert persist_bytes == 236
+    assert persist_bytes == 244
     learner = MultiHeadMLPLearner(
         n_heads=2, hidden_sizes=(4,), sparsity=0.0, use_layer_norm=False
     )

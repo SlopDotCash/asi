@@ -365,8 +365,12 @@ class OffPolicyHordeLearner:
 
     ``delta_i = c_i + gamma_i V_i(s') - V_i(s)``
 
-    ``z_i <- gamma_i lambda_i min(rho_i, trace_ratio_clip) z_i
-    + min(rho_i, ratio_clip) grad V_i(s)``
+    ``z_i <- gamma_i^prev lambda_i min(rho_i, trace_ratio_clip) z_i
+    + min(rho_i, ratio_clip) grad V_i(s)``, where ``gamma_i^prev`` is the
+    PRIOR call's discount for demon ``i`` (the discount into the state being
+    processed); the current call's discount only controls the TD bootstrap.
+    A terminal transition therefore still credits the episode trace instead
+    of wiping it before the terminal error is applied.
 
     ``w_i <- w_i + alpha delta_i z_i``
 
