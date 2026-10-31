@@ -5446,6 +5446,8 @@ def _make_rls_head_identmap_learner(
     # anneal schedule evaluated on that clock, while the step keeps the
     # ``anneal_reset_frac`` clock.  f_d == 0 is the parent's full-reset
     # decay; f_d == anneal_reset_frac is the coupled arm bit-exactly.
+    if not float(hp["weight_decay"]) >= 0.0:
+        raise ValueError("weight_decay must be >= 0 for the identmap learner")
     decay_on = "anneal_decay_reset_frac" in hp
     decay_frac = float(hp.get("anneal_decay_reset_frac", 0.0))
     if decay_on and not (
@@ -8748,6 +8750,25 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             for tag, f_s, f_d, desc in (
                 ("steponly", 0.5, 0.0, "pr50 step, parent decay"),
                 ("decayonly", 0.0, 0.5, "parent step, pr50 decay"),
+            )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_wd{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "weight_decay": wd},
+                f"anneal_f2t1000 with a plain constant weight_decay {wd} "
+                f"({desc}; decayonly_fresh_screen/; development screening "
+                "diagnostic)"
+            )
+            for tag, wd, desc in (
+                ("00084", 0.0084, "matched to the decayonly arm's mean "
+                 "effective decay, computed analytically"),
+                ("0005", 0.005, "the ancestor upgd_w_wd0005 value"),
             )
         ),
     ):
