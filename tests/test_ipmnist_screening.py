@@ -7628,6 +7628,19 @@ class TestRLSHeadIdentMap:
                     ("0001", 0.001), ("0", 0.0),
                 )
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal"
+                f"_{tag}_wd0": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": floor,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                }
+                for tag, floor in (
+                    ("f1t1000", 0.005625), ("f4t1000", 0.00140625),
+                    ("f8t1000", 0.000703125),
+                )
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8219,3 +8232,63 @@ class TestRLSHeadIdentMapAnnealConstantWeightDecay:
         assert np.all(np.isfinite(loss))
         assert np.all(np.isfinite(np.asarray(arm.per_task_accuracy)))
         assert not np.array_equal(loss, np.asarray(parent.per_task_loss))
+
+
+class TestRLSHeadIdentMapAnnealWd0FloorRegistry:
+    """Anneal-floor retune arms on anneal_f2t1000_wd0 (wd0_floor_retune/).
+
+    Each arm differs from the wd0 parent only in ``anneal_floor``; at
+    weight_decay 0 the decay is exactly 1 on both branches of the coupling.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    WD0 = PARENT + "_wd0"
+    ARMS = (
+        ("f1t1000", 0.005625),
+        ("f4t1000", 0.00140625),
+        ("f8t1000", 0.000703125),
+    )
+
+    def _arm(self, tag):
+        return "rls_head_resid_identmap50_r_idet003_s005625_anneal_" + tag + "_wd0"
+
+    def test_registry_resolves_and_differs_only_in_floor(self):
+        wd0 = dict(screening_spec(self.WD0).hyperparameters)
+        for tag, floor in self.ARMS:
+            spec = screening_spec(self._arm(tag))
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("anneal_floor") == floor
+            rest = dict(wd0)
+            del rest["anneal_floor"]
+            assert hp == rest
+            assert spec.factory is screening_spec(self.WD0).factory
+
+    def test_floor_values_relative_to_peak(self):
+        for (tag, floor), k in zip(self.ARMS, (1, 4, 8)):
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            assert hp["step_size"] == 0.005625
+            assert hp["anneal_tau"] == 1000.0
+            assert floor * k == hp["step_size"]
+            assert 0.0 < hp["anneal_floor"] <= hp["step_size"]
+
+    def test_decay_exactly_one_at_wd0(self):
+        for tag, _ in self.ARMS:
+            hp = screening_spec(self._arm(tag)).hyperparameters
+            wd = hp["weight_decay"]
+            assert wd == 0.0
+            step = hp["step_size"]
+            assert 1.0 - step * wd == 1.0
+            for lr in (step, hp["anneal_floor"], step * 0.5):
+                d = 1.0 - jnp.float32(lr) * jnp.float32(wd)
+                assert np.asarray(d, dtype=np.float32) == np.float32(1.0)
+
+    def test_parent_configs_unchanged(self):
+        parent = dict(screening_spec(self.PARENT).hyperparameters)
+        assert parent["weight_decay"] == 0.01
+        assert parent["anneal_floor"] == 0.0028125
+        assert parent["anneal_tau"] == 1000.0
+        assert parent["step_size"] == 0.005625
+        wd0 = dict(screening_spec(self.WD0).hyperparameters)
+        assert wd0.pop("weight_decay") == 0.0
+        del parent["weight_decay"]
+        assert wd0 == parent

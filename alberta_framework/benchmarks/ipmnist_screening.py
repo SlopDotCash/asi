@@ -8774,6 +8774,26 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("0", 0.0, "wd_sweep_screen/ tuning grid; no decay"),
             )
         ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}_wd0",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": floor,
+                 "anneal_tau": 1000.0, "weight_decay": 0.0},
+                f"anneal_f2t1000_wd0 with the anneal floor set to {floor} "
+                f"({desc}); at weight_decay 0 the body decay is exactly 1, "
+                "so the step schedule is decoupled from shrinkage "
+                "(wd0_floor_retune/; development screening diagnostic)"
+            )
+            for tag, floor, desc in (
+                ("f1t1000", 0.005625, "floor == step_size: constant step, "
+                 "no anneal"),
+                ("f4t1000", 0.00140625, "floor step_size/4"),
+                ("f8t1000", 0.000703125, "floor step_size/8"),
+            )
+        ),
     ):
         specs.append(
             ScreeningSpec(
