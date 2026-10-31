@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -274,3 +275,50 @@ def test_coerce_still_rejects_non_integer_lookalikes() -> None:
     # An exact-type gate keeps hostile subclasses out without touching a hook.
     with pytest.raises(ValueError, match="security action"):
         coerce_security_action(_HostileInt(3))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        (float("nan"), 0.0),
+        (0.0, float("inf")),
+        (1e39, 0.0),
+        (True, False),
+        (1 + 1j, 0.0),
+        ("x", "y"),
+        (_HostileFloat(0.5), 0.0),
+        [None, 0.0],
+        "ab",
+        {0: 0.0, 1: 0.0},
+        np.array([np.nan, 0.0], dtype=np.float32),
+        np.array([1.0 + 0.0j, 0.0]),
+        np.array([True, False]),
+        jnp.array([jnp.inf, 0.0], dtype=jnp.float32),
+    ],
+)
+def test_validate_observation_rejects_values_outside_the_float32_schema(
+    observation: Any,
+) -> None:
+    schema = SecurityFeatureSchema(names=("x0", "x1"))
+    with pytest.raises(ValueError, match="observation|must be a finite real number"):
+        schema.validate_observation(observation)
+
+
+def test_validate_observation_rejects_a_matching_length_matrix() -> None:
+    schema = SecurityFeatureSchema(names=("x0", "x1"))
+    with pytest.raises(ValueError, match="one-dimensional"):
+        schema.validate_observation(np.ones((2, 3), dtype=np.float32))  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "observation",
+    [
+        (0.1, 2),
+        [np.float32(0.1), np.int64(2)],
+        np.array([0.1, 2.0], dtype=np.float32),
+        np.array([0.1, 2.0], dtype=np.float64),
+        jnp.array([0.1, 2.0], dtype=jnp.float32),
+    ],
+)
+def test_validate_observation_admits_finite_real_vectors(observation: Any) -> None:
+    SecurityFeatureSchema(names=("x0", "x1")).validate_observation(observation)
