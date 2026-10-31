@@ -151,6 +151,35 @@ def test_readiness_rejects_nonrepresentable_squared_norms() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("gradient", "batch_gradients", "name"),
+    [
+        ([1e-170, 2e-170], [[1.0, 2.0]], "full_validation_gradient"),
+        ([1.0, 2.0], [[1e-170, 2e-170], [3e-170, 1e-170]], "expected batch gradient"),
+        ([1e-170, 2e-170], [[1e-170, 2e-170]], "full_validation_gradient"),
+        ([1e-160, 2e-160], [[1.0, 2.0]], "full_validation_gradient"),
+    ],
+)
+def test_readiness_rejects_gradients_whose_squared_norm_underflows(
+    gradient: list[float], batch_gradients: list[list[float]], name: str
+) -> None:
+    with pytest.raises(ValueError, match=f"{name} squared norm must not underflow"):
+        estimate_optimization_readiness(
+            loss=1.0,
+            full_validation_gradient=np.asarray(gradient),
+            batch_gradients=np.asarray(batch_gradients),
+        )
+
+
+def test_readiness_keeps_a_small_row_beside_a_representable_batch_mean() -> None:
+    readiness = estimate_optimization_readiness(
+        loss=1.0,
+        full_validation_gradient=np.asarray([1.0, 2.0]),
+        batch_gradients=np.asarray([[1e-170, 2e-170], [1.0, 3.0], [0.0, 0.0]]),
+    )
+    assert readiness.expected_batch_gradient_squared_norm == pytest.approx(10.0 / 3.0)
+
+
 def test_batch_gradient_mean_survives_large_but_representable_row_norms() -> None:
     """A representable batch mean must not be fabricated from an overflowed sum.
 
