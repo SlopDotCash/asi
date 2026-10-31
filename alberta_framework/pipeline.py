@@ -1887,7 +1887,7 @@ def run_pipeline_smoke(
 
     observation_dim = pipeline._observation_dim()  # noqa: SLF001
 
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     if cfg.step2 == "associative" and cfg.associative is not None:
         observations = jr.randint(
             data_key,

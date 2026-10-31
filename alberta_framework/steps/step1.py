@@ -512,7 +512,7 @@ def run_step1_smoke(
             learner,
             cast(Any, stream),
             num_steps=steps,
-            key=jr.key(seed),
+            key=jr.key(seed, impl="threefry2x32"),
         ),
     )
     metrics = loop_result[1]

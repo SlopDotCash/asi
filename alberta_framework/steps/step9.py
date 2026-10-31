@@ -1088,7 +1088,7 @@ def run_step9_smoke(
     _preflight_step9_resources(cfg)
     _preflight_step9_smoke_resources(cfg, steps)
     agent, model, buffer = make_step9_components(cfg)
-    data_key, state_key = jr.split(jr.key(seed))
+    data_key, state_key = jr.split(jr.key(seed, impl="threefry2x32"))
     observations = jr.normal(
         data_key,
         (steps + 1, cfg.observation_dim),
