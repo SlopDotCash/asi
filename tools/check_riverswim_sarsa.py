@@ -3,7 +3,9 @@
 This is an additional, nonpromoting consistency check for the trace records
 proposed in ASI PRs #3220 and #3225. It does not replace their validators.
 It conditions on the recorded actions and initial Q values, with zero initial
-biases/traces. It verifies neither initialization provenance nor policy/RNG.
+biases/traces. A numeric ``initial_q_value`` (optimistic tabular start) must
+equal every initial Q value. It verifies neither initialization provenance nor
+policy/RNG.
 The last bootstrap action is missing from these schemas: both possibilities
 are checked and the compatible actions are reported, never silently inferred.
 """
@@ -51,6 +53,9 @@ CONFIG_FIELDS = {
     "step_size",
     "use_layer_norm",
 }
+# Control configs serialize ``initial_q_value`` since #3308. Records written
+# before it omit the field; both manifests are accepted, nothing else.
+CONFIG_FIELD_SETS = (frozenset(CONFIG_FIELDS), frozenset(CONFIG_FIELDS | {"initial_q_value"}))
 type FloatArray = NDArray[np.float32]
 
 
@@ -166,7 +171,10 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     for flag in ("scientific_promotion_allowed", "reference_dev_population_allowed"):
         _require(record.get(flag) is False, f"{flag} must be false")
     config, env = record.get("config"), record.get("environment")
-    _require(type(config) is dict and set(config) == CONFIG_FIELDS, "unsupported config fields")
+    _require(
+        type(config) is dict and frozenset(config) in CONFIG_FIELD_SETS,
+        "unsupported config fields",
+    )
     _require(type(env) is dict, "environment must be an object")
     config = cast(dict[str, Any], config)
     env = cast(dict[str, Any], env)
@@ -221,6 +229,13 @@ def check_record(record: dict[str, Any]) -> dict[str, Any]:
     by_index = {s["accepted_events"]: s for s in snapshots}
     initial = _array(snapshots[0].get("q_by_state_action"), (n_states, 2), "initial Q")
     _require(bool((np.abs(initial) <= 1e6).all()), "initial Q exceeds supported range")
+    declared_initial_q = config.get("initial_q_value")
+    if declared_initial_q is not None:
+        declared = _number(declared_initial_q, "config initial_q_value", lower=0, upper=1e6)
+        _require(
+            bool(np.allclose(initial, declared, rtol=0.0, atol=ABSOLUTE_TOLERANCE)),
+            "initial Q differs from config initial_q_value",
+        )
     weights = initial.T.astype(np.float32).copy()
     biases = np.zeros(2, dtype=np.float32)
     traces = np.zeros_like(weights)
