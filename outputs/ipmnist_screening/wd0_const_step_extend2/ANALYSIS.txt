@@ -1,0 +1,15 @@
+seed 124 +0.001870
+seed 125 +0.001660
+seed 126 +0.001633
+seed 127 +0.001603
+seed 128 +0.001333
+seed 129 +0.001760
+seed 130 +0.001677
+seed 131 +0.001557
+seed 132 +0.001043
+seed 133 +0.001473
+rls_head_resid_identmap50_r_idet003_s05_anneal_f1t1000_wd0 vs rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0
+blocks (10 tasks, mean over 10 valid seeds): +0.005944 / +0.001294 / +0.000762 / +0.000564 / +0.000410 / +0.000392
+mean +0.001561 SE 0.000074 CI95 [+0.001394, +0.001728] improved 10/10 diverged 0/10
+BARS: mean>=+0.002 False, >=7/10 True, CI_lo>0 True; no diverged seed True -> FAIL
+EDGE FLAG: the winner is the largest step tested (0.05); the optimum may be higher. Verdict unchanged.
