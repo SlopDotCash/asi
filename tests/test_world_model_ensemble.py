@@ -15,6 +15,7 @@ import pytest
 
 import alberta_framework as alberta
 import alberta_framework.core as core
+from alberta_framework.core.checkpoints import load_checkpoint_metadata, save_checkpoint
 from alberta_framework.core.learning_signals import (
     LearningSignalEstimatorConfig,
 )
@@ -23,6 +24,7 @@ from alberta_framework.core.world_model_ensemble import (
     WorldModelEnsemble,
     WorldModelEnsembleConfig,
     WorldModelEnsembleResourceBudget,
+    load_world_model_ensemble_checkpoint,
     save_world_model_ensemble_checkpoint,
 )
 
@@ -826,6 +828,24 @@ def test_checkpoint_rejects_invalid_state(tmp_path: Path) -> None:
             corrupt,
             tmp_path / "invalid",
         )
+
+
+def test_checkpoint_rejects_undeclared_metadata(tmp_path: Path) -> None:
+    ensemble = WorldModelEnsemble(_config())
+    state = ensemble.init(jr.key(0))
+    clean_path = tmp_path / "clean"
+    save_world_model_ensemble_checkpoint(ensemble, state, clean_path)
+    metadata = load_checkpoint_metadata(clean_path)
+    load_world_model_ensemble_checkpoint(clean_path)
+
+    forged_path = tmp_path / "forged"
+    save_checkpoint(
+        state,
+        forged_path,
+        metadata={**metadata, "accepted_scientific_evidence": True},
+    )
+    with pytest.raises(ValueError, match="metadata fields do not match"):
+        load_world_model_ensemble_checkpoint(forged_path)
 
 
 def test_config_preflights_complete_update_result_at_exact_boundary() -> None:
