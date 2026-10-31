@@ -7602,6 +7602,19 @@ class TestRLSHeadIdentMap:
                 }
                 for tag, frac in (("25", 0.25), ("50", 0.5))
             },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_pr50_{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.005625, "anneal_floor": 0.0028125,
+                    "anneal_tau": 1000.0, "anneal_reset_frac": f_s,
+                    "anneal_decay_reset_frac": f_d,
+                }
+                for tag, f_s, f_d in (
+                    ("steponly", 0.5, 0.0), ("decayonly", 0.0, 0.5)
+                )
+            },
         }
         registered = {
             name for name in SCREENING_REGISTRY if "identmap" in name
@@ -8073,3 +8086,69 @@ class TestRLSHeadIdentMapAnnealPartialReset:
 
         with pytest.raises(ValueError, match="anneal_reset_frac"):
             _make_rls_head_identmap_learner({**hp, "anneal_reset_frac": 0.5})
+
+
+class TestRLSHeadIdentMapAnnealDecayDecoupled:
+    """Decoupled-decay control (``anneal_decay_reset_frac``) for pr50.
+
+    Pins on the anneal pin stream (short tau so clocks reach the step):
+    f_d == f_s is the coupled partial-reset arm bit-exactly; f_s = f_d = 0
+    is the parent bit-exactly; a deliberate f_d != f_s differs; invalid
+    values rejected.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    _offset_data = staticmethod(TestRLSHeadIdentMapStepAnneal._offset_data)
+    _spec = classmethod(TestRLSHeadIdentMapStepAnneal._spec.__func__)
+    _run = TestRLSHeadIdentMapStepAnneal._run
+
+    @staticmethod
+    def _same(a, b):
+        np.testing.assert_array_equal(
+            np.asarray(a.per_task_accuracy), np.asarray(b.per_task_accuracy)
+        )
+        np.testing.assert_array_equal(
+            np.asarray(a.per_task_loss), np.asarray(b.per_task_loss)
+        )
+
+    def test_registered_arms(self):
+        pr50 = screening_spec(self.PARENT + "_pr50").hyperparameters
+        for tag, f_s, f_d in (("steponly", 0.5, 0.0), ("decayonly", 0.0, 0.5)):
+            hp = dict(screening_spec(self.PARENT + f"_pr50_{tag}").hyperparameters)
+            assert hp.pop("anneal_decay_reset_frac") == f_d
+            assert hp.pop("anneal_reset_frac") == f_s
+            rest = dict(pr50)
+            del rest["anneal_reset_frac"]
+            assert hp == rest
+
+    def test_matched_fracs_equal_coupled_arm_bitwise(self):
+        coupled = self._run(anneal_tau=2.0, anneal_reset_frac=0.5)
+        matched = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.5, anneal_decay_reset_frac=0.5
+        )
+        self._same(matched, coupled)
+
+    def test_zero_fracs_equal_parent_bitwise(self):
+        parent = self._run(anneal_tau=2.0)
+        zero = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.0, anneal_decay_reset_frac=0.0
+        )
+        self._same(zero, parent)
+
+    def test_deliberate_break_differs(self):
+        coupled = self._run(anneal_tau=2.0, anneal_reset_frac=0.5)
+        split = self._run(
+            anneal_tau=2.0, anneal_reset_frac=0.5, anneal_decay_reset_frac=0.9
+        )
+        assert not np.array_equal(
+            np.asarray(split.per_task_loss), np.asarray(coupled.per_task_loss)
+        )
+
+    @pytest.mark.parametrize("frac", [-0.1, 1.0, 2.0, float("nan")])
+    def test_invalid_frac_rejected(self, frac):
+        with pytest.raises(ValueError, match="anneal_decay_reset_frac|finite"):
+            self._run(anneal_reset_frac=0.5, anneal_decay_reset_frac=frac)
+
+    def test_requires_partial_reset_key(self):
+        with pytest.raises(ValueError, match="anneal_decay_reset_frac"):
+            self._run(anneal_decay_reset_frac=0.5)
