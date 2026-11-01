@@ -8219,3 +8219,112 @@ class TestRLSHeadIdentMapAnnealConstantWeightDecay:
         assert np.all(np.isfinite(loss))
         assert np.all(np.isfinite(np.asarray(arm.per_task_accuracy)))
         assert not np.array_equal(loss, np.asarray(parent.per_task_loss))
+
+
+def _exp_path(*parts):
+    return Path(__file__).resolve().parents[1].joinpath("outputs", "ipmnist_screening", *parts)
+
+
+def _run_py(script, cwd, *args):
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(cwd)}
+    return subprocess.run([sys.executable, str(script), *args], cwd=cwd,
+                          capture_output=True, text=True, env=env)
+
+
+def _jobs_ok_rc(launch, content, tmp_path):
+    import re
+    import subprocess
+
+    fn = re.search(r"^jobs_ok\(\)\{.*$", launch.read_text(), re.M).group(0)
+    f = tmp_path / "jobs.txt"
+    f.write_text(content)
+    return subprocess.run(["bash", "-c", "L=/dev/null; log(){ :; }\n" + fn + '\njobs_ok "$1"',
+                           "x", str(f)], capture_output=True, text=True).returncode
+
+
+def _worker_xla_flags(worker):
+    import re
+    import subprocess
+
+    line = re.search(r"^export XLA_FLAGS=.*$", worker.read_text(), re.M).group(0)
+    return subprocess.run(["bash", "-c", line + '\nprintf %s "$XLA_FLAGS"'],
+                          capture_output=True, text=True).stdout
+
+
+class TestEnvcheckWd0Confirm200Unreadable:
+    """wd0_confirm200/envcheck.py: an unreadable reference is a clean FAIL (exit 1), never a crash."""
+
+    ENV = _exp_path("wd0_confirm200", "envcheck.py")
+
+    def _check_clean_fail(self, r):
+        assert r.returncode == 1, r.stderr
+        assert "Traceback" not in r.stderr
+        assert "UNREADABLE" in r.stdout
+        assert r.stdout.strip().splitlines()[-1] == "ENVCHECK FAIL"
+
+    def test_commit_absent_from_clone(self, tmp_path):
+        import shutil
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        shutil.copytree(_exp_path("wd0_confirm200", "envcheck"),
+                        tmp_path / "outputs" / "ipmnist_screening" / "wd0_confirm200" / "envcheck")
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_not_a_git_checkout_and_no_local_shards(self, tmp_path):
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_full_history_still_passes(self):
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        if subprocess.run(["git", "cat-file", "-e", "396d6d3c^{commit}"], cwd=root).returncode:
+            pytest.skip("reference commit not in this clone")
+        r = _run_py(self.ENV, root)
+        assert r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "ENVCHECK PASS"
+
+
+class TestWd0Confirm200AnalyzeShardErrors:
+    """wd0_confirm200/analyze.py: a missing or wrong-length shard is a clean VOID (exit 1)."""
+
+    A = _exp_path("wd0_confirm200", "analyze.py")
+    P = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+
+    def _shards(self, tmp_path):
+        import json
+
+        d = tmp_path / "outputs" / "ipmnist_screening" / "wd0_confirm200" / "shards"
+        d.mkdir(parents=True)
+        for s in range(50, 70):
+            (d / f"{self.P}_seed{s}.json").write_text(json.dumps({"per_task_accuracy": [0.9] * 200}))
+            (d / f"{self.P}_wd0_seed{s}.json").write_text(
+                json.dumps({"per_task_accuracy": [0.9 + 0.003 + 0.0001 * (s - 50)] * 200}))
+        return d
+
+    def test_valid_shards_give_verdict(self, tmp_path):
+        self._shards(tmp_path)
+        r = _run_py(self.A, tmp_path)
+        assert r.returncode == 0 and r.stdout.strip().endswith("-> PASS")
+
+    def _void(self, r):
+        assert r.returncode == 1 and "Traceback" not in r.stderr
+        assert r.stderr.startswith("VOID: shard ") and r.stdout == ""
+
+    def test_missing_shard_voids(self, tmp_path):
+        (self._shards(tmp_path) / f"{self.P}_seed57.json").unlink()
+        self._void(_run_py(self.A, tmp_path))
+
+    def test_short_shard_voids(self, tmp_path):
+        import json
+
+        (self._shards(tmp_path) / f"{self.P}_wd0_seed61.json").write_text(
+            json.dumps({"per_task_accuracy": [0.9] * 199}))
+        self._void(_run_py(self.A, tmp_path))
+
+    def test_malformed_shard_voids(self, tmp_path):
+        (self._shards(tmp_path) / f"{self.P}_seed50.json").write_text("{not json")
+        self._void(_run_py(self.A, tmp_path))
