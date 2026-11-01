@@ -1,8 +1,16 @@
-"""Final verdict per PREREGISTRATION.md: seeds 50-69, 200 tasks, wd0 minus parent."""
-import json, statistics as st
+"""Final verdict per PREREGISTRATION.md: seeds 50-69, 200 tasks, wd0 minus parent.
+A missing, unreadable or wrong-length shard stops with a VOID message and exit 1 (no verdict)."""
+import json, statistics as st, sys
 D='outputs/ipmnist_screening/wd0_confirm200/shards/'; P='rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000'
 def a(c,s):
-    v=json.load(open(f'{D}{c}_seed{s}.json'))['per_task_accuracy']; assert len(v)==200; return v
+    p=f'{D}{c}_seed{s}.json'
+    try:
+        v=json.load(open(p))['per_task_accuracy']
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        sys.exit(f'VOID: shard {p} unreadable ({type(e).__name__})')
+    if not isinstance(v,list) or len(v)!=200:
+        sys.exit(f'VOID: shard {p} has {len(v) if isinstance(v,list) else type(v).__name__} tasks, expected 200')
+    return v
 S=range(50,70); d=[[x-y for x,y in zip(a(P+'_wd0',s),a(P,s))] for s in S]; g=[sum(v)/200 for v in d]
 mu=st.mean(g); se=st.stdev(g)/20**.5; lo,hi=mu-2.093*se,mu+2.093*se; n=sum(x>0 for x in g)
 for s,x in zip(S,g): print(f'seed {s} {x:+.6f}')
