@@ -156,6 +156,16 @@ def test_first_float32_action_outside_wide_domain_remains_invalid() -> None:
     assert int(safe) == 0
 
 
+def test_float32_action_at_largest_accepted_domain_stays_valid() -> None:
+    # n_actions is capped at 2**31 - 1, so the int32 bound below never overflows.
+    largest = np.float32(2_147_483_520.0)  # largest float32 below 2**31 - 1
+    safe, valid = safe_discrete_action(largest, 2**31 - 1)
+    assert bool(valid)
+    assert int(safe) == 2_147_483_520
+    with pytest.raises(ValueError, match="n_actions must be an integer"):
+        safe_discrete_action(largest, 2**31)
+
+
 @pytest.mark.parametrize("dtype, n_actions", [
     (jnp.int8, 300), (jnp.uint8, 300), (jnp.int16, 70000), (jnp.uint16, 70000),
 ])
