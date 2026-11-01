@@ -9,7 +9,7 @@ an optimistic initial reward-rate estimate R̄0? This answers the question raise
 single-change arm: same manifest settings, same seeds protocol, same gate, one opt-in field.
 
 Credit: the RiverSwim reference-life pipeline and the SARSA Q0 reference life come from #3308. Our
-own Q0 calibration of SARSA is in our own #NNNN; it is not reused here except as background.
+own Q0 calibration of SARSA is in our own #3652; it is not reused here except as background.
 
 ## Why R̄0 and not Q0
 
