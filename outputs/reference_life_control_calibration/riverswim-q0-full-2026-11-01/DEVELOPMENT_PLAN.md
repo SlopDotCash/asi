@@ -119,3 +119,19 @@ not `oracle_reward_sum`, `regret_sum` (all three), or the sarsa transcript and m
    stored values in the record and the pinned base-commit values (b25a382e..., 3c4301d0...).
 
 Any mismatch is still a VOID stop with no automatic re-run.
+
+## Amendment 2 (2026-11-01 GMT, before relaunch)
+
+Seeds, event count, arms, decision rule, analysis script and environment check are unchanged.
+
+**Second VOID attempt (launcher defect, no life computed).** The relaunch at commit 33cc00bd
+(01:34 GMT) passed the amended environment check: all four lives MATCH. Then a variable-shadowing
+bug in `launch.sh` broke phase 2. `wait_slot` assigned the free-memory reading to `a`, which was
+also the arm loop variable. Every one of the 48 `run.py life` calls got a number as its arm and
+was rejected by argument parsing before any environment or agent was built. No calibration life
+started, so no outcome was seen. Pack then failed, and the attempt ended VOID as designed.
+
+**Fix:** `wait_slot` uses a local `avail`. The loops use `seed` and `arm`. Before each launch,
+the launcher checks that the arm is one of the four planned arms and stops VOID otherwise. The
+relaunch reruns the environment check from scratch. This is the only relaunch made because of
+this defect.
