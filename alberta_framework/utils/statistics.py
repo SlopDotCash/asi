@@ -471,6 +471,35 @@ def cohens_d(
             f"(got n_a={n_a}, n_b={n_b}, pooled_df={pooled_df})"
         )
 
+    if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+        # Integer counters can retain unit differences far above float64's
+        # exact-integer range. Center exactly before estimating their spread.
+        integers_a = [int(value) for value in a]
+        integers_b = [int(value) for value in b]
+        exact_mean_a = Fraction(sum(integers_a), n_a)
+        exact_mean_b = Fraction(sum(integers_b), n_b)
+        centered_a = np.asarray(
+            [float(Fraction(value) - exact_mean_a) for value in integers_a], dtype=np.float64
+        )
+        centered_b = np.asarray(
+            [float(Fraction(value) - exact_mean_b) for value in integers_b], dtype=np.float64
+        )
+        centered_a.sort()
+        centered_b.sort()
+        integer_std_a = np.std(centered_a, ddof=1) if n_a > 1 else 0.0
+        integer_std_b = np.std(centered_b, ddof=1) if n_b > 1 else 0.0
+        integer_pooled_std = float(np.hypot(
+            np.sqrt((n_a - 1) / pooled_df) * integer_std_a,
+            np.sqrt((n_b - 1) / pooled_df) * integer_std_b,
+        ))
+        integer_mean_difference = float(exact_mean_a - exact_mean_b)
+        if integer_pooled_std == 0.0:
+            return (
+                0.0 if integer_mean_difference == 0.0
+                else float(np.copysign(np.inf, integer_mean_difference))
+            )
+        return integer_mean_difference / integer_pooled_std
+
     # Compute each group's spread at its own bounded scale so a large constant
     # group cannot erase the smaller group's variance. Cohen's d is unchanged
     # when both means and standard deviations use the same positive units.
@@ -701,7 +730,16 @@ def mann_whitney_comparison(
             f"independent Mann-Whitney test requires non-empty groups (got {len(a)} and {len(b)})"
         )
 
-    if np.all(a == a[0]) and np.all(b == a[0]):
+    rank_a, rank_b = a, b
+    if a.dtype.kind in "iu" and b.dtype.kind in "iu":
+        # Concatenating signed and unsigned integer arrays can itself narrow
+        # their observations to float64. Only their shared ordering is needed.
+        integer_values = sorted({int(value) for values in (a, b) for value in values})
+        order = {value: index for index, value in enumerate(integer_values)}
+        rank_a = np.asarray([float(order[int(value)]) for value in a])
+        rank_b = np.asarray([float(order[int(value)]) for value in b])
+
+    if np.all(rank_a == rank_a[0]) and np.all(rank_b == rank_a[0]):
         # Every cross-group pair is a tie.  The exact permutation null puts
         # all mass at U=n_a*n_b/2, hence p=1; scipy's asymptotic tie variance
         # is zero and some supported versions return NaN instead.
@@ -711,7 +749,7 @@ def mann_whitney_comparison(
         try:
             from scipy import stats
 
-            result = stats.mannwhitneyu(a, b, alternative="two-sided")
+            result = stats.mannwhitneyu(rank_a, rank_b, alternative="two-sided")
             # scipy returns (statistic, pvalue) tuple
             stat_val = float(result[0])
             p_val = _require_p_value(
@@ -788,7 +826,15 @@ def wilcoxon_comparison(
         )
     _require_exact_str("method_a", method_a)
     _require_exact_str("method_b", method_b)
-    if a.size > 0 and np.array_equal(a, b):
+    integer_differences = (
+        [int(left) - int(right) for left, right in zip(a, b, strict=True)]
+        if a.dtype.kind in "iu" and b.dtype.kind in "iu" else None
+    )
+    identical = (
+        not any(integer_differences)
+        if integer_differences is not None else bool(np.array_equal(a, b))
+    )
+    if a.size > 0 and identical:
         raise ValueError(
             f"Paired comparison '{method_a}' vs '{method_b}' has identical "
             "samples; the Wilcoxon signed-rank statistic is undefined"
@@ -801,7 +847,19 @@ def wilcoxon_comparison(
     try:
         from scipy import stats
 
-        result = stats.wilcoxon(a, b, alternative="two-sided")
+        if integer_differences is not None:
+            # The signed-rank test depends only on signs, zeros and ordering of
+            # absolute differences. Preserve these exactly before SciPy casts
+            # integer observations to float64, which can erase whole pairs.
+            magnitudes = sorted({abs(value) for value in integer_differences if value})
+            order = {value: index for index, value in enumerate(magnitudes, start=1)}
+            rank_input = np.asarray([
+                0.0 if value == 0 else float(order[abs(value)]) * (1 if value > 0 else -1)
+                for value in integer_differences
+            ])
+            result = stats.wilcoxon(rank_input, alternative="two-sided")
+        else:
+            result = stats.wilcoxon(a, b, alternative="two-sided")
         # scipy returns (statistic, pvalue) tuple
         stat_val = float(result[0])
         p_val = _require_p_value(
