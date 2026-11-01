@@ -78,3 +78,44 @@ committed.
 
 Analysis: `.venv/bin/python <this dir>/analyze.py <this dir>/evidence` (exit 0 PASS, 1 FAIL, 3 VOID).
 Tests: `tests/test_riverswim_q0_full_calibration.py`.
+
+## Amendment 1 (2026-11-01 GMT, before relaunch)
+
+Seeds, event count, arms, decision rule and analysis script are unchanged.
+
+**VOID attempt.** The first launch, at commit b3fb21bd (2026-11-01 01:20 GMT), stopped VOID at
+the environment check. No calibration life ran. The #3308 Q0 life matched bit-exactly. The three
+scorecard seed-70000 lives matched accepted events, parameter changes and reward sums exactly, but
+not `oracle_reward_sum`, `regret_sum` (all three), or the sarsa transcript and manifest id.
+
+**Cause, isolated in a 2x2 of {launch commit 30c6f016, base ea6eee9d} x {Python 3.12.12, 3.13.5}:**
+
+- *Python version: not a cause.* All four cells give identical results.
+- *`oracle_reward_sum`: not drift but a different accumulator.* Every cell, including the
+  scorecard's own launch commit, gives 17143.002837745098 = `20000.0 * g` for the exact
+  RiverSwim gain `g` (rational solve, host-independent). That is the stationary-metrics closed form
+  (`alberta_framework/reference_life.py:698-701`). The stored 17143.002837739168 is bit-exactly
+  `g` added 20,000 times, which is the scorecard recorder's per-event sum
+  (`alberta_framework/benchmarks/reference_life_scorecard.py:743`). This runner read the metrics
+  field. `regret_sum` differs only through it.
+- *sarsa manifest and transcript: a code change.* At the launch commit both reproduce the stored
+  values exactly. A bisect of the manifest id between 30c6f016 and ea6eee9d gives first-bad commit
+  e9b0760f (#3308, "add optimistic tabular SARSA initialization"). It adds `"initial_q_value": None`
+  to the discounted-SARSA manifest config (`alberta_framework/reference_life_controls.py:760`
+  at ea6eee9d). The manifest id changes, and with it the transcript hash. Agent behaviour is
+  unchanged: rewards and parameter changes are bit-identical.
+
+**Revised environment check (envcheck.py):**
+
+1. `pr3308_q0_81010`: still every field bit-exact (events, parameter changes, reward, oracle,
+   regret, transcript, manifest).
+2. Scorecard seed 70000, sarsa, random and oracle: bit-exact accepted events, parameter changes
+   and reward sum. Persistent bytes are bit-exact for sarsa and random. The scorecard's oracle
+   resource accounting (480,052 bytes) is not the measure this runner uses (28 bytes); the oracle's
+   bytes play no part in the gate.
+3. The known differences are checked exactly, not skipped. The stored oracle sum must equal the
+   sequential sum of `g`, and the runner's must equal `20000.0 * g`. Random and oracle transcripts
+   and manifests must match the stored values. The sarsa manifest and transcript must equal the
+   stored values in the record and the pinned base-commit values (b25a382e..., 3c4301d0...).
+
+Any mismatch is still a VOID stop with no automatic re-run.
