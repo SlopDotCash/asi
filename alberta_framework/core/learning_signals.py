@@ -906,7 +906,7 @@ class LearningSignalEstimator:
         next_state = jax.tree_util.tree_map(
             lambda valid_value, invalid_value, corrupt_value: jnp.where(
                 state_valid,
-                cast(Array, jnp.where(input_valid, valid_value, invalid_value)),
+                jnp.where(input_valid, valid_value, invalid_value),
                 corrupt_value,
             ),
             next_state_if_valid,

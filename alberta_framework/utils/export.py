@@ -18,7 +18,12 @@ import numpy as np
 from numpy.typing import NDArray
 
 from alberta_framework._seed_validation import require_unique_jax_seeds
-from alberta_framework.utils.experiments import AggregatedResults, MetricSummary
+from alberta_framework.utils.experiments import (
+    AggregatedResults,
+    MetricSummary,
+    _scaled_mean,
+    _scaled_std,
+)
 from alberta_framework.utils.statistics import SignificanceResult, common_final_window
 
 if TYPE_CHECKING:
@@ -247,8 +252,15 @@ def _preflight_export_results(
                 )
             metric_values = aggregate.metric_arrays[metric_name]
             final_window = min(100, metric_values.shape[1])
-            expected_values = np.mean(metric_values[:, -final_window:], axis=1)
-            if not np.array_equal(summary.values, expected_values):
+            final_steps = metric_values[:, -final_window:]
+            # aggregate_metrics reduces with _scaled_mean, which can differ from
+            # np.mean in the last bit; both are exact reductions of this trace.
+            with np.errstate(over="ignore", invalid="ignore"):
+                plain_values = np.mean(final_steps, axis=1)
+            if not (
+                np.array_equal(summary.values, plain_values)
+                or np.array_equal(summary.values, _scaled_mean(final_steps, axis=1))
+            ):
                 raise ValueError(
                     f"{qualified_name} values do not match the raw metric trace"
                 )
@@ -261,25 +273,19 @@ def _preflight_export_results(
                     float(np.min(summary.values)),
                     float(np.max(summary.values)),
                 )
-            # Recover reductions whose intermediate sum/squares leave float64.
-            # Keep ordinary exact validation unchanged, including its rounding.
-            if (
-                not all(math.isfinite(value) for value in expected_statistics)
-                or (expected_statistics[1] == 0.0 and np.ptp(summary.values) > 0.0)
-            ):
-                scale = float(np.max(np.abs(summary.values)))
-                scaled = summary.values / scale if scale else summary.values
-                expected_statistics = (
-                    float(np.mean(scaled) * scale),
-                    float(np.std(scaled, ddof=1) * scale) if seed_count > 1 else 0.0,
-                    expected_statistics[2],
-                    expected_statistics[3],
-                )
+            # aggregate_metrics reduces with _scaled_mean/_scaled_std, which also
+            # recovers reductions whose intermediate sum/squares leave float64.
+            scaled_statistics = (
+                float(_scaled_mean(summary.values, axis=0)),
+                float(_scaled_std(summary.values, axis=0)) if seed_count > 1 else 0.0,
+                expected_statistics[2],
+                expected_statistics[3],
+            )
             actual_statistics = tuple(
                 float(_exported_number(value))
                 for value in (summary.mean, summary.std, summary.min, summary.max)
             )
-            if actual_statistics != expected_statistics:
+            if actual_statistics not in (expected_statistics, scaled_statistics):
                 raise ValueError(f"{qualified_name} statistics do not match values")
             export_cells = _checked_export_cells(export_cells, int(summary.values.size))
 

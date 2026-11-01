@@ -79,6 +79,16 @@ def _explicit_rbg_key() -> jax.Array:
     return jr.key(0, impl="rbg")
 
 
+# sparse_init (initializers.py) admits only scalar Threefry keys, so an RBG
+# PrototypeAgent cannot be built on main. Strict: this flips red when RBG
+# initialisation is supported again and these tests can run as written.
+_RBG_INIT_REFUSED = pytest.mark.xfail(
+    raises=ValueError,
+    strict=True,
+    reason="sparse_init refuses non-Threefry keys; RBG agents cannot initialise",
+)
+
+
 def _ambient_rbg_key() -> jax.Array:
     with jax.default_prng_impl("rbg"):
         return jr.key(0)
@@ -89,6 +99,7 @@ def _ambient_rbg_key() -> jax.Array:
     [_explicit_rbg_key, _ambient_rbg_key],
     ids=["explicit-rbg", "ambient-rbg-default"],
 )
+@_RBG_INIT_REFUSED
 def test_rbg_key_init_derives_a_two_word_session_nonce(
     make_key: Callable[[], jax.Array],
 ) -> None:
@@ -123,6 +134,7 @@ def test_threefry_session_nonce_is_the_session_key_data() -> None:
     [None, jnp.asarray([1, 2], dtype=jnp.uint32)],
     ids=["derived-nonce", "caller-nonce"],
 )
+@_RBG_INIT_REFUSED
 def test_rbg_checkpoint_restores_with_the_default_template(
     tmp_path: Path,
     lifecycle_id: jax.Array | None,

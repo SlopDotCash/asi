@@ -285,7 +285,7 @@ class HistoryFeatureExtractor:
         traces = jnp.zeros(
             (len(self._decay_rates), len(self._channels)), dtype=jnp.float32
         )
-        return HistoryFeatureState(traces=traces)
+        return HistoryFeatureState(traces=traces)  # type: ignore[call-arg]
 
     def _require_state_contract(self, state: HistoryFeatureState) -> None:
         if type(state) is not HistoryFeatureState:
@@ -384,7 +384,7 @@ class HistoryFeatureExtractor:
         else:
             augmented = flat_traces
 
-        return augmented, HistoryFeatureState(traces=new_traces)
+        return augmented, HistoryFeatureState(traces=new_traces)  # type: ignore[call-arg]
 
     def to_config(self) -> dict[str, Any]:
         """Serialize to dict."""

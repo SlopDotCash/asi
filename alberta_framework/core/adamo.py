@@ -313,7 +313,7 @@ class AdamO:
             & floating_tree_is_finite(candidate_state)
             & jnp.all(jnp.isfinite(step))
         )
-        return AdamOUpdate(
+        return AdamOUpdate(  # type: ignore[call-arg]
             step=neutralize_array(update_applied, step),
             new_state=select_transaction(update_applied, candidate_state, state),
             task_step=neutralize_array(update_applied, task_step),

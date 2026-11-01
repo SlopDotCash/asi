@@ -142,10 +142,12 @@ def test_binding_clip_limits_prediction_change(compiled, adaptive, error):
 
 @pytest.mark.parametrize("compiled", [False, True])
 @pytest.mark.parametrize("field", ["beta2", "beta_clip", "lamda"])
-@pytest.mark.parametrize("decay", [0.0, 1.0 - 1e-10])
+# 1 - 2**-24 is the largest float32 below one: the config refuses decays that
+# round to one in float32, so this is the nearest decay it accepts.
+@pytest.mark.parametrize("decay", [0.0, 1.0 - 2.0**-24])
 def test_bias_correction_preserves_finite_first_update(compiled, field, decay):
     # For a unit gradient and error, every first-step bias correction
-    # cancels its EMA coefficient, even when float32 rounds decay to one.
+    # cancels its EMA coefficient, even for the nearest float32 decay below one.
     settings = {field: decay}
     if field == "lamda":
         settings["gamma"] = 1.0

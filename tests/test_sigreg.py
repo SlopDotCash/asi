@@ -428,7 +428,7 @@ def test_sliced_sigreg_compiled_vmap_rejects_nonfinite_lane() -> None:
 
 
 def test_epps_pulley_rejects_samples_that_overflow_float32_narrowing() -> None:
-    with jax.experimental.enable_x64():
+    with jax.enable_x64():
         samples = jnp.asarray([1.0e300, 1.0e300], dtype=jnp.float64)
 
         with pytest.raises(ValueError, match="samples must be finite"):

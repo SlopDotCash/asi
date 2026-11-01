@@ -485,11 +485,11 @@ def _finite_saturated_norm(value: Array) -> Array:
     )
     overflow = scale > jnp.float32(_FLOAT32_MAX) / safe_scaled_norm
     ordinary = scale * scaled_norm
-    return cast(Array, jnp.where(
+    return jnp.where(
         scaled_norm == 0.0,
         jnp.float32(0.0),
         jnp.where(overflow, jnp.float32(_FLOAT32_MAX), ordinary),
-    ))
+    )
 
 
 def _normalize_unit_l2(value: Array, epsilon: float) -> Array:
@@ -508,7 +508,7 @@ def _normalize_unit_l2(value: Array, epsilon: float) -> Array:
     )
     unit = scaled / safe_scaled_norm
     below_epsilon = scaled * (scale / epsilon_value)
-    return cast(Array, jnp.where(at_least_epsilon, unit, below_epsilon))
+    return jnp.where(at_least_epsilon, unit, below_epsilon)
 
 
 def _clip_l2(value: Array, limit: float | None) -> Array:
@@ -528,7 +528,7 @@ def _clip_l2(value: Array, limit: float | None) -> Array:
         scale > limit_value / safe_scaled_norm,
     )
     clipped = (scaled / safe_scaled_norm) * limit_value
-    return cast(Array, jnp.where(needs_clip, clipped, value))
+    return jnp.where(needs_clip, clipped, value)
 
 
 def _prepare_source(
@@ -552,11 +552,11 @@ def _safe_cosine(first: Array, second: Array) -> Array:
     denominator = first_scaled_norm * second_scaled_norm
     safe_denominator = jnp.where(denominator > 0.0, denominator, jnp.float32(1.0))
     cosine = jnp.sum(first_scaled * second_scaled) / safe_denominator
-    return cast(Array, jnp.where(
+    return jnp.where(
         denominator > 0.0,
         jnp.clip(cosine, -1.0, 1.0),
         jnp.float32(0.0),
-    ))
+    )
 
 
 def _safe_dot(first: Array, second: Array, cosine: Array) -> Array:

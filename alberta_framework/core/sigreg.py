@@ -365,7 +365,7 @@ def sample_sigreg_directions(
     fallback = jnp.zeros_like(scaled).at[:, 0].set(1.0)
     safe_scaled_norms = jnp.where(scaled_norms == 0.0, jnp.ones_like(scaled_norms), scaled_norms)
     unit = scaled / safe_scaled_norms
-    return cast(Array, jnp.where(scaled_norms == 0.0, fallback, unit))
+    return jnp.where(scaled_norms == 0.0, fallback, unit)
 
 
 def epps_pulley_gaussian_statistic(

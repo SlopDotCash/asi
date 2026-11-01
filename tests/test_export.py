@@ -903,3 +903,34 @@ def test_exports_validate_finite_scaled_summary(tmp_path: Path, scale: float) ->
     with pytest.raises(ValueError, match="statistics do not match values"):
         export_to_json({"finite": bad}, tmp_path / "bad.json")
     assert not (tmp_path / "bad.json").exists()
+
+
+@pytest.mark.parametrize("trace_seed", range(8))
+def test_json_export_accepts_real_aggregate_metrics_output(trace_seed: int, tmp_path: Path) -> None:
+    # aggregate_metrics reduces with _scaled_mean/_scaled_std; the export check
+    # must accept its exact output, not only np.mean/np.std of the same trace.
+    from alberta_framework.core.optimizers import LMSState
+    from alberta_framework.core.types import LearnerState
+    from alberta_framework.utils import experiments as ex
+
+    state = LearnerState(
+        weights=jnp.zeros(1),
+        bias=jnp.zeros(()),
+        optimizer_state=LMSState(step_size=jnp.asarray(0.1)),
+        step_count=jnp.asarray(0),
+    )
+    rng = np.random.default_rng(trace_seed)
+    runs = [
+        ex.SingleRunResult(
+            config_name="c",
+            seed=seed,
+            metrics_history=[{_METRIC: float(v)} for v in rng.random(150)],
+            final_state=state,
+        )
+        for seed in range(4)
+    ]
+    output = tmp_path / "results.json"
+
+    export_to_json({"c": ex.aggregate_metrics(runs)}, output)
+
+    assert output.is_file()

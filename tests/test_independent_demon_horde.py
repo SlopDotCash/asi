@@ -878,10 +878,12 @@ def test_independent_loop_finishes_device_work_before_stopping_uptime_clock(
 
     import alberta_framework.core.independent_demon_horde as module
 
+    # LMS step size 1.0 diverges on this stream within 200 steps.
     horde = IndependentDemonHorde(
         horde_spec=create_horde_spec(_make_all_gamma0_spec(3)),
         hidden_sizes=(4,),
         sparsity=0.0,
+        step_size=0.1,
     )
     state = horde.init(5, jr.key(0))
     observations = jnp.full((1024, 5), 0.1, dtype=jnp.float32)

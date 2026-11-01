@@ -2051,11 +2051,13 @@ def _masked_mean(values: Array, mask: Array) -> Array:
     selected = jnp.where(mask_arr, value_arr, 0.0)
     mean = jnp.sum(selected) / jnp.maximum(count, 1.0)
     # A finite conditional mean can have an overflowing intermediate sum.
+    # Divide by the count before summing: XLA lowers x / scale to
+    # x * (1 / scale), and 1 / scale is flushed to zero for |scale| > 2**126.
     scale = jnp.max(jnp.abs(selected), initial=0.0)
-    scaled_mean = jnp.sum(selected / jnp.where(scale > 0.0, scale, 1.0))
-    scaled_mean = jnp.clip(scaled_mean / jnp.maximum(count, 1.0), -1.0, 1.0)
+    scaled_mean = jnp.sum(selected / jnp.maximum(count, 1.0))
+    scaled_mean = jnp.clip(scaled_mean, -scale, scale)
     recover = (~jnp.isfinite(mean)) & jnp.all(jnp.isfinite(selected))
-    return jnp.where(recover, scaled_mean * scale, mean)
+    return jnp.where(recover, scaled_mean, mean)
 
 
 def discrete_delightful_policy_gradient(
