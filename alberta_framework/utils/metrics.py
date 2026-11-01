@@ -196,13 +196,20 @@ def _record_vector(
     return array
 
 
+def _compensated_total(values: NDArray[np.float64]) -> float | Fraction:
+    try:
+        return math.fsum(float(value) for value in values)
+    except OverflowError:
+        # A finite mean (or a cancelling total) may have an unrepresentable
+        # intermediate sum. Keep the original binary values exact on that path.
+        return sum((Fraction.from_float(float(value)) for value in values), Fraction())
+
+
 def _scale_safe_mean(values: NDArray[np.float64], *, name: str) -> float:
     if values.size == 0 or np.any(~np.isfinite(values)):
         raise ValueError(f"{name} must contain finite values")
-    scale = float(np.max(np.abs(values)))
-    if scale == 0.0:
-        return 0.0
-    result = float(np.mean(values / scale) * scale)
+    # Scaling first can erase a small residual beside cancelling large rewards.
+    result = float(_compensated_total(values) / values.size)
     if not math.isfinite(result):
         raise ValueError(f"{name} mean must remain finite")
     return result
@@ -891,8 +898,8 @@ def compare_learners(
     shorter), estimating settled performance less noisily than the last value.
     ``std`` is the population standard deviation over the complete recorded
     time-step trajectory; it is not a spread estimate across independent seeds.
-    ``cumulative`` uses a scaled compensated sum so finite cancellation does not
-    overflow merely because of reduction order.
+    ``cumulative`` uses compensated summation with an exact overflow fallback,
+    so finite cancellation does not overflow merely because of reduction order.
 
     Args:
         results: Dictionary mapping learner name to metrics history
@@ -924,10 +931,10 @@ def compare_learners(
         normalized = values if scale == 0.0 else values / scale
         mean = _scale_safe_mean(values, name=f"learner {name}")
         std = float(np.std(normalized) * (1.0 if scale == 0.0 else scale))
-        cumulative = float(
-            math.fsum(float(value) for value in normalized)
-            * (1.0 if scale == 0.0 else scale)
-        )
+        try:
+            cumulative = float(_compensated_total(values))
+        except OverflowError:
+            raise ValueError(f"learner {name} summaries must remain finite") from None
         tail = values[-100:] if len(values) >= 100 else values
         final_100_mean = _scale_safe_mean(tail, name=f"learner {name} tail")
         if not math.isfinite(std) or not math.isfinite(cumulative):
