@@ -266,7 +266,14 @@ def _preflight_on_disk_metadata(path: Path) -> None:
 
 
 def _preflight_on_disk_state(path: Path) -> None:
-    """Reject state trees that escape the checkpoint through filesystem aliases."""
+    """Reject symlinks and special files at or below ``<checkpoint>/state``.
+
+    Only the ``state`` subtree is walked; ``path`` itself, its parents and the
+    metadata file are not. The walk runs before Orbax opens the files, so it
+    covers a static artifact (for example an unpacked archive), not a writer
+    that swaps entries during the load. A missing ``state`` directory raises
+    ``FileNotFoundError``, as a missing checkpoint does.
+    """
 
     state_path = path / "state"
     pending = [state_path]
@@ -274,6 +281,8 @@ def _preflight_on_disk_state(path: Path) -> None:
         directory = pending.pop()
         try:
             directory_stat = directory.lstat()
+        except FileNotFoundError as error:
+            raise FileNotFoundError(f"checkpoint state not found: {directory}") from error
         except OSError as error:
             raise ValueError(f"checkpoint state path is not readable: {directory}") from error
         if stat_module.S_ISLNK(directory_stat.st_mode) or not stat_module.S_ISDIR(
