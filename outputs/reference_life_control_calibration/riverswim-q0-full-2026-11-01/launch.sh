@@ -16,8 +16,8 @@ rm -f "$RUN/MEMGUARD_STOP"; echo RUNNING > "$RUN/STATUS"
 bash $D/memguard.sh "$RUN" & log "memguard pid $!"
 PAT="riverswim-q0-full-2026-11-01/run.py"
 nrun(){ pgrep -fc "$PAT (life|envcheck-life)"; }
-wait_slot(){ while :; do a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
-  if [ "$(nrun)" -lt 4 ] && [ "$a" -ge 3072 ]; then break; fi; sleep 10; done; }
+wait_slot(){ local avail; while :; do avail=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
+  if [ "$(nrun)" -lt 4 ] && [ "$avail" -ge 3072 ]; then break; fi; sleep 10; done; }
 drain(){ while [ "$(nrun)" -gt 0 ]; do sleep 10; done; }
 # Phase 1
 for c in scorecard_sarsa_70000 scorecard_random_70000 scorecard_oracle_70000 pr3308_q0_81010; do
@@ -27,9 +27,11 @@ drain
 if .venv/bin/python $D/envcheck.py "$RUN/envcheck" >> "$L" 2>&1; then echo PASS > "$RUN/ENVCHECK_STATUS"; log "envcheck PASS"
 else echo VOID > "$RUN/ENVCHECK_STATUS"; log "VOID: envcheck failed or mismatched; stopping without re-run"; fin VOID 1; fi
 # Phase 2
-for s in $(seq 47310 47321); do for a in sarsa sarsa_q0 random privileged_oracle; do
-  wait_slot; { echo "HEAD $(git rev-parse HEAD)"; .venv/bin/python $D/run.py life --arm $a --seed $s --out "$RUN/raw/${a}__${s}.json"; echo "exit $?"; } > "$RUN/logs/${a}__${s}.log" 2>&1 < /dev/null &
-  log "launched $a $s"; sleep 2; done; done
+for seed in $(seq 47310 47321); do for arm in sarsa sarsa_q0 random privileged_oracle; do
+  wait_slot
+  case "$arm" in sarsa|sarsa_q0|random|privileged_oracle) ;; *) log "VOID: launcher arm corrupted ($arm)"; fin VOID 1;; esac
+  { echo "HEAD $(git rev-parse HEAD)"; .venv/bin/python $D/run.py life --arm "$arm" --seed "$seed" --out "$RUN/raw/${arm}__${seed}.json"; echo "exit $?"; } > "$RUN/logs/${arm}__${seed}.log" 2>&1 < /dev/null &
+  log "launched $arm $seed"; sleep 2; done; done
 drain
 # Phase 3
 .venv/bin/python $D/run.py pack --raw "$RUN/raw" --out "$RUN/evidence" >> "$L" 2>&1 || { log "VOID: pack failed (missing life record)"; fin VOID 1; }
