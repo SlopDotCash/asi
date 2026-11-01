@@ -44,7 +44,7 @@ pushed below untried ones and the agent keeps trying actions it has not yet take
 ## Adapter change
 
 `initial_average_reward: float | None = None` on the differential-SARSA control config in
-`alberta_framework/benchmarks/reference_life_controls.py`. Unset: config, manifest id and
+`alberta_framework/reference_life_controls.py`. Unset: config, manifest id and
 transcripts are unchanged (golden manifest and 300-event transcript tests). Set: must be finite and
 ≥ 0 (float32-canonical, −0.0 stored as +0.0), and is written into the config and manifest.
 
