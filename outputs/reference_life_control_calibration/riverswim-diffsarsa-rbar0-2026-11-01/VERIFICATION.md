@@ -42,7 +42,8 @@ commits only files inside this probe directory changed: per-seed evidence, env-c
 `DEVELOPMENT_PLAN.md` (`git diff --name-status fc5d025b 20e29af5`: 19 added, 1 modified).
 
 After `20e29af5`, `DEVELOPMENT_PLAN.md` received a doc-only adapter path correction
-(`alberta_framework/reference_life_controls.py`). `MANIFEST.sha256` is left as written
-with the results and lists the plan as `aa69b5e7…0796`; the corrected plan is `e84220b2…2cd7`.
+(`alberta_framework/reference_life_controls.py`). `MANIFEST.sha256`'s `DEVELOPMENT_PLAN.md` line was updated
+for this doc-only path fix: old `aa69b5e7f83cffdd9ac9d5f5bba21392f0d858c4e3c8a99fdca41ae01cfb0796`,
+new `e84220b24283bb399a1a2ed1c05b26718812a63ab9858ee8fe59ee5062652cd7`.
 
 If #3651 merges first, the env check is re-run on top of it before merge.
