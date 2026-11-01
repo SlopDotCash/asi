@@ -1,15 +1,15 @@
-# Verification: code at the run commit vs the published head
+**Verification: code at the run commit vs the published head**
 
 Checked on 2026-11-01 (GMT). Run commit `fc5d025b`; published head `20e29af5`.
 
-## `git diff --stat fc5d025b 20e29af5` over the library source, runner, launcher and probe test
+**`git diff --stat fc5d025b 20e29af5` over the library source, runner, launcher and probe test**
 
 ```
 $ git diff --stat fc5d025b 20e29af5 -- <files below> alberta_framework/
 (no output: no differences)
 ```
 
-## sha256 per file at each commit (`git show <commit>:<path> | sha256sum`)
+**sha256 per file at each commit (`git show <commit>:<path> | sha256sum`)**
 
 ```
 fc5d025b 16af65a3f151c04c095c1fbb1f49fd64483402f1dcaf4d8c25dcf738d9a7f9b0  alberta_framework/reference_life_controls.py
