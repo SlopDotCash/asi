@@ -23,18 +23,20 @@ bash $D/memguard.sh $L & log "memguard pid $!"
 nrun(){ pgrep -fc "alberta_framework.benchmarks.ipmnist_screening run"; }
 wait_slot(){ while :; do a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
   if [ "$(nrun)" -lt 4 ] && [ "$a" -ge 3072 ] && ! pgrep -f "ipmnist_screening run .*--out $D/" | xargs -r -I{} awk '{print $3}' /proc/{}/stat 2>/dev/null | grep -q T; then break; fi; sleep 20; done; }
-missing(){ while read -r c s n u; do [ -z "$c" ] || [ -f "$D/$u/${c}_seed${s}.json" ] || echo "$c"; done < "$1"; }
-queue(){ while read -r cfg seed nt sub; do [ -z "$cfg" ] && continue
+# Job files: one "config seed n_tasks subdir" line per job; blank and #-comment lines are skipped.
+jobs_ok(){ awk 'NF==0||$1~/^#/{next} NF!=4||$2!~/^[0-9]+$/||$3!~/^[0-9]+$/{print "bad job line " NR ": " $0; bad=1} END{exit bad}' "$1" >> $L || { log "VOID: malformed job file $1"; return 1; }; }
+missing(){ while read -r c s n u; do [ -z "$c" ] || [ "${c:0:1}" = "#" ] || [ -f "$D/$u/${c}_seed${s}.json" ] || echo "$c"; done < "$1"; }
+queue(){ while read -r cfg seed nt sub; do { [ -z "$cfg" ] || [ "${cfg:0:1}" = "#" ]; } && continue
     [ -f "$D/$sub/${cfg}_seed${seed}.json" ] && continue
     wait_slot; bash $D/worker.sh "$cfg" "$seed" "$nt" "$sub" >> $L 2>&1 < /dev/null &
     log "launched $sub $cfg $seed ${nt}t pid $!"; sleep 8
   done < "$1"; while pgrep -f "ipmnist_screening run .*--out $D/" >/dev/null; do sleep 20; done; }
-phase(){ queue "$1"; [ -n "$(missing "$1")" ] && { log "retry once: $(missing "$1" | wc -l) missing ($1)"; queue "$1"; }
+phase(){ jobs_ok "$1" || fin VOID 1; queue "$1"; [ -n "$(missing "$1")" ] && { log "retry once: $(missing "$1" | wc -l) missing ($1)"; queue "$1"; }
   m=$(missing "$1"); [ -z "$m" ] && return 0
   log "still missing after retry (DIVERGED): $(echo $m)"; ! echo "$m" | grep -qx "$INC"; }
 # Phase 1: env check (no retry: any failure voids)
 if [ ! -f $D/ENVCHECK_STATUS ] || [ "$(cat $D/ENVCHECK_STATUS)" != PASS ]; then
-  queue $D/envcheck_jobs.txt
+  jobs_ok $D/envcheck_jobs.txt || fin VOID 1; queue $D/envcheck_jobs.txt
   [ -n "$(missing $D/envcheck_jobs.txt)" ] && { log "VOID: an envcheck job failed"; echo VOID > $D/ENVCHECK_STATUS; fin VOID 1; }
   if .venv/bin/python $D/envcheck.py >> $L 2>&1; then echo PASS > $D/ENVCHECK_STATUS; else log "VOID: envcheck mismatch, stopping"; echo VOID > $D/ENVCHECK_STATUS; fin VOID 1; fi
 fi
