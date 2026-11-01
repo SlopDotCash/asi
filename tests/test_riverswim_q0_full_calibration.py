@@ -140,3 +140,45 @@ def test_void_on_nonpositive_scale() -> None:
     for entry in packed:
         entry["lives"][3]["outcome"]["reward_sum"] = 60.0
     assert analyze.analyze(packed)["verdict"] == "VOID"
+
+
+envcheck = _load("envcheck")
+
+
+def test_oracle_sum_difference_is_accumulation_order_not_drift() -> None:
+    gain = envcheck.riverswim_gain()
+    assert envcheck.sequential_sum(gain, 20_000) == 17143.002837739168  # stored scorecard
+    assert float(20_000) * gain == 17143.002837745098  # stationary metrics closed form
+
+
+def test_q0_reference_check_still_requires_every_field() -> None:
+    assert set(envcheck.ALL_FIELDS) >= {"oracle_reward_sum", "regret_sum", "transcript_sha256"}
+    record = envcheck.json.loads(run.Q0_REFERENCE.read_text())
+    life = {
+        "agent_manifest_id": record["agent_manifest_id"],
+        "outcome": {f: record["result"][f] for f in envcheck.ALL_FIELDS},
+    }
+    assert envcheck.check_q0(life) == []
+    life["outcome"]["transcript_sha256"] = "0" * 64
+    assert envcheck.check_q0(life)
+
+
+def test_scorecard_check_rejects_a_reward_change() -> None:
+    gain = envcheck.riverswim_gain()
+    shard = run.SCORECARD_SHARDS / "riverswim__random__70000.json"
+    stored = envcheck.json.loads(shard.read_text())
+    outcome = {k: stored["outcome"][k] for k in envcheck.DECISION_FIELDS}
+    outcome |= {
+        "oracle_reward_sum": float(20_000) * gain,
+        "regret_sum": 0.0,
+        "transcript_sha256": stored["outcome"]["transcript_sha256"],
+        "persistent_bytes_initial": 220,
+        "persistent_bytes_final": 220,
+    }
+    life = {
+        "agent_manifest_id": stored["resolved"]["agent_manifest"]["manifest_id"],
+        "outcome": outcome,
+    }
+    base = envcheck.check_scorecard("random", 70000, life, gain)
+    life["outcome"]["reward_sum"] += 1e-9
+    assert len(envcheck.check_scorecard("random", 70000, life, gain)) == len(base) + 1
