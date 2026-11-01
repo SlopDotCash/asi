@@ -8593,3 +8593,92 @@ class TestS02Wd0WclipDivergenceRules:
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("tune", self.A.CELLS[0][0], 154)
+
+
+def _exp_path(*parts):
+    return Path(__file__).resolve().parents[1].joinpath("outputs", "ipmnist_screening", *parts)
+
+
+def _run_py(script, cwd, *args):
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(cwd)}
+    return subprocess.run([sys.executable, str(script), *args], cwd=cwd,
+                          capture_output=True, text=True, env=env)
+
+
+def _jobs_ok_rc(launch, content, tmp_path):
+    import re
+    import subprocess
+
+    fn = re.search(r"^jobs_ok\(\)\{.*$", launch.read_text(), re.M).group(0)
+    f = tmp_path / "jobs.txt"
+    f.write_text(content)
+    return subprocess.run(["bash", "-c", "L=/dev/null; log(){ :; }\n" + fn + '\njobs_ok "$1"',
+                           "x", str(f)], capture_output=True, text=True).returncode
+
+
+def _worker_xla_flags(worker):
+    import re
+    import subprocess
+
+    line = re.search(r"^export XLA_FLAGS=.*$", worker.read_text(), re.M).group(0)
+    return subprocess.run(["bash", "-c", line + '\nprintf %s "$XLA_FLAGS"'],
+                          capture_output=True, text=True).stdout
+
+
+class TestEnvcheckS02Wd0WclipUnreadable:
+    """s02_wd0_wclip/envcheck.py: an unreadable reference is a clean FAIL (exit 1), never a crash."""
+
+    ENV = _exp_path("s02_wd0_wclip", "envcheck.py")
+
+    def _check_clean_fail(self, r):
+        assert r.returncode == 1, r.stderr
+        assert "Traceback" not in r.stderr
+        assert "UNREADABLE" in r.stdout
+        assert r.stdout.strip().splitlines()[-1] == "ENVCHECK FAIL"
+
+    def test_commit_absent_from_clone(self, tmp_path):
+        import shutil
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        shutil.copytree(_exp_path("s02_wd0_wclip", "envcheck"),
+                        tmp_path / "outputs" / "ipmnist_screening" / "s02_wd0_wclip" / "envcheck")
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_not_a_git_checkout_and_no_local_shards(self, tmp_path):
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_full_history_still_passes(self):
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        if subprocess.run(["git", "cat-file", "-e", "ef85fff8^{commit}"], cwd=root).returncode:
+            pytest.skip("reference commit not in this clone")
+        r = _run_py(self.ENV, root)
+        assert r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "ENVCHECK PASS"
+
+
+class TestLaunchHardeningS02Wd0Wclip:
+    """s02_wd0_wclip launch.sh job-file validation and worker.sh XLA_FLAGS value."""
+
+    LAUNCH = _exp_path("s02_wd0_wclip", "launch.sh")
+
+    def test_committed_job_files_validate(self, tmp_path):
+        for f in sorted(_exp_path("s02_wd0_wclip").glob("*jobs*.txt")):
+            assert _jobs_ok_rc(self.LAUNCH, f.read_text(), tmp_path) == 0, f.name
+
+    def test_blank_and_comment_lines_allowed(self, tmp_path):
+        assert _jobs_ok_rc(self.LAUNCH, "# c\n\nabc 5 60 tune\n", tmp_path) == 0
+
+    @pytest.mark.parametrize("line", ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune",
+                                      "abc 5 6o tune", "abc 5a 60 tune"])
+    def test_malformed_lines_rejected(self, tmp_path, line):
+        assert _jobs_ok_rc(self.LAUNCH, f"abc 5 60 tune\n{line}\n", tmp_path) == 1
+
+    def test_worker_xla_flags_value_unchanged(self):
+        assert _worker_xla_flags(_exp_path("s02_wd0_wclip", "worker.sh")) == (
+            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1")
