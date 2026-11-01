@@ -47,7 +47,9 @@ def screen_verdict(gains, t=T9):
     """gains: per-seed mean paired gains, None for a diverged winner seed (scored -1.0, not improved).
     Any diverged seed makes the verdict FAIL regardless of the bars."""
     g = [-1.0 if x is None else x for x in gains]
-    k = len(g); mu = st.mean(g); se = st.stdev(g) / k ** .5; lo = mu - t * se
+    # Fewer than 2 seeds (e.g. an empty list) has no SE: NaN mean/SE/CI, bars False, FAIL.
+    k = len(g); mu = st.mean(g) if k else math.nan
+    se = st.stdev(g) / k ** .5 if k >= 2 else math.nan; lo = mu - t * se
     n = sum(x is not None and x > 0 for x in gains); nd = sum(x is None for x in gains)
     bars = mu >= 0.002 and n >= 0.7 * k and lo > 0
     return dict(mean=mu, se=se, lo=lo, hi=mu + t * se, improved=n, diverged=nd,
