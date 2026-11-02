@@ -8448,3 +8448,112 @@ class TestWd0ConstStep200TaskConfirm:
             (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 134) is None
+
+
+class TestAnnealScheduleUnits:
+    """Unit tests for the identmap anneal / partial-reset / decoupled-decay
+    schedule helpers on tiny synthetic inputs (CPU, no learner run)."""
+
+    @staticmethod
+    def _h():
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _advance_anneal_clock,
+            _anneal_lr,
+            _decode_anneal_clock,
+            _runtime_decay,
+        )
+
+        return _decode_anneal_clock, _anneal_lr, _advance_anneal_clock, _runtime_decay
+
+    def test_decode_clock_before_and_after_first_shift(self):
+        dec = self._h()[0]
+        c = jnp.array([-(2**30), -(2**30) + 7, 0, 1, 42], dtype=jnp.int32)
+        np.testing.assert_array_equal(np.asarray(dec(c)), [0, 7, 0, 1, 42])
+
+    def test_clock_counts_up_without_trigger(self):
+        adv = self._h()[2]
+        no = jnp.array(False)
+        c = jnp.array(-(2**30), dtype=jnp.int32)
+        for _ in range(5):
+            c = adv(c, no, 0.5)
+        assert int(self._h()[0](c)) == 5
+        assert int(adv(jnp.array(9, jnp.int32), no, 0.5)) == 10
+
+    @pytest.mark.parametrize(
+        "prev,frac,expected",
+        [
+            (100, 0.0, 1),     # f = 0: full reset, the parent rule
+            (100, 0.5, 51),    # 1 + floor(0.5 * 100)
+            (101, 0.5, 51),    # floor, not round
+            (100, 0.25, 26),
+            (1, 0.5, 1),       # small prev: floor(0.5) = 0 -> full reset
+            (3, 0.25, 1),      # f * s < 1 -> full reset
+            (4, 0.25, 2),      # first s where the partial reset keeps time
+        ],
+    )
+    def test_partial_reset_restart(self, prev, frac, expected):
+        adv = self._h()[2]
+        out = adv(jnp.array(prev, jnp.int32), jnp.array(True), frac)
+        assert int(out) == expected
+
+    def test_partial_reset_decodes_pre_shift_clock(self):
+        """A first shift at stream step 200 restarts from the decoded 200."""
+        adv = self._h()[2]
+        c = jnp.array(-(2**30) + 200, jnp.int32)
+        assert int(adv(c, jnp.array(True), 0.5)) == 101
+
+    def test_anneal_lr_schedule(self):
+        lr = self._h()[1]
+        s = jnp.array([0.0, 3.0, 1e6], jnp.float32)
+        out = np.asarray(lr(s, 0.01, 0.001, 1.0))
+        np.testing.assert_allclose(out, [0.01, 0.005, 0.001], rtol=1e-6)
+        # floor == step: constant step at every clock value
+        const = np.asarray(lr(s, 0.02, 0.02, 1000.0))
+        np.testing.assert_array_equal(const, np.float32(0.02))
+
+    def test_runtime_decay_branches(self):
+        dec = self._h()[3]
+        step, wd = 0.005625, 0.01
+        pd = 1.0 - step * wd
+        at = dec(jnp.float32(step), step, pd, wd)
+        assert at == jnp.float32(pd)
+        off = dec(jnp.float32(0.0028125), step, pd, wd)
+        np.testing.assert_allclose(float(off), 1.0 - 0.0028125 * wd, rtol=1e-7)
+        assert float(off) > float(at)
+
+    def test_runtime_decay_selects_branch_by_exact_step(self):
+        """A sentinel param_decay shows which branch ran: only an exactly
+        equal float32 step reads the precomputed constant."""
+        dec = self._h()[3]
+        assert float(dec(jnp.float32(0.02), 0.02, 0.5, 0.01)) == 0.5
+        near = jnp.nextafter(jnp.float32(0.02), jnp.float32(1.0))
+        np.testing.assert_allclose(
+            float(dec(near, 0.02, 0.5, 0.01)), 1.0 - 0.02 * 0.01, rtol=1e-6
+        )
+
+    def test_runtime_decay_is_one_at_wd0_on_both_branches(self):
+        """The headline arms run at weight_decay 0: either branch gives 1."""
+        dec = self._h()[3]
+        for dl in (0.02, 0.005625, 0.0028125, 0.0031):
+            assert float(dec(jnp.float32(dl), 0.02, 1.0, 0.0)) == 1.0
+
+    def test_constant_arm_takes_parent_constant_branch(self):
+        """s02_anneal_f1t1000_wd0 (floor == step) keeps lr == float32(step)
+        at every clock, so the equality branch is always taken."""
+        _, lr, _, _ = self._h()
+        hp = screening_spec(
+            "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+        ).hyperparameters
+        s = jnp.arange(0, 200_000, 997, dtype=jnp.float32)
+        out = lr(s, hp["step_size"], hp["anneal_floor"], hp["anneal_tau"])
+        assert bool(jnp.all(out == jnp.float32(hp["step_size"])))
+        assert hp["weight_decay"] == 0.0
+
+    def test_headline_arms_do_not_use_partial_or_decoupled_reset(self):
+        for arm in ("s02_anneal_f1t1000_wd0", "s005625_anneal_f2t1000_wd0"):
+            hp = screening_spec(
+                "rls_head_resid_identmap50_r_idet003_" + arm
+            ).hyperparameters
+            assert "anneal_reset_frac" not in hp
+            assert "anneal_decay_reset_frac" not in hp
+            assert hp["weight_decay"] == 0.0

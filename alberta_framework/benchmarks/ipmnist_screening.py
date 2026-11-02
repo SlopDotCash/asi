@@ -5051,11 +5051,7 @@ def _make_rls_head_learner(
             # ``decay_lr`` (decoupled-decay control) only replaces the step
             # in the decay expression; absent, the decay reads ``lr``.
             dl = lr if decay_lr is None else decay_lr
-            decay = jnp.where(
-                dl == jnp.float32(step_size),
-                jnp.float32(param_decay),
-                1.0 - dl * weight_decay,
-            )
+            decay = _runtime_decay(dl, step_size, param_decay, weight_decay)
         for name in names:
             if init_params is None:
                 # Keep the incumbent expression byte-for-byte unchanged.
@@ -5386,6 +5382,48 @@ def _identmap_assignment(
     return assignment
 
 
+def _decode_anneal_clock(clock: Array) -> Array:
+    """Steps counted by an identmap clock.  Clocks start at ``-2**30`` so
+    that, before any detected shift, the offset recovers steps since stream
+    start; after a shift they hold the count directly."""
+    return jnp.where(clock < 0, clock + (2**30), clock)
+
+
+def _anneal_lr(s: Array, step: float, floor: float, tau: float) -> Array:
+    """Within-task anneal ``max(floor, step * (1 + s/tau)^-1/2)`` (float32)."""
+    return jnp.maximum(
+        jnp.float32(floor),
+        jnp.float32(step) * jax.lax.rsqrt(1.0 + s / jnp.float32(tau)),
+    )
+
+
+def _advance_anneal_clock(clock: Array, trigger: Array, frac: float) -> Array:
+    """One step of a partial-reset clock: +1, or on a detected shift restart
+    at ``1 + floor(frac * s)`` with ``s`` the decoded pre-step count.  The
+    floor is the defined rule: whenever ``frac * s < 1`` (e.g. ``frac=0.5``,
+    ``s=1``) the restart is 1, the same as a full reset."""
+    prev = _decode_anneal_clock(clock)
+    restart = 1 + jnp.floor(jnp.float32(frac) * prev.astype(jnp.float32)).astype(
+        jnp.int32
+    )
+    return jnp.where(trigger, restart, clock + 1)
+
+
+def _runtime_decay(
+    dl: Array, step_size: float, param_decay: float, weight_decay: float
+) -> Array:
+    """Body decay for a runtime step ``dl``.  The exact-equality branch only
+    reproduces the parent's precomputed ``param_decay`` constant bit-exactly
+    at ``dl == float32(step_size)``; any other ``dl`` takes the general
+    ``1 - dl*weight_decay``, which is the same quantity up to rounding.  At
+    ``weight_decay == 0`` both branches are exactly 1."""
+    return jnp.where(
+        dl == jnp.float32(step_size),
+        jnp.float32(param_decay),
+        1.0 - dl * weight_decay,
+    )
+
+
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
 ) -> tuple[LearnerInitFn, ScreeningStepFn]:
@@ -5509,27 +5547,11 @@ def _make_rls_head_identmap_learner(
             # Pre-step counter; before any detected shift it runs from
             # -2**30, so the offset recovers steps since stream start.
             clock = state.anneal_clock if partial_on else state.since_shift
-            s = jnp.where(
-                clock < 0,
-                clock + (2**30),
-                clock,
-            ).astype(jnp.float32)
-            lr = jnp.maximum(
-                jnp.float32(anneal_floor),
-                jnp.float32(anneal_step)
-                * jax.lax.rsqrt(1.0 + s / jnp.float32(anneal_tau)),
-            )
+            s = _decode_anneal_clock(clock).astype(jnp.float32)
+            lr = _anneal_lr(s, anneal_step, anneal_floor, anneal_tau)
             if decay_on:
-                ds = jnp.where(
-                    state.decay_clock < 0,
-                    state.decay_clock + (2**30),
-                    state.decay_clock,
-                ).astype(jnp.float32)
-                decay_lr = jnp.maximum(
-                    jnp.float32(anneal_floor),
-                    jnp.float32(anneal_step)
-                    * jax.lax.rsqrt(1.0 + ds / jnp.float32(anneal_tau)),
-                )
+                ds = _decode_anneal_clock(state.decay_clock).astype(jnp.float32)
+                decay_lr = _anneal_lr(ds, anneal_step, anneal_floor, anneal_tau)
                 new_params, new_inner, metrics = cast(Any, inner_step)(
                     params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr
                 )
@@ -5589,27 +5611,11 @@ def _make_rls_head_identmap_learner(
             trigger, jnp.array(1, jnp.int32), state.since_shift + 1
         )
         if partial_on:
-            prev = jnp.where(
-                state.anneal_clock < 0,
-                state.anneal_clock + (2**30),
-                state.anneal_clock,
-            )
-            restart = 1 + jnp.floor(
-                jnp.float32(reset_frac) * prev.astype(jnp.float32)
-            ).astype(jnp.int32)
-            new_clock = jnp.where(trigger, restart, state.anneal_clock + 1)
+            new_clock = _advance_anneal_clock(state.anneal_clock, trigger, reset_frac)
         else:
             new_clock = since
         if decay_on:
-            dprev = jnp.where(
-                state.decay_clock < 0,
-                state.decay_clock + (2**30),
-                state.decay_clock,
-            )
-            drestart = 1 + jnp.floor(
-                jnp.float32(decay_frac) * dprev.astype(jnp.float32)
-            ).astype(jnp.int32)
-            new_dclock = jnp.where(trigger, drestart, state.decay_clock + 1)
+            new_dclock = _advance_anneal_clock(state.decay_clock, trigger, decay_frac)
         else:
             new_dclock = new_clock
         remap = jnp.where(
