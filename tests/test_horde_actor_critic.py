@@ -2301,3 +2301,131 @@ def test_actor_gradient_clip_recovers_near_float32_max_norm(
             trunk_w, trunk_b, head_w, head_b, 1.0
         )
     np.testing.assert_allclose(clipped[0][0], [[1.0, 0.0]], rtol=1e-5)
+
+
+def _make_value_head_trace_agent() -> HordeActorCriticAgent:
+    spec = create_horde_spec(
+        [
+            GVFSpec(  # type: ignore[call-arg]
+                name="v",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.8,
+                cumulant_index=0,
+                terminal_reward=0.0,
+            )
+        ]
+    )
+    critic = HordeLearner(horde_spec=spec, hidden_sizes=(), sparsity=0.0)
+    return HordeActorCriticAgent(
+        HordeActorCriticConfig(n_actions=2, actor_step_size=0.01, actor_lamda=0.9),
+        critic,
+    )
+
+
+def test_horde_actor_critic_clears_value_head_traces_at_terminal() -> None:
+    """A terminal update must not carry the critic value-head trace over.
+
+    The actor traces were already cleared on a zero value discount, but the
+    critic's value-head trace survived and was credited to the next
+    episode's first TD error, moving weights along the old episode's
+    feature direction. The next-episode update must match the control in
+    which the value-head traces were zeroed by hand.
+    """
+    agent = _make_value_head_trace_agent()
+    state = agent.init(2, jr.key(0))
+    state, _, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+    step = agent.update(
+        state,
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount=0.9,
+    )
+    assert bool(step.update_applied)
+    terminal = agent.update(
+        step.state,
+        jnp.array(1.0, dtype=jnp.float32),
+        jnp.array([0.0, 1.0], dtype=jnp.float32),
+        discount=0.0,
+    )
+    assert bool(terminal.update_applied)
+    trace_w, trace_b = terminal.state.critic_state.head_traces[0]
+    chex.assert_trees_all_close(trace_w, jnp.zeros_like(trace_w))
+    chex.assert_trees_all_close(trace_b, jnp.zeros_like(trace_b))
+
+    def _zero_value_head_traces(s):  # type: ignore[no-untyped-def]
+        traces = list(s.critic_state.head_traces)
+        w, b = traces[0]
+        traces[0] = (jnp.zeros_like(w), jnp.zeros_like(b))
+        return s.replace(
+            critic_state=s.critic_state.replace(head_traces=tuple(traces))
+        )
+
+    clean = _zero_value_head_traces(terminal.state)
+    obs_new = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    obs_next = jnp.array([1.0, 0.0], dtype=jnp.float32)
+    leaky_start, _, _ = agent.start(terminal.state, obs_new)
+    clean_start, _, _ = agent.start(clean, obs_new)
+    leaky = agent.update(
+        leaky_start,
+        jnp.array(0.0, dtype=jnp.float32),
+        obs_next,
+        discount=0.9,
+    )
+    clean_result = agent.update(
+        clean_start,
+        jnp.array(0.0, dtype=jnp.float32),
+        obs_next,
+        discount=0.9,
+    )
+    chex.assert_trees_all_close(
+        leaky.state.critic_state.head_params.weights[0],
+        clean_result.state.critic_state.head_params.weights[0],
+    )
+
+
+def test_nonlinear_horde_actor_critic_clears_value_head_traces_at_terminal() -> None:
+    """Same episode-boundary trace clearing for the nonlinear agent."""
+    from alberta_framework.core.optimizers import LMS
+
+    spec = create_horde_spec(
+        [
+            GVFSpec(  # type: ignore[call-arg]
+                name="v",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.8,
+                cumulant_index=0,
+                terminal_reward=0.0,
+            )
+        ]
+    )
+    critic = HordeLearner(
+        horde_spec=spec, hidden_sizes=(), sparsity=0.0, use_layer_norm=False
+    )
+    agent = NonlinearHordeActorCriticAgent(
+        NonlinearHordeActorCriticConfig(
+            n_actions=2, hidden_sizes=(), use_layer_norm=False, actor_lamda=0.9
+        ),
+        critic,
+        actor_optimizer=LMS(step_size=0.1),
+    )
+    state = agent.init(2, jr.key(0))
+    state, _, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+    step = agent.update(
+        state,
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
+        discount=0.9,
+    )
+    assert bool(step.update_applied)
+    terminal = agent.update(
+        step.state,
+        jnp.array(1.0, dtype=jnp.float32),
+        jnp.array([0.0, 1.0], dtype=jnp.float32),
+        discount=0.0,
+    )
+    assert bool(terminal.update_applied)
+    trace_w, trace_b = terminal.state.critic_state.head_traces[0]
+    chex.assert_trees_all_close(trace_w, jnp.zeros_like(trace_w))
+    chex.assert_trees_all_close(trace_b, jnp.zeros_like(trace_b))

@@ -342,6 +342,32 @@ def _rollback_critic_result(
     )
 
 
+def _clear_value_head_traces(
+    state: MultiHeadMLPState,
+    value_head_index: int,
+    carry_traces: Array,
+) -> MultiHeadMLPState:
+    """Zero the value head's eligibility traces at an episode boundary.
+
+    The critic's head traces decay by the demon's fixed ``gamma * lamda``,
+    so unlike the prior-discount learners they are not inert after a
+    zero-discount transition: the stored trace would be credited to the
+    next episode's first TD error. The actor traces are already cleared
+    on the same condition; clear the value head's traces here so the
+    critic does not carry credit across the boundary. Auxiliary heads
+    keep their traces: their discounts were not zeroed, so their GVFs
+    continue. The terminal transition's own learning is unaffected: the
+    traces are cleared only after the critic update has used them.
+    """
+    traces = list(state.head_traces)
+    weight_trace, bias_trace = traces[value_head_index]
+    traces[value_head_index] = (
+        jnp.where(carry_traces, weight_trace, jnp.zeros_like(weight_trace)),
+        jnp.where(carry_traces, bias_trace, jnp.zeros_like(bias_trace)),
+    )
+    return state.replace(head_traces=tuple(traces))  # type: ignore[attr-defined]
+
+
 @dataclasses.dataclass(frozen=True)
 class HordeActorCriticConfig:
     """Configuration for a Horde-backed discrete actor-critic agent.
@@ -1125,6 +1151,16 @@ class HordeActorCriticAgent:
                 observation,
                 discounts,
             )
+        # A zero value discount ends the episode for the value head: the
+        # terminal update above has already used its traces, so clear them
+        # now instead of letting them credit the next episode's first error.
+        critic_result = critic_result.replace(  # type: ignore[attr-defined]
+            state=_clear_value_head_traces(
+                critic_result.state,
+                cfg.value_head_index,
+                value_discount != 0.0,
+            )
+        )
         td_error = critic_result.td_errors[cfg.value_head_index]
         actor_td_error = (
             td_error
@@ -1994,6 +2030,16 @@ class NonlinearHordeActorCriticAgent:
             critic_result = self._critic.update_with_discounts(
                 state.critic_state, prev_obs, cumulants, observation, discounts
             )
+        # A zero value discount ends the episode for the value head: the
+        # terminal update above has already used its traces, so clear them
+        # now instead of letting them credit the next episode's first error.
+        critic_result = critic_result.replace(  # type: ignore[attr-defined]
+            state=_clear_value_head_traces(
+                critic_result.state,
+                idx,
+                value_discount != 0.0,
+            )
+        )
         td_error = critic_result.td_errors[idx]
         actor_td_error = (
             td_error
