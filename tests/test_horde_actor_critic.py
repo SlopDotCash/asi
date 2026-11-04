@@ -2301,3 +2301,81 @@ def test_actor_gradient_clip_recovers_near_float32_max_norm(
             trunk_w, trunk_b, head_w, head_b, 1.0
         )
     np.testing.assert_allclose(clipped[0][0], [[1.0, 0.0]], rtol=1e-5)
+
+
+def test_horde_actor_critic_rejected_update_preserves_last_action() -> None:
+    """A rejected update must report the prior last_action rather than hardcoding action 0.
+
+    When an update fails validation (e.g. nonfinite reward or observation), the
+    state is rolled back to the incoming state atomically and retains
+    ``state.last_action``. The returned result.action must also report
+    ``state.last_action`` so external callers and scans record the actual action
+    maintained by the agent rather than desynchronizing with action 0.
+    """
+    agent = _make_agent()
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(1, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.last_action) == 1
+    assert int(result.action) == 1
+
+
+def test_qhorde_actor_critic_rejected_update_preserves_last_action() -> None:
+    """QHordeActorCriticAgent must report prior last_action when an update is rejected."""
+    agent = _make_qhorde_agent(n_actions=3)
+    state = agent.init(feature_dim=2, key=jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.array([1.0, 0.0], dtype=jnp.float32),
+        last_action=jnp.array(2, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.array([0.0, 1.0], dtype=jnp.float32),
+        terminated=jnp.asarray(False),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.last_action) == 2
+    assert int(result.action) == 2
+
+
+def test_nonlinear_horde_actor_critic_rejected_update_preserves_last_action() -> None:
+    """NonlinearHordeActorCriticAgent must report prior last_action when an update is rejected."""
+    agent = _make_nlhac_agent(hidden_sizes=())
+    state = _init_nlhac(agent).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.zeros(OBS_DIM, dtype=jnp.float32),
+        last_action=jnp.array(2, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.zeros(OBS_DIM, dtype=jnp.float32),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.last_action) == 2
+    assert int(result.action) == 2
+
+
+def test_nonlinear_qhorde_actor_critic_rejected_update_preserves_last_action() -> None:
+    """NonlinearQHordeActorCriticAgent must report prior last_action when an update is rejected."""
+    agent = _make_nlqhac_agent()
+    state = agent.init(OBS_DIM, jr.key(0)).replace(  # type: ignore[attr-defined]
+        last_observation=jnp.zeros(OBS_DIM, dtype=jnp.float32),
+        last_action=jnp.array(2, dtype=jnp.int32),
+    )
+    result = agent.update(
+        state,
+        reward=jnp.array(jnp.inf, dtype=jnp.float32),
+        observation=jnp.zeros(OBS_DIM, dtype=jnp.float32),
+        terminated=jnp.asarray(False),
+    )
+    assert not bool(result.update_applied)
+    assert int(result.state.last_action) == 2
+    assert int(result.action) == 2
+
