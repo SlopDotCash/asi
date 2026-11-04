@@ -1008,6 +1008,40 @@ def _discounted_bootstrap(discount: Array, value: Array) -> Array:
     return discount * jnp.where(discount == 0.0, jnp.zeros_like(value), value)
 
 
+def _decay_inactive_base_traces(
+    state: MultiHeadMLPState,
+    active_action: Array,
+    decay: float,
+) -> MultiHeadMLPState:
+    """Apply the base trace decay to every head except the updated one.
+
+    The base learner pre-scales all head traces by the transition discount
+    before its update, and then applies its per-head gamma*lamda decay only
+    to the active head's trace: inactive heads are masked back to their
+    discount-scaled input trace. Without this step an inactive head's trace
+    misses the lam factor entirely, so it is over-credited by lam**-k after
+    k inactive steps. The active head is left untouched: its trace already
+    carries discount * lam plus the current gradient.
+    """
+    lam = jnp.asarray(decay, dtype=jnp.float32)
+    scaled_traces = tuple(
+        (
+            jnp.where(
+                head_index == active_action,
+                w_trace,
+                jnp.where(lam == 0.0, jnp.zeros_like(w_trace), lam * w_trace),
+            ),
+            jnp.where(
+                head_index == active_action,
+                b_trace,
+                jnp.where(lam == 0.0, jnp.zeros_like(b_trace), lam * b_trace),
+            ),
+        )
+        for head_index, (w_trace, b_trace) in enumerate(state.head_traces)
+    )
+    return state.replace(head_traces=scaled_traces)
+
+
 _GUMBEL_TIE_BREAK_SCALE = jnp.asarray(1.0e-6, dtype=jnp.float32)
 
 
@@ -2423,6 +2457,13 @@ class STOMPAgent:
             state.base_last_obs,
             targets,
         )
+        base_update = base_update.replace(
+            state=_decay_inactive_base_traces(
+                base_update.state,
+                state.base_last_action,
+                cfg.base_trace_decay,
+            )
+        )
         base_td = base_update.errors[state.base_last_action]
         new_average_reward = (
             state.base_average_reward
@@ -2915,6 +2956,13 @@ class STOMPAgent:
                 ),
             )
             result = self._base_learner.update(trace_adjusted_state, base_update_obs, targets)
+            result = result.replace(
+                state=_decay_inactive_base_traces(
+                    result.state,
+                    state.base_last_action,
+                    cfg.base_trace_decay,
+                )
+            )
             td_err = result.errors[state.base_last_action]
             new_avg_reward = state.base_average_reward + beta * td_err
             return result.state, new_avg_reward, td_err, result.update_applied

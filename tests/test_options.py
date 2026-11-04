@@ -810,3 +810,126 @@ def test_scan_preserves_base_learner_host_clocks() -> None:
     assert clocks.birth_timestamp == birth
     assert type(clocks.uptime_s) is float
     assert clocks.uptime_s == uptime
+
+
+def _zeroed_base_heads(agent: STOMPAgent, state: STOMPState) -> STOMPState:
+    """Zero base head weights/biases so TD errors are exact in trace tests."""
+    learner_state = state.base_learner_state
+    head_params = learner_state.head_params
+    return state.replace(
+        base_learner_state=learner_state.replace(
+            head_params=head_params.replace(
+                weights=tuple(jnp.zeros_like(w) for w in head_params.weights),
+                biases=tuple(jnp.zeros_like(b) for b in head_params.biases),
+            )
+        )
+    )
+
+
+def _force_base_transition(state: STOMPState, obs: list[float], action: int) -> STOMPState:
+    """Prime a base transition, as if the agent had just taken ``action``."""
+    return state.replace(
+        executing_option=jnp.asarray(-1, dtype=jnp.int32),
+        base_last_obs=jnp.asarray(obs, dtype=jnp.float32),
+        base_last_action=jnp.asarray(action, dtype=jnp.int32),
+        last_primitive_action=jnp.asarray(action, dtype=jnp.int32),
+    )
+
+
+def _head_trace(state: STOMPState, head: int) -> tuple[list[float], float]:
+    weights, bias = state.base_learner_state.head_traces[head]
+    return [float(x) for x in jnp.asarray(weights).reshape(-1)], float(
+        jnp.asarray(bias).reshape(-1)[0]
+    )
+
+
+def _head_params(state: STOMPState, head: int) -> tuple[list[float], float]:
+    weights = state.base_learner_state.head_params.weights[head]
+    bias = state.base_learner_state.head_params.biases[head]
+    return [float(x) for x in jnp.asarray(weights).reshape(-1)], float(
+        jnp.asarray(bias).reshape(-1)[0]
+    )
+
+
+def test_stomp_base_trace_decays_for_inactive_heads() -> None:
+    """Inactive base heads must decay by discount * base_trace_decay.
+
+    The base learner pre-scales every head trace by the transition discount
+    and then applies its per-head decay only to the active head's trace:
+    without the STOMP-side correction, an inactive head's trace misses the
+    lam factor and is over-credited by lam**-k after k inactive steps.
+    Both base-update sites are covered: the primitive-only path and the
+    full update path with options configured.
+    """
+    one = jnp.asarray(1.0, dtype=jnp.float32)
+    zero = jnp.asarray(0.0, dtype=jnp.float32)
+
+    # Primitive-only path (no options configured).
+    config = STOMPConfig(
+        subtask_specs=(),
+        observation_dim=2,
+        n_primitive_actions=2,
+        base_step_size=1.0,
+        base_avg_reward_step_size=0.0,
+        base_trace_decay=0.5,
+        base_hidden_sizes=(),
+        epsilon_base=0.0,
+    )
+    agent = STOMPAgent(config)
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+
+    # Action 0 at [1, 0], reward 0: head 0 trace becomes ([1, 0], 1).
+    state = _force_base_transition(state, [1.0, 0.0], 0)
+    result = agent.update(state, zero, jnp.asarray([0.0, 1.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert float(result.td_error) == 0.0
+    assert _head_trace(result.state, 0) == ([1.0, 0.0], 1.0)
+
+    # Action 1 elsewhere, reward 0: head 0 is inactive and must decay to
+    # discount * lam = 0.5 of its trace, with weights untouched.
+    state = _force_base_transition(result.state, [0.0, 1.0], 1)
+    result = agent.update(state, zero, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([0.5, 0.0], 0.5)
+    assert _head_params(result.state, 0) == ([0.0, 0.0], 0.0)
+
+    # Action 0 again at [0, 0], reward 1, TD 1: the reactivated head's trace
+    # is 0.5 * [0.5, 0] + [0, 0] = [0.25, 0] with bias 0.5 * 0.5 + 1 = 1.25,
+    # and its weights move by exactly that trace (step size 1).
+    state = _force_base_transition(result.state, [0.0, 0.0], 0)
+    result = agent.update(state, one, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert float(result.td_error) == 1.0
+    assert _head_trace(result.state, 0) == ([0.25, 0.0], 1.25)
+    assert _head_params(result.state, 0) == ([0.25, 0.0], 1.25)
+
+    # Full update path with one option configured (not executing).
+    config = STOMPConfig(
+        subtask_specs=(
+            SubtaskSpec(
+                feature_index=0,
+                threshold=10.0,
+                pseudo_reward_scale=1.0,
+                max_option_steps=10,
+            ),
+        ),
+        observation_dim=2,
+        n_primitive_actions=2,
+        base_step_size=1.0,
+        base_avg_reward_step_size=0.0,
+        base_trace_decay=0.5,
+        base_hidden_sizes=(),
+        epsilon_base=0.0,
+        epsilon_option=0.0,
+        option_planning_backups_per_step=0,
+    )
+    agent = STOMPAgent(config)
+    state = _zeroed_base_heads(agent, agent.init(jr.key(0)))
+    state = _force_base_transition(state, [1.0, 0.0], 0)
+    result = agent.update(state, zero, jnp.asarray([0.0, 1.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([1.0, 0.0], 1.0)
+    state = _force_base_transition(result.state, [0.0, 1.0], 1)
+    result = agent.update(state, zero, jnp.asarray([0.0, 0.0], dtype=jnp.float32), one)
+    assert bool(result.update_applied)
+    assert _head_trace(result.state, 0) == ([0.5, 0.0], 0.5)
