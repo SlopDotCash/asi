@@ -1080,7 +1080,7 @@ class AverageRewardHordeActorCriticAgent:
             action=jnp.where(
                 update_applied,
                 next_sample.action,
-                jnp.asarray(0, dtype=jnp.int32),
+                state.last_action,
             ),
             policy=jnp.where(
                 update_applied,
