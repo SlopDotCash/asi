@@ -1055,12 +1055,22 @@ def dream_one_step(
         ),
         step_count=_saturating_int32_counter_increment(rollout_state.step_count),
     )
+    # A terminated step must not bootstrap: the converters drop the
+    # ``terminated`` flag, so the discount is the only carrier of that
+    # information. Force it to zero here (and again in the converters, for
+    # hand-built transitions) instead of passing a non-zero model discount
+    # through a terminal row.
+    effective_discount = jnp.where(
+        terminated,
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.asarray(world_prediction.discount, dtype=jnp.float32),
+    )
     transition = ImaginedTransition(
         observation=rollout_state.observation,
         action=behavior_prediction.action,
         reward=jnp.squeeze(jnp.asarray(world_prediction.reward, dtype=jnp.float32)),
         next_observation=world_prediction.next_observation,
-        discount=jnp.squeeze(jnp.asarray(world_prediction.discount, dtype=jnp.float32)),
+        discount=jnp.squeeze(effective_discount),
         terminated=terminated,
         confidence=jnp.squeeze(jnp.asarray(world_prediction.confidence, dtype=jnp.float32)),
         model_error=jnp.squeeze(jnp.asarray(world_prediction.model_error, dtype=jnp.float32)),
@@ -1192,12 +1202,17 @@ def imagined_transition_to_gvf_item(
         if cumulants is None
         else jnp.ravel(jnp.asarray(cumulants, dtype=jnp.float32))
     )
+    effective_discount = jnp.where(
+        jnp.asarray(transition.terminated, dtype=jnp.bool_),
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.asarray(transition.discount, dtype=jnp.float32),
+    )
     return DreamGVFTrainingItem(
         observations=_neutralize_invalid(transition.observation, transition.valid),
         cumulants=_neutralize_invalid(cumulant_array, transition.valid),
         next_observations=_neutralize_invalid(transition.next_observation, transition.valid),
         discounts=_neutralize_invalid(
-            jnp.reshape(jnp.asarray(transition.discount, dtype=jnp.float32), (1,)),
+            jnp.reshape(effective_discount, (1,)),
             transition.valid,
         ),
         weights=jnp.reshape(jnp.asarray(transition.valid, dtype=jnp.float32), (1,)),
@@ -1215,15 +1230,18 @@ def imagined_rollout_to_gvf_items(
         if cumulants is None
         else jnp.asarray(cumulants, dtype=jnp.float32)
     )
+    effective_discounts = jnp.where(
+        jnp.asarray(transitions.terminated, dtype=jnp.bool_),
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.asarray(transitions.discount, dtype=jnp.float32),
+    )
     return DreamGVFTrainingItem(
         observations=_neutralize_invalid(transitions.observation, transitions.valid),
         cumulants=_neutralize_invalid(cumulant_array, transitions.valid),
         next_observations=_neutralize_invalid(
             transitions.next_observation, transitions.valid
         ),
-        discounts=_neutralize_invalid(
-            jnp.asarray(transitions.discount, dtype=jnp.float32), transitions.valid
-        ),
+        discounts=_neutralize_invalid(effective_discounts, transitions.valid),
         weights=jnp.asarray(transitions.valid, dtype=jnp.float32),
     )
 
@@ -1238,11 +1256,16 @@ def imagined_rollout_to_sarsa_items(
     """
     transitions = rollout.transitions
     actions = transitions.action
+    effective_discounts = jnp.where(
+        jnp.asarray(transitions.terminated, dtype=jnp.bool_),
+        jnp.array(0.0, dtype=jnp.float32),
+        jnp.asarray(transitions.discount, dtype=jnp.float32),
+    )
     if bootstrap_action is None:
         next_actions = jnp.concatenate([actions[1:], jnp.zeros_like(actions[-1:])], axis=0)
         weights = jnp.asarray(transitions.valid, dtype=jnp.float32)
         # A zero-discount transition has no bootstrap term or next-action dependency.
-        weights = weights.at[-1].set(weights[-1] * (transitions.discount[-1] == 0.0))
+        weights = weights.at[-1].set(weights[-1] * (effective_discounts[-1] == 0.0))
     else:
         bootstrap = jnp.expand_dims(jnp.asarray(bootstrap_action, dtype=actions.dtype), axis=0)
         next_actions = jnp.concatenate([actions[1:], bootstrap], axis=0)
@@ -1256,9 +1279,7 @@ def imagined_rollout_to_sarsa_items(
         next_observations=_neutralize_invalid(
             transitions.next_observation, transitions.valid
         ),
-        discounts=_neutralize_invalid(
-            jnp.asarray(transitions.discount, dtype=jnp.float32), transitions.valid
-        ),
+        discounts=_neutralize_invalid(effective_discounts, transitions.valid),
         next_actions=_neutralize_invalid(next_actions, transitions.valid),
         weights=weights,
     )

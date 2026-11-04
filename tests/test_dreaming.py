@@ -15,9 +15,12 @@ from alberta_framework.core.dreaming import (
     DreamBehaviorModelPrediction,
     DreamingConfig,
     DreamRolloutConfig,
+    DreamRolloutResult,
+    DreamRolloutState,
     DreamSelectionConfig,
     DreamWorldModelPrediction,
     GuardedDreamer,
+    ImaginedTransition,
     RecentObservationBuffer,
     action_features,
     dream_one_step,
@@ -555,6 +558,63 @@ def test_rollout_to_sarsa_items_shift_actions_and_mask_last_without_bootstrap() 
         jnp.array(1, dtype=jnp.int32),
     )
     chex.assert_trees_all_close(bootstrapped.weights, rollout.transitions.valid.astype(jnp.float32))
+
+
+def test_terminal_imagined_row_carries_zero_discount_to_gvf_and_sarsa() -> None:
+    """A terminated imagined row must not bootstrap from a dummy next state.
+
+    The converters drop the ``terminated`` flag, so a nonzero model
+    discount on a terminal row used to reach GVF/SARSA updates as
+    ``reward + discount * value(dummy next state)``. The terminal row
+    keeps its weight; only its discount is forced to zero. A valid
+    non-terminal row keeps its discount unchanged.
+    """
+    horizon = 4
+    transitions = ImaginedTransition(
+        observation=jnp.zeros((horizon, 2), dtype=jnp.float32),
+        action=jnp.zeros((horizon,), dtype=jnp.int32),
+        reward=jnp.zeros((horizon,), dtype=jnp.float32),
+        next_observation=jnp.zeros((horizon, 2), dtype=jnp.float32),
+        discount=jnp.array([0.9, 0.9, 0.9, 0.9], dtype=jnp.float32),
+        terminated=jnp.array([True, False, False, False]),
+        confidence=jnp.ones((horizon,), dtype=jnp.float32),
+        model_error=jnp.zeros((horizon,), dtype=jnp.float32),
+        behavior_probability=jnp.ones((horizon,), dtype=jnp.float32),
+        valid=jnp.array([True, True, False, False]),
+        step_index=jnp.arange(horizon, dtype=jnp.int32),
+    )
+    rollout = DreamRolloutResult(
+        state=DreamRolloutState(
+            observation=jnp.zeros((2,), dtype=jnp.float32),
+            rng_key=jr.key(0),
+            active=jnp.array(False),
+            cumulative_confidence=jnp.array(1.0, dtype=jnp.float32),
+            step_count=jnp.array(2, dtype=jnp.int32),
+        ),
+        transitions=transitions,
+    )
+
+    gvf = imagined_rollout_to_gvf_items(rollout)
+    chex.assert_trees_all_close(
+        gvf.discounts,
+        jnp.array([0.0, 0.9, 0.0, 0.0], dtype=jnp.float32),
+    )
+    chex.assert_trees_all_close(
+        gvf.weights, jnp.array([1.0, 1.0, 0.0, 0.0], dtype=jnp.float32)
+    )
+
+    sarsa = imagined_rollout_to_sarsa_items(
+        rollout, bootstrap_action=jnp.array(1, dtype=jnp.int32)
+    )
+    chex.assert_trees_all_close(
+        sarsa.discounts,
+        jnp.array([0.0, 0.9, 0.0, 0.0], dtype=jnp.float32),
+    )
+
+    single = imagined_transition_to_gvf_item(
+        slice_imagined_transition(transitions, 0)
+    )
+    chex.assert_trees_all_close(single.discounts, jnp.array([0.0], dtype=jnp.float32))
 
 
 @pytest.mark.unit
