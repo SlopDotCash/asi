@@ -1316,8 +1316,12 @@ def run_horde_actor_critic_from_arrays(
             lambda: carry,
         )
         return committed_state, (
+            # The action for this row was selected (or supplied) even when
+            # the learning update is rejected; only an invalid action
+            # itself falls back to 0. Reporting 0 for a valid action would
+            # falsify the recorded trajectory.
             jnp.where(
-                update_applied,
+                fixed_action_valid,
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
@@ -2288,11 +2292,11 @@ def run_nonlinear_horde_actor_critic_from_arrays(
             lambda: carry,
         )
         return committed_state, (
-            jnp.where(
-                result.update_applied,
-                current_action,
-                jnp.asarray(0, dtype=jnp.int32),
-            ),
+            # The action for this row was sampled even when the learning
+            # update is rejected; reporting 0 would falsify the recorded
+            # trajectory. (This runner samples on-policy only, so the
+            # action is always a valid index.)
+            current_action,
             jnp.where(result.update_applied, current_policy, jnp.zeros_like(current_policy)),
             result.value,
             result.td_error,
