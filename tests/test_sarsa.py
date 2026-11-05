@@ -582,6 +582,56 @@ class TestSARSAUpdate:
         pred_changed = not jnp.allclose(old_pred_weights, new_pred_weights)
         assert pred_changed, "Prediction demon head should have been updated"
 
+    def test_terminated_prediction_demon_traces_are_cleared(self):
+        """A terminal transition clears prediction-demon traces like control traces.
+
+        Control heads are zeroed at ``terminated=1`` in ``SARSAAgent.update``,
+        but prediction heads kept their decayed traces, so the next
+        episode's first update credited the dead episode's trace.
+        """
+        pred_demons = [
+            GVFSpec(
+                name="pred_0",
+                demon_type=DemonType.PREDICTION,
+                gamma=0.9,
+                lamda=0.9,
+                cumulant_index=0,
+            ),
+        ]
+        agent = _make_agent(
+            n_actions=2,
+            prediction_demons=pred_demons,
+            hidden_sizes=(),
+            lamda=0.9,
+        )
+        state = agent.init(feature_dim=4, key=jr.key(42))
+        obs = jnp.ones(4, dtype=jnp.float32)
+        state = state.replace(  # type: ignore[attr-defined]
+            last_action=jnp.array(0, dtype=jnp.int32),
+            last_observation=obs,
+        )
+
+        def update(state, terminated):
+            return agent.update(
+                state,
+                reward=jnp.array(1.0),
+                observation=jnp.full(4, 0.5, dtype=jnp.float32),
+                terminated=jnp.array(terminated, dtype=jnp.float32),
+                next_action=jnp.array(0, dtype=jnp.int32),
+                prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+            ).state
+
+        # A non-terminal update builds a nonzero prediction trace.
+        state = update(state, 0.0)
+        pred_w_trace, pred_b_trace = state.learner_state.head_traces[2]
+        assert float(jnp.max(jnp.abs(pred_w_trace))) > 0.0
+
+        # The terminal update credits that trace, then clears it.
+        state = update(state, 1.0)
+        for head in state.learner_state.head_traces:
+            chex.assert_trees_all_close(head[0], jnp.zeros_like(head[0]))
+            chex.assert_trees_all_close(head[1], jnp.zeros_like(head[1]))
+
     def test_td_error_uses_last_observation_prediction(self):
         """Returned TD error is target - Q(s_t, a_t), not Q(s_{t+1}, a_t)."""
         agent = _make_agent(n_actions=2, hidden_sizes=(), gamma=0.0, epsilon_start=0.0)

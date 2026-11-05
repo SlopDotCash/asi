@@ -1086,6 +1086,23 @@ class SARSAAgent:
                 head_optimizer_states=tuple(head_opt_states),
             )
 
+        # Prediction demons are not control heads, so the loop above does
+        # not touch them, but their traces must not carry past an episode
+        # boundary either: the terminal step's trace would otherwise be
+        # credited by the next episode's first TD error. Clear them at a
+        # terminal transition regardless of the control trace decay.
+        if self._n_prediction_demons > 0:
+            head_traces = list(new_learner_state.head_traces)
+            for i in range(n_actions, self._horde.n_demons):
+                w_trace, b_trace = head_traces[i]
+                head_traces[i] = (
+                    jnp.where(safe_terminated, jnp.zeros_like(w_trace), w_trace),
+                    jnp.where(safe_terminated, jnp.zeros_like(b_trace), b_trace),
+                )
+            new_learner_state = new_learner_state.replace(
+                head_traces=tuple(head_traces),
+            )
+
         # Epsilon decay
         cfg = self._sarsa_config
         new_step_count = jnp.minimum(state.step_count, _INT32_MAX - 1) + 1
