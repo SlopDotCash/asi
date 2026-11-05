@@ -3559,7 +3559,12 @@ def run_upgd_arrays(
     jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
     final_state, metrics = scan_result
     elapsed = time.time() - t0
-    final_state = final_state.replace(uptime_s=final_state.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
+    )  # type: ignore[attr-defined]
     return UPGDLearningResult(state=final_state, metrics=metrics)  # type: ignore[call-arg]
 
 
@@ -3621,7 +3626,12 @@ def run_upgd_loop[StreamStateT](
     jax.block_until_ready(scan_result)  # type: ignore[no-untyped-call]
     (final_learner, _), metrics = scan_result
     elapsed = time.time() - t0
-    final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]  # noqa: E501
+    # Keep host-only clocks out of the device scan's scalar narrowing: restore
+    # the incoming values, advancing uptime from the true host base.
+    final_learner = final_learner.replace(
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )  # type: ignore[attr-defined]
     return UPGDLearningResult(  # type: ignore[call-arg]
         state=final_learner, metrics=metrics
     )
