@@ -34,7 +34,7 @@ import jax.random as jr
 import numpy as np
 from jax import Array
 
-from alberta_framework._seed_validation import JAX_KEY_SEED_MAX, require_jax_seed
+from alberta_framework._seed_validation import require_jax_seed
 from alberta_framework.core._float32_scalars import validated_float32_scalar
 from alberta_framework.core.learners import LinearLearner
 from alberta_framework.core.types import LearnerState, TimeStep
@@ -45,6 +45,10 @@ if TYPE_CHECKING:
 _INT32_MAX = 2**31 - 1
 _INT32_MIN = -(2**31)
 _ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
+# Distinct from the epsilon-coin splits of this same root. Not ``seed + 1``:
+# that root is the next experiment seed, so paired runs shared one stream,
+# and the uint32 maximum used a different derivation from every smaller seed.
+_EPSILON_GREEDY_RANDOM_STREAM = 0x45504752
 
 
 def _require_positive_int32(name: str, value: object) -> int:
@@ -384,6 +388,13 @@ def make_epsilon_greedy_policy(
 ) -> Callable[[Array], Any]:
     """Wrap a policy with epsilon-greedy exploration.
 
+    The coin flip and the random action share one ``threefry2x32`` root named
+    by ``seed``. Random actions are a fold of that root, not ``jr.key(seed + 1)``.
+    The next integer is another experiment's seed, so the old derivation made
+    seed ``S`` replay the random policy recorded as seed ``S + 1``. The uint32
+    maximum used ``fold_in`` instead, so the last seed was not the same
+    function of its id. A process-wide PRNG default does not retarget the root.
+
     Args:
         base_policy: The greedy policy to wrap
         env: Gymnasium environment (for random action sampling)
@@ -397,8 +408,8 @@ def make_epsilon_greedy_policy(
         raise ValueError("base_policy must be callable")
     epsilon = validated_float32_scalar("epsilon", epsilon, lower=0.0, upper=1.0)
     seed = require_jax_seed(seed)
-    rng = jr.key(seed)
-    random_rng = jr.key(seed + 1) if seed < JAX_KEY_SEED_MAX else jr.fold_in(rng, 1)
+    rng = jr.key(seed, impl="threefry2x32")
+    random_rng = jr.fold_in(rng, _EPSILON_GREEDY_RANDOM_STREAM)
     random_policy = _make_random_policy(env, random_rng)
 
     def policy(obs: Array) -> Any:
