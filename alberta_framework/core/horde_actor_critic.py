@@ -781,6 +781,22 @@ class QHordeActorCriticAgent:
             cumulants,
             observation,
         )
+        # A terminal transition ends the episode for the prediction demons
+        # too: their traces decay by the spec gamma * lamda, so the stored
+        # trace would be credited to the next episode's first TD error.
+        # The terminal update above has already used the traces; clear them
+        # now. Action heads keep theirs: gamma=0 forces gamma * lamda = 0.
+        if self._critic.n_demons > cfg.n_actions:
+            _pred_traces = list(critic_result.state.head_traces)
+            for _i in range(cfg.n_actions, self._critic.n_demons):
+                _w, _b = _pred_traces[_i]
+                _pred_traces[_i] = (
+                    jnp.where(terminated, jnp.zeros_like(_w), _w),
+                    jnp.where(terminated, jnp.zeros_like(_b), _b),
+                )
+            critic_result = critic_result.replace(  # type: ignore[attr-defined]
+                state=critic_result.state.replace(head_traces=tuple(_pred_traces))  # type: ignore[attr-defined]
+            )
 
         actor_td_error = (
             td_error
@@ -2705,6 +2721,22 @@ class NonlinearQHordeActorCriticAgent:
             cumulants,
             observation,
         )
+        # A terminal transition ends the episode for the prediction demons
+        # too: their traces decay by the spec gamma * lamda, so the stored
+        # trace would be credited to the next episode's first TD error.
+        # The terminal update above has already used the traces; clear them
+        # now. Action heads keep theirs: gamma=0 forces gamma * lamda = 0.
+        if self._critic.n_demons > cfg.n_actions:
+            _pred_traces = list(critic_result.state.head_traces)
+            for _i in range(cfg.n_actions, self._critic.n_demons):
+                _w, _b = _pred_traces[_i]
+                _pred_traces[_i] = (
+                    jnp.where(terminated, jnp.zeros_like(_w), _w),
+                    jnp.where(terminated, jnp.zeros_like(_b), _b),
+                )
+            critic_result = critic_result.replace(  # type: ignore[attr-defined]
+                state=critic_result.state.replace(head_traces=tuple(_pred_traces))  # type: ignore[attr-defined]
+            )
 
         actor_td_error = (
             td_error
