@@ -87,6 +87,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cleared Prototype Horde head eligibility after a zero transition discount.
+  The terminating step still applies the trace it carried in; only the stored
+  trace is dropped, and only for demons whose configured trace decay is
+  nonzero. A following episode otherwise multiplies that trace by
+  `gamma * lambda` and credits the new life with the previous one. Demons
+  that replace their trace every step are unchanged.
 - Required every merged screening arm's recorded `base_learner` to match its
   registered arm. `load_shard` cross-checks the registered arm only for
   source-bound v2/v3 shards and the campaign's live format is v1, so a v1 arm
