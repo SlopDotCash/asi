@@ -169,6 +169,50 @@ def test_shared_measurement_validator_is_registered_for_current_source_inventori
 
 
 @pytest.mark.unit
+def test_current_validators_hash_every_registered_source() -> None:
+    """A registered-source edit must move the validator that accepts the artifact.
+
+    The scale-robust and multiagent registries already list the shared
+    measurement helper. Their validators must hash that same set; otherwise
+    a helper edit leaves a byte-matching artifact accepted.
+    """
+
+    from alberta_framework.evaluation.continual_multiagent_artifact import (
+        _source_provenance as multiagent_source_provenance,
+    )
+    from alberta_framework.evaluation.continual_multiagent_artifact import (
+        _validate_source_provenance as validate_multiagent_provenance,
+    )
+    from alberta_framework.evaluation.scale_robust_feature_artifact import (
+        current_source_fingerprint,
+    )
+
+    specs = {spec.name: spec for spec in EVIDENCE_SPECS}
+
+    def registered(claim: str) -> set[str]:
+        return {path.as_posix() for path in specs[claim].source_paths}
+
+    scale_paths = registered("scale_robust_pair_features")
+    multiagent_paths = registered("recurring_multiagent_coadaptation")
+    helper = "alberta_framework/evaluation/_measurement_validation.py"
+    assert helper in scale_paths
+    assert helper in multiagent_paths
+    assert set(current_source_fingerprint()) == scale_paths
+    provenance = multiagent_source_provenance()
+    hashes = provenance["source_sha256"]
+    assert isinstance(hashes, dict)
+    assert set(hashes) == multiagent_paths
+    drifted_hashes = dict(hashes)
+    drifted_hashes[helper] = "0" * 64
+    errors: list[str] = []
+    validate_multiagent_provenance(
+        {**provenance, "source_sha256": drifted_hashes},
+        errors,
+    )
+    assert any("pinned source hashes" in error for error in errors)
+
+
+@pytest.mark.unit
 def test_manifest_distinguishes_acceptance_rejection_and_missing(
     tmp_path: Path,
 ) -> None:

@@ -412,14 +412,15 @@ def test_calibration_record_is_hash_bound_and_marks_missing_primitives():
     ]
 
 
-def test_source_fingerprint_covers_exactly_five_pinned_sources():
-    assert set(current_source_fingerprint()) == {
-        "alberta_framework/core/interaction_features.py",
-        "alberta_framework/streams/gauntlet.py",
-        "alberta_framework/evaluation/scale_robust_feature.py",
-        "alberta_framework/evaluation/scale_robust_feature_artifact.py",
-        "alberta_framework/evaluation/scale_robust_feature_cli.py",
-    }
+def test_source_fingerprint_covers_the_registered_source_inventory():
+    from alberta_framework.evaluation.evidence_manifest import EVIDENCE_SPECS
+
+    registered = next(
+        spec.source_paths
+        for spec in EVIDENCE_SPECS
+        if spec.name == "scale_robust_pair_features"
+    )
+    assert set(current_source_fingerprint()) == {path.as_posix() for path in registered}
 
 
 def test_pair_descriptor_count_uses_only_unique_relevant_context_products():
@@ -1054,6 +1055,20 @@ def test_source_hash_tamper_fails_current_source_binding_even_when_rehashed(
     hashes = provenance["source_sha256"]
     path = next(iter(hashes))
     hashes[path] = "0" * 64
+    _rehash(changed)
+    validation = validate_evidence_artifact(changed)
+    assert not validation.valid
+
+
+def test_registered_measurement_helper_hash_is_bound(
+    accepted_artifact: dict[str, object],
+):
+    helper = "alberta_framework/evaluation/_measurement_validation.py"
+    changed = copy.deepcopy(accepted_artifact)
+    provenance = changed["scientific_payload"]["source_provenance"]
+    hashes = provenance["source_sha256"]
+    assert helper in hashes
+    hashes[helper] = "0" * 64
     _rehash(changed)
     validation = validate_evidence_artifact(changed)
     assert not validation.valid
