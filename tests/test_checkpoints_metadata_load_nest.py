@@ -17,6 +17,7 @@ import pytest
 
 from alberta_framework import LinearLearner
 from alberta_framework.core.checkpoints import (
+    _JSON_MAX_BYTES,
     _JSON_MAX_DEPTH,
     _on_disk_metadata_path,
     load_checkpoint,
@@ -50,6 +51,32 @@ def test_last_fit_checkpoint_still_roundtrips(tmp_path: Path) -> None:
     restored, meta = load_checkpoint(state, path)
     assert meta["epoch"] == 1
     assert restored.weights.shape == state.weights.shape
+
+
+def test_save_rejects_metadata_above_json_byte_limit(tmp_path: Path) -> None:
+    # Load refuses on-disk metadata over _JSON_MAX_BYTES, so save must fail
+    # fast instead of writing a checkpoint its own load cannot read.
+    learner = LinearLearner()
+    state = learner.init(3)
+    path = tmp_path / "oversized"
+    with pytest.raises(ValueError, match="JSON byte limit"):
+        save_checkpoint(state, path, metadata={"big": "x" * (17 * 1024 * 1024)})
+    assert not path.exists()
+
+
+def test_largest_metadata_still_roundtrips(tmp_path: Path) -> None:
+    # On-disk JSON is the user metadata plus `, "_format_version": 2`;
+    # this is the largest single-string payload that still fits the limit.
+    overhead = len(json.dumps({"big": "", "_format_version": 2}).encode("utf-8"))
+    payload = "x" * (_JSON_MAX_BYTES - overhead)
+    learner = LinearLearner()
+    state = learner.init(3)
+    path = tmp_path / "largest"
+    save_checkpoint(state, path, metadata={"big": payload})
+    loaded = load_checkpoint_metadata(path)
+    assert loaded["big"] == payload
+    _, meta = load_checkpoint(state, path)
+    assert meta["big"] == payload
 
 
 def test_last_fit_on_disk_nest_still_loads(tmp_path: Path) -> None:
