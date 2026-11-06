@@ -1319,6 +1319,31 @@ def _adaupgd_select_tree(condition: Array, candidate: Any, fallback: Any) -> Any
     )
 
 
+def _alberta_adaupgd_weighted_product(scale: float, left: Array, right: Array) -> Array:
+    """Weight a product after the mantissas when ``left * right`` overflows.
+
+    A finite product keeps ``scale * (left * right)``. The split multiplies
+    the three mantissas before restoring the exponents so the product is not
+    fused back into the overflowing product.
+    """
+
+    product = left * right
+    scale_array = jnp.asarray(scale, dtype=left.dtype)
+    direct = scale_array * product
+    left_mantissa, left_exponent = jnp.frexp(left)
+    right_mantissa, right_exponent = jnp.frexp(right)
+    scale_mantissa, scale_exponent = jnp.frexp(scale_array)
+    recovered = jnp.ldexp(
+        scale_mantissa * left_mantissa * right_mantissa,
+        scale_exponent + left_exponent + right_exponent,
+    )
+    return jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
+
+
 def _alberta_adaupgd_weighted_square(scale: float, value: Array) -> Array:
     """Weight a square after the mantissa when ``value**2`` overflows.
 
@@ -1691,11 +1716,14 @@ class AlbertaAdaUPGD:
             eligible_leaves,
             strict=True,
         ):
-            instantaneous_utility = -gradient * param
+            weighted_utility = _alberta_adaupgd_weighted_product(
+                1.0 - beta_utility,
+                -gradient,
+                param,
+            )
             proposed_utility = jnp.where(
                 eligible,
-                _static_zero_scale(beta_utility, utility)
-                + (1.0 - beta_utility) * instantaneous_utility,
+                _static_zero_scale(beta_utility, utility) + weighted_utility,
                 utility,
             )
             proposed_age = jnp.where(eligible, age + 1, age)
