@@ -574,10 +574,14 @@ class StackedLinearHorde:
         decay = (self._gammas * self._lamdas)[:, None]  # (n_demons, 1)
         carried = jnp.where(decay == 0.0, jnp.zeros_like(state.traces), decay * state.traces)
         accumulated = carried + features[None, :]
-        # Inactive demons: trace decays but the current gradient is withheld.
+        # A NaN cumulant withholds the current feature. The importance ratio
+        # belongs to the question that was asked, so a quiet demon's trace
+        # decays by gamma*lambda only (rho=0 must not wipe it).
         decayed_only = carried
         safe_rho = jnp.where(rho_valid, rho_vec, 0.0)
-        proposed_traces = safe_rho[:, None] * jnp.where(active[:, None], accumulated, decayed_only)
+        proposed_traces = jnp.where(
+            active[:, None], safe_rho[:, None] * accumulated, decayed_only
+        )
 
         masked_delta = jnp.where(channel_valid, td_errors, 0.0)
         proposed_weights = state.weights + cfg.step_size * masked_delta[:, None] * proposed_traces
