@@ -834,3 +834,162 @@ def test_option_search_control_config_rejects_noncanonical_serialized_containers
     payload = OptionSearchControlConfig().to_config()
     with pytest.raises(ValueError, match="actual dict"):
         OptionSearchControlConfig.from_config(DictSubclass(payload))
+
+
+def _cancelling_semi_mdp_state(sign: float) -> tuple[STOMPAgent, STOMPState, jax.Array]:
+    """Return a one-option life whose three-term target cancels to ``sign * 2e38``.
+
+    ``(reward - baseline) + bootstrap`` overflows float32. The same terms in the
+    association ``reward - (baseline - bootstrap)`` equal that finite value, and
+    the option value at the decision observation matches it, so the Bellman
+    residual is zero.
+    """
+
+    magnitude = jnp.asarray(2.0e38, dtype=jnp.float32)
+    signed = jnp.asarray(sign, dtype=jnp.float32) * magnitude
+    agent = STOMPAgent(_stomp_config(n_options=1))
+    state = _supported_state(agent, targets=(0.0,))
+    zero_weight = jnp.zeros((1, 2), dtype=jnp.float32)
+    option_weight = jnp.array([[signed, -signed]], dtype=jnp.float32)
+    primitive_bias = -signed
+    learner = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(
+            weights=(zero_weight, zero_weight, option_weight),
+            biases=(
+                jnp.array([primitive_bias], dtype=jnp.float32),
+                jnp.array([primitive_bias], dtype=jnp.float32),
+                jnp.zeros((1,), dtype=jnp.float32),
+            ),
+        )
+    )
+    state = cast(
+        STOMPState,
+        state.replace(
+            base_learner_state=learner,
+            option_models=state.option_models.replace(
+                env_return_ema=jnp.array([signed], dtype=jnp.float32),
+                duration_ema=jnp.ones((1,), dtype=jnp.float32),
+                baseline_mass_ema=jnp.ones((1,), dtype=jnp.float32),
+                discount_ema=jnp.ones((1,), dtype=jnp.float32),
+                next_state_weights=jnp.array(
+                    [[[-1.0, 0.0], [1.0, 0.0]]],
+                    dtype=jnp.float32,
+                ),
+                n_completions=jnp.ones((1,), dtype=jnp.int32),
+            ),
+            base_average_reward=-signed,
+        ),
+    )
+    return agent, state, signed
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+@pytest.mark.parametrize("compile_apply", [False, True])
+def test_overflowing_semi_mdp_sum_keeps_finite_cancelled_target(
+    sign: float,
+    compile_apply: bool,
+) -> None:
+    agent, state, signed = _cancelling_semi_mdp_state(sign)
+    controller = OptionSearchControl(agent)
+    apply = jax.jit(controller.apply) if compile_apply else controller.apply
+    diagnostics = apply(state, ANCHOR).diagnostics
+
+    np.testing.assert_array_equal(
+        np.asarray(diagnostics.candidate_valid[0]),
+        np.array([True]),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(diagnostics.candidate_predictions_finite[0]),
+        np.array([True]),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(diagnostics.candidate_targets[0]),
+        np.asarray([signed], dtype=np.float32),
+    )
+    np.testing.assert_array_equal(
+        np.asarray(diagnostics.candidate_bellman_residuals[0]),
+        np.zeros((1,), dtype=np.float32),
+    )
+    assert int(diagnostics.selected_option_indices[0]) == 0
+    assert bool(diagnostics.applied[0])
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_unrepresentable_semi_mdp_sum_stays_invalid(sign: float) -> None:
+    """A three-term sum past float32 max stays invalid for both associations."""
+
+    magnitude = jnp.asarray(2.0e38, dtype=jnp.float32)
+    signed = jnp.asarray(sign, dtype=jnp.float32) * magnitude
+    agent = STOMPAgent(_stomp_config(n_options=1))
+    state = _supported_state(agent, targets=(0.0,))
+    learner = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(
+            weights=tuple(
+                jnp.zeros_like(weight)
+                for weight in state.base_learner_state.head_params.weights
+            ),
+            biases=tuple(
+                jnp.full_like(bias, signed)
+                for bias in state.base_learner_state.head_params.biases
+            ),
+        )
+    )
+    state = state.replace(
+        base_learner_state=learner,
+        option_models=state.option_models.replace(
+            env_return_ema=jnp.array([signed], dtype=jnp.float32),
+            discount_ema=jnp.ones((1,), dtype=jnp.float32),
+        ),
+        base_average_reward=-signed,
+    )
+    exact = np.float64(signed) - np.float64(-signed) + np.float64(signed)
+    assert abs(exact) > np.finfo(np.float32).max
+
+    diagnostics = OptionSearchControl(agent).apply(state, ANCHOR).diagnostics
+
+    assert not bool(diagnostics.candidate_valid[0, 0])
+    assert not bool(diagnostics.candidate_predictions_finite[0, 0])
+    assert float(diagnostics.candidate_targets[0, 0]) == 0.0
+    assert int(diagnostics.selected_option_indices[0]) == -1
+    assert not bool(diagnostics.applied[0])
+
+
+@pytest.mark.parametrize("sign", [1.0, -1.0])
+def test_overflowing_bellman_residual_stays_invalid(sign: float) -> None:
+    """A finite cancelled target whose residual cannot fit stays unpublished."""
+
+    magnitude = jnp.asarray(2.0e38, dtype=jnp.float32)
+    signed = jnp.asarray(sign, dtype=jnp.float32) * magnitude
+    agent = STOMPAgent(_stomp_config(n_options=1))
+    state = _supported_state(agent, targets=(0.0,))
+    option_value = jnp.array([[-signed, -signed]], dtype=jnp.float32)
+    learner = state.base_learner_state.replace(
+        head_params=state.base_learner_state.head_params.replace(
+            weights=(option_value, option_value, option_value),
+            biases=tuple(
+                jnp.zeros_like(bias)
+                for bias in state.base_learner_state.head_params.biases
+            ),
+        )
+    )
+    state = state.replace(
+        base_learner_state=learner,
+        option_models=state.option_models.replace(
+            env_return_ema=jnp.array([signed], dtype=jnp.float32),
+            discount_ema=jnp.ones((1,), dtype=jnp.float32),
+            next_state_weights=jnp.array(
+                [[[-1.0, 0.0], [1.0, 0.0]]],
+                dtype=jnp.float32,
+            ),
+        ),
+        base_average_reward=-signed,
+    )
+    residual = signed - (-signed)
+    assert not bool(jnp.isfinite(residual))
+
+    diagnostics = OptionSearchControl(agent).apply(state, ANCHOR).diagnostics
+
+    assert not bool(diagnostics.candidate_valid[0, 0])
+    assert float(diagnostics.candidate_targets[0, 0]) == 0.0
+    assert int(diagnostics.selected_option_indices[0]) == -1
+    assert not bool(diagnostics.applied[0])

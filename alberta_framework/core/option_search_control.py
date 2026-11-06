@@ -774,10 +774,16 @@ class OptionSearchControl:
                 jnp.zeros_like(discount),
                 discount * jnp.max(next_values),
             )
-            target = (
-                models.env_return_ema[index]
-                - state.base_average_reward * models.baseline_mass_ema[index]
-                + bootstrap
+            reward_term = models.env_return_ema[index]
+            baseline_term = state.base_average_reward * models.baseline_mass_ema[index]
+            direct_target = reward_term - baseline_term + bootstrap
+            # Left association overflows when reward and baseline cancel through
+            # the bootstrap. Use the other association only for that finite value.
+            recovered_target = reward_term - (baseline_term - bootstrap)
+            target = jnp.where(
+                jnp.isfinite(direct_target) | ~jnp.isfinite(recovered_target),
+                direct_target,
+                recovered_target,
             )
             residual = target - option_values[index]
             prediction_finite = (
