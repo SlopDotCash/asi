@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -20,6 +21,7 @@ from alberta_framework.benchmarks.nap_ipmnist import (
     PLASTICINE_COMMIT,
     NaPCatalogEntry,
     NaPResult,
+    _normalize,
     _run_arm,
     main,
     qualification_gates,
@@ -282,6 +284,51 @@ def test_catalog_and_execution_cli_are_bounded(
     assert payload["schema"].startswith("asi.nap_ipmnist")
     assert payload["scientific_promotion_allowed"] is False
     assert payload["paper_parity_claimed"] is False
+
+
+def _float64_layer_norm(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float64)
+    centered = array - array.mean(axis=-1, keepdims=True)
+    variance = np.mean(centered * centered, axis=-1, keepdims=True)
+    return (centered / np.sqrt(variance + 1e-5)).astype(np.float32)
+
+
+def test_normalize_keeps_the_direct_layer_norm_for_modest_preactivations() -> None:
+    values = jnp.asarray([[1.0, 2.0, 3.0], [0.0, 4.0, 4.0]], dtype=jnp.float32)
+    mean = jnp.mean(values, axis=-1, keepdims=True)
+    centered = values - mean
+    variance = jnp.mean(jnp.square(centered), axis=-1, keepdims=True)
+    expected = centered * jax.lax.rsqrt(variance + 1e-5)
+    observed = _normalize(values)
+    np.testing.assert_array_equal(np.asarray(observed), np.asarray(expected))
+
+
+@pytest.mark.parametrize("sign", [np.float32(1.0), np.float32(-1.0)])
+def test_normalize_keeps_a_finite_direction_when_a_component_square_overflows(
+    sign: np.float32,
+) -> None:
+    """Width 64 is the bounded-development NaP hidden width."""
+    values = np.zeros((64,), dtype=np.float32)
+    values[0] = sign * np.float32(2.0e19)
+    mean = np.mean(values, dtype=np.float32)
+    with np.errstate(over="ignore"):
+        raw_square = np.float32(values[0] - mean) * np.float32(values[0] - mean)
+    assert not np.isfinite(raw_square)
+    expected = _float64_layer_norm(values)
+    assert np.all(np.isfinite(expected))
+    assert not np.all(expected == 0.0)
+    assert np.sign(expected[0]) == np.sign(sign)
+
+    observed = _normalize(jnp.asarray(values))
+    compiled = jax.jit(_normalize)(jnp.asarray(values))
+    np.testing.assert_allclose(np.asarray(observed), expected, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.asarray(compiled), expected, rtol=1e-5, atol=1e-5)
+
+
+def test_normalize_leaves_a_nonfinite_preactivation_unrepaired() -> None:
+    values = jnp.asarray([jnp.inf, 0.0, 0.0], dtype=jnp.float32)
+    observed = _normalize(values)
+    assert not bool(jnp.all(jnp.isfinite(observed)))
 
 
 def test_costly_paper_lanes_are_unconditionally_closed() -> None:
