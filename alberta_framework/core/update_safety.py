@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import operator
 from typing import Any, SupportsIndex, cast
 
@@ -85,6 +86,44 @@ def _integer_action_code(
     return safe, valid
 
 
+def _float64_action_code(
+    action: object,
+    n_actions: int,
+    *,
+    allow_unset: bool,
+) -> tuple[Array, Bool[Array, ""]] | None:
+    """Validate a concrete floating action code in the float64 domain.
+
+    ``float32`` represents integers exactly only up to ``2**24``, so routing
+    a float64 code through ``float32`` would silently remap, for example,
+    action ``2**24 + 1`` onto action ``2**24`` — the same remap the integer
+    path refuses.  Validate concrete host floats in float64 first and only
+    then narrow to ``int32``.  Returns ``None`` for JAX arrays (including
+    tracers, whose float64 values are already narrowed to float32 at trace
+    time when x64 is disabled) and booleans, which keep the float32 path.
+    """
+
+    if isinstance(action, (bool, np.bool_)):
+        return None
+    if isinstance(action, (float, np.floating)):
+        value = float(action)
+    elif isinstance(action, np.ndarray) and np.issubdtype(action.dtype, np.floating):
+        value = float(np.asarray(action, dtype=np.float64).reshape(()))
+    else:
+        return None
+    lower = -1.0 if allow_unset else 0.0
+    host_valid = (
+        math.isfinite(value)
+        and value == math.floor(value)
+        and lower <= value < n_actions
+    )
+    fallback = -1 if allow_unset else 0
+    return (
+        jnp.asarray(int(value) if host_valid else fallback, dtype=jnp.int32),
+        jnp.asarray(host_valid, dtype=jnp.bool_),
+    )
+
+
 def safe_discrete_action(
     action: Array | int,
     n_actions: int,
@@ -98,8 +137,10 @@ def safe_discrete_action(
     one-hot vector.  Validate the floating scalar first, then expose only a
     safe code to downstream one-hot arithmetic.  Integer codes are validated
     in the integer domain so codes above ``2**24`` are not rounded onto a
-    neighbouring action.  ``allow_unset`` admits the conventional ``-1``
-    episode-start sentinel.
+    neighbouring action.  Concrete floating scalars are validated in float64
+    for the same reason; JAX floating arrays (including tracers) keep the
+    float32 path, which is best-effort under x64-disabled tracing.
+    ``allow_unset`` admits the conventional ``-1`` episode-start sentinel.
     """
 
     n_actions = _require_non_negative_int("n_actions", n_actions)
@@ -115,6 +156,9 @@ def safe_discrete_action(
     integer_code = _integer_action_code(action, n_actions, allow_unset=allow_unset)
     if integer_code is not None:
         return integer_code
+    float_code = _float64_action_code(action, n_actions, allow_unset=allow_unset)
+    if float_code is not None:
+        return float_code
     raw = jnp.asarray(action, dtype=jnp.float32)
     lower = -1.0 if allow_unset else 0.0
     valid = (
