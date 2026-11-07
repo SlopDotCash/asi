@@ -316,6 +316,21 @@ postmortem.
     (pre-run plan, six v2 shards, official merge, raw-array analysis, source
     bundle, commands, logs and results). Permanently nonpromoting.
 
+
+25. **At weight_decay 0, constant body steps above 0.02 miss the +0.002
+    development bar (our own #3639).** The identmap50_r idet003 wd0
+    constant-step cells with steps 0.03, 0.04 and 0.05 were tuned on seed
+    123 against the 0.02 incumbent (+0.000657, +0.000973, +0.001103; gains
+    flatten). The winner, 0.05, measured **+0.001561 paired, CI95
+    [+0.001394, +0.001728], 10/10 unseen seeds (124-133) improved** at 60
+    tasks, with no divergence. The effect is consistent but below the
+    preregistered +0.002 bar, so this is a FAIL and 0.02 stays the wd0
+    constant step. Almost all of the gain is in the first 10 tasks. Do not
+    retry larger constant steps on this cell without a reason to expect
+    late-life gains. Records:
+    `outputs/ipmnist_screening/wd0_const_step_extend2/`
+    (`PREREGISTRATION.md`, `ANALYSIS.txt`, `RECOMPUTE.txt`, 24 shards).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

@@ -1,0 +1,18 @@
+tune s03 seed123 +0.000657 min_acc=0.8162
+tune s04 seed123 +0.000973 min_acc=0.8210
+tune s05 seed123 +0.001103 min_acc=0.8260
+seed 124 +0.001870
+seed 125 +0.001660
+seed 126 +0.001633
+seed 127 +0.001603
+seed 128 +0.001333
+seed 129 +0.001760
+seed 130 +0.001677
+seed 131 +0.001557
+seed 132 +0.001043
+seed 133 +0.001473
+blocks +0.005944 / +0.001294 / +0.000762 / +0.000564 / +0.000410 / +0.000392
+mean +0.001561 SE 0.000074 CI95(t9) [+0.001394, +0.001728] improved 10/10
+shards 24; non-finite acc/loss values 0; min single-task acc 0.7802 (floor 0.5); diverged 0
+verdict: FAIL (mean bar +0.002 not met)
+incumbent s02 mean acc: tune 0.964720; screen 0.964239
