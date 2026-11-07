@@ -1,0 +1,27 @@
+{
+  "schema": "asi.unit_features_precheck_comparison.v1",
+  "mypy": {
+    "exitCode": 1,
+    "baseCandidateDiagnosticsByteEqual": true,
+    "errorCount": 27,
+    "unmodifiedFilesWithErrors": 9
+  },
+  "evidenceRegistry": {
+    "exitCode": 2,
+    "baseCandidateReportEqualIgnoringValidationTimestamps": true,
+    "claims": 5,
+    "status": "all invalid on both: historical registered-source hash mismatch"
+  },
+  "ruff": "passed",
+  "focusedTests": {
+    "passed": 410,
+    "seconds": 62.45
+  },
+  "originalLogSha256": {
+    "asi-base-evidence-status.log": "dc68c24dd81349c69c29a7d22a8e1a7de86889ebfa2d4f19848fe25d3a44fc70",
+    "asi-base-mypy.log": "39ba6c25bf16fcc38d8ebc9691ac3465ae59d3ddbfe929240f2bd2f346f7f446",
+    "asi-evidence-status.log": "1296e246e56f26bef52be8ab59523b8202316a33ae6eef49c76b631b778ea53a",
+    "asi-final-mypy.log": "39ba6c25bf16fcc38d8ebc9691ac3465ae59d3ddbfe929240f2bd2f346f7f446",
+    "asi-focused-final.log": "1e4d744087dc83836ad1ea617833249e32852e443e4528d4ba39a0f54d4f3134"
+  }
+}

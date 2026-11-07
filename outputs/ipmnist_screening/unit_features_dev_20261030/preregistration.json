@@ -1,0 +1,25 @@
+{
+  "schema": "asi.local-development-preregistration.v1",
+  "base": "fd25c476957a36937bd5fccfb8be57f4f33e9210",
+  "control": "rls_head_resid_identmap50_r_idet003_s005625",
+  "candidate": "rls_head_resid_identmap50_r_idet003_s005625_unitfeatures",
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "nTasks": 60,
+  "taskLength": 5000,
+  "noiseMode": "step",
+  "winThreshold": 0.005,
+  "negativeThreshold": -0.005,
+  "allSeedsRequired": true,
+  "evidenceTier": "development_screening_diagnostic",
+  "scientificPromotionAllowed": false,
+  "paidSpendUSD": 0,
+  "workers": 1,
+  "ompNumThreads": 1,
+  "budgetSeconds": 7200,
+  "planSha256": "cdc929d1c23308d86e978aaccd3af84f43bbefb25200d759f72265ca7acdb79c",
+  "declaredAt": "2026-10-30T15:57:28.534246+00:00"
+}
