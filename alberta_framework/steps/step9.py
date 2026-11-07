@@ -1061,7 +1061,7 @@ def run_step9_scan(
     ) = jax.lax.scan(scan_step, state, (rewards, next_observations))
     elapsed = 0.0
     if not isinstance(real_td_errors, jax.core.Tracer):
-        jax.block_until_ready(real_td_errors)
+        jax.block_until_ready(real_td_errors)  # type: ignore[no-untyped-call]
         elapsed = time.time() - t0
     # Preserve the model's host-only lifecycle clocks at the batch boundary.
     final_state = final_state.replace(

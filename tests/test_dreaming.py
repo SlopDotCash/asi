@@ -864,9 +864,9 @@ def test_sarsa_items_never_bootstrap_from_a_rejected_next_row() -> None:
     assert bool(jnp.all(jnp.isfinite(items.next_actions)))
 
 
-@pytest.mark.parametrize(("discount", "expected_weight"), [(0.9, 0.0), (0.0, 1.0)])
-def test_sarsa_items_keep_rows_before_a_rejected_row_only_without_bootstrap(
-    discount: float, expected_weight: float
+@pytest.mark.parametrize("discount", [0.9, 0.0])
+def test_sarsa_items_keep_terminal_rows_before_a_rejected_row(
+    discount: float,
 ) -> None:
     class TerminatingWorldModel(MockWorldModel):
         def predict(self, state, observation, action, key):  # type: ignore[no-untyped-def]
@@ -891,5 +891,6 @@ def test_sarsa_items_keep_rows_before_a_rejected_row_only_without_bootstrap(
 
     chex.assert_trees_all_close(
         items.weights,
-        jnp.array([expected_weight, 0.0], dtype=jnp.float32),
+        jnp.array([1.0, 0.0], dtype=jnp.float32),
     )
+    chex.assert_trees_all_close(items.discounts, jnp.zeros((2,), dtype=jnp.float32))
