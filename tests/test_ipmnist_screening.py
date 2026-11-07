@@ -2025,6 +2025,81 @@ class TestShardsAndMerge:
                 [control, winner], control_name="upgd_w_control", slope_window=2
             )
 
+    def _write_inband_arm_with_hyperparameters(self, tmp_path, hyperparameters):
+        """Write a paired two-seed v1 batch whose winner records ``hyperparameters``."""
+        paths = [
+            self._write_inband_shard(tmp_path, "upgd_w_control", 0, 0.50),
+            self._write_inband_shard(tmp_path, "upgd_w_control", 1, 0.50),
+        ]
+        for seed in (0, 1):
+            winner = self._write_inband_shard(tmp_path, "upgd_l2init", seed, 0.56)
+            payload = json.loads(winner.read_text(encoding="utf-8"))
+            payload["hyperparameters"] = dict(hyperparameters)
+            winner.write_text(json.dumps(payload), encoding="utf-8")
+            paths.append(winner)
+        return paths
+
+    def test_merge_rejects_registry_contradicting_hyperparameters(self, tmp_path):
+        """An arm whose seeds agree on forged hyperparameters must not rank.
+
+        The campaign's live format is v1, and ``load_shard`` checks the
+        registered hyperparameters only for source-bound v2/v3 shards.  Every
+        seed of a v1 arm can therefore agree on values its registry entry never
+        registered; within-arm agreement is not registry agreement, and the
+        merged summary would publish the forged values as the arm's identity.
+        """
+        registered = SCREENING_REGISTRY["upgd_l2init"].hyperparameters
+        paths = self._write_inband_arm_with_hyperparameters(
+            tmp_path, {**registered, "step_size": 0.5, "noise_std": 0.5}
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'upgd_l2init' seed 0 records hyperparameters "
+                r"\{'noise_std': 0\.5, 'step_size': 0\.5\}, but its registered arm "
+                r"registers \{'noise_std': 0\.1, 'step_size': 0\.01\}; refusing to "
+                r"publish an arm identity the registry does not support"
+            ),
+        ):
+            merge_shards(paths, control_name="upgd_w_control", slope_window=2)
+
+    def test_merge_rejects_unregistered_hyperparameter_key(self, tmp_path):
+        registered = SCREENING_REGISTRY["upgd_l2init"].hyperparameters
+        assert "forged_gain" not in registered
+        paths = self._write_inband_arm_with_hyperparameters(
+            tmp_path, {**registered, "forged_gain": 1.0}
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'upgd_l2init' seed 0 records hyperparameter\(s\) \['forged_gain'\], "
+                r"but its registered arm registers only .*; refusing to publish an "
+                r"arm identity the registry does not support"
+            ),
+        ):
+            merge_shards(paths, control_name="upgd_w_control", slope_window=2)
+
+    def test_merge_accepts_registered_hyperparameter_subset(self, tmp_path):
+        """Retained v1 shards may record a strict subset of the registered keys.
+
+        The registry later gained inert keys, so an exact-set rule would reject
+        retained shards whose recorded values all match the registry exactly.
+        """
+        registered = SCREENING_REGISTRY["upgd_l2init"].hyperparameters
+        subset = {
+            name: value for name, value in registered.items() if name != "noise_std"
+        }
+        assert set(subset) < set(registered)
+        paths = self._write_inband_arm_with_hyperparameters(tmp_path, subset)
+
+        summary = merge_shards(paths, control_name="upgd_w_control", slope_window=2)
+        result = next(
+            entry for entry in summary["results"] if entry["config_name"] == "upgd_l2init"
+        )
+        assert result["hyperparameters"] == subset
+
     def test_merge_rejects_environment_drift_and_records_environment(
         self, tmp_path, small_data
     ):
