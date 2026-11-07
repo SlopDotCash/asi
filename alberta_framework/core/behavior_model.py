@@ -905,7 +905,11 @@ class BehaviorModel:
         loss = -jnp.sum(one_hot * _stable_temperature_log_softmax(logits, cfg.temperature))
         logit_gradient = (probabilities - one_hot) / cfg.temperature
         gradient = state.weights.T @ logit_gradient
-        gradient_norm = _reduction_safe_l2_norm(gradient)
+        # Square only power-of-two-normalized components: a finite norm can
+        # survive even when the raw squares overflow or underflow float32.
+        _, exponent = jnp.frexp(jnp.max(jnp.abs(gradient)))
+        scaled_gradient = jnp.ldexp(gradient, -exponent)
+        gradient_norm = jnp.ldexp(jnp.linalg.norm(scaled_gradient), exponent)
         # Inf observation makes softmax NaN and W.T @ (p - one_hot)
         # non-finite, including 0*inf on a silent feature. The parameter
         # update already no-ops; this pre-update bridge must not hand a
