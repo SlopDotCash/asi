@@ -237,8 +237,11 @@ class TestMultiHeadInit:
         assert calls == 0
 
         overflow = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1,))
+        # 268,435,448 is the largest feature dim whose corrected persist bytes
+        # still fit signed int32, so the working-set preflight is the one that
+        # fires here; one dim higher the persist bound fires first.
         with pytest.raises(ValueError, match="update working set byte count"):
-            overflow.init(268_435_450, jr.key(0))
+            overflow.init(268_435_448, jr.key(0))
         assert calls == 0
 
         boundary = MultiHeadMLPLearner(n_heads=1, hidden_sizes=(1,))
