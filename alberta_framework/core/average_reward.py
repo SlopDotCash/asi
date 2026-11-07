@@ -94,10 +94,13 @@ def _actor_temperature_logits(logits: Array, temperature: float) -> Array:
     # already underflows softmax at either temperature.
     scale = _SUBNORMAL_TEMPERATURE_SCALE
     max_scalable = float(np.finfo(np.float32).max) / scale
-    return jax.lax.cond(
-        jnp.abs(jnp.max(logits)) <= max_scalable,
-        lambda: _temperature_scaled_logits(logits * scale, temperature * scale),
-        lambda: _temperature_scaled_logits(logits, _FLOAT32_MIN_NORMAL),
+    return cast(
+        Array,
+        jax.lax.cond(
+            jnp.abs(jnp.max(logits)) <= max_scalable,
+            lambda: _temperature_scaled_logits(logits * scale, temperature * scale),
+            lambda: _temperature_scaled_logits(logits, _FLOAT32_MIN_NORMAL),
+        ),
     )
 
 
