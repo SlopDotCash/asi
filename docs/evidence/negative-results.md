@@ -658,3 +658,13 @@ A preregistered (b1c5e283) development screen. On a detected shift, the body-ste
 - Caveat: the anneal step is coupled to weight decay (`1 - lr*weight_decay`), so this arm changes both, and they were not separated.
 
 Evidence: [`outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md).
+
+## 2026-10-31: pr50 partial reset is decay-driven; the step part hurts (pr50_wd_decoupled_screen)
+- Branch screen/identmap50-r-idet003-s005625-anneal-pr50-wd-decoupled.
+- Setup: 60 tasks, seeds 4-13, paired vs #3580 parent.
+- In the partial-reset screen, the +0.000613 pr50 gain was attributed to the step clock. Decoupling shows otherwise:
+  - step-only (pr50 step, parent decay): −0.001071, CI [−0.001163, −0.000979], 0/10 seeds improved.
+  - decay-only (parent step, pr50 decay): +0.001656, CI [+0.001565, +0.001748], 10/10 seeds improved.
+  - interaction: +0.000028, CI includes 0.
+- Preregistered verdict: DECAY-DRIVEN. Do not run f=0.5 at 200 tasks.
+- Decay-only is a post hoc lead and needs its own preregistration on fresh seeds.
