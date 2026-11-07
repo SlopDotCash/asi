@@ -1007,7 +1007,7 @@ class ExperientialMemory:
         # the reciprocal of the configured scale is not a normal float32.
         scale_root = jnp.asarray(cfg.distance_scale**0.5, dtype=jnp.float32)
         recovered_distance = jnp.mean((differences / scale_root) ** 2, axis=1)
-        tiny = float(jnp.finfo(jnp.float32).tiny)
+        tiny = float(np.finfo(np.float32).tiny)
         if cfg.distance_scale < tiny or cfg.distance_scale > 1.0 / tiny:
             normalized_distance = recovered_distance
         else:

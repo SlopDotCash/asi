@@ -159,7 +159,7 @@ def _finite_cancelling_dot(left: Array, right: Array) -> Array:
         combined_exponent = left_exponent + right_exponent
         return jnp.ldexp(normalized_dot, combined_exponent)
 
-    return jax.lax.cond(use_fallback, compensated, lambda: direct)
+    return cast(Array, jax.lax.cond(use_fallback, compensated, lambda: direct))
 
 
 @dataclass(frozen=True)

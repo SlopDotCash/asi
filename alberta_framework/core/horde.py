@@ -672,7 +672,10 @@ class HordeLearner:
                     jnp.where(clear, jnp.zeros_like(bias_trace), bias_trace),
                 )
             )
-        return state.replace(head_traces=tuple(new_traces))  # type: ignore[attr-defined]
+        return cast(
+            MultiHeadMLPState,
+            state.replace(head_traces=tuple(new_traces)),  # type: ignore[attr-defined]
+        )
 
 
 # =============================================================================
