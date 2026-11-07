@@ -341,11 +341,13 @@ def _require_json_safe_metadata(metadata: dict[str, Any]) -> None:
             raise
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
     try:
-        json.dumps(metadata, allow_nan=False)
+        serialized = json.dumps(metadata, allow_nan=False)
     except RecursionError as exc:
         raise ValueError("checkpoint metadata exceeds the JSON nesting limit") from exc
     except (TypeError, ValueError) as exc:
         raise ValueError("checkpoint metadata must be JSON-safe and finite") from exc
+    if len(serialized.encode("utf-8")) > _JSON_MAX_BYTES:
+        raise ValueError("checkpoint metadata exceeds the JSON byte limit")
 
 
 def save_checkpoint(
@@ -377,6 +379,10 @@ def save_checkpoint(
     empty_array_manifest = _empty_array_manifest(state)
     if empty_array_manifest is not None:
         meta_to_save[_EMPTY_ARRAYS_KEY] = empty_array_manifest
+    # Re-check the exact dict Orbax writes: the version key and manifest
+    # add bytes, so user metadata just under the limit could otherwise
+    # still produce a checkpoint the load preflight refuses.
+    _require_json_safe_metadata(meta_to_save)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     with ocp.Checkpointer(ocp.CompositeCheckpointHandler()) as ckptr:
