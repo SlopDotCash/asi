@@ -980,6 +980,91 @@ class TestInfiniteRewardDoesNotPoisonWeights:
             post_terminal.state.follow_on_trace, fresh.state.follow_on_trace
         )
 
+    def test_off_policy_td_terminal_step_clears_stored_traces(self) -> None:
+        learner = OffPolicyTDLinearLearner(step_size=0.05, trace_decay=0.5)
+        zero = jnp.zeros(2, dtype=jnp.float32)
+        fresh = learner.update(
+            learner.init(2),
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        terminal = learner.update(
+            fresh.state,
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(terminal.state.eligibility_traces, zero)
+        assert float(terminal.state.bias_eligibility_trace) == 0.0
+        # The terminal step's own weight update does not change: the stored
+        # traces are cleared, the applied update still uses the live trace.
+        chex.assert_trees_all_close(
+            terminal.state.weights, jnp.array([0.05, 0.0225], dtype=jnp.float32)
+        )
+        chex.assert_trees_all_close(terminal.state.bias, jnp.asarray(0.0725, dtype=jnp.float32))
+        post_terminal = learner.update(
+            terminal.state,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            post_terminal.state.eligibility_traces, fresh.state.eligibility_traces
+        )
+        chex.assert_trees_all_close(
+            post_terminal.state.bias_eligibility_trace,
+            fresh.state.bias_eligibility_trace,
+        )
+
+    def test_gradient_td_terminal_step_clears_stored_traces(self) -> None:
+        learner = GradientTDLinearLearner(step_size=0.1, secondary_step_size=0.01, trace_decay=0.5)
+        zero = jnp.zeros(2, dtype=jnp.float32)
+        fresh = learner.update(
+            learner.init(2),
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        terminal = learner.update(
+            fresh.state,
+            jnp.array([1.0, 0.0], dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.0, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            terminal.state.eligibility_traces, jnp.zeros(3, dtype=jnp.float32)
+        )
+        # The terminal step's own weight updates do not change.
+        chex.assert_trees_all_close(
+            terminal.state.weights, jnp.array([0.1, 0.045, 0.145], dtype=jnp.float32)
+        )
+        chex.assert_trees_all_close(
+            terminal.state.secondary_weights,
+            jnp.array([0.01, 0.0045, 0.0145], dtype=jnp.float32),
+        )
+        post_terminal = learner.update(
+            terminal.state,
+            jnp.array([0.0, 1.0], dtype=jnp.float32),
+            jnp.array(0.0, dtype=jnp.float32),
+            zero,
+            jnp.array(0.9, dtype=jnp.float32),
+            jnp.array(1.0, dtype=jnp.float32),
+        )
+        chex.assert_trees_all_close(
+            post_terminal.state.eligibility_traces, fresh.state.eligibility_traces
+        )
+
     def test_gradient_td(self) -> None:
         learner = GradientTDLinearLearner(step_size=0.1)
         state = learner.init(2)
