@@ -2572,11 +2572,17 @@ class FixedBudgetInteractionLearner:
                         - (state.candidate_output_weights * candidate_features[None, :]),
                         0.0,
                     )
-                    candidate_output_delta = (
-                        self._step_size_output
-                        * candidate_errors
-                        * candidate_features[None, :]
-                        / active_count
+                    # The non-robust path keeps no causal second moments, so
+                    # use a unit floor: plain LMS diverges once
+                    # ``step_size * phi**2 > 2`` and phi is a product of two
+                    # observation channels. Unit moments keep the delta
+                    # identical to the plain LMS step for a unit-bounded bank
+                    # and scale-free above that, mirroring the robust path.
+                    candidate_output_delta = self._normalized_candidate_delta(
+                        candidate_errors,
+                        candidate_features,
+                        jnp.ones_like(candidate_features),
+                        active_count,
                     )
                 else:
                     candidate_errors = jnp.where(
