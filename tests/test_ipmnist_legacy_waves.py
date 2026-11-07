@@ -1,5 +1,6 @@
 """Recompute retained development waves without rerunning historical training."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import jax
@@ -36,6 +37,7 @@ _OUTPUTS = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
         "wave_identmap50_r_idet003_s0031640625_r02",
         "wave_identmap50_r_idet003_s0031640625_r02_preset003",
         "wave_identmap50_r_idet003_s0031640625_r02_l2init",
+        "wave_identmap50_r_idet003_s0031640625_r02_sgdhead",
         "gradual64_r2",
     ),
 )
@@ -99,3 +101,25 @@ def test_historical_identmap_l2init_rejects_configuration_drift(
     spec = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02_l2init")
     with pytest.raises(ValueError, match="frozen L2-Init configuration differs"):
         spec.factory({**spec.hyperparameters, **override})
+
+
+def test_historical_identmap_sgd_head_keeps_covariance_and_applies_decayed_step() -> None:
+    spec = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02_sgdhead")
+    params = {
+        "w1": jnp.zeros((4, 3)),
+        "b1": jnp.zeros(3),
+        "w2": jnp.zeros((3, 3)),
+        "b2": jnp.zeros(3),
+        "w3": jnp.zeros((3, 2)),
+        "b3": jnp.zeros(2),
+    }
+    initialize, step = spec.factory(spec.hyperparameters)
+    state = initialize(params)
+    assert isinstance(state, RLSHeadIdentState)
+    bias = jnp.array([0.4, -0.2])
+    state = replace(state, inner=replace(state.inner, wout=state.inner.wout.at[-1].set(bias)))
+    _, updated, _ = jax.jit(step)(params, state, jnp.zeros(4), jnp.int32(0), jr.key(0))
+
+    np.testing.assert_allclose(updated.inner.wout[-1], [0.4596, -0.1798], rtol=1e-6)
+    np.testing.assert_array_equal(updated.inner.wout[:-1], state.inner.wout[:-1])
+    np.testing.assert_array_equal(updated.inner.p, state.inner.p)

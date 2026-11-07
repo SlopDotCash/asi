@@ -5015,6 +5015,30 @@ def _make_rls_head_learner(
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
 
+    head_sgd = hp.get("rls_head_sgd", 0.0)
+    if head_sgd not in (0.0, 1.0):
+        raise ValueError("rls_head_sgd must be 0.0 or 1.0")
+    sgd_head = head_sgd == 1.0
+    head_sgd_step = hp.get("rls_head_sgd_step", 0.01)
+    head_param_decay = 1.0 - head_sgd_step * weight_decay
+    if sgd_head:
+        if not (
+            math.isfinite(head_sgd_step)
+            and head_sgd_step >= 0.0
+            and 0.0 <= head_param_decay <= 1.0
+        ):
+            raise ValueError("SGD head requires a finite step and a decay factor in [0, 1]")
+        if (
+            not resid
+            or not gate_enabled
+            or whiten_enabled
+            or newton
+            or sm_enabled
+            or _decay_to_init
+            or wclip_on
+        ):
+            raise ValueError("SGD head is scoped to the plain gated residual body")
+
     def normalize(
         state: EMANormState, fast_mean: Array, x: Array
     ) -> tuple[Array, EMANormState, Array, Array]:
@@ -5333,25 +5357,33 @@ def _make_rls_head_learner(
             loss = 0.5 * jnp.sum(err_pre * err_pre)
         accuracy = (jnp.argmax(logits) == y).astype(jnp.float32)
         err = y_onehot - logits
-        pp = state.p @ phi
-        gain = pp / (rls_lambda + phi @ pp)
-        new_wout = state.wout + jnp.outer(gain, err)
-        new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
-        new_p = 0.5 * (new_p + new_p.T)
-        if reset_enabled:
-            m = new_p.shape[0]
-            trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
-            new_p = jnp.where(
-                trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+        if sgd_head:
+            # The historical comparator uses the same pre-update residual
+            # with decayed SGD. Its unused covariance stays fixed.
+            new_wout = (
+                state.wout * head_param_decay + head_sgd_step * jnp.outer(phi, err)
             )
-        if cap_enabled:
-            # Covariance wind-up guard: exponential forgetting grows P as
-            # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
-            # float32 overflow and prediction collapse (wave-1 measurement:
-            # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
-            # horizon).  Rescale P to the trace cap whenever it exceeds it;
-            # under the cap the step is bitwise untouched.
-            new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
+            new_p = state.p
+        else:
+            pp = state.p @ phi
+            gain = pp / (rls_lambda + phi @ pp)
+            new_wout = state.wout + jnp.outer(gain, err)
+            new_p = (state.p - jnp.outer(gain, pp)) / rls_lambda
+            new_p = 0.5 * (new_p + new_p.T)
+            if reset_enabled:
+                m = new_p.shape[0]
+                trigger = jnp.mean(shifted.astype(jnp.float32)) >= reset_frac
+                new_p = jnp.where(
+                    trigger, jnp.eye(m, dtype=jnp.float32) / ridge_init, new_p
+                )
+            if cap_enabled:
+                # Covariance wind-up guard: exponential forgetting grows P as
+                # (1/lambda)^t along unexcited (dead-ReLU) feature directions —
+                # float32 overflow and prediction collapse (wave-1 measurement:
+                # onset ~ task 18 at lambda 0.999, exactly the e^88.7 overflow
+                # horizon).  Rescale P to the trace cap whenever it exceeds it;
+                # under the cap the step is bitwise untouched.
+                new_p = new_p * jnp.minimum(1.0, trace_cap / jnp.trace(new_p))
         err_after = y_onehot - _rls_head_forward(new_params, new_wout, x_norm)[0]
         loss_after = 0.5 * jnp.sum(err_after * err_after)
         plasticity = jnp.clip(
@@ -9078,6 +9110,17 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                         "rls_ridge_init": 0.03,
                     },
                     "gated RLS ridge 0.03 with head reset fraction 0.03",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_sgdhead",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                        "rls_head_sgd": 1.0,
+                        "rls_head_sgd_step": 0.1,
+                    },
+                    "gated r02 body with a decayed SGD readout on the same squared loss",
                 ),
             )
         ),
