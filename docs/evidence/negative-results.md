@@ -341,6 +341,15 @@ postmortem.
     wd0 the body weights do not grow large enough for a norm bound to
     matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
 
+### Historical identmap momentum screen
+
+Bias-corrected first-moment EMA on the fixed-step gated residual body scored
+0.91113 at momentum 0.9 and 0.90766 at momentum 0.99. The gated parent scored
+0.91142 on the same three development seeds. The variants lost on two of
+three and three of three seeds, respectively.
+See the retained [0.9 wave](../../outputs/ipmnist_screening/wave_identmap50_r_mom9/README.md)
+and [0.99 wave](../../outputs/ipmnist_screening/wave_identmap50_r_mom99/README.md).
+
 ### Historical identmap head-reset threshold screen
 
 Reducing the head reset threshold from 0.05 to 0.03 on the gated

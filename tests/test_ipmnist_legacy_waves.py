@@ -13,6 +13,8 @@ from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_screening import (
     RLSHeadIdentState,
     RLSHeadL2InitState,
+    RLSHeadMomentumState,
+    _make_rls_head_learner,
     merge_shards,
     screening_spec,
 )
@@ -28,6 +30,8 @@ _OUTPUTS = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
         "wave_identmap50_nogate_idet003",
         "wave_identmap50_nogate_idet003_s0075",
         "wave_identmap50_nogate_idet003_s005625",
+        "wave_identmap50_r_mom9",
+        "wave_identmap50_r_mom99",
         "wave_identmap50_r_idet002",
         "wave_identmap50_r_idet003_s00421875",
         "wave_identmap50_r_idet004_s00421875",
@@ -123,3 +127,93 @@ def test_historical_identmap_sgd_head_keeps_covariance_and_applies_decayed_step(
     np.testing.assert_allclose(updated.inner.wout[-1], [0.4596, -0.1798], rtol=1e-6)
     np.testing.assert_array_equal(updated.inner.wout[:-1], state.inner.wout[:-1])
     np.testing.assert_array_equal(updated.inner.p, state.inner.p)
+
+
+@pytest.mark.parametrize("tag", ("mom9", "mom99"))
+def test_historical_momentum_changes_only_the_gated_direction(tag: str) -> None:
+    parent = screening_spec("rls_head_resid_identmap50_r")
+    candidate = screening_spec(parent.name + "_" + tag)
+    hp = candidate.hyperparameters
+    mu = hp["body_momentum"]
+    params = {
+        "w1": jnp.full((4, 3), 0.25),
+        "b1": jnp.full(3, 0.25),
+        "w2": jnp.full((3, 3), 0.25),
+        "b2": jnp.full(3, 0.25),
+        "w3": jnp.zeros((3, 2)),
+        "b3": jnp.zeros(2),
+    }
+    initialize, step = candidate.factory(hp)
+    _, parent_step = parent.factory(parent.hyperparameters)
+    state = initialize(params)
+    assert isinstance(state, RLSHeadIdentState)
+    assert isinstance(state.inner, RLSHeadMomentumState)
+    assert set(state.inner.momentum) == {"w1", "b1", "w2", "b2"}
+    # Seed the head and utility clock so the test exercises a nonzero
+    # gradient with a gate that can pass a change in direction.
+    state = replace(state, inner=replace(
+        state.inner,
+        step=jnp.int32(1000),
+        wout=state.inner.wout.at[:-1, 0].set(0.25),
+    ))
+    step = jax.jit(step)
+    parent_step = jax.jit(parent_step)
+    utility_decay = hp["utility_decay"]
+    decay = 1.0 - hp["step_size"] * hp["weight_decay"]
+    for i in range(3):
+        inputs = jnp.full(4, 0.2 * (i + 1)), jnp.int32(i % 2), jr.key(0)
+        new_params, updated, _ = step(params, state, *inputs)
+        parent_params, parent_updated, _ = parent_step(params, state, *inputs)
+        np.testing.assert_array_equal(updated.inner.p, parent_updated.inner.p)
+        np.testing.assert_array_equal(updated.inner.wout, parent_updated.inner.wout)
+        maximum = max(float(updated.inner.utility[name].max()) for name in state.inner.momentum)
+        for name, previous in state.inner.momentum.items():
+            utility = updated.inner.utility[name]
+            np.testing.assert_array_equal(utility, parent_updated.inner.utility[name])
+            raw_grad = (utility_decay * state.inner.utility[name] - utility) / (
+                (1.0 - utility_decay) * params[name]
+            )
+            moment = mu * previous + (1.0 - mu) * raw_grad
+            np.testing.assert_allclose(updated.inner.momentum[name], moment, atol=1e-7)
+            count = updated.inner.step.astype(jnp.float32)
+            correction = 1.0 - jnp.float32(mu) ** count
+            bias = 1.0 - jnp.float32(utility_decay) ** count
+            gate = jax.nn.sigmoid((utility / bias) / (maximum or 1.0))
+            np.testing.assert_allclose(
+                new_params[name],
+                params[name] * decay - hp["step_size"] * (moment / correction) * (1.0 - gate),
+                atol=1e-7,
+            )
+        if i == 2:
+            assert any(
+                not np.array_equal(new_params[name], parent_params[name])
+                for name in state.inner.momentum
+            )
+        params, state = new_params, updated
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    (
+        ({"body_momentum": 1.0 - 2.0**-30}, "float32 rounding"),
+        ({"anneal_floor": 0.001}, "fixed-step gated residual body"),
+        ({"gate_scale": 0.0}, "fixed-step gated residual body"),
+        ({"body_as_meta": 0.001}, "fixed-step gated residual body"),
+        ({"polyak_window": 16.0}, "fixed-step gated residual body"),
+        ({"snp_shrink": 0.5}, "fixed-step gated residual body"),
+    ),
+)
+def test_historical_momentum_rejects_unsupported_configurations(
+    override: dict[str, float], message: str,
+) -> None:
+    spec = screening_spec("rls_head_resid_identmap50_r_mom9")
+    with pytest.raises(ValueError, match=message):
+        spec.factory({**spec.hyperparameters, **override})
+
+
+@pytest.mark.parametrize("keyword", ("lr", "decay_lr"))
+def test_historical_momentum_rejects_runtime_schedule(keyword: str) -> None:
+    spec = screening_spec("rls_head_resid_identmap50_r_mom9")
+    _, step = _make_rls_head_learner(spec.hyperparameters)
+    with pytest.raises(ValueError, match="requires a fixed step and decay"):
+        step({}, None, jnp.zeros(1), jnp.int32(0), jr.key(0), **{keyword: jnp.float32(0.01)})
