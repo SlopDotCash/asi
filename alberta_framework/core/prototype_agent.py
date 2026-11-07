@@ -7078,7 +7078,14 @@ class PrototypeAgent:
                 bootstrap_obs,
                 horde_discounts,
             )
-            new_horde_state = horde_result.state
+            # The learner keeps the demon's configured trace decay so a zero
+            # bootstrap can still be separated from eligibility. A stored
+            # zero-discount trace would otherwise enter the next episode.
+            new_horde_state = self._horde.drop_eligibility_after_zero_discount(
+                horde_result.state,
+                horde_discounts,
+                horde_result.update_applied,
+            )
             horde_tderrs = horde_result.td_errors
 
         # -- Step 12: IA update -----------------------------------------------
