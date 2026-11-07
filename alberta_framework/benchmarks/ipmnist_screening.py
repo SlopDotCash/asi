@@ -5498,6 +5498,21 @@ def _runtime_decay(
     )
 
 
+_SNP_KEY_SALT = 0x5A9D
+
+
+def _shrink_perturb_body(
+    params: dict[str, Array], event: Array, key: Array, shrink: float, sigma: float,
+) -> dict[str, Array]:
+    """Apply the first-remap perturbation using the residual body's init scale."""
+    updated = dict(params)
+    for name, subkey in zip(_RLS_HEAD_BODY, jr.split(key, len(_RLS_HEAD_BODY)), strict=True):
+        bound = _wclip_bound(params, name, 1.0)
+        fresh = jr.uniform(subkey, params[name].shape, jnp.float32, -bound, bound)
+        updated[name] = jnp.where(event, shrink * params[name] + sigma * fresh, params[name])
+    return updated
+
+
 def _make_rls_head_identmap_learner(
     hp: Mapping[str, float],
     *,
@@ -5520,6 +5535,19 @@ def _make_rls_head_identmap_learner(
     """
     inner_options = {"_decay_to_init": True} if _decay_to_init else {}
     match1 = float(hp["ident_match_at"])
+    if "anneal_peak" in hp and match1 == 0.0:
+        raise ValueError("anneal_peak requires an active identifier")
+    snp_on = "snp_shrink" in hp
+    snp_shrink = float(hp.get("snp_shrink", 1.0))
+    snp_sigma = float(hp.get("snp_sigma", 0.0))
+    if "snp_sigma" in hp and not snp_on:
+        raise ValueError("snp_sigma requires snp_shrink")
+    if snp_on and not (
+        match1 > 0.0 and "body_wclip_kappa" not in hp
+        and 0.0 < snp_shrink <= 1.0 and np.float32(snp_shrink) > 0.0
+        and 0.0 <= snp_sigma <= float(np.finfo(np.float32).max)
+    ):
+        raise ValueError("snp needs an active unclipped identifier and float32 shrink/sigma")
     if match1 == 0.0:
         return _make_rls_head_learner(hp, **inner_options)
     match2 = float(hp.get("ident_match2", 0.0))
@@ -5535,12 +5563,17 @@ def _make_rls_head_identmap_learner(
     anneal_step = float(hp["step_size"])
     anneal_floor = float(hp.get("anneal_floor", anneal_step))
     anneal_tau = float(hp.get("anneal_tau", 1.0))
+    anneal_peak = float(hp.get("anneal_peak", anneal_step))
     if anneal_on and not (
         0.0 < anneal_floor <= anneal_step
         and 0.0 < anneal_tau
         and math.isfinite(anneal_tau)
     ):
         raise ValueError("anneal needs 0 < floor <= step_size and tau > 0")
+    if "anneal_peak" in hp and not (
+        anneal_on and anneal_floor <= anneal_peak <= float(np.finfo(np.float32).max)
+    ):
+        raise ValueError("anneal_peak requires annealing and a float32 peak at least the floor")
     # Partial anneal reset.  Key absent: ``anneal_clock`` mirrors
     # ``since_shift`` exactly and the anneal reads ``since_shift`` (parent
     # verbatim).  Key present: the anneal reads ``anneal_clock``, which on a
@@ -5625,10 +5658,10 @@ def _make_rls_head_identmap_learner(
             # -2**30, so the offset recovers steps since stream start.
             clock = state.anneal_clock if partial_on else state.since_shift
             s = _decode_anneal_clock(clock).astype(jnp.float32)
-            lr = _anneal_lr(s, anneal_step, anneal_floor, anneal_tau)
+            lr = _anneal_lr(s, anneal_peak, anneal_floor, anneal_tau)
             if decay_on:
                 ds = _decode_anneal_clock(state.decay_clock).astype(jnp.float32)
-                decay_lr = _anneal_lr(ds, anneal_step, anneal_floor, anneal_tau)
+                decay_lr = _anneal_lr(ds, anneal_peak, anneal_floor, anneal_tau)
                 new_params, new_inner, metrics = cast(Any, inner_step)(
                     params, state.inner, x_r, y, key, lr=lr, decay_lr=decay_lr
                 )
@@ -5748,6 +5781,11 @@ def _make_rls_head_identmap_learner(
             return remap
 
         remap = jax.lax.cond(do_match, matched, unmatched, None)
+        if snp_on:
+            first_remap = ref_frozen & (since == int(match1))
+            new_params = _shrink_perturb_body(
+                new_params, first_remap, jr.fold_in(key, _SNP_KEY_SALT), snp_shrink, snp_sigma,
+            )
         return new_params, RLSHeadIdentState(  # type: ignore[call-arg]
             inner=new_inner,
             raw_norm=new_raw_norm,
@@ -8793,6 +8831,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
         ),
         *(
             (
+                f"rls_head_resid_identmap50_r_idet003_s005625_snp_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "snp_shrink": shrink, "snp_sigma": sigma},
+                f"shrink {shrink} and perturb by {sigma} times the initialization scale "
+                "at the first remap (development screening diagnostic)"
+            )
+            for tag, shrink, sigma in (("l08s001", 0.8, 0.01), ("l05s01", 0.5, 0.1))
+        ),
+        *(
+            (
                 f"rls_head_resid_identmap50_r_idet003_s005625_anneal_{tag}",
                 {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
                  "ident_match_at": 50.0, "ident_match2": 200.0,
@@ -8812,6 +8862,20 @@ def _build_registry() -> dict[str, ScreeningSpec]:
                 ("f4t1000", 0.00140625, 1000.0),
                 ("f2t2000", 0.0028125, 2000.0),
             )
+        ),
+        *(
+            (
+                "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+                f"_{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "anneal_floor": 0.0028125,
+                 "anneal_tau": 1000.0, "anneal_peak": peak},
+                f"anneal_f2t1000 with starting and post-shift step {peak} "
+                "(anneal_peak_screen/; development screening diagnostic)"
+            )
+            for tag, peak in (("p75", 0.0075), ("p10", 0.01), ("p15", 0.015))
         ),
         *(
             (

@@ -697,3 +697,20 @@ Preregistered fresh-seed screen (seeds 30-39, 60 tasks, prereg ccb788d6). It tes
 - The descriptive arm at weight_decay 0.005 gained +0.008022. That is post hoc and nonpromoting; it would need its own preregistered sweep.
 
 Evidence: [decayonly_fresh_screen](../../outputs/ipmnist_screening/decayonly_fresh_screen/RESULTS.md).
+
+## IPMNIST anneal peak on anneal_f2t1000 (2026-10-31)
+
+The preregistered development experiment (b9deafcd) compared three higher
+starting and post-shift steps against the anneal_f2t1000 parent at a fixed
+floor of 0.0028125 and tau of 1000. All three peaks lost at the seed-0 tune
+gate. The screen and confirmation seeds were never run. The historical
+[results](../../outputs/ipmnist_screening/anneal_peak_screen/RESULTS.md)
+retain the paired scores, environment checks, and source bindings.
+
+## Shrink and perturb at the first identmap remap (2026-10-30)
+
+This preregistered development screen tested the residual-body shrink and
+perturb transform at the first remap of each detected task. The selected
+shrink 0.8 and perturbation scale 0.01 lost to the local parent on all three
+60-task seeds. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_snp/README.md)
+records the paired comparison, unsuccessful tune cells, and source bindings.

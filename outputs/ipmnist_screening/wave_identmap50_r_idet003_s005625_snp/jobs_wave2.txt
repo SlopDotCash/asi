@@ -1,0 +1,3 @@
+rls_head_resid_identmap50_r_idet003_s005625_snp_l08s001 0 60 shards
+rls_head_resid_identmap50_r_idet003_s005625_snp_l08s001 1 60 shards
+rls_head_resid_identmap50_r_idet003_s005625_snp_l08s001 2 60 shards

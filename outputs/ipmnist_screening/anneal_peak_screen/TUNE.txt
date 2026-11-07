@@ -1,0 +1,4 @@
+seed0 p75 -0.001323
+seed0 p10 -0.003407
+seed0 p15 -0.008810
+STOP no peak beats parent on seed 0
