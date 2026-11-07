@@ -302,9 +302,17 @@ def init_step6_state(
     if type(agent) is not DifferentialSARSAAgent:
         raise TypeError("agent must be an exact DifferentialSARSAAgent")
     _checked_product("Step 6 state parameter bytes", 8, agent.config.n_actions, feature_dim)
-    state = agent.init(feature_dim, key)
-    state, _action = agent.start(state, initial_features)
-    return cast(DifferentialSARSAState, state)
+    initial_state = agent.init(feature_dim, key)
+    state, _action = agent.start(initial_state, initial_features)
+    # The jitted start narrows the host-only clocks to device precision.
+    # Restore the values agent.init stamped.
+    return cast(
+        DifferentialSARSAState,
+        state.replace(
+            birth_timestamp=initial_state.birth_timestamp,
+            uptime_s=initial_state.uptime_s,
+        ),
+    )
 
 
 def _has_trusted_array_type(value: object) -> bool:
@@ -353,7 +361,18 @@ def step6_update(
     next_features: Array,
 ) -> DifferentialSARSAUpdateResult:
     """Run one continuing differential SARSA transition update."""
-    return cast(DifferentialSARSAUpdateResult, agent.update(state, reward, next_features))
+    result = agent.update(state, reward, next_features)
+    # The jitted update narrows the host-only clocks, which one transition
+    # does not advance. Restore their incoming values.
+    return cast(
+        DifferentialSARSAUpdateResult,
+        result.replace(
+            state=result.state.replace(
+                birth_timestamp=state.birth_timestamp,
+                uptime_s=state.uptime_s,
+            )
+        ),
+    )
 
 
 def run_step6_scan(

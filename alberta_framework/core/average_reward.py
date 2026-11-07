@@ -2699,10 +2699,13 @@ def run_differential_sarsa_from_arrays(
         (rewards, next_observations, discounts),
     )
     elapsed = time.time() - start
-    # Keep host-only clocks out of the device scan's scalar narrowing. Birth is
+    # Keep host-only clocks out of the device scan's scalar narrowing. Both are
     # always restored; uptime advances from the true host base only when the
     # scan applied an update, preserving the existing conditional semantics.
-    final_state = final_state.replace(birth_timestamp=state.birth_timestamp)
+    final_state = final_state.replace(
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s,
+    )
     if bool(jax.device_get(jnp.any(updates_applied))):
         final_state = final_state.replace(uptime_s=state.uptime_s + elapsed)
     return DifferentialSARSAArrayResult(

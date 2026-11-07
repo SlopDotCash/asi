@@ -1744,3 +1744,19 @@ def test_differential_sarsa_arrays_preserve_initialized_host_clocks() -> None:
         jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
     )
     _assert_host_clocks_preserved(result.state, initial_uptime=12.5)
+
+
+def test_differential_sarsa_rejected_arrays_keep_incoming_host_uptime() -> None:
+    agent = DifferentialSARSAAgent(DifferentialSARSAConfig(n_actions=2))
+    started, _ = agent.start(agent.init(2, jr.key(1)), jnp.array([1.0, 0.0], dtype=jnp.float32))
+    # Past 2**24 seconds a float32 cannot hold the fractional part.
+    state = started.replace(birth_timestamp=1700000000.125, uptime_s=20000000.5)
+    result = run_differential_sarsa_from_arrays(
+        agent,
+        state,
+        jnp.full((2,), jnp.nan, dtype=jnp.float32),
+        jnp.array([[0.0, 1.0], [1.0, 1.0]], dtype=jnp.float32),
+    )
+    assert not bool(jnp.any(result.updates_applied))
+    _assert_host_clocks_preserved(result.state, initial_uptime=20000000.5)
+    assert result.state.uptime_s == 20000000.5
