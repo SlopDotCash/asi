@@ -1002,6 +1002,22 @@ class ScaledStreamWrapper:
         if jnp.issubdtype(raw_feature_scales.dtype, jnp.complexfloating):
             raise ValueError("feature_scales must contain only real values")
         self._feature_scales = jnp.asarray(raw_feature_scales, dtype=jnp.float32)
+        # A nonzero requested scale that narrows to binary32 zero would
+        # silently suppress its channel, exactly the collapse fixed for
+        # scalar stream parameters in #3315. Exact zero stays legal: it is
+        # the documented deliberate suppression. Reject only the silent
+        # nonzero-to-zero narrowing (either sign: -0.0 suppresses too).
+        try:
+            requested = np.asarray(feature_scales, dtype=np.float64)
+        except (TypeError, ValueError, OverflowError):
+            requested = None
+        if requested is not None and requested.shape == self._feature_scales.shape:
+            narrowed = np.asarray(self._feature_scales, dtype=np.float64)
+            if bool(np.any((requested != 0.0) & (narrowed == 0.0))):
+                raise ValueError(
+                    "feature_scales must not contain a nonzero value that "
+                    "narrows to float32 zero"
+                )
 
         if (
             self._feature_scales.ndim != 1
