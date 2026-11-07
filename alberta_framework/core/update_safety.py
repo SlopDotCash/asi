@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import operator
 from typing import Any, SupportsIndex, cast
 
@@ -86,42 +85,33 @@ def _integer_action_code(
     return safe, valid
 
 
-def _float64_action_code(
+def _host_float_action_code(
     action: object,
     n_actions: int,
     *,
     allow_unset: bool,
 ) -> tuple[Array, Bool[Array, ""]] | None:
-    """Validate a concrete floating action code in the float64 domain.
-
-    ``float32`` represents integers exactly only up to ``2**24``, so routing
-    a float64 code through ``float32`` would silently remap, for example,
-    action ``2**24 + 1`` onto action ``2**24`` — the same remap the integer
-    path refuses.  Validate concrete host floats in float64 first and only
-    then narrow to ``int32``.  Returns ``None`` for JAX arrays (including
-    tracers, whose float64 values are already narrowed to float32 at trace
-    time when x64 is disabled) and booleans, which keep the float32 path.
-    """
-
-    if isinstance(action, (bool, np.bool_)):
-        return None
+    """Check host floating actions before JAX can narrow them."""
     if isinstance(action, (float, np.floating)):
-        value = float(action)
+        value = action
     elif isinstance(action, np.ndarray) and np.issubdtype(action.dtype, np.floating):
-        value = float(np.asarray(action, dtype=np.float64).reshape(()))
+        value = action.item()
+    elif (
+        isinstance(action, jax.Array)
+        and not isinstance(action, jax.core.Tracer)
+        and action.dtype == np.dtype(np.float64)
+        and not jax.config.x64_enabled
+    ):
+        value = np.asarray(action).item()
     else:
         return None
-    lower = -1.0 if allow_unset else 0.0
-    host_valid = (
-        math.isfinite(value)
-        and value == math.floor(value)
-        and lower <= value < n_actions
-    )
-    fallback = -1 if allow_unset else 0
-    return (
-        jnp.asarray(int(value) if host_valid else fallback, dtype=jnp.int32),
-        jnp.asarray(host_valid, dtype=jnp.bool_),
-    )
+
+    lower = -1 if allow_unset else 0
+    if np.isfinite(value):
+        code = int(value)
+        if value == code and lower <= code < n_actions:
+            return jnp.asarray(code, dtype=jnp.int32), jnp.asarray(True, dtype=jnp.bool_)
+    return jnp.asarray(lower, dtype=jnp.int32), jnp.asarray(False, dtype=jnp.bool_)
 
 
 def safe_discrete_action(
@@ -137,9 +127,8 @@ def safe_discrete_action(
     one-hot vector.  Validate the floating scalar first, then expose only a
     safe code to downstream one-hot arithmetic.  Integer codes are validated
     in the integer domain so codes above ``2**24`` are not rounded onto a
-    neighbouring action.  Concrete floating scalars are validated in float64
-    for the same reason; JAX floating arrays (including tracers) keep the
-    float32 path, which is best-effort under x64-disabled tracing.
+    neighbouring action. Floating codes are validated at their supplied
+    precision before the exact action range is checked in the integer domain.
     ``allow_unset`` admits the conventional ``-1`` episode-start sentinel.
     """
 
@@ -156,20 +145,36 @@ def safe_discrete_action(
     integer_code = _integer_action_code(action, n_actions, allow_unset=allow_unset)
     if integer_code is not None:
         return integer_code
-    float_code = _float64_action_code(action, n_actions, allow_unset=allow_unset)
+    float_code = _host_float_action_code(action, n_actions, allow_unset=allow_unset)
     if float_code is not None:
         return float_code
-    raw = jnp.asarray(action, dtype=jnp.float32)
-    lower = -1.0 if allow_unset else 0.0
-    valid = (
+    source = jnp.asarray(action)
+    # Preserve a supported wide device dtype while promoting half precision
+    # to a type that can represent the int32 range endpoints.
+    dtype = jnp.promote_types(source.dtype, jnp.float32)
+    raw = source.astype(dtype if jnp.issubdtype(dtype, jnp.floating) else jnp.float32)
+    fallback = -1 if allow_unset else 0
+    # Compare a validated integral code to the exact integer action bound.
+    convertible = (
         jnp.isfinite(raw)
         & (raw == jnp.floor(raw))
-        & (raw >= lower)
-        & (raw < float(n_actions))
+        & (raw >= -(2.0**31))
+        & (raw < 2.0**31)
     )
-    fallback = -1 if allow_unset else 0
-    safe = jnp.where(valid, raw, jnp.asarray(fallback, dtype=jnp.float32))
-    return safe.astype(jnp.int32), valid
+    candidate = jnp.where(
+        convertible,
+        raw,
+        jnp.asarray(fallback, dtype=raw.dtype),
+    )
+    candidate = candidate.astype(jnp.int32)
+    lower = -1 if allow_unset else 0
+    valid = (
+        convertible
+        & (candidate >= jnp.asarray(lower, dtype=jnp.int32))
+        & (candidate < jnp.asarray(n_actions, dtype=jnp.int32))
+    )
+    safe = jnp.where(valid, candidate, jnp.asarray(fallback, dtype=jnp.int32))
+    return safe, valid
 
 
 def checked_integer_action_array(
