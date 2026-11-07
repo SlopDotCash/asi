@@ -636,6 +636,43 @@ def test_trainable_encoder_learning_smoke_loss_decreases() -> None:
 
 
 @pytest.mark.unit
+def test_trainable_encoder_keeps_finite_wide_gradient_norm() -> None:
+    config = LatentWorldModelConfig(
+        observation_dim=8,
+        n_actions=2,
+        latent_dim=2,
+        hidden_sizes=(),
+        sparsity=0.0,
+        encoder_learning=True,
+        min_latent_std=0.0,
+        encoder_collapse_gate_threshold=1.0,
+    )
+    model = LatentWorldModel(config)
+    state = model.init(jr.key(0)).replace(
+        encoder_matrix=jnp.zeros((8, 2), dtype=jnp.float32),
+        encoder_bias=jnp.zeros((2,), dtype=jnp.float32),
+    )
+    observation = jnp.full((8,), 1.0e20, dtype=jnp.float32)
+    next_observation = jnp.zeros((8,), dtype=jnp.float32)
+
+    result = model.update(
+        state,
+        observation,
+        jnp.asarray(1, dtype=jnp.int32),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        jnp.asarray(0.99, dtype=jnp.float32),
+        next_observation,
+    )
+
+    assert bool(result.update_applied)
+    assert bool(result.encoder_update_applied)
+    assert bool(jnp.isfinite(result.encoder_gradient_norm))
+    assert float(result.encoder_gradient_norm) > 0.0
+    assert bool(jnp.all(jnp.isfinite(result.state.encoder_matrix)))
+    assert bool(jnp.any(result.state.encoder_matrix != state.encoder_matrix))
+
+
+@pytest.mark.unit
 def test_trainable_encoder_first_step_is_collapse_gated() -> None:
     config = LatentWorldModelConfig(
         observation_dim=3,
