@@ -197,6 +197,13 @@ def _replace_diagnostic_third_layer(
     ), jnp.asarray(1, dtype=jnp.int32)
 
 
+def _mean_abs_outgoing(weights: Array) -> Array:
+    direct = jnp.mean(jnp.abs(weights), axis=1)
+    inv_width = jnp.asarray(1.0 / weights.shape[1], dtype=weights.dtype)
+    scaled = jnp.sum(jnp.abs(weights) * inv_width, axis=1)
+    return jnp.where(jnp.isfinite(direct), direct, scaled)
+
+
 @jax.jit
 def _diagnostic_step(
     state: DiagnosticMLPState,
@@ -216,9 +223,9 @@ def _diagnostic_step(
         for index, (value, gradient) in enumerate(zip(state, gradients, strict=True))
     )
     updated = DiagnosticMLPState(*trainable)
-    utility1 = 0.99 * state.utility1 + 0.01 * hidden1 * jnp.mean(jnp.abs(state.w2), axis=1)
-    utility2 = 0.99 * state.utility2 + 0.01 * hidden2 * jnp.mean(jnp.abs(state.w3), axis=1)
-    utility3 = 0.99 * state.utility3 + 0.01 * hidden3 * jnp.mean(jnp.abs(state.w4), axis=1)
+    utility1 = 0.99 * state.utility1 + 0.01 * hidden1 * _mean_abs_outgoing(state.w2)
+    utility2 = 0.99 * state.utility2 + 0.01 * hidden2 * _mean_abs_outgoing(state.w3)
+    utility3 = 0.99 * state.utility3 + 0.01 * hidden3 * _mean_abs_outgoing(state.w4)
     age1 = state.age1 + 1
     age2 = state.age2 + 1
     age3 = state.age3 + 1
@@ -377,8 +384,8 @@ def _step(
         for index, (value, gradient) in enumerate(zip(state, gradients, strict=True))
     )
     updated = MLPState(*trainable)
-    utility1 = 0.99 * state.utility1 + 0.01 * hidden1 * jnp.mean(jnp.abs(state.w2), axis=1)
-    utility2 = 0.99 * state.utility2 + 0.01 * hidden2 * jnp.mean(jnp.abs(state.w3), axis=1)
+    utility1 = 0.99 * state.utility1 + 0.01 * hidden1 * _mean_abs_outgoing(state.w2)
+    utility2 = 0.99 * state.utility2 + 0.01 * hidden2 * _mean_abs_outgoing(state.w3)
     age1 = state.age1 + 1
     age2 = state.age2 + 1
     eligible1 = age1 >= maturity_threshold
