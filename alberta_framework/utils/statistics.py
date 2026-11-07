@@ -218,6 +218,19 @@ def _scaled_float64_values(
     return work / divisors, divisors
 
 
+def _common_binary_scaled(
+    a: NDArray[np.float64], b: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Shift two samples to unit magnitude so squared deviations stay representable.
+
+    t statistics and effect sizes are unit-free, and a power of two keeps the
+    sample values exact, so ordinary inputs produce unchanged results.
+    """
+    largest = max(float(np.max(np.abs(a))), float(np.max(np.abs(b))))
+    _, exponent = math.frexp(largest)
+    return np.ldexp(a, -exponent), np.ldexp(b, -exponent)
+
+
 def _require_finite_statistics(values: NDArray[np.float64], *, name: str) -> None:
     if not np.isfinite(values).all():
         raise ValueError(f"{name} cannot be represented as finite float64 statistics")
@@ -660,6 +673,19 @@ def ttest_comparison(
             b = np.asarray(b, dtype=np.float64)
         _require_finite_values(a, name="values_a")
         _require_finite_values(b, name="values_b")
+
+    if exact_pair_summary is None:
+        if paired:
+            # Preserve small residuals in pairs whose huge offsets cancel.
+            # Only scale the operands first if a difference exceeds float64.
+            with np.errstate(over="ignore"):
+                paired_deltas = a - b
+            if not np.isfinite(paired_deltas).all():
+                scaled_a, scaled_b = _common_binary_scaled(a, b)
+                paired_deltas = scaled_a - scaled_b
+            a, b = _common_binary_scaled(paired_deltas, np.zeros_like(paired_deltas))
+        else:
+            a, b = _common_binary_scaled(a, b)
 
     try:
         from scipy import stats
