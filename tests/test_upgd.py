@@ -2487,6 +2487,37 @@ class TestLoops:
         result = run_upgd_loop(learner, stream, num_steps=50, key=jr.key(0))
         chex.assert_shape(result.metrics, (50, 4))
 
+    @pytest.mark.parametrize("stream_runner", [False, True])
+    def test_loops_preserve_exact_host_clocks(self, stream_runner: bool) -> None:
+        """lax.scan must not narrow the host-only clocks to float32."""
+        from alberta_framework.streams.synthetic import RandomWalkStream
+
+        birth = 1700000000.125
+        learner = UPGDLearner(
+            n_heads=1, hidden_sizes=(4,), sparsity=0.0, perturbation_sigma=0.0
+        )
+        state = learner.init(feature_dim=3, key=jr.key(0))
+        state = state.replace(birth_timestamp=birth, uptime_s=3.25)
+        if stream_runner:
+            result = run_upgd_loop(
+                learner,
+                RandomWalkStream(feature_dim=3),
+                num_steps=4,
+                key=jr.key(271),
+                learner_state=state,
+            )
+        else:
+            result = run_upgd_arrays(
+                learner,
+                state,
+                jnp.ones((4, 3), dtype=jnp.float32),
+                jnp.zeros((4, 1), dtype=jnp.float32),
+            )
+        assert result.state.birth_timestamp == birth
+        assert type(result.state.birth_timestamp) is float
+        assert type(result.state.uptime_s) is float
+        assert result.state.uptime_s >= 3.25
+
 
 class TestGradientAlignmentScaleInvariance:
     """Tests that gradient alignment and tuple norms are invariant to magnitude and scale-free."""
