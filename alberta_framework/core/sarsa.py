@@ -1144,6 +1144,21 @@ class SARSAAgent:
 # =============================================================================
 
 
+def _dispatchable_action(action: Array) -> int:
+    """Return an environment action, refusing the rejected-decision sentinel.
+
+    :meth:`SARSAAgent.select_action` returns ``-1`` for a non-finite
+    observation or state. That value only marks the refusal: an environment
+    would read it as an ordinary (often last-index) action.
+    """
+    action_id = int(action)
+    if action_id < 0:
+        raise ValueError(
+            "SARSA rejected the decision, so no action can be dispatched to the environment"
+        )
+    return action_id
+
+
 def run_sarsa_episode(
     agent: SARSAAgent,
     state: SARSAState,
@@ -1183,7 +1198,9 @@ def run_sarsa_episode(
 
     for _ in range(max_steps):
         # Step environment
-        next_obs, reward, terminated, truncated, _info = env.step(int(action))
+        next_obs, reward, terminated, truncated, _info = env.step(
+            _dispatchable_action(action)
+        )
         next_obs = jnp.asarray(next_obs, dtype=jnp.float32).flatten()
         reward_arr = jnp.array(reward, dtype=jnp.float32)
         term_arr = jnp.array(terminated, dtype=jnp.float32)
@@ -1264,7 +1281,9 @@ def run_sarsa_continuing(
     total_reward = 0.0
 
     for _ in range(num_steps):
-        next_obs, reward, terminated, truncated, _info = env.step(int(action))
+        next_obs, reward, terminated, truncated, _info = env.step(
+            _dispatchable_action(action)
+        )
         next_obs = jnp.asarray(next_obs, dtype=jnp.float32).flatten()
         reward_arr = jnp.array(reward, dtype=jnp.float32)
 

@@ -2162,3 +2162,52 @@ def test_sarsa_select_action_rejects_nonfinite_without_consuming_rng() -> None:
     )
     assert int(action) == -1
     chex.assert_trees_all_equal(key, state.rng_key)
+
+
+class _RecordingCorridor:
+    """Corridor that records every dispatched action and can emit a NaN sensor row."""
+
+    def __init__(self, *, nan_reset: bool = False, nan_step: bool = False) -> None:
+        self.actions: list[int] = []
+        self._nan_reset = nan_reset
+        self._nan_step = nan_step
+
+    def reset(self):
+        fill = np.nan if self._nan_reset else 1.0
+        return np.full((2,), fill, dtype=np.float32), {}
+
+    def step(self, action: int):
+        self.actions.append(action)
+        fill = np.nan if self._nan_step else 1.0
+        return np.full((2,), fill, dtype=np.float32), 1.0, False, False, {}
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_first_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_reset=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert env.actions == []
+
+
+@pytest.mark.parametrize("runner_name", ["run_sarsa_episode", "run_sarsa_continuing"])
+def test_env_runner_refuses_to_dispatch_rejected_next_action(runner_name: str) -> None:
+    import alberta_framework
+
+    runner = getattr(alberta_framework, runner_name)
+    agent = _make_agent(n_actions=2, hidden_sizes=())
+    state = agent.init(feature_dim=2, key=jr.key(0))
+    env = _RecordingCorridor(nan_step=True)
+
+    with pytest.raises(ValueError, match="dispatch"):
+        runner(agent, state, env, 3)
+
+    assert len(env.actions) == 1
+    assert env.actions[0] >= 0
