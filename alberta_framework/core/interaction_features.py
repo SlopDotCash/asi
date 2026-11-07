@@ -2579,9 +2579,15 @@ class FixedBudgetInteractionLearner:
                         / active_count
                     )
                 else:
+                    candidate_errors = jnp.where(
+                        active_mask[:, None],
+                        errors[:, None]
+                        - (state.candidate_output_weights * candidate_features[None, :]),
+                        0.0,
+                    )
                     candidate_output_delta = (
                         self._step_size_output
-                        * errors[:, None]
+                        * candidate_errors
                         * candidate_features[None, :]
                         / active_count
                     )

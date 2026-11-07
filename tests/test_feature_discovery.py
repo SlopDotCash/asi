@@ -3214,6 +3214,53 @@ class TestFixedBudgetInteractionLearner:
         chex.assert_shape(result.metrics, (10, 7))
         chex.assert_tree_all_finite(result.metrics)
 
+    def test_legacy_candidate_head_learns_its_own_residual(self) -> None:
+        """A legacy candidate head must converge, not accumulate raw residuals.
+
+        The candidate is not part of the deployed prediction, so its LMS
+        error must be the deployed residual minus its own contribution,
+        exactly as the scale-robust and independent-probe paths already do.
+        Without the self-term the update has no fixed point: the weight
+        grows linearly at ``alpha * E[e * phi]`` forever and its utility
+        inflates until promotion copies the runaway weight verbatim.
+        """
+        learner = FixedBudgetInteractionLearner(
+            n_features=1,
+            n_tasks=1,
+            candidate_count=3,
+            candidate_strategy="all_pairs",
+            include_squares=True,
+            replacement_interval=100000,
+        )
+        state = learner.init(feature_dim=2, key=jr.key(0)).replace(
+            feature_left=jnp.array([0], dtype=jnp.int32),
+            feature_right=jnp.array([1], dtype=jnp.int32),
+        )
+        # The (1, 1) candidate is index 2 of the all-pairs bank.
+        assert int(state.candidate_left[2]) == 1
+        assert int(state.candidate_right[2]) == 1
+        for step in range(200):
+            if step % 2 == 0:
+                observation = jnp.array([0.0, 1.0], dtype=jnp.float32)
+                target = jnp.array([1.0], dtype=jnp.float32)
+            else:
+                observation = jnp.array([0.0, 0.0], dtype=jnp.float32)
+                target = jnp.array([0.0], dtype=jnp.float32)
+            result = learner.update(
+                state,
+                observation,
+                target,
+                jnp.ones((1,), dtype=jnp.bool_),
+            )
+            state = result.state
+        # The deployed feature (0, 1) is always zero here, so the bias
+        # converges to ~0.5 and the correct promoted candidate weight is
+        # ~0.5 as well (the scale-robust control converges to 0.5076).
+        assert float(state.candidate_output_weights[0, 2]) == pytest.approx(
+            0.5, abs=0.1
+        )
+        assert float(state.candidate_utilities[2]) < 0.2
+
 
 class TestReplaceFractionRemoval:
     """The vestigial replace_fraction knob is gone but legacy configs load."""
