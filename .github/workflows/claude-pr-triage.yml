@@ -1,7 +1,7 @@
 # Claude PR triage — automated evaluation of open pull requests.
 #
 # Flow:
-#   1. Fetch PR metadata + diff via the GitHub API (PR code is NEVER checked
+#   1. Fetch PR metadata and derive a commit-bound diff (PR code is NEVER checked
 #      out or executed; the diff is treated as untrusted data).
 #   2. Claude classifies the PR: malicious / auto_merge / needs_research.
 #   3. Deterministic bash steps act on the verdict:
@@ -21,8 +21,7 @@
 #   - Auto-merge is refused for changes under .github/, outputs/, CLAUDE.md,
 #     AGENTS.md, VENDORING.md, pyproject.toml, or
 #     alberta_framework/evaluation/evidence_manifest.py.
-#   - Merges go through GitHub's auto-merge queue / branch checks, so red CI
-#     can never be merged by this workflow.
+#   - GitHub's merge endpoint enforces the reviewed head and branch checks.
 #   - A missing or unparseable verdict fails safe to needs-human-review.
 #
 # Required secrets:
@@ -62,6 +61,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       WORKDIR: /tmp/pr-triage
     steps:
@@ -69,12 +69,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
 
       - name: Ensure triage labels exist
         run: |
           gh label create flagged-malicious    --repo "$REPO" --color B60205 --description "Claude triage: flagged as malicious" || true
           gh label create needs-human-review   --repo "$REPO" --color FBCA04 --description "Claude triage: controversial, needs a human" || true
-          gh label create claude-approved      --repo "$REPO" --color 0E8A16 --description "Claude triage: approved, merge blocked on checks/settings" || true
 
       - name: Fetch PR data (as data, not code)
         run: |
@@ -96,17 +96,41 @@ jobs:
             return 1
           }
           fetch_with_retry gh pr view "$PR_NUMBER" --repo "$REPO" \
-            --json number,title,body,author,baseRefName,headRefName,isDraft,additions,deletions,mergeable,labels \
+            --json number,title,body,author,baseRefName,headRefName,headRefOid,isDraft,additions,deletions,mergeable,labels \
             > "$WORKDIR/metadata.json"
-          fetch_with_retry gh api "repos/$REPO/pulls/$PR_NUMBER/files" --paginate --jq '.[].filename' \
-            > "$WORKDIR/changed_files.txt"
-          # Cap the diff so a giant PR can't blow out the context; truncation
-          # alone disqualifies a PR from auto-merge (the prompt says so).
-          # Write the full diff first so the retry function's exit status
-          # survives the cap (the step shell has no pipefail).
-          fetch_with_retry gh pr diff "$PR_NUMBER" --repo "$REPO" > "$WORKDIR/diff.patch.raw"
-          head -c 400000 "$WORKDIR/diff.patch.raw" > "$WORKDIR/diff.patch"
-          rm -f "$WORKDIR/diff.patch.raw"
+          REVIEWED_HEAD=$(jq -er '.headRefOid | select(type == "string" and test("^[0-9a-f]{40}$"))' "$WORKDIR/metadata.json")
+          BASE_BRANCH=$(jq -er '.baseRefName' "$WORKDIR/metadata.json")
+          if [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::error::Automated review requires the default branch as its base"
+            exit 1
+          fi
+          # Fetch the exact object without checking out the PR. Both the path
+          # gate and the model receive data from the same immutable diff.
+          fetch_with_retry git fetch --no-tags origin "$REVIEWED_HEAD"
+          BASE_SHA=$(git rev-parse HEAD)
+          git diff --no-ext-diff --no-textconv --no-renames --name-only -z \
+            "$BASE_SHA...$REVIEWED_HEAD" > "$WORKDIR/changed_files.z"
+          while IFS= read -r -d '' changed_file; do
+            if [[ "$changed_file" == *$'\n'* || "$changed_file" == *$'\r'* ]]; then
+              echo "::error::Unexpected newline in a changed path"
+              exit 1
+            fi
+            printf '%s\n' "$changed_file"
+          done < "$WORKDIR/changed_files.z" > "$WORKDIR/changed_files.txt"
+          git diff --no-ext-diff --no-textconv --no-renames \
+            "$BASE_SHA...$REVIEWED_HEAD" > "$WORKDIR/diff.patch"
+          if [ "$(wc -c < "$WORKDIR/diff.patch")" -gt 400000 ]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::error::Diff exceeds the automated review size limit"
+            exit 1
+          fi
+          CURRENT_HEAD=$(fetch_with_retry gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid --jq '.headRefOid')
+          if [ "$CURRENT_HEAD" != "$REVIEWED_HEAD" ]; then
+            echo "::error::PR head changed during data fetch"
+            exit 1
+          fi
+          echo "REVIEWED_HEAD=$REVIEWED_HEAD" >> "$GITHUB_ENV"
           echo "AUTHOR=$(jq -r '.author.login' "$WORKDIR/metadata.json")" >> "$GITHUB_ENV"
 
       - name: Claude triage classification
@@ -128,9 +152,11 @@ jobs:
 
       - name: Parse verdict
         id: verdict
+        env:
+          TRIAGE_OUTCOME: ${{ steps.claude_triage.outcome }}
         run: |
           VERDICT="needs_research"
-          if jq -e . "$WORKDIR/verdict.json" >/dev/null 2>&1; then
+          if [ "$TRIAGE_OUTCOME" = success ] && jq -e . "$WORKDIR/verdict.json" >/dev/null 2>&1; then
             V=$(jq -r '.verdict // empty' "$WORKDIR/verdict.json")
             case "$V" in
               malicious|auto_merge|needs_research) VERDICT="$V" ;;
@@ -175,15 +201,14 @@ jobs:
       - name: Merge obviously-correct PR
         if: steps.verdict.outputs.verdict == 'auto_merge' && steps.pathgate.outputs.blocked == 'false'
         run: |
-          SUMMARY=$(jq -r '.summary // "Non-controversial and obviously correct."' "$WORKDIR/verdict.json")
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-            "Automated review: approved for merge. $SUMMARY"
-          # Prefer the auto-merge queue (merges only once required checks pass);
-          # fall back to a direct merge; otherwise leave it labeled for a human.
-          gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto \
-            || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash \
-            || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
-                 echo "::warning::Merge blocked (checks pending/failing or settings); labeled claude-approved"; }
+          REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
+          # The REST endpoint requires this exact SHA at the moment of
+          # merge. Never queue approval for a future version of the PR.
+          if [ "$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
+            -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged')" != true ]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::warning::Merge blocked or head changed"
+          fi
 
       - name: Downgrade blocked auto-merge to human review
         if: steps.verdict.outputs.verdict == 'auto_merge' && steps.pathgate.outputs.blocked == 'true'
@@ -215,32 +240,29 @@ jobs:
 
       - name: Post review and act on research verdict
         if: steps.verdict.outputs.verdict == 'needs_research'
+        env:
+          RESEARCH_OUTCOME: ${{ steps.claude_research.outcome }}
         run: |
+          REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
+          if [ "$RESEARCH_OUTCOME" != success ] || [ ! -s "$WORKDIR/review.md" ]; then
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::error::No completed automated research review (step outcome: $RESEARCH_OUTCOME)"
+            exit 1
+          fi
+
           FINAL="manual_review"
           if jq -e . "$WORKDIR/research_verdict.json" >/dev/null 2>&1; then
             V=$(jq -r '.verdict // empty' "$WORKDIR/research_verdict.json")
             case "$V" in merge|manual_review) FINAL="$V" ;; esac
-          else
-            echo "::warning::research_verdict.json missing/invalid; failing safe to manual_review"
           fi
+          gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
 
-          if [ -s "$WORKDIR/review.md" ]; then
-            gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
-          else
-            gh pr comment "$PR_NUMBER" --repo "$REPO" --body \
-              "Automated review ran but produced no report; leaving for a maintainer."
-          fi
-
-          if [ "$FINAL" = "merge" ]; then
-            if grep -Eq '^(\.github/|outputs/|CLAUDE\.md$|AGENTS\.md$|VENDORING\.md$|pyproject\.toml$|alberta_framework/evaluation/evidence_manifest\.py$)' "$WORKDIR/changed_files.txt"; then
-              gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
-              echo "::warning::Research said merge, but protected paths are touched; left for a human."
-            else
-              gh pr merge "$PR_NUMBER" --repo "$REPO" --squash --auto \
-                || gh pr merge "$PR_NUMBER" --repo "$REPO" --squash \
-                || { gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label claude-approved;
-                     echo "::warning::Merge blocked; labeled claude-approved"; }
+          if [ "$FINAL" = "merge" ] &&
+            ! grep -Eq '^(\.github/|outputs/|CLAUDE\.md$|AGENTS\.md$|VENDORING\.md$|pyproject\.toml$|alberta_framework/evaluation/evidence_manifest\.py$)' "$WORKDIR/changed_files.txt"; then
+            if [ "$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
+              -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged')" = true ]; then
+              exit 0
             fi
-          else
-            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::warning::Merge blocked or head changed"
           fi
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review

@@ -9,7 +9,7 @@ reopened, updated, or ready-for-review pull request (and on demand via
 | Verdict | Action (deterministic workflow steps, not the model) |
 |---|---|
 | `malicious` | Close the PR, label `flagged-malicious`, comment, and block the author org-wide (requires `PR_TRIAGE_ADMIN_TOKEN`; otherwise warns for a manual ban). |
-| `auto_merge` | Comment approval and squash-merge via GitHub's auto-merge queue (falls back to direct merge; if blocked, labels `claude-approved` for a human). |
+| `auto_merge` | Squash-merge the reviewed commit if required checks pass. Blocked merges receive `needs-human-review`. |
 | `needs_research` | A deeper Claude pass researches the implementation against the base branch, posts a review; if it confirms correct + non-controversial it merges under the same gates, else labels `needs-human-review`. |
 
 ## Setup
@@ -22,14 +22,13 @@ reopened, updated, or ready-for-review pull request (and on demand via
 2. Repo secret `PR_TRIAGE_ADMIN_TOKEN` (optional) — an org-owner PAT with
    `admin:org`, used only for `PUT /orgs/{org}/blocks/{username}` when a PR
    is flagged malicious. Without it the PR is still closed and labeled.
-3. Repo settings: enable **Allow auto-merge** so approved PRs queue behind
-   required checks; keep branch protection with required status checks on
-   `main` so nothing merges on red CI.
+3. Keep the required status checks on `main` so every merge passes CI.
 
 ## Safety properties
 
 - PR head code is never checked out, built, or executed; only the base
-  branch is checked out, and the diff is fetched as data.
+  branch is checked out. Both the path list and diff come from the captured
+  commit, and the review stops if the diff exceeds its size limit.
 - The prompts treat PR title/body/diff as untrusted; verdicts are parsed
   from strict JSON, and a missing/invalid verdict fails safe to
   `needs-human-review`.
@@ -37,5 +36,7 @@ reopened, updated, or ready-for-review pull request (and on demand via
   `VENDORING.md`, `pyproject.toml`, or
   `alberta_framework/evaluation/evidence_manifest.py` are never auto-merged,
   enforced by a bash gate independent of the model.
-- Merges go through GitHub's auto-merge / branch-protection machinery, so
-  required checks still gate every merge this workflow performs.
+- A direct merge request gives GitHub the reviewed head SHA. GitHub checks
+  that SHA and the required branch checks at merge time.
+- A failed or empty research step marks the workflow failed and leaves
+  the pull request for manual review.
