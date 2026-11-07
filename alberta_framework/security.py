@@ -39,6 +39,10 @@ _JSON_MAX_STRING_LENGTH: int = 65_536
 _JSON_MAX_INTEGER_BITS: int = 64
 _ORACLE_EXPERIENCE_SCHEMA = "alberta.security_gym.oracle_experience.v1"
 
+_CONFUSION_MATRIX_LABELS: frozenset[str] = frozenset(
+    {"true_positive", "false_positive", "true_negative", "false_negative"}
+)
+
 _ACTUAL_INT_TYPES = frozenset({int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")})
 _ACTUAL_FLOAT_TYPES = frozenset(
     {float, Fraction, *(np.dtype(code).type for code in ("e", "f", "d", "g"))}
@@ -535,6 +539,14 @@ class SecurityOracleExperience:
             )
             if type(label) is not str or label != expected_label:
                 raise ValueError("security oracle outcome label does not match action metadata")
+        label = outcome.get("label")
+        if type(label) is str and label in _CONFUSION_MATRIX_LABELS:
+            possible_labels = {
+                _security_outcome_label(action=self.action, is_malicious=True),
+                _security_outcome_label(action=self.action, is_malicious=False),
+            }
+            if label not in possible_labels:
+                raise ValueError("security oracle outcome label is impossible for action")
         object.__setattr__(self, "state", state)
         object.__setattr__(self, "reward", reward)
         object.__setattr__(self, "outcome", _freeze_json_mapping(outcome))
