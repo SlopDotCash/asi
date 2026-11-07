@@ -1052,7 +1052,11 @@ class AverageRewardHordeActorCriticAgent:
         score_numerator = actor_score_scale * (action_mask - old_sample.target_policy)
         temperature = self._config.temperature
         if temperature < _FLOAT32_MIN_NORMAL:
-            score_numerator = score_numerator * _SUBNORMAL_TEMPERATURE_SCALE
+            # Keep XLA from reassociating the scales into the original
+            # overflowing reciprocal before multiplying a zero score.
+            score_numerator = jax.lax.optimization_barrier(
+                score_numerator * _SUBNORMAL_TEMPERATURE_SCALE
+            )
             temperature *= _SUBNORMAL_TEMPERATURE_SCALE
         score = score_numerator / temperature
         grad_log_policy = score[:, None] * old_features[None, :]
