@@ -9,8 +9,8 @@
 #                          PR_TRIAGE_ADMIN_TOKEN org-owner PAT; otherwise
 #                          labels + warns for a human to ban).
 #        auto_merge     -> squash-merge, but only if no protected path is
-#                          touched and CI is green (auto-merge queue first,
-#                          direct merge as fallback, human label otherwise).
+#                          touched, the reviewed base still matches, and CI
+#                          passed for the reviewed head.
 #        needs_research -> a second, deeper Claude pass researches the
 #                          implementation against the base checkout, posts a
 #                          review comment, then either merges (same hard
@@ -18,10 +18,10 @@
 #
 # Hard guardrails enforced OUTSIDE the model:
 #   - PR head code is never checked out, built, or run.
-#   - Auto-merge is refused for changes under .github/, outputs/, CLAUDE.md,
-#     AGENTS.md, VENDORING.md, pyproject.toml, or
-#     alberta_framework/evaluation/evidence_manifest.py.
-#   - GitHub's merge endpoint enforces the reviewed head and branch checks.
+#   - Auto-merge is refused for changes to workflow, agent and Git config,
+#     pinned evidence, and other protected paths listed in the path gate.
+#   - GitHub atomically matches the reviewed head. The base ref and named
+#     branch tip are checked immediately before the direct merge.
 #   - A missing or unparseable verdict fails safe to needs-human-review.
 #
 # Required secrets:
@@ -58,6 +58,7 @@ jobs:
       issues: write
       id-token: write  # claude-code-action exchanges OIDC for its app token
       actions: read
+      checks: read
     env:
       GH_TOKEN: ${{ github.token }}
       REPO: ${{ github.repository }}
@@ -79,6 +80,10 @@ jobs:
       - name: Fetch PR data (as data, not code)
         id: review_data
         run: |
+          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Expected a positive PR number"
+            exit 1
+          fi
           mkdir -p "$WORKDIR"
           # One transient GitHub API 5xx (observed 2026-10-12: a graphql 504)
           # failed this step, the whole triage job, and left a healthy PR
@@ -119,7 +124,10 @@ jobs:
               exit 1
             fi
             case "$changed_file" in
-              .github/*|outputs/*|CLAUDE.md|AGENTS.md|VENDORING.md|pyproject.toml|alberta_framework/evaluation/evidence_manifest.py)
+              .github|.github/*|outputs|outputs/*|.claude|.claude/*|.husky|.husky/*|\
+              .mcp.json|.claude.json|.gitmodules|.gitattributes|.ripgreprc|\
+              CLAUDE.md|CLAUDE.local.md|AGENTS.md|VENDORING.md|pyproject.toml|\
+              alberta_framework/evaluation/evidence_manifest.py)
                 PROTECTED=true ;;
             esac
             printf '%s\n' "$changed_file"
@@ -140,6 +148,8 @@ jobs:
           # its reports, so its copies of the metadata and paths are untrusted.
           {
             echo "reviewed_head=$REVIEWED_HEAD"
+            echo "reviewed_base_ref=$BASE_BRANCH"
+            echo "reviewed_base_sha=$BASE_SHA"
             echo "protected=$PROTECTED"
             echo "author=$(jq -r '.author.login' "$WORKDIR/metadata.json")"
           } >> "$GITHUB_OUTPUT"
@@ -151,13 +161,13 @@ jobs:
         with:
           github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true
           prompt: |
             Read the instructions in .github/claude/triage-prompt.md and follow
             them exactly. The PR under review is number ${{ env.PR_NUMBER }};
             its metadata, changed-file list, and diff are in /tmp/pr-triage/.
             Write your verdict to /tmp/pr-triage/verdict.json.
           claude_args: |
+            --tools "Read,Grep,Glob,Write"
             --allowedTools "Read,Grep,Glob,Write"
             --max-turns 30
 
@@ -165,15 +175,17 @@ jobs:
         id: verdict
         env:
           TRIAGE_OUTCOME: ${{ steps.claude_triage.outcome }}
+          # actionlint's bundled metadata for v1 predates its conclusion output.
+          TRIAGE_CONCLUSION: ${{ fromJSON(toJSON(steps.claude_triage.outputs)).conclusion }}
         run: |
           VERDICT="needs_research"
-          if [ "$TRIAGE_OUTCOME" = success ] && jq -e . "$WORKDIR/verdict.json" >/dev/null 2>&1; then
-            V=$(jq -r '.verdict // empty' "$WORKDIR/verdict.json")
+          if [ "$TRIAGE_OUTCOME" = success ] && [ "$TRIAGE_CONCLUSION" = success ] \
+            && V=$(jq -er 'select(type == "object") | .verdict | strings' "$WORKDIR/verdict.json" 2>/dev/null); then
             case "$V" in
               malicious|auto_merge|needs_research) VERDICT="$V" ;;
             esac
           else
-            echo "::warning::verdict.json missing or invalid; failing safe to needs_research"
+            echo "::warning::Triage did not complete with a valid verdict; requesting research"
           fi
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
           echo "Triage verdict: $VERDICT"
@@ -199,22 +211,6 @@ jobs:
           fi
 
       # --------------------------------------------------------- auto merge
-      - name: Merge obviously-correct PR
-        if: steps.verdict.outputs.verdict == 'auto_merge' && steps.review_data.outputs.protected == 'false'
-        env:
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          REVIEWED_HEAD: ${{ steps.review_data.outputs.reviewed_head }}
-        run: |
-          REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
-          # The REST endpoint requires this exact SHA at the moment of
-          # merge. Never queue approval for a future version of the PR.
-          if [ "$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
-            -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged')" != true ]; then
-            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
-            echo "::warning::Merge blocked or head changed"
-          fi
-
       - name: Downgrade blocked auto-merge to human review
         if: steps.verdict.outputs.verdict == 'auto_merge' && steps.review_data.outputs.protected == 'true'
         run: |
@@ -231,7 +227,6 @@ jobs:
         with:
           github_token: ${{ github.token }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          show_full_output: true
           prompt: |
             Read the instructions in .github/claude/research-prompt.md and
             follow them exactly. The PR under review is number
@@ -240,37 +235,81 @@ jobs:
             directory is the BASE branch (the PR is not applied). Write
             /tmp/pr-triage/review.md and /tmp/pr-triage/research_verdict.json.
           claude_args: |
-            --allowedTools "Read,Grep,Glob,Write,Bash(git log:*),Bash(git show:*),Bash(git blame:*)"
+            --tools "Read,Grep,Glob,Write"
+            --allowedTools "Read,Grep,Glob,Write"
             --max-turns 60
 
-      - name: Post review and act on research verdict
+      - name: Post review and parse research verdict
+        id: research_verdict
         if: steps.verdict.outputs.verdict == 'needs_research'
         env:
-          REPO: ${{ github.repository }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
-          REVIEWED_HEAD: ${{ steps.review_data.outputs.reviewed_head }}
           PROTECTED_PATHS: ${{ steps.review_data.outputs.protected }}
           RESEARCH_OUTCOME: ${{ steps.claude_research.outcome }}
+          RESEARCH_CONCLUSION: ${{ fromJSON(toJSON(steps.claude_research.outputs)).conclusion }}
         run: |
-          REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
-          if [ "$RESEARCH_OUTCOME" != success ] || [ ! -s "$WORKDIR/review.md" ]; then
+          if [ "$RESEARCH_OUTCOME" != success ] || [ "$RESEARCH_CONCLUSION" != success ] \
+            || [ ! -s "$WORKDIR/review.md" ]; then
             gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
-            echo "::error::No completed automated research review (step outcome: $RESEARCH_OUTCOME)"
+            echo "::error::No completed automated research review"
             exit 1
           fi
 
           FINAL="manual_review"
-          if jq -e . "$WORKDIR/research_verdict.json" >/dev/null 2>&1; then
-            V=$(jq -r '.verdict // empty' "$WORKDIR/research_verdict.json")
+          if V=$(jq -er 'select(type == "object") | .verdict | strings' "$WORKDIR/research_verdict.json" 2>/dev/null); then
             case "$V" in merge|manual_review) FINAL="$V" ;; esac
           fi
           gh pr review "$PR_NUMBER" --repo "$REPO" --comment --body-file "$WORKDIR/review.md"
-
-          if [ "$FINAL" = "merge" ] && [ "$PROTECTED_PATHS" = false ]; then
-            if [ "$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
-              -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged')" = true ]; then
-              exit 0
-            fi
-            echo "::warning::Merge blocked or head changed"
+          if [ "$FINAL" != merge ] || [ "$PROTECTED_PATHS" != false ]; then
+            FINAL="manual_review"
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
           fi
-          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+          echo "verdict=$FINAL" >> "$GITHUB_OUTPUT"
+
+      - name: Merge the reviewed PR
+        if: >-
+          steps.review_data.outputs.protected == 'false' &&
+          (steps.verdict.outputs.verdict == 'auto_merge' ||
+           steps.research_verdict.outputs.verdict == 'merge')
+        env:
+          REVIEWED_HEAD: ${{ steps.review_data.outputs.reviewed_head }}
+          REVIEWED_BASE_REF: ${{ steps.review_data.outputs.reviewed_base_ref }}
+          REVIEWED_BASE_SHA: ${{ steps.review_data.outputs.reviewed_base_sha }}
+        run: |
+          REVIEWED_HEAD=${REVIEWED_HEAD:?Missing reviewed PR head}
+          REVIEWED_BASE_REF=${REVIEWED_BASE_REF:?Missing reviewed base ref}
+          REVIEWED_BASE_SHA=${REVIEWED_BASE_SHA:?Missing reviewed base SHA}
+          manual_review() {
+            gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label needs-human-review
+            echo "::warning::$1"
+            exit 0
+          }
+
+          CHECKS="repos/$REPO/commits/$REVIEWED_HEAD/check-runs"
+          if ! CHECK_RUNS=$(gh api "$CHECKS?check_name=ci-ok&filter=latest&per_page=100") \
+            || ! jq -e --arg head "$REVIEWED_HEAD" '
+              [.check_runs[] | select(
+                .name == "ci-ok" and .head_sha == $head and .app.slug == "github-actions"
+              )] | max_by(.id) | .status == "completed" and .conclusion == "success"
+            ' <<< "$CHECK_RUNS" >/dev/null; then
+            manual_review "No successful GitHub Actions ci-ok check for the reviewed head"
+          fi
+
+          # The PR endpoint's base.sha may be stale. Query the named branch
+          # for its current tip, immediately before the direct merge.
+          BASE_PATH=$(jq -rn --arg branch "$REVIEWED_BASE_REF" '$branch | @uri')
+          if ! CURRENT_BASE=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.ref') \
+            || [ "$CURRENT_BASE" != "$REVIEWED_BASE_REF" ]; then
+            manual_review "PR base branch changed or could not be confirmed"
+          fi
+          if ! CURRENT_BASE_SHA=$(gh api "repos/$REPO/branches/$BASE_PATH" --jq '.commit.sha') \
+            || [ "$CURRENT_BASE_SHA" != "$REVIEWED_BASE_SHA" ]; then
+            manual_review "Reviewed base tip changed or could not be confirmed"
+          fi
+
+          # GitHub atomically compares the head SHA. It does not accept an
+          # expected base SHA, so the base check above is a preflight.
+          if ! MERGED=$(gh api --method PUT "repos/$REPO/pulls/$PR_NUMBER/merge" \
+            -f sha="$REVIEWED_HEAD" -f merge_method=squash --jq '.merged') \
+            || [ "$MERGED" != true ]; then
+            manual_review "Merge blocked or head changed"
+          fi
