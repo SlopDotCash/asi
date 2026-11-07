@@ -8358,10 +8358,11 @@ class TestRLSHeadIdentMapAnnealDecayDecoupled:
         self._same(zero, parent)
 
     def test_deliberate_break_differs(self):
-        coupled = self._run(anneal_tau=2.0, anneal_reset_frac=0.5)
-        split = self._run(
-            anneal_tau=2.0, anneal_reset_frac=0.5, anneal_decay_reset_frac=0.9
-        )
+        # Keep the schedules above the common floor long enough for the decay
+        # rates to separate on this short stream.
+        options = dict(anneal_tau=32.0, anneal_reset_frac=0.5, weight_decay=1.0)
+        coupled = self._run(**options)
+        split = self._run(**options, anneal_decay_reset_frac=0.9)
         assert not np.array_equal(
             np.asarray(split.per_task_loss), np.asarray(coupled.per_task_loss)
         )
