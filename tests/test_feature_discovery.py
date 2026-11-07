@@ -3248,8 +3248,8 @@ class TestFixedBudgetInteractionLearner:
         chex.assert_shape(result.metrics, (10, 7))
         chex.assert_tree_all_finite(result.metrics)
 
-    def test_legacy_candidate_head_learns_its_own_residual(self) -> None:
-        """A legacy candidate head must converge, not accumulate raw residuals.
+    def test_candidate_residual_feedback_learns_the_candidate_contribution(self) -> None:
+        """Residual feedback lets an unnormalized candidate converge.
 
         The candidate is not part of the deployed prediction, so its LMS
         error must be the deployed residual minus its own contribution,
@@ -3265,7 +3265,11 @@ class TestFixedBudgetInteractionLearner:
             candidate_strategy="all_pairs",
             include_squares=True,
             replacement_interval=100000,
+            candidate_residual_feedback=True,
         )
+        config = learner.to_config()
+        assert config["candidate_residual_feedback"] is True
+        learner = FixedBudgetInteractionLearner.from_config(config)
         state = learner.init(feature_dim=2, key=jr.key(0)).replace(
             feature_left=jnp.array([0], dtype=jnp.int32),
             feature_right=jnp.array([1], dtype=jnp.int32),
