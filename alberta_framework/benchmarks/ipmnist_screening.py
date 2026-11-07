@@ -8929,6 +8929,99 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             )
             for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
         ),
+        # Historical screens retain their exact constants for shard replay.
+        *(
+            (
+                f"rls_head_resid_identmap{suffix}",
+                {
+                    "rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0,
+                    **overrides,
+                },
+                f"historical development screen of {description}",
+            )
+            for suffix, overrides, description in (
+                (
+                    "50_r_nogate",
+                    {"gate_scale": 0.0},
+                    "ungated body with rematches at 50/200/2000",
+                ),
+                (
+                    "200_r_nogate",
+                    {"ident_match_at": 200.0, "ident_match2": 500.0, "gate_scale": 0.0},
+                    "ungated body with rematches at 200/500/2000",
+                ),
+                (
+                    "50_r_nogate_idet003",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03},
+                    "ungated body with a 0.03 identifier trigger",
+                ),
+                (
+                    "50_r_nogate_idet003_s0075",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.0075},
+                    "ungated 0.03 identifier trigger and body step 0.0075",
+                ),
+                (
+                    "50_r_nogate_idet003_s005625",
+                    {"gate_scale": 0.0, "ident_reset_frac": 0.03, "step_size": 0.005625},
+                    "ungated 0.03 identifier trigger and body step 0.005625",
+                ),
+                (
+                    "50_r_idet002",
+                    {"ident_reset_frac": 0.02},
+                    "gated body with a 0.02 identifier trigger",
+                ),
+                (
+                    "50_r_idet003_s00421875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.00421875},
+                    "gated body with a 0.03 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet004_s00421875",
+                    {"ident_reset_frac": 0.04, "step_size": 0.00421875},
+                    "gated body with a 0.04 identifier trigger and body step 0.00421875",
+                ),
+                (
+                    "50_r_idet003_s0031640625",
+                    {"ident_reset_frac": 0.03, "step_size": 0.0031640625},
+                    "gated body with a 0.03 identifier trigger and body step 0.0031640625",
+                ),
+                (
+                    "50_r_idet003_s002373046875",
+                    {"ident_reset_frac": 0.03, "step_size": 0.002373046875},
+                    "gated body with a 0.03 identifier trigger and body step 0.002373046875",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r01",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.1,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.1",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02",
+                    {
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated body step 0.0031640625 and RLS ridge 0.03",
+                ),
+                (
+                    "50_r_idet003_s0031640625_r02_preset003",
+                    {
+                        "rls_reset_frac": 0.03,
+                        "ident_reset_frac": 0.03,
+                        "step_size": 0.0031640625,
+                        "rls_ridge_init": 0.03,
+                    },
+                    "gated RLS ridge 0.03 with head reset fraction 0.03",
+                ),
+            )
+        ),
     ):
         specs.append(
             ScreeningSpec(

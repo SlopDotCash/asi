@@ -341,6 +341,15 @@ postmortem.
     wd0 the body weights do not grow large enough for a norm bound to
     matter. Records: `outputs/ipmnist_screening/s02_wd0_wclip/`.
 
+### Historical identmap head-reset threshold screen
+
+Reducing the head reset threshold from 0.05 to 0.03 on the gated
+`idet003_s0031640625_r02` arm lost on all three matched development seeds.
+The reported mean difference was −0.00039 online accuracy. The experiment
+kept the identifier trigger at 0.03 and the RLS ridge at 0.03. This
+brackets the head reset threshold under that historical protocol.
+See the [retained wave](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/README.md).
+
 ## Evidence and campaign closures
 
 1. **Continual-IA v1 is a valid rejection at its frozen gate.** Reward uplift

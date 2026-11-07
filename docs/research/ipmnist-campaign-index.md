@@ -69,16 +69,39 @@ not external SOTA findings.
 Use the mutable [protocol-aware comparison landscape](sota-landscape.md) for
 the current external review and the correction to the dated output survey.
 
+## Historical identmap development waves
+
+These retained 60-task waves use seeds 0–2. The original shard and summary
+bytes carry their historical source and dataset identities. The current
+registry can validate their configurations and recompute their summaries.
+Any new experiment must measure the current control under its own matched
+protocol. The historical waves do not change the lead development candidate.
+
+| PR | Retained summary |
+|---|---|
+| #3106 | [Ungated body with rematches at 50/200/2000](../../outputs/ipmnist_screening/wave_identmap50_nogate/summary.json) |
+| #3107 | [Ungated body with rematches at 200/500/2000](../../outputs/ipmnist_screening/wave_identmap200_nogate/summary.json) |
+| #3109 | [Ungated body with a 0.03 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003/summary.json) |
+| #3110 | [Ungated 0.03 identifier trigger and body step 0.0075](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s0075/summary.json) |
+| #3111 | [Ungated 0.03 identifier trigger and body step 0.005625](../../outputs/ipmnist_screening/wave_identmap50_nogate_idet003_s005625/summary.json) |
+| #3116 | [Gated body with a 0.02 identifier trigger](../../outputs/ipmnist_screening/wave_identmap50_r_idet002/summary.json) |
+| #3118 | [Gated body with a 0.03 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s00421875/summary.json) |
+| #3119 | [Gated body with a 0.04 identifier trigger and body step 0.00421875](../../outputs/ipmnist_screening/wave_identmap50_r_idet004_s00421875/summary.json) |
+| #3120 | [Gated body with a 0.03 identifier trigger and body step 0.0031640625](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625/summary.json) |
+| #3121 | [Gated body with a 0.03 identifier trigger and body step 0.002373046875](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s002373046875/summary.json) |
+| #3122 | [Gated body step 0.0031640625 and rls ridge 0.1](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r01/summary.json) |
+| #3123 | [Gated body step 0.0031640625 and rls ridge 0.03](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02/summary.json) |
+| #3124 | [Gated rls ridge 0.03 with head reset fraction 0.03](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s0031640625_r02_preset003/summary.json) |
+| #3144 | [Gradual transitions with a 64-step ramp](../../outputs/ipmnist_screening/gradual64_r2/summary.json) |
+
 ## Artifact-schema boundary
 
-Every stored screening shard and summary in this append-only campaign is a v1
-record. New `run` invocations write `alberta.ipmnist_screening.shard.v2`.
-The live merge command accepts v1 or v2 inputs, never a mixture, and recomputes
-the derived summary from the supplied shards. It requires the declared control
-and exactly the same observed seed set for every arm, but it does not accept a
-separately declared expected-seed universe. A v1 merge remains a legacy,
-non-source-bound description; only a v2 merge carries the current strict
-source, dataset, runtime, arm, and input-shard bindings.
+The append-only campaign contains v1, v2, and v3 records. New `run` invocations
+write v2 shards for step and pool noise and v3 shards for gradual transitions.
+The live merge command recomputes summaries within a single shard schema. It
+requires the declared control and the same observed seed set for every arm.
+A v1 merge carries a legacy description. V2 and v3 add source, dataset,
+runtime, arm, and input-shard bindings.
 
 V2 binds the exact post-cast array bytes, arm fields and callback descriptors,
 a package-wide Python disk snapshot plus available checkout lock documents,
