@@ -474,7 +474,7 @@ def _rms_mix(hidden: Array, f_rms: Array) -> Array:
             hidden,
         ),
     )
-    return cast(Array, f_rms * direction + (1.0 - f_rms) * hidden)
+    return f_rms * direction + (1.0 - f_rms) * hidden
 
 
 def _loss_logits(
