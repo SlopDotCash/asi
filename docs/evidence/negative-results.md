@@ -646,3 +646,37 @@ A preregistered (4b2d6de0) development comparison, run at the full 200-task hori
 - Conclusion: more within-task decay does not pay materially over a full life.
 
 Evidence: [`outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md`](../../outputs/ipmnist_screening/anneal_f4t1000_confirm200/RESULTS.md).
+
+## IPMNIST partial anneal reset on anneal_f2t1000 (2026-10-31)
+
+A preregistered (b1c5e283) development screen. On a detected shift, the body-step anneal clock of `..._s005625_anneal_f2t1000` restarts at `1 + floor(f·s)` instead of 1. The identifier's clock is untouched.
+- Seed-0 tune: f=0.25 gave +0.000183 and f=0.5 gave +0.000807, so f=0.5 was chosen.
+- Screen, seeds 1-3: mean +0.000544, GO.
+- Confirm, seeds 4-13: +0.000613 paired, 10/10 seeds improved, 95% CI [+0.000547, +0.000680]. It FAILS the preregistered +0.002 mean bar.
+- The bit-exact environment check passed.
+- The gain is negative in tasks 1-15 and grows through tasks 46-60. A longer horizon was not tested.
+- Caveat: the anneal step is coupled to weight decay (`1 - lr*weight_decay`), so this arm changes both, and they were not separated.
+
+Evidence: [`outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md`](../../outputs/ipmnist_screening/anneal_partial_reset_screen/RESULTS.md).
+
+## 2026-10-31: pr50 partial reset is decay-driven; the step part hurts (pr50_wd_decoupled_screen)
+- Branch screen/identmap50-r-idet003-s005625-anneal-pr50-wd-decoupled.
+- Setup: 60 tasks, seeds 4-13, paired vs #3580 parent.
+- In the partial-reset screen, the +0.000613 pr50 gain was attributed to the step clock. Decoupling shows otherwise:
+  - step-only (pr50 step, parent decay): −0.001071, CI [−0.001163, −0.000979], 0/10 seeds improved.
+  - decay-only (parent step, pr50 decay): +0.001656, CI [+0.001565, +0.001748], 10/10 seeds improved.
+  - interaction: +0.000028, CI includes 0.
+- Preregistered verdict: DECAY-DRIVEN. Do not run f=0.5 at 200 tasks.
+- Decay-only is a post hoc lead and needs its own preregistration on fresh seeds.
+
+## Shift-timed decay relief (anneal decay clock) on identmap50_r_idet003 (2026-10-31)
+
+Preregistered fresh-seed screen (seeds 30-39, 60 tasks, prereg ccb788d6). It tested the pr50 decay-only clock (f_s 0, f_d 0.5) against the `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000` parent.
+
+- Decay-only gained +0.001706 (CI [+0.001580, +0.001831], 10/10 seeds). This fails the +0.002 mean bar.
+- A plain constant weight_decay of 0.0084, matched to decay-only's average effective decay, did better: +0.002432.
+- D = A − B = −0.000727, CI [−0.000828, −0.000625], so the verdict is AMOUNT-ONLY.
+- The gain comes from less weight decay overall, not from when the decay is relaxed. Do not pursue the decay clock as a mechanism.
+- The descriptive arm at weight_decay 0.005 gained +0.008022. That is post hoc and nonpromoting; it would need its own preregistered sweep.
+
+Evidence: [decayonly_fresh_screen](../../outputs/ipmnist_screening/decayonly_fresh_screen/RESULTS.md).
