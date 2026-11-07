@@ -47,11 +47,18 @@ def input_file_identities(
 
 def array_identity(array: np.ndarray[Any, Any]) -> dict[str, Any]:
     """Bind shape, dtype, and canonical C-order bytes of one array."""
+    if not isinstance(array, np.ndarray):
+        raise ValueError("array identity requires a NumPy array")
+    # Object cells are process-local pointers, and a void dtype string omits its fields.
+    if array.dtype.kind in "OV":
+        raise ValueError(f"array identity cannot bind dtype {array.dtype}")
+    # ``ascontiguousarray`` promotes 0-d arrays, so the shape comes from the input.
     contiguous = np.ascontiguousarray(array)
+    payload = memoryview(contiguous).cast("B") if contiguous.size else b""
     return {
-        "shape": list(contiguous.shape),
+        "shape": list(array.shape),
         "dtype": contiguous.dtype.str,
-        "sha256": hashlib.sha256(memoryview(contiguous).cast("B")).hexdigest(),
+        "sha256": hashlib.sha256(payload).hexdigest(),
     }
 
 
