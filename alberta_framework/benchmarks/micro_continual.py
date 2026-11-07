@@ -692,18 +692,31 @@ def bayes_predict(component_means: Array, dim_sigma: Array, x: Array) -> Array:
     the Bayes rule is ``argmax_c logsumexp_k(-0.5 * mahalanobis²(x, mu_ck))``.
     Components are visited sequentially so memory stays
     ``O(n * n_classes * n_components + n * dim)`` instead of materializing
-    the ``(n, C, K, dim)`` difference tensor.  Computing each coordinate
-    difference before squaring also avoids the catastrophic cancellation in
-    the expanded ``||x||² - 2 x·mu + ||mu||²`` identity.  A finite direct
-    sum of squares still feeds that rule.  When every class sum overflows,
-    the scaled log distance selects the nearer class.
+    the ``(n, C, K, dim)`` difference tensor.  Each coordinate difference is
+    formed after an exact power-of-two rescaling, which avoids both the
+    catastrophic cancellation in the expanded
+    ``||x||² - 2 x·mu + ||mu||²`` identity and float32 subtraction overflow
+    for opposite-sign extremes.  A finite direct sum of squares still feeds
+    that rule.  When every class sum overflows, the scaled log distance
+    selects the nearer class.
     """
     c, k, d = component_means.shape
-    whitened_means = (component_means / dim_sigma[None, None, :]).reshape(c * k, d)
-    whitened_x = x / dim_sigma[None, :]
+    means = component_means.reshape(c * k, d)
 
     def squared_distances(mean: Array) -> tuple[Array, Array]:
-        delta = whitened_x - mean[None, :]
+        # Rescale by an exact power of two before subtracting so opposite-sign
+        # extremes cannot overflow.  Combining the scale with the sigma
+        # mantissa/exponent keeps the shared-offset subtraction exact without
+        # intermediate overflow or underflow.
+        magnitude = jnp.maximum(jnp.abs(x), jnp.abs(mean[None, :]))
+        _, magnitude_exponent = jnp.frexp(magnitude)
+        sigma_mantissa, sigma_exponent = jnp.frexp(dim_sigma[None, :])
+        scale = jnp.ldexp(jnp.ones_like(magnitude), magnitude_exponent - 1)
+        scaled_delta = x / scale - mean[None, :] / scale
+        delta = jnp.ldexp(
+            scaled_delta / sigma_mantissa,
+            magnitude_exponent - 1 - sigma_exponent,
+        )
         direct = jnp.sum(delta * delta, axis=1)
         max_abs = jnp.max(jnp.abs(delta), axis=1)
         # Scale by a power of two. Dividing by max_abs compiles to a
@@ -726,7 +739,7 @@ def bayes_predict(component_means: Array, dim_sigma: Array, x: Array) -> Array:
     # lax.map evaluates one component at a time.  Unlike vmap/broadcasting,
     # this makes the bounded-memory contract explicit while retaining a
     # vectorized reduction across samples and dimensions for each component.
-    direct_rows, log_rows = jax.lax.map(squared_distances, whitened_means)
+    direct_rows, log_rows = jax.lax.map(squared_distances, means)
     d2 = direct_rows.T.reshape(-1, c, k)
     log_d2 = log_rows.T.reshape(-1, c, k)
     scores = jax.scipy.special.logsumexp(-0.5 * d2, axis=2)
