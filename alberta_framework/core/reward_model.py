@@ -57,9 +57,12 @@ def _preflight_update_working_set(feature_dim: int) -> None:
     # banks (source, outer, unsymmetrized, symmetrized, selected), plus the
     # symmetrizer's two gathered values, two half-scaled values, and sum.
     # Its i/j/min/max int32 index grids and equality boolean mask also count.
-    # Seven float32 vectors and eight scalars retain the existing update terms.
+    # Nine float32 vectors retain the existing update terms plus the two
+    # normalized operands used by the overflow-safe prediction dot product.
+    # Twenty-two scalar slots conservatively cover both update and stable-dot
+    # values and predicates, with every slot charged at four bytes.
     matrix_cells = feature_dim * feature_dim
-    update_bytes = 4 * (10 * matrix_cells + 7 * feature_dim + 8)
+    update_bytes = 4 * (10 * matrix_cells + 9 * feature_dim + 22)
     update_bytes += (4 * 4 + 1) * matrix_cells
     if update_bytes > _INT32_MAX:
         raise ValueError(
@@ -113,6 +116,50 @@ def _symmetrize_matrix(matrix: Array) -> Array:
     val_b = matrix[j_max, i_min]
     # Equal entries already are symmetric; halving tiny normal values can flush to zero.
     return jnp.where(val_a == val_b, val_a, half * val_a + half * val_b)
+
+
+def _finite_cancelling_dot(left: Array, right: Array) -> Array:
+    """Preserve a representable dot product when direct accumulation overflows."""
+
+    direct = jnp.dot(left, right)
+    left_scale = jnp.max(jnp.abs(left))
+    right_scale = jnp.max(jnp.abs(right))
+    magnitude_bound = left_scale * right_scale * left.size
+    use_fallback = (
+        (~jnp.isfinite(direct) | ~jnp.isfinite(magnitude_bound))
+        & jnp.isfinite(left_scale) & jnp.isfinite(right_scale)
+    )
+
+    def compensated() -> Array:
+        _, left_exponent = jnp.frexp(left_scale)
+        _, right_exponent = jnp.frexp(right_scale)
+        normalized_left = jnp.ldexp(left, -left_exponent)
+        normalized_right = jnp.ldexp(right, -right_exponent)
+
+        def add_product(
+            carry: tuple[Array, Array], operands: tuple[Array, Array]
+        ) -> tuple[tuple[Array, Array], None]:
+            total, correction = carry
+            product = operands[0] * operands[1]
+            next_total = total + product
+            rounding_error = jnp.where(
+                jnp.abs(total) >= jnp.abs(product),
+                (total - next_total) + product,
+                (product - next_total) + total,
+            )
+            next_correction = correction + rounding_error
+            return (next_total, next_correction), None
+
+        (normalized_sum, correction), _ = jax.lax.scan(
+            add_product,
+            (jnp.asarray(0.0, dtype=left.dtype), jnp.asarray(0.0, dtype=left.dtype)),
+            (normalized_left, normalized_right),
+        )
+        normalized_dot = normalized_sum + correction
+        combined_exponent = left_exponent + right_exponent
+        return jnp.ldexp(normalized_dot, combined_exponent)
+
+    return jax.lax.cond(use_fallback, compensated, lambda: direct)
 
 
 @dataclass(frozen=True)
@@ -255,7 +302,7 @@ class RLSRewardModel:
     def predict(self, state: RLSRewardModelState, features: Array) -> Array:
         """Predict reward from one feature vector."""
         x = _validated_feature_vector(features, feature_dim=self._config.feature_dim)
-        return jnp.dot(state.weights, x)
+        return _finite_cancelling_dot(state.weights, x)
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def update(
@@ -291,7 +338,7 @@ class RLSRewardModel:
         ):
             raise TypeError("reward must be real numeric")
         target = raw_target.astype(jnp.float32)
-        prediction = jnp.dot(state.weights, x)
+        prediction = _finite_cancelling_dot(state.weights, x)
         error = target - prediction
         covariance_features = state.covariance @ x
         forgetting = jnp.asarray(self._config.forgetting, dtype=jnp.float32)
