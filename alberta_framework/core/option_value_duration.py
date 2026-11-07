@@ -423,10 +423,13 @@ class OptionValueDurationLearner:
             dtype=jnp.float32,
         )
         heads = jnp.einsum("ohf,f->oh", state.weights, observation)
-        inputs_valid = self._state_values_valid(state) & jnp.all(
-            jnp.isfinite(observation)
+        # Finite weights and observations can still overflow the dot product.
+        heads_valid = (
+            self._state_values_valid(state)
+            & jnp.all(jnp.isfinite(observation))
+            & jnp.all(jnp.isfinite(heads))
         )
-        return jnp.where(inputs_valid, heads, jnp.zeros_like(heads))
+        return jnp.where(heads_valid, heads, jnp.zeros_like(heads))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def predict(
@@ -442,10 +445,13 @@ class OptionValueDurationLearner:
             durations,
             jnp.asarray(self._config.duration_floor, dtype=jnp.float32),
         )
+        reward_rates = reward_values / safe_durations
+        # Finite heads can still overflow the division by the duration floor.
+        rates_valid = jnp.all(jnp.isfinite(reward_rates))
         return OptionValueDurationPrediction(
-            reward_values=reward_values,
-            durations=durations,
-            reward_rates=reward_values / safe_durations,
+            reward_values=jnp.where(rates_valid, reward_values, jnp.zeros_like(reward_values)),
+            durations=jnp.where(rates_valid, durations, jnp.zeros_like(durations)),
+            reward_rates=jnp.where(rates_valid, reward_rates, jnp.zeros_like(reward_rates)),
         )
 
     @functools.partial(jax.jit, static_argnums=(0,))
