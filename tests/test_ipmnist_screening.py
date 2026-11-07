@@ -8718,3 +8718,135 @@ class TestAnnealScheduleUnits:
             assert "anneal_reset_frac" not in hp
             assert "anneal_decay_reset_frac" not in hp
             assert hp["weight_decay"] == 0.0
+
+
+class TestRLSHeadIdentMapAnnealClockArithmetic:
+    """Exact clock and schedule arithmetic of the identmap body anneal.
+
+    One ``full_step`` on hand-built states: a forced detector trigger
+    (raw-norm mean far from a zero input, matured count) or a forced
+    non-trigger, then the stored clocks and the step sizes handed to the
+    body are compared with the documented formulas.
+    """
+
+    PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
+    OFF = -(2**30)
+
+    def _step(self, monkeypatch, *, trigger, anneal_clock, decay_clock=None,
+              since_shift=None, **overrides):
+        seen = {}
+        real = ipmnist_screening._make_rls_head_learner
+
+        def recording(hp):
+            init, step = real(hp)
+
+            def wrapped(*args, **kwargs):
+                seen.update(kwargs)
+                return step(*args, **kwargs)
+
+            return init, wrapped
+
+        monkeypatch.setattr(ipmnist_screening, "_make_rls_head_learner", recording)
+        hp = {**screening_spec(self.PARENT).hyperparameters, **overrides}
+        init_fn, step_fn = ipmnist_screening._make_rls_head_identmap_learner(hp)
+        params = init_mlp_params(jr.key(0), SMALL)
+        state = init_fn(params)
+        d = SMALL.input_dim
+        raw_norm = replace(
+            state.raw_norm,
+            mean=jnp.full((d,), 100.0 if trigger else 0.0, jnp.float32),
+            count=jnp.full((d,), 1e6, jnp.float32),
+        )
+        clock = jnp.array(anneal_clock, jnp.int32)
+        state = replace(
+            state,
+            raw_norm=raw_norm,
+            anneal_clock=clock,
+            decay_clock=clock if decay_clock is None
+            else jnp.array(decay_clock, jnp.int32),
+            since_shift=clock if since_shift is None
+            else jnp.array(since_shift, jnp.int32),
+        )
+        _, new, _ = step_fn(
+            params, state, jnp.zeros((d,), jnp.float32), jnp.array(0), jr.key(1)
+        )
+        return new, seen
+
+    @staticmethod
+    def _sched(s, floor=0.0028125, step=0.005625, tau=1000.0):
+        return np.maximum(
+            np.float32(floor),
+            np.float32(step)
+            * np.asarray(jax.lax.rsqrt(np.float32(1.0) + np.float32(s) / np.float32(tau))),
+        )
+
+    def test_partial_reset_restart_value(self, monkeypatch):
+        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=7,
+                            anneal_reset_frac=0.5)
+        assert int(new.anneal_clock) == 1 + math.floor(0.5 * 7)
+        assert int(new.since_shift) == 1
+
+    def test_partial_reset_decodes_pre_shift_offset(self, monkeypatch):
+        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=self.OFF + 9,
+                            anneal_reset_frac=0.5)
+        assert int(new.anneal_clock) == 1 + math.floor(0.5 * 9)
+
+    def test_partial_clock_counts_without_trigger(self, monkeypatch):
+        new, _ = self._step(monkeypatch, trigger=False, anneal_clock=7,
+                            anneal_reset_frac=0.5)
+        assert int(new.anneal_clock) == 8
+        assert int(new.since_shift) == 8
+
+    def test_flag_off_clocks_mirror_since_shift(self, monkeypatch):
+        for trig in (True, False):
+            new, _ = self._step(monkeypatch, trigger=trig, anneal_clock=7)
+            assert int(new.anneal_clock) == int(new.since_shift)
+            assert int(new.decay_clock) == int(new.since_shift)
+        new, _ = self._step(monkeypatch, trigger=False, anneal_clock=self.OFF)
+        assert int(new.anneal_clock) == self.OFF + 1 == int(new.since_shift)
+
+    def test_decay_clock_restart_value(self, monkeypatch):
+        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=8,
+                            decay_clock=10, anneal_reset_frac=0.5,
+                            anneal_decay_reset_frac=0.25)
+        assert int(new.anneal_clock) == 1 + math.floor(0.5 * 8)
+        assert int(new.decay_clock) == 1 + math.floor(0.25 * 10)
+
+    def test_schedule_value_and_floor(self, monkeypatch):
+        for s in (0, 1, 999, 2999, 10**6):
+            _, seen = self._step(monkeypatch, trigger=False, anneal_clock=s)
+            np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(s))
+        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=10**6)
+        assert np.asarray(seen["lr"]) == np.float32(0.0028125)
+
+    def test_schedule_reads_partial_and_decay_clocks(self, monkeypatch):
+        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=500,
+                             decay_clock=50, since_shift=5,
+                             anneal_reset_frac=0.5, anneal_decay_reset_frac=0.25)
+        np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(500))
+        np.testing.assert_array_equal(np.asarray(seen["decay_lr"]), self._sched(50))
+
+    def test_schedule_reads_since_shift_when_partial_off(self, monkeypatch):
+        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=500,
+                             since_shift=5)
+        np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(5))
+        assert "decay_lr" not in seen
+
+    def test_stream_start_lr_equals_step(self, monkeypatch):
+        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=self.OFF)
+        assert np.asarray(seen["lr"]) == np.float32(0.005625)
+
+    def test_decay_schedule_decodes_pre_shift_offset(self, monkeypatch):
+        _, seen = self._step(monkeypatch, trigger=False,
+                             anneal_clock=self.OFF + 500,
+                             decay_clock=self.OFF + 50,
+                             anneal_reset_frac=0.5, anneal_decay_reset_frac=0.25)
+        np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(500))
+        np.testing.assert_array_equal(np.asarray(seen["decay_lr"]), self._sched(50))
+
+    def test_decay_clock_restart_decodes_pre_shift_offset(self, monkeypatch):
+        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=self.OFF + 8,
+                            decay_clock=self.OFF + 10, anneal_reset_frac=0.5,
+                            anneal_decay_reset_frac=0.25)
+        assert int(new.anneal_clock) == 1 + math.floor(0.5 * 8)
+        assert int(new.decay_clock) == 1 + math.floor(0.25 * 10)
