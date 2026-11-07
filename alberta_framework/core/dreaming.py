@@ -462,6 +462,15 @@ class GuardedDreamer:
             self._config.min_discount,
             max_discount,
         )
+        # A zero model discount is the terminal signal: the world-model
+        # prediction carries no terminated flag, so the min_discount floor
+        # must not resurrect it into a bootstrapping transition. This mirrors
+        # the terminal-discount rule in the rollout path.
+        discount = jnp.where(
+            prediction.discount == 0.0,
+            jnp.zeros_like(discount),
+            discount,
+        )
         transition = DreamTransition(
             observation=jnp.asarray(observation, dtype=jnp.float32).reshape(
                 (model.config.observation_dim,)
