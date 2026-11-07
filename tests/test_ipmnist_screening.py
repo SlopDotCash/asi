@@ -8535,8 +8535,14 @@ class TestRLSHeadIdentMapWd0ConstStepExtendRegistry(TestRLSHeadIdentMapWd0ConstS
 
 def _load_step200_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "wd0_const_step_200task" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "wd0_const_step_200task"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("step200_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -8544,7 +8550,7 @@ def _load_step200_analyze():
 
 
 class TestWd0ConstStep200TaskConfirm:
-    """Development-plan rules of wd0_const_step_200task/analyze.py (adapted from our own earlier 60-task screen)."""
+    """Development rules for the 200-task constant-step confirmation."""
 
     A = _load_step200_analyze()
     OK = [0.95] * 200
@@ -8555,7 +8561,12 @@ class TestWd0ConstStep200TaskConfirm:
         assert self.A.CAND in reg and self.A.INC in reg
 
     def test_constants(self):
-        assert self.A.FLOOR == 0.5 and self.A.T19 == 2.093 and self.A.NTASK == 200 and self.A.BLOCK == 50
+        assert (
+            self.A.FLOOR == 0.5
+            and self.A.T19 == 2.093
+            and self.A.NTASK == 200
+            and self.A.BLOCK == 50
+        )
         assert list(self.A.SEEDS) == list(range(134, 154))
 
     def test_healthy_shard_passes(self):
@@ -8566,25 +8577,29 @@ class TestWd0ConstStep200TaskConfirm:
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_accuracy_diverged(self, bad):
-        acc = list(self.OK); acc[117] = bad
+        acc = list(self.OK)
+        acc[117] = bad
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
     def test_non_finite_loss_diverged(self, bad):
-        loss = list(self.LOSS); loss[199] = bad
+        loss = list(self.LOSS)
+        loss[199] = bad
         assert "non-finite loss" in self.A.classify(self.OK, loss)
 
     def test_missing_loss_diverged(self):
         assert "non-finite loss" in self.A.classify(self.OK, None)
 
     def test_floor(self):
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         acc[3] = 0.5
         assert self.A.classify(acc, self.LOSS) is None
 
     def test_out_of_range_accuracy_diverged(self):
-        acc = list(self.OK); acc[0] = 1.5
+        acc = list(self.OK)
+        acc[0] = 1.5
         assert "outside" in self.A.classify(acc, self.LOSS)
 
     def test_pass(self):
@@ -8606,18 +8621,26 @@ class TestWd0ConstStep200TaskConfirm:
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 199), (self.A.CAND, self.OK)):
-            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed134.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("confirm", self.A.CAND, 134)
 
     def test_candidate_divergence_scored_not_void(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, self.OK), (self.A.CAND, [0.3] + [0.9] * 199)):
-            (d / f"{c}_seed134.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed134.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 134) is None
 
@@ -8654,13 +8677,13 @@ class TestAnnealScheduleUnits:
     @pytest.mark.parametrize(
         "prev,frac,expected",
         [
-            (100, 0.0, 1),     # f = 0: full reset, the parent rule
-            (100, 0.5, 51),    # 1 + floor(0.5 * 100)
-            (101, 0.5, 51),    # floor, not round
+            (100, 0.0, 1),  # f = 0: full reset, the parent rule
+            (100, 0.5, 51),  # 1 + floor(0.5 * 100)
+            (101, 0.5, 51),  # floor, not round
             (100, 0.25, 26),
-            (1, 0.5, 1),       # small prev: floor(0.5) = 0 -> full reset
-            (3, 0.25, 1),      # f * s < 1 -> full reset
-            (4, 0.25, 2),      # first s where the partial reset keeps time
+            (1, 0.5, 1),  # small prev: floor(0.5) = 0 -> full reset
+            (3, 0.25, 1),  # f * s < 1 -> full reset
+            (4, 0.25, 2),  # first s where the partial reset keeps time
         ],
     )
     def test_partial_reset_restart(self, prev, frac, expected):
@@ -8699,9 +8722,7 @@ class TestAnnealScheduleUnits:
         dec = self._h()[3]
         assert float(dec(jnp.float32(0.02), 0.02, 0.5, 0.01)) == 0.5
         near = jnp.nextafter(jnp.float32(0.02), jnp.float32(1.0))
-        np.testing.assert_allclose(
-            float(dec(near, 0.02, 0.5, 0.01)), 1.0 - 0.02 * 0.01, rtol=1e-6
-        )
+        np.testing.assert_allclose(float(dec(near, 0.02, 0.5, 0.01)), 1.0 - 0.02 * 0.01, rtol=1e-6)
 
     def test_runtime_decay_is_one_at_wd0_on_both_branches(self):
         """The headline arms run at weight_decay 0: either branch gives 1."""
@@ -8723,9 +8744,7 @@ class TestAnnealScheduleUnits:
 
     def test_headline_arms_do_not_use_partial_or_decoupled_reset(self):
         for arm in ("s02_anneal_f1t1000_wd0", "s005625_anneal_f2t1000_wd0"):
-            hp = screening_spec(
-                "rls_head_resid_identmap50_r_idet003_" + arm
-            ).hyperparameters
+            hp = screening_spec("rls_head_resid_identmap50_r_idet003_" + arm).hyperparameters
             assert "anneal_reset_frac" not in hp
             assert "anneal_decay_reset_frac" not in hp
             assert hp["weight_decay"] == 0.0
@@ -8743,8 +8762,9 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
     PARENT = "rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000"
     OFF = -(2**30)
 
-    def _step(self, monkeypatch, *, trigger, anneal_clock, decay_clock=None,
-              since_shift=None, **overrides):
+    def _step(
+        self, monkeypatch, *, trigger, anneal_clock, decay_clock=None, since_shift=None, **overrides
+    ):
         seen = {}
         real = ipmnist_screening._make_rls_head_learner
 
@@ -8773,14 +8793,10 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
             state,
             raw_norm=raw_norm,
             anneal_clock=clock,
-            decay_clock=clock if decay_clock is None
-            else jnp.array(decay_clock, jnp.int32),
-            since_shift=clock if since_shift is None
-            else jnp.array(since_shift, jnp.int32),
+            decay_clock=clock if decay_clock is None else jnp.array(decay_clock, jnp.int32),
+            since_shift=clock if since_shift is None else jnp.array(since_shift, jnp.int32),
         )
-        _, new, _ = step_fn(
-            params, state, jnp.zeros((d,), jnp.float32), jnp.array(0), jr.key(1)
-        )
+        _, new, _ = step_fn(params, state, jnp.zeros((d,), jnp.float32), jnp.array(0), jr.key(1))
         return new, seen
 
     @staticmethod
@@ -8792,19 +8808,18 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
         )
 
     def test_partial_reset_restart_value(self, monkeypatch):
-        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=7,
-                            anneal_reset_frac=0.5)
+        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=7, anneal_reset_frac=0.5)
         assert int(new.anneal_clock) == 1 + math.floor(0.5 * 7)
         assert int(new.since_shift) == 1
 
     def test_partial_reset_decodes_pre_shift_offset(self, monkeypatch):
-        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=self.OFF + 9,
-                            anneal_reset_frac=0.5)
+        new, _ = self._step(
+            monkeypatch, trigger=True, anneal_clock=self.OFF + 9, anneal_reset_frac=0.5
+        )
         assert int(new.anneal_clock) == 1 + math.floor(0.5 * 9)
 
     def test_partial_clock_counts_without_trigger(self, monkeypatch):
-        new, _ = self._step(monkeypatch, trigger=False, anneal_clock=7,
-                            anneal_reset_frac=0.5)
+        new, _ = self._step(monkeypatch, trigger=False, anneal_clock=7, anneal_reset_frac=0.5)
         assert int(new.anneal_clock) == 8
         assert int(new.since_shift) == 8
 
@@ -8817,9 +8832,14 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
         assert int(new.anneal_clock) == self.OFF + 1 == int(new.since_shift)
 
     def test_decay_clock_restart_value(self, monkeypatch):
-        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=8,
-                            decay_clock=10, anneal_reset_frac=0.5,
-                            anneal_decay_reset_frac=0.25)
+        new, _ = self._step(
+            monkeypatch,
+            trigger=True,
+            anneal_clock=8,
+            decay_clock=10,
+            anneal_reset_frac=0.5,
+            anneal_decay_reset_frac=0.25,
+        )
         assert int(new.anneal_clock) == 1 + math.floor(0.5 * 8)
         assert int(new.decay_clock) == 1 + math.floor(0.25 * 10)
 
@@ -8831,15 +8851,20 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
         assert np.asarray(seen["lr"]) == np.float32(0.0028125)
 
     def test_schedule_reads_partial_and_decay_clocks(self, monkeypatch):
-        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=500,
-                             decay_clock=50, since_shift=5,
-                             anneal_reset_frac=0.5, anneal_decay_reset_frac=0.25)
+        _, seen = self._step(
+            monkeypatch,
+            trigger=False,
+            anneal_clock=500,
+            decay_clock=50,
+            since_shift=5,
+            anneal_reset_frac=0.5,
+            anneal_decay_reset_frac=0.25,
+        )
         np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(500))
         np.testing.assert_array_equal(np.asarray(seen["decay_lr"]), self._sched(50))
 
     def test_schedule_reads_since_shift_when_partial_off(self, monkeypatch):
-        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=500,
-                             since_shift=5)
+        _, seen = self._step(monkeypatch, trigger=False, anneal_clock=500, since_shift=5)
         np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(5))
         assert "decay_lr" not in seen
 
@@ -8848,17 +8873,26 @@ class TestRLSHeadIdentMapAnnealClockArithmetic:
         assert np.asarray(seen["lr"]) == np.float32(0.005625)
 
     def test_decay_schedule_decodes_pre_shift_offset(self, monkeypatch):
-        _, seen = self._step(monkeypatch, trigger=False,
-                             anneal_clock=self.OFF + 500,
-                             decay_clock=self.OFF + 50,
-                             anneal_reset_frac=0.5, anneal_decay_reset_frac=0.25)
+        _, seen = self._step(
+            monkeypatch,
+            trigger=False,
+            anneal_clock=self.OFF + 500,
+            decay_clock=self.OFF + 50,
+            anneal_reset_frac=0.5,
+            anneal_decay_reset_frac=0.25,
+        )
         np.testing.assert_array_equal(np.asarray(seen["lr"]), self._sched(500))
         np.testing.assert_array_equal(np.asarray(seen["decay_lr"]), self._sched(50))
 
     def test_decay_clock_restart_decodes_pre_shift_offset(self, monkeypatch):
-        new, _ = self._step(monkeypatch, trigger=True, anneal_clock=self.OFF + 8,
-                            decay_clock=self.OFF + 10, anneal_reset_frac=0.5,
-                            anneal_decay_reset_frac=0.25)
+        new, _ = self._step(
+            monkeypatch,
+            trigger=True,
+            anneal_clock=self.OFF + 8,
+            decay_clock=self.OFF + 10,
+            anneal_reset_frac=0.5,
+            anneal_decay_reset_frac=0.25,
+        )
         assert int(new.anneal_clock) == 1 + math.floor(0.5 * 8)
         assert int(new.decay_clock) == 1 + math.floor(0.25 * 10)
 
@@ -8873,8 +8907,9 @@ def _run_py(script, cwd, *args):
     import sys
 
     env = {**os.environ, "GIT_CEILING_DIRECTORIES": str(cwd)}
-    return subprocess.run([sys.executable, str(script), *args], cwd=cwd,
-                          capture_output=True, text=True, env=env)
+    return subprocess.run(
+        [sys.executable, str(script), *args], cwd=cwd, capture_output=True, text=True, env=env
+    )
 
 
 def _jobs_ok_rc(launch, content, tmp_path):
@@ -8884,8 +8919,11 @@ def _jobs_ok_rc(launch, content, tmp_path):
     fn = re.search(r"^jobs_ok\(\)\{.*$", launch.read_text(), re.M).group(0)
     f = tmp_path / "jobs.txt"
     f.write_text(content)
-    return subprocess.run(["bash", "-c", "L=/dev/null; log(){ :; }\n" + fn + '\njobs_ok "$1"',
-                           "x", str(f)], capture_output=True, text=True).returncode
+    return subprocess.run(
+        ["bash", "-c", "L=/dev/null; log(){ :; }\n" + fn + '\njobs_ok "$1"', "x", str(f)],
+        capture_output=True,
+        text=True,
+    ).returncode
 
 
 def _worker_xla_flags(worker):
@@ -8893,12 +8931,13 @@ def _worker_xla_flags(worker):
     import subprocess
 
     line = re.search(r"^export XLA_FLAGS=.*$", worker.read_text(), re.M).group(0)
-    return subprocess.run(["bash", "-c", line + '\nprintf %s "$XLA_FLAGS"'],
-                          capture_output=True, text=True).stdout
+    return subprocess.run(
+        ["bash", "-c", line + '\nprintf %s "$XLA_FLAGS"'], capture_output=True, text=True
+    ).stdout
 
 
 class TestEnvcheckWd0Confirm200Unreadable:
-    """wd0_confirm200/envcheck.py: an unreadable reference is a clean FAIL (exit 1), never a crash."""
+    """An unreadable environment-check reference fails cleanly with exit 1."""
 
     ENV = _exp_path("wd0_confirm200", "envcheck.py")
 
@@ -8913,8 +8952,10 @@ class TestEnvcheckWd0Confirm200Unreadable:
         import subprocess
 
         subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-        shutil.copytree(_exp_path("wd0_confirm200", "envcheck"),
-                        tmp_path / "outputs" / "ipmnist_screening" / "wd0_confirm200" / "envcheck")
+        shutil.copytree(
+            _exp_path("wd0_confirm200", "envcheck"),
+            tmp_path / "outputs" / "ipmnist_screening" / "wd0_confirm200" / "envcheck",
+        )
         self._check_clean_fail(_run_py(self.ENV, tmp_path))
 
     def test_not_a_git_checkout_and_no_local_shards(self, tmp_path):
@@ -8942,9 +8983,12 @@ class TestWd0Confirm200AnalyzeShardErrors:
         d = tmp_path / "outputs" / "ipmnist_screening" / "wd0_confirm200" / "shards"
         d.mkdir(parents=True)
         for s in range(50, 70):
-            (d / f"{self.P}_seed{s}.json").write_text(json.dumps({"per_task_accuracy": [0.9] * 200}))
+            (d / f"{self.P}_seed{s}.json").write_text(
+                json.dumps({"per_task_accuracy": [0.9] * 200})
+            )
             (d / f"{self.P}_wd0_seed{s}.json").write_text(
-                json.dumps({"per_task_accuracy": [0.9 + 0.003 + 0.0001 * (s - 50)] * 200}))
+                json.dumps({"per_task_accuracy": [0.9 + 0.003 + 0.0001 * (s - 50)] * 200})
+            )
         return d
 
     def test_valid_shards_give_verdict(self, tmp_path):
@@ -8964,7 +9008,8 @@ class TestWd0Confirm200AnalyzeShardErrors:
         import json
 
         (self._shards(tmp_path) / f"{self.P}_wd0_seed61.json").write_text(
-            json.dumps({"per_task_accuracy": [0.9] * 199}))
+            json.dumps({"per_task_accuracy": [0.9] * 199})
+        )
         self._void(_run_py(self.A, tmp_path))
 
     def test_malformed_shard_voids(self, tmp_path):
@@ -8985,8 +9030,10 @@ class TestRLSHeadIdentMapS02Wd0Ridge:
             name=spec.name + "_ridge_test",
             hyperparameters={
                 **spec.hyperparameters,
-                "ident_match_at": 10.0, "ident_match2": 0.0,
-                "ident_match3": 0.0, **overrides,
+                "ident_match_at": 10.0,
+                "ident_match2": 0.0,
+                "ident_match3": 0.0,
+                **overrides,
             },
         )
 
@@ -9001,7 +9048,8 @@ class TestRLSHeadIdentMapS02Wd0Ridge:
             spec = screening_spec(self.INCUMBENT + "_" + tag)
             hp = dict(spec.hyperparameters)
             assert hp.pop("rls_ridge_init") == ridge
-            inc_rest = dict(inc); inc_rest.pop("rls_ridge_init")
+            inc_rest = dict(inc)
+            inc_rest.pop("rls_ridge_init")
             assert hp == inc_rest
             assert spec.factory is screening_spec(self.INCUMBENT).factory
 
@@ -9029,8 +9077,14 @@ class TestRLSHeadIdentMapS02Wd0Ridge:
 
 def _load_s02_ridge_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "s02_wd0_ridge" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "s02_wd0_ridge"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("s02_ridge_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -9054,31 +9108,37 @@ class TestS02Wd0RidgeDivergenceRules:
     def test_classify(self):
         assert self.A.classify(self.OK, self.LOSS) is None
         assert "missing" in self.A.classify(None, None)
-        acc = list(self.OK); acc[5] = float("nan")
+        acc = list(self.OK)
+        acc[5] = float("nan")
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         assert self.A.FLOOR == 0.5
 
     def test_tune_gate_diverged_and_ties_to_larger_ridge(self):
-        T = self.A.tune_decision
-        assert T([("a", 0.03, 0.001), ("b", 0.1, None), ("c", 0.3, 0.002)]) == "c"
-        assert T([("a", 0.03, None), ("b", 0.1, None)]) == "STOP_ALL_DIVERGED"
-        assert T([("a", 0.03, 0.0005), ("b", 0.1, -0.01)]) == "STOP"
-        assert T([("a", 0.03, 0.003), ("b", 0.1, 0.003)]) == "b"
+        decide = self.A.tune_decision
+        assert decide([("a", 0.03, 0.001), ("b", 0.1, None), ("c", 0.3, 0.002)]) == "c"
+        assert decide([("a", 0.03, None), ("b", 0.1, None)]) == "STOP_ALL_DIVERGED"
+        assert decide([("a", 0.03, 0.0005), ("b", 0.1, -0.01)]) == "STOP"
+        assert decide([("a", 0.03, 0.003), ("b", 0.1, 0.003)]) == "b"
 
     def test_screen_verdict(self):
-        V = self.A.screen_verdict
-        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
-        v = V([0.5] * 9 + [None])
+        verdict = self.A.screen_verdict
+        assert verdict([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = verdict([0.5] * 9 + [None])
         assert v["diverged"] == 1 and v["verdict"] == "FAIL"
-        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+        assert verdict([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "tune"; d.mkdir()
+
+        d = tmp_path / "tune"
+        d.mkdir()
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
-            (d / f"{c}_seed165.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed165.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("tune", self.A.CELLS[0][0], 165)
@@ -9086,8 +9146,14 @@ class TestS02Wd0RidgeDivergenceRules:
 
 def _load_ridge200_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "s02_wd0_ridge_200task" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "s02_wd0_ridge_200task"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("ridge200_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -9095,7 +9161,7 @@ def _load_ridge200_analyze():
 
 
 class TestS02Ridge200TaskConfirm:
-    """Development-plan rules of s02_wd0_ridge_200task/analyze.py (rules reused from our own wd0 constant-step 200-task confirm)."""
+    """Development rules for the 200-task smaller-ridge confirmation."""
 
     A = _load_ridge200_analyze()
     OK = [0.95] * 200
@@ -9108,7 +9174,12 @@ class TestS02Ridge200TaskConfirm:
         assert reg[self.A.CAND].hyperparameters["rls_ridge_init"] == 0.1
 
     def test_constants(self):
-        assert self.A.FLOOR == 0.5 and self.A.T19 == 2.093 and self.A.NTASK == 200 and self.A.BLOCK == 50
+        assert (
+            self.A.FLOOR == 0.5
+            and self.A.T19 == 2.093
+            and self.A.NTASK == 200
+            and self.A.BLOCK == 50
+        )
         assert list(self.A.SEEDS) == list(range(176, 196))
 
     def test_healthy_shard_passes(self):
@@ -9119,25 +9190,29 @@ class TestS02Ridge200TaskConfirm:
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_accuracy_diverged(self, bad):
-        acc = list(self.OK); acc[117] = bad
+        acc = list(self.OK)
+        acc[117] = bad
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
     def test_non_finite_loss_diverged(self, bad):
-        loss = list(self.LOSS); loss[199] = bad
+        loss = list(self.LOSS)
+        loss[199] = bad
         assert "non-finite loss" in self.A.classify(self.OK, loss)
 
     def test_missing_loss_diverged(self):
         assert "non-finite loss" in self.A.classify(self.OK, None)
 
     def test_floor(self):
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         acc[3] = 0.5
         assert self.A.classify(acc, self.LOSS) is None
 
     def test_out_of_range_accuracy_diverged(self):
-        acc = list(self.OK); acc[0] = 1.5
+        acc = list(self.OK)
+        acc[0] = 1.5
         assert "outside" in self.A.classify(acc, self.LOSS)
 
     def test_pass(self):
@@ -9159,26 +9234,43 @@ class TestS02Ridge200TaskConfirm:
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 199), (self.A.CAND, self.OK)):
-            (d / f"{c}_seed176.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed176.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("confirm", self.A.CAND, 176)
 
     def test_candidate_divergence_scored_not_void(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "confirm"; d.mkdir()
+
+        d = tmp_path / "confirm"
+        d.mkdir()
         for c, acc in ((self.A.INC, self.OK), (self.A.CAND, [0.3] + [0.9] * 199)):
-            (d / f"{c}_seed176.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed176.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         assert self.A.diff("confirm", self.A.CAND, 176) is None
 
     def test_memguard_stop_sentinel_is_ignored_and_untracked(self):
         import subprocess
+
         root = Path(__file__).resolve().parents[1]
         rel = "outputs/ipmnist_screening/s02_wd0_ridge_200task/MEMGUARD_STOP"
-        assert subprocess.run(["git", "check-ignore", "-q", "--no-index", rel], cwd=root).returncode == 0
-        tracked = subprocess.run(["git", "ls-files", "outputs/ipmnist_screening/s02_wd0_ridge_200task/"],
-                                 cwd=root, capture_output=True, text=True, check=True).stdout.split()
+        assert (
+            subprocess.run(["git", "check-ignore", "-q", "--no-index", rel], cwd=root).returncode
+            == 0
+        )
+        tracked = subprocess.run(
+            ["git", "ls-files", "outputs/ipmnist_screening/s02_wd0_ridge_200task/"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
         assert not any(f.endswith("MEMGUARD_STOP") for f in tracked)
