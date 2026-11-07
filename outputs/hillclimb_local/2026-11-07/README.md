@@ -41,6 +41,21 @@ four 50-task block gains were +0.00812800, +0.00323200, +0.00243600 and
 the final block. This is a one-seed check. See the
 [paired shards and summary](ipmnist-200/).
 
+## SwitchingTwoState 4,000-event comparison
+
+All 12 lives completed on paired seeds 118331–118333.
+
+| Arm | Mean cumulative reward | Initial and final numeric bytes |
+|---|---:|---:|
+| Prototype step 0.20 | 3554.00 | 217 |
+| Prototype step 0.10 | 3406.67 | 217 |
+| Prototype step 0.05 | 3030.33 | 217 |
+| Differential SARSA | 3231.33 | 108 |
+
+Prototype step 0.20 won all three pairs against each comparator, with
+mean gains of +147.33 over step 0.10, +523.67 over step 0.05, and +322.67
+over differential SARSA. See the [paired summary](reference/switching-summary.json).
+
 ## RiverSwim 5,000-event smoke
 
 All 12 lives completed on paired seeds 118331–118333. Both optimistic
