@@ -706,3 +706,14 @@ rate lost to its locally measured parent on all three 60-task seeds and
 failed the preregistered gate. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/README.md)
 documents the paired results and why the historical parent shards were not
 used for that pairing.
+
+## Polyak body averaging on anneal_f2t1000 (2026-10-30)
+
+The preregistered development screen used a window-capped average of the
+body for prediction, with an optional averaged-feature RLS head update.
+The selected window-100 arm using raw head features improved one of three
+seeds and missed the preregistered gain. The historical
+[results](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_polyak/RESULTS.md)
+retain the original metrics. The current implementation scores accuracy and
+loss on the averaged predictor and measures plasticity using the raw
+learner both before and after the update.
