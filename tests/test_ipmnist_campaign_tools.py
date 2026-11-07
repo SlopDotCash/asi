@@ -57,6 +57,8 @@ def _shard(
     noise_mode: str | None = "step",
     noise_pool_steps: int | None = None,
     schema: str = "alberta.ipmnist_screening.shard.v1",
+    base_learner: str | None = None,
+    hyperparameters: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -76,6 +78,10 @@ def _shard(
         payload["noise_mode"] = noise_mode
     if noise_pool_steps is not None:
         payload["noise_pool_steps"] = noise_pool_steps
+    if base_learner is not None:
+        payload["base_learner"] = base_learner
+    if hyperparameters is not None:
+        payload["hyperparameters"] = hyperparameters
     path.write_text(
         json.dumps(payload),
         encoding="utf-8",
@@ -278,6 +284,65 @@ def test_seed_means_rejects_payload_arm_substitution(tmp_path: Path) -> None:
     (tmp_path / "disc_r1_seed0.json").write_bytes(source.read_bytes())
     with pytest.raises(ValueError, match="config_name.*expected arm.*disc_r1"):
         seed_means(tmp_path, "disc_r1")
+
+
+def test_seed_means_rejects_mixed_base_learner_across_seeds(tmp_path: Path) -> None:
+    # Failing-test-first for the campaign-tools gap: merge_shards rejects
+    # base_learner drift within one arm, but seed_means did not, so two
+    # different mechanisms could be averaged under one arm name.
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="upgd_w",
+        hyperparameters={"lr": 0.99},
+    )
+    with pytest.raises(ValueError, match="inconsistent base_learner"):
+        seed_means(tmp_path, "candidate")
+
+
+def test_seed_means_rejects_mixed_hyperparameters_across_seeds(tmp_path: Path) -> None:
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.99},
+    )
+    with pytest.raises(ValueError, match="inconsistent base_learner"):
+        seed_means(tmp_path, "candidate")
+
+
+def test_seed_means_accepts_consistent_learner_across_seeds(tmp_path: Path) -> None:
+    _shard(
+        tmp_path / "candidate_seed0.json",
+        seed=0,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    _shard(
+        tmp_path / "candidate_seed1.json",
+        seed=1,
+        accuracy=0.9,
+        base_learner="adamw",
+        hyperparameters={"lr": 0.01},
+    )
+    assert seed_means(tmp_path, "candidate") == {0: 0.9, 1: 0.9}
 
 
 def test_campaign_cli_uses_strict_json_serialization(
