@@ -1,0 +1,84 @@
+{
+  "source_provenance": {
+    "git_commit": "c8c1050e4d69a41ddf1950cd49ca1cae0e331d08",
+    "git_object_format": "sha1",
+    "git_tree": "fdb2828c85235c8d8dc0f188bba56fe06802769e",
+    "relevant_source_file_count": 232,
+    "relevant_source_scope": "tracked:alberta_framework/**,pyproject.toml,uv.lock",
+    "relevant_source_sha256": "0d59e9d24b12301f395564c179c8bfc92923f59137920a7e0b4d5d8d9eb6433f",
+    "schema": "alberta.ipmnist_screening.source_provenance.v1",
+    "uv_lock_sha256": "0fc52a642ba70bd64bfa80049b1efc99c35829d01e44705370994ad818ee82d7",
+    "worktree_clean": true
+  },
+  "dataset_provenance": {
+    "materialization": "alberta.ipmnist.float32-neg1-pos1-int32-labels.v1",
+    "schema": "alberta.ipmnist_screening.dataset_provenance.v1",
+    "source": {
+      "name": "mnist_784",
+      "provider": "openml",
+      "row_start": 0,
+      "row_stop_exclusive": 60000,
+      "version": 1
+    },
+    "x": {
+      "dtype": "<f4",
+      "sha256": "b8078cd833f53d89828a5e28d728517be9add34076f13fe973399f1f16381313",
+      "shape": [
+        60000,
+        784
+      ]
+    },
+    "y": {
+      "dtype": "<i4",
+      "sha256": "4f1dd9551f104f8153409e0add59f0a71568f7bad5a5f8e2274480c186fe219a",
+      "shape": [
+        60000
+      ]
+    }
+  },
+  "s02_anneal_f1t1000_wd0_mean": 0.9321222002777778,
+  "s02_anneal_f1t1000_wd0_seed_means": [
+    0.9327166483333333,
+    0.93234998,
+    0.9312999725
+  ],
+  "s005625_anneal_f1t1000_wd0_mean": 0.9158499744444445,
+  "s005625_anneal_f1t1000_wd0_seed_means": [
+    0.9153666408333333,
+    0.9168999691666667,
+    0.9152833133333333
+  ],
+  "s02_vs_s005625_anneal_f1t1000_wd0": {
+    "mean_gain": 0.01627222583333332,
+    "gains_in_seed_order": [
+      0.017350007500000042,
+      0.015450010833333305,
+      0.016016659166666614
+    ],
+    "improved_seeds": 3,
+    "paired_seeds": 3
+  },
+  "s005625_anneal_f2t1000_wd0_mean": 0.9067666444444444,
+  "s005625_anneal_f2t1000_wd0_seed_means": [
+    0.9060333175,
+    0.9083166408333333,
+    0.905949975
+  ],
+  "s02_vs_s005625_anneal_f2t1000_wd0": {
+    "mean_gain": 0.025355555833333338,
+    "gains_in_seed_order": [
+      0.026683330833333296,
+      0.024033339166666723,
+      0.0253499975
+    ],
+    "improved_seeds": 3,
+    "paired_seeds": 3
+  },
+  "seeds": [
+    311001,
+    311002,
+    311003
+  ],
+  "n_tasks": 12,
+  "task_length": 5000
+}

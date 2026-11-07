@@ -27,8 +27,11 @@ The [constant-step 0.005625 arm](../../outputs/ipmnist_screening/wd0_const200/AN
 also beat the annealed zero-decay comparator in a separate 200-task cohort.
 The retained analyses use different seeds, so the next full-length comparison
 must remeasure step 0.02 against this stronger constant-step arm on the same
-workload and seed set. Bind the current implementation, runtime, dataset, and
-resource accounting before collecting those results.
+workload and seed set. The [fresh 12-task screen](../../outputs/hillclimb_local/2026-11-07/ipmnist/SUMMARY.json)
+paired both constant steps directly. Step 0.02 gained **0.016272** mean
+pre-update accuracy and led on all three seeds. This short screen supports
+the candidate for the full-length comparison, with the same dataset bytes
+and separate resource receipts for each arm.
 
 The older cross-runner
 [`proxy_validation.json`](../../outputs/ipmnist_screening/proxy_validation.json)

@@ -1,0 +1,3 @@
+# ASI local full-length IPMNIST pair
+
+Permanently nonpromoting. Use #3646 head c8c1050e, CPU macOS arm64, locked Python 3.12 and JAX 0.11.0. Same dataset validation, runner, architecture and 5,000 pre-update examples per task as the 12-task local screen. Compare constant 0.02 and constant 0.005625, each at zero body weight decay, across 200 tasks. Seed 311011 was chosen before running the pair and was absent from the retained outputs inspected. Both arms use the same seed. Report full-life and four 50-task paired differences. One paired life tests longevity, and is not a multi-seed confirmation or a qualification gate.
