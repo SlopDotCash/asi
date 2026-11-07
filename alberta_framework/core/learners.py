@@ -1848,7 +1848,14 @@ def run_mlp_learning_loop[StreamStateT](
         )
         jax.block_until_ready((final_learner, metrics))  # type: ignore[no-untyped-call]
         elapsed = time.time() - t0
-        final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]
+        # update() is JIT-compiled, so the scan returns float32 host clocks.
+        # Restore the incoming Python values and add this scan's time to the
+        # original uptime; float32 cannot represent a large uptime plus a
+        # short elapsed interval.
+        final_learner = final_learner.replace(  # type: ignore[attr-defined]
+            birth_timestamp=learner_state.birth_timestamp,
+            uptime_s=learner_state.uptime_s + elapsed,
+        )
 
         return final_learner, metrics
 
@@ -1905,7 +1912,11 @@ def run_mlp_learning_loop[StreamStateT](
     ) = jax.lax.scan(step_fn_with_tracking, initial_carry, jnp.arange(num_steps))
     jax.block_until_ready((final_learner, metrics))  # type: ignore[no-untyped-call]
     elapsed = time.time() - t0
-    final_learner = final_learner.replace(uptime_s=final_learner.uptime_s + elapsed)  # type: ignore[attr-defined]
+    # Same host-clock restore as the untracked MLP loop above.
+    final_learner = final_learner.replace(  # type: ignore[attr-defined]
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
+    )
 
     norm_history = NormalizerHistory(
         means=final_n_means,
@@ -2523,7 +2534,11 @@ def run_true_online_td_loop[StreamStateT](
         jnp.arange(num_steps),
     )
     elapsed = time.time() - t0
+    # update() is JIT-compiled, so the scan returns float32 host clocks.
+    # Restore the incoming Python values and add this scan's time to the
+    # original uptime.
     final_learner = final_learner.replace(  # type: ignore[attr-defined]
-        uptime_s=final_learner.uptime_s + elapsed
+        birth_timestamp=learner_state.birth_timestamp,
+        uptime_s=learner_state.uptime_s + elapsed,
     )
     return final_learner, metrics
