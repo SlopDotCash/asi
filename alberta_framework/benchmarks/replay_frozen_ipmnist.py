@@ -321,9 +321,34 @@ def make_frozen_feature_learner(hp: Mapping[str, float]) -> tuple[Any, Any]:
         error = target - jax.nn.softmax(logits)
         if method == 1:
             pp = state.inverse_covariance @ phi
-            gain = pp / (1.0 + phi @ pp)
+            direct_denom = 1.0 + phi @ pp
+            direct_gain = pp / direct_denom
+            # A finite ``phi`` and ``pp`` can overflow ``1.0 + phi @ pp`` to
+            # ``+inf`` and collapse ``direct_gain`` to zero even when the
+            # Sherman-Morrison gain and covariance step are representable.
+            peak = jnp.maximum(jnp.max(jnp.abs(phi)), jnp.max(jnp.abs(pp)))
+            _, exp = jnp.frexp(peak)
+            safe_exp = jnp.where(peak > 0.0, exp, 0)
+            scaled_phi = jnp.ldexp(phi, -safe_exp)
+            scaled_pp = jnp.ldexp(pp, -safe_exp)
+            scaled_denom = jnp.ldexp(jnp.float32(1.0), -2 * safe_exp) + (
+                scaled_phi @ scaled_pp
+            )
+            scaled_gain = scaled_pp / scaled_denom
+            safe_gain = jnp.ldexp(scaled_gain, -safe_exp)
+            use_direct = (
+                jnp.isfinite(direct_denom)
+                | ~jnp.all(jnp.isfinite(safe_gain))
+                | ~jnp.all(jnp.isfinite(scaled_gain))
+            )
+            gain = jnp.where(use_direct, direct_gain, safe_gain)
+            outer_step = jnp.where(
+                use_direct,
+                jnp.outer(direct_gain, pp),
+                jnp.outer(scaled_gain, scaled_pp),
+            )
             readout = state.readout + jnp.outer(gain, target - logits)
-            inverse = state.inverse_covariance - jnp.outer(gain, pp)
+            inverse = state.inverse_covariance - outer_step
             prompt, scale, shift = state.prompt, state.scale, state.shift
         else:
             loss = -jax.nn.log_softmax(logits)[y]
