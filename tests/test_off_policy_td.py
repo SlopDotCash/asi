@@ -202,6 +202,33 @@ def test_runtime_gamma_rejection_is_atomic_and_neutral(learner) -> None:
             assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
 
 
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+def test_runtime_negative_rho_rejection_is_atomic_and_neutral(learner) -> None:
+    state = learner.init(1)
+    result = learner.update(
+        state,
+        jnp.asarray([1.0], dtype=jnp.float32),
+        jnp.asarray(1.0, dtype=jnp.float32),
+        jnp.asarray([2.0], dtype=jnp.float32),
+        jnp.asarray(0.5, dtype=jnp.float32),
+        jnp.asarray(-0.25, dtype=jnp.float32),
+    )
+    chex.assert_trees_all_equal(result.state, state)
+    assert not bool(result.update_applied)
+    for name in ("prediction", "td_error", "metrics"):
+        assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+    for name in ("rho_clipped", "follow_on_trace", "emphasis"):
+        if hasattr(result, name):
+            assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+
+
 def test_etd_runtime_negative_interest_rejection_is_atomic_and_neutral() -> None:
     learner = ETDLinearLearner(step_size=0.1, trace_decay=0.5)
     state = learner.init(1)
@@ -219,6 +246,36 @@ def test_etd_runtime_negative_interest_rejection_is_atomic_and_neutral() -> None
     assert not bool(result.update_applied)
     for name in ("prediction", "td_error", "follow_on_trace", "emphasis", "metrics"):
         assert bool(jnp.all(jnp.asarray(getattr(result, name)) == 0))
+
+
+@pytest.mark.parametrize(
+    "learner",
+    [
+        OffPolicyTDLinearLearner(step_size=0.1),
+        ETDLinearLearner(step_size=0.1),
+        GradientTDLinearLearner(step_size=0.1),
+    ],
+)
+@pytest.mark.parametrize(
+    "rho",
+    [
+        -math.nextafter(0.0, 1.0),
+        -Fraction(1, 2**200),
+    ],
+)
+def test_update_rejects_exact_host_negative_rho_before_float32_narrowing(
+    learner, rho: object
+) -> None:
+    state = learner.init(1)
+    with pytest.raises(ValueError, match="rho"):
+        learner.update(
+            state,
+            jnp.asarray([1.0], dtype=jnp.float32),
+            jnp.asarray(1.0, dtype=jnp.float32),
+            jnp.asarray([2.0], dtype=jnp.float32),
+            jnp.asarray(0.5, dtype=jnp.float32),
+            rho,
+        )
 
 
 @pytest.mark.parametrize(
