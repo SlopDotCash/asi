@@ -60,6 +60,7 @@ from alberta_framework.core.types import TimeStep
 from alberta_framework.streams.base import ScanStream  # noqa: F401  (re-exported)
 
 _INT32_MAX = 2**31 - 1
+_FLOAT32_MAX = jnp.float32(np.finfo(np.float32).max)
 _ACTUAL_INT_TYPES: frozenset[type] = frozenset(
     {int, *(np.dtype(code).type for code in "bBhHiIlLqQpP")}
 )
@@ -821,7 +822,11 @@ class ClassicalConditioningStream:
         noise = self._noise_std * jr.normal(
             k_noise, (self.feature_dim,), dtype=jnp.float32
         )
-        observation = (clean_obs + noise).astype(jnp.float32)
+        observation = jnp.clip(
+            (clean_obs + noise).astype(jnp.float32),
+            -_FLOAT32_MAX,
+            _FLOAT32_MAX,
+        )
 
         target = jnp.where(us_fires, jnp.float32(1.0), jnp.float32(0.0))
 
