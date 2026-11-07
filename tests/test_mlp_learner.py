@@ -1643,6 +1643,80 @@ class TestResetDormantOptimizerState:
         assert mse_last < mse_first
 
 
+class TestResetDormantOutgoingColumns:
+    """Dormant reset must also clear the zeroed outgoing column.
+
+    ``reset_dormant_neurons`` zeroes the outgoing weights of a dormant
+    neuron. The outgoing eligibility-trace column and the outgoing
+    optimizer-state slice must reset with them, mirroring
+    ``continual_backprop._replace_one_unit``. Otherwise the fresh zero
+    weights move along pre-reset trace directions with pre-reset
+    step-sizes, so the fresh unit inherits the dead unit's history.
+    """
+
+    FEATURE_DIM = 3
+    N_HIDDEN = 4
+
+    def _trained_state(self, optimizer, head_optimizer=None):
+        learner = MLPLearner(
+            hidden_sizes=(self.N_HIDDEN,),
+            optimizer=optimizer,
+            head_optimizer=head_optimizer,
+            sparsity=0.0,
+            gamma=0.9,
+            lamda=0.8,
+            track_neuron_utility=True,
+        )
+        state = learner.init(feature_dim=self.FEATURE_DIM, key=jr.key(0))
+        obs = jnp.array([1.0, 0.5, -0.5], dtype=jnp.float32)
+        for _ in range(5):
+            state = learner.update(
+                state, obs, jnp.array(1.0, dtype=jnp.float32)
+            ).state
+        forced = jnp.array([0.0, 5.0, 5.0, 5.0], dtype=jnp.float32)
+        state = state.replace(neuron_utility=(forced,))
+        return learner, state
+
+    def test_outgoing_trace_column_zeroed(self):
+        learner, state = self._trained_state(LMS(step_size=0.1))
+        assert jnp.any(state.traces[2][:, 0] != 0.0)
+        reset = learner.reset_dormant_neurons(state, jr.key(10), threshold=0.01)
+        assert jnp.all(reset.traces[2][:, 0] == 0.0)
+        assert jnp.allclose(reset.traces[2][:, 1:], state.traces[2][:, 1:])
+
+    def test_outgoing_optimizer_column_reinitialized(self):
+        optimizer = IDBD(initial_step_size=0.05, meta_step_size=0.01)
+        learner, state = self._trained_state(optimizer)
+        reset = learner.reset_dormant_neurons(state, jr.key(10), threshold=0.01)
+        fresh = optimizer.init_for_shape((1, self.N_HIDDEN))
+        old_leaves = jax.tree_util.tree_leaves(state.optimizer_states[2])
+        new_leaves = jax.tree_util.tree_leaves(reset.optimizer_states[2])
+        fresh_leaves = jax.tree_util.tree_leaves(fresh)
+        for old, new, ref in zip(old_leaves, new_leaves, fresh_leaves):
+            if new.ndim == 2:
+                assert jnp.allclose(new[:, 0], ref[:, 0])
+                assert jnp.allclose(new[:, 1:], old[:, 1:])
+            else:
+                assert jnp.allclose(new, old)
+
+    def test_outgoing_optimizer_column_uses_head_optimizer(self):
+        head_optimizer = IDBD(initial_step_size=0.05, meta_step_size=0.01)
+        learner, state = self._trained_state(
+            LMS(step_size=0.1), head_optimizer=head_optimizer
+        )
+        reset = learner.reset_dormant_neurons(state, jr.key(10), threshold=0.01)
+        fresh = head_optimizer.init_for_shape((1, self.N_HIDDEN))
+        old_leaves = jax.tree_util.tree_leaves(state.optimizer_states[2])
+        new_leaves = jax.tree_util.tree_leaves(reset.optimizer_states[2])
+        fresh_leaves = jax.tree_util.tree_leaves(fresh)
+        for old, new, ref in zip(old_leaves, new_leaves, fresh_leaves):
+            if new.ndim == 2:
+                assert jnp.allclose(new[:, 0], ref[:, 0])
+                assert jnp.allclose(new[:, 1:], old[:, 1:])
+            else:
+                assert jnp.allclose(new, old)
+
+
 class TestMLPLearnerConstructorScalars:
     """Leftover constructor scalars must not sit on the single-head MLP host."""
 

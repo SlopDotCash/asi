@@ -1310,6 +1310,33 @@ class MLPLearner:
             if layer_i + 1 < len(new_weights):
                 out_w = new_weights[layer_i + 1]  # shape (h_{i+1}, h_i)
                 new_weights[layer_i + 1] = jnp.where(dormant_mask[None, :], 0.0, out_w)
+                # The zeroed outgoing column must not inherit the dead
+                # neuron's adaptation history either: clear its eligibility
+                # traces and re-initialise its optimizer-state slice, mirroring
+                # continual_backprop._replace_one_unit. Otherwise the first
+                # post-reset updates move the fresh zero weights along
+                # pre-reset trace directions with pre-reset step-sizes.
+                new_traces[2 * (layer_i + 1)] = jnp.where(
+                    dormant_mask[None, :], 0.0, new_traces[2 * (layer_i + 1)]
+                )
+                is_output_layer = layer_i + 1 == len(new_weights) - 1
+                out_optimizer = (
+                    self._head_optimizer
+                    if is_output_layer and self._head_optimizer is not None
+                    else self._optimizer
+                )
+                fresh_out_opt = out_optimizer.init_for_shape(out_w.shape)
+
+                def _reset_out_col(
+                    x: Array, fresh: Array, m: Array = dormant_mask
+                ) -> Array:
+                    if x.ndim != 2:
+                        return x
+                    return jnp.where(m[None, :], fresh, x)
+
+                new_opt_states[2 * (layer_i + 1)] = jax.tree_util.tree_map(
+                    _reset_out_col, new_opt_states[2 * (layer_i + 1)], fresh_out_opt
+                )
             # Reset utility for reset neurons
             new_utility[layer_i] = jnp.where(dormant_mask, 0.0, new_utility[layer_i])
 
