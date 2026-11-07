@@ -1148,8 +1148,12 @@ def run_actor_critic_from_arrays(
             lambda: carry,
         )
         return next_carry, (
+            # The action for this row was selected (or supplied) even when
+            # the learning update is rejected; only an invalid action
+            # itself falls back to 0. Reporting 0 for a valid action would
+            # falsify the recorded trajectory.
             jnp.where(
-                update_applied,
+                fixed_action_valid,
                 current_action,
                 jnp.asarray(0, dtype=jnp.int32),
             ),
@@ -2047,7 +2051,15 @@ def run_continuous_actor_critic_from_arrays(
             lambda: carry,
         )
         return next_carry, (
-            jnp.where(result.update_applied, current_action, jnp.zeros_like(current_action)),
+            # The action for this row was selected (or supplied) even when
+            # the learning update is rejected; only a non-finite action
+            # itself falls back to zeros. Reporting zeros for a valid
+            # action would falsify the recorded trajectory.
+            jnp.where(
+                jnp.all(jnp.isfinite(current_action)),
+                current_action,
+                jnp.zeros_like(current_action),
+            ),
             jnp.where(result.update_applied, current_mean, jnp.zeros_like(current_mean)),
             jnp.where(result.update_applied, current_sigma, jnp.zeros_like(current_sigma)),
             result.value,
