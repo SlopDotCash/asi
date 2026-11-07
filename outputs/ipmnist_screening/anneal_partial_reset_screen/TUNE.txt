@@ -1,0 +1,3 @@
+seed0 pr25 +0.000183
+seed0 pr50 +0.000807
+CHOSEN rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000_pr50
