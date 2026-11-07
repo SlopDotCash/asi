@@ -568,6 +568,24 @@ def _config_digest(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _exact_json_equal(left: object, right: object) -> bool:
+    """Compare JSON trees without Python's bool/int or int/float aliases."""
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        right_dict = cast(dict[str, object], right)
+        return left.keys() == right_dict.keys() and all(
+            _exact_json_equal(value, right_dict[key]) for key, value in left.items()
+        )
+    if type(left) is list:
+        right_list = cast(list[object], right)
+        return len(left) == len(right_list) and all(
+            _exact_json_equal(item, other)
+            for item, other in zip(left, right_list, strict=True)
+        )
+    return left == right
+
+
 def _saturating_increment(value: Array) -> Array:
     return jnp.minimum(value, jnp.asarray(_INT32_MAX - 1, dtype=jnp.int32)) + jnp.asarray(
         1, dtype=jnp.int32
@@ -1262,7 +1280,7 @@ def load_model_replay_rehearsal_checkpoint(
     if type(digest) is not str or digest != _config_digest(config):
         raise ValueError("model replay rehearsal config digest does not match")
     composer = ModelReplayRehearsal.from_config(config)
-    if composer.to_config() != config:
+    if not _exact_json_equal(composer.to_config(), config):
         raise ValueError("model replay rehearsal checkpoint config is not canonical")
     key = (
         jr.key(0, impl=_MODEL_REPLAY_PRNG_IMPLEMENTATION)
@@ -1272,7 +1290,9 @@ def load_model_replay_rehearsal_checkpoint(
     template = composer.init(key)
     expected_budget = composer.resource_budget(template).to_config()
     resource_budget = metadata.get("resource_budget")
-    if type(resource_budget) is not dict or resource_budget != expected_budget:
+    if type(resource_budget) is not dict or not _exact_json_equal(
+        resource_budget, expected_budget
+    ):
         raise ValueError("model replay rehearsal resource budget does not match config")
     expected_metadata_fields = {
         "schema",
@@ -1285,7 +1305,7 @@ def load_model_replay_rehearsal_checkpoint(
     if set(metadata) != expected_metadata_fields:
         raise ValueError("model replay rehearsal checkpoint metadata fields do not match v1")
     restored, restored_metadata = load_checkpoint(template, path)
-    if restored_metadata != metadata:
+    if not _exact_json_equal(restored_metadata, metadata):
         raise ValueError("model replay rehearsal checkpoint metadata changed between reads")
     state = cast(ModelReplayRehearsalState, restored)
     composer.validate_state(state)
