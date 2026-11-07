@@ -1250,7 +1250,8 @@ def run_gradient_td_learning_loop(
     )
     elapsed = time.time() - t0
     final_state = final_state.replace(  # type: ignore[attr-defined]
-        uptime_s=final_state.uptime_s + elapsed
+        birth_timestamp=state.birth_timestamp,
+        uptime_s=state.uptime_s + elapsed,
     )
     return GradientTDArrayResult(  # type: ignore[call-arg]
         state=final_state,
