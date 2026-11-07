@@ -545,6 +545,40 @@ resource exclusions and independent recomputation are retained in
 [`discounted-sarsa-lambda-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-lambda-2026-10-15/README.md).
 
 
+## RiverSwim eligibility-trace step-size factorial (2026-10-15)
+
+The preregistered four-arm, three-seed full reference-life panel completed all
+240,000 events. At fixed lambda 0.8, reducing step size 0.05 to 0.014 produced paired
+lifetime mean-reward delta `0.504521583 +/- 0.436920817`; the no-trace
+step reduction gave `0.005125000 +/- 0.004959583`; the factorial
+interaction was `0.499396583 +/- 0.432498742` (means +/- sample SD).
+Primary decision: `bounded_trace_step_reduction_supported`. The interaction rule passed:
+`false`. These separate rules prevent a
+generic step-size effect or secondary metric from rescuing the trace-specific
+hypothesis. This bounds only the tested configuration and fresh development
+seeds 100601-100603; it establishes no sole-cause, optimality, frozen-scorecard,
+reference-dev or scientific claim. Preserve the full panel and do not retry
+these settings without a new causal hypothesis and separate bounded plan.
+All per-seed values, full raw reward/action/state traces, fixed diagnostics,
+source/runtime/UTC identities, resource exclusions and independent recomputation:
+[`discounted-sarsa-step-size-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-step-size-2026-10-15/README.md).
+
+
+## RiverSwim discount-horizon probe (2026-10-15)
+
+At fixed lambda 0.8 and learning rate 0.014, the separately preregistered
+gamma 0.9 versus 0.99 comparison completed all six full reference lives
+(three fresh development seeds 101001–101003, 120,000 events, no retries).
+Paired lifetime mean-reward difference: `0.004296750 +/- 0.007343468`
+(mean +/- sample SD). Decision: `bounded_gamma_increase_inconclusive`. The all-positive/mean-above-0.01
+screen passed: `false`; the improvement
+rule also requiring mean above sample SD passed: `false`.
+No secondary rescue or reference selection. Gamma changes discounting, trace
+decay and value scale jointly; this does not isolate horizon mediation.
+Permanently nonpromoting. Do not retry this consumed roster or retune its gates.
+Full results, per-seed values, raw traces, diagnostics, resources and verification:
+[`discounted-sarsa-horizon-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/README.md).
+
 ## RiverSwim discounted-SARSA exploration decay (2026-10-15)
 
 A separately declared, permanently nonpromoting diagnostic used the full
@@ -564,3 +598,13 @@ paired spread, source/runtime bindings, exact reproduction and re-derivation
 commands, and the excluded earlier scan attempt. Existing scorecard plans,
 gates and pinned artifacts are unchanged. Any new calibration needs a new
 causal hypothesis and an independently declared development plan.
+
+## Anneal schedule sweep on anneal_f2t1000 (2026-10-30)
+
+A preregistered, nonpromoting screen changed only the anneal (floor, tau) of `rls_head_resid_identmap50_r_idet003_s005625_anneal_f2t1000`. Each arm was judged on its own against the bar: ≥ +0.002, ≥ 7/10 seeds improved, and a 95% CI and Bonferroni 97.5% CI lower bound above 0. Seeds 0-9, 60 tasks.
+
+- **f2t2000 (gentler):** -0.000256, CI [-0.000345, -0.000167], 0/10 improved. +0.0013 at tasks 1-15, falling to -0.0013 at tasks 46-60.
+- **f4t1000 (stronger):** -0.000077, CI [-0.000168, +0.000013], 2/10 improved. -0.00046 at tasks 1-15, rising to +0.00023 at tasks 46-60.
+- **Secondary, f4t1000 − f2t2000:** +0.000179, CI [+0.000086, +0.000271], 9/10. More annealing pays later in life, but at 60 tasks the parent schedule is near-optimal on this axis.
+- **Integrity:** the parent shards were reused after jaxpr, environment and bit-exact re-run checks. The control was re-measured bit-exactly.
+- [Report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_anneal_sweep/RESULTS.md).

@@ -1,0 +1,25 @@
+seed 176 +0.000723
+seed 177 +0.000654
+seed 178 +0.000558
+seed 179 +0.000782
+seed 180 +0.000932
+seed 181 +0.000924
+seed 182 +0.000919
+seed 183 +0.000941
+seed 184 +0.000356
+seed 185 +0.000670
+seed 186 +0.000846
+seed 187 +0.000541
+seed 188 +0.001149
+seed 189 +0.000682
+seed 190 +0.001245
+seed 191 +0.000234
+seed 192 +0.000805
+seed 193 +0.000762
+seed 194 +0.000687
+seed 195 +0.000387
+rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0_r01 vs rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0
+blocks (50 tasks, mean over 20 valid seeds): +0.002826 / +0.000176 / +0.000028 / -0.000071
+mean +0.000740 SE 0.000056 CI95 [+0.000622, +0.000858] improved 20/20 diverged 0/20
+BARS: mean>=+0.002 False, >=14/20 True, CI_lo>0 True; no diverged seed True -> FAIL
+LATE-BLOCK FLAG: tasks 151-200 mean gain is negative (disclosure only).

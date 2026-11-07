@@ -1,0 +1,194 @@
+{
+  "accepted_events": 120000,
+  "arm_statistics": {
+    "gamma_090": {
+      "mean": 0.25631791660330877,
+      "sample_std": 0.43661741990841907
+    },
+    "gamma_099": {
+      "mean": 0.2606146666026364,
+      "sample_std": 0.44396064760829285
+    }
+  },
+  "decision": "bounded_gamma_increase_inconclusive",
+  "development_only": true,
+  "inputs": [
+    {
+      "path": "gamma_090-seed101001.json",
+      "sha256": "1b95d2d00394ef2f96674390ccb738e4a730a5e57543b67cb8f97d1f99105ab0"
+    },
+    {
+      "path": "gamma_090-seed101002.json",
+      "sha256": "59a6d08f86fcb4081ecfabc8cf3cb3c8f411ba60f3dc21d6e6ec0aacd9f53c83"
+    },
+    {
+      "path": "gamma_090-seed101003.json",
+      "sha256": "fd6d97bada754dedae545ab96e9a714da147e6e65cd03191ddf25b82578872f4"
+    },
+    {
+      "path": "gamma_099-seed101001.json",
+      "sha256": "ef23c202c9f0899d8efd2ef7ee64a839843f23975fd5769742f349e5cf970b89"
+    },
+    {
+      "path": "gamma_099-seed101002.json",
+      "sha256": "7389a61ec6b20932e9f9eb559e251ca56017dc3a6e3d17128e4b13344a09bb0c"
+    },
+    {
+      "path": "gamma_099-seed101003.json",
+      "sha256": "b9d0f8e3c069e2ba92082d77cb1a334b67306630b40d7146cf945041d3272ee4"
+    }
+  ],
+  "limits": [
+    "Permanently nonpromoting development probe, three seed pairs and two gamma values. Cannot establish an optimal discount, trace superiority, a pure horizon mechanism, sole cause of previous failure, confidence, generalization, transfer/retention, frozen-scorecard qualification, reference-dev or scientific evidence. Existing artifacts and gates immutable. This roster is consumed development data after execution.",
+    "Sample SD is not a confidence bound.",
+    "Raw rewards and transition support independently reconstructed; snapshot shapes and finite values checked, not independent learner-state replay.",
+    "UTC times and hashes bind consistency, not authenticated execution."
+  ],
+  "maximum_recorded_collection_concurrency": 2,
+  "n_paired_seeds": 3,
+  "paired_seeds": [
+    {
+      "arm_diagnostics": {
+        "gamma_090": {
+          "action_counts": [
+            17205,
+            2795
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004737499894108623,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        },
+        "gamma_099": {
+          "action_counts": [
+            17534,
+            2466
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004737499894108623,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        }
+      },
+      "arm_mean_rewards": {
+        "gamma_090": 0.0040707499090116474,
+        "gamma_099": 0.004184999906457961
+      },
+      "primary_gamma_delta": 0.00011424999744631334,
+      "seed": 101001
+    },
+    {
+      "arm_diagnostics": {
+        "gamma_090": {
+          "action_counts": [
+            646,
+            19354
+          ],
+          "first_upstream_reward_event": 45,
+          "late_mean_reward": 0.8165,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15492
+        },
+        "gamma_099": {
+          "action_counts": [
+            486,
+            19514
+          ],
+          "first_upstream_reward_event": 45,
+          "late_mean_reward": 0.8165,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 15740
+        }
+      },
+      "arm_mean_rewards": {
+        "gamma_090": 0.7604802499993238,
+        "gamma_099": 0.7732562499998603
+      },
+      "primary_gamma_delta": 0.01277600000053647,
+      "seed": 101002
+    },
+    {
+      "arm_diagnostics": {
+        "gamma_090": {
+          "action_counts": [
+            18166,
+            1834
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004739999894052744,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        },
+        "gamma_099": {
+          "action_counts": [
+            18166,
+            1834
+          ],
+          "first_upstream_reward_event": null,
+          "late_mean_reward": 0.004739999894052744,
+          "parameter_change_events": 20000,
+          "rightmost_state_visits": 0
+        }
+      },
+      "arm_mean_rewards": {
+        "gamma_090": 0.004402749901590869,
+        "gamma_099": 0.004402749901590869
+      },
+      "primary_gamma_delta": 0.0,
+      "seed": 101003
+    }
+  ],
+  "plan_sha256": "eab4959efb58291757089174b2573a3fc3b6b57eac13fde6e42bb4c1474a7cd9",
+  "preregistration": {
+    "base": "415e7d225a4338492275be6cafa69d87c158c30a",
+    "created_at": "2026-10-15T07:12:35Z",
+    "draft": true,
+    "head": "b19b48f1428c108ab4baf416df32027069a313e3",
+    "number": 3225,
+    "url": "https://github.com/SlopDotCash/asi/pull/3225"
+  },
+  "primary_gamma_delta": {
+    "mean": 0.0042967499993275945,
+    "sample_std": 0.007343468097753925
+  },
+  "primary_improvement_rule_passed": false,
+  "primary_sign_size_rule_passed": false,
+  "reference_dev_population_allowed": false,
+  "resources": {
+    "final": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    },
+    "initial": {
+      "array_elements": 55,
+      "array_leaves": 23,
+      "floating_array_leaves": 17,
+      "persistent_bytes": 220
+    }
+  },
+  "runtime": {
+    "backend": "cpu",
+    "machine": "AMD64",
+    "python": "3.12.4",
+    "system": "Windows",
+    "thread_settings": {
+      "MKL_NUM_THREADS": "1",
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "XLA_PYTHON_CLIENT_PREALLOCATE": "false"
+    },
+    "versions": {
+      "chex": "0.1.92",
+      "jax": "0.11.0",
+      "jaxlib": "0.11.0",
+      "numpy": "2.5.1"
+    }
+  },
+  "schema": "asi.riverswim_sarsa_discount_horizon.summary.v1",
+  "scientific_promotion_allowed": false,
+  "script_sha256": "5f38fb5c9aafd5b667814cfaa7a6757b2310ca30c79e78585b00c2842f39d696",
+  "source_commit": "b19b48f1428c108ab4baf416df32027069a313e3",
+  "utc_schedule_order_verified": true
+}

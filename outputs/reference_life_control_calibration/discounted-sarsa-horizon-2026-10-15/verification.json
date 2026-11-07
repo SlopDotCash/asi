@@ -1,0 +1,73 @@
+{
+  "schema": "asi.riverswim_sarsa_discount_horizon.verification.v1",
+  "development_only": true,
+  "scientific_promotion_allowed": false,
+  "source_count": 228,
+  "source_bytes_match_frozen_and_framework_base_git_blobs": true,
+  "plan_run_validator_bytes_unchanged": true,
+  "retained_summary_reproduced_byte_for_byte": true,
+  "accepted_events": 120000,
+  "completed_comparison_lives": 6,
+  "failed_comparison_attempts": 0,
+  "excluded_preflight_lives": 2,
+  "checks": {
+    "reference_control_tests": {
+      "exit_code": 0,
+      "command": [
+        "D:\\ChatGPT\u5185\u5bb9\\make-money-online\\asi-source\\.venv\\Scripts\\python.exe",
+        "-m",
+        "pytest",
+        "tests/test_reference_life_controls.py",
+        "tests/test_reference_life_controls_json_nest.py",
+        "-q",
+        "-o",
+        "addopts="
+      ],
+      "passed": 39
+    },
+    "repository_ruff": {
+      "exit_code": 0,
+      "command": [
+        "D:\\ChatGPT\u5185\u5bb9\\make-money-online\\asi-source\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "."
+      ]
+    },
+    "retained_script_ruff": {
+      "exit_code": 0,
+      "command": [
+        "D:\\ChatGPT\u5185\u5bb9\\make-money-online\\asi-source\\.venv\\Scripts\\python.exe",
+        "-m",
+        "ruff",
+        "check",
+        "--no-force-exclude",
+        "outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/run.py",
+        "outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/validate.py",
+        "outputs/reference_life_control_calibration/discounted-sarsa-horizon-2026-10-15/plot.py"
+      ]
+    },
+    "mypy_linux_platform": {
+      "exit_code": 0,
+      "command": [
+        "D:\\ChatGPT\u5185\u5bb9\\make-money-online\\asi-source\\.venv\\Scripts\\python.exe",
+        "-m",
+        "mypy",
+        "--platform",
+        "linux"
+      ],
+      "files": 226
+    },
+    "evidence_registry": {
+      "exit_code": 2,
+      "command": [
+        "D:\\ChatGPT\u5185\u5bb9\\make-money-online\\asi-source\\.venv\\Scripts\\python.exe",
+        "-m",
+        "alberta_framework.evaluation.evidence_manifest_cli"
+      ],
+      "statuses_and_errors_equal_baseline": true
+    }
+  },
+  "limits": "No full fast/scientific suites, independent learner-state replay, authenticated execution, qualified timing or peak/native memory measurement."
+}
