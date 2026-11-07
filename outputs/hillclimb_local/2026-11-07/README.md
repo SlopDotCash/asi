@@ -2,7 +2,8 @@
 
 These paired development checks are permanently nonpromoting. The IPMNIST
 screens measure pre-update accuracy. The reference-life checks measure raw
-cumulative reward at the original horizon. The local reference checks did
+cumulative reward over 4,000 Switching events and 5,000 RiverSwim
+events. The local reference checks did
 not run the random and oracle normalization arms, so no local scorecard or
 qualification verdict follows. Resource receipts distinguish persistent
 numeric state from peak memory and timing telemetry.
@@ -30,6 +31,34 @@ its 40 shards. It compared 0.02 against the annealed arm, with a paired gain
 of +0.007665, 20/20 positive, and 95% CI [+0.007588, +0.007741].
 See the [recomputed verdict](ipmnist/retained-3646-recomputed.txt).
 
+## IPMNIST 200-task pair
+
+Both arms completed 200 tasks × 5,000 examples on fresh paired seed
+311011. Constant step 0.02 averaged 0.97729498 online accuracy, and
+constant step 0.005625 averaged 0.97336498, a gain of 0.00393000. The
+four 50-task block gains were +0.00812800, +0.00323200, +0.00243600 and
++0.00192400. The gain narrowed across the life and remained positive in
+the final block. This is a one-seed check. See the
+[paired shards and summary](ipmnist-200/).
+
+## RiverSwim 5,000-event smoke
+
+All 12 lives completed on paired seeds 118331–118333. Both optimistic
+initializations improved on their own default in all three pairs and
+reached the high-reward end in all three lives.
+
+| Arm | Mean cumulative reward | Initial and final numeric bytes |
+|---|---:|---:|
+| Discounted SARSA, Q0 = 10 | 3006.42 | 220 |
+| Discounted SARSA, default | 1513.39 | 220 |
+| Differential SARSA, initial average reward = 1.0 | 2995.47 | 204 |
+| Differential SARSA, default | 22.68 | 204 |
+
+The head-to-head reward differences for discounted minus differential
+optimism were +79.905, −39.050 and −8.005. The two optimistic arms remain
+separate candidates for a future matched full-horizon control panel.
+See the [raw-reward summary](reference/riverswim-summary.json).
+
 ## Reproduction
 
 `inputs.txt` binds the source trees, locked dependencies, and downloaded
@@ -39,7 +68,7 @@ a detached composition of PRs [#3664](https://github.com/SlopDotCash/asi/pull/36
 (including [#3656](https://github.com/SlopDotCash/asi/pull/3656)),
 [#3655](https://github.com/SlopDotCash/asi/pull/3655), and
 [#3652](https://github.com/SlopDotCash/asi/pull/3652), merged in that order.
-The two locally composed commit IDs are provenance records. Verify the tree
+The locally composed commit IDs are provenance records. Verify the tree
 hash after reconstructing it with the PR heads below. Metadata such as
 creation time, wall time, and the local commit ID can vary across reruns.
 
@@ -48,6 +77,18 @@ creation time, wall time, and the local commit ID can vary across reruns.
 | #3664 | `7d586c9a3690d9c17167fbe69419ba3321697d2e` |
 | #3655 | `13e08153f0cb5d45727f76f478c304490a4e3b9b` |
 | #3652 | `05c9b46b257f10f3cabe8d69154601cc1ce2894b` |
+
+From an ASI clone, fetch the PR heads and create separate source worktrees.
+
+```bash
+git fetch https://github.com/SlopDotCash/asi.git \
+    refs/pull/3646/head refs/pull/3664/head refs/pull/3655/head refs/pull/3652/head
+git worktree add --detach "$ip_source" c8c1050e4d69a41ddf1950cd49ca1cae0e331d08
+git worktree add --detach "$ref_source" 7d586c9a3690d9c17167fbe69419ba3321697d2e
+git -C "$ref_source" merge --no-ff --no-edit 13e08153f0cb5d45727f76f478c304490a4e3b9b
+git -C "$ref_source" merge --no-ff --no-edit 05c9b46b257f10f3cabe8d69154601cc1ce2894b
+git -C "$ref_source" rev-parse 'HEAD^{tree}'
+```
 
 The run used Python 3.12.14, JAX/JAXLIB 0.11.0, and NumPy 2.5.1 on macOS
 arm64 CPU. In each source checkout install the locked environment with

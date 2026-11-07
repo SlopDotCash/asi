@@ -73,8 +73,9 @@ def run_reference(lane: str, arm: str, seed: int, destination: Path) -> None:
     sys.modules[spec.name] = probe
     spec.loader.exec_module(probe)
     life_digest = hashlib.sha256(f"asi.local.{lane}.{seed}".encode("ascii")).hexdigest()
+    horizon = 5000 if lane == "riverswim" else probe.HORIZON
     record = probe.run_life(
-        arm, seed, horizon=probe.HORIZON, life_id=f"prototype.{life_digest[:16]}",
+        arm, seed, horizon=horizon, life_id=f"prototype.{life_digest[:16]}",
     )
     probe.write_new(destination / f"{lane}.{arm}.{seed}.json", record)
     if record["outcome"]["status"] != "completed":
