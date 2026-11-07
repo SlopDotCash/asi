@@ -452,7 +452,25 @@ def init_rule_state(params: dict[str, Array]) -> RuleState:
 
 
 def _rms_mix(hidden: Array, f_rms: Array) -> Array:
-    rms = jnp.sqrt(jnp.mean(hidden * hidden) + _EPS)
+    """Scale hidden units by their root-mean-square when the flag is on.
+
+    A finite ``mean(h**2)`` keeps that root. When the square overflows, the
+    root is recovered from unit-scaled activations so a large finite layer
+    stays on its sphere instead of collapsing to zero.
+    """
+    squares = hidden * hidden
+    direct = jnp.sqrt(jnp.mean(squares) + _EPS)
+    max_abs = jnp.max(jnp.abs(hidden))
+    safe_abs = jnp.where(max_abs > 0.0, max_abs, jnp.ones_like(max_abs))
+    scaled = hidden / safe_abs
+    # ``safe_abs**2`` may itself overflow; the epsilon is negligible there.
+    scale_square = safe_abs * safe_abs
+    recovered = safe_abs * jnp.sqrt(jnp.mean(scaled * scaled) + _EPS / scale_square)
+    rms = jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
     return f_rms * (hidden / rms) + (1.0 - f_rms) * hidden
 
 
