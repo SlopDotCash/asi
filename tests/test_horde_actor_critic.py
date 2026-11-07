@@ -2603,3 +2603,136 @@ def test_nonlinear_qhorde_actor_critic_rejected_update_preserves_last_action() -
     assert int(result.state.last_action) == 2
     assert int(result.action) == 2
 
+
+def _make_qhorde_prediction_trace_agent() -> QHordeActorCriticAgent:
+    """Q Horde AC agent with one prediction demon whose trace accumulates."""
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name=f"q_{idx}",
+            demon_type=DemonType.CONTROL,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+        for idx in range(2)
+    ]
+    demons.append(
+        GVFSpec(  # type: ignore[call-arg]
+            name="pred",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.9,
+            lamda=0.9,
+            cumulant_index=0,
+        )
+    )
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    return QHordeActorCriticAgent(
+        QHordeActorCriticConfig(n_actions=2, gamma=0.9, actor_step_size=0.05, actor_lamda=0.7),
+        critic,
+    )
+
+
+def _make_nlqhorde_prediction_trace_agent() -> NonlinearQHordeActorCriticAgent:
+    """Nonlinear Q Horde AC agent with one accumulating prediction demon."""
+    demons = [
+        GVFSpec(  # type: ignore[call-arg]
+            name=f"q_{idx}",
+            demon_type=DemonType.CONTROL,
+            gamma=0.0,
+            lamda=0.0,
+            cumulant_index=-1,
+        )
+        for idx in range(2)
+    ]
+    demons.append(
+        GVFSpec(  # type: ignore[call-arg]
+            name="pred",
+            demon_type=DemonType.PREDICTION,
+            gamma=0.9,
+            lamda=0.9,
+            cumulant_index=0,
+        )
+    )
+    critic = HordeLearner(
+        create_horde_spec(demons),
+        hidden_sizes=(),
+        step_size=0.1,
+        use_layer_norm=False,
+    )
+    return NonlinearQHordeActorCriticAgent(
+        NonlinearQHordeActorCriticConfig(n_actions=2, gamma=0.9, actor_lamda=0.7),
+        critic,
+    )
+
+
+def _assert_prediction_demon_traces_cleared_at_terminal(agent) -> None:  # type: ignore[no-untyped-def]
+    """A terminal update must clear the prediction-demon traces.
+
+    The actor traces were already cleared at a terminal transition, but the
+    critic's prediction-demon traces survived: they decay by the spec gamma
+    * lamda, so the dead episode's trace was credited to the next episode's
+    first TD error and moved the prediction weights.
+    """
+    state = agent.init(2, jr.key(0))
+    state, _, _ = agent.start(state, jnp.array([1.0, 0.0], dtype=jnp.float32))
+    obs = jnp.array([0.0, 1.0], dtype=jnp.float32)
+    step = agent.update(
+        state,
+        jnp.array(1.0, dtype=jnp.float32),
+        obs,
+        jnp.array(0.0, dtype=jnp.float32),
+        prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+    )
+    assert bool(step.update_applied)
+    trace_w, _ = step.state.critic_state.head_traces[2]
+    assert float(jnp.max(jnp.abs(trace_w))) > 0.0
+    terminal = agent.update(
+        step.state,
+        jnp.array(1.0, dtype=jnp.float32),
+        obs,
+        jnp.array(1.0, dtype=jnp.float32),
+        prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+    )
+    assert bool(terminal.update_applied)
+    trace_w, trace_b = terminal.state.critic_state.head_traces[2]
+    chex.assert_trees_all_close(trace_w, jnp.zeros_like(trace_w))
+    chex.assert_trees_all_close(trace_b, jnp.zeros_like(trace_b))
+
+    # The next episode's first update must match a control with the trace
+    # zeroed by hand: no dead-episode trace may move the prediction weights.
+    leaky = agent.update(
+        terminal.state,
+        jnp.array(1.0, dtype=jnp.float32),
+        obs,
+        jnp.array(0.0, dtype=jnp.float32),
+        prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+    )
+    traces = list(terminal.state.critic_state.head_traces)
+    traces[2] = (jnp.zeros_like(traces[2][0]), jnp.zeros_like(traces[2][1]))
+    clean_state = terminal.state.replace(
+        critic_state=terminal.state.critic_state.replace(head_traces=tuple(traces))
+    )
+    clean = agent.update(
+        clean_state,
+        jnp.array(1.0, dtype=jnp.float32),
+        obs,
+        jnp.array(0.0, dtype=jnp.float32),
+        prediction_cumulants=jnp.array([1.0], dtype=jnp.float32),
+    )
+    chex.assert_trees_all_close(
+        np.array(leaky.state.critic_state.head_params.weights[2]),
+        np.array(clean.state.critic_state.head_params.weights[2]),
+    )
+
+
+def test_qhorde_clears_prediction_demon_traces_at_terminal() -> None:
+    _assert_prediction_demon_traces_cleared_at_terminal(_make_qhorde_prediction_trace_agent())
+
+
+def test_nonlinear_qhorde_clears_prediction_demon_traces_at_terminal() -> None:
+    _assert_prediction_demon_traces_cleared_at_terminal(_make_nlqhorde_prediction_trace_agent())
