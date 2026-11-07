@@ -36,6 +36,10 @@ def _write_hostile_metadata(path: Path, depth: int) -> None:
     meta_path.write_bytes(_nested_json_bytes(depth))
 
 
+def _write_raw_metadata(path: Path, payload: bytes) -> None:
+    _on_disk_metadata_path(path).write_bytes(payload)
+
+
 def test_frozen_checkpoint_json_nest_bound() -> None:
     assert _JSON_MAX_DEPTH == 32
 
@@ -60,6 +64,34 @@ def test_last_fit_on_disk_nest_still_loads(tmp_path: Path) -> None:
     _write_hostile_metadata(path, _JSON_MAX_DEPTH)
     loaded = load_checkpoint_metadata(path)
     assert loaded["k"] is True or isinstance(loaded, dict)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b'{"epoch":1,"epoch":2,"_format_version":2}',
+        b'{"learner_config":{"step_size":0.1,"step_size":0.2},"_format_version":2}',
+    ],
+    ids=["top-level", "nested"],
+)
+@pytest.mark.parametrize("metadata_only", [True, False], ids=["metadata-only", "full"])
+def test_on_disk_metadata_rejects_duplicate_object_keys(
+    tmp_path: Path,
+    payload: bytes,
+    *,
+    metadata_only: bool,
+) -> None:
+    learner = LinearLearner()
+    state = learner.init(3)
+    path = tmp_path / "duplicate"
+    save_checkpoint(state, path, metadata={"epoch": 1})
+    _write_raw_metadata(path, payload)
+
+    with pytest.raises(ValueError, match="duplicate JSON object key"):
+        if metadata_only:
+            load_checkpoint_metadata(path)
+        else:
+            load_checkpoint(state, path)
 
 
 @pytest.mark.parametrize("metadata_only", [False, True])
