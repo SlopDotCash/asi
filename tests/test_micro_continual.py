@@ -897,10 +897,11 @@ class TestBayesReference:
             assert actual.dtype == np.int32
             np.testing.assert_array_equal(actual, expected)
 
-    def test_bayes_predict_handles_opposite_sign_overflow_after_sigma(self):
+    @pytest.mark.parametrize("sigma_scale", [1e20, 1e-10])
+    def test_bayes_predict_handles_opposite_sign_overflow_after_sigma(self, sigma_scale):
         # Synthetic numerical inputs, not a benchmark or scientific evaluation.
         means = jnp.asarray([[[-3e38]], [[-1e38]]], dtype=jnp.float32)
-        sigma = jnp.asarray([1e20], dtype=jnp.float32)
+        sigma = jnp.asarray([sigma_scale], dtype=jnp.float32)
         observations = jnp.asarray([[3e38]], dtype=jnp.float32)
 
         # Promote stored float32 inputs before independent oracle arithmetic.
@@ -920,8 +921,6 @@ class TestBayesReference:
         ):
             assert actual.dtype == np.int32
             np.testing.assert_array_equal(actual, expected)
-
-
     def test_bayes_predict_keeps_nearer_class_when_squared_distances_overflow(self):
         """A finite overflow of both squared distances must not select class 0."""
 

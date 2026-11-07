@@ -340,27 +340,28 @@ def _normalize(preactivation: Array) -> Array:
     mean = jnp.mean(preactivation, axis=-1, keepdims=True)
     centered = preactivation - mean
     variance = jnp.mean(jnp.square(centered), axis=-1, keepdims=True)
-    ordinary = centered * jax.lax.rsqrt(variance + _NORMALIZATION_EPSILON)
-    # One centered square can overflow while the normalized direction still fits.
-    scale = jnp.max(jnp.abs(preactivation), axis=-1, keepdims=True)
-    safe_scale = jnp.where(scale > 0.0, scale, jnp.ones_like(scale))
-    scaled = jnp.where(
-        jnp.abs(preactivation) == scale,
-        jnp.sign(preactivation),
-        preactivation / safe_scale,
-    )
-    scaled_centered = scaled - jnp.mean(scaled, axis=-1, keepdims=True)
-    scaled_variance = jnp.mean(jnp.square(scaled_centered), axis=-1, keepdims=True)
-    epsilon = jnp.asarray(_NORMALIZATION_EPSILON, dtype=preactivation.dtype)
-    scaled_epsilon = (epsilon / safe_scale) / safe_scale
-    fallback = jnp.where(
-        scaled_variance > 0.0,
-        scaled_centered * jax.lax.rsqrt(scaled_variance + scaled_epsilon),
-        jnp.zeros_like(preactivation),
-    )
     use_fallback = jnp.all(jnp.isfinite(preactivation), axis=-1, keepdims=True) & (
         ~jnp.isfinite(mean) | ~jnp.isfinite(variance)
     )
+    # Keep overflowed rows out of the ordinary gradient computation.
+    ordinary_centered = jnp.where(use_fallback, 0.0, centered)
+    ordinary_variance = jnp.mean(jnp.square(ordinary_centered), axis=-1, keepdims=True)
+    ordinary = ordinary_centered * jax.lax.rsqrt(ordinary_variance + _NORMALIZATION_EPSILON)
+
+    # A power-of-two scale retains the ratios even when dividing by max(abs(x))
+    # would lower to a subnormal reciprocal.
+    fallback_input = jnp.where(use_fallback, preactivation, 0.0)
+    _, exponent = jnp.frexp(jnp.max(jnp.abs(fallback_input), axis=-1, keepdims=True))
+    scaled = jnp.ldexp(fallback_input, -exponent)
+    scaled_centered = scaled - jnp.mean(scaled, axis=-1, keepdims=True)
+    scaled_variance = jnp.mean(jnp.square(scaled_centered), axis=-1, keepdims=True)
+    epsilon = jnp.asarray(_NORMALIZATION_EPSILON, dtype=preactivation.dtype)
+    scaled_denominator = jnp.where(
+        scaled_variance > 0.0,
+        scaled_variance + jnp.ldexp(epsilon, -2 * exponent),
+        1.0,
+    )
+    fallback = scaled_centered * jax.lax.rsqrt(scaled_denominator)
     return jnp.where(use_fallback, fallback, ordinary)
 
 

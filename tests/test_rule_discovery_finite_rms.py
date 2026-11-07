@@ -78,6 +78,25 @@ def test_modest_activation_rms_stays_bitwise(compiled: bool) -> None:
     np.testing.assert_array_equal(np.asarray(mixed), np.asarray(direct))
 
 
+def test_overflowing_rms_retains_relative_values_at_float32_extremes() -> None:
+    hidden = jnp.asarray([3e38, 1.5e38, -2e38], dtype=jnp.float32)
+    mixed = _mix(hidden, 1.0, compiled=True)
+    np.testing.assert_allclose(np.asarray(mixed), _finite_rms(np.asarray(hidden)), rtol=1e-6)
+
+
+def test_overflowing_rms_keeps_the_loss_gradient() -> None:
+    hidden = jnp.asarray([2e19, 1e19, -1e19], dtype=jnp.float32)
+    weights = jnp.asarray([1.0, -0.5, 0.75], dtype=jnp.float32)
+    values = np.asarray(hidden, dtype=np.float64)
+    rms = np.sqrt(np.mean(values**2) + _EPS)
+    direction = values / rms
+    expected = (np.asarray(weights) - direction * np.mean(np.asarray(weights) * direction)) / rms
+    gradient = jax.jit(jax.grad(lambda row: _rms_mix(row, jnp.float32(1.0)) @ weights))
+    np.testing.assert_allclose(
+        np.asarray(gradient(hidden)) * 1e19, expected * 1e19, rtol=5e-6, atol=1e-7
+    )
+
+
 @pytest.mark.parametrize("compiled", [False, True])
 def test_nonfinite_activation_stays_nonfinite(compiled: bool) -> None:
     hidden = jnp.asarray([jnp.inf, 1.0, 0.0, -3.0], dtype=jnp.float32)

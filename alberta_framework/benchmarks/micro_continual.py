@@ -702,37 +702,33 @@ def bayes_predict(component_means: Array, dim_sigma: Array, x: Array) -> Array:
     """
     c, k, d = component_means.shape
     means = component_means.reshape(c * k, d)
+    sigma_mantissa, sigma_exponent = jnp.frexp(dim_sigma)
 
     def squared_distances(mean: Array) -> tuple[Array, Array]:
-        # Rescale by an exact power of two before subtracting so opposite-sign
-        # extremes cannot overflow.  Combining the scale with the sigma
-        # mantissa/exponent keeps the shared-offset subtraction exact without
-        # intermediate overflow or underflow.
+        # Subtract in a shared power-of-two scale to avoid overflow and
+        # cancellation from whitening the two operands separately.
         magnitude = jnp.maximum(jnp.abs(x), jnp.abs(mean[None, :]))
         _, magnitude_exponent = jnp.frexp(magnitude)
-        sigma_mantissa, sigma_exponent = jnp.frexp(dim_sigma[None, :])
-        scale = jnp.ldexp(jnp.ones_like(magnitude), magnitude_exponent - 1)
-        scaled_delta = x / scale - mean[None, :] / scale
-        delta = jnp.ldexp(
-            scaled_delta / sigma_mantissa,
-            magnitude_exponent - 1 - sigma_exponent,
+        scaled_delta = jnp.ldexp(x, -magnitude_exponent) - jnp.ldexp(
+            mean[None, :], -magnitude_exponent
         )
+        mantissa, local_exponent = jnp.frexp(scaled_delta / sigma_mantissa)
+        exponent = magnitude_exponent + local_exponent - sigma_exponent
+        delta = jnp.ldexp(mantissa, exponent)
         direct = jnp.sum(delta * delta, axis=1)
-        max_abs = jnp.max(jnp.abs(delta), axis=1)
-        # Scale by a power of two. Dividing by max_abs compiles to a
-        # reciprocal multiply, and the reciprocal of a value above 2**126
-        # flushes to zero.
-        _, exponent = jnp.frexp(max_abs)
-        scaled_sum = jnp.sum(jnp.square(jnp.ldexp(delta, -exponent[:, None])), axis=1)
-        # A positive max coordinate scales into [0.5, 1), so this sum is at
-        # least 0.25.
-        log_distance = jnp.log(scaled_sum) + (
-            jnp.asarray(2.0 * np.log(2.0), dtype=jnp.float32) * exponent.astype(jnp.float32)
+
+        # Keep the exponent separate even if whitening the difference itself
+        # overflows. Zero coordinates must not set the common exponent.
+        max_exponent = jnp.max(
+            jnp.where(mantissa != 0.0, exponent, jnp.iinfo(jnp.int32).min),
+            axis=1,
         )
-        log_distance = jnp.where(
-            max_abs > 0.0,
-            log_distance,
-            jnp.asarray(-jnp.inf, dtype=jnp.float32),
+        max_exponent = jnp.where(jnp.any(mantissa != 0.0, axis=1), max_exponent, 0)
+        scaled_sum = jnp.sum(
+            jnp.square(jnp.ldexp(mantissa, exponent - max_exponent[:, None])), axis=1
+        )
+        log_distance = jnp.log(scaled_sum) + (
+            jnp.asarray(2.0 * np.log(2.0), dtype=jnp.float32) * max_exponent.astype(jnp.float32)
         )
         return direct, log_distance
 
@@ -781,10 +777,9 @@ def bayes_reference(
     seed = require_jax_seed(seed, name="seed")
     chunk_size = min(20_000, n_samples)
     class_components = config.n_classes * config.n_components
-    # Exact named host-visible arrays retained at the peak of bayes_predict:
-    # geometry + whitened geometry, y/z/eps/x, whitened x, d2, log_d2,
-    # scores, and predictions. The one-component delta and expression/compiler
-    # temporaries are intentionally outside this explicitly named work contract.
+    # Preserve the conservative named-array budget, including headroom for
+    # transformed geometry and samples. Component-local expression/compiler
+    # temporaries remain outside this explicitly named work contract.
     bayes_work_scalars = (
         2 * class_components * config.dim
         + config.dim

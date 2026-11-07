@@ -331,6 +331,25 @@ def test_normalize_leaves_a_nonfinite_preactivation_unrepaired() -> None:
     assert not bool(jnp.all(jnp.isfinite(observed)))
 
 
+def test_normalize_retains_relative_values_at_float32_extremes() -> None:
+    values = np.array([[3e38, 1.5e38, -2e38], [1.0, 0.0, 3.0]], dtype=np.float32)
+    actual = jax.jit(_normalize)(jnp.asarray(values))
+    np.testing.assert_allclose(np.asarray(actual), _float64_layer_norm(values), rtol=1e-6)
+
+
+def test_normalize_keeps_gradient_when_a_component_square_overflows() -> None:
+    values = np.array([2e19, 1e19, -1e19], dtype=np.float32)
+    weights = np.array([1.0, -0.5, 0.75], dtype=np.float32)
+    centered = values.astype(np.float64) - values.astype(np.float64).mean()
+    std = np.sqrt(np.mean(centered**2) + 1e-5)
+    direction = centered / std
+    expected = (weights - weights.mean() - direction * np.mean(weights * direction)) / std
+    gradient = jax.jit(jax.grad(lambda row: _normalize(row) @ jnp.asarray(weights)))
+    np.testing.assert_allclose(
+        np.asarray(gradient(jnp.asarray(values))) * 1e19, expected * 1e19, rtol=5e-6, atol=1e-7
+    )
+
+
 def test_costly_paper_lanes_are_unconditionally_closed() -> None:
     gates = qualification_gates()
     assert gates["execution_authorized"] is False
