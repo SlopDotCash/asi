@@ -117,6 +117,38 @@ def test_integer_action_above_float32_mantissa_keeps_its_identity(action: object
     assert int(safe) == 2**24 + 1
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        2**24 + 1.0,
+        np.float64(2**24 + 1),
+        np.asarray(2**24 + 1, dtype=np.float64),
+    ],
+)
+def test_float64_action_above_float32_mantissa_keeps_its_identity(action: object) -> None:
+    # float32 rounds 2**24 + 1 to 2**24; an exact float64 code must not be
+    # silently remapped onto a neighbouring action/context row.
+    safe, valid = safe_discrete_action(action, 2**24 + 2)  # type: ignore[arg-type]
+    assert bool(valid)
+    assert int(safe) == 2**24 + 1
+
+
+def test_float_action_at_float32_rounded_domain_bound_stays_valid() -> None:
+    # float(2**24 + 1) rounds to 2**24 in float32, so a float32 range check
+    # would reject the legal float code 2**24 when n_actions is 2**24 + 1.
+    safe, valid = safe_discrete_action(float(2**24), 2**24 + 1)
+    assert bool(valid)
+    assert int(safe) == 2**24
+
+
+def test_fractional_float64_action_above_float32_mantissa_stays_invalid() -> None:
+    # 2**24 + 1.5 is not an integer code; it must stay invalid instead of
+    # being narrowed onto a neighbouring action.
+    safe, valid = safe_discrete_action(2**24 + 1.5, 2**24 + 2)
+    assert not bool(valid)
+    assert int(safe) == 0
+
+
 def test_wide_unsigned_integer_action_is_rejected_not_wrapped() -> None:
     safe, valid = safe_discrete_action(jnp.asarray(2**32 - 1, dtype=jnp.uint32), 3)
     assert not bool(valid)
