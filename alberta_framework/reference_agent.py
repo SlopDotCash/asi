@@ -292,10 +292,15 @@ def _require_builtin_value_shape(
         array = value
         if array.size > _MAX_ARRAY_ELEMENTS or array.shape != expected:
             raise ValueError(f"{name} shape must be {expected}, got {array.shape}")
+        if array.dtype.kind == "b":
+            raise ValueError(f"{name} must contain only real numeric values, not bool")
         return
     if not expected:
         if type(value) in (list, tuple, range):
             raise ValueError(f"{name} shape must be {expected}")
+        # NumPy would promote a boolean element beside a number without a trace.
+        if type(value) is bool or getattr(value, "dtype", None) == np.dtype(np.bool_):
+            raise ValueError(f"{name} must contain only real numeric values, not bool")
         return
     if type(value) is range:
         count = _require_bounded_sequence_length(
@@ -514,6 +519,8 @@ class SpaceSpec:
             cast_lows = cast_integer_bounds(self.low, name="box low bounds")
             cast_highs = cast_integer_bounds(self.high, name="box high bounds")
         else:
+            _require_builtin_value_shape(self.low, expected=(size,), name="box low bounds")
+            _require_builtin_value_shape(self.high, expected=(size,), name="box high bounds")
             lows = _numeric_array(self.low, name="box low bounds")
             highs = _numeric_array(self.high, name="box high bounds")
             if lows.shape != (size,) or highs.shape != (size,):
