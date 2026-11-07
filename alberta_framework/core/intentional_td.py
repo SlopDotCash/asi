@@ -24,11 +24,15 @@ _INT32_MAX = 2**31 - 1
 def _stable_weighted_square_ema(previous: Array, value: Array, decay: float) -> Array:
     """Preserve a finite EMA when only the unweighted square overflows."""
 
-    retained = decay * previous
-    direct = retained + (1.0 - decay) * value**2
-    scaled_value = math.sqrt(1.0 - decay) * value
-    stable = retained + scaled_value**2
-    return jnp.where(jnp.isfinite(direct), direct, stable)
+    increment = 1.0 - decay
+    direct_innovation = increment * value**2
+    scaled_value = math.sqrt(increment) * value
+    innovation = jnp.where(jnp.isfinite(direct_innovation), direct_innovation, scaled_value**2)
+    if float(np.float32(decay)) == 1.0:
+        # Apply the exact configured decrement together with the innovation.
+        # Multiplying by the narrowed decay would discard it on every step.
+        return previous + (innovation - increment * previous)
+    return decay * previous + innovation
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,15 +74,8 @@ class IntentionalTDConfig:
             raise ValueError("gamma and lamda must be in [0, 1]")
         if self.gamma * self.lamda >= 1:
             raise ValueError("gamma * lamda must be less than 1 for sigma correction")
-        if float(np.float32(self.gamma * self.lamda)) >= 1.0:
-            raise ValueError(
-                "gamma * lamda must remain less than 1 in float32 for sigma correction"
-            )
         if not 0 <= self.beta2 < 1 or not 0 <= self.beta_clip < 1:
             raise ValueError("EMA decays must be in [0, 1)")
-        for name in ("beta2", "beta_clip"):
-            if float(np.float32(getattr(self, name))) >= 1.0:
-                raise ValueError(f"{name} must remain less than 1 in float32")
         for name in ("use_rmsprop", "use_adaptive_clip", "enabled"):
             if type(getattr(self, name)) is not bool:
                 raise ValueError(f"{name} must be a bool")
@@ -135,7 +132,18 @@ def intentional_td_update(
     if gradient.shape != weights.shape or gradient.dtype != weights.dtype:
         raise ValueError("gradient must match weights")
     decay = config.gamma * config.lamda
-    trace = decay * state.trace + gradient
+    if float(np.float32(decay)) == 1.0:
+        decrement = (1.0 - decay) * state.trace
+        # Opposite signs cancel safely before the small decrement. With the
+        # same sign, subtract the decrement before the potentially large sum.
+        opposite_sign = (state.trace < 0.0) != (gradient < 0.0)
+        trace = jnp.where(
+            opposite_sign,
+            (state.trace + gradient) - decrement,
+            state.trace + (gradient - decrement),
+        )
+    else:
+        trace = decay * state.trace + gradient
     maximum_step = jnp.array(_INT32_MAX, dtype=jnp.int32)
     step = jnp.minimum(state.step, maximum_step - 1) + jnp.array(
         1, dtype=jnp.int32
