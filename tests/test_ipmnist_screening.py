@@ -9300,14 +9300,17 @@ class TestLaunchHardeningS02Wd0Ridge:
     def test_blank_and_comment_lines_allowed(self, tmp_path):
         assert _jobs_ok_rc(self.LAUNCH, "# c\n\nabc 5 60 tune\n", tmp_path) == 0
 
-    @pytest.mark.parametrize("line", ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune",
-                                      "abc 5 6o tune", "abc 5a 60 tune"])
+    @pytest.mark.parametrize(
+        "line",
+        ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune", "abc 5 6o tune", "abc 5a 60 tune"],
+    )
     def test_malformed_lines_rejected(self, tmp_path, line):
         assert _jobs_ok_rc(self.LAUNCH, f"abc 5 60 tune\n{line}\n", tmp_path) == 1
 
     def test_worker_xla_flags_value_unchanged(self):
         assert _worker_xla_flags(_exp_path("s02_wd0_ridge", "worker.sh")) == (
-            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1")
+            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+        )
 
 
 class TestS02Wd0RidgeScreenVerdictEmpty:
@@ -9325,7 +9328,7 @@ class TestS02Wd0RidgeScreenVerdictEmpty:
 
         g = [0.003 + 0.0001 * i for i in range(10)]
         v = self.A.screen_verdict(g)
-        assert v["se"] == st.stdev(g) / 10 ** .5 and v["mean"] == st.mean(g)
+        assert v["se"] == st.stdev(g) / 10**0.5 and v["mean"] == st.mean(g)
 
 
 class TestRLSHeadIdentMapWd0ConstStepExtend2Registry(TestRLSHeadIdentMapWd0ConstStepRegistry):
@@ -9346,8 +9349,14 @@ class TestRLSHeadIdentMapWd0ConstStepExtend2Registry(TestRLSHeadIdentMapWd0Const
 
 def _load_extend2_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "wd0_const_step_extend2" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "wd0_const_step_extend2"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("extend2_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -9369,26 +9378,30 @@ class TestWd0ConstStepExtend2DivergenceRules:
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_accuracy_diverged(self, bad):
-        acc = list(self.OK); acc[17] = bad
+        acc = list(self.OK)
+        acc[17] = bad
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
     def test_non_finite_loss_diverged(self, bad):
-        loss = list(self.LOSS); loss[59] = bad
+        loss = list(self.LOSS)
+        loss[59] = bad
         assert "non-finite loss" in self.A.classify(self.OK, loss)
 
     def test_missing_loss_diverged(self):
         assert "non-finite loss" in self.A.classify(self.OK, None)
 
     def test_floor(self):
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         acc[3] = 0.5
         assert self.A.classify(acc, self.LOSS) is None
         assert self.A.FLOOR == 0.5
 
     def test_out_of_range_accuracy_diverged(self):
-        acc = list(self.OK); acc[0] = 1.5
+        acc = list(self.OK)
+        acc[0] = 1.5
         assert "outside" in self.A.classify(acc, self.LOSS)
 
     def test_tune_diverged_cell_never_wins(self):
@@ -9419,9 +9432,13 @@ class TestWd0ConstStepExtend2DivergenceRules:
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
+
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
-            d = tmp_path / "tune"; d.mkdir(exist_ok=True)
-            (d / f"{c}_seed123.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            d = tmp_path / "tune"
+            d.mkdir(exist_ok=True)
+            (d / f"{c}_seed123.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("tune", self.A.CELLS[0][0], 123)
@@ -9440,8 +9457,10 @@ class TestRLSHeadIdentMapS02Wd0WeightClip:
             name=spec.name + "_wclip_test",
             hyperparameters={
                 **spec.hyperparameters,
-                "ident_match_at": 10.0, "ident_match2": 0.0,
-                "ident_match3": 0.0, **overrides,
+                "ident_match_at": 10.0,
+                "ident_match2": 0.0,
+                "ident_match3": 0.0,
+                **overrides,
             },
         )
 
@@ -9471,9 +9490,7 @@ class TestRLSHeadIdentMapS02Wd0WeightClip:
     def test_tight_clip_is_live_and_finite(self):
         parent = self._run()
         tight = self._run(body_wclip_kappa=0.05)
-        assert not np.array_equal(
-            np.asarray(tight.per_task_loss), np.asarray(parent.per_task_loss)
-        )
+        assert not np.array_equal(np.asarray(tight.per_task_loss), np.asarray(parent.per_task_loss))
         assert np.all(np.isfinite(np.asarray(tight.per_task_loss)))
 
     def test_rejects_bad_kappa(self):
@@ -9488,23 +9505,37 @@ class TestRLSHeadIdentMapS02Wd0WeightClip:
                 )
         with pytest.raises(ValueError):
             _make_rls_head_identmap_learner(
-                {**self._spec().hyperparameters, "head_resid": 0.0,
-                 "ident_match_at": 0.0, "body_wclip_kappa": 2.0}
+                {
+                    **self._spec().hyperparameters,
+                    "head_resid": 0.0,
+                    "ident_match_at": 0.0,
+                    "body_wclip_kappa": 2.0,
+                }
             )
 
     def test_bound_is_kappa_over_sqrt_fan_in(self):
         from alberta_framework.benchmarks.ipmnist_screening import _wclip_bound
 
-        params = {"w1": np.zeros((784, 300)), "b1": np.zeros(300),
-                  "w2": np.zeros((300, 150)), "b2": np.zeros(150)}
+        params = {
+            "w1": np.zeros((784, 300)),
+            "b1": np.zeros(300),
+            "w2": np.zeros((300, 150)),
+            "b2": np.zeros(150),
+        }
         assert _wclip_bound(params, "w1", 2.0) == 2.0 / math.sqrt(784)
         assert _wclip_bound(params, "b2", 4.0) == 4.0 / math.sqrt(300)
 
 
 def _load_s02_wclip_analyze():
     import importlib.util
-    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
-            / "s02_wd0_wclip" / "analyze.py")
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "outputs"
+        / "ipmnist_screening"
+        / "s02_wd0_wclip"
+        / "analyze.py"
+    )
     spec = importlib.util.spec_from_file_location("s02_wclip_analyze", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -9528,41 +9559,47 @@ class TestS02Wd0WclipDivergenceRules:
     def test_classify(self):
         assert self.A.classify(self.OK, self.LOSS) is None
         assert "missing" in self.A.classify(None, None)
-        acc = list(self.OK); acc[5] = float("nan")
+        acc = list(self.OK)
+        acc[5] = float("nan")
         assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
         assert "non-finite loss" in self.A.classify(self.OK, None)
-        acc = list(self.OK); acc[3] = 0.4999
+        acc = list(self.OK)
+        acc[3] = 0.4999
         assert "tasks [3]" in self.A.classify(acc, self.LOSS)
         acc[3] = 1.5
         assert "outside" in self.A.classify(acc, self.LOSS)
         assert self.A.FLOOR == 0.5
 
     def test_tune_gate_diverged_and_ties_to_larger_kappa(self):
-        T = self.A.tune_decision
-        assert T([("a", 2.0, 0.001), ("b", 4.0, None), ("c", 8.0, 0.002)]) == "c"
-        assert T([("a", 2.0, None), ("b", 4.0, None)]) == "STOP_ALL_DIVERGED"
-        assert T([("a", 2.0, 0.0005), ("b", 4.0, -0.01)]) == "STOP"
-        assert T([("a", 2.0, 0.003), ("b", 4.0, 0.003)]) == "b"
+        decide = self.A.tune_decision
+        assert decide([("a", 2.0, 0.001), ("b", 4.0, None), ("c", 8.0, 0.002)]) == "c"
+        assert decide([("a", 2.0, None), ("b", 4.0, None)]) == "STOP_ALL_DIVERGED"
+        assert decide([("a", 2.0, 0.0005), ("b", 4.0, -0.01)]) == "STOP"
+        assert decide([("a", 2.0, 0.003), ("b", 4.0, 0.003)]) == "b"
 
     def test_screen_verdict(self):
-        V = self.A.screen_verdict
-        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
-        v = V([0.5] * 9 + [None])
+        verdict = self.A.screen_verdict
+        assert verdict([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = verdict([0.5] * 9 + [None])
         assert v["mean"] >= 0.002 and v["diverged"] == 1 and v["verdict"] == "FAIL"
-        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+        assert verdict([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
 
     def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
         import json
-        d = tmp_path / "tune"; d.mkdir()
+
+        d = tmp_path / "tune"
+        d.mkdir()
         for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
-            (d / f"{c}_seed154.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+            (d / f"{c}_seed154.json").write_text(
+                json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS})
+            )
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("tune", self.A.CELLS[0][0], 154)
 
 
 class TestEnvcheckS02Wd0WclipUnreadable:
-    """s02_wd0_wclip/envcheck.py: an unreadable reference is a clean FAIL (exit 1), never a crash."""
+    """An unreadable clipping environment-check reference fails cleanly."""
 
     ENV = _exp_path("s02_wd0_wclip", "envcheck.py")
 
@@ -9577,8 +9614,10 @@ class TestEnvcheckS02Wd0WclipUnreadable:
         import subprocess
 
         subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-        shutil.copytree(_exp_path("s02_wd0_wclip", "envcheck"),
-                        tmp_path / "outputs" / "ipmnist_screening" / "s02_wd0_wclip" / "envcheck")
+        shutil.copytree(
+            _exp_path("s02_wd0_wclip", "envcheck"),
+            tmp_path / "outputs" / "ipmnist_screening" / "s02_wd0_wclip" / "envcheck",
+        )
         self._check_clean_fail(_run_py(self.ENV, tmp_path))
 
     def test_not_a_git_checkout_and_no_local_shards(self, tmp_path):
@@ -9606,11 +9645,14 @@ class TestLaunchHardeningS02Wd0Wclip:
     def test_blank_and_comment_lines_allowed(self, tmp_path):
         assert _jobs_ok_rc(self.LAUNCH, "# c\n\nabc 5 60 tune\n", tmp_path) == 0
 
-    @pytest.mark.parametrize("line", ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune",
-                                      "abc 5 6o tune", "abc 5a 60 tune"])
+    @pytest.mark.parametrize(
+        "line",
+        ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune", "abc 5 6o tune", "abc 5a 60 tune"],
+    )
     def test_malformed_lines_rejected(self, tmp_path, line):
         assert _jobs_ok_rc(self.LAUNCH, f"abc 5 60 tune\n{line}\n", tmp_path) == 1
 
     def test_worker_xla_flags_value_unchanged(self):
         assert _worker_xla_flags(_exp_path("s02_wd0_wclip", "worker.sh")) == (
-            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1")
+            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+        )
