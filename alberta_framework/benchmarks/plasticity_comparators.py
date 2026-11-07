@@ -614,7 +614,16 @@ def churn_loss(before: Array, after: Array, *, strength: float) -> Array:
     if before.size == 0:
         raise ValueError("reference predictions must be non-empty")
     _finite_scalar("strength", strength)
-    candidate = 0.5 * strength * jnp.mean(jnp.square(after - before))
+    delta = after - before
+    direct = 0.5 * strength * jnp.mean(jnp.square(delta))
+    # One-half of the mean. Component squares can overflow while this sum fits.
+    scale = (0.5 * strength) / delta.size
+    recovered = jnp.sum(_adamo_weighted_square(scale, jnp.ravel(delta)))
+    candidate = jnp.where(
+        jnp.isfinite(direct) | ~jnp.isfinite(recovered),
+        direct,
+        recovered,
+    )
     return _finite_result(candidate, jnp.asarray(0.0, dtype=before.dtype), name="churn loss")
 
 
