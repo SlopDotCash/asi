@@ -5723,6 +5723,8 @@ def _make_rls_head_identmap_learner(
     :func:`_make_rls_head_learner` (bit-exact reduction, pinned).
     """
     if "polyak_window" in hp:
+        if hp.get("body_momentum", 0.0) != 0.0:
+            raise ValueError("body momentum requires the fixed-step gated residual body")
         if _decay_to_init:
             raise ValueError("polyak averaging is not composed with L2-Init")
         return _make_rls_head_identmap_polyak_learner(hp)
@@ -6033,6 +6035,7 @@ def _make_rls_head_identmap_polyak_learner(
         hp["ident_match_at"] > 0.0 and hp["head_resid"] == 1.0
         and hp.get("gate_scale", 1.0) == 1.0
         and hp.get("rls_head_sgd", 0.0) == 0.0
+        and hp.get("body_momentum", 0.0) == 0.0
         and hp.get("body_sm_decay", 0.0) == 0.0 and hp.get("resid_whiten", 0.0) == 0.0
         and not {"body_as_meta", "snp_shrink", "body_wclip_kappa"}.intersection(hp)
     ):

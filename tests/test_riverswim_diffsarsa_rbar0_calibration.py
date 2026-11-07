@@ -11,6 +11,7 @@ from types import ModuleType
 import pytest
 
 from alberta_framework.benchmarks import reference_life_scorecard as sc
+from alberta_framework.reference_agent import AgentManifest
 from alberta_framework.streams.closed_loop import RiverSwimMDP
 
 DIR = (
@@ -112,7 +113,22 @@ def test_rbar0_arm_differs_from_scorecard_arm_only_in_initial_average_reward() -
     stored = envcheck.json.loads(
         (run.SCORECARD_SHARDS / "riverswim__differential_sarsa__70000.json").read_text()
     )
-    assert default.manifest.manifest_id == stored["resolved"]["agent_manifest"]["manifest_id"]
+    manifest = default.manifest
+    historical = stored["resolved"]["agent_manifest"]
+    assert manifest.config == historical["config"]
+    assert manifest.state_schema == "asi.differential_sarsa_exact_control_state.preview2"
+    assert historical["state_schema"] == "asi.differential_sarsa_exact_control_state.preview1"
+    historical_identity = AgentManifest.from_config(
+        schema=manifest.schema,
+        implementation_id=manifest.implementation_id,
+        state_schema=historical["state_schema"],
+        config=manifest.config,
+        observation_spec=manifest.observation_spec,
+        action_spec=manifest.action_spec,
+        capabilities=manifest.capabilities,
+    )
+    assert historical_identity.manifest_id == historical["manifest_id"]
+    assert manifest.manifest_id != historical_identity.manifest_id
 
 
 def test_lifecycle_ids_are_unique_and_scorecard_shaped() -> None:
