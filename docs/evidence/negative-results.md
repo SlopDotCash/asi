@@ -506,6 +506,24 @@ remains telemetry, resource Pareto selection remains unevaluated, and the prior
 run and all pinned evidence are unchanged.
 
 
+## Discounted SARSA eligibility-trace RiverSwim diagnostic (2026-10-15)
+
+A separately preregistered full reference-life comparison changed only `lamda`
+from 0.0 to 0.8 with the existing exploration schedule, step size and six-state
+environment. All six 20,000-event lives completed on three new paired development
+seeds (100401-100403). Baseline lifetime mean reward was
+`0.495116917 +/- 0.424669047`, versus `0.005533083 +/- 0.001311531` with traces;
+the paired delta was `-0.489583833 +/- 0.424023634` (means +/- sample SD).
+The fixed all-positive / mean-delta > 0.01 rule returned
+`bounded_hypothesis_negative`; no candidate is selected. This does not refute
+SARSA(lambda) generally or alter the frozen scorecard gates, and it never
+populates `reference-dev` or promotes scientific evidence. Do not retry this
+setting without a new causal hypothesis and separate bounded plan. Full per-seed
+values, reward/action/state traces, fixed action-value snapshots, byte identities,
+resource exclusions and independent recomputation are retained in
+[`discounted-sarsa-lambda-2026-10-15/`](../../outputs/reference_life_control_calibration/discounted-sarsa-lambda-2026-10-15/README.md).
+
+
 ## RiverSwim discounted-SARSA exploration decay (2026-10-15)
 
 A separately declared, permanently nonpromoting diagnostic used the full
