@@ -1251,9 +1251,9 @@ def run_latent_world_model_learning_loop(
         (obs_array, act_array, rew_array, discounts_array, next_obs_array),
     )
     # Scan materializes host-only lifecycle clocks as float32 leaves.
-    final_state = dataclasses.replace(
+    final_state = dataclasses.replace(  # type: ignore[type-var]
         final_state,
-        learner_state=dataclasses.replace(
+        learner_state=dataclasses.replace(  # type: ignore[type-var]
             final_state.learner_state,
             birth_timestamp=state.learner_state.birth_timestamp,
             uptime_s=state.learner_state.uptime_s,
