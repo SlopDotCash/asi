@@ -135,6 +135,27 @@ def test_recent_observation_buffer_rejects_wrong_shaped_observations(
         buffer.add(state, observation)
 
 
+@pytest.mark.parametrize("bad_value", [jnp.nan, jnp.inf, -jnp.inf])
+def test_recent_observation_buffer_never_retains_non_finite_anchors(
+    bad_value: float,
+) -> None:
+    """A rejected observation must not stay behind as a later dream anchor."""
+    buffer = RecentObservationBuffer(capacity=2, observation_dim=2)
+    first = jnp.asarray([1.0, 2.0], dtype=jnp.float32)
+    state = buffer.add(buffer.init(), first)
+
+    rejected = buffer.add(state, jnp.asarray([bad_value, 3.0], dtype=jnp.float32))
+
+    chex.assert_trees_all_equal(rejected, state)
+    following = buffer.add(rejected, jnp.asarray([4.0, 5.0], dtype=jnp.float32))
+    assert int(following.size) == 2
+    assert int(following.index) == 0
+    np.testing.assert_array_equal(
+        np.asarray(following.observations),
+        np.asarray([[1.0, 2.0], [4.0, 5.0]], dtype=np.float32),
+    )
+
+
 def _assert_rollout_state_close(left, right) -> None:  # type: ignore[no-untyped-def]
     chex.assert_trees_all_close(
         (
