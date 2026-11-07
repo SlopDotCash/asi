@@ -525,6 +525,8 @@ def _upgd_utility_and_gate(
     utility: dict[str, Array],
     count: Array,
     utility_decay: float,
+    *,
+    guard_zero_max: bool = False,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
     """UPGD utility EMA update + global-max sigmoid gate (lean-step equations)."""
     beta = utility_decay
@@ -534,6 +536,8 @@ def _upgd_utility_and_gate(
         for name in params
     }
     global_max = jnp.max(jnp.stack([jnp.max(new_utility[name]) for name in sorted(params)]))
+    if guard_zero_max:
+        global_max = jnp.where(global_max == 0.0, 1.0, global_max)
     bias_correction = 1.0 - jnp.power(
         jnp.asarray(beta, dtype=jnp.float32), count.astype(jnp.float32)
     )
@@ -1315,8 +1319,10 @@ def upgd_autostep_update(
     params: dict[str, Array],
     state: UPGDAutostepState,
     grads: dict[str, Array],
-    noise: dict[str, Array],
+    noise: dict[str, Array] | None,
     hp: Mapping[str, float],
+    *,
+    _guard_zero_max: bool = False,
 ) -> tuple[dict[str, Array], UPGDAutostepState]:
     """UPGD-W step with Autostep per-weight step-size adaptation.
 
@@ -1330,7 +1336,7 @@ def upgd_autostep_update(
     tau = hp["tau"]
     count = _next_utility_clock(state.step)
     utility, gate = _upgd_utility_and_gate(
-        params, grads, state.utility, count, hp["utility_decay"]
+        params, grads, state.utility, count, hp["utility_decay"], guard_zero_max=_guard_zero_max,
     )
     z_all = {name: grads[name] * (1.0 - gate[name]) for name in params}
     raw_alpha: dict[str, Array] = {}
@@ -1376,9 +1382,8 @@ def upgd_autostep_update(
         keep = 1.0 - gate[name]
         z = z_all[name]
         alpha = jnp.clip(raw_alpha[name] / m_factor, _AUTOSTEP_ALPHA_MIN, _AUTOSTEP_ALPHA_MAX)
-        new_params[name] = params[name] * (1.0 - alpha * wd) - alpha * (
-            (grads[name] + noise[name]) * keep
-        )
+        direction = z if noise is None else (grads[name] + noise[name]) * keep
+        new_params[name] = params[name] * (1.0 - alpha * wd) - alpha * direction
         new_alpha[name] = alpha
         trace_candidate = state.trace[name] * (1.0 - alpha * z * z) + alpha * z
         new_trace[name] = jnp.where(
@@ -4765,6 +4770,25 @@ class RLSHeadSMState:
     sm: dict[str, Array]
 
 
+@chex.dataclass(frozen=True)
+class RLSHeadASState:
+    """RLS readout and normalizer with a body-only Autostep carry."""
+
+    autostep: UPGDAutostepState
+    norm: EMANormState
+    fast_mean: Array
+    p: Array
+    wout: Array
+
+    @property
+    def utility(self) -> dict[str, Array]:
+        return self.autostep.utility
+
+    @property
+    def step(self) -> Array:
+        return self.autostep.step
+
+
 def _rls_head_hp(**overrides: float) -> dict[str, float]:
     """Champion (``sigma0_shiftnorm_d099``) constants plus RLS-head defaults.
 
@@ -5014,6 +5038,24 @@ def _make_rls_head_learner(
             raise ValueError("body_sm_step must be positive and finite")
         if sm_eps <= 0.0 or not math.isfinite(sm_eps):
             raise ValueError("body_sm_eps must be positive and finite")
+    as_enabled = "body_as_meta" in hp
+    as_meta = float(hp.get("body_as_meta", 0.0))
+    as_tau = float(hp.get("body_as_tau", 1e4))
+    if "body_as_tau" in hp and not as_enabled:
+        raise ValueError("body_as_tau requires body_as_meta")
+    if as_enabled:
+        if not 0.0 <= as_meta <= 1.0:
+            raise ValueError("body_as_meta must lie in [0, 1]")
+        if not 1.0 <= as_tau <= float(np.finfo(np.float32).max):
+            raise ValueError("body_as_tau must be float32 and >= 1")
+        if not (resid and gate_enabled) or any((
+            whiten_enabled, _decay_to_init, sm_enabled, wclip_on, "anneal_floor" in hp,
+        )):
+            raise ValueError("body Autostep requires the plain fixed-step gated residual body")
+    as_hp = {
+        "weight_decay": weight_decay, "utility_decay": utility_decay,
+        "meta_step_size": as_meta, "tau": as_tau,
+    }
 
     head_sgd = hp.get("rls_head_sgd", 0.0)
     if head_sgd not in (0.0, 1.0):
@@ -5034,6 +5076,7 @@ def _make_rls_head_learner(
             or whiten_enabled
             or newton
             or sm_enabled
+            or as_enabled
             or _decay_to_init
             or wclip_on
         ):
@@ -5054,10 +5097,29 @@ def _make_rls_head_learner(
 
     def init_fn(
         params: dict[str, Array],
-    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState:
+    ) -> RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState:
         input_dim = params["w1"].shape[0]
         m = params["w2"].shape[1] + 1
         n_classes = params["w3"].shape[1]
+        if as_enabled:
+            zeros = {name: jnp.zeros_like(params[name]) for name in _RLS_HEAD_BODY}
+            return RLSHeadASState(  # type: ignore[call-arg]
+                autostep=UPGDAutostepState(  # type: ignore[call-arg]
+                    utility=zeros,
+                    step=jnp.array(0, dtype=jnp.int32),
+                    alpha={name: jnp.full_like(params[name], step_size) for name in _RLS_HEAD_BODY},
+                    trace=zeros,
+                    normalizer=zeros,
+                ),
+                norm=EMANormState(  # type: ignore[call-arg]
+                    mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                    var=jnp.ones(input_dim, dtype=jnp.float32),
+                    count=jnp.zeros(input_dim, dtype=jnp.float32),
+                ),
+                fast_mean=jnp.zeros(input_dim, dtype=jnp.float32),
+                p=jnp.eye(m, dtype=jnp.float32) / ridge_init,
+                wout=jnp.zeros((m, n_classes), dtype=jnp.float32),
+            )
         if sm_enabled:
             return RLSHeadSMState(  # type: ignore[call-arg]
                 utility={
@@ -5179,7 +5241,7 @@ def _make_rls_head_learner(
 
     def full_step(
         params: dict[str, Array],
-        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        state: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         x: Array,
         y: Array,
         key: Array,
@@ -5187,11 +5249,11 @@ def _make_rls_head_learner(
         decay_lr: Array | None = None,
     ) -> tuple[
         dict[str, Array],
-        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState,
+        RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState,
         StepMetrics,
     ]:
         del key  # sigma-0 body, closed-form head: no randomness consumed
-        if lr is not None and (sm_enabled or not gate_enabled or not resid):
+        if lr is not None and (as_enabled or sm_enabled or not gate_enabled or not resid):
             raise ValueError("a runtime step needs the gated residual body")
         if _decay_to_init:
             if not isinstance(state, RLSHeadL2InitState):
@@ -5269,7 +5331,23 @@ def _make_rls_head_learner(
                 (loss, (logits, phi)), body_grads = jax.value_and_grad(
                     head_loss, has_aux=True
                 )(body)
-            if sm_enabled:
+            if as_enabled:
+                assert isinstance(state, RLSHeadASState)
+                if as_meta == 0.0:
+                    new_params, new_utility = _gated_sgd(
+                        params, body_grads, state.utility, count,
+                        _RLS_HEAD_BODY, guard_zero_max=True,
+                    )
+                    new_autostep = UPGDAutostepState(  # type: ignore[call-arg]
+                        utility=new_utility, step=count, alpha=state.autostep.alpha,
+                        trace=state.autostep.trace, normalizer=state.autostep.normalizer,
+                    )
+                else:
+                    updated_body, new_autostep = upgd_autostep_update(
+                        body, state.autostep, body_grads, None, as_hp, _guard_zero_max=True,
+                    )
+                    new_params = {**params, **updated_body}
+            elif sm_enabled:
                 assert isinstance(state, RLSHeadSMState)
                 # Champion utility EMA and sigmoid gate byte-identical to
                 # _gated_sgd; only the step geometry changes: the raw body
@@ -5389,6 +5467,10 @@ def _make_rls_head_learner(
         plasticity = jnp.clip(
             1.0 - loss_after / jnp.maximum(loss, _PLASTICITY_LOSS_FLOOR), 0.0, 1.0
         )
+        if as_enabled:
+            return new_params, RLSHeadASState(  # type: ignore[call-arg]
+                autostep=new_autostep, norm=new_norm, fast_mean=new_fast, p=new_p, wout=new_wout,
+            ), (accuracy, loss, plasticity)
         if sm_enabled:
             assert isinstance(state, RLSHeadSMState)
             return new_params, RLSHeadSMState(  # type: ignore[call-arg]
@@ -5437,7 +5519,7 @@ class RLSHeadIdentState:
     (identity until the first match of each task).
     """
 
-    inner: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState
+    inner: RLSHeadState | RLSHeadL2InitState | RLSHeadSMState | RLSHeadASState
     raw_norm: EMANormState
     raw_fast: Array
     ref_class_sums: Array
@@ -8860,6 +8942,18 @@ def _build_registry() -> dict[str, ScreeningSpec]:
             "and the gated chain never screened any step below 0.01 — the "
             "gate + trigger + step triple named unmeasured in the idet002 "
             "wave README (PR #3116)"
+        ),
+        *(
+            (
+                f"rls_head_resid_identmap50_r_idet003_s005625_as{tag}",
+                {"rls_lambda": 1.0, "rls_reset_frac": 0.05, "head_resid": 1.0,
+                 "ident_match_at": 50.0, "ident_match2": 200.0,
+                 "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                 "step_size": 0.005625, "body_as_meta": meta, "body_as_tau": 1e4},
+                f"Autostep per-weight body steps with meta rate {meta} "
+                "(development screening diagnostic)"
+            )
+            for tag, meta in (("1e3", 1e-3), ("1e2", 1e-2))
         ),
         *(
             (

@@ -471,7 +471,7 @@ def _rms_mix(hidden: Array, f_rms: Array) -> Array:
         lambda values: values / jnp.sqrt(jnp.mean(values * values) + _EPS),
         hidden,
     )
-    return f_rms * direction + (1.0 - f_rms) * hidden
+    return cast(Array, f_rms * direction + (1.0 - f_rms) * hidden)
 
 
 def _loss_logits(

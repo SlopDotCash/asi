@@ -723,3 +723,12 @@ perturb transform at the first remap of each detected task. The selected
 shrink 0.8 and perturbation scale 0.01 lost to the local parent on all three
 60-task seeds. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_snp/README.md)
 records the paired comparison, unsuccessful tune cells, and source bindings.
+
+## Autostep body steps on idet003_s005625 (2026-10-30)
+
+The preregistered development screen compared fixed body steps with
+Autostep's per-weight steps on the gated residual body. The selected meta
+rate lost to its locally measured parent on all three 60-task seeds and
+failed the preregistered gate. The [retained report](../../outputs/ipmnist_screening/wave_identmap50_r_idet003_s005625_autostep/README.md)
+documents the paired results and why the historical parent shards were not
+used for that pairing.
