@@ -81,6 +81,26 @@ def _require_int32(name: str, value: object, *, minimum: int, maximum: int = _IN
     return canonical
 
 
+_FLOAT32_MIN_NORMAL = 2.0**-126
+_SUBNORMAL_TEMPERATURE_SCALE = 2.0**23
+
+
+def _actor_temperature_logits(logits: Array, temperature: float) -> Array:
+    if temperature >= _FLOAT32_MIN_NORMAL:
+        return _temperature_scaled_logits(logits, temperature)
+
+    # Normalize the divisor so its reciprocal is finite on the device.
+    # If the maximum itself cannot be scaled, its smallest nonzero gap
+    # already underflows softmax at either temperature.
+    scale = _SUBNORMAL_TEMPERATURE_SCALE
+    max_scalable = float(np.finfo(np.float32).max) / scale
+    return jax.lax.cond(
+        jnp.abs(jnp.max(logits)) <= max_scalable,
+        lambda: _temperature_scaled_logits(logits * scale, temperature * scale),
+        lambda: _temperature_scaled_logits(logits, _FLOAT32_MIN_NORMAL),
+    )
+
+
 def _root_mean_square(values: Array) -> Array:
     """Keep a representable RMS finite when only its square reduction overflows."""
     direct = jnp.sqrt(jnp.mean(values * values))
@@ -893,7 +913,7 @@ class AverageRewardHordeActorCriticAgent:
         features = self._actor_features(state, observation)
         logits = state.actor_weights @ features + state.actor_bias
         logits = jnp.clip(logits, -self._config.logit_clip, self._config.logit_clip)
-        return jax.nn.softmax(_temperature_scaled_logits(logits, self._config.temperature))
+        return jax.nn.softmax(_actor_temperature_logits(logits, self._config.temperature))
 
     @functools.partial(jax.jit, static_argnums=(0,))
     def behavior_policy(
@@ -1005,9 +1025,12 @@ class AverageRewardHordeActorCriticAgent:
             * old_sample.target_probability
             / old_sample.behavior_probability
         )
-        score = (
-            actor_score_scale * (action_mask - old_sample.target_policy) / self._config.temperature
-        )
+        score_numerator = actor_score_scale * (action_mask - old_sample.target_policy)
+        temperature = self._config.temperature
+        if temperature < _FLOAT32_MIN_NORMAL:
+            score_numerator = score_numerator * _SUBNORMAL_TEMPERATURE_SCALE
+            temperature *= _SUBNORMAL_TEMPERATURE_SCALE
+        score = score_numerator / temperature
         grad_log_policy = score[:, None] * old_features[None, :]
         bias_grad = score
         raw_w, new_opt_w, weight_update_applied = _update_from_gradient_with_diagnostics(
@@ -2751,7 +2774,7 @@ def migrate_legacy_differential_sarsa_state(
         raise TypeError("legacy differential SARSA state must be a mapping or dataclass")
     current_names = {
         field.name
-        for field in dataclasses.fields(DifferentialSARSAState)
+        for field in dataclasses.fields(DifferentialSARSAState)  # type: ignore[arg-type]
     }
     legacy_names = current_names - {"step_words"}
     supplied_names = set(fields)
