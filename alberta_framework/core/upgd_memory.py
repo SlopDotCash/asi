@@ -1085,6 +1085,9 @@ class UPGDMemoryLearner:
         target_arr = jnp.asarray(target)
         observation_valid = jnp.all(jnp.isfinite(observation_arr))
         target_valid = jnp.all(~jnp.isinf(target_arr))
+        # NaN marks an inactive head. A step with no active head carries no
+        # learning signal, so it must not commit wrapper state.
+        any_active_head = jnp.any(~jnp.isnan(target_arr))
         safe_observation = jnp.where(
             observation_valid, observation_arr, jnp.zeros_like(observation_arr)
         )
@@ -1210,6 +1213,7 @@ class UPGDMemoryLearner:
         update_applied = (
             observation_valid
             & target_valid
+            & any_active_head
             & memory_result.update_applied
             & self._state_is_valid(checked_state)
             & floating_tree_is_finite(candidate_state)
