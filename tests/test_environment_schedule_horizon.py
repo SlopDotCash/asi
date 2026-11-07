@@ -307,3 +307,34 @@ def test_lifetime_schema_migration_resources_and_checkpoint(tmp_path) -> None:
     restored_stream, restored = load_lifetime_gauntlet_checkpoint(path)
     assert restored_stream.to_config() == payload
     chex.assert_trees_all_equal(restored, state)
+
+
+def test_lifetime_init_rejects_rbg_before_returning_an_invalid_state() -> None:
+    """The public initializer must enforce its persisted two-word key contract."""
+    stream = LifetimeGauntletStream()
+    rbg_key = jr.key(7, impl="rbg")
+    assert jr.key_data(rbg_key).shape == (4,)
+
+    with pytest.raises(TypeError, match="threefry2x32"):
+        stream.init(rbg_key)
+
+
+def test_lifetime_resources_and_restore_ignore_ambient_prng(
+    tmp_path,
+) -> None:
+    """Exact accounting and restore templates must not inherit global PRNG state."""
+    stream = LifetimeGauntletStream(
+        GauntletConfig(relevant_dim=2, irrelevant_dim=1, segment_length=4)
+    )
+    state = stream.init(jr.key(11, impl="threefry2x32"))
+    path = tmp_path / "lifetime-ambient-prng"
+    save_lifetime_gauntlet_checkpoint(stream, state, path)
+
+    with jax.default_prng_impl("threefry2x32"):
+        expected_budget = stream.resource_budget
+    with jax.default_prng_impl("rbg"):
+        assert stream.resource_budget == expected_budget
+        restored_stream, restored = load_lifetime_gauntlet_checkpoint(path)
+
+    assert restored_stream.to_config() == stream.to_config()
+    chex.assert_trees_all_equal(restored, state)
