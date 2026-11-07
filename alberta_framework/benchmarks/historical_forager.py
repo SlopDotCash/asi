@@ -709,6 +709,10 @@ class _HistoricalMetricAccumulator:
         self.ema = (
             HISTORICAL_FORAGER_EMA_DECAY * self.ema + (1.0 - HISTORICAL_FORAGER_EMA_DECAY) * reward
         )
+        if not math.isfinite(self.total_reward) or not math.isfinite(self.ema):
+            raise HistoricalForagerContractError(
+                "rewards produce a non-finite historical metric aggregate or EMA"
+            )
         if self.completed % HISTORICAL_FORAGER_EMA_SUBSAMPLE == 0:
             sample_index = self.completed // HISTORICAL_FORAGER_EMA_SUBSAMPLE
             if sample_index >= self.tail_start:
@@ -721,7 +725,14 @@ class _HistoricalMetricAccumulator:
         expected_tail = self.sample_count - self.tail_start
         if len(self.tail_samples) != expected_tail or not self.tail_samples:
             raise HistoricalForagerContractError("historical FOV tail sampling is inconsistent")
-        value = float(np.mean(np.asarray(self.tail_samples, dtype=np.float64)))
+        with np.errstate(over="ignore", invalid="ignore"):
+            value = float(np.mean(np.asarray(self.tail_samples, dtype=np.float64)))
+        if not all(
+            math.isfinite(metric) for metric in (self.total_reward, value, self.ema)
+        ):
+            raise HistoricalForagerContractError(
+                "rewards produce a non-finite historical metric aggregate or EMA"
+            )
         return {
             "total_reward": self.total_reward,
             "fov_last_10pct_ema_auc": value,
