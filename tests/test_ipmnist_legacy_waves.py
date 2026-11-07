@@ -1,5 +1,6 @@
 """Recompute retained development waves without rerunning historical training."""
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,10 +12,13 @@ import pytest
 
 from alberta_framework._strict_json import load_strict_json_object
 from alberta_framework.benchmarks.ipmnist_screening import (
+    RLSHeadDiagonalState,
     RLSHeadIdentState,
     RLSHeadL2InitState,
     RLSHeadMomentumState,
+    _diagonal_rls_gain,
     _make_rls_head_learner,
+    load_shard,
     merge_shards,
     screening_spec,
 )
@@ -42,6 +46,8 @@ _OUTPUTS = Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
         "wave_identmap50_r_idet003_s0031640625_r02_preset003",
         "wave_identmap50_r_idet003_s0031640625_r02_l2init",
         "wave_identmap50_r_idet003_s0031640625_r02_sgdhead",
+        "wave_identmap50_r_idet003_s0031640625_r02_diaghead",
+        "wave_identmap50_r_idet003_s0031640625_r02_gdiag",
         "gradual64_r2",
     ),
 )
@@ -217,3 +223,115 @@ def test_historical_momentum_rejects_runtime_schedule(keyword: str) -> None:
     _, step = _make_rls_head_learner(spec.hyperparameters)
     with pytest.raises(ValueError, match="requires a fixed step and decay"):
         step({}, None, jnp.zeros(1), jnp.int32(0), jr.key(0), **{keyword: jnp.float32(0.01)})
+
+
+@pytest.mark.parametrize("pooled", (False, True))
+def test_diagonal_rls_retains_positive_covariance_under_dominant_excitation(
+    pooled: bool,
+) -> None:
+    p = np.array([1.0 / 0.03, 3.0, 1.0 / 0.03], dtype=np.float32)
+    phi = np.array([10000.0, 0.25, 1.0], dtype=np.float32)
+    excitation = p.astype(np.float64) * phi.astype(np.float64) ** 2
+    denominator = 1.0 + (excitation.sum() if pooled else excitation)
+    remaining = 1.0 + (excitation.sum() - excitation if pooled else 0.0)
+    expected_gain = p.astype(np.float64) * phi.astype(np.float64) / denominator
+    expected_p = p.astype(np.float64) * remaining / denominator
+
+    gain, covariance = jax.jit(_diagonal_rls_gain, static_argnames="pooled")(
+        p, phi, pooled=pooled,
+    )
+
+    np.testing.assert_allclose(gain, expected_gain, rtol=2e-6)
+    np.testing.assert_allclose(covariance, expected_p, rtol=2e-6)
+    assert np.all(covariance > 0)
+    assert np.all(covariance <= p)
+
+
+def test_pooled_diagonal_rls_scales_finite_features_before_quadratic_excitation() -> None:
+    p = np.full(3, 1.0 / 0.03, dtype=np.float32)
+    phi = np.array([1e20, 1e18, 1.0], dtype=np.float32)
+    gain, covariance = jax.jit(_diagonal_rls_gain, static_argnames="pooled")(
+        p, phi, pooled=True,
+    )
+
+    assert np.all(np.isfinite(gain))
+    np.testing.assert_allclose(gain[:2], [9.999e-21, 9.999e-23], rtol=2e-6)
+    np.testing.assert_allclose(covariance, p * np.array([0.00009999, 0.99990001, 1.0]), rtol=2e-6)
+
+    # Once a diagonal has underflowed, even a huge feature on that axis
+    # must leave the other coordinates' excitation at its ordinary scale.
+    gain, covariance = jax.jit(_diagonal_rls_gain, static_argnames="pooled")(
+        jnp.array([0.0, 3.0, 4.0]), jnp.array([3e38, 1.0, 1.0]), pooled=True,
+    )
+    np.testing.assert_allclose(gain, [0.0, 3.0 / 8.0, 4.0 / 8.0], rtol=2e-6)
+    np.testing.assert_allclose(covariance, [0.0, 3.0 * 5.0 / 8.0, 2.0], rtol=2e-6)
+
+
+@pytest.mark.parametrize("suffix", ("diaghead", "gdiag"))
+def test_live_diagonal_registry_preserves_vector_carry_and_head_reset(suffix: str) -> None:
+    name = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_" + suffix
+    spec = screening_spec(name + "_stable")
+    params = {
+        "w1": jnp.zeros((4, 2)),
+        "b1": jnp.zeros(2),
+        "w2": jnp.zeros((2, 2)),
+        "b2": jnp.array([0.5, 0.0]),
+        "w3": jnp.zeros((2, 2)),
+        "b3": jnp.zeros(2),
+    }
+    initialize, step = spec.factory(spec.hyperparameters)
+    state = initialize(params)
+    assert isinstance(state, RLSHeadIdentState)
+    assert isinstance(state.inner, RLSHeadDiagonalState)
+    assert state.inner.p.shape == (3,)
+    inputs = jnp.zeros(4), jnp.int32(1), jr.key(0)
+    _, updated, _ = jax.jit(step)(params, state, *inputs)
+    expected_gain, expected_p = _diagonal_rls_gain(
+        state.inner.p, jnp.array([0.5 / np.sqrt(3), 0.0, 1.0], dtype=jnp.float32),
+        pooled=suffix == "gdiag",
+    )
+    np.testing.assert_allclose(updated.inner.wout[:, 1], expected_gain, rtol=1e-6)
+    np.testing.assert_array_equal(updated.inner.wout[:, 0], 0.0)
+    np.testing.assert_allclose(updated.inner.p, expected_p, rtol=1e-6)
+
+    # A zero detector threshold forces a covariance reset on this sample.
+    _, reset_step = spec.factory({**spec.hyperparameters, "rls_reset_frac": 0.0})
+    _, reset, _ = jax.jit(reset_step)(params, state, *inputs)
+    np.testing.assert_array_equal(reset.inner.p, state.inner.p)
+    np.testing.assert_array_equal(reset.inner.wout, updated.inner.wout)
+
+
+@pytest.mark.parametrize("suffix", ("diaghead", "gdiag"))
+def test_archived_diagonal_ids_are_replay_only(suffix: str, tmp_path: Path) -> None:
+    name = "rls_head_resid_identmap50_r_idet003_s0031640625_r02_" + suffix
+    with pytest.raises(ValueError, match="unknown screening config"):
+        screening_spec(name)
+    directory = _OUTPUTS / f"wave_identmap50_r_idet003_s0031640625_r02_{suffix}"
+    retained = directory / f"{name}_seed0.json"
+    payload = load_strict_json_object(retained)
+    payload["source_provenance"]["git_commit"] = "0" * 40
+    forged = tmp_path / "other-source.json"
+    forged.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="requires its original source commit"):
+        load_shard(forged)
+
+
+@pytest.mark.parametrize(
+    ("override", "message"),
+    (
+        ({"rls_head_sgd": 1.0}, "mutually exclusive"),
+        ({"rls_head_gdiag": 1.0}, "mutually exclusive"),
+        ({"rls_head_block": 1.0}, "mutually exclusive"),
+        ({"rls_head_rank": 1.0}, "mutually exclusive"),
+        ({"rls_lambda": 0.99}, "requires lambda 1"),
+        ({"rls_p_trace_cap": 200.0}, "no trace cap"),
+        ({"gate_scale": 0.0}, "fixed-step gated residual body"),
+        ({"polyak_window": 16.0}, "fixed-step gated residual body"),
+    ),
+)
+def test_live_diagonal_head_rejects_overlapping_head_and_body_modes(
+    override: dict[str, float], message: str,
+) -> None:
+    spec = screening_spec("rls_head_resid_identmap50_r_idet003_s0031640625_r02_diaghead_stable")
+    with pytest.raises(ValueError, match=message):
+        spec.factory({**spec.hyperparameters, **override})
