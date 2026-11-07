@@ -25,13 +25,16 @@ The comparator, per-seed results, and predeclared gates are in the
 
 The [constant-step 0.005625 arm](../../outputs/ipmnist_screening/wd0_const200/ANALYSIS.txt)
 also beat the annealed zero-decay comparator in a separate 200-task cohort.
-The retained analyses use different seeds, so the next full-length comparison
-must remeasure step 0.02 against this stronger constant-step arm on the same
-workload and seed set. The [fresh 12-task screen](../../outputs/hillclimb_local/2026-11-07/ipmnist/SUMMARY.json)
+The retained analyses used different seeds. The [fresh 12-task screen](../../outputs/hillclimb_local/2026-11-07/ipmnist/SUMMARY.json)
 paired both constant steps directly. Step 0.02 gained **0.016272** mean
 pre-update accuracy and led on all three seeds. This short screen supports
 the candidate for the full-length comparison, with the same dataset bytes
-and separate resource receipts for each arm.
+and separate resource receipts for each arm. A [fresh 200-task pair](../../outputs/hillclimb_local/2026-11-07/ipmnist-200/SUMMARY.json)
+on seed 311011 also favored step 0.02, with mean accuracy 0.977295 versus
+0.973365 (+0.003930). Its four consecutive 50-task block gains were
++0.008128, +0.003232, +0.002436, and +0.001924. The one-seed comparison
+establishes direction on that life. A matched multi-seed 200-task comparison
+against constant step 0.005625 remains open.
 
 The older cross-runner
 [`proxy_validation.json`](../../outputs/ipmnist_screening/proxy_validation.json)

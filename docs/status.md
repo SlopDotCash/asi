@@ -353,6 +353,14 @@ remains `valid_baseline_failure`. The following probes guide a separately planne
 See the retained [discounted SARSA calibration](../outputs/reference_life_control_calibration/riverswim-q0-full-2026-11-01/RESULTS.md),
 [differential SARSA calibration](../outputs/reference_life_control_calibration/riverswim-diffsarsa-rbar0-2026-11-01/RESULTS.md),
 and [SwitchingTwoState step probe](../outputs/reference_life_control_calibration/switching-prototype-step020-2026-11-02/RESULTS.md).
+In a [fresh local RiverSwim smoke](../outputs/hillclimb_local/2026-11-07/reference/riverswim-summary.json),
+both optimistic controls reached the high-reward end on all three matched
+seeds over 5,000 events. They beat their defaults by mean raw reward of
++1,493.03 (discounted) and +2,972.79 (differential). The direct comparison
+split 1–2 across seeds, with mean difference +10.95 for discounted SARSA.
+Keep both controls for the full matched calibration. The smoke used raw
+rewards and omitted random and oracle normalizers.
+
 The follow-up runs are permanently nonpromoting and the whole-life candidate
 selection remains open.
 

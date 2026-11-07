@@ -81,7 +81,7 @@ def compare_ip(root: Path, *, n_tasks: int) -> dict[str, Any]:
 def compare_ref(root: Path, environment: str) -> dict[str, Any]:
     seeds = [118331, 118332, 118333]
     arms = REF_ARMS[environment]
-    horizon = 4000 if environment == "switching" else 20000
+    horizon = 4000 if environment == "switching" else 5000
     arm_outcomes: dict[str, Any] = {}
     identities: dict[int, str] = {}
     source_heads: set[str] = set()
