@@ -7690,6 +7690,17 @@ class TestRLSHeadIdentMap:
             },
             **{
                 "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+                f"_wclip{tag}": {
+                    "ident_match_at": 50.0, "ident_match2": 200.0,
+                    "ident_match3": 2000.0, "ident_reset_frac": 0.03,
+                    "step_size": 0.02, "anneal_floor": 0.02,
+                    "anneal_tau": 1000.0, "weight_decay": 0.0,
+                    "body_wclip_kappa": kappa,
+                }
+                for tag, kappa in (("2", 2.0), ("4", 4.0), ("8", 8.0))
+            },
+            **{
+                "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
                 f"_{tag}": {
                     "ident_match_at": 50.0, "ident_match2": 200.0,
                     "ident_match3": 2000.0, "ident_reset_frac": 0.03,
@@ -9414,3 +9425,192 @@ class TestWd0ConstStepExtend2DivergenceRules:
         monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
         with pytest.raises(self.A.VoidRun):
             self.A.diff("tune", self.A.CELLS[0][0], 123)
+
+
+class TestRLSHeadIdentMapS02Wd0WeightClip:
+    """Opt-in residual-body weight clipping on the s02 wd0 incumbent (s02_wd0_wclip/)."""
+
+    INCUMBENT = "rls_head_resid_identmap50_r_idet003_s02_anneal_f1t1000_wd0"
+    KAPPAS = (("2", 2.0), ("4", 4.0), ("8", 8.0))
+
+    def _spec(self, **overrides):
+        spec = screening_spec(self.INCUMBENT)
+        return replace(
+            spec,
+            name=spec.name + "_wclip_test",
+            hyperparameters={
+                **spec.hyperparameters,
+                "ident_match_at": 10.0, "ident_match2": 0.0,
+                "ident_match3": 0.0, **overrides,
+            },
+        )
+
+    def _run(self, **overrides):
+        x, y = TestRLSHeadIdentMapStepAnneal._offset_data()
+        return run_screening_config(x, y, self._spec(**overrides), seed=7, config=SMALL)
+
+    def test_registry_differs_only_in_kappa(self):
+        inc = dict(screening_spec(self.INCUMBENT).hyperparameters)
+        assert "body_wclip_kappa" not in inc
+        for tag, kappa in self.KAPPAS:
+            spec = screening_spec(self.INCUMBENT + "_wclip" + tag)
+            hp = dict(spec.hyperparameters)
+            assert hp.pop("body_wclip_kappa") == kappa
+            assert hp == inc
+            assert spec.factory is screening_spec(self.INCUMBENT).factory
+
+    def test_loose_clip_is_parent_bitwise(self):
+        """A bound far above any weight leaves the trajectory bit-exact."""
+        parent = self._run()
+        loose = self._run(body_wclip_kappa=1e30)
+        for f in ("per_task_accuracy", "per_task_loss"):
+            np.testing.assert_array_equal(
+                np.asarray(getattr(loose, f)), np.asarray(getattr(parent, f))
+            )
+
+    def test_tight_clip_is_live_and_finite(self):
+        parent = self._run()
+        tight = self._run(body_wclip_kappa=0.05)
+        assert not np.array_equal(
+            np.asarray(tight.per_task_loss), np.asarray(parent.per_task_loss)
+        )
+        assert np.all(np.isfinite(np.asarray(tight.per_task_loss)))
+
+    def test_rejects_bad_kappa(self):
+        from alberta_framework.benchmarks.ipmnist_screening import (
+            _make_rls_head_identmap_learner,
+        )
+
+        for bad in (0.0, -1.0, float("inf"), float("nan")):
+            with pytest.raises(ValueError):
+                _make_rls_head_identmap_learner(
+                    {**self._spec().hyperparameters, "body_wclip_kappa": bad}
+                )
+        with pytest.raises(ValueError):
+            _make_rls_head_identmap_learner(
+                {**self._spec().hyperparameters, "head_resid": 0.0,
+                 "ident_match_at": 0.0, "body_wclip_kappa": 2.0}
+            )
+
+    def test_bound_is_kappa_over_sqrt_fan_in(self):
+        from alberta_framework.benchmarks.ipmnist_screening import _wclip_bound
+
+        params = {"w1": np.zeros((784, 300)), "b1": np.zeros(300),
+                  "w2": np.zeros((300, 150)), "b2": np.zeros(150)}
+        assert _wclip_bound(params, "w1", 2.0) == 2.0 / math.sqrt(784)
+        assert _wclip_bound(params, "b2", 4.0) == 4.0 / math.sqrt(300)
+
+
+def _load_s02_wclip_analyze():
+    import importlib.util
+    path = (Path(__file__).resolve().parents[1] / "outputs" / "ipmnist_screening"
+            / "s02_wd0_wclip" / "analyze.py")
+    spec = importlib.util.spec_from_file_location("s02_wclip_analyze", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+class TestS02Wd0WclipDivergenceRules:
+    """Development-plan rules of s02_wd0_wclip/analyze.py on synthetic inputs."""
+
+    A = _load_s02_wclip_analyze()
+    OK = [0.95] * 60
+    LOSS = [0.1] * 60
+
+    def test_cells_registered_and_seeds_fixed(self):
+        for c, k in self.A.CELLS:
+            assert SCREENING_REGISTRY[c].hyperparameters["body_wclip_kappa"] == k
+        assert self.A.INC in SCREENING_REGISTRY
+        assert self.A.TUNE_SEED == 154 and list(self.A.SCREEN_SEEDS) == list(range(155, 165))
+        assert self.A.EDGE == self.A.INC + "_wclip2"
+
+    def test_classify(self):
+        assert self.A.classify(self.OK, self.LOSS) is None
+        assert "missing" in self.A.classify(None, None)
+        acc = list(self.OK); acc[5] = float("nan")
+        assert "non-finite accuracy" in self.A.classify(acc, self.LOSS)
+        assert "non-finite loss" in self.A.classify(self.OK, None)
+        acc = list(self.OK); acc[3] = 0.4999
+        assert "tasks [3]" in self.A.classify(acc, self.LOSS)
+        acc[3] = 1.5
+        assert "outside" in self.A.classify(acc, self.LOSS)
+        assert self.A.FLOOR == 0.5
+
+    def test_tune_gate_diverged_and_ties_to_larger_kappa(self):
+        T = self.A.tune_decision
+        assert T([("a", 2.0, 0.001), ("b", 4.0, None), ("c", 8.0, 0.002)]) == "c"
+        assert T([("a", 2.0, None), ("b", 4.0, None)]) == "STOP_ALL_DIVERGED"
+        assert T([("a", 2.0, 0.0005), ("b", 4.0, -0.01)]) == "STOP"
+        assert T([("a", 2.0, 0.003), ("b", 4.0, 0.003)]) == "b"
+
+    def test_screen_verdict(self):
+        V = self.A.screen_verdict
+        assert V([0.003 + 0.0001 * i for i in range(10)])["verdict"] == "PASS"
+        v = V([0.5] * 9 + [None])
+        assert v["mean"] >= 0.002 and v["diverged"] == 1 and v["verdict"] == "FAIL"
+        assert V([0.001] * 9 + [0.0011])["verdict"] == "FAIL"
+
+    def test_incumbent_divergence_voids(self, tmp_path, monkeypatch):
+        import json
+        d = tmp_path / "tune"; d.mkdir()
+        for c, acc in ((self.A.INC, [float("nan")] + [0.9] * 59), (self.A.CELLS[0][0], self.OK)):
+            (d / f"{c}_seed154.json").write_text(json.dumps({"per_task_accuracy": acc, "per_task_loss": self.LOSS}))
+        monkeypatch.setattr(self.A, "D", str(tmp_path) + "/")
+        with pytest.raises(self.A.VoidRun):
+            self.A.diff("tune", self.A.CELLS[0][0], 154)
+
+
+class TestEnvcheckS02Wd0WclipUnreadable:
+    """s02_wd0_wclip/envcheck.py: an unreadable reference is a clean FAIL (exit 1), never a crash."""
+
+    ENV = _exp_path("s02_wd0_wclip", "envcheck.py")
+
+    def _check_clean_fail(self, r):
+        assert r.returncode == 1, r.stderr
+        assert "Traceback" not in r.stderr
+        assert "UNREADABLE" in r.stdout
+        assert r.stdout.strip().splitlines()[-1] == "ENVCHECK FAIL"
+
+    def test_commit_absent_from_clone(self, tmp_path):
+        import shutil
+        import subprocess
+
+        subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+        shutil.copytree(_exp_path("s02_wd0_wclip", "envcheck"),
+                        tmp_path / "outputs" / "ipmnist_screening" / "s02_wd0_wclip" / "envcheck")
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_not_a_git_checkout_and_no_local_shards(self, tmp_path):
+        self._check_clean_fail(_run_py(self.ENV, tmp_path))
+
+    def test_full_history_still_passes(self):
+        import subprocess
+
+        root = Path(__file__).resolve().parents[1]
+        if subprocess.run(["git", "cat-file", "-e", "ef85fff8^{commit}"], cwd=root).returncode:
+            pytest.skip("reference commit not in this clone")
+        r = _run_py(self.ENV, root)
+        assert r.returncode == 0 and r.stdout.strip().splitlines()[-1] == "ENVCHECK PASS"
+
+
+class TestLaunchHardeningS02Wd0Wclip:
+    """s02_wd0_wclip launch.sh job-file validation and worker.sh XLA_FLAGS value."""
+
+    LAUNCH = _exp_path("s02_wd0_wclip", "launch.sh")
+
+    def test_committed_job_files_validate(self, tmp_path):
+        for f in sorted(_exp_path("s02_wd0_wclip").glob("*jobs*.txt")):
+            assert _jobs_ok_rc(self.LAUNCH, f.read_text(), tmp_path) == 0, f.name
+
+    def test_blank_and_comment_lines_allowed(self, tmp_path):
+        assert _jobs_ok_rc(self.LAUNCH, "# c\n\nabc 5 60 tune\n", tmp_path) == 0
+
+    @pytest.mark.parametrize("line", ["abc 5 60", "abc 5 60 tune extra", "abc x 60 tune",
+                                      "abc 5 6o tune", "abc 5a 60 tune"])
+    def test_malformed_lines_rejected(self, tmp_path, line):
+        assert _jobs_ok_rc(self.LAUNCH, f"abc 5 60 tune\n{line}\n", tmp_path) == 1
+
+    def test_worker_xla_flags_value_unchanged(self):
+        assert _worker_xla_flags(_exp_path("s02_wd0_wclip", "worker.sh")) == (
+            "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1")
