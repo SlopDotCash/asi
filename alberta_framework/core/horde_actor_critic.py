@@ -908,7 +908,7 @@ class QHordeActorCriticAgent:
         )
         return QHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, policy, jnp.zeros_like(policy)),
             q_values=jnp.where(update_applied, q_previous, jnp.zeros_like(q_previous)),
             next_q_values=jnp.where(
@@ -1247,7 +1247,7 @@ class HordeActorCriticAgent:
         )
         return HordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(update_applied, value, 0.0),
             next_value=jnp.where(update_applied & (value_discount != 0.0), next_value, 0.0),
@@ -2255,7 +2255,7 @@ class NonlinearHordeActorCriticAgent:
         )
         return NonlinearHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, next_policy, jnp.zeros_like(next_policy)),
             value=jnp.where(update_applied, value, 0.0),
             next_value=jnp.where(update_applied & (value_discount != 0.0), next_value, 0.0),
@@ -2942,7 +2942,7 @@ class NonlinearQHordeActorCriticAgent:
         )
         return NonlinearQHordeActorCriticUpdateResult(  # type: ignore[call-arg]
             state=new_state,
-            action=jnp.where(update_applied, next_action, jnp.asarray(0, jnp.int32)),
+            action=jnp.where(update_applied, next_action, state.last_action),
             policy=jnp.where(update_applied, policy, jnp.zeros_like(policy)),
             q_values=jnp.where(update_applied, q_previous, jnp.zeros_like(q_previous)),
             next_q_values=jnp.where(
