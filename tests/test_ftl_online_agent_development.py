@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
+import json
+from typing import Any
 
 import jax
 import numpy as np
@@ -12,6 +14,7 @@ from alberta_framework.benchmarks.ftl_online_agent_development import (
     FROZEN_GOALS,
     FROZEN_SEEDS,
     OFFICIAL_CODE_REVISION,
+    DevelopmentResult,
     _mpc_action,
     run_development_lane,
     validate_result,
@@ -100,6 +103,41 @@ def test_validator_rejects_promotion_counter_forgery_and_extra_fields() -> None:
     forged_identity = dataclasses.replace(result.identity, paper_registry_sha256="0" * 64)
     with pytest.raises(ValueError, match="current source/runtime/registries"):
         validate_result(dataclasses.replace(result, identity=forged_identity))
+
+
+def _json_payload(result: DevelopmentResult) -> dict[str, Any]:
+    payload: dict[str, Any] = json.loads(json.dumps(dataclasses.asdict(result)))
+    validate_result(payload)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("field", "alias"),
+    [
+        ("scientific_promotion_allowed", 0),
+        ("scientific_promotion_allowed", 0.0),
+        ("scientific_promotion_allowed", None),
+        ("scientific_promotion_allowed", ""),
+        ("historical_ftl_claim_reused", 0),
+        ("historical_ftl_claim_reused", []),
+    ],
+)
+def test_validator_rejects_non_bool_negative_flags(field: str, alias: object) -> None:
+    result = run_development_lane(seed=FROZEN_SEEDS[0], steps_per_task=1, planning_horizon=1)
+    with pytest.raises(ValueError, match="nonpromoting"):
+        validate_result(dataclasses.replace(result, **{field: alias}))
+    payload = _json_payload(result)
+    payload[field] = alias
+    with pytest.raises(ValueError, match="nonpromoting"):
+        validate_result(payload)
+
+
+def test_validator_rejects_a_float_alias_of_a_frozen_seed() -> None:
+    result = run_development_lane(seed=FROZEN_SEEDS[0], steps_per_task=1, planning_horizon=1)
+    payload = _json_payload(result)
+    payload["seed"] = float(FROZEN_SEEDS[0])
+    with pytest.raises(ValueError, match="frozen development schedule"):
+        validate_result(payload)
 
 
 def test_mechanism_off_is_causal_and_does_not_adopt_updates() -> None:
