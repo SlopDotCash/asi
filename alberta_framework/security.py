@@ -19,6 +19,7 @@ from fractions import Fraction
 from types import MappingProxyType
 from typing import Any, SupportsIndex, cast
 
+import jax
 import numpy as np
 
 from alberta_framework.core._float32_scalars import validated_float32_scalar
@@ -348,11 +349,24 @@ class SecurityFeatureSchema:
 
     def validate_observation(self, observation: Sequence[float]) -> None:
         """Raise ``ValueError`` if an observation does not match this schema."""
-        if len(observation) != self.feature_dim:
+        actual_type: type[object] = type(observation)
+        values: list[object]
+        if actual_type is list or actual_type is tuple:
+            values = list(observation)
+        elif actual_type is np.ndarray or issubclass(actual_type, jax.Array):
+            array = np.asarray(observation)
+            if array.ndim != 1:
+                raise ValueError("observation must be one-dimensional")
+            values = array.tolist()
+        else:
+            raise ValueError("observation must be an exact list, tuple, or array")
+        if len(values) != self.feature_dim:
             raise ValueError(
-                f"observation length {len(observation)} does not match "
+                f"observation length {len(values)} does not match "
                 f"schema feature_dim {self.feature_dim}"
             )
+        for index, value in enumerate(values):
+            _require_finite_real(f"observation[{index}]", value)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable schema mapping."""
