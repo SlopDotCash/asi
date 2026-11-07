@@ -1204,3 +1204,28 @@ def test_recurrent_ensemble_config_rejects_non_dict_schema_containers() -> None:
 def test_recurrent_ensemble_config_rejects_derived_resource_overflow() -> None:
     with pytest.raises(ValueError, match="persistent state"):
         _config(observation_dim=3_000_000)
+
+
+
+@pytest.mark.parametrize("disable_jit", [True, False])
+@pytest.mark.parametrize("magnitude", [2.0e38, -2.0e38, 1.0, 1.1754943508222875e-38])
+def test_public_decision_retains_finite_raw_member_mean(
+    disable_jit: bool, magnitude: float
+) -> None:
+    model = RecurrentLatentWorldModelEnsemble(_config(
+        ensemble_size=2, max_prediction_magnitude=2.5e38,
+        max_parameter_magnitude=2.5e38,
+    ))
+    state = model.init(jr.key(0))
+    members = tuple(dataclasses.replace(
+        member, mean_kernel=jnp.zeros_like(member.mean_kernel),
+        mean_bias=jnp.zeros_like(member.mean_bias).at[-1].set(magnitude),
+    ) for member in state.member_parameters)
+    state = dataclasses.replace(state, member_parameters=members)
+    with jax.disable_jit(disable_jit):
+        decision = _decision(model, state)
+        assert bool(decision.valid)
+        raw = np.asarray(decision.prediction.member_raw_outputs)
+        np.testing.assert_array_equal(raw[:, 3], np.full(2, magnitude, dtype=np.float32))
+        assert float(decision.prediction.mean_raw_output[3]) == float(np.float32(magnitude))
+        assert np.all(np.isfinite(np.asarray(decision.prediction.mean_raw_output)))
